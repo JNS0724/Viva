@@ -12,6 +12,7 @@ import { createBackendKeeper } from './backend-keeper.ts'
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
 import { loadDataKey } from './data-key.ts'
 import { createDeskIsland } from './desk-island.ts'
+import { createDeskPreview } from './desk-preview.ts'
 import { leaveFullScreen } from './full-screen.ts'
 import { IMAGE_SCHEME_PRIVILEGES, registerImageProtocol } from './image-protocol.ts'
 import { type Channel, checkedIpc } from '../shared/ipc-contract.ts'
@@ -31,6 +32,7 @@ import { devIcon, windowChrome, windowSize } from './window-options.ts'
  * started again (backend-keeper.ts), and the window reloads onto it.
  */
 const automationMode = app.commandLine.hasSwitch('enable-smoke-test-driver')
+const previewMode = !app.isPackaged && app.commandLine.hasSwitch('debug-desk-states')
 // A standard alternate profile works for automation and separate user profiles alike.
 const profileDirectory = app.commandLine.getSwitchValue('user-data-dir')
 if (automationMode && !profileDirectory) throw new Error('External automation requires an explicit --user-data-dir')
@@ -61,6 +63,7 @@ type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces' | 'deskCoa
 let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.ts). */
 let desk: ReturnType<typeof createDeskIsland> | null = null
+let deskPreview: ReturnType<typeof createDeskPreview> | null = null
 let ownDraft = (_owner: 'main' | 'desk'): unknown => undefined
 /** False in smoke runs, which turn the desktop island on only while they check it. */
 let deskAllowed = true
@@ -96,10 +99,10 @@ function mainWindow(): BrowserWindow {
 /** Brings the window to the front: from the desktop island, the tray, the Dock or a second launch. */
 function showWindow() {
   if (!win || win.isDestroyed()) return
+  desk?.setAway(false)
+  deskPreview?.close()
   if (win.isMinimized()) win.restore()
   win.show()
-  // A rapid hide/show can make the window visible without a native 'show' event.
-  desk?.setAway(false)
   if (process.platform === 'darwin') app.focus({ steal: true })
   win.focus()
 }
@@ -295,7 +298,10 @@ function registerShortcut() {
   shortcutHeld = registerAskShortcut(globalShortcut, {
     foreground: windowInFront,
     focusComposer: () => mainWindow().webContents.send('composer:focus'),
-    openInput: () => desk?.openInput() ?? false,
+    openInput: () => {
+      deskPreview?.close()
+      return desk?.openInput() ?? false
+    },
     showWindow,
   })
   mirror({ shellSettings: shellSettings() })
@@ -333,12 +339,15 @@ function showTray() {
  */
 function attachDeskIsland(window: BrowserWindow) {
   deskAllowed = !automationMode
-  desk = createDeskIsland({
+  const host = {
     BrowserWindow,
     screen,
     preload: path.join(CODE_ROOT, 'src', 'preload', 'desk-preload.cjs'),
     page: path.join(CODE_ROOT, 'src', 'renderer', 'desk.html'),
     mainWindow: window,
+  }
+  const liveIsland = createDeskIsland({
+    ...host,
     enabled: deskAllowed && shellPreferences.deskIsland,
     onOwnership: owner => ownDraft(owner),
     // Its 已完成 card read: the window's island goes back to 待命 too (done-notice-actions.ts).
@@ -346,12 +355,20 @@ function attachDeskIsland(window: BrowserWindow) {
     places: { get: () => shellPreferences.deskPlaces, set: (places) => { setShellPreference('deskPlaces', places).catch(logged('places')) } },
     coach: { get: () => shellPreferences.deskCoached, set: () => { setShellPreference('deskCoached', true).catch(logged('coached')) } },
   })
+  desk = liveIsland
+  if (previewMode) deskPreview = createDeskPreview(() => createDeskIsland({
+    ...host, preview: true, enabled: true,
+    places: { get: () => shellPreferences.deskPlaces, set: () => {} },
+  }), suspended => liveIsland.suspend(suspended))
   window.on('close', (event) => {
     if (quitting) return
     event.preventDefault()
     closeToTray()
   })
-  window.on('show', () => desk?.setAway(false))
+  window.on('show', () => {
+    desk?.setAway(false)
+    deskPreview?.close()
+  })
   // Whether the window is in front, which the backend reads without asking (follow-ups hold notices then).
   window.on('focus', mirrorInFront)
   window.on('blur', mirrorInFront)
@@ -365,6 +382,8 @@ function attachDeskIsland(window: BrowserWindow) {
     tellBackend('mark-quitting')
   })
   window.on('closed', () => {
+    deskPreview?.close(false)
+    deskPreview = null
     desk?.destroy()
     desk = null
   })
@@ -451,6 +470,7 @@ app.whenReady().then(async () => {
   registerImageProtocol(protocol, async (url) => (await backendConnection()).image(url))
   registerShellSettingsIpc()
   ownDraft = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu,
+    preview: () => deskPreview,
     keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
     switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } }).ownDraft
   installAutomationDriver(automationMode, {

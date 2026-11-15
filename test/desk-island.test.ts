@@ -8,6 +8,7 @@ import type { BrowserWindow, Display, Rectangle, WebContents } from 'electron'
 import type { Places } from '../src/shell/desk-place.ts'
 import { DESK_SIZE, DRAG_SIZE, FIXED_DESK_HOST, dragBounds, deskLayout, homePoint } from '../src/shell/desk-place.ts'
 import { deskMenuTemplate } from '../src/shell/desk-menu.ts'
+import { createDeskPreview } from '../src/shell/desk-preview.ts'
 import { describeDropped, MISSING, NOT_A_FILE } from '../src/shell/island-files.ts'
 import { ASK_LIMITS, checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView } from '../src/shell/island-ipc.ts'
 
@@ -41,6 +42,8 @@ test('only the actions the island offers get through, with their ids', () => {
   assert.deepEqual(checkIslandAction({ kind: 'permission', requestId: 'r1', optionId: 'allow-once', extra: 'x' }), { kind: 'permission', requestId: 'r1', optionId: 'allow-once' })
   assert.deepEqual(checkIslandAction({ kind: 'answer', questionId: 'q', id: 'city', label: '上海' }), { kind: 'answer', questionId: 'q', id: 'city', label: '上海' })
   assert.deepEqual(checkIslandAction({ kind: 'skip', questionId: 'q', id: 'x' }), { kind: 'skip', questionId: 'q' })
+  assert.deepEqual(checkIslandAction({ kind: 'request', requestId: 'q', taskId: 'ignored' }), { kind: 'request', requestId: 'q' })
+  assert.equal(checkIslandAction({ kind: 'request', requestId: '' }), null)
   assert.equal(checkIslandAction({ kind: 'skip' }), null)
   assert.deepEqual(checkIslandAction({ kind: 'cancel' }), { kind: 'cancel' })
   assert.deepEqual(checkIslandAction({ kind: 'open' }), { kind: 'open' })
@@ -114,6 +117,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     destroyed = false
     shape: Rectangle[] = []
     shapeCalls = 0
+    blurCalls = 0
     boundsHistory: Rectangle[] = []
     constructor(options: { focusable?: boolean, width: number, height: number }) {
       this.visible = false
@@ -156,7 +160,7 @@ function fakes({ cursor = { x: 0, y: 0 } } = {}) {
     }
     focus() { this.focused = this.focusable; this.onTop = false }
     isFocused() { return this.focused }
-    blur() { this.focused = false }
+    blur() { this.blurCalls += 1; this.focused = false }
     lastView() { return this.sent.filter(([channel]) => channel === 'island:view').at(-1)![1] }
   }
   const screen = {
@@ -367,7 +371,11 @@ test('dragged, the portrait follows the pointer at each frame and is remembered 
   assert.equal(win.bounds.x, initial.x, 'no timer moves it: the page\'s frames do')
   desk.dragMove()
   assert.deepEqual(win.bounds, dragBounds({ x: 1080, y: 681.25 }))
+  assert.equal(win.isFocused(), true, 'the drag takes the keyboard for Escape')
   desk.endDrag()
+  assert.equal(win.blurCalls, process.platform === 'darwin' ? 0 : 1, 'macOS must not order the native panel out and back in on release')
+  assert.equal(win.focusable, process.platform === 'win32')
+  assert.equal(win.isVisible(), true)
   assert.deepEqual([win.bounds.width, win.bounds.height, win.lastView().dir], [DESK_SIZE.width, DESK_SIZE.height, 'up'])
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 0.75, fy: 0.75 } } })
   assert.equal(win.lastView().dragging, false)
@@ -472,6 +480,44 @@ test('the right-click menu: ask, open, stop only while working, put back, hide f
   assert.equal(make(false).find((item) => item.label === '停止')?.enabled, false)
 })
 
+test('the debug menu previews eight states in a separate window and resumes the live island on exit', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const live = deskIsland(env)
+  const preview = createDeskPreview(() => createDeskIsland({
+    BrowserWindow: env.BrowserWindow as unknown as typeof BrowserWindow, screen: env.screen,
+    preload: 'p', page: 'q', mainWindow: { getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }) },
+    enabled: true, places: { get: env.places.get, set: () => assert.fail('preview saved placement') }, preview: true,
+    onOwnership: () => assert.fail('preview acquired the live draft'),
+  }), on => live.suspend(on))
+  const items = () => {
+    const submenu = preview.menu().submenu
+    return Array.isArray(submenu) ? submenu : []
+  }
+  const click = (label: string) => Reflect.apply(items().find(item => item.label?.startsWith(label))!.click!, undefined, [])
+  assert.equal(items().length, 8)
+  click('01')
+  assert.equal(env.windows[0].destroyed, true)
+  const previewWindow = env.windows[1]
+  assert.ok(previewWindow)
+  previewWindow.handlers['did-finish-load']()
+  assert.equal(items()[0].checked, true)
+  click('下一组')
+  assert.equal(items()[1].checked, true)
+  for (let index = 3; index <= 8; index++) {
+    click(String(index).padStart(2, '0'))
+    assert.equal(items()[index - 1].checked, true)
+    if (index === 5) click('查看恢复后的草稿')
+  }
+  assert.equal(env.windows.length, 2, 'all frames reuse the preview host')
+  live.setView(view('working'))
+  click('退出预览')
+  assert.equal(previewWindow.destroyed, true)
+  env.windows[2].handlers['did-finish-load']()
+  assert.equal(env.windows[2].lastView().form, 'working')
+  live.destroy()
+})
+
 test('the island may open its menu, open its input and say the user has seen what it can do', () => {
   assert.deepEqual([checkIslandAction({ kind: 'menu', x: 1 }), checkIslandAction({ kind: 'coached' })], [{ kind: 'menu' }, { kind: 'coached' }])
 })
@@ -551,7 +597,7 @@ test('a quick release saves the latest cursor and invalidates the outstanding co
   desk.destroy()
 })
 
-test('Windows follows a drag immediately and keeps its canvas, anchor and hit region through release', { skip: !FIXED_DESK_HOST }, t => {
+test('a fixed host follows a drag immediately and keeps its canvas, anchor and hit region through release', { skip: !FIXED_DESK_HOST }, t => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes({ cursor: { x: 738, y: 74 } })
   const desk = deskIsland(env)
@@ -561,10 +607,11 @@ test('Windows follows a drag immediately and keeps its canvas, anchor and hit re
   desk.openInput()
   const anchor = win.lastView().anchor
   const rect = { x: anchor.x - 40, y: anchor.y - 40, width: 80, height: 80 }
-  desk.setIslandRect(rect, win.lastView().layoutVersion, true, [rect, { x: anchor.x + 52, y: rect.y, width: 440, height: 260 }])
+  const panel = { x: anchor.x + 52, y: rect.y, width: 440, height: 260 }
+  desk.setIslandRect(rect, win.lastView().layoutVersion, true, [rect, panel])
   desk.startDrag({ ...env.cursor })
   const dragVersion = win.lastView().layoutVersion
-  assert.equal(win.shape.length, 1, 'keep only the known portrait region while the panel collapses')
+  if (process.platform === 'win32') assert.equal(win.shape.length, 1, 'keep only the known portrait region while the panel collapses')
   const mask = [...win.shape]
   for (const point of [{ x: 900, y: 600 }, { x: 500, y: 200 }, { x: 1080, y: 700 }]) {
     Object.assign(env.cursor, point)
@@ -572,16 +619,23 @@ test('Windows follows a drag immediately and keeps its canvas, anchor and hit re
     assert.deepEqual(win.bounds, dragBounds({ x: point.x - 18, y: point.y + 7 }), 'movement does not wait for a renderer acknowledgement')
   }
   const beforeRelease = { ...win.bounds }
+  const boundsChanges = win.boundsHistory.length
   desk.endDrag()
   assert.deepEqual(win.bounds, beforeRelease, 'release does not relocate or resize the canvas')
+  assert.equal(win.boundsHistory.length, boundsChanges, 'release does not apply the same native bounds again')
   assert.deepEqual(win.lastView().anchor, anchor)
   assert.deepEqual(win.shape, mask, 'release never temporarily enables a full rectangular native region')
   assert.ok(win.boundsHistory.every(bounds => bounds.width === DESK_SIZE.width && bounds.height === DESK_SIZE.height))
   assert.equal(desk.inputOpen(), false)
   const calls = win.shapeCalls
-  desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, dragVersion, true)
-  desk.setIslandRect({ x: 12, y: 12, width: 80, height: 80 }, win.lastView().layoutVersion, false)
+  desk.setIslandRect(rect, dragVersion, true, [panel])
+  desk.setIslandRect(rect, win.lastView().layoutVersion, false, [panel])
   assert.equal(win.shapeCalls, calls, 'neither old-version nor not-yet-committed geometry can replace the mask')
+  if (process.platform === 'darwin') {
+    Object.assign(env.cursor, { x: beforeRelease.x + panel.x + 15, y: beforeRelease.y + panel.y + 15 })
+    t.mock.timers.tick(60)
+    assert.equal(win.ignoring.at(-1), true, 'the old panel region already lets clicks through')
+  }
   desk.setIslandRect(rect, win.lastView().layoutVersion, true, [rect])
   assert.deepEqual(win.shape, mask)
   assert.deepEqual(env.saved(), { last: '1', places: { 1: { fx: 1062 / 1440, fy: (707 - 25) / 875 } } })
@@ -646,10 +700,13 @@ test('dragging preserves an off-centre grab, and cancellation restores position 
   desk.startDrag({ x: 740, y: 100 })
   desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 }, win.lastView().layoutVersion, true)
   assert.deepEqual(win.bounds, dragBounds({ x: 840, y: 221 }), 'the 20px/19px grab offset remains under the pointer')
+  win.handlers.blur()
+  assert.equal(desk.inputOpen(), true, 'native focus changes during a drag leave the original panel available for Escape')
   desk.endDrag(true)
   assert.deepEqual(win.bounds, original)
   assert.deepEqual(env.saved(), { last: null, places: {} })
   assert.equal(desk.inputOpen(), true)
+  assert.equal(win.isFocused(), true, 'cancel restores the open input with its keyboard focus')
   desk.destroy()
 })
 

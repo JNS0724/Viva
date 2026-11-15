@@ -55,12 +55,15 @@ function createItemLine(id: string, act: IslandAct, desk: boolean) {
   const open = h('button', { type: 'button', class: 'isl-bg-mid', onClick: () => act({ kind: 'task', taskId: id }) }, title, detail)
   const stop = h('button', { type: 'button', class: desk ? 'isl-mini isl-mini-text' : 'isl-mini', onClick: () => act({ kind: 'stop-task', taskId: id }) })
   const el = h('li', { class: 'isl-bg-item' }, open)
+  const approvals = h('div', { class: 'isl-bg-approvals' })
   let signature = '', actions: HTMLElement[] = []
-  function update(item: IslandTask, now: number) {
+  function update(item: IslandTask, now: number, primaryApproval: boolean) {
     el.dataset.status = item.status
     const name = desk ? item.title : `#${item.title}`
     if (title.textContent !== name) title.textContent = name
     const asks = item.permission
+    const questionId = desk && !asks ? item.question?.questionId : undefined
+    if (desk) el.dataset.request = asks ? 'permission' : questionId ? 'question' : ''
     const doing = asks ? t('island-tasks.wants.to', { title: asks.title }) : item.status === 'waiting' ? t('island-tasks.waiting.for.your.answer')
       : item.now ? t('island-tasks.currently', { now: item.now }) : t('island-tasks.working')
     if (detail.textContent !== doing) detail.textContent = doing
@@ -69,15 +72,21 @@ function createItemLine(id: string, act: IslandAct, desk: boolean) {
     const elapsed = runningFor(item.startedAt, now)
     if (time.textContent !== elapsed) time.textContent = elapsed
     // A request owns its option handlers. A different request receives new buttons and ids.
-    const next = JSON.stringify([localeRevision(), asks?.requestId, asks?.options])
+    const next = JSON.stringify([localeRevision(), asks?.requestId, asks?.options, questionId, primaryApproval])
     if (signature !== next) {
       signature = next
       actions = asks ? asks.options.map(option => h('button', {
-        type: 'button', class: `isl-mini ${option.role === 'primary' ? 'isl-mini-primary' : ''}`, text: option.name,
+        type: 'button', class: option.role === 'primary' && primaryApproval ? 'isl-mini isl-mini-primary' : 'isl-mini', text: option.name,
         onClick: () => act({ kind: 'permission', requestId: asks.requestId, optionId: option.optionId }),
-      })) : [time, stop]
+      })) : questionId ? [h('button', { type: 'button', class: 'isl-mini', text: t('island-tasks.answer'),
+        onClick: () => act({ kind: 'request', requestId: questionId }) }), stop] : [time, stop]
     }
-    reconcileChildren(el, [open, ...actions])
+    if (desk && asks) {
+      reconcileChildren(approvals, actions)
+      reconcileChildren(el, [open, approvals])
+    } else {
+      reconcileChildren(el, [open, ...actions])
+    }
   }
   return { el, update }
 }
@@ -100,10 +109,11 @@ export function createBackgroundSection(act: IslandAct, { desk = false } = {}) {
     el.setAttribute('aria-label', t('island-tasks.background'))
     label.textContent = t('island-tasks.background.2')
     count.textContent = String(items.length)
+    const primaryApproval = desk ? items.find(item => item.permission?.options.some(option => option.role === 'primary')) : undefined
     reconcileChildren(list, items.map(item => {
       let row = rows.get(item.id)
       if (!row) { row = createItemLine(item.id, act, desk); rows.set(item.id, row) }
-      row.update(item, now)
+      row.update(item, now, !desk || item === primaryApproval)
       return row.el
     }))
     return el

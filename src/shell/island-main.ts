@@ -4,6 +4,7 @@ import { deskMenuTemplate } from './desk-menu.ts'
 import { describeDropped, MISSING } from './island-files.ts'
 import type { BrowserWindow, GlobalShortcut, IpcMainEvent, IpcMainInvokeEvent, Menu as ElectronMenu } from 'electron'
 import type { createDeskIsland } from './desk-island.ts'
+import type { createDeskPreview } from './desk-preview.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { checkAsk, checkDroppedPaths, checkIslandAction, checkIslandView, type IslandAction } from './island-ipc.ts'
 import { createComposerDraftStore } from '../shared/composer-draft.ts'
@@ -22,10 +23,11 @@ export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
 let NOT_SENT = t("main.island-main.could.not.send.please.try.again")
 
 /** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
-export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage }: {
+export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage, preview }: {
   desk: () => DeskIsland | null, window: () => BrowserWindow | null, showWindow: () => void,
   Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>, switchOff: () => void,
   keepImage: (bytes: Uint8Array | ArrayBuffer) => Promise<KeptImage>,
+  preview?: () => ReturnType<typeof createDeskPreview> | null,
 }) {
   const drafts = createComposerDraftStore(snapshot => {
     const main = window()
@@ -99,6 +101,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     placeAt: corner => island.placeAt(corner),
     hide: () => island.hideUntilAway(),
     switchOff,
+    preview: preview?.()?.menu(),
   }))
 
   // The actions come checked (checkIslandAction): each has the fields its kind needs, of their types.
@@ -111,6 +114,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     },
     toggle: island => island.togglePanel(),
     panel: (island, { panel }) => island.openPanel(panel),
+    request: (island, { requestId }: { requestId: string }) => island.openPanel('request', requestId),
     place: (island, { corner }) => island.placeAt(corner),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
@@ -132,6 +136,23 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     coached: (island) => island.markCoached(),
   }
   ipcMain.on('island:act', (event, raw) => {
+    const activePreview = preview?.()
+    const previewIsland = activePreview?.island()
+    if (activePreview && previewIsland?.owns(event.sender)) {
+      const action = checkIslandAction(raw)
+      if (!action) return
+      // A preview can operate its own window and request panels. Its buttons never act on a live task.
+      switch (action.kind) {
+        case 'menu': previewIsland.popup(Menu.buildFromTemplate([activePreview.menu()])); break
+        case 'dismiss': activePreview.close(); break
+        case 'rect':
+        case 'drag':
+        case 'toggle':
+        case 'panel':
+        case 'request': LOCAL[action.kind](previewIsland, action); break
+      }
+      return
+    }
     const island = fromDesk(event)
     const action = island && checkIslandAction(raw)
     if (!action) return

@@ -10,7 +10,7 @@ import { topicHint } from '../topics.ts'
  * The desktop island's input (desk.js): what the user asks from any app, with the shortcut or by dropping
  * files on the island. The text field is made once and kept, so what is typed survives the island's
  * changes of shape; the rest is drawn from the view:
- *   { form: 'input', busy?: { text: string }, steering?: boolean, files: { path, name, size }[], images?: { id, size }[], error?: string }
+ *   { form: 'input', steering?: boolean, files: { path, name, size }[], images?: { id, size }[], error?: string }
  * steering: the agent is working, so what is asked goes into its turn (app.js steer); images: pictures pasted,
  * shown like the files, with the picture for an icon.
  * and, while files are dragged over the island, { form: 'drop', count }.
@@ -23,12 +23,11 @@ let PLACEHOLDER_IMAGES = t("island-input.what.would.you.like.to.know.about")
 let TARGET = t("island-input.send.to.current.conversation")
 let TARGET_STEER = t("island-input.the.assistant.is.working.and.will.read")
 
-export function createIslandInput({ send, dismiss, removeFile, removeImage = () => {}, paste = null, configure }: {
+export function createIslandInput({ send, dismiss, removeFile, removeImage = () => {}, paste = null }: {
   send: (text: string) => void, dismiss: () => void, removeFile: (path: string) => void,
   removeImage?: (id: string) => void, paste?: ((event: ClipboardEvent) => void) | null,
-  configure?: () => void,
 }) {
-  const field = h('textarea', { class: 'isl-field', name: 'island-draft', rows: '2', 'aria-label': PLACEHOLDER, spellcheck: 'false' })
+  const field = h('textarea', { class: 'isl-field', name: 'island-draft', rows: '1', 'aria-label': PLACEHOLDER, spellcheck: 'false' })
   const enter = h('button', { class: 'isl-send', type: 'button', disabled: true, 'aria-label': t('render.send'),
     onClick: () => { if (!enter.disabled) send(field.value.trim()) } }, icon('send', 17))
   const entry = h('div', { class: 'isl-entry' }, field)
@@ -61,9 +60,7 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
     const pictures = view.images?.length ?? 0
     attachments = view.files.length + pictures
     sending = Boolean(view.sending)
-    field.disabled = Boolean(view.busy)
-    field.placeholder = view.busy?.text ?? (view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : pictures ? PLACEHOLDER_IMAGES : PLACEHOLDER)
-    enter.hidden = Boolean(view.busy)
+    field.placeholder = view.steering ? PLACEHOLDER_STEER : view.files.length ? PLACEHOLDER_FILES : pictures ? PLACEHOLDER_IMAGES : PLACEHOLDER
     ready()
   }
 
@@ -87,20 +84,19 @@ export function createIslandInput({ send, dismiss, removeFile, removeImage = () 
         h('span', { text: t("island-input.only.file.paths.are.shared.with.the", { value1: view.count > 1 ? t("island-input.files", { count: view.count }) : t("drawer.files") }) }))) ]
     }
     const error = view.error ? h('div', { class: 'isl-error', role: 'alert', text: view.error }) : null
-    if (view.busy) return [hint(configure ? h('button', { type: 'button', class: 'isl-link', text: t('selectors.open.settings'), onClick: configure }) : null), error]
     // The topic is named only when its title says which one it is: never a greeting like 你好.
     const topic = view.steering ? null : topicHint(view.targetLabel ?? '')
     const target = view.steering ? TARGET_STEER : topic ? t('island-input.send.to.topic', { title: topic }) : TARGET
     const images = view.images ?? []
     if (view.files.length || images.length) {
       return [
-        h('div', { class: 'isl-body' },
-          h('div', { class: 'isl-files', tabindex: '0', 'aria-label': t('island-input.attachments', { count: images.length + view.files.length }) }, images.map(imageChip), view.files.map(fileChip)), error),
+        h('div', { class: 'isl-body', tabindex: '0', 'aria-label': t('island-input.attachments', { count: images.length + view.files.length }) },
+          h('div', { class: 'isl-files' }, images.map(imageChip), view.files.map(fileChip)), error),
         h('div', { class: 'isl-footer' },
           hint(target), enter),
       ]
     }
-    return [h('div', { class: 'isl-body' }, error), h('div', { class: 'isl-footer' }, hint(target), enter)]
+    return [error ? h('div', { class: 'isl-body' }, error) : null, h('div', { class: 'isl-footer' }, hint(target), enter)]
   }
 
   return {
