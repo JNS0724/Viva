@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import fs, { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
@@ -20,6 +19,7 @@ import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/dsh-harness.js'
 import { questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
+import { scratch } from './fixtures/scratch.js'
 
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
@@ -40,7 +40,7 @@ function makeScheduleDue(directory: string) {
 }
 
 async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), 'viva-memory-handoff-'))
+  const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
@@ -84,19 +84,28 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     backend.open()
     return backend
   }
-  t.after(async () => {
-    await stopBackend()
-    await model.close()
-    for (const [key, value] of Object.entries(original)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
+  defer(async () => {
+    try {
+      await stopBackend()
+    } finally {
+      try { await model.close() } finally {
+        for (const [key, value] of Object.entries(original)) {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }
+      }
     }
-    rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
   })
   openBackend()
   await call('models:add', { name: 'Local fixture', api: 'anthropic-messages', baseURL: model.url, models: [{ id: 'deepseek-chat', image }], key: 'test-gateway-key' })
   assert.ok(await eventually(() => call<AgentInfo>('agent:info').sessionId))
-  const ask = (text: string) => call<Promise<void>>('agent:prompt', text, [], randomUUID())
+  async function ask(text: string) {
+    // A completed task may still be reporting in the foreground. The real composer waits for that turn too.
+    assert.ok(await eventually(() => events.findLast(event =>
+      event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error')?.type !== 'turn_started'),
+    'the foreground is ready for the next prompt')
+    await call<Promise<void>>('agent:prompt', text, [], randomUUID())
+  }
   const newTopic = () => call<Promise<AgentInfo>>('agent:new-session')
   const tasks = () => call<Task[]>('task:finished')
   const feed = () => call<FeedItem[]>('feed:list')
@@ -119,7 +128,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     assert.ok(await eventually(() => call<Change[]>('memory:list-changes').find(change => change.kind === 'supersede')))
     assert.ok(memories().some(item => item.text.includes(newValue)))
   }
-  return { ask, call, directory, events, feed, memories, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
+  return { ask, call, defer, directory, events, feed, memories, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
     startBackend: () => openBackend().startBridge(),
     wake: () => backend?.signal({ kind: 'system.woke' }) }
 }
@@ -765,7 +774,7 @@ test('schedule results recheck the facts read during execution before publicatio
   assert.ok(await eventually(() => responding))
   await app.replace()
   const db = new DatabaseSync(join(app.directory, 'app.db'))
-  t.after(() => db.close())
+  app.defer(() => db.close())
   assert.ok(await eventually(() => db.prepare('SELECT attempts FROM schedule_runs').get()?.attempts === 1))
   assert.equal(app.feed().length, 0)
   db.prepare('UPDATE schedule_runs SET due_at=?').run(Date.now() - 1000)
