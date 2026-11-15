@@ -35,7 +35,7 @@ export function onPage(state: State): State {
 function createTaskSidebar(handlers: Handlers) {
   let folded = false
   const title = h('span', { class: 'tp-side-title' })
-  const glyph = h('span', { 'aria-hidden': 'true' })
+  const glyph = h('span', { 'aria-hidden': 'true' }, icon('chevronsLeft', 14))
   const fold = h('button', { class: 'icon-btn tp-fold', type: 'button', onClick: () => handlers.foldTaskList(!folded) }, glyph)
   const head = h('div', { class: 'tp-side-head' }, title)
   const count = h('span', { class: 'tp-count' })
@@ -43,7 +43,10 @@ function createTaskSidebar(handlers: Handlers) {
   const groups = new Map<string, { el: HTMLElement, name: Text, count: HTMLSpanElement }>()
   const rows = new Map<string, { el: HTMLButtonElement, name: HTMLSpanElement, mark: HTMLSpanElement, standing: Text }>()
   function update(state: State, now: number) {
-    folded = state.tasks.listFolded
+    if (folded !== state.tasks.listFolded) {
+      folded = state.tasks.listFolded
+      glyph.replaceChildren(icon(folded ? 'chevronsRight' : 'chevronsLeft', 14))
+    }
     el.dataset.folded = String(folded)
     el.setAttribute('aria-label', t('tasks-page.background.tasks'))
     title.textContent = t('tasks-page.background.tasks')
@@ -51,7 +54,6 @@ function createTaskSidebar(handlers: Handlers) {
     fold.title = label
     fold.setAttribute('aria-label', label)
     fold.setAttribute('aria-expanded', String(!folded))
-    glyph.replaceChildren(icon(folded ? 'chevronsRight' : 'chevronsLeft', 14))
     if (folded) {
       const waiting = state.tasks.list.filter(task => task.status === 'waiting').length
       count.textContent = String(waiting)
