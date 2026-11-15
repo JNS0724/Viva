@@ -99,3 +99,14 @@ export const memoryCompute = z.object({
   system: z.string().max(6000), input: z.string().max(100_000),
 })
 export type MemoryCompute = z.infer<typeof memoryCompute>
+export const memoryComputeFailure = z.enum(['max-tokens', 'tool-calls', 'aborted', 'error', 'missing-finish', 'dispatch-denied', 'timeout', 'call-failed'])
+export type MemoryComputeFailure = z.infer<typeof memoryComputeFailure>
+export const memoryComputeUsage = z.object({
+  inputTokens: z.int().nonnegative(),
+  outputTokens: z.int().nonnegative(),
+  totalTokens: z.int().nonnegative().optional(),
+  cacheReadTokens: z.int().nonnegative().optional(),
+  cacheWriteTokens: z.int().nonnegative().optional(),
+  reasoningTokens: z.int().nonnegative().optional(),
+})
+export type MemoryComputeUsage = z.infer<typeof memoryComputeUsage>

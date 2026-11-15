@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createMemoryChannel } from '../src/backend/memory-channel.ts'
+import { createMemoryChannel, MemoryComputeError } from '../src/backend/memory-channel.ts'
 import { createMemoryDispatch, MemoryDispatchConflict } from '../src/backend/memory-dispatch.ts'
 import { openMemoryStore } from '../src/backend/memory-store.ts'
 import { MEMORY_CONTRACT } from '../src/shared/memory-contract.ts'
@@ -155,6 +155,24 @@ test('model computations need a pending current attempt and late results cannot 
     channel.close()
     channel.processExited()
     clearInterval(keepAlive)
+  }
+})
+
+test('memory computation preserves only recognized failure codes from the matching model reply', async () => {
+  const channel = createMemoryChannel({ send() {}, handle: () => '' })
+  channel.receive({ type: 'memory_ready', version: MEMORY_CONTRACT })
+  const job: MemoryCompute = { id: 'extract-attempt', sourceId: 'source-id', stage: 'extract', generation: 2,
+    provider: 'fake', model: 'fake', system: 'extract', input: '{}' }
+  try {
+    for (const [failure, expected] of [['max-tokens', 'max-tokens'], ['arbitrary provider text', 'missing-reply']]) {
+      const result = channel.compute(job)
+      assert.ok(result)
+      channel.receive({ type: 'memory_computed', id: job.id, generation: job.generation, failure })
+      await assert.rejects(result, error => error instanceof MemoryComputeError && error.reason === expected
+        && error.message === 'memory model computation did not finish')
+    }
+  } finally {
+    channel.close()
   }
 })
 

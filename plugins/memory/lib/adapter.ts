@@ -7,8 +7,8 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
-import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, memoryClarificationResult, memoryCompute, memoryKinds } from '../../../src/shared/memory-contract.ts'
-import type { MemoryCompute, MemoryRequest } from '../../../src/shared/memory-contract.ts'
+import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, memoryClarificationResult, memoryCompute, memoryComputeFailure, memoryKinds } from '../../../src/shared/memory-contract.ts'
+import type { MemoryCompute, MemoryComputeFailure, MemoryRequest } from '../../../src/shared/memory-contract.ts'
 import { objectOf } from '../../../src/shared/unknown-value.ts'
 import { withoutHeaders } from '../../../src/shared/request-routing/header.ts'
 
@@ -30,16 +30,22 @@ function clearPreviousContext(agent: Agent) {
   }
 }
 
-async function complete(ctx: Context, job: MemoryCompute, signal: AbortSignal) {
-  const assembler = new BlockAssembler()
+type Computed = { text: string } | { failure: MemoryComputeFailure }
+
+async function complete(ctx: Context, job: MemoryCompute, signal: AbortSignal, assembler: BlockAssembler): Promise<Computed> {
   for await (const chunk of ctx.llm.stream({
     provider: job.provider, model: job.model, system: job.system,
     messages: [createUserMessage({ content: [{ type: 'text', text: job.input }], source: memorySource })],
-    maxTokens: 2000, signal,
+    ...(job.stage === 'extract' ? {} : { maxTokens: 2000 }),
+    signal,
   })) assembler.push(chunk)
-  if (assembler.finish?.kind !== 'stop') throw new Error('incomplete memory extraction')
-  return assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
+  const finish = assembler.finish?.kind
+  if (finish === 'stop') return { text: assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('') }
+  const failure = memoryComputeFailure.safeParse(finish)
+  return { failure: failure.success ? failure.data : 'missing-finish' }
 }
+
+class MemoryDispatchDenied extends Error {}
 
 export function applyMemoryAdapter(ctx: Context, port = process) {
   if (!port.send) return
@@ -94,9 +100,9 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
   async function authorize(origin: DispatchOrigin, id: string, signal?: AbortSignal) {
     const allowed = await exchange({ type: 'memory_dispatch', ...origin }, id, signal)
     signal?.throwIfAborted()
-    if (!allowed) throw new Error('Memory context changed. Retry from the conversation.')
+    if (!allowed) throw new MemoryDispatchDenied('Memory context changed. Retry from the conversation.')
     const deadline = Number(allowed)
-    if (deadline && deadline <= Date.now()) throw new Error('Memory context expired. Retry from the conversation.')
+    if (deadline && deadline <= Date.now()) throw new MemoryDispatchDenied('Memory context expired. Retry from the conversation.')
     return deadline
   }
 
@@ -154,7 +160,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
       const deadline = await authorize(call.origin, id, signal)
       if (deadline) {
         const delay = deadline - Date.now()
-        if (delay <= 0) throw new Error('Memory context expired. Retry from the conversation.')
+        if (delay <= 0) throw new MemoryDispatchDenied('Memory context expired. Retry from the conversation.')
         if (delay <= 2_147_483_647) {
           timer = setTimeout(() => cutoff.abort(), delay)
           timer.unref()
@@ -198,12 +204,19 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     const signal = AbortSignal.any([lifetime.signal, cancel.signal, AbortSignal.timeout(115_000)])
     const running = { generation: job.generation, cancel }
     computations.set(job.id, running)
-    const answer = (text: string | null) => {
+    const assembler = new BlockAssembler()
+    const answer = (result: Computed) => {
       if (computations.get(job.id) !== running) return
       computations.delete(job.id)
-      if (!cancel.signal.aborted) send({ type: 'memory_computed', id: job.id, generation: job.generation, text })
+      if (!cancel.signal.aborted) {
+        send({ type: 'memory_computed', id: job.id, generation: job.generation, ...result,
+          ...(job.stage === 'extract' && assembler.usage ? { usage: assembler.usage } : {}) })
+      }
     }
-    void caller.run({ jobId: job.id }, () => complete(ctx, job, signal)).then(answer, () => answer(null))
+    void caller.run({ jobId: job.id }, () => complete(ctx, job, signal, assembler)).then(answer, error => {
+      const failure = signal.aborted ? (signal.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted') : 'call-failed'
+      answer({ failure: error instanceof MemoryDispatchDenied ? 'dispatch-denied' : failure })
+    })
   }
   port.on('message', receive)
   ctx.effect(() => () => {

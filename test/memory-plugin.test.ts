@@ -89,6 +89,7 @@ async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]
 /** The plugin's block in the model's latest request, or '' when it sent none. */
 interface ModelRequest {
   system?: unknown
+  max_tokens?: number
   messages: { content: string | { type: string, text?: string }[] }[]
 }
 
@@ -156,6 +157,14 @@ test('an affected session cannot send a model request after automatic replacemen
   await ask('从现在起，我的周报提交邮箱从 amber@example.com 改为 cobalt@example.com')
   await memory.wake()
   assert.equal(memory.listChanges()[0]?.kind, 'supersede')
+  const requests = llm.requests as ModelRequest[]
+  const extraction = requests.findLast(request => JSON.stringify(request.system).includes('你是记忆整理员'))
+  const review = requests.findLast(request => JSON.stringify(request.system).includes('你是记忆变更复核员'))
+  const conversation = requests.find(request => JSON.stringify(request.system).includes('你是用户的个人工作助手'))
+  assert.ok(extraction?.max_tokens && conversation?.max_tokens)
+  assert.equal(extraction.max_tokens, conversation.max_tokens)
+  assert.notEqual(extraction.max_tokens, 2_000)
+  assert.equal(review?.max_tokens, 2_000)
   const before = llm.requests.length
   await assert.rejects(agent.prompt('再核对周报提交邮箱'))
   assert.equal(llm.requests.length, before)
