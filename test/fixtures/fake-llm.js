@@ -404,6 +404,10 @@ function stream(res, request, index, decideFirst) {
     res.writeHead(answer.httpError, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Simulated model failure' } }))
     return
   }
+  // A test can hold the answer while another request is being dispatched.
+  if (answer.waitFor) return answer.waitFor.then(() => {
+    if (!res.destroyed) streamAnswer(res, request, index, answer, send)
+  })
   // An answer may take a while (the showcase shows preparation at work).
   if (answer.delayMs) return setTimeout(() => streamAnswer(res, request, index, answer, send), answer.delayMs)
   return streamAnswer(res, request, index, answer, send)

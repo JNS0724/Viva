@@ -531,6 +531,8 @@ for (const memoryReady of [true, false]) {
     { timeout: DSH_TIMEOUT_MS }, async t => {
       const ask = '比较两份报告，回复要详细'
       const steer = '再另外整理出一份会议纪要'
+      let releaseForeground!: () => void
+      const foreground = new Promise<void>(resolve => { releaseForeground = resolve })
       const { llm, bridge, requests } = await setup(t, {
         decideFirst: raw => {
           const request = raw as ModelRequest
@@ -538,7 +540,7 @@ for (const memoryReady of [true, false]) {
           if (JSON.stringify(request.messages.at(-1)?.content).includes('tool_result')
             && request.messages.some(({ content }) => JSON.stringify(content).includes(ask))
             && !request.messages.some(({ content }) => JSON.stringify(content).includes(steer))) {
-            return { text: '两份报告的比较。', delayMs: 1300 }
+            return { text: '两份报告的比较。', waitFor: foreground }
           }
           return null
         },
@@ -564,8 +566,11 @@ for (const memoryReady of [true, false]) {
           JSON.stringify(request.messages.at(-1)?.content).includes('tool_result')), { intervalMs: 10 }))
         denyNext = memoryReady
         assert.deepEqual(await agent.steer(steer), { ok: true })
-        if (memoryReady) assert.ok(await eventually(() => denied, { timeoutMs: 900, intervalMs: 15 }))
-      } finally { await turn }
+        if (memoryReady) assert.ok(await eventually(() => denied), 'the fast request reaches the barrier before the foreground reply')
+      } finally {
+        releaseForeground()
+        await turn
+      }
       assert.ok(llm.requests.every(raw => !JSON.stringify((raw as ModelRequest).system).includes('Viva 的快速调度')),
         'nothing from the fast lane may leave without authorization')
       assert.ok(llm.requests.some(request => JSON.stringify(request).includes(steer)), 'the main route still gets the interjection')
