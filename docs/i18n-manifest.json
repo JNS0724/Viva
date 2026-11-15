@@ -11,8 +11,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "a2fb92b7e2d658dbbc6f8bd4d06da50bfa993be7b747c088b876c961a19339b7",
-      "zhHash": "f16281fad258fbd16d7340224bed4ac2483731bbc5192c2be6e5054e21725a81"
+      "enHash": "6e81733f162c27d9c7136de241baf734d9fc628f823463f4bba1e8c244f2cce8",
+      "zhHash": "6630a31deff9aeaecaeedb7109e272b9e41640f8d6919d23b6b2b915291e49be"
     },
     {
       "en": "docs/features.md",
@@ -95,8 +95,14 @@
     {
       "en": "docs/memory-design.md",
       "zh": "docs/memory-design.zh-CN.md",
-      "enHash": "14316dd51f4f355750ed8680fd682b15b4557241467bd25073069fca0a9d63da",
-      "zhHash": "9c26d734c273a33a36d633a4631f1518aa9e72f178d6e49abf195f8292934fce"
+      "enHash": "1675ef650f15d5f5046531785adcb127a222e10d5037fd71a80e5080b477ff9e",
+      "zhHash": "58a186ce87516fc65683aa487ed99900a7fba935a86027a5cca432e1a16824d5"
+    },
+    {
+      "en": "docs/memory-reme-plan.md",
+      "zh": "docs/memory-reme-plan.zh-CN.md",
+      "enHash": "523318f59e70de76ce9876e400bad0ed7c6eff98abba7e75ca0d2c498665e089",
+      "zhHash": "b114ff447e135eda5220ccedbd4475a83fbcb6e55a6f6759fcb324920a91a309"
     }
   ],
   "bilingual": [

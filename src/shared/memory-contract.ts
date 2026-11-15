@@ -79,7 +79,8 @@ const text = z.string().trim().min(1).max(MAX_MESSAGE_CHARS)
 export const MEMORY_SEMANTIC_TIMEOUT_MS = 6000
 export const memoryRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('context'), session, turn: z.number().int().positive(), question: z.string().max(MAX_MESSAGE_CHARS) }),
-  z.object({ op: z.literal('recall'), session, query, scope: z.literal('project').optional(), asOf: z.iso.date().optional(), deep: z.boolean().optional() }),
+  z.object({ op: z.literal('recall'), session, query, scope: z.literal('project').optional(), asOf: z.iso.date().optional(), deep: z.boolean().optional(),
+    limit: z.number().int().optional(), min_score: z.number().optional(), start_date: z.iso.date().optional(), end_date: z.iso.date().optional() }),
   z.object({ op: z.literal('remember'), session, text, kind: memoryKind.optional(), keywords: z.array(z.string().max(20)).max(6).optional() }),
   z.object({ op: z.literal('forget'), session, id: z.number().int().positive() }),
   z.object({ op: z.literal('clarify'), session, ref: z.uuid() }),
@@ -94,10 +95,14 @@ export const memoryClarificationResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('rejected'), reason: z.string() }),
 ])
 export const memoryCompute = z.object({
-  id: operationId, sourceId: operationId, stage: z.enum(['extract', 'review', 'question', 'profile']),
+  id: operationId, sourceId: operationId, stage: z.enum(['extract', 'review', 'question', 'profile', 'note', 'dream']),
   generation: z.number().int().positive(), provider: z.string().min(1), model: z.string().min(1),
-  system: z.string().max(6000), input: z.string().max(100_000),
-})
+  system: z.string().max(6000), input: z.string(),
+}).refine(job => isDailyMemoryStage(job.stage) || job.input.length <= 100_000, { path: ['input'] })
+
+export function isDailyMemoryStage(stage: string) {
+  return stage === 'note' || stage === 'dream'
+}
 export type MemoryCompute = z.infer<typeof memoryCompute>
 export const memoryComputeFailure = z.enum(['max-tokens', 'tool-calls', 'aborted', 'error', 'missing-finish', 'dispatch-denied', 'timeout', 'call-failed'])
 export type MemoryComputeFailure = z.infer<typeof memoryComputeFailure>

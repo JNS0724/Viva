@@ -66,6 +66,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const one = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE kind = ? AND key = ?')
   const rewrite = db.prepare('UPDATE effects SET payload = ? WHERE kind = ? AND key = ? AND generation = ?')
   const runners = new Map<string, Runner>()
+  const retries = new Map<string, (attempts: number) => number>()
   let timer: unknown = null
   let running: Promise<void> | null = null
   let again = false
@@ -94,7 +95,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
    * What a try learned that the next one must know (a report's token, where it was delivered), written into the
    * effect at the generation the try holds, as one change with its event: false when that generation is gone.
    */
-  function amend<P extends object>(effect: Effect<P>, payload: P): boolean {
+  function amend(effect: Pick<Effect, 'kind' | 'key' | 'generation'>, payload: object): boolean {
     return apply('effect.amended', { kind: effect.kind, key: effect.key, generation: effect.generation },
       () => Number(rewrite.run(JSON.stringify(payload), effect.kind, effect.key, effect.generation).changes) > 0).value
   }
@@ -162,7 +163,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     const data = { kind: effect.kind, key: effect.key, generation: effect.generation }
     if (outcome === 'done') apply('effect.done', data, () => dropDone.run(effect.kind, effect.key, effect.generation))
     if (outcome === 'retry') {
-      const wait = RETRY_MS[Math.min(effect.attempts, RETRY_MS.length - 1)]
+      const wait = retries.get(effect.kind)?.(effect.attempts) ?? RETRY_MS[Math.min(effect.attempts, RETRY_MS.length - 1)]
       apply('effect.retry', { ...data, waitMs: wait }, () => putOff.run(now() + wait, effect.kind, effect.key, effect.generation))
     }
     // `wait`: left as it is, due; run again when woken.
@@ -235,7 +236,11 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     wake,
     close() { closed = true; if (timer !== null) cancelTimer(timer); timer = null },
     /** How the effects of `kind` are done. */
-    runs: (kind: string, run: Runner) => { runners.set(kind, run) },
+    runs(kind: string, run: Runner, delay?: (attempts: number) => number) {
+      runners.set(kind, run)
+      if (delay) retries.set(kind, delay)
+      else retries.delete(kind)
+    },
   }
 }
 

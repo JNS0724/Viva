@@ -1,4 +1,5 @@
-import { MEMORY_CONTRACT, memoryComputeFailure, memoryComputeUsage, memoryRequest } from '../shared/memory-contract.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../shared/memory-daily-defaults.ts'
+import { MEMORY_CONTRACT, isDailyMemoryStage, memoryComputeFailure, memoryComputeUsage, memoryRequest } from '../shared/memory-contract.ts'
 import type { MemoryCompute, MemoryComputeFailure, MemoryComputeUsage, MemoryRequest } from '../shared/memory-contract.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
@@ -24,7 +25,7 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
   endDispatch?: (id: string) => void,
   timeoutMs?: number,
 }) {
-  const jobs = new Map<string, { generation: number, done: (result: ComputationResult) => void }>()
+  const jobs = new Map<string, { generation: number, daily: boolean, done: (result: ComputationResult) => void }>()
   const dispatches = new Map<string, 'pending' | 'allowed'>()
   const queries = new Map<string, AbortController>()
   let ready = false
@@ -54,8 +55,9 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
         jobs.delete(job.id)
-        if (job.stage === 'extract') {
-          console.info('[memory] extraction model', JSON.stringify({
+        if (job.stage === 'extract' || job.stage === 'note' || job.stage === 'dream') {
+          console.info(job.stage === 'extract' ? '[memory] extraction model' : '[memory] daily model', JSON.stringify({
+            stage: job.stage,
             usage: result.usage ?? null, durationMs: Math.round(performance.now() - started),
             finishReason: 'failure' in result ? result.failure : 'stop',
           }))
@@ -63,9 +65,13 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
         if ('failure' in result) reject(new MemoryComputeError(result.failure))
         else resolve(result.text)
       }
-      const timer = setTimeout(() => finish({ failure: 'timeout' }), timeoutMs)
+      const daily = isDailyMemoryStage(job.stage)
+      const timer = setTimeout(() => {
+        send({ type: 'memory_compute_cancel', id: job.id, generation: job.generation })
+        finish({ failure: 'timeout' })
+      }, daily ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : timeoutMs)
       timer.unref()
-      jobs.set(job.id, { generation: job.generation, done: finish })
+      jobs.set(job.id, { generation: job.generation, daily, done: finish })
       signal?.addEventListener('abort', abort, { once: true })
       send({ type: 'memory_compute', job })
     })
@@ -88,7 +94,7 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
           const usage = memoryComputeUsage.safeParse(message.usage).data
           if (failure.success) job.done({ failure: failure.data, usage })
           else if (typeof message.text !== 'string') job.done({ failure: 'missing-reply', usage })
-          else if (message.text.length >= 20_000) job.done({ failure: 'oversize-reply', usage })
+          else if (!job.daily && message.text.length >= 20_000) job.done({ failure: 'oversize-reply', usage })
           else job.done({ text: message.text, usage })
         }
       }

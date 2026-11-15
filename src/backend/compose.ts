@@ -1,6 +1,7 @@
 import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
 import { createConversationSession } from './conversation-session.ts'
 import { sameContext } from '../shared/conversation-context.ts'
+import { objectOf } from '../shared/unknown-value.ts'
 import { createConfigActions } from './config-actions.ts'
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
@@ -116,7 +117,9 @@ function assertText(value: unknown, name: string, maxLength: number): string {
   return value
 }
 
-export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcRegistry }) {
+export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_MEMORY === '1' }: {
+  host: HostCapabilities, ipc: IpcRegistry, dailyNotes?: boolean,
+}) {
   const userData = host.paths.userData
   // What the user does in a page is a signal first (commands.ts); every channel below is registered through this.
   const commands = commandIpc(ipc, (input) => signal(input))
@@ -173,8 +176,17 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
   let personal!: ReturnType<typeof createPersonal>
   /** The foreground turn in progress. */
   let turn = { active: false, startedAt: 0 }
+  let noteTurn: { session: string, sources: string[], replies: Map<string, string> } | null = null
   /** What the window is told of the agent (session-info.ts, acp-bridge.ts): mode, model, session, what it remembers. */
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
+  function flushNoteTurns(session?: string) {
+    try {
+      memory?.flushNoteTurns?.(session)
+    } catch {
+      console.error('[memory] failed to queue remaining note turns')
+    }
+  }
+  let selectedNoteSession: string | null = null
   const sessions = createConversationSession({
     history: () => historyDb,
     agent: () => dsh.current,
@@ -183,7 +195,14 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     isBusy: () => turn.active,
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
-    changed: () => { wakeEffects(); syncProjectView(); void memory?.wake() },
+    changed: () => {
+      const selected = sessions.current().sessionId ?? null
+      if (selectedNoteSession && selectedNoteSession !== selected) flushNoteTurns(selectedNoteSession)
+      selectedNoteSession = selected
+      wakeEffects()
+      syncProjectView()
+      void memory?.wake()
+    },
   })
 
   /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */
@@ -267,6 +286,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const sameProject = !sessionProjectChanged(old.sessionId, project) && memoryProjectScope(old.cwd)?.id === project?.id
       const rebuild = sameProject && staleMemorySession(old.sessionId)
       const info = sessions.ready(started, context.cwd)
+      if (old.sessionId && old.sessionId !== started.sessionId) flushNoteTurns(old.sessionId)
+      selectedNoteSession = started.sessionId
       if (!sameProject) sessions.select(historyDb.create({ sessionId: started.sessionId, mode: started.mode, model: started.model, cwd: context.cwd }))
       if (started.sessionId) {
         memory.recordSession(started.sessionId)
@@ -282,6 +303,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     },
     onGone: () => {
       taskRuntime?.dsh.gone(); unattended.gone()
+      flushNoteTurns(selectedNoteSession ?? undefined)
       memory?.resetLive()
       memoryDispatch?.resetLive()
       // Retired generations cannot deliver a final error/turn_end. Settle the foreground here too,
@@ -308,10 +330,19 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
     },
   })
 
-  function finishForegroundTurn(completed = false) {
+  function finishForegroundTurn(completed = false, noteCompleted = completed) {
     if (!turn.active) return
     turn = { ...turn, active: false }
     const sessionId = sessions.current().sessionId
+    const finishedNote = noteTurn
+    noteTurn = null
+    if (noteCompleted && finishedNote?.session === sessionId) {
+      try {
+        memory.recordNoteTurn?.(sessionId, finishedNote.sources, [...finishedNote.replies.values()].join('\n\n'))
+      } catch {
+        console.error('[memory] failed to record note turn')
+      }
+    }
     if (sessionId) memoryDispatch?.endTurn(sessionId)
     memory?.finishTurn(sessionId, completed)
   }
@@ -596,6 +627,7 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
           const derived = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
           const accepted = acceptMemory(text, sourceId ? derived : operation ?? derived, entry.context,
             { question: question.question, requestId: entry.question.id, questionId: answer.id, custom: true })
+          if (noteTurn?.session === entry.sessionId) noteTurn.sources.push(accepted)
           sourceId ??= accepted
         }
         return sourceId
@@ -655,6 +687,17 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
         if (typeof taskId === 'string' && unattended.owns(taskId)) return unattended.receive({ ...event, taskId } satisfies TaskEvent)
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
+        if (noteTurn && event.type === 'update' && objectOf(event.context)?.sessionId === noteTurn.session) {
+          const update = objectOf(event.update)
+          if (update?.sessionUpdate === 'viva_stream' && update.kind === 'settle' && typeof update.key === 'string' && Array.isArray(update.blocks)) {
+            const reply = update.blocks.flatMap((value: unknown) => {
+              const block = objectOf(value)
+              return block?.type === 'text' && typeof block.text === 'string' ? [block.text] : []
+            }).join('\n')
+            if (reply) noteTurn.replies.set(update.key, reply)
+            else noteTurn.replies.delete(update.key)
+          }
+        }
         emitToRenderer(event)
         if (event.type === 'turn_end' || event.type === 'error') endRequests(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended', stopReason: typeof event.stopReason === 'string' ? event.stopReason : undefined })
@@ -925,7 +968,8 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       const words = assertText(text, 'steer', MAX_PROMPT_CHARS)
       if (memoryBusy()) return { ok: false, reason: 'unavailable' }
       if (memory.forgetIntent(words, conversationMemoryScope(), currentMemoryProject()) !== null || memory.correctionIntent(words, conversationMemoryScope(), currentMemoryProject()) !== null) return { ok: false, reason: 'idle' }
-      acceptMemory(words, operation ?? randomUUID())
+      const source = acceptMemory(words, operation ?? randomUUID())
+      if (noteTurn) noteTurn.sources.push(source)
       if (!turn.active) return { ok: false, reason: 'idle' }
       return requireBridge().steer(words)
     })
@@ -1005,11 +1049,19 @@ export function createBackend({ host, ipc }: { host: HostCapabilities, ipc: IpcR
       if (!origin.sessionId || (needsMemoryTransport(evidence) && !agent.memory.ready())) throw new Error(t('main.feed.memory.unavailable'))
       recordDeliveredSource(operation, origin, { derived: true })
       if (evidence) memoryDispatch?.attach(origin.sessionId, evidence)
-    } else if (!replay) acceptMemory(question, operation)
+    } else if (!replay) {
+      const source = acceptMemory(question, operation)
+      const session = agent.currentSession()
+      if (session && memory.recordNoteTurn) noteTurn = { session, sources: [source], replies: new Map() }
+    }
     else for (const sourceId of operation) {
       const sessionId = agent.currentSession()
       memory.bindSource(sourceId, sessionId)
       if (sessionId) memoryDispatch?.recordSource(sessionId, sourceId)
+      if (sessionId && memory.recordNoteTurn) {
+        noteTurn ??= { session: sessionId, sources: [], replies: new Map() }
+        noteTurn.sources.push(sourceId)
+      }
     }
     turn = { active: true, startedAt: Date.now() }
     const carried = sessions.takeCarried()
@@ -1038,7 +1090,7 @@ ${question}` : question
       'chat.said': ({ text, images, operation, feedItemId }) => sayInChat(text, images as ReturnType<typeof imagesForPrompt>, operation, feedItemId),
       // A turn of the user's just ended: clear the turn's source bindings.
       'agent.turn_ended': ({ stopReason }) => {
-        finishForegroundTurn(stopReason === 'end_turn')
+        finishForegroundTurn(stopReason === 'end_turn', stopReason === 'end_turn' || stopReason === 'max_tokens')
         // A task that ended while this turn ran comes back now that the conversation is free.
         wakeEffects()
       },
@@ -1219,6 +1271,8 @@ ${question}` : question
       compute: (request, signal) => dsh.current?.memory.compute(request, signal) ?? null,
       route: () => parseModelValue(lastInfo.modelValue ?? '') ?? profileModels(currentConfig()).defaultModel,
       maintainSemanticIndex: true,
+      dailyNotes,
+      noteSourcesUsed: (session, ids) => { for (const id of ids) memoryDispatch?.recordSource(session, id) },
       profilesEnabled: true,
       profileBusy: () => memoryBusy() || turn.active || sessions.isChanging(),
       projectionChanged: () => emitToRenderer({ type: 'memory_changed' }),
@@ -1527,7 +1581,10 @@ ${question}` : question
     hasBridge: () => Boolean(dsh.current),
     isQuitting: dsh.isQuitting,
     /** Quitting has begun (or the session ends): dsh must not be started again. */
-    markQuitting: dsh.markQuitting,
+    markQuitting() {
+      flushNoteTurns()
+      dsh.markQuitting()
+    },
     /** Stops dsh, waiting at most a few seconds; the real release remains a barrier. */
     stop: dsh.stopWithin,
     close,

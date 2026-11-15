@@ -155,6 +155,9 @@ export function openMemorySemanticIndex(db: DatabaseSync) {
       missingVectors: db.prepare(`SELECT DISTINCT m.id,m.revision ${AUTHORIZED_ROWS}
         LEFT JOIN memory_semantic_vectors v ON ${VECTOR_JOIN}
         WHERE ${MISSING_VECTOR} AND ${RETAINED} ORDER BY refs.key LIMIT ?`),
+      authorizedVectors: db.prepare(`SELECT m.id,m.revision,v.vector ${AUTHORIZED_ROWS}
+        JOIN memory_semantic_vectors v ON ${VECTOR_JOIN}
+        WHERE ${RETAINED} AND length(v.vector)=?`),
       scopedVectors: db.prepare(`WITH page AS (
         SELECT memory FROM memory_semantic_vectors WHERE memory>? AND memory<=? ORDER BY memory LIMIT ?
       )
@@ -190,7 +193,7 @@ export function openMemorySemanticIndex(db: DatabaseSync) {
     return null
   }
   const { config, updateConfig, clearVectors, saveVector, missingVectors,
-    scopedVectors, missingScopedVectors, missingAfterId } = statements
+    scopedVectors, missingScopedVectors, missingAfterId, authorizedVectors } = statements
   const scanCursors = new Map<string, number>()
 
   const settings = () => config.get() as { fingerprint: string | null, codec: number, version: number } | undefined
@@ -295,6 +298,14 @@ export function openMemorySemanticIndex(db: DatabaseSync) {
         .map(({ id, revision }) => ({ id, revision }))
     },
     missingScoped,
+    similarities(fingerprint: string, query: Float32Array, authorized: readonly MemorySemanticReference[]) {
+      if (!authorized.length || version(fingerprint) === null || !validVector(query)) return []
+      const rows = authorizedVectors.all(refPairs(authorized), VECTOR_BYTES) as Array<MemorySemanticReference & { vector: Uint8Array }>
+      return rows.flatMap(({ vector, ...reference }) => {
+        const similarity = cosine(vector, query)
+        return Number.isFinite(similarity) ? [{ ...reference, similarity }] : []
+      })
+    },
     missingAfter(fingerprint: string, afterId: number, limit = MEMORY_EMBEDDING_BATCH) {
       if (version(fingerprint) === null || !Number.isSafeInteger(afterId) || afterId < 0 || !Number.isSafeInteger(limit) || limit < 1) return []
       return (missingAfterId.all(afterId, Math.min(limit, MEMORY_EMBEDDING_BATCH)) as MemorySemanticReference[]).map(receipt)

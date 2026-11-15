@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import type { StatementSync } from 'node:sqlite'
 import { createHash, createHmac, randomBytes } from 'node:crypto'
@@ -532,11 +533,11 @@ export function openMemoryStore(file: string, now = Date.now) {
     // When the remaining prefix is shorter, all retained spans still address identical UTF-16 positions.
     db.prepare('UPDATE memory_sources SET text=?,question=NULL WHERE id=?').run(text.trim() ? text : null, id)
   }
-  function expire() {
+  function expire(retainSource: (id: string) => boolean = () => false) {
     const expired = db.prepare('SELECT DISTINCT source FROM memory_candidates WHERE expires_at<=?').all(now()) as Array<{ source: string }>
     if (expired.length) tx(() => {
       db.prepare('DELETE FROM memory_candidates WHERE expires_at<=?').run(now())
-      for (const { source } of expired) compactSource(source)
+      for (const { source } of expired) if (!retainSource(source)) compactSource(source)
     })
   }
   const nextCandidateExpiry = () => (db.prepare('SELECT MIN(expires_at) AS at FROM memory_candidates').get() as { at: number | null }).at
@@ -608,7 +609,11 @@ export function openMemoryStore(file: string, now = Date.now) {
       }
     },
   }
-  return { db, tx, revision, epoch, nextRevision, get, exists: (id: number) => Boolean(exists.get(id)), list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, profileCandidates, nextProfileBoundary, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
+  let temporaryFileRoot: string | undefined
+  return { get fileRoot() {
+    return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-'))
+      : path.join(path.dirname(file), 'memory-files')
+  }, db, tx, revision, epoch, nextRevision, get, exists: (id: number) => Boolean(exists.get(id)), list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, profileCandidates, nextProfileBoundary, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
     readSource, insertSource, outcome, withdrawSource, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
     insert, setAssertion, project, touch, authorize, remove, forgetEntry, restoreEntry, recordFact, setKeywords, touchChange,
     exclude, excluded, sourceExcluded, excludeSource, sourceIds, answerSourceIds, memoriesFrom, changesFrom, changesReferencing, hasChangeSource,
@@ -622,6 +627,8 @@ export function openMemoryStore(file: string, now = Date.now) {
       scopedPendingCandidates.all(at, scope?.kind ?? 'user', scope && 'id' in scope ? scope.id : '', limit) as unknown as MemoryCandidate[],
     pendingChange: (at: number, ref: Pick<MemoryCandidate, 'sourceId' | 'start' | 'end'>) =>
       pendingCandidate.get(at, ref.sourceId, ref.start, ref.end) as unknown as MemoryCandidate | undefined,
-    sessionEpoch, recordSession, sessionProject, recordSessionProject, meta, setMeta, profile, setProfile, command, recordCommand, close: () => db.close() }
+    sessionEpoch, recordSession, sessionProject, recordSessionProject, meta, setMeta, profile, setProfile, command, recordCommand, close() {
+      try { db.close() } finally { if (temporaryFileRoot) fs.rmSync(temporaryFileRoot, { recursive: true, force: true }) }
+    } }
 }
 export type MemoryStore = ReturnType<typeof openMemoryStore>

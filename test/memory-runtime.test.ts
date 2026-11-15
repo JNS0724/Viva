@@ -5,10 +5,14 @@ import path from 'node:path'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { createEffects } from '../src/backend/effects.ts'
+import { openMemoryNotes } from '../src/backend/memory-note-store.ts'
+import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { openMemoryStore } from '../src/backend/memory-store.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { historyRecall } from '../src/backend/history-recall.ts'
 import { localDay, resolveMemoryTime } from '../src/backend/memory-facts.ts'
+import { memoryCompute } from '../src/shared/memory-contract.ts'
 import type { MemoryCompute, MemoryProposal, MemoryTemporal } from '../src/shared/memory-contract.ts'
 import { scratch } from './fixtures/scratch.js'
 
@@ -58,6 +62,288 @@ test('receipt and extraction recover with the same source ID after restart', asy
   assert.deepEqual(second.memory.listMemories().items[0].evidence.map(item => item.sourceId), [op])
   assert.throws(() => second.memory.accept('我住在松木城', origin, op))
   assert.equal(second.store.db.prepare('SELECT count(*) AS n FROM effects').get()?.n, 0)
+})
+
+test('daily notes are recalled after five rounds and long-term admission reads the selected source', async t => {
+  const { dir, defer } = scratch(t, 'viva-daily-memory-')
+  let now = Date.parse('2026-11-03T12:00:00Z')
+  const stages: string[] = []
+  const firstText = '我的周报每周五提交'
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const memory = createMemoryRuntime({
+    store, now: () => now, timezone: () => 'UTC', dailyNotes: { timezone: 'UTC' },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      stages.push(job.stage)
+      if (job.stage === 'note') {
+        const input = JSON.parse(job.input) as { turns: Array<{ user: Array<{ text: string }>, assistant: string }> }
+        assert.equal(input.turns.length, 5)
+        assert.equal(input.turns[0]?.user[0]?.text, firstText)
+        assert.equal(input.turns[1]?.assistant, '记下当前进展')
+        return JSON.stringify({ status: 'write', title: '周报安排', markdown: '周五提交周报。草稿尚未完成。' })
+      }
+      if (job.stage === 'dream') {
+        const input = JSON.parse(job.input) as { notes: Array<{ key: string, markdown: string, sources: string[] }> }
+        const [note] = input.notes
+        assert.match(note!.markdown, /周五提交周报/)
+        return JSON.stringify({ units: [{ note: note!.key, sourceId: note!.sources[0], focus: '每周五提交周报' }] })
+      }
+      if (job.stage === 'extract') {
+        const input = JSON.parse(job.input) as { user: string, noteFocuses: string[] }
+        assert.equal(input.user, firstText)
+        assert.deepEqual(input.noteFocuses, ['每周五提交周报'])
+        return proposal(firstText)
+      }
+      throw new Error(job.stage)
+    },
+  })
+  defer(() => memory.close())
+  const turns = [firstText, '这周的草稿尚未完成', '再补进展', '需要更新页眉', '其余按旧模板']
+  const ids = turns.map(() => randomUUID())
+  for (const [index, text] of turns.entries()) {
+    memory.accept(text, origin, ids[index]!)
+    memory.recordNoteTurn!(origin.session, [ids[index]!], '记下当前进展')
+    await memory.wake()
+    assert.deepEqual(stages, index < 4 ? [] : ['note'])
+    now += 60_000
+  }
+  assert.equal(memory.listMemories().items.length, 0)
+  const recalled = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '周报' }, origin))
+  assert.match(recalled.notes[0].markdown, /草稿尚未完成/)
+  now = Date.parse('2026-11-03T23:00:00Z')
+  await memory.wake()
+  assert.deepEqual(stages, ['note', 'dream', 'extract'])
+  assert.equal(memory.listMemories().items[0]?.text, firstText)
+  assert.equal(memory.listMemories().items[0]?.evidence[0]?.sourceId, ids[0])
+  memory.withdraw({ ids: [ids[1]], conversation: origin.conversation, onlySources: true })
+  const after = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '周报' }, origin))
+  assert.deepEqual(after.notes, [])
+  assert.equal(memory.listMemories().items[0]?.text, firstText)
+})
+
+test('daily notes and long-term memories share five ranked recall results', async t => {
+  const { dir, defer } = scratch(t, 'viva-daily-memory-recall-')
+  let now = Date.parse('2026-11-04T12:00:00Z')
+  const memory = createMemoryRuntime({
+    store: openMemoryStore(path.join(dir, 'memory.db'), () => now), now: () => now, timezone: () => 'UTC', dailyNotes: true,
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage !== 'note') return JSON.stringify({ proposals: [] })
+      const input = JSON.parse(job.input) as { turns: Array<{ user: Array<{ text: string }> }> }
+      return JSON.stringify({ status: 'write', title: '周报', markdown: input.turns[0]?.user[0]?.text })
+    },
+  })
+  defer(() => memory.close())
+  const bestNote = '周报记录 第一期客户反馈'
+  const bestMemory = '我的周报固定放客户意见'
+  for (let group = 0; group < 6; group++) {
+    const host = { conversation: `conversation-${group}`, session: `session-${group}` }
+    for (let round = 0; round < 5; round++) {
+      const id = randomUUID()
+      memory.accept(group === 0 ? bestNote : `周报记录 第${group + 1}期进度`, host, id)
+      memory.recordNoteTurn!(host.session, [id], '好的')
+    }
+    await memory.wake()
+    now += 1_000
+  }
+  function recall(start_date?: string) {
+    return JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '周报 客户', start_date }, origin)) as {
+      memories: Array<{ text: string }>, notes: Array<{ markdown: string }>,
+    }
+  }
+  const notesOnly = recall()
+  assert.equal(notesOnly.notes.length, 5)
+  assert.equal(notesOnly.notes[0]?.markdown, bestNote)
+
+  memory.addMemory(bestMemory)
+  for (const word of ['渠道', '指标', '日期', '标题']) memory.addMemory(`我的周报固定注明${word}`)
+  const mixed = recall()
+  assert.equal(mixed.notes.length + mixed.memories.length, 5)
+  assert.equal(mixed.notes[0]?.markdown, bestNote)
+  assert.equal(mixed.memories[0]?.text, bestMemory)
+  const dated = recall('2026-11-05')
+  assert.deepEqual(dated.notes, [])
+  assert.equal(dated.memories[0]?.text, bestMemory)
+})
+
+test('daily recall searches past 64 newer notes and returns a match at the end without prefix clipping', async t => {
+  const { dir, defer } = scratch(t, 'viva-daily-full-recall-')
+  let now = Date.parse('2026-11-01T08:00:00Z')
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const beginning = '# Earlier progress\n' + ('Previous milestones and work already discussed.\n'.repeat(220))
+  const ending = '# Final decisions\n' + 'Supplemental material from the daily discussion.\n'.repeat(40) + 'NEBULARHARBOR'
+  const memory = createMemoryRuntime({
+    store, now: () => now, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage !== 'note') return JSON.stringify({ units: [] })
+      const input = JSON.parse(job.input)
+      const first = input.turns[0].user[0].text === 'Most relevant turn'
+      if (first) {
+        assert.equal(memoryCompute.safeParse(job).success, true)
+        assert(input.turns[0].assistant.endsWith('Full assistant text end'))
+        assert(input.turns[0].assistant.length > 100_000)
+      }
+      return JSON.stringify({ status: 'write', title: 'Daily note', markdown: first ? beginning + ending : 'Periodic meeting' })
+    },
+  })
+  defer(() => memory.close())
+  const topic = { kind: 'conversation' as const, id: 'topic-a' }
+  const contextualOrigin = { ...origin, context: topic }
+  const first = randomUUID()
+  memory.accept('Most relevant turn', contextualOrigin, first)
+  memory.recordNoteTurn!(origin.session, [first], 'filler '.repeat(15_000) + 'Full assistant text end')
+  await memory.wake()
+  now += 86_400_000
+  for (let i = 0; i < 65; i++) {
+    const host = { ...contextualOrigin, session: `other-session-${i}` }
+    const id = randomUUID()
+    memory.accept('Ordinary periodic update', host, id)
+    memory.recordNoteTurn!(host.session, [id], 'acknowledged')
+  }
+  await memory.wake()
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM memory_daily_notes').get()?.count, 66)
+  const request = { op: 'recall' as const, session: origin.session, query: 'NEBULARHARBOR' }
+  const recall = (extra = {}) => JSON.parse(memory.handle({ ...request, ...extra }, contextualOrigin))
+  const result = recall()
+  assert.equal(result.notes.length, 1)
+  assert(result.notes[0].startLine > 1)
+  assert.match(result.notes[0].markdown, /NEBULARHARBOR$/u)
+  assert(result.notes[0].markdown.length > 1500)
+  assert.deepEqual(result.notes[0].sourceIds, [first])
+  assert.deepEqual(recall({ start_date: '2026-11-02' }).notes, [])
+  assert.deepEqual(recall({ min_score: 10_000 }).notes, [])
+  assert.deepEqual(JSON.parse(memory.handle(request, { ...origin, context: { ...topic, id: 'topic-b' } })).notes, [])
+  assert.equal(JSON.parse(memory.handle({ ...request, query: 'meeting', limit: 99 }, contextualOrigin)).notes.length, 50)
+})
+
+test('consolidation waits for exact-source admission before checkpointing and reattempts structural errors once', async t => {
+  const { dir, defer } = scratch(t, 'viva-dream-checkpoint-')
+  let now = Date.parse('2026-11-06T13:59:00Z')
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const completeExtraction = deferred<string>()
+  const beganExtraction = deferred<void>()
+  const fact = 'I submit the quarterly report on the first Friday'
+  const id = randomUUID()
+  let dreams = 0
+  const memory = createMemoryRuntime({
+    store, now: () => now, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', markdown: fact })
+      if (job.stage === 'dream') {
+        const input = JSON.parse(job.input)
+        assert.equal(input.maxUnits, 5)
+        if (++dreams === 1) return '{"units": ['
+        assert(input.retry)
+        return JSON.stringify({ units: [{ note: input.notes[0].key, sourceId: id, focus: fact }] })
+      }
+      assert.equal(job.stage, 'extract')
+      assert.equal(JSON.parse(job.input).user, fact)
+      beganExtraction.resolve()
+      return completeExtraction.promise
+    },
+  })
+  defer(() => memory.close())
+  memory.accept(fact, origin, id)
+  memory.recordNoteTurn!(origin.session, [id], 'OK')
+  await memory.wake()
+  now = Date.parse('2026-11-06T15:00:00Z')
+  const running = memory.wake()
+  await beganExtraction.promise
+  assert.equal(store.db.prepare('SELECT processed FROM memory_daily_notes').get()?.processed, 0)
+  completeExtraction.resolve(proposal(fact))
+  await running
+  assert.equal(dreams, 2)
+  assert.equal(memory.listMemories().items[0]?.text, fact)
+  const note = store.db.prepare('SELECT processed,revision FROM memory_daily_notes').get()!
+  assert.equal(note.processed, note.revision)
+})
+
+test('consolidation groups the two-day window by byte budget, bisects transport failures and keeps oversized notes', async t => {
+  const { dir, defer } = scratch(t, 'viva-dream-batches-')
+  let now = Date.parse('2026-11-04T15:01:00Z')
+  const requests: string[][] = []
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const memory = createMemoryRuntime({
+    store, now: () => now, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      const input = JSON.parse(job.input)
+      if (job.stage === 'note') {
+        const title = input.turns[0].user[0].text
+        const markdown = '城'.repeat(title === 'large note' ? 61_000 : 4_000)
+        return JSON.stringify({ status: 'write', title, markdown })
+      }
+      assert.equal(job.stage, 'dream')
+      const notes = input.notes as Array<{ title: string, markdown: string }>
+      requests.push(notes.map(note => note.title))
+      if (notes.length > 1) throw new Error('fake transport overflow')
+      if (notes[0]?.title === 'large note') {
+        assert.equal([...notes[0].markdown.replace(/\n\n\[truncated\]$/u, '')].length, 60_000)
+        assert.match(notes[0].markdown, /\[truncated\]$/u)
+      }
+      return JSON.stringify({ units: [] })
+    },
+  })
+  defer(() => memory.close())
+
+  async function note(session: string, title: string) {
+    const id = randomUUID()
+    memory.accept(title, { ...origin, session }, id)
+    memory.recordNoteTurn!(session, [id], 'OK')
+    await memory.wake()
+  }
+
+  await note('old', 'old note')
+  now += 2 * 86_400_000
+  // Move past the old scheduled run before seeding notes in the rolling window.
+  await memory.wake()
+  requests.length = 0
+  await note('a', 'note A')
+  await note('b', 'note B')
+  await note('c', 'note C')
+  await note('z', 'large note')
+  now = Date.parse('2026-11-07T15:00:00Z')
+  await memory.wake()
+  assert.deepEqual(requests, [['note A', 'note B', 'note C'], ['note A'], ['note B', 'note C'], ['note B'], ['note C'], ['large note']])
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM memory_daily_notes WHERE processed=revision').get()?.count, 4)
+})
+
+test('a partial daily-note batch survives restart and can be written once', async t => {
+  const { dir, defer } = scratch(t, 'viva-daily-memory-recovery-')
+  const file = path.join(dir, 'memory.db')
+  let modelCalls = 0
+  const start = () => createMemoryRuntime({
+    store: openMemoryStore(file), dailyNotes: true,
+    now: () => Date.parse('2026-11-04T12:00:00Z'), timezone: () => 'UTC',
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      assert.equal(job.stage, 'note')
+      modelCalls += 1
+      return JSON.stringify({ status: 'write', title: '原型验证', markdown: '用户在检查原型，今天还要补测试。' })
+    },
+  })
+  const first = start()
+  const [one, two] = [randomUUID(), randomUUID()]
+  first.accept('今天我在检查原型', origin, one)
+  first.recordNoteTurn!(origin.session, [one], '好的')
+  first.accept('还要补一轮测试', origin, two)
+  first.recordNoteTurn!(origin.session, [two], '明白')
+  await first.wake()
+  first.close()
+  assert.equal(modelCalls, 0)
+
+  const resumed = start()
+  defer(() => resumed.close())
+  await resumed.wake()
+  assert.equal(modelCalls, 1)
+  assert.throws(() => resumed.recordNoteTurn!(origin.session, [two], '重复的回合'), /memory-request-input-mismatch/)
+  resumed.recordNoteTurn!(origin.session, [two], '明白')
+  await resumed.wake()
+  const recalled = JSON.parse(resumed.handle({ op: 'recall', session: origin.session, query: '原型' }, origin))
+  assert.deepEqual(recalled.notes.map((note: { sourceIds: string[] }) => note.sourceIds), [[one, two]])
+  assert.equal(modelCalls, 1)
 })
 
 test('deletion clears a value quoted by an unrelated pending answer without consuming its receipt', async t => {
@@ -1518,4 +1804,302 @@ test('an empty profile is regenerated when a timed disagreement ends', async t =
   await memory.wake()
   assert.equal(memory.profileView(scope).generated, true)
   assert.deepEqual(memory.profileView(scope).items.map(item => item.dependency.id).sort(), [first.id, second.id])
+})
+
+test('a recovered completed turn uses message time in configured timezone, accepts empty assistant text, and is immediately searchable', async t => {
+  const { dir, defer } = scratch(t, 'viva-note-message-date-')
+  let now = Date.parse('2026-11-14T15:59:00Z')
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { noteInterval: 1, timezone: 'Asia/Shanghai' },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage !== 'note') return '{"units":[]}'
+      const input = JSON.parse(job.input)
+      assert.equal(input.turns[0].user[0].at, Date.parse('2026-11-14T15:59:00Z'))
+      assert.equal(input.turns[0].user[0].author, 'user')
+      assert.equal(input.turns[0].user[0].version, 1)
+      assert.equal(input.turns[0].assistant, '')
+      return JSON.stringify({ status: 'write', title: '历史回合', markdown: '我的发布核对日是周五' })
+    },
+  })
+  defer(() => memory.close())
+  const id = randomUUID()
+  memory.accept('我的发布核对日是周五', origin, id)
+  now += 2 * 86_400_000
+  memory.recordNoteTurn!(origin.session, [id], '')
+  await memory.wake()
+  const note = store.db.prepare('SELECT day FROM memory_daily_notes').get()
+  assert.equal(note?.day, '2026-11-14')
+  const result = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '发布核对日' }, origin))
+  assert.equal(result.notes.length, 1)
+})
+
+test('a malformed note response is retried and never counted as a successful skip', async t => {
+  const { dir, defer } = scratch(t, 'viva-note-retry-')
+  let now = Date.parse('2026-11-14T12:00:00Z'), attempts = 0
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      assert.equal(job.stage, 'note')
+      return ++attempts === 1 ? '{"broken":true}' : '{"status":"skip"}'
+    },
+  })
+  defer(() => memory.close())
+  const id = randomUUID()
+  memory.accept('普通寒暄', origin, id)
+  memory.recordNoteTurn!(origin.session, [id], '你好')
+  await memory.wake()
+  assert.equal(store.db.prepare('SELECT written FROM memory_note_turns').get()?.written, 0)
+  assert.equal(store.readSource(id)?.outcome, 'note-pending')
+  now += 2000
+  await memory.wake()
+  assert.equal(attempts, 2)
+  assert.equal(store.db.prepare('SELECT written FROM memory_note_turns').get()?.written, 2)
+  assert.equal(store.readSource(id)?.outcome, 'note-skipped')
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_daily_notes').get()?.n, 0)
+})
+
+for (const extraction of ['partial', 'empty'] as const) test(`daily files retain full session evidence after ${extraction} legacy dream extraction and accept the next turn`, async t => {
+  const { dir, defer } = scratch(t, 'viva-note-extraction-retention-')
+  let now = Date.parse('2026-11-14T12:00:00Z'), notesWritten = 0
+  const sourceId = randomUUID(), fact = '我的周报每周五提交'
+  const text = `${fact}。今天还在调试界面`
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage === 'note') {
+        notesWritten++
+        return JSON.stringify({ status: 'write', title: '周报安排', markdown: text })
+      }
+      if (job.stage === 'dream') {
+        const input = JSON.parse(job.input) as { notes: Array<{ key: string }> }
+        return JSON.stringify({ units: [{ note: input.notes[0]!.key, sourceId, focus: fact }] })
+      }
+      assert.equal(job.stage, 'extract')
+      return extraction === 'empty' ? '{"proposals":[]}' : proposal(fact)
+    },
+  })
+  defer(() => memory.close())
+  memory.accept(text, origin, sourceId)
+  memory.recordNoteTurn!(origin.session, [sourceId], '先保留今天的进度')
+  await memory.wake()
+  now = Date.parse('2026-11-14T23:00:00Z')
+  await memory.wake()
+  assert.equal(store.readSource(sourceId)?.text, text)
+  assert.equal(store.readSource(sourceId)?.outcome, extraction === 'empty' ? 'skipped' : 'accepted')
+  const read = () => JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '调试界面' }, origin)) as { notes: { markdown: string }[] }
+  assert.equal(read().notes[0]?.markdown, text)
+  const next = randomUUID()
+  memory.accept('补上封面', origin, next)
+  memory.recordNoteTurn!(origin.session, [next], '好的')
+  await memory.wake()
+  assert.equal(notesWritten, 2)
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
+  assert.equal(read().notes[0]?.markdown, text)
+})
+
+for (const phase of ['startup', 'scheduled'] as const) test(`${phase} candidate expiry preserves evidence already owned by daily files`, async t => {
+  const { dir, defer } = scratch(t, 'viva-note-candidate-retention-')
+  const file = path.join(dir, 'memory.db')
+  let now = Date.parse('2026-11-14T12:00:00Z')
+  let store = openMemoryStore(file, () => now)
+  const text = '这次测试采用海棠发布流程', sourceId = randomUUID()
+  const start = () => createMemoryRuntime({ store, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      return job.stage === 'note' ? JSON.stringify({ status: 'write', title: '测试流程', markdown: text }) : '{"units":[]}'
+    },
+  })
+  let memory = start()
+  defer(() => memory.close())
+  memory.accept(text, origin, sourceId)
+  memory.recordNoteTurn!(origin.session, [sourceId], '尚未确认为长期流程')
+  await memory.wake()
+  store.candidate(sourceId, 0, text.length, { spans: [{ start: 0, end: text.length }] }, 'unverified-modality')
+  memory.close()
+  if (phase === 'startup') now += 7 * 86_400_000 + 1
+  store = openMemoryStore(file, () => now)
+  memory = start()
+  if (phase === 'scheduled') {
+    now += 7 * 86_400_000 + 1
+    await memory.wake()
+  }
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_candidates').get()?.n, 0)
+  assert.equal(store.readSource(sourceId)?.text, text)
+  const recalled = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '海棠发布流程' }, origin)) as { notes: { markdown: string }[] }
+  assert.equal(recalled.notes[0]?.markdown, text)
+})
+
+test('explicit legacy extraction before completed-turn capture preserves session text for its daily note', async t => {
+  const { dir, defer } = scratch(t, 'viva-note-explicit-retention-')
+  const fact = '我每周五核对发布流程', text = `记住：${fact}`, sourceId = randomUUID()
+  const store = openMemoryStore(path.join(dir, 'memory.db'))
+  const memory = createMemoryRuntime({ store, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage === 'note') {
+        const input = JSON.parse(job.input) as { turns: { user: { text: string }[] }[] }
+        assert.equal(input.turns[0]?.user[0]?.text, text)
+        return JSON.stringify({ status: 'write', title: '发布流程', markdown: fact })
+      }
+      return JSON.stringify({ proposals: [{ spans: [{ start: text.indexOf(fact), end: text.length }],
+        kind: 'fact', scope: 'user', modality: 'asserted', attribution: 'self', keywords: [] }] })
+    },
+  })
+  defer(() => memory.close())
+  memory.accept(text, origin, sourceId)
+  await memory.wake()
+  assert.equal(store.readSource(sourceId)?.text, text)
+  memory.recordNoteTurn!(origin.session, [sourceId], '已记住')
+  await memory.wake()
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_daily_notes').get()?.n, 1)
+})
+
+
+test('recovery finishes a receipted note generation before processing the remaining batch with a new operation', async t => {
+  const { dir, defer } = scratch(t, 'viva-note-receipt-effect-gap-')
+  const file = path.join(dir, 'memory.db'), now = Date.parse('2026-11-14T12:00:00Z')
+  const initial = openMemoryStore(file, () => now)
+  const effects = createEffects({ db: initial.db, now: () => now })
+  const notes = openMemoryNotes(initial, () => true)
+  let key = ''
+  for (let index = 0; index < 7; index++) {
+    const source = noteSource(initial, { session: origin.session, conversation: origin.conversation, at: now, timezone: 'UTC' })
+    key = notes.add(origin.session, '2026-11-14', [source], `第${index + 1}回合已完成`)!
+  }
+  effects.queue('memory.note', key, { flush: true })
+  const job = effects.get('memory.note', key)!
+  const first = notes.pending(key, 5)
+  notes.commit(key, first, { status: 'write', title: '首批记录', markdown: '前五回合已整理' }, job.generation, now,
+    notes.snapshot(first.flatMap(row => row.sourceIds)), undefined)
+  assert.equal(notes.jobState(key, job.generation), 'done')
+  assert.equal(notes.pending(key).length, 2)
+  // Exact durable state after a crash between the receipt/checkpoint transaction and finishing the effect.
+  effects.close()
+  initial.close()
+  const reopened = openMemoryStore(file, () => now)
+  const computed: number[] = []
+  const memory = createMemoryRuntime({ store: reopened, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 5 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(request) {
+      assert.equal(request.stage, 'note')
+      const input = JSON.parse(request.input) as { existing: { markdown: string }, turns: unknown[] }
+      assert.equal(input.existing.markdown, '前五回合已整理')
+      assert.equal(input.turns.length, 2)
+      computed.push(request.generation)
+      return JSON.stringify({ status: 'write', title: '全部记录', markdown: '七个回合均已整理' })
+    },
+  })
+  defer(() => memory.close())
+  await memory.wake()
+  assert.equal(computed.length, 1)
+  assert.notEqual(computed[0], job.generation)
+  assert.equal(reopened.db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
+  assert.equal(reopened.db.prepare("SELECT count(*) AS n FROM effects WHERE kind='memory.note'").get()?.n, 0)
+  assert.equal(reopened.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE id LIKE 'note:%' AND state='done'").get()?.n, 2)
+})
+
+for (const stage of ['note', 'dream'] as const) test(`${stage} requests do not send credentials added to an existing daily file`, async t => {
+  const { dir, defer } = scratch(t, 'viva-note-stored-text-safety-')
+  let now = Date.parse('2026-11-14T12:00:00Z')
+  const inputs: string[] = []
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      inputs.push(job.input)
+      return job.stage === 'note' ? JSON.stringify({ status: 'write', title: '发布安排', markdown: '周五核对发布进度' }) : '{"units":[]}'
+    },
+  })
+  defer(() => memory.close())
+  const first = randomUUID()
+  memory.accept('我每周五核对发布进度', origin, first)
+  memory.recordNoteTurn!(origin.session, [first], '好的')
+  await memory.wake()
+  const card = store.db.prepare('SELECT workspace,path FROM memory_daily_notes').get() as { workspace: string, path: string }
+  const file = path.join(store.fileRoot, card.workspace, card.path)
+  fs.appendFileSync(file, '\napi_key=fixture-secret-value')
+  if (stage === 'note') {
+    const next = randomUUID()
+    memory.accept('请补上版本检查', origin, next)
+    memory.recordNoteTurn!(origin.session, [next], '好的')
+  } else now = Date.parse('2026-11-14T23:00:00Z')
+  await memory.wake()
+  assert.equal(inputs.length, 1)
+  assert(inputs.every(input => !input.includes('fixture-secret-value')))
+  assert.equal(store.db.prepare("SELECT count(*) AS n FROM effects WHERE kind=?").get(`memory.${stage}`)?.n, 1)
+})
+
+test('note input admission checks saved question text and rechecks existing document text before dispatch/commit', async t => {
+  const { dir, defer } = scratch(t, 'viva-note-input-admission-')
+  const store = openMemoryStore(path.join(dir, 'memory.db'))
+  const inputs: string[] = []
+  let prohibitDuringCompute = false
+  const existing = '综合安排是前往海棠场馆'
+  const memory = createMemoryRuntime({ store, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      inputs.push(job.input)
+      if (prohibitDuringCompute) {
+        assert.equal(memory.computeCurrent(job.id), true)
+        store.exclude(existing, { kind: 'user' })
+        assert.equal(memory.computeCurrent(job.id), false)
+      }
+      return JSON.stringify({ status: 'write', title: '行程安排', markdown: existing })
+    },
+  })
+  defer(() => memory.close())
+  const first = randomUUID()
+  memory.accept('下周需要安排行程', origin, first)
+  memory.recordNoteTurn!(origin.session, [first], '会参考你之前的安排')
+  await memory.wake()
+  prohibitDuringCompute = true
+  const next = randomUUID()
+  memory.accept('先确认日期', origin, next)
+  memory.recordNoteTurn!(origin.session, [next], '好的')
+  await memory.wake()
+  assert.equal(inputs.length, 2)
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 1)
+
+  // A question was safe when captured but became excluded before the note request.
+  const other = { session: 'other-session', conversation: 'other-conversation' }, answer = randomUUID()
+  memory.accept('是的', other, answer, { question: '旧项目代号是海棠吗？', requestId: 'question-request', questionId: 'question-id', custom: true })
+  memory.recordNoteTurn!(other.session, [answer], '收到')
+  store.exclude('旧项目代号是海棠吗？', { kind: 'user' })
+  await memory.wake()
+  assert.equal(inputs.length, 2)
+  assert(inputs.every(input => !input.includes('旧项目代号')))
+})
+
+for (const unavailable of ['turn-only', 'stale-dependency'] as const) test(`assistant text with ${unavailable} context is not persisted or used as independent daily evidence`, async t => {
+  const { dir, defer } = scratch(t, 'viva-note-assistant-admission-')
+  const store = openMemoryStore(path.join(dir, 'memory.db'))
+  let noteInput = ''
+  const memory = createMemoryRuntime({ store, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    async compute(job) {
+      if (job.stage !== 'note') return '{"proposals":[]}'
+      noteInput = job.input
+      return '{"status":"skip"}'
+    },
+  })
+  defer(() => memory.close())
+  if (unavailable === 'turn-only') store.dispatch.turnOnly(origin.session)
+  else {
+    const known = memory.addMemory('长期流程为先核对签收')!
+    store.dispatch.dependencies(origin.session, [{ id: known.id, revision: known.revision + 1 }])
+  }
+  const source = randomUUID(), assistant = '临时或已失效上下文里的海棠场馆资料'
+  memory.accept('谢谢', origin, source)
+  memory.recordNoteTurn!(origin.session, [source], assistant)
+  await memory.wake()
+  assert(noteInput)
+  assert.equal(noteInput.includes(assistant), false)
+  const row = store.db.prepare('SELECT workspace FROM memory_note_turns WHERE id=?').get(source) as { workspace: string }
+  const directory = path.join(store.fileRoot, row.workspace, 'session/dialog')
+  const transcript = fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0]!), 'utf8')
+  assert.equal(transcript.includes(assistant), false)
+  assert.equal(transcript.includes('谢谢'), true)
 })

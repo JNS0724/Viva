@@ -1,5 +1,7 @@
 # Viva Long Term Memory Implementation Plan
 
+> 2026-11-15: Further memory organization, processing and retrieval work follows the [ReMe reproduction plan](memory-reme-plan.md). This document remains a reference for the existing implementation, authorization, evidence, forgetting and request barriers; the new file pipeline is not yet implemented.
+
 English | [简体中文](memory-design.zh-CN.md)
 
 Revised on 2026-11-14. M1 and M2 include open-predicate extraction, separate model review of changes, timeline undo, and on-demand clarification. M3 implements layered recall, relation expansion, and index rebuilds. M4 adds evidence-linked user and project summaries, recoverable deletion cleanup, and tests for process death and request replay. The [system design](system-design.md) describes the current implementation.

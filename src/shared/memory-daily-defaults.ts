@@ -1,0 +1,22 @@
+// ReMe b13034ba: DSH config, search.py, MarkdownFileChunker, and auto_dream.
+export const DAILY_MEMORY_DEFAULTS = Object.freeze({
+  noteInterval: 5,
+  timezone: 'Asia/Shanghai',
+  dreamTime: '23:00',
+  scanDays: 2,
+  dreamUnits: 5,
+  dreamBatchBytes: 40_000,
+  dreamFileChars: 60_000,
+  searchLimit: 5,
+  searchMaxLimit: 50,
+  searchMinScore: 0,
+  searchCandidateMultiplier: 5,
+  searchMaxCandidates: 200,
+  vectorWeight: 0.7,
+  reciprocalRankK: 60,
+  markdownChunkBytes: 10_000,
+  requestTimeoutMs: 10_000,
+  backgroundTimeoutMs: 3_600_000,
+  retryMs: 1000,
+  retryMaxMs: 60_000,
+})

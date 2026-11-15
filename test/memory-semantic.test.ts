@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { randomUUID } from 'node:crypto'
 import type { TestContext } from 'node:test'
 import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
 import { openMemoryStore } from '../src/backend/memory-store.ts'
@@ -68,6 +69,52 @@ test('scoped semantic search checks exact scope, revision, and disjoint windows 
   assert.deepEqual(await index.searchScoped(fingerprint, exact, undefined, 5, { interval: at }), {
     hits: [global], partial: false, skipped: false, incomplete: false,
   })
+})
+
+test('daily recall ranks persisted Viva memory vectors and daily notes together without re-embedding an indexed fact', async t => {
+  const store = openMemoryStore(':memory:')
+  const origin = { conversation: 'topic', session: 'session' }
+  const seen: MemoryEmbeddingInput[] = []
+  const memory = createMemoryRuntime({
+    store, dailyNotes: { noteInterval: 1 },
+    route: () => ({ provider: 'test', model: 'test' }), quiesce: async () => {}, changed() {},
+    embedder: {
+      fingerprint,
+      close() {},
+      async embedBatch(inputs) {
+        seen.push(...inputs)
+        return inputs.map(({ kind }) => kind === 'query' ? exact : close)
+      },
+    },
+    async compute(job) {
+      return JSON.stringify({ status: 'write', title: '交接事项', markdown: JSON.parse(job.input).turns[0].user[0].text })
+    },
+  })
+  t.after(() => memory.close())
+  const fact = memory.addMemory('门禁卡遗失后可以找园区物业补办')
+  assert.ok(fact)
+  const index = openMemorySemanticIndex(store.db)!
+  index.configure(fingerprint)
+  assert.equal(index.put(fingerprint, [{ id: fact.id, revision: fact.revision, vector: exact }], index.version(fingerprint)!), 1)
+  const note = '今天新开了一个补办窗口'
+  const sourceId = randomUUID()
+  memory.accept(note, origin, sourceId)
+  memory.recordNoteTurn!(origin.session, [sourceId], '好的')
+  await memory.wake()
+
+  const request = { op: 'recall' as const, query: 'who handles missing badges', session: origin.session }
+  const keyword = JSON.parse(memory.handle(request, origin))
+  assert.deepEqual(keyword.memories, [])
+  assert.deepEqual(keyword.notes, [])
+  const semantic = JSON.parse(await memory.handleModelRequest(request, origin, () => true))
+  assert.deepEqual(semantic.memories.map((item: { id: number }) => item.id), [fact.id])
+  assert.equal(semantic.memories[0].match, 'semantic')
+  assert.deepEqual(semantic.notes.map((item: { markdown: string }) => item.markdown), [note])
+  assert(semantic.memories[0].score > semantic.notes[0].score)
+  assert(!seen.some(input => input.kind === 'passage' && input.text.includes(fact.text)))
+  assert(seen.some(input => input.kind === 'passage' && input.text.includes(note)))
+  assert.deepEqual(index.similarities(fingerprint, exact, [{ id: fact.id, revision: fact.revision + 1 }]), [])
+  assert.deepEqual(index.similarities('other model', exact, [fact]), [])
 })
 
 test('scoped vector search ranks across pages, yields to cancellation and does not use a cleared generation', async t => {

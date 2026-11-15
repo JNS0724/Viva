@@ -54,19 +54,23 @@ const han = /^\p{Script=Han}+$/u
 // Break at Han/Latin boundaries, including when a project code is adjacent to Han text.
 const words = /\p{Script=Han}+|(?:(?!\p{Script=Han})[\p{L}\p{M}\p{N}])+(?:[-_./@](?:(?!\p{Script=Han})[\p{L}\p{M}\p{N}])+)*/gu
 
-function lexicalTerms(text: string, indexing: boolean) {
-  const result = new Set<string>()
+export function memorySearchTokens(text: string, indexing: boolean) {
+  const result: string[] = []
   for (const part of text.normalize('NFKC').toLowerCase().match(words) ?? []) {
     if (han.test(part)) {
       const chars = [...part]
-      if (indexing || chars.length === 1) for (const char of chars) result.add(char)
-      for (let index = 1; index < chars.length; index++) result.add(chars[index - 1] + chars[index])
+      if (indexing || chars.length === 1) for (const char of chars) result.push(char)
+      for (let index = 1; index < chars.length; index++) result.push(chars[index - 1] + chars[index])
     } else {
-      result.add(part)
-      if (indexing) for (const component of part.split(/[-_./@]/u)) result.add(component)
+      result.push(part)
+      if (indexing && /[-_./@]/u.test(part)) result.push(...part.split(/[-_./@]/u))
     }
   }
   return result
+}
+
+function lexicalTerms(text: string, indexing: boolean) {
+  return new Set(memorySearchTokens(text, indexing))
 }
 
 /** Verify an index hit against language visible in the canonical projection. */

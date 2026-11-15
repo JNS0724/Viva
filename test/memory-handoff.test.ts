@@ -20,6 +20,7 @@ import { eventually } from './fixtures/dsh-harness.js'
 import { questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
+import { modelToolResults } from './fixtures/model-tool-results.ts'
 
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
@@ -39,7 +40,7 @@ function makeScheduleDue(directory: string) {
   } finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
@@ -80,7 +81,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   function openBackend() {
     assert.equal(backend, null)
-    backend = createBackend({ host, ipc: { handle: register, on: register } })
+    backend = createBackend({ host, ipc: { handle: register, on: register }, dailyNotes })
     backend.open()
     return backend
   }
@@ -132,6 +133,37 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     startBackend: () => openBackend().startBridge(),
     wake: () => backend?.signal({ kind: 'system.woke' }) }
 }
+
+test('the fifth completed Viva prompt sends actual user and visible assistant text to the daily-note model', { timeout: 45_000 }, async t => {
+  const turns = ['我要每周写一份周报', '模板沿用上周', '新增客户反馈', '把进展放在开头', '周五提交']
+  const incoming: Array<{ user: Array<{ text: string }>, assistant: string }> = []
+  const app = await setup(t, request => {
+    if (!JSON.stringify(request.system).includes('整理最近完成的会话回合')) return null
+    const input = JSON.parse(questionOf(request.messages)) as { turns: typeof incoming }
+    incoming.push(...input.turns)
+    return { text: JSON.stringify({ status: 'write', title: '周报安排', markdown: '沿用上周模板，周五提交周报。' }) }
+  }, { dailyNotes: true })
+  for (const text of turns.slice(0, -1)) await app.ask(text)
+  assert.equal(incoming.length, 0)
+  await app.ask(turns.at(-1)!)
+  assert.ok(await eventually(() => incoming.length === 5))
+  assert.deepEqual(incoming.map(turn => turn.user.map(source => source.text)), turns.map(text => [text]))
+  assert.ok(incoming[0]?.assistant.includes(turns[0]!))
+  assert.equal(app.memories().length, 0)
+  const db = new DatabaseSync(join(app.directory, 'memory.db'), { readOnly: true })
+  try {
+    const card = await eventually(() => db.prepare('SELECT workspace,path,day FROM memory_daily_notes').get()) as
+      { workspace: string, path: string, day: string } | undefined
+    assert.ok(card)
+    const root = join(app.directory, 'memory-files', card.workspace)
+    assert.match(fs.readFileSync(join(root, card.path), 'utf8'), /沿用上周模板，周五提交周报/u)
+    assert.ok(fs.readFileSync(join(root, `daily/${card.day}.md`), 'utf8').includes(card.path))
+    const sessions = fs.readdirSync(join(root, 'session/dialog'))
+    assert.equal(sessions.length, 1)
+    assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
+  } finally { db.close() }
+})
 
 test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 45_000 }, async t => {
   const app = await setup(t, () => null)
@@ -332,10 +364,9 @@ test('generated project summaries, exact recall and chat history remain in their
   assert.ok(scheduleId)
   const listOffset = app.model.requests.length
   await app.ask(listSchedules)
-  assert.ok(app.model.requests.slice(listOffset).some(raw => {
-    const reply = JSON.stringify((raw as Request).messages.at(-1))
-    return reply.includes('tool_result') && reply.includes(scheduleTitle)
-  }))
+  const listResults = (app.model.requests.slice(listOffset) as Request[]).flatMap(request => modelToolResults(request, 'schedule_list'))
+  assert.ok(listResults.some(result => JSON.stringify(result).includes(scheduleTitle)),
+    JSON.stringify({ schedules: schedules(), results: listResults, lastMessages: (app.model.requests.slice(listOffset) as Request[]).map(request => request.messages.at(-1)) }))
   const subdirectory = join(projectA, 'nested')
   mkdirSync(subdirectory)
   const forked = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', subdirectory, { confirmed: true })
@@ -348,16 +379,12 @@ test('generated project summaries, exact recall and chat history remain in their
   await check(secondMarker, firstMarker)
   const restrictedOffset = app.model.requests.length
   await app.ask(listSchedules)
-  const modelLists = (app.model.requests.slice(restrictedOffset) as Request[]).filter(request =>
-    JSON.stringify(request.messages).includes('"name":"schedule_list"') && JSON.stringify(request.messages.at(-1)).includes('tool_result'))
+  const modelLists = (app.model.requests.slice(restrictedOffset) as Request[]).flatMap(request => modelToolResults(request, 'schedule_list'))
   assert.ok(modelLists.length)
-  assert.ok(modelLists.every(request => !JSON.stringify(request.messages.at(-1)).includes(scheduleId)))
+  assert.ok(modelLists.every(result => !JSON.stringify(result).includes(scheduleId)))
   const updateOffset = app.model.requests.length
   await app.ask(updateSchedule)
-  assert.ok(app.model.requests.slice(updateOffset).some(raw => {
-    const request = raw as Request
-    return JSON.stringify(request.messages).includes('"name":"schedule_update"') && JSON.stringify(request.messages.at(-1)).includes('tool_result')
-  }))
+  assert.ok((app.model.requests.slice(updateOffset) as Request[]).some(request => modelToolResults(request, 'schedule_update').length))
   assert.equal(schedules().find(item => item.id === scheduleId)?.title, scheduleTitle)
   const afterSwitch = app.model.requests.slice(beforeSwitch) as Request[]
   assert.ok(afterSwitch.some(request => questionOf(request.messages) === secondFact && JSON.stringify(request.system).includes('个人工作助手')))
@@ -831,4 +858,18 @@ test('an Updates draft keeps the result identity until dispatch and never become
   await assert.rejects(() => send(text, item.id), /已变更/)
   assert.ok(!app.model.requests.slice(before).some(raw => JSON.stringify(raw).includes(draft)))
   assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
+})
+
+
+test('schedule assertions find the matching result before a trailing runtime notice without accepting other tools', () => {
+  const request = { messages: [
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'list-call', name: 'schedule_list', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'list-call', content: '[{"title":"甲项目定时汇总"}]' }] },
+    { role: 'user', content: [{ type: 'text', text: '后台任务完成通知' }] },
+  ] }
+  // This is the old assertion's false negative: the result exists but is no longer last.
+  assert.equal(JSON.stringify(request.messages.at(-1)).includes('tool_result'), false)
+  assert.deepEqual(modelToolResults(request, 'schedule_list'), ['[{"title":"甲项目定时汇总"}]'])
+  assert.deepEqual(modelToolResults(request, 'schedule_update'), [])
+  assert.deepEqual(modelToolResults({ messages: [{ content: [{ type: 'tool_result', tool_use_id: 'unrelated', content: '甲项目定时汇总' }] }] }, 'schedule_list'), [])
 })

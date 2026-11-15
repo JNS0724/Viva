@@ -62,7 +62,7 @@ export function nextDay(day: string) {
 }
 
 type CivilBoundary = NonNullable<Extract<MemoryTemporal, { kind: 'interval' }>['from']>
-function localBoundary(boundary: CivilBoundary, assertedAt: number, timezone: string): number | null {
+export function localBoundary(boundary: CivilBoundary, assertedAt: number, timezone: string): number | null {
   const date = 'date' in boundary ? boundary.date
     : new Date(Date.parse(todayAt(assertedAt, timezone)) + boundary.daysFromSource * 86_400_000).toISOString().slice(0, 10)
   if (!boundary.time) return localDay(date, timezone)

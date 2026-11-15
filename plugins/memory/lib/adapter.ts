@@ -1,3 +1,4 @@
+import { DAILY_MEMORY_DEFAULTS } from '../../../src/shared/memory-daily-defaults.ts'
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { channel } from 'node:diagnostics_channel'
@@ -7,7 +8,7 @@ import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-questions'
-import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, memoryClarificationResult, memoryCompute, memoryComputeFailure, memoryKinds } from '../../../src/shared/memory-contract.ts'
+import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, isDailyMemoryStage, memoryClarificationResult, memoryCompute, memoryComputeFailure, memoryKinds } from '../../../src/shared/memory-contract.ts'
 import type { MemoryCompute, MemoryComputeFailure, MemoryRequest } from '../../../src/shared/memory-contract.ts'
 import { objectOf } from '../../../src/shared/unknown-value.ts'
 import { withoutHeaders } from '../../../src/shared/request-routing/header.ts'
@@ -36,7 +37,7 @@ async function complete(ctx: Context, job: MemoryCompute, signal: AbortSignal, a
   for await (const chunk of ctx.llm.stream({
     provider: job.provider, model: job.model, system: job.system,
     messages: [createUserMessage({ content: [{ type: 'text', text: job.input }], source: memorySource })],
-    ...(job.stage === 'extract' ? {} : { maxTokens: 2000 }),
+    ...(job.stage === 'extract' || job.stage === 'note' || job.stage === 'dream' ? {} : { maxTokens: 2000 }),
     signal,
   })) assembler.push(chunk)
   const finish = assembler.finish?.kind
@@ -95,7 +96,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
   const request = (input: MemoryRequest, agent: Agent, signal?: AbortSignal) =>
     exchange({ type: 'memory_query', request: input, parent: parentOf(agent) }, randomUUID(),
       signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal,
-      input.op === 'recall' ? MEMORY_SEMANTIC_TIMEOUT_MS + 1500 : undefined)
+      input.op === 'recall' ? Math.max(MEMORY_SEMANTIC_TIMEOUT_MS + 1500, DAILY_MEMORY_DEFAULTS.requestTimeoutMs + 500) : undefined)
 
   async function authorize(origin: DispatchOrigin, id: string, signal?: AbortSignal) {
     const allowed = await exchange({ type: 'memory_dispatch', ...origin }, id, signal)
@@ -201,7 +202,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     if (!result.success) return
     const job = result.data
     const cancel = new AbortController()
-    const signal = AbortSignal.any([lifetime.signal, cancel.signal, AbortSignal.timeout(115_000)])
+    const signal = AbortSignal.any([lifetime.signal, cancel.signal, AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)])
     const running = { generation: job.generation, cancel }
     computations.set(job.id, running)
     const assembler = new BlockAssembler()
@@ -210,7 +211,7 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
       computations.delete(job.id)
       if (!cancel.signal.aborted) {
         send({ type: 'memory_computed', id: job.id, generation: job.generation, ...result,
-          ...(job.stage === 'extract' && assembler.usage ? { usage: assembler.usage } : {}) })
+          ...((job.stage === 'extract' || job.stage === 'note' || job.stage === 'dream') && assembler.usage ? { usage: assembler.usage } : {}) })
       }
     }
     void caller.run({ jobId: job.id }, () => complete(ctx, job, signal, assembler)).then(answer, error => {
@@ -285,9 +286,9 @@ export function applyMemoryAdapter(ctx: Context, port = process) {
     { op: 'remember', description: '保存用户本轮明确要求记住的原文。只传原文，保留时间、条件和例外。',
       parameters: { text: { type: 'string', required: true }, kind: { type: 'string', enum: memoryKinds }, keywords: { type: 'array', items: { type: 'string' } } },
       input: (session: string, args: { text: string, kind?: typeof memoryKinds[number], keywords?: string[] }): MemoryRequest => ({ op: 'remember', session, ...args }) },
-    { op: 'recall', description: '查有关的有效记忆，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope 设为 project 可查当前工作区项目；不能指定其他项目。用户明确深查或需要关系链、跨记录归纳时可设 deep。中文句子中的关系起点可用「」标出完整名称。match 为 semantic 表示按语义相似度找到的候选，使用前依据原文核对实际对象、关系和限制。relations 是带原始证据和适用区间的路径。conflicts 包含成对依据，pendingChanges 仍待确认。partial 表示结果不完整，可参考 reasons 缩小范围。只有不确定性会改变答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',
-      parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' }, scope: { type: 'string', enum: ['project'] }, deep: { type: 'boolean' } },
-      input: (session: string, args: { query: string, asOf?: string, scope?: 'project', deep?: boolean }): MemoryRequest => ({ op: 'recall', session, ...args }) },
+    { op: 'recall', description: '查有关的有效记忆，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope 设为 project 可查当前工作区项目；不能指定其他项目。用户明确深查或需要关系链、跨记录归纳时可设 deep。中文句子中的关系起点可用「」标出完整名称。match 为 semantic 表示按语义相似度找到的候选，使用前依据原文核对实际对象、关系和限制。notes 提供临时上下文，核验事实时应查看用户原文。relations 是带原始证据和适用区间的路径。conflicts 包含成对依据，pendingChanges 仍待确认。partial 表示结果不完整，可参考 reasons 缩小范围。只有不确定性会改变答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',
+      parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' }, scope: { type: 'string', enum: ['project'] }, deep: { type: 'boolean' }, limit: { type: 'integer' }, min_score: { type: 'number' }, start_date: { type: 'string' }, end_date: { type: 'string' } },
+      input: (session: string, args: { query: string, asOf?: string, scope?: 'project', deep?: boolean, limit?: number, min_score?: number, start_date?: string, end_date?: string }): MemoryRequest => ({ op: 'recall', session, ...args }) },
     { op: 'forget', description: '用户明确要求忘掉时使用。请用户说「忘掉 #编号」，也可以在关于你中操作。',
       parameters: { id: { type: 'integer', required: true } },
       input: (session: string, args: { id: number }): MemoryRequest => ({ op: 'forget', session, id: args.id }) },
