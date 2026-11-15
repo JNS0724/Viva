@@ -1,6 +1,7 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
+import { icon } from './icons.ts'
 
 /**
  * Going back to something the user said (phase 2, rewind-state.js): the small bar over a message of theirs,
@@ -49,7 +50,7 @@ function makeEditor(message: ThreadMessage, handlers: Handlers, later: number) {
       // The old words fold too: the path left behind starts with them.
       h('span', { class: 'rewind-hint', text: later ? t("rewind.this.message.and.the.next.will.be", { later: later }) : t("rewind.this.message.will.be.folded.away.not") }),
       h('button', { class: 'btn btn-text', type: 'button', text: t("extensions.cancel"), onClick: () => handlers.cancelEdit() }),
-      h('button', { class: 'btn btn-primary rewind-send', type: 'button', text: t("rewind.resend"), onClick: send })))
+      h('button', { class: 'btn btn-accent rewind-send', type: 'button', text: t("rewind.resend"), onClick: send })))
   return { id: message.id, el, field, fresh: true }
 }
 
@@ -111,7 +112,7 @@ export function renderRewindConfirm(root: HTMLElement, state: State, handlers: H
 export function foldStrip(fold: Fold, { opened, handlers, messageView, tasks, records, recordView }: FoldOptions): View[] {
   if (fold.kind === 'task') return taskStrip(fold, { opened, handlers, messageView, tasks, records, recordView })
   const strip = h('div', { class: 'fold', role: 'group', 'aria-label': t("rewind.another.branch"), 'data-fold': fold.id },
-    h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '⑂' }),
+    h('span', { class: 'fold-ico', 'aria-hidden': 'true' }, icon('branch', 14)),
     h('span', { text: t("rewind.another.branch.2") }),
     h('b', { text: t("rewind.messages", { count: fold.count }) }),
     h('span', { class: 'fold-actions' },
@@ -139,7 +140,7 @@ function taskStrip(fold: Fold, { opened, handlers, messageView, tasks, records, 
   const status = task?.status === 'running' && task.now ? t("island-tasks.currently", { now: task.now }) : TASK_STATUS[task?.status ?? ''] ?? t("rewind.messages", { count: fold.count })
   const live = task?.status === 'running' || task?.status === 'waiting'
   const strip = h('div', { class: 'fold fold-task', role: 'group', 'aria-label': t("rewind.task.moved.to.background"), 'data-fold': fold.id },
-    h('span', { class: 'fold-ico', 'aria-hidden': 'true', text: '↗' }),
+    h('span', { class: 'fold-ico', 'aria-hidden': 'true' }, icon('external', 14)),
     h('span', { text: task ? t("rewind.continued.in.background") : t("rewind.previously.ran.in.background") }),
     task ? h('span', { class: 'fold-tag', title: task.words, text: `#${task.title}` }) : null,
     h('span', { class: 'fold-status', text: `· ${status}` }),

@@ -1,8 +1,19 @@
-import { MEMORY_CONTRACT, memoryRequest } from '../shared/memory-contract.ts'
-import type { MemoryCompute, MemoryRequest } from '../shared/memory-contract.ts'
+import { MEMORY_CONTRACT, memoryComputeFailure, memoryComputeUsage, memoryRequest } from '../shared/memory-contract.ts'
+import type { MemoryCompute, MemoryComputeFailure, MemoryComputeUsage, MemoryRequest } from '../shared/memory-contract.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 export type MemoryDispatchAdmission = boolean | { allowed: boolean, deadline?: number | null }
+
+export class MemoryComputeError extends Error {
+  readonly reason: MemoryComputeFailure | 'oversize-reply' | 'missing-reply'
+
+  constructor(reason: MemoryComputeError['reason']) {
+    super('memory model computation did not finish')
+    this.reason = reason
+  }
+}
+
+type ComputationResult = ({ text: string } | { failure: MemoryComputeError['reason'] }) & { usage?: MemoryComputeUsage }
 
 export function createMemoryChannel({ send, handle, onReady, beginDispatch, beginJobDispatch, endDispatch, timeoutMs = 120_000 }: {
   send: (message: object) => void,
@@ -13,7 +24,7 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
   endDispatch?: (id: string) => void,
   timeoutMs?: number,
 }) {
-  const jobs = new Map<string, { generation: number, done: (text: string | null) => void }>()
+  const jobs = new Map<string, { generation: number, done: (result: ComputationResult) => void }>()
   const dispatches = new Map<string, 'pending' | 'allowed'>()
   const queries = new Map<string, AbortController>()
   let ready = false
@@ -33,19 +44,26 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
 
   function compute(job: MemoryCompute, signal?: AbortSignal): Promise<string> | null {
     if (!ready || jobs.has(job.id) || signal?.aborted) return null
+    const started = performance.now()
     return new Promise((resolve, reject) => {
       const abort = () => {
         send({ type: 'memory_compute_cancel', id: job.id, generation: job.generation })
-        finish(null)
+        finish({ failure: 'aborted' })
       }
-      const finish = (text: string | null) => {
+      const finish = (result: ComputationResult) => {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
         jobs.delete(job.id)
-        if (text === null) reject(new Error('memory model computation did not finish'))
-        else resolve(text)
+        if (job.stage === 'extract') {
+          console.info('[memory] extraction model', JSON.stringify({
+            usage: result.usage ?? null, durationMs: Math.round(performance.now() - started),
+            finishReason: 'failure' in result ? result.failure : 'stop',
+          }))
+        }
+        if ('failure' in result) reject(new MemoryComputeError(result.failure))
+        else resolve(result.text)
       }
-      const timer = setTimeout(() => finish(null), timeoutMs)
+      const timer = setTimeout(() => finish({ failure: 'timeout' }), timeoutMs)
       timer.unref()
       jobs.set(job.id, { generation: job.generation, done: finish })
       signal?.addEventListener('abort', abort, { once: true })
@@ -65,7 +83,14 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
       }
       if (message?.type === 'memory_computed' && typeof message.id === 'string') {
         const job = jobs.get(message.id)
-        if (job && job.generation === message.generation) job.done(typeof message.text === 'string' && message.text.length < 20_000 ? message.text : null)
+        if (job && job.generation === message.generation) {
+          const failure = memoryComputeFailure.safeParse(message.failure)
+          const usage = memoryComputeUsage.safeParse(message.usage).data
+          if (failure.success) job.done({ failure: failure.data, usage })
+          else if (typeof message.text !== 'string') job.done({ failure: 'missing-reply', usage })
+          else if (message.text.length >= 20_000) job.done({ failure: 'oversize-reply', usage })
+          else job.done({ text: message.text, usage })
+        }
       }
       if (typeof message?.id !== 'string' || message.id.length > 128) return
       const id = message.id
@@ -127,7 +152,7 @@ export function createMemoryChannel({ send, handle, onReady, beginDispatch, begi
       closed = true
       ready = false
       for (const id of queries.keys()) cancelQuery(id)
-      for (const job of jobs.values()) job.done(null)
+      for (const job of jobs.values()) job.done({ failure: 'aborted' })
     },
     processExited() { for (const id of dispatches.keys()) release(id) },
   }

@@ -58,19 +58,25 @@ function traceView(state: State, body: HTMLElement): View[] {
 
 type DrawerView = {
   body: HTMLElement, tabs: HTMLButtonElement[], close: HTMLButtonElement,
+  request: HTMLElement, requestLabel: HTMLElement, requestButton: HTMLButtonElement,
   handlers: Handlers, scroll: ReturnType<typeof scrollSnapshot>,
   fileScroll: { tree: number, preview: { path: string | undefined, top: number } | null } | null,
 }
 const drawers = new WeakMap<HTMLElement, DrawerView>()
 
 function createDrawer(container: HTMLElement, handlers: Handlers): DrawerView {
+  const requestLabel = h('span')
+  const requestButton = h('button', { class: 'btn btn-primary btn-small', type: 'button' })
   const view: DrawerView = {
     handlers, scroll: null, fileScroll: null,
+    request: h('div', { class: 'drawer-request', hidden: true }, requestLabel, requestButton),
+    requestLabel, requestButton,
     body: h('div', { class: 'drawer-body', role: 'tabpanel' }),
     tabs: TABS.map(tab => h('button', { class: 'tab', role: 'tab', onClick: () => view.handlers.openDrawer(tab.id) })),
     close: h('button', { class: 'icon-btn' }, icon('close', 16)),
   }
   view.close.addEventListener('click', () => view.handlers.closeDrawer())
+  view.requestButton.addEventListener('click', () => view.handlers.jumpToRequest())
   const yieldToReader = () => {
     view.scroll = { tab: container.dataset.tab ?? '', top: view.body.scrollTop, atBottom: false }
   }
@@ -87,7 +93,7 @@ function createDrawer(container: HTMLElement, handlers: Handlers): DrawerView {
     if (view.scroll?.tab === next.tab && next.top < view.scroll.top) next.atBottom = false
     view.scroll = next
   }, { passive: true })
-  container.append(h('div', { class: 'drawer-head' }, h('div', { class: 'tabs', role: 'tablist' }, view.tabs), view.close), view.body)
+  container.append(h('div', { class: 'drawer-head' }, h('div', { class: 'tabs', role: 'tablist' }, view.tabs), view.close), view.request, view.body)
   drawers.set(container, view)
   return view
 }
@@ -116,6 +122,11 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
   })
   const closeLabel = t('drawer.close.panel')
   if (view.close.getAttribute('aria-label') !== closeLabel) view.close.setAttribute('aria-label', closeLabel)
+  view.request.hidden = !(state.permission || state.question || state.secret)
+  const requestLabel = t('island-dom.needs.your.attention')
+  const requestButton = t('drawer.open.request')
+  if (view.requestLabel.textContent !== requestLabel) view.requestLabel.textContent = requestLabel
+  if (view.requestButton.textContent !== requestButton) view.requestButton.textContent = requestButton
   // The 文件 tab scrolls inside: its tree, and its preview while the same file is shown.
   if (state.drawer === 'files' && !view.fileScroll) {
     const shown = view.body.querySelector<HTMLElement>('.file-preview[data-path]')

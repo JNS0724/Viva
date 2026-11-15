@@ -83,7 +83,7 @@ export async function checkStreamingNavigation(session: SmokeApplication, info: 
     retained.task = await heldClick(page, page.locator('#tasks-page .tp-row').filter({ hasText: 'ui-retention-other' }), acrossUpdates, info)
     await expect(page.locator('#tasks-page .tp-main')).toHaveAttribute('data-task', 'ui-retention-other')
     retained.fold = await heldClick(page, page.locator('#tasks-page .tp-fold'), acrossUpdates, info)
-    await expect(page.locator('#tasks-page .tp-side')).toHaveClass(/tp-side-folded/)
+    await expect(page.locator('#tasks-page .tp-side')).toHaveAttribute('data-folded', 'true')
     retained.unfold = await heldClick(page, page.locator('#tasks-page .tp-fold'), acrossUpdates, info)
     await expect(page.locator('#tasks-page .tp-row')).toHaveCount(2)
 

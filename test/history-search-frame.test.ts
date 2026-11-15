@@ -14,7 +14,8 @@ for (const outcome of ['loaded', 'loaded-composing', 'error', 'wrong-document', 
     let selection: unknown
     let expire: (() => void) | undefined
     const classes = new Set<string>()
-    const host = Object.assign(new EventTarget(), { classList: { add: (value: string) => classes.add(value), remove: (value: string) => classes.delete(value) }, insertBefore: (_node: unknown, _next: unknown) => {} })
+    const dataset: Record<string, string | undefined> = {}
+    const host = Object.assign(new EventTarget(), { dataset, classList: { add: (value: string) => classes.add(value), remove: (value: string) => classes.delete(value) }, insertBefore: (_node: unknown, _next: unknown) => {} })
     const owner = { activeElement: null as unknown }
     const input = Object.assign(new EventTarget(), {
       parentElement: host, nextSibling: null, ownerDocument: owner,
@@ -70,9 +71,9 @@ for (const outcome of ['loaded', 'loaded-composing', 'error', 'wrong-document', 
         assert.equal(removed, false)
         assert.equal(fonts.href, fonts.dataset.fontHref)
         input.dispatchEvent(new Event('focus'))
-        assert.equal(classes.has('search-focused'), true)
+        assert.equal(dataset.focused, 'true')
         input.dispatchEvent(new Event('blur'))
-        assert.equal(classes.has('search-focused'), false)
+        assert.equal(dataset.focused, undefined)
       } else {
         assert.equal(result, null)
         assert.equal(adopted, undefined)

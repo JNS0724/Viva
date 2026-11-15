@@ -22,7 +22,7 @@ function modelOption(model: Choice, info: AgentInfo, handlers: Handlers) {
   },
   h('span', { class: 'model-option-name', text: model.name }),
   model.group ? h('span', { class: 'model-option-group', text: model.group }) : null,
-  selected ? h('span', { class: 'model-check', text: '●' }) : null)
+  selected ? h('span', { class: 'model-check', 'aria-hidden': 'true' }) : null)
 }
 
 function effortRow(info: AgentInfo, handlers: Handlers) {

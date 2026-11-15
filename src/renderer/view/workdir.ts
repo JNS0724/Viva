@@ -27,7 +27,7 @@ function renderChip(button: HTMLButtonElement, state: State) {
   let label = chipNames.get(button)
   if (!label) {
     label = h('span', { class: 'workdir-name' })
-    button.replaceChildren(h('span', { class: 'workdir-ico', 'aria-hidden': 'true', text: '📁' }), label, icon('chevron', 14))
+    button.replaceChildren(h('span', { class: 'workdir-ico', 'aria-hidden': 'true' }, icon('folder', 14)), label, icon('chevron', 14))
     chipNames.set(button, label)
   }
   const text = workDir.switching ? t("workdir.switching") : name
@@ -48,7 +48,7 @@ function renderMenu(container: HTMLElement, state: State, handlers: Handlers, pl
   const previous = menus.get(container)
   if (previous?.key === key && previous.handlers === handlers) return
   const item = (entry: MenuEntry) => h('button', {
-    class: `workdir-item${entry.current ? ' is-current' : ''}`, type: 'button', role: 'menuitem', title: entry.dir,
+    class: 'workdir-item', type: 'button', role: 'menuitem', title: entry.dir,
     'aria-current': entry.current ? 'true' : null, onClick: () => (entry.current ? handlers.closeWorkDirMenu() : handlers.pickWorkDir(entry.dir)),
   },
   h('span', { class: 'workdir-check', 'aria-hidden': 'true', text: entry.current ? '✓' : '' }),

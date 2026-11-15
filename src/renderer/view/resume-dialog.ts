@@ -52,7 +52,7 @@ export function renderResumeDialog(root: HTMLElement, asked: ResumeAsk | null, h
         : h('p', { class: 'workdir-sheet-text', text: line.text }))),
       h('div', { class: 'workdir-sheet-actions' },
         h('button', { class: 'btn btn-secondary', type: 'button', text: t("extensions.cancel"), onClick: () => handlers.resumeDismiss() }),
-        copy.choose ? h('button', { class: `btn ${copy.main ? 'btn-secondary' : 'btn-primary resume-main'}`, type: 'button', text: copy.choose, onClick: () => handlers.resumeChooseDir() }) : null,
-        copy.main ? h('button', { class: 'btn btn-primary resume-main', type: 'button', text: copy.main, onClick: () => handlers.resumeConfirm() }) : null)))
+        copy.choose ? h('button', { class: `btn ${copy.main ? 'btn-secondary' : 'btn-accent resume-main'}`, type: 'button', text: copy.choose, onClick: () => handlers.resumeChooseDir() }) : null,
+        copy.main ? h('button', { class: 'btn btn-accent resume-main', type: 'button', text: copy.main, onClick: () => handlers.resumeConfirm() }) : null)))
   return root.querySelector<HTMLElement>('.resume-main')?.focus()
 }

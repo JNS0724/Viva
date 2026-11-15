@@ -26,6 +26,18 @@ test('MCP import menu stays inside its sidebar and cancelling an edit restores t
   const bounds = []
   for (const width of [1360, 880, 720]) {
     await mainWindow.evaluate((window, width) => window.setSize(width, 860), width)
+    const tabs = await page.locator('.cap-tabs').evaluate(group => {
+      const sidebar = group.closest('.cap-side')!
+      const bounds = sidebar.getBoundingClientRect()
+      return [...group.querySelectorAll('button')].every(button => {
+        const rect = button.getBoundingClientRect()
+        return rect.left >= bounds.left && rect.right <= bounds.left + sidebar.clientWidth
+          && button.scrollWidth <= button.clientWidth
+          && button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))
+      })
+    })
+    expect(tabs, `all capability tabs visible and reachable at ${width}px`).toBe(true)
+    if (width === 880) await page.screenshot({ path: info.outputPath('capability-tabs-880.png') })
     await page.locator('.import-btn').click()
     await expect(page.locator('.import-menu')).toBeVisible()
     const metrics = await page.locator('.import-menu').evaluate(menu => {

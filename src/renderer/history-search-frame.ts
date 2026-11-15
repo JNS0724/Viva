@@ -36,8 +36,8 @@ export async function mountHistorySearchFrame(input: HTMLInputElement): Promise<
     const selection = [input.selectionStart, input.selectionEnd] as const
     child.body.append(input)
     // :focus-within does not cross the iframe document boundary.
-    input.addEventListener('focus', () => host.classList.add('search-focused'))
-    input.addEventListener('blur', () => host.classList.remove('search-focused'))
+    input.addEventListener('focus', () => { host.dataset.focused = 'true' })
+    input.addEventListener('blur', () => { delete host.dataset.focused })
     if (focused) {
       input.focus()
       input.setSelectionRange(selection[0], selection[1])
