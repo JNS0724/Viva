@@ -208,9 +208,11 @@ export async function checkRuntime(embedder: MemoryEmbedder) {
       assert.equal(profile.user.length, 6, 'measure authorized personal files rather than the removed numeric profile')
     }
     const cases: RuntimeCase[] = []
-    for (const item of queries) {
+    for (const [index, item] of queries.entries()) {
       const started = performance.now()
-      const context = memory.handle({ op: 'context', session: origin.session, turn: 1, question: item.text }, origin)
+      const turn = index + 1
+      const context = await memory.handleModelRequest({ op: 'context', session: origin.session, turn, question: item.text },
+        { ...origin, foregroundTurn: String(turn) }, () => true)
       const automatic = { hits: facts.filter(fact => context.includes(fact.text)).map(fact => fact.id), elapsedMs: performance.now() - started }
       cases.push({ ...item, automatic, keyword: await query(item.text, 'keyword'), semantic: await query(item.text, 'semantic') })
     }
@@ -234,7 +236,7 @@ export async function checkRuntime(embedder: MemoryEmbedder) {
         timings: timingsOf(cases.map(item => item[layer].elapsedMs)),
       }
     }
-    return { engine: 'source-backed-files', retrieval: { keyword: 'file-lexical', semantic: 'file-hybrid' },
+    return { engine: 'source-backed-files', retrieval: { automatic: 'file-hybrid-context', keyword: 'file-lexical', semantic: 'file-hybrid' },
       profile: timingsOf(profileTimes), automatic: metrics('automatic'), keyword: metrics('keyword'), semantic: metrics('semantic'), scopeCases, cases }
   } finally {
     memory.close()
@@ -243,29 +245,28 @@ export async function checkRuntime(embedder: MemoryEmbedder) {
 }
 
 async function main() {
-const [modelRoot, runtimeRoot] = process.argv.slice(2)
-if (!modelRoot) throw new Error('Usage: node scripts/memory-embedding-check.ts <model-dir> [runtime-dir]')
+  const [modelRoot, runtimeRoot] = process.argv.slice(2)
+  if (!modelRoot) throw new Error('Usage: node scripts/memory-embedding-check.ts <model-dir> [runtime-dir]')
 
-const embedder = createMemoryEmbedder({ modelRoot, runtimeRoot })
-try {
-  const started = performance.now()
-  const warmup = await embedder.embedBatch([{ kind: 'query', text: 'Viva' }])
-  assert.ok(warmup?.[0], 'the local E5 worker must encode successfully')
-  const workerStartupMs = performance.now() - started
-  const result = await checkMemoryEmbeddings(async (texts, kind) => {
-    const vectors = await embedder.embedBatch(texts.map(text => ({ kind, text })))
-    assert.ok(vectors, `the local E5 worker rejected the ${kind} batch`)
-    return vectors.map(vector => {
-      assert.ok(vector, 'the benchmark text must fit the model token budget')
-      return vector
+  const embedder = createMemoryEmbedder({ modelRoot, runtimeRoot })
+  try {
+    const started = performance.now()
+    const warmup = await embedder.embedBatch([{ kind: 'query', text: 'Viva' }])
+    assert.ok(warmup?.[0], 'the local E5 worker must encode successfully')
+    const workerStartupMs = performance.now() - started
+    const result = await checkMemoryEmbeddings(async (texts, kind) => {
+      const vectors = await embedder.embedBatch(texts.map(text => ({ kind, text })))
+      assert.ok(vectors, `the local E5 worker rejected the ${kind} batch`)
+      return vectors.map(vector => {
+        assert.ok(vector, 'the benchmark text must fit the model token budget')
+        return vector
+      })
     })
-  })
-  const runtime = await checkRuntime(embedder)
-  console.log(JSON.stringify({ model: embedder.fingerprint, workerStartupMs, rawCalibration: result, runtime }, null, 2))
-} finally {
-  embedder.close()
-}
-
+    const runtime = await checkRuntime(embedder)
+    console.log(JSON.stringify({ model: embedder.fingerprint, workerStartupMs, rawCalibration: result, runtime }, null, 2))
+  } finally {
+    embedder.close()
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main()

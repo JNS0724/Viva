@@ -148,6 +148,10 @@ test('the offline runtime benchmark uses source-backed files, file profile and p
   const result = await checkRuntime({ fingerprint: 'unit-test-wiring-only', dimensions: 8,
     embedBatch: async inputs => inputs.map(() => Float32Array.from([1, 0, 0, 0, 0, 0, 0, 0])), close() {} })
   assert.equal(result.engine, 'source-backed-files')
+  assert.equal(result.retrieval.automatic, 'file-hybrid-context')
+  const absent = result.cases.find(item => item.text === 'What is the capital of Sweden?')!
+  assert.equal(absent.keyword.hits.length, 0)
+  assert.ok(absent.automatic.hits.length > 0, 'the offline unit vectors reach the async hybrid injection path, not lexical-only context')
   assert.equal(result.cases.length > 0, true)
   assert.deepEqual(result.scopeCases.map(item => item.expected), [[], ['allowed-escrow'], ['private-escrow']])
 })
