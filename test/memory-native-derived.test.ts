@@ -12,7 +12,7 @@ import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
-import { memoryOriginalContentDigest } from '../plugins/memory/lib/context-recovery.ts'
+import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from '../plugins/memory/lib/context-recovery.ts'
 import { eraseColdNativeCopies, PendingNativePublication } from '../plugins/memory/lib/native/maintenance.ts'
 import { scratch } from './fixtures/scratch.js'
 
@@ -30,13 +30,18 @@ test('cold native derived erasure groups inbox replicas and retains independent 
     source: { kind }, content: [{ type: 'text', text }],
   })
   const first = make('viva-memory', 'Old injection from the first source')
-  const second = make('user', 'Host task brief from a separate second source')
+  const second = createUserMessage({ source: { kind: 'subagent-settled', form: 'notice',
+    summary: 'Source-derived title in the native notice', senderSessionId: parentId },
+    content: [{ type: 'text', text: 'Host task brief from a separate second source' }] })
+  const noticeOnly = createUserMessage({ source: { kind: 'subagent-settled', form: 'notice',
+    summary: 'Source-derived notice without content blocks', senderSessionId: parentId }, content: [] })
   const equalIndependent = make('user', 'Old injection from the first source')
   const tampered = { ...second, content: [{ type: 'text' as const, text: 'Unverified third payload must remain present' }] }
   const session = Session.create(parentId)
-  const audit = session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [first, second, equalIndependent] })
+  const audit = session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [first, second, noticeOnly, equalIndependent] })
   const shown = session.append('user/message', first, { surfaceOp: 'append' })
   const accepted = session.append('user/message', second, { surfaceOp: 'append' })
+  const notice = session.append('user/message', noticeOnly, { surfaceOp: 'append' })
   const untouched = session.append('user/message', equalIndependent, { surfaceOp: 'append' })
   const prefix = session.snapshotEvents()
   const child = Session.fromRestore(childId, buildForkSeed(prefix, untouched.seq),
@@ -67,7 +72,10 @@ test('cold native derived erasure groups inbox replicas and retains independent 
     const packet = owner.runtime.handle({ op: 'file_read', session: scope, id: created.identity.id }, { session: scope, conversation: scope })
     assert.match(packet ?? '', /Canonical/u)
     await owner.registerDerived({ sessionId: scope, messageId: message.id, sourceIds: [], nativeUserSource: message.source.kind,
-      contentDigest: memoryOriginalContentDigest(message) })
+      contentDigest: memoryOriginalContentDigest(message), nativeMessageDigest: memoryRecoveryMessageHash(message) })
+    if (message === second) await owner.registerDerived({ sessionId: scope, messageId: noticeOnly.id, sourceIds: [],
+      nativeUserSource: noticeOnly.source.kind, nativeMessageDigest: memoryRecoveryMessageHash(noticeOnly),
+      contentDigest: memoryOriginalContentDigest(noticeOnly) })
     const detail = await call('readFile', { args: [created.identity] })
     assert.ok(detail)
     await call('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
@@ -97,11 +105,18 @@ test('cold native derived erasure groups inbox replicas and retains independent 
     const events = await read(id)
     const grouped = events[audit.seq], installedFirst = events[shown.seq], installedSecond = events[accepted.seq]
     assert.ok(grouped?.type === 'agent/inbox/spliced' && installedFirst?.type === 'user/message' && installedSecond?.type === 'user/message')
-    assert.deepEqual(grouped.data.inserted.map(item => item.content), [[], [], equalIndependent.content])
+    assert.deepEqual(grouped.data.inserted.map(item => item.content), [[], [], [], equalIndependent.content])
     assert.equal(installedFirst.data.id, first.id)
     assert.equal(installedSecond.data.id, second.id)
     assert.deepEqual(installedFirst.data.content, [])
     assert.deepEqual(installedSecond.data.content, [])
+    assert.ok(installedSecond.data.source.kind === 'subagent-settled')
+    assert.equal(installedSecond.data.source.summary, '')
+    assert.equal(grouped.data.inserted[1]!.source.kind, 'subagent-settled')
+    assert.doesNotMatch(JSON.stringify([grouped, installedSecond]), /Source-derived title/u)
+    const emptyNotice = events[notice.seq]
+    assert.ok(emptyNotice?.type === 'user/message' && emptyNotice.data.source.kind === 'subagent-settled')
+    assert.equal(emptyNotice.data.source.summary, '')
     assert.deepEqual(events[untouched.seq], untouched)
   }
   assert.deepEqual((await read(untrusted.id)).at(-1)?.data, tampered)

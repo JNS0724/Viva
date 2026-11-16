@@ -159,6 +159,13 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     }
     return {
       messageIds: new Set(replicas.keys()), authorize, publication,
+      satisfiesCuts(candidate: NativeOriginalCandidate) {
+        const original = replicas.get(candidate.messageId)
+        if (!original || maskTextSpans(candidate.wireText, original.wireCuts) !== candidate.wireText) return false
+        const actual = { messageId: candidate.messageId, wireHash: hash(candidate.wireText), contentHash: hash(candidate.contentDigest) }
+        return (knownMedia.get(candidate.messageId) ?? []).some(proof =>
+          proof.wireHash === actual.wireHash && proof.contentHash === actual.contentHash)
+      },
       prepare(session: string, entry: Publication) {
         transaction(db, () => {
           db.prepare('INSERT INTO owner_native_original_publications VALUES (?,?,?,0)').run(operationId, session, JSON.stringify(publicationShape.parse(entry)))
@@ -207,7 +214,38 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
       const journal = outputJournal.forOperation(operationId + ':derived-messages')
       const targets = () => derived.affected(ranges, memoryIds ?? [])
       return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets, complete: derived.erased,
-        verify: (target: { digest: string }, content: string) => hash(content) === target.digest,
+        verify: (target: { digest: string, envelope?: string }, content: string, messageDigest: string) => hash(content) === target.digest
+          && (!target.envelope || hash(messageDigest) === target.envelope),
+      }] : []
+    })
+  }
+
+  db.exec(`CREATE TABLE IF NOT EXISTS owner_native_recovery_erased (
+    operation TEXT NOT NULL,ticket TEXT NOT NULL,PRIMARY KEY(operation,ticket)
+  ) WITHOUT ROWID`)
+  const recoveryTickets = db.prepare('SELECT id,payload FROM owner_context_recoveries')
+  const recovered = db.prepare('SELECT 1 FROM owner_native_recovery_erased WHERE operation=? AND ticket=?')
+  const eraseRecovery = db.prepare('INSERT OR IGNORE INTO owner_native_recovery_erased VALUES (?,?)')
+  function recoveryMessageOperations() {
+    return outputPlans.all().flatMap(row => {
+      const plan = planShape.parse(JSON.parse(String(row.payload)))
+      if (!plan.originals?.length) return []
+      const operationId = z.uuid().parse(row.operation), originals = operation(operationId, plan)
+      const messageIds = originals.messageIds
+      const journal = outputJournal.forOperation(operationId + ':recovery-messages')
+      const targets = () => recoveryTickets.all().flatMap(row => {
+        const ticket = z.strictObject({
+          ticketId: z.uuid(), sessionId: z.string(), state: z.enum(['prepared', 'bound', 'committed']),
+          replacementMessageId: z.string().optional(), replacementHash: digest.optional(),
+          retainedMessageIds: z.array(z.string()),
+        }).passthrough().parse(JSON.parse(String(row.payload)))
+        return ticket.state !== 'prepared' && ticket.replacementMessageId && ticket.replacementHash
+          && ticket.retainedMessageIds.some(id => messageIds.has(id)) && !recovered.get(operationId, ticket.ticketId)
+          ? [{ ticket: ticket.ticketId, message: ticket.replacementMessageId, hash: ticket.replacementHash, originals: ticket.retainedMessageIds }] : []
+      })
+      return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets,
+        contains: (message: string) => messageIds.has(message), authorize: originals.authorize, satisfies: originals.satisfiesCuts,
+        complete(tickets: readonly string[]) { transaction(db, () => { for (const id of tickets) eraseRecovery.run(operationId, id) }) },
       }] : []
     })
   }
@@ -224,7 +262,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   }
 
   const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
-  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations, unsettledReceipts,
+  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts,
     hasPlans: () => outputPlans.all().length > 0,
     finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
     pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),

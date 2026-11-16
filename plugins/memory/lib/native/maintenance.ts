@@ -9,6 +9,7 @@ import { projectNativeOriginals } from './project-native-originals.ts'
 import { eraseNativeOutputs } from './erase-native-outputs.ts'
 import { eraseNativeToolResults } from './erase-native-tool-results.ts'
 import { eraseNativeDerivedMessages } from './erase-native-derived-messages.ts'
+import { eraseNativeRecoveryMessages } from './erase-native-recovery-messages.ts'
 import type { NativeOutputTrace } from './publish-native-event-copies.ts'
 import { reconcileNativeReceipts } from './reconcile-native-receipts.ts'
 
@@ -28,13 +29,15 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
     await reconcileNativeReceipts(root, owner)
     const work = owner.operations()
     const outputs = owner.outputOperations(), tools = owner.toolResultOperations()
-    const derived = owner.derivedMessageOperations()
+    const derived = owner.derivedMessageOperations(), recoveries = owner.recoveryMessageOperations()
     const pendingOriginals = owner.pendingOriginalOperations()
     const tasks = [
       ...work.map(item => ({ pending: pendingOriginals.has(item.operationId),
         run: () => eraseNativeOriginals({ root, storageRoot, owner, item, isCold }) })),
       ...tools.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
         run: () => eraseNativeToolResults({ root, storageRoot, operation, isCold, trace }) })),
+      ...recoveries.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
+        run: () => eraseNativeRecoveryMessages({ root, storageRoot, operation, isCold, trace }) })),
       ...derived.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
         run: () => eraseNativeDerivedMessages({ root, storageRoot, operation, isCold, trace }) })),
       ...outputs.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,

@@ -34,10 +34,10 @@ import { createNativeDerivedMessages } from './native-derived-messages.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
+  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, nativeMessageDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
 export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, contextGeneration?: number, sourceIds: readonly string[],
   assistant: string, completed: boolean, at: number, timezone: string }
-export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
+export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, nativeMessageDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
   root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], fileMode?: boolean, embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
@@ -323,6 +323,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     requireContextGeneration(input.sessionId, input.contextGeneration)
     if (contextRecovery.retired(input.sessionId, input.messageId)) throw new Error('Source context was retired')
     if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid original content digest')
+    if (input.nativeMessageDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.nativeMessageDigest)) throw new Error('Invalid native message digest')
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
     if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) {
       if (noteInheritedNativeCut(input)) {
@@ -336,7 +337,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       LEFT JOIN owner_message_wires r ON r.message=m.id AND r.source_hash IS NULL WHERE m.id=?`).get(input.messageId) as
       { source: string, hash: string, kind: string, query_start: number | null, query_end: number | null, query_spans: string | null } | undefined
     if (known?.kind === 'host-derived' && known.hash === hash(input.text)) {
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', sourceIds: [], inherited: input.inherited })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: [], inherited: input.inherited })
       markLiveTurn(input)
       return { sourceId: known.source, text: '', handledIntent: true,
         retrievalQuery: known.query_spans ? originalFromWire(input.text, JSON.parse(known.query_spans) as TextSpan[])
@@ -344,7 +345,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     if (!known && input.derived) {
       if (input.inherited) throw new Error('Unregistered inherited source')
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', sourceIds: [] })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: [] })
       db.prepare("UPDATE owner_messages SET kind='host-derived',hash=?,query_start=0,query_end=? WHERE id=?").run(hash(input.text), input.text.length, input.messageId)
       markLiveTurn(input)
       const sourceId = db.prepare('SELECT source FROM owner_messages WHERE id=?').get(input.messageId)!.source as string
@@ -358,7 +359,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const mapped = !known && candidates[0] ? restoreAlias(JSON.parse(candidates[0].payload) as StoredAlias, input.text) : undefined
     if (mapped?.origin === 'derived') {
       const sources = mapped.dependencies?.sources ?? []
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', sourceIds: sources })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: sources })
       const canonical = store.tx(() => {
         db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
         db.prepare("UPDATE owner_messages SET kind='host-derived',hash=? WHERE id=?").run(hash(input.text), input.messageId)
@@ -449,6 +450,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         && input.verifiedDelivery !== true) throw new Error('Unverified delivery receipt across a recovered context')
     }
     if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid derived content digest')
+    if (input.nativeMessageDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.nativeMessageDigest)) throw new Error('Invalid native message digest')
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
     if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Derived content identity conflicts')
     let observed = dispatch.snapshot(input.sessionId)
@@ -474,7 +476,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       dispatch.attach(input.sessionId, evidence)
       db.prepare('INSERT OR IGNORE INTO owner_derived_occurrences VALUES (?,?)').run(input.sessionId, input.messageId)
       if (!saved && input.contentDigest) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
-      if (input.nativeUserSource && input.contentDigest && (!saved || contentIdentity)) nativeDerived.bind(input.messageId, input.nativeUserSource)
+      if (input.nativeUserSource && input.contentDigest && (!saved || contentIdentity)) nativeDerived.bind(input.messageId, input.nativeUserSource, input.nativeMessageDigest ? hash(input.nativeMessageDigest) : undefined)
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
     })
   }

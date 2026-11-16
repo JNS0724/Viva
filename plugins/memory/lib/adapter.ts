@@ -27,7 +27,7 @@ import { assertMemoryProviderSupported } from './providers.ts'
 import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
 import { createControlReceipts } from './control-receipts.ts'
-import { memoryOriginalContentDigest } from './context-recovery.ts'
+import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from './context-recovery.ts'
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
 import { trackNativeOutputAttempts } from './native/output-attempts.ts'
 import { trackNativeToolReads, type NativeToolLease } from './native/tool-reads.ts'
@@ -296,7 +296,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision
     const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
-    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, nativeUserSource: memorySource.kind, sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
+    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, nativeUserSource: memorySource.kind, nativeMessageDigest: memoryRecoveryMessageHash(message), sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
       contextGeneration: owner.contextGeneration(String(agent.session.id)), contentDigest: memoryOriginalContentDigest(message) })
     return { ...decision, messages: [...decision.messages, message] }
   }), { prepend: true })
