@@ -862,6 +862,34 @@ test('manual IPC reports structured failures without accepting caller provenance
   assert.equal(result.status, 'applied')
 })
 
+test('permanent file forget IPC binds owner proof, replays one operation, and reports pending copies honestly', async t => {
+  const f = await fixture(t), created = await f.client.createFile({ operationId: randomUUID(), text: 'Explicit manual memory' })
+  const detail = (await f.client.readFile(created.identity))!
+  assert.equal(detail.actions.forget, false, 'production activation is still gated on end-to-end erasure acceptance')
+  const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
+  const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
+  registerRuntimeMemoryIpc(ipc, { fileMode: true, client: f.client, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null })
+  const call = (value: unknown) => listeners.get('memory:forget-file')!({}, value) as Promise<import('../src/memory/contracts/file-management.ts').MemoryFileForgetResult>
+  const request = { operationId: randomUUID(), identity: detail.identity, version: detail.version }
+  assert.throws(() => call({ ...request, authorized: true }), /invalid memory:forget-file/)
+  assert.deepEqual(await call({ ...request, operationId: randomUUID(), version: { ...request.version, policyToken: 'obsolete' } }),
+    { status: 'rejected', code: 'revision.conflict' })
+  const result = await call(request)
+  assert.equal(result.status, 'applied')
+  assert.equal(result.status === 'applied' && result.cleanup, 'pending')
+  assert.equal(await f.client.readFile(created.identity), null)
+  assert.deepEqual(await call(request), result)
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  const effect = effects.find(item => item.effectId === request.operationId)!
+  assert.equal(effect.kind, 'erase-file-copies')
+  await f.owner.runtime.wake()
+  await f.owner.handleHost('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
+  const complete = await call(request)
+  assert.equal(complete.status === 'applied' && complete.cleanup, 'complete')
+  await assert.rejects(f.client.undoFile({ operationId: randomUUID(), identity: detail.identity, version: detail.version, changeId: 'before-forget' }),
+    { code: 'not.found' })
+})
+
 test('a concurrent edit cannot copy content across an exact forgetting boundary', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   const user = await f.client.createFile({ operationId: randomUUID(), text: 'New independent material for tea' })

@@ -12,7 +12,7 @@ export const memoryFileCursor = z.strictObject({ snapshot: opaque, offset: z.num
 export const memoryFileListRequest = z.strictObject({ kind: z.enum(['daily', 'digest']).optional(),
   state: z.enum(['all', 'enabled', 'disabled']).optional(), query: z.string().max(500).optional(),
   limit: z.number().int().min(1).max(100).optional(), cursor: memoryFileCursor.optional() })
-export const memoryFileActions = z.strictObject({ setEnabled: z.boolean(), edit: z.boolean(), forget: z.literal(false), stop: z.boolean().optional(),
+export const memoryFileActions = z.strictObject({ setEnabled: z.boolean(), edit: z.boolean(), forget: z.boolean(), stop: z.boolean().optional(),
   undo: z.strictObject({ changeId: opaque }).nullable() })
 export const memoryFileSummary = z.strictObject({ identity: memoryFileIdentity, version: memoryFileVersion,
   path: z.string().min(1).max(4096), title: z.string().max(200), enabled: z.boolean(), day: z.string().optional(),
@@ -42,6 +42,10 @@ export const memoryFileWriteResult = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('applied'), receipt: memoryFileMutationResult }),
   z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode }),
 ])
+export const memoryFileForgetResult = z.discriminatedUnion('status', [
+  z.strictObject({ status: z.literal('applied'), receipt: memoryFileMutationResult, cleanup: z.enum(['pending', 'complete']) }),
+  z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode }),
+])
 export type MemoryManagedFileIdentity = z.infer<typeof memoryFileIdentity>
 export type MemoryManagedFileVersion = z.infer<typeof memoryFileVersion>
 export type MemoryFileListRequest = z.infer<typeof memoryFileListRequest>
@@ -58,3 +62,4 @@ export type MemoryFileMutationResult = z.infer<typeof memoryFileMutationResult>
 export type MemoryFileCreateRequest = z.infer<typeof memoryFileCreateRequest>
 export type MemoryFileEditRequest = z.infer<typeof memoryFileEditRequest>
 export type MemoryFileWriteResult = z.infer<typeof memoryFileWriteResult>
+export type MemoryFileForgetResult = z.infer<typeof memoryFileForgetResult>

@@ -245,6 +245,57 @@ test('file-backed profile opens the matching evidence by identity and clears obs
   assert.ok(!draw(state.memory, handlers).some(node => node.attrs['data-profile-summary']))
 })
 
+test('file permanent forget buttons map through explicit confirmation and keep IME Enter and Escape inert', async t => {
+  const { draw } = profileDom(t)
+  const detail: MemoryFileDetailView = { identity: { kind: 'digest', workspace: 'personal', id: 'file' },
+    version: { contentRevision: 'revision', usageVersion: 1, policyToken: 'policy' }, title: 'Private note',
+    path: 'digest/wiki/private.md', enabled: true, applicability: 'current', markdown: 'Private body', sources: [],
+    actions: { edit: false, setEnabled: false, forget: true, undo: null } }
+  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
+    fileMode: true, profile: {}, habits: { text: '', samples: 0 },
+    fileProfile: { user: [{ identity: detail.identity, text: 'Derived private profile' }], project: null },
+  } })
+  const requests: Parameters<AgentApi['forgetMemoryFile']>[0][] = []
+  const api: Pick<AgentApi, 'readMemoryFile' | 'listMemoryFiles' | 'forgetMemoryFile'> = { readMemoryFile: async () => detail,
+    listMemoryFiles: async () => ({ status: 'ok', snapshot: 'empty', nextCursor: null, items: [] }),
+    forgetMemoryFile: async request => { requests.push(request); return { status: 'applied', cleanup: 'pending',
+      receipt: { ...request, action: 'FORGET', contentRevision: detail.version.contentRevision, usageVersion: 2 } } },
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch: action => { state = reduce(state, action) },
+    errorMessage: String, showToast: () => {}, ask: () => false })
+  const handlers = actions as unknown as Handlers
+  await actions.showMemoryFile({ identity: detail.identity })
+  draw(state.memory, handlers).find(node => node.attrs.name === 'memory-file-forget')!.listeners.click()
+  assert.equal(requests.length, 0)
+  const id = state.memory.files.forget!.id
+  let nodes = draw(state.memory, handlers)
+  const confirm = nodes.find(node => node.attrs['data-memory-file-forget'] === String(id))!
+  let suppressed = 0
+  const key = (value: Partial<KeyboardEvent>) => confirm.listeners.keydown({ ...value,
+    preventDefault() { suppressed++ }, stopPropagation() {} })
+  key({ key: 'Enter', isComposing: true })
+  key({ key: 'Escape', isComposing: true })
+  key({ key: 'Enter', keyCode: 229 })
+  key({ key: 'Escape', keyCode: 229 })
+  assert.equal(requests.length, 0)
+  assert.equal(state.memory.files.forget?.id, id)
+  assert.equal(suppressed, 2)
+  key({ key: 'Escape' })
+  assert.equal((() => state.memory.files.forget)(), null)
+  actions.askManagedMemoryForget(detail)
+  nodes = draw(state.memory, handlers)
+  await nodes.find(node => node.attrs.name === 'memory-file-forget-confirm')!.listeners.click()
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0]!.identity, detail.identity)
+  assert.equal(requests[0]!.version, detail.version)
+  assert.equal(state.memory.files.forget?.phase, 'pending')
+  assert.equal(state.memory.fileProfile, null)
+  nodes = draw(state.memory, handlers)
+  assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent.includes('仍有副本待清理')))
+  assert.ok(!nodes.some(node => node.textContent.includes('Private body') || node.textContent.includes('无法撤销。') && node.attrs.role === 'status'))
+  assert.ok(!nodes.some(node => node.attrs.name === 'memory-file-forget-confirm'))
+})
+
 test('the file editor keeps multiline submission and Escape separate from IME composition', t => {
   const { draw } = profileDom(t)
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded',

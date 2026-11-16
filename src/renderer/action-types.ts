@@ -1,6 +1,6 @@
 import type { ConversationPayloads } from './conversation-types.ts'
 import type { KeptTask, MemoryFileDetailView } from '../shared/ipc-results.ts'
-import type { MemoryFileCreateRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryManagedFileVersion } from '../memory/contracts/file-management.ts'
+import type { MemoryFileCreateRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryManagedFileVersion, MemoryFileForgetRequest } from '../memory/contracts/file-management.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
@@ -13,6 +13,13 @@ type Settings = Partial<State['settings']>
 type Review = State['review']
 export type MemoryFileSelection = { identity: MemoryManagedFileIdentity, restrictionId?: string }
 export type MemoryFileDraft = { title: string, text: string }
+export type MemoryFileForget = {
+  id: number
+  request: MemoryFileForgetRequest
+  phase: 'confirm' | 'unconfirmed' | 'pending' | 'complete' | 'conflict'
+  title?: string
+  error?: string
+}
 export type MemoryFileEditor = {
   id: number
   draft: MemoryFileDraft
@@ -147,6 +154,9 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_file_editor: { editor: MemoryFileEditor | null }
   memory_file_write_busy: { busy: boolean }
   memory_file_write_failed: { message: string }
+  memory_file_forget: { forget: MemoryFileForget | null }
+  memory_file_forget_started: { id: number }
+  memory_file_forgotten: { id: number, cleanup: 'pending' | 'complete' }
   extensions_loaded: { view: Partial<State['extensions']> }
   extensions_busy: {}
   extensions_failed: { message: string }

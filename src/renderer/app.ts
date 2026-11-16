@@ -858,6 +858,7 @@ function closeTopmost() {
   else if (state.topic.menu) dispatch({ type: 'topic_menu', open: false })
   else if (state.settings.permissionMenu) dispatch({ type: 'permission_menu', open: false })
   else if (state.island) dispatch({ type: 'close_island' })
+  else if (state.memory.files.forget?.phase === 'confirm') memoryActions.cancelManagedMemoryForget(state.memory.files.forget.id)
   else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
 }
