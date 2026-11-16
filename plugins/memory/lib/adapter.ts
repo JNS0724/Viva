@@ -6,7 +6,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session-log-deepseek'
 import type {} from '@deepseek-ai/dsh-session-title-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
@@ -27,6 +27,7 @@ import { registerMemoryTools } from './tools.ts'
 import { createControlReceipts } from './control-receipts.ts'
 import { memoryOriginalContentDigest } from './context-recovery.ts'
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
+import { trackNativeOutputAttempts } from './native/output-attempts.ts'
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
 import { memorySource } from './source.ts'
@@ -86,6 +87,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     onChange: change => { state(); send({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...change }) }, onHostEffects: () => { effectsRevision++; state() },
   })
   const transport = createMemoryTransport(owner)
+  const outputAttempts = config.fileMode ? trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput) : null
   const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
     const proof = deliveries.get(message.id)
     if (!proof) return undefined
@@ -116,7 +118,11 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     }
     // Prepared host source changes resume through the host outbox; the next admitted step replays.
   }
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    if (!closing) outputAttempts?.frame(agent.session, frame)
+  })
   ctx.on('session/event', (session, event) => {
+    if (!closing) outputAttempts?.observe(session, event)
     const messages = event.type === 'user/message' ? [event.data] : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
     for (const message of messages) {
       const source = message.source
@@ -196,8 +202,13 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const jobId = current && 'jobId' in current ? current.jobId : undefined
     if (!session && !jobId) throw new Error('Model request has no verified memory origin')
     if (!owner.ready()) throw new Error('Memory owner is not ready')
+    // Only the pinned loop's own request object may inherit the active attempt.
+    const loopRequest = outputAttempts && isAgentLoopRequest(options)
+    const output = loopRequest && session ? outputAttempts.prepare(session) : undefined
+    if (loopRequest && !output) throw new Error('Model request has no active native output attempt')
     if (session) {
       await ingestion.synchronize(session)
+      if (output && outputAttempts?.current(session) !== output) throw new Error('Model output attempt changed while its marker was being persisted')
       if (contextGeneration !== owner.contextGeneration(String(session.id))) throw new Error('Model request belongs to a retired context generation')
       if (options.purpose === 'session-title') {
         const recorded = session.snapshotEvents().findLast(event => event.type === 'session/title-llm-request')
@@ -207,7 +218,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     }
     // Only audited fetch-based adapters provide an observable physical send/retry boundary.
     assertMemoryProviderSupported(ctx.llm, options.provider)
-    const origin: MemoryTransportOrigin = session ? { session: String(session.id), contextGeneration } : { jobId: jobId! }
+    const origin: MemoryTransportOrigin = session ? { session: String(session.id), contextGeneration, ...(output ? { output } : {}) } : { jobId: jobId! }
     const currentOrigin = () => owner.ready() && ('jobId' in origin
       ? Boolean(owner.runtime.computeAdmission(origin.jobId)?.current())
       : origin.contextGeneration === owner.contextGeneration(origin.session)

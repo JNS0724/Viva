@@ -55,7 +55,7 @@ async function setup(t: TestContext) {
   }
   function recall(session: string, query: string) {
     return JSON.parse(owner.runtime.handle({ op: 'recall', session, query }, owner.sessionContext(session))) as {
-      notes: Array<{ pendingClarification?: boolean; markdown?: string; topic?: string }>, clarification?: { ref: string; topic: string },
+      notes: Array<{ pendingClarification?: boolean; markdown?: string }>, clarification?: { ref: string },
     }
   }
   function issue(session: string, ref: string) {
@@ -92,10 +92,11 @@ test('only relevant file retrieval issues a scoped clarification and its genuine
   assert.ok(unrelated.notes.length)
   assert.equal(unrelated.clarification, undefined)
   const paraphrase = f.recall(reader, 'Where will the conference be held?')
-  assert.ok(paraphrase.notes.some(hit => hit.pendingClarification && hit.topic === topic))
+  assert.ok(paraphrase.notes.some(hit => hit.pendingClarification))
   const result = f.recall(reader, topic)
   assert.ok(result.clarification)
-  assert.equal(result.clarification.topic, topic)
+  assert.deepEqual(Object.keys(result.clarification), ['ref'])
+  assert.ok(result.notes.every(note => !('topic' in note)))
   assert.ok(result.notes.some(hit => hit.pendingClarification))
   assert.doesNotMatch(JSON.stringify(result), /old hall|auditorium/)
   const sourceRead = f.owner.runtime.handle({ op: 'file_read', session: reader, id: f.file.identity.id, evidence: true }, f.owner.sessionContext(reader))
@@ -123,6 +124,7 @@ test('only relevant file retrieval issues a scoped clarification and its genuine
   await questions.receive({ type: 'question', id: 'the-window-card', sessionId: reader, questions: [{ ...question.question, question: 'fabricated wording' }] })
   assert.deepEqual(events.map(event => event.type), ['question'])
   assert.doesNotMatch(JSON.stringify(events), /fabricated wording/)
+  assert.match(JSON.stringify(events), /Conference venue/)
   const reply = 'The approved venue is the library.'
   assert.equal(await questions.answer('the-window-card', [{ id: question.question.id, selected: [], custom: reply }]), true)
   const answer = await f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, question.question, reply)) as { sourceId: string }
@@ -308,9 +310,10 @@ test('current deferred digest participants are withheld across recall, injection
   const { status: _status, answer: _answer, ...data } = pending
   f.documents.expire(f.workspace, f.workId)
   f.documents.defer({ ...data, operationId: 'dream:' + randomUUID(),
+    unit: { ...data.unit, name: 'Conference venue ALBATROSS side room' },
     reads: [{ id: snapshot.identity.id, revision: snapshot.version.contentRevision, usageVersion: snapshot.version.usageVersion }],
     readPolicies: [{ path: snapshot.path, policyToken: snapshot.version.policyToken }] })
-  const assertSafe = (packet: string) => assert.doesNotMatch(packet, /old hall|old-hall|auditorium/i)
+  const assertSafe = (packet: string) => assert.doesNotMatch(packet, /old hall|old-hall|auditorium|ALBATROSS/i)
   const recall = f.recall(reader, topic)
   assert.ok(recall.clarification)
   assert.ok(recall.notes.some(hit => hit.pendingClarification))

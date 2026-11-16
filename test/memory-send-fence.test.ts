@@ -44,5 +44,7 @@ test('a deadline beyond the platform timer limit never expires after one millise
   await delay(10)
   assert.equal(permit.signal.aborted, false)
   assert.equal(permit.current(), true)
-  permit.settled(); await fence.close()
+  permit.settled()
+  assert.equal(permit.current(), false)
+  await fence.close()
 })

@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { createMemorySendFence } from '../src/memory/core/send-fence.ts'
 import { createMemoryTransport } from '../plugins/memory/lib/transport.ts'
 
-async function fixture(t: import('node:test').TestContext, status = 200) {
+async function fixture(t: import('node:test').TestContext, status = 200, recordBody?: () => void) {
   const bodies: string[] = []
   const server = createServer(async (req, res) => {
     let body = ''; for await (const part of req) body += String(part)
@@ -15,7 +15,10 @@ async function fixture(t: import('node:test').TestContext, status = 200) {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const fence = createMemorySendFence({ epoch: 'epoch', admit: () => ({ current: () => true, deadline: null }) })
   let attempts = 0
-  const transport = createMemoryTransport({ acquireSend: (id, origin, payload) => { attempts++; return fence.acquire(id, origin, payload) } })
+  const transport = createMemoryTransport({ acquireSend: (id, origin, payload) => {
+    attempts++
+    return { ...fence.acquire(id, origin, payload), recordBody }
+  } })
   t.after(async () => { transport.dispose(); await fence.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) })
   return { bodies, fence, attempts: () => attempts, transport, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/model` }
 }
@@ -43,6 +46,17 @@ test('request construction failure releases the unsent permit and never blocks l
   await assert.rejects(transport.run({ session: 'session' }, () => fetch(url, { method: 'POST', headers: { 'invalid\nname': 'value' }, body: JSON.stringify({ messages: [] }) })))
   assert.equal(bodies.length, 0)
   assert.equal(fence.pending(), 0)
+  await fence.mutate(() => undefined)
+})
+test('a native output ledger write must succeed before any prompt bytes are sent', async t => {
+  let recorded = 0
+  const { transport, url, bodies, fence } = await fixture(t, 200, () => {
+    recorded++
+    throw new Error('fixture ledger write failed')
+  })
+  await assert.rejects(transport.run({ session: 'session' }, () => fetch(url, { method: 'POST', body: JSON.stringify({ messages: [] }) })))
+  assert.equal(recorded, 1)
+  assert.equal(bodies.length, 0)
   await fence.mutate(() => undefined)
 })
 test('an opaque fetch cannot consume prompt bytes before proving a physical boundary', async () => {

@@ -89,7 +89,9 @@ test('project binding and provisional dependencies constrain admission and outst
   const { coordinator, dispatch, store } = fixture
   try {
     fixture.setDeadline(150)
-    assert.deepEqual(coordinator.beginSession('request', 'session', fixture.project(), fixture.project), { allowed: true, deadline: 150 })
+    assert.deepEqual(coordinator.beginSession('request', 'session', fixture.project(), fixture.project), {
+      allowed: true, deadline: 150, evidence: dispatch.snapshot('session'),
+    })
     assert.equal(coordinator.bindProject('session', { kind: 'project', id: 'other' }), false)
     fixture.setProject({ kind: 'project', id: 'other' })
     assert.equal(coordinator.stale('session', fixture.project()), true)

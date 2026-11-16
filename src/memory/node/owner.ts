@@ -26,6 +26,7 @@ import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { TextSpan } from '../contracts/text-spans.ts'
 import { createOwnerNativeOriginals } from './owner-native-originals.ts'
 import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
+import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
@@ -98,6 +99,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const removedSession = (session: string) => Boolean(db.prepare(`SELECT 1 FROM owner_occurrences o WHERE o.session=? AND o.removed=1
     AND NOT EXISTS(SELECT 1 FROM owner_context_retired r WHERE r.session=o.session AND r.message=o.message) LIMIT 1`).get(session))
   const nativeSurface = nativeSurfaceInvalidation(db)
+  const nativeOutputs = createNativeOutputAttempts(db)
   const coordinated = { ...runtime,
     staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && (removedSession(session) || nativeSurface.has(session))),
     allowedHistory(row: MemoryHistoryOccurrence) {
@@ -555,10 +557,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     const sessions = [...new Set(invalidated)]
     for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges, memoryIds))) nativeSessions.add(session)
+    for (const { session } of nativeOutputs.affected(ranges, memoryIds)) nativeSessions.add(session)
     if (nativeSessions.size) {
       const originals = nativeOriginals.replicas(ranges)
       db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)')
-        .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges, ...(originals.length ? { originals } : {}) }))
+        .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges, ...(memoryIds.length ? { memoryIds } : {}),
+          ...(originals.length ? { originals } : {}) }))
     }
     if (options.hostNamespace) {
       const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
@@ -986,18 +990,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
     nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
-    acquireSend(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string) {
+    finishNativeOutput: nativeOutputs.finish,
+    acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string) {
+      const output = 'session' in origin ? origin.output : undefined
       if ('session' in origin) {
+        if (output && (output.session !== origin.session || output.generation !== (origin.contextGeneration ?? 0))) throw new Error('Native output attempt belongs to a different send origin')
         if (contextRecovery.pending(origin.session) || (origin.contextGeneration ?? 0) !== contextRecovery.contextGeneration(origin.session)) throw new Error('Memory context generation changed')
         reconcileChildren(origin.session)
       }
-      const admission = 'session' in origin
-        ? coordination.beginSession(id, origin.session, sessionContext(origin.session).project, () => sessionContext(origin.session).project)
-        : coordination.beginJob(id, origin.jobId)
-      if (!admission) throw new Error('Memory dispatch denied')
+      const sessionAdmission = 'session' in origin && coordination.beginSession(id, origin.session, sessionContext(origin.session).project,
+        () => sessionContext(origin.session).project)
+      if (!('session' in origin ? sessionAdmission : coordination.beginJob(id, origin.jobId))) throw new Error('Memory dispatch denied')
+      const evidence = sessionAdmission ? sessionAdmission.evidence : undefined
       try {
         const permit = fence.acquire(id, origin, payload)
-        return { ...permit, settled() { coordination.endDispatch(id); permit.settled() } }
+        return { ...permit, settled() { coordination.endDispatch(id); permit.settled() },
+          ...(output && evidence ? { recordBody: () => nativeOutputs.record(output, evidence) } : {}) }
       } catch (error) { coordination.endDispatch(id); throw error }
     },
     async close() {

@@ -7,10 +7,12 @@ import { Context } from '@deepseek-ai/cordis'
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { pluginRecordOf, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
+import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
+import { NATIVE_OUTPUT_MARKER, nativeOutputDigest } from '../plugins/memory/lib/native/output-attempts.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
@@ -211,6 +213,22 @@ test('cold Viva startup erases native originals in a root log and a fork the own
     try {
       const { events } = await original.read()
       assert.ok(JSON.stringify(events).includes(erased))
+      const proofDb = new DatabaseSync(join(memoryRoot, 'memory.db'))
+      try {
+        const affected = createNativeOutputAttempts(proofDb).affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
+        assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
+        for (const { result, session, floor, id, generation, turn, step } of affected) {
+          assert.equal(session, parentId)
+          const prefix = events[floor - 1]
+          const marker = prefix && pluginRecordOf(prefix)
+          assert.equal(marker?.type, NATIVE_OUTPUT_MARKER)
+          assert.deepEqual(marker.data, { id, generation, turn, step })
+          assert.equal(result.state, 'settled')
+          const event = events[result.terminal.seq]
+          assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
+          assert.equal(nativeOutputDigest(event), result.terminal.digest)
+        }
+      } finally { proofDb.close() }
       const inherited = SessionLogOffset(events.length)
       const child = Session.create(forkId, events, { ...original.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
       const image = child.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{

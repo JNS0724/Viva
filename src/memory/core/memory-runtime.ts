@@ -927,12 +927,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     turn.refs.set(ref, matched.reference)
     turn.pending.set(identity, matched.reference)
     fileClarificationDispatch?.offerFileClarification(session, identity)
-    return { ref, topic: matched.work.unit.name.slice(0, 160) }
+    // The approved question keeps its title on the host side. Model results only
+    // expose a turn-scoped handle to the question about this retrieval.
+    return { ref }
   }
 
-  function pendingFileLocator({ id, workspace, revision }: FileLocator, matches: readonly PendingFileWork[], scope?: MemoryScope) {
-    const topic = matches.find(({ work }) => !looksSecret(work.unit.name) && !excludedSourceText(work.unit.name, scope))?.work.unit.name.slice(0, 160)
-    return { id, workspace, revision, topic, pendingClarification: true as const }
+  function pendingFileLocator({ id, workspace, revision }: FileLocator) {
+    return { id, workspace, revision, pendingClarification: true as const }
   }
 
   const wikiLinks = /\[\[([^\]\n]+)\]\]/gu
@@ -984,7 +985,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     }
     const notes = hits.map(({ text, ...hit }) => {
       const matches = pending.get(fileLocatorKey(hit))
-      if (matches) return pendingFileLocator(hit, matches, scope)
+      if (matches) return pendingFileLocator(hit)
       if (!pending.size) return { ...hit, markdown: text }
       return { ...hit, markdown: redactPendingLinks(text, hit.workspace, pending), applicability: redactPendingApplicability(hit.applicability, hit.workspace, pending),
         inlinks: redactPendingNeighbors(hit.inlinks, pending), outlinks: redactPendingNeighbors(hit.outlinks, pending) }
@@ -2955,7 +2956,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const { files, sourceIds, ...content } = result
       const pending = fileMode ? matchingDeferredFiles([...files, ...linkedFileReads(content.workspace, content.text, origin, scope)], origin, scope) : new Map<string, PendingFileWork[]>()
       const matches = pending.get(fileLocatorKey(content))
-      if (matches) return textOf({ status: 'ok', ...pendingFileLocator(content, matches, scope) })
+      if (matches) return textOf({ status: 'ok', ...pendingFileLocator(content) })
       const projected = { ...content, text: redactPendingLinks(content.text, content.workspace, pending),
         applicability: redactPendingApplicability(content.applicability, content.workspace, pending) }
       if (textOf(projected).length > MAX_DEEP_RECALL_CHARS) return textOf({ status: 'rejected', reason: 'narrow-line-range' })
@@ -2973,7 +2974,7 @@ ${node.description}`, origin, scope))
       const clarification = offerFileClarification(request.session, origin, request.query, scope, nodes.flatMap(node => pending.get(fileLocatorKey(node)) ?? []))
       const visibleNodes = nodes.map(node => {
         const matches = pending.get(fileLocatorKey(node))
-        return matches ? pendingFileLocator(node, matches, scope)
+        return matches ? pendingFileLocator(node)
           : { ...node, name: redactPendingLinks(node.name, node.workspace, pending), description: redactPendingLinks(node.description, node.workspace, pending) }
       })
       return textOf({ status: 'ok', nodes: visibleNodes, partial: partial || pending.size > 0, clarification })

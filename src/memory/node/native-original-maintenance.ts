@@ -17,7 +17,7 @@ const replica = z.strictObject({
   sourceSpans: z.array(span).min(1), wireCuts: z.array(span).min(1),
 })
 const planShape = z.strictObject({
-  sessions: z.array(z.string().min(1)), ranges: z.array(memoryHostErasureRange), originals: z.array(replica).optional(),
+  sessions: z.array(z.string().min(1)), ranges: z.array(memoryHostErasureRange), memoryIds: z.array(z.int().nonnegative()).optional(), originals: z.array(replica).optional(),
 })
 const publicationShape = z.strictObject({
   intent: z.strictObject({ before: digest, after: digest, events: digest }),

@@ -102,7 +102,7 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
       && !owner.staleSession(session) && owner.provisionalReadsCurrent(session, at)
       && !projectChanged(session, currentProject()) && allowsEvidence(admission.evidence, currentProject()))
     acquired.set(id, leases)
-    return { allowed: true as const, deadline: provisional === undefined ? admission.deadline : Math.min(provisional, admission.deadline ?? Infinity) }
+    return { allowed: true as const, evidence: admission.evidence, deadline: provisional === undefined ? admission.deadline : Math.min(provisional, admission.deadline ?? Infinity) }
   }
 
   function beginJob(id: string, jobId: string) {

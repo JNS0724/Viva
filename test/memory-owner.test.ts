@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 
 function fixture(t: import('node:test').TestContext, hostNamespace?: string) {
   const root = mkdtempSync(join(tmpdir(), 'memory-owner-'))
@@ -16,6 +17,38 @@ function fixture(t: import('node:test').TestContext, hostNamespace?: string) {
 const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>['receiveSource']>[0]> = {}) => ({
   sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1,
   admitted: true, inherited: false, ...overrides,
+})
+test('native output evidence retains exact file ranges across sends without persisting file names', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    const outputs = createNativeOutputAttempts(db)
+    const attempt = { id: randomUUID(), session: 'session', generation: 0, turn: 1, step: 2, floor: 12 }
+    const first = source().messageId, second = source().messageId
+    const fileProof = (sourceId: string, start: number, end: number) => ({
+      dependencies: [], sources: [sourceId], fileSources: [sourceId], epoch: 0, turnOnly: false,
+      files: [{ workspace: '0'.repeat(64), id: 'file', path: 'digest/wiki/sensitive-file-name.md', revision: 'rev',
+        usageVersion: 0, policyToken: 'policy', sourceRanges: [{ sourceId, spans: [{ start, end }] }] }],
+    })
+    outputs.record(attempt, fileProof(first, 2, 8))
+    outputs.record(attempt, fileProof(second, 9, 20))
+    outputs.record(attempt, fileProof(first, 2, 8))
+    const readsets = db.prepare('SELECT evidence FROM owner_native_output_reads').all()
+    assert.equal(readsets.length, 2)
+    assert.doesNotMatch(JSON.stringify(readsets), /sensitive-file-name|policy/)
+    assert.deepEqual(outputs.affected([{ sourceId: first, spans: [{ start: 8, end: 9 }] }], []), [])
+    const overlapping = [{ sourceId: second, spans: [{ start: 12, end: 13 }] }]
+    assert.deepEqual(outputs.affected(overlapping, []), [{ ...attempt, result: { state: 'open' } }])
+    const terminal = { seq: 14, kind: 'attempt', digest: 'a'.repeat(64) } as const
+    // A settlement may arrive after an erasure was planned from the open receipt.
+    outputs.finish(attempt, terminal)
+    outputs.finish(attempt, terminal)
+    assert.deepEqual(outputs.affected(overlapping, []), [{ ...attempt, result: { state: 'settled', terminal } }])
+    assert.throws(() => outputs.finish(attempt, { ...terminal, seq: 15 }), /settlement conflicts/)
+    const abandonedBeforeSend = { ...attempt, id: randomUUID() }
+    outputs.finish(abandonedBeforeSend)
+    assert.throws(() => outputs.record(abandonedBeforeSend, fileProof(second, 9, 20)), /attempt identity conflicts/)
+    assert.equal(outputs.affected(overlapping, []).length, 1)
+  } finally { db.close() }
 })
 test('owner refuses a second process-local connection and can reopen after close', async t => {
   const { owner, root } = fixture(t)
