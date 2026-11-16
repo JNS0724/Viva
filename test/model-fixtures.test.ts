@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto'
 import { test } from 'node:test'
 import { memoryRequest } from '../src/memory/contracts/memory-contract.ts'
 import { withRequestHeader } from '../src/shared/request-routing/header.ts'
-import { CITY_QUESTION, decide, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.ts'
+import { CITY_QUESTION, decide, questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.ts'
+import { currentTurnTextParts } from './fixtures/model-user-text.ts'
 import { eventually } from './fixtures/eventually.ts'
 
 const human = (text: string) => ({ role: 'user', content: [{ type: 'text', text }] })
@@ -12,6 +13,49 @@ const result = (name: string, input: object, value: unknown) => ({ messages: [hu
   { role: 'assistant', content: [{ type: 'tool_use', name, input }] },
   { role: 'user', content: [{ type: 'tool_result', content: [{ type: 'text', text: JSON.stringify(value) }] }] },
 ] })
+
+test('a recovered task selects its real brief after provider-converted system messages', () => {
+  // Windows native trace: recovery user #6, persona system #8, real user #9,
+  // runtime/skill user #10–11, profile #12. The provider converts the late system
+  // message to a user-role system-reminder because recovery already began history.
+  const history = 'The previous generated context has been retired.\n[Earlier user message 1]\nretired text\n[End of earlier user messages]\n'
+  const persona = '<system-reminder>\nYou are an AI agent powered by DeepSeek Harness.\n</system-reminder>'
+  const runtime = '<system-reminder>\nCurrent working directory: synthetic-workspace.\n</system-reminder>'
+  const skills = '<system-reminder>\n<available_skills>synthetic catalog</available_skills>\n</system-reminder>'
+  const brief = '核对任意任务的原文，不依赖任务名称。'
+  const delivered = `${brief}\n\n<memory-delivery id="${randomUUID()}" />`
+  const blocks = [history, persona, delivered, runtime, skills, '<about-user>profile']
+  const layouts = [blocks.map(human), [{ role: 'user', content: blocks.map(text => ({ type: 'text', text })) }],
+    [human(`${history}${persona}\n${delivered}`), human(runtime), human(skills)]]
+  for (const messages of layouts) {
+    assert.equal(questionOf(messages), brief)
+    assert.ok(decide({ messages }).text?.endsWith(`收到：「${brief}」`))
+  }
+})
+
+test('a recovered foreground request still routes the exact pending task message', () => {
+  const words = '向已存在的任务补充新资料', taskId = randomUUID(), text = '保留这次转告的任意原文'
+  const respond = routeFixtureTools((request: { messages: Parameters<typeof questionOf>[0] }) => questionOf(request.messages) === words
+    ? { tool: { name: 'message_background_task', input: { taskId, text } } } : null)
+  const messages = [human('The previous generated context has been retired.\n[End of earlier user messages]\n'),
+    human('<system-reminder>\nSynthetic mid-history persona.\n</system-reminder>'), human(withRequestHeader(words, 'pending-forward')),
+    human('<system-reminder>\nSynthetic runtime notice.\n</system-reminder>')]
+  const reply = respond({ messages, tools: [{ name: 'commit_route' }] })
+  assert.equal(reply?.tool?.name, 'commit_route')
+  const route = reply?.tool?.input
+  assert.ok(route && 'actions' in route && 'requestId' in route)
+  assert.deepEqual(route.actions, [{ kind: 'message', taskId, text }])
+  assert.equal(route.requestId, 'pending-forward')
+})
+
+test('fixture reminder filtering preserves ordinary text, quoted markers and incomplete frames', () => {
+  for (const text of ['Ordinary task text', 'Please quote <system-reminder> literally.',
+    '<system-reminder>\nIncomplete text', 'A user quotation:\n<system-reminder>\nquoted text\n</system-reminder>',
+    '<system-reminder>\nAn incomplete user example.\n<system-reminder>\nHost runtime context.\n</system-reminder>']) {
+    assert.deepEqual(currentTurnTextParts([text]), [text])
+  }
+  assert.deepEqual(currentTurnTextParts(['<system-reminder>\nRuntime notice.\n</system-reminder>']), [])
+})
 
 test('the common fake emits exact text-only file remember and arbitrary recall inputs', () => {
   for (const text of ['我加入读书会，同时仍在支付组。', 'The new marker is moonstone-47.', '今週は木曜日に資料を送ります。']) {
