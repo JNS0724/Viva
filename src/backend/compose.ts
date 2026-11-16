@@ -26,7 +26,7 @@ import type { MemoryProvenance } from '../memory/contracts/records.ts'
 import { intersectsMemoryErasure, memoryErasureEvidence, type MemoryErasureEvidence } from '../memory/contracts/provenance.ts'
 import type { CommittedOutput } from './assistant-stream.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
-import { carriedRecords } from './history-carry.ts'
+import { verifiedHistoryCarry, publishHistoryCarry, type HistoryCarry } from './history-carry.ts'
 import { activeHours } from './habits.ts'
 import { openTraceDb, traceStepDigest } from '../../plugins/trace/lib/store.ts'
 import { stepsFrom } from '../../plugins/trace/lib/steps.ts'
@@ -46,7 +46,7 @@ import { registerMcpImportIpc } from './mcp-import-ipc.ts'
 import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
 import { registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
-import { openHistoryDb } from './history-db.ts'
+import { openHistoryDb, type Conversation } from './history-db.ts'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { createImageStore } from './image-store.ts'
@@ -191,6 +191,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     info: () => lastInfo,
     setInfo: (info) => { lastInfo = info },
     isBusy: () => turn.active,
+    carryRevision: () => historyDb.fileErasureRevision(),
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
     changed: () => {
@@ -374,13 +375,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     }
   }
   const usedHistory = memoryCoordination.useHistory
-  async function trackCarry(session: string | null, evidence: readonly HistoryEvidence[]) {
-    if (session) for (const row of evidence) await usedHistory(session, row)
+  async function publishCarry(target: Conversation, carry: HistoryCarry) {
+    const current = () => Boolean(target.sessionId) && carry.revision === historyDb.fileErasureRevision()
+      && sessions.current().id === target.id && sessions.current().sessionId === target.sessionId
+    return publishHistoryCarry(carry, current, row => usedHistory(target.sessionId ?? undefined, row),
+      () => sessions.carryNext(target.id, carry.text))
   }
   async function storeSessionCarry(id: string) {
+    const target = sessions.current()
     const carry = await filteredCarry(id, true, workDirNow() ?? undefined)
-    await trackCarry(sessions.current().sessionId, carry.evidence)
-    sessions.carryNext(id, carry.turns ? carry.text : '')
+    await publishCarry(target, carry)
   }
   async function reopenMemorySession() {
     const started = await sessions.withSelection(async ({ switchAgent, select }) => {
@@ -393,16 +397,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     emitToRenderer({ type: 'ready', info: { ...started, conversationId: sessions.current().id, topicId: sessions.topicId(), remembersHistory: false } })
   }
   async function filteredCarry(conversationId: string, userOnly = false, targetCwd?: string) {
+    const revision = historyDb.fileErasureRevision()
     const topic = historyDb.topicOf(conversationId)
     const part = historyDb.read(userOnly || !topic ? `s:${conversationId}` : `t:${topic}`, { from: Number.MAX_SAFE_INTEGER, count: 40 })
     const sourceProject = memoryProjectScope(historyDb.workspaceOf(conversationId)?.cwd)
     const project = targetCwd === undefined ? sourceProject : memoryProjectScope(targetCwd)
-    const allowed = historyForProject(project)
-    const rows = []
-    if (sourceProject?.id === project?.id) for (const row of part?.messages ?? []) {
-      if ((!userOnly || row.role === 'user') && await allowed(row)) rows.push(row)
-    }
-    return { ...carriedRecords(rows), evidence: rows }
+    const rows = sourceProject?.id === project?.id ? part?.messages.filter(row => !userOnly || row.role === 'user') ?? [] : []
+    return verifiedHistoryCarry(rows, historyForProject(project), revision, historyDb.fileErasureRevision)
   }
 
   async function changingMemory<T>(work: () => T | Promise<T>, { duringSelection = false } = {}): Promise<T> {
@@ -1050,7 +1051,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       for (const sourceId of operation) await recordDeliveredSource(sourceId)
     }
     turn = { active: true, startedAt: Date.now() }
+    const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()
+    const held = carried ? () => historyDb.fileErasureRevision() === carryRevision : undefined
     const words = carried ? `${carried}
 
 ${question}` : question
@@ -1062,9 +1065,9 @@ ${question}` : question
       }
       throw error
     }
-    if (!feedItemId) return await agent.prompt(words, pictures, { userTurn: true, sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText: question }).catch(failed)
+    if (!feedItemId) return await agent.prompt(words, pictures, { userTurn: true, sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText: question, held }).catch(failed)
     return await new Promise<void>((resolve, reject) => {
-      void agent.prompt(words, pictures, { userTurn: true, onStart: resolve, sourceId: undefined }).then(() => {
+      void agent.prompt(words, pictures, { userTurn: true, onStart: resolve, sourceId: undefined, held }).then(() => {
         reject(new Error(t('main.memory.context.stale')))
       }, error => { finishForegroundTurn(); reject(error) })
     })
@@ -1127,8 +1130,7 @@ ${question}` : question
         const next = historyDb.create({ sessionId: started.sessionId, mode: started.mode, model: started.model, cwd: started.cwd,
           parentId: !projectChanged && historyDb.get(previous.id) ? previous.id : null, topicId: projectChanged ? null : topicId })
         select(next)
-        await trackCarry(started.sessionId, carried.evidence)
-        sessions.carryNext(next.id, carried.text)
+        await publishCarry(next, carried)
         return { ...started, conversationId: next.id, topicId: next.topicId ?? next.id, remembersHistory: false }
       })
       : await sessions.switchDirectory(dir)
@@ -1330,7 +1332,7 @@ ${question}` : question
       isBusy: () => turn.active || memoryBusy(),
       staleSession: staleMemorySession,
       filteredCarry,
-      onCarry: trackCarry,
+      publishCarry,
       recordSession: async id => {
         if (id) {
           await memory.recordSession(id)
@@ -1340,7 +1342,6 @@ ${question}` : question
       deleteHistory: memoryWithdrawal.deleteHistory,
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
-      carryNext: sessions.carryNext,
     })
     registerRewindIpc(ipcMain, {
       db: historyDb,
@@ -1357,16 +1358,14 @@ ${question}` : question
       commitEdit: memoryWithdrawal.commitEdit,
       rebuild: async (previous, kept, force) => {
         if (!force && !await staleMemorySession(previous.sessionId) && memory.epoch() === 0) return null
+        const revision = historyDb.fileErasureRevision()
         const project = memoryProjectScope(previous.cwd)
-        const allowed = historyForProject(project)
-        const evidence = []
-        for (const row of kept.map(row => ({ ...row, segmentId: previous.id }))) {
-          if (row.role === 'user' && row.sourceId && await allowed(row)) evidence.push(row)
-        }
-        return { ...carriedRecords(evidence), evidence }
+        const current = historyDb.get(previous.id)?.messages.slice(0, kept.length) ?? []
+        const rows = current.flatMap((row, index) => row.role === 'user' && row.sourceId && row.sourceId === kept[index]?.sourceId
+          ? [{ ...row, segmentId: previous.id }] : [])
+        return verifiedHistoryCarry(rows, historyForProject(project), revision, historyDb.fileErasureRevision)
       },
-      onCarry: trackCarry,
-      carryNext: sessions.carryNext,
+      publishCarry,
       onContinuation: async (previous, started) => {
         if (started.sessionId && await staleMemorySession(previous.sessionId)) await storeSessionCarry(previous.id)
       },
@@ -1379,6 +1378,7 @@ ${question}` : question
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
+      invalidateFileHistory: sessions.discardStaleCarry,
       eraseTaskBodies: taskStore.eraseMemoryBodies,
       invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
       generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
