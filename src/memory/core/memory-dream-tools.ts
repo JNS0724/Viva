@@ -101,7 +101,7 @@ export type DreamDraftResult<S extends DreamDocumentSnapshot> = {
  * attribution, polarity, time and conditions against canonical user sources before commit. */
 export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, documents, onRead = () => {} }: {
   unit: DreamUnit,
-  documents: { list(): readonly S[], read(path: string): S | null },
+  documents: { list(): readonly S[], read(path: string): S | null, locatorRetired?: (path: string) => boolean },
   onRead?: (snapshot: S) => void,
 }) {
   const observed = new Map<string, S>()
@@ -135,6 +135,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     if (!searched) return reject('memory-dream-search-required')
     if (target && target.path !== path) return reject('memory-dream-single-target-required')
     const before = target?.before ?? documents.read(path)
+    if (!before && documents.locatorRetired?.(path)) return reject('memory-dream-target-unavailable')
     if (before && !bodyReads.has(path)) return reject('memory-dream-read-target-first')
     // Parse before mutating draft state; an invalid attempt does not poison later corrections.
     try { parseMemoryDocument(markdown) } catch { return reject('memory-dream-invalid-document') }

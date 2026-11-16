@@ -18,15 +18,27 @@ const document = (path: string, name: string, body: string, description = name):
 const unit = { name: 'Deployment', bucket: 'wiki' as const, summary: 'Deployment procedure', paths: [daily] }
 const content = (name = 'Deployment', body = `New procedure.\n\n## Sources\nThe decision in [[${daily}]] supports this procedure.`) =>
   formatMemoryDocument({ metadata: { name, description: 'Deployment procedure', custom: 'retained' }, body })
-function setup(snapshots: DreamDocumentSnapshot[] = []) {
+function setup(snapshots: DreamDocumentSnapshot[] = [], retired: string[] = []) {
   const rows = new Map([document(daily, 'Today', 'We changed the deployment process.'), ...snapshots].map(snapshot => [snapshot.path, snapshot]))
   const seen: string[] = []
-  const tools = createMemoryDreamTools({ unit, documents: { list: () => [...rows.values()], read: path => rows.get(path) ?? null }, onRead: snapshot => seen.push(snapshot.path) })
+  const tools = createMemoryDreamTools({ unit, documents: { list: () => [...rows.values()], read: path => rows.get(path) ?? null,
+    locatorRetired: path => retired.includes(path) }, onRead: snapshot => seen.push(snapshot.path) })
   let id = 0
   const call = (name: string, input: MemoryToolInvocation['input']) => tools.executeTool({ callId: String(++id), name, input })
   const search = () => call('node_search', { query: 'Deployment' })
   return { rows, seen, tools, call, search }
 }
+
+test('Dream can choose a new filename after the requested locator is retired', async () => {
+  const { call, search, tools } = setup([], [target])
+  await search()
+  const rejected = await call('write', { path: target, markdown: content() })
+  assert.equal(rejected.state, 'rejected')
+  assert.equal(rejected.content, 'memory-dream-target-unavailable')
+  const fresh = 'digest/wiki/work-2.md'
+  assert.equal((await call('write', { path: fresh, markdown: content() })).state, 'completed')
+  assert.equal(tools.finish({ action: 'CREATE', target_path: fresh, note: 'Fresh path' }).path, fresh)
+})
 
 test('six dream tools expose complete JSON schemas and reject extra arguments and unknown tools', async () => {
   assert.deepEqual(memoryDreamToolDefinitions.map(tool => tool.name), ['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update'])

@@ -100,6 +100,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   const scopedDocuments = (workspace: string) => ({
     read: (path: string) => policy.read(workspace, path),
     list: () => policy.list(workspace, 'digest'),
+    locatorRetired: (path: string) => documents.locatorRetired(workspace, path),
   })
   const extractedReadsCurrent = (files: readonly FileRef[]) => files.every(file => file.reads.every(ref =>
     documents.list(file.workspace).some(doc => doc.id === ref.id && doc.revision === ref.revision && doc.usageVersion === ref.usageVersion)))

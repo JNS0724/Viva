@@ -121,6 +121,7 @@ export interface MemoryDocuments {
   hasPendingCleanup(sourceId: string): boolean
   pendingCleanup(): number
   projectErasedLocators(workspace: string, markdown: string): string
+  locatorRetired(workspace: string, path: string): boolean
   read(workspace: string, path: string, options?: { includeDisabled?: boolean }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt

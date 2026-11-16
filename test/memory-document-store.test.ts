@@ -111,6 +111,23 @@ test('a third physical revision keeps locator cleanup pending and does not clobb
   assert.equal(resumed.pendingCleanup(), 0)
 })
 
+test('retired paths stay unavailable, and independent evidence can use and link a fresh path', t => {
+  const f = fixture(t), documents = f.create()
+  const first = documents.commit(f.input)
+  const nextSource = { id: 's2', token: 'v2' }
+  const updated = documents.commit({ ...f.input, operationId: 'update', expectedRevision: first.revision, action: 'REFINE',
+    markdown: 'Shanghai with older information retained.', sources: [...f.input.sources, nextSource] })
+  documents.eraseSource({ ...nextSource, version: 1, length: f.sources.get('s2')!.text.length, hash: 'next',
+    spans: [{ start: 0, end: f.sources.get('s2')!.text.length }] })
+  const recovered = f.create()
+  assert.ok(recovered.locatorRetired(workspace, path))
+  assert.ok(!JSON.stringify(f.db.prepare('SELECT before,after FROM memory_document_revisions WHERE document=?').all(updated.documentId)).includes(path))
+  assert.throws(() => recovered.commit({ ...f.input, operationId: 'fresh', markdown: 'Independent evidence' }), /document-unavailable/)
+  const fresh = recovered.commit({ ...f.input, operationId: 'fresh', path: 'digest/personal/home-2.md', markdown: 'Independent evidence' })
+  assert.ok(recovered.commit({ ...f.input, operationId: 'linked', path: 'digest/personal/linked.md', markdown: `Fresh reference [[${fresh.path}]]` }))
+  assert.equal(recovered.pendingCleanup(), 0)
+})
+
 test('CORRECT persists exact old fragment; undo creates a revision and does not cover later edits', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)

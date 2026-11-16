@@ -138,7 +138,8 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       if (data.kind === 'purge') return Boolean(rowById(data.document)?.forgotten)
       const actual = rowByPath(data.workspace, data.receipt.path)
       const before = data.before
-      const targetCurrent = before ? actual?.id === before.id && actual.revision === before.revision && actual.usage_version === before.usageVersion && !actual.forgotten : !actual
+      const targetCurrent = before ? actual?.id === before.id && actual.revision === before.revision && actual.usage_version === before.usageVersion && !actual.forgotten
+        : !actual && !locatorRetired(data.workspace, data.receipt.path)
       if (data.manualSource) {
         // A locator may be retired after this draft was written but before its receipt.
         if (!data.after || !manual?.current(data.manualSource)
@@ -277,6 +278,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (prior) return prior
     digestPath.parse(input.path)
     parseMemoryDocument(input.markdown)
+    if (locatorRetired(input.workspace, input.path)) throw new Error('memory-document-unavailable')
     if (projectErasedLocators(input.workspace, input.markdown) !== input.markdown) throw new Error('memory-document-erased-locator')
     const before = read(input.workspace, input.path)
     if (rowByPath(input.workspace, input.path) && !before) throw new Error('memory-document-unavailable')
@@ -306,7 +308,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (!manual) throw new MemoryDomainError('not.found')
     digestPath.parse(input.path)
     parseMemoryDocument(input.markdown)
-    if (!manualLocatorsCurrent(input.workspace, input.markdown, input.source)) throw new MemoryDomainError('revision.conflict')
+    if (locatorRetired(input.workspace, input.path) || !manualLocatorsCurrent(input.workspace, input.markdown, input.source)) throw new MemoryDomainError('revision.conflict')
     const before = read(input.workspace, input.path)
     const expected = input.expected
     if (expected ? !before || before.id !== expected.id || before.revision !== expected.revision || before.usageVersion !== expected.usageVersion
@@ -434,6 +436,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     return new Set(db.prepare('SELECT fingerprint FROM memory_document_erased_locators WHERE workspace=? ORDER BY fingerprint')
       .all(scope).map(row => String(row.fingerprint)))
   }
+  function locatorRetired(scope: string, path: string) {
+    return Boolean(db.prepare('SELECT 1 FROM memory_document_erased_locators WHERE workspace=? AND fingerprint=?').get(scope, memoryFileRevision(path)))
+  }
   function locatorProjection(markdown: string, fingerprints: ReadonlySet<string>) {
     return fingerprints.size ? maskMemoryWikiLinks(markdown, path => fingerprints.has(memoryFileRevision(path))) : markdown
   }
@@ -475,6 +480,11 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   function cleanLocatorMetadata(scope: string, revisions = new Map<string, string>()) {
     const fingerprints = locatorFingerprints(scope)
     const project = (text: string) => locatorProjection(text, fingerprints)
+    function safePath(path: string, id: string) {
+      if (!fingerprints.has(memoryFileRevision(path))) return path
+      const current = currentIdentityPath(scope, id)
+      return current && !fingerprints.has(memoryFileRevision(current)) ? current : erasedPath(id)
+    }
     const history = (db.prepare(`SELECT h.* FROM memory_document_revisions h
       JOIN memory_documents d ON d.id=h.document WHERE d.workspace=?`).all(scope) as unknown as Revision[])
       .map(row => ({ row, before: row.before ? JSON.parse(row.before) as DocumentSnapshot : null, after: row.after ? JSON.parse(row.after) as DocumentSnapshot : null }))
@@ -485,13 +495,14 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     }
     for (const { before, after } of history) { collectRevision(before); collectRevision(after) }
     const corrections = (items: DocumentSupersession[]) => items.map(item => ({ ...item,
+      path: safePath(item.path, item.sourceDocumentId),
       revision: revisions.get(item.revision) ?? item.revision,
       replacementRevision: revisions.get(item.replacementRevision) ?? item.replacementRevision,
       text: project(item.text), condition: project(item.condition), time: project(item.time),
     }))
     function cleanSnapshot(snapshot: DocumentSnapshot | null) {
       if (!snapshot) return null
-      const updated = { ...snapshot, markdown: project(snapshot.markdown), revision: revisions.get(snapshot.revision) ?? snapshot.revision,
+      const updated = { ...snapshot, path: safePath(snapshot.path, snapshot.id), markdown: project(snapshot.markdown), revision: revisions.get(snapshot.revision) ?? snapshot.revision,
         corrections: corrections(snapshot.corrections) }
       return encode(updated)
     }
@@ -528,7 +539,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (!affected.size) return false
     const contains = (workspace: string, markdown: string) => affected.has(workspace) && projectErasedLocators(workspace, markdown) !== markdown
     const containsCorrection = (workspace: string, corrections: DocumentSupersession[]) =>
-      corrections.some(item => [item.text, item.condition, item.time].some(text => contains(workspace, text)))
+      corrections.some(item => locatorRetired(workspace, item.path) || [item.text, item.condition, item.time].some(text => contains(workspace, text)))
     const docs = db.prepare('SELECT workspace,path,corrections FROM memory_documents WHERE forgotten=0').all()
     const notes = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_daily_notes'").get()
       ? db.prepare('SELECT workspace,path FROM memory_daily_notes WHERE file_revision IS NOT NULL').all() : []
@@ -541,7 +552,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       } catch { return true }
     }
     const containsSnapshot = (snapshot: DocumentSnapshot | null) => Boolean(snapshot
-      && (contains(snapshot.workspace, snapshot.markdown) || containsCorrection(snapshot.workspace, snapshot.corrections)))
+      && (locatorRetired(snapshot.workspace, snapshot.path) || contains(snapshot.workspace, snapshot.markdown) || containsCorrection(snapshot.workspace, snapshot.corrections)))
     if ((db.prepare('SELECT before,after FROM memory_document_revisions').all() as unknown as Revision[]).some(row => [row.before, row.after].some(value => {
       if (!value) return false
       return containsSnapshot(JSON.parse(value) as DocumentSnapshot)
@@ -720,7 +731,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         return true
       }
       const row=rowById(input.id)
-      if (!row || row.workspace!==input.workspace || row.forgotten || row.path!==input.from || row.revision!==input.revision || row.usage_version!==input.usageVersion || rowByPath(input.workspace,input.to)) return false
+      if (!row || row.workspace!==input.workspace || row.forgotten || row.path!==input.from || row.revision!==input.revision || row.usage_version!==input.usageVersion || rowByPath(input.workspace,input.to) || locatorRetired(input.workspace, input.to)) return false
       if (!currentSources(input.workspace,refsOf(row)) || !journal.visible(input.workspace,input.from) || !journal.visible(input.workspace,input.to)) return false
       const files=journal.files(input.workspace)
       if (files.read(input.from) || files.read(input.to)?.revision!==input.revision) return false
@@ -882,7 +893,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
-    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators,
+    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired,
     read, list, commit, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
   }
 }
