@@ -5,10 +5,10 @@ import { objectOf } from '../contracts/unknown-value.ts'
 import { MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from '../contracts/embedding.ts'
 import type { MemoryEmbeddingInput } from '../contracts/embedding.ts'
 import { readMemoryEmbeddingDescriptor, verifyMemoryEmbeddingAssets } from './memory-embedding-assets.ts'
-import type { MemoryEmbeddingDescriptor } from './memory-embedding-assets.ts'
+import type { MemoryEmbeddingDescriptor, MemoryEmbeddingPooling } from './memory-embedding-assets.ts'
 
 type FeatureExtraction = {
-  (prompts: string[], options: { pooling: 'mean', normalize: true }): Promise<{ dims: number[], data: Float32Array }>
+  (prompts: string[], options: { pooling: MemoryEmbeddingPooling, normalize: true }): Promise<{ dims: number[], data: Float32Array }>
   tokenizer: { encode(prompt: string): number[], model_max_length: number }
 }
 type Transformers = {
@@ -69,7 +69,7 @@ process.on('message', async raw => {
       process.send?.({ type: 'ready', fingerprint: identity.fingerprint, dimensions: identity.manifest.dimensions })
     }
     if (!descriptor || descriptor.fingerprint !== message.fingerprint || descriptor.manifest.dimensions !== message.dimensions) throw new Error('Embedding request changed identity')
-    const { dimensions, maxTokens, queryPrefix, passagePrefix } = descriptor.manifest
+    const { dimensions, maxTokens, queryPrefix, passagePrefix, pooling } = descriptor.manifest
     const identity = { fingerprint: descriptor.fingerprint, dimensions }
     const model = extractor
     const prompts = inputs.flatMap(({ kind, text }, index) => {
@@ -80,7 +80,7 @@ process.on('message', async raw => {
     })
     const rows = Array.from<number[] | null>({ length: inputs.length }).fill(null)
     if (prompts.length) {
-      const { dims, data } = await model(prompts.map(({ prompt }) => prompt), { pooling: 'mean', normalize: true })
+      const { dims, data } = await model(prompts.map(({ prompt }) => prompt), { pooling, normalize: true })
       if (dims.length !== 2 || dims[0] !== prompts.length || dims[1] !== dimensions
         || !(data instanceof Float32Array) || data.length !== prompts.length * dimensions) {
         process.send?.({ type: 'result', id, ...identity, rows: null })

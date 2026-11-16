@@ -1,8 +1,7 @@
-Paraphrase Multilingual MiniLM L12 v2, 8-bit ONNX weights
-Base model: https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-License declaration: https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2/blob/main/README.md
-ONNX conversion: https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2
-Pinned ONNX revision: 2c4055b12046f11709e9df2c122e59ffbdc2f900
+IBM Granite Embedding 97M Multilingual R2, 8-bit ONNX weights
+Base model: https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2
+ONNX conversion and license declaration: https://huggingface.co/onnx-community/granite-embedding-97m-multilingual-r2-ONNX/tree/536a9f241cb3f02a9c5995a1e708c784bd274859
+Pinned ONNX revision: 536a9f241cb3f02a9c5995a1e708c784bd274859
 License: Apache-2.0 (full unmodified license text follows)
 License source: https://www.apache.org/licenses/LICENSE-2.0.txt
 

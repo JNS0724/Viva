@@ -32,7 +32,7 @@ test('asset identity follows weights and tokenizer contents, not installation pa
 
 test('manifest encoding parameters are part of the immutable vector identity', async t => {
   const { descriptor } = await embeddingFixture(t)
-  const changes = [{ dimensions: 3 }, { maxTokens: 128 }, { queryPrefix: '', passagePrefix: '' }]
+  const changes = [{ dimensions: 3 }, { maxTokens: 128 }, { pooling: 'cls' }, { queryPrefix: '', passagePrefix: '' }]
   for (const change of changes) assert.notEqual(parseMemoryEmbeddingManifest({ ...descriptor.manifest, ...change }).fingerprint, descriptor.fingerprint)
   assert.ok(Object.isFrozen(descriptor.manifest.files[0]))
   assert.ok(Object.isFrozen(descriptor.manifest))
@@ -42,7 +42,7 @@ test('strict manifests reject unknown fields, unsupported recipes and ambiguous 
   const { descriptor } = await embeddingFixture(t)
   const manifest = descriptor.manifest
   const bad = [{ ...manifest, extra: true }, { ...manifest, dimensions: 0 }, { ...manifest, maxTokens: 1.5 },
-    { ...manifest, queryPrefix: '' }, { ...manifest, dtype: 'fp32' },
+    { ...manifest, queryPrefix: '' }, { ...manifest, dtype: 'fp32' }, { ...manifest, pooling: 'last_token' },
     { ...manifest, files: [manifest.files[0], manifest.files[0], ...manifest.files.slice(2)] },
     { ...manifest, files: manifest.files.map((file, index) => index ? file : { ...file, path: '../config.json' }) }]
   for (const value of bad) assert.throws(() => parseMemoryEmbeddingManifest(value))
@@ -75,8 +75,8 @@ test('worker rejects changed files and manifest hashes without authenticating ve
   })
 })
 
-test('worker supports declared dimensions, empty prefixes and conservative token budgets', async t => {
-  const { embedder } = await embeddingFixture(t, { dimensions: 3, maxTokens: 2, runtimeLimit: 4, prefixes: 'none' })
+test('worker uses manifest pooling, dimensions, empty prefixes and conservative token budgets', async t => {
+  const { embedder } = await embeddingFixture(t, { dimensions: 3, maxTokens: 2, runtimeLimit: 4, prefixes: 'none', pooling: 'cls' })
   const result = await embedder.embedBatch([...query, { kind: 'passage', text: 'supporting fact' }])
   assert.equal(embedder.dimensions, 3)
   assert.deepEqual(result?.map(row => row && [...row]), [[0, 0, 1], [0, 0, 1]])

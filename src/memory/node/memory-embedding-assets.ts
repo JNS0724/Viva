@@ -9,11 +9,13 @@ export const MEMORY_EMBEDDING_ASSET_PATHS = Object.freeze([
   'config.json', 'tokenizer.json', 'tokenizer_config.json', 'onnx/model_quantized.onnx',
 ] as const)
 type AssetPath = typeof MEMORY_EMBEDDING_ASSET_PATHS[number]
+export type MemoryEmbeddingPooling = 'mean' | 'cls'
 export type MemoryEmbeddingEncoding = {
-  dimensions: number, maxTokens: number, queryPrefix: 'query: ' | '', passagePrefix: 'passage: ' | '',
+  dimensions: number, maxTokens: number, pooling: MemoryEmbeddingPooling,
+  queryPrefix: 'query: ' | '', passagePrefix: 'passage: ' | '',
 }
 export type MemoryEmbeddingManifest = Readonly<MemoryEmbeddingEncoding & {
-  version: 1, dtype: 'q8', pooling: 'mean', normalization: 'l2',
+  version: 1, dtype: 'q8', normalization: 'l2',
   files: readonly Readonly<{ path: AssetPath, size: number, sha256: string }>[],
 }>
 export type MemoryEmbeddingDescriptor = Readonly<{ manifest: MemoryEmbeddingManifest, fingerprint: string }>
@@ -26,7 +28,7 @@ const positive = (value: unknown, maximum: number): value is number => typeof va
 export function parseMemoryEmbeddingManifest(raw: unknown): MemoryEmbeddingDescriptor {
   const value = objectOf(raw)
   if (!value || !exactKeys(value, ['version', 'dimensions', 'dtype', 'pooling', 'normalization', 'queryPrefix', 'passagePrefix', 'maxTokens', 'files'])
-    || value.version !== 1 || value.dtype !== 'q8' || value.pooling !== 'mean' || value.normalization !== 'l2'
+    || value.version !== 1 || value.dtype !== 'q8' || (value.pooling !== 'mean' && value.pooling !== 'cls') || value.normalization !== 'l2'
     || !positive(value.dimensions, 8192) || !positive(value.maxTokens, 8192)
     || !((value.queryPrefix === 'query: ' && value.passagePrefix === 'passage: ') || (value.queryPrefix === '' && value.passagePrefix === ''))
     || !Array.isArray(value.files) || value.files.length !== MEMORY_EMBEDDING_ASSET_PATHS.length) throw new Error('Invalid embedding asset manifest')
@@ -39,7 +41,7 @@ export function parseMemoryEmbeddingManifest(raw: unknown): MemoryEmbeddingDescr
     }
     return Object.freeze({ path: name, size: file.size, sha256: file.sha256 })
   })
-  const manifest: MemoryEmbeddingManifest = Object.freeze({ version: 1, dimensions: value.dimensions, dtype: 'q8', pooling: 'mean', normalization: 'l2',
+  const manifest: MemoryEmbeddingManifest = Object.freeze({ version: 1, dimensions: value.dimensions, dtype: 'q8', pooling: value.pooling, normalization: 'l2',
     queryPrefix: value.queryPrefix, passagePrefix: value.passagePrefix, maxTokens: value.maxTokens, files: Object.freeze(files) })
   return Object.freeze({ manifest, fingerprint: `memory-embedding-assets:v1:${digest(JSON.stringify(manifest))}` })
 }
@@ -86,7 +88,7 @@ export async function verifyMemoryEmbeddingAssets(modelRoot: string, expected: M
 export async function writeMemoryEmbeddingManifest(modelRoot: string, encoding: MemoryEmbeddingEncoding): Promise<MemoryEmbeddingDescriptor> {
   const files = []
   for (const name of MEMORY_EMBEDDING_ASSET_PATHS) files.push({ path: name, ...await fileIdentity(path.join(modelRoot, name)) })
-  const descriptor = parseMemoryEmbeddingManifest({ version: 1, dtype: 'q8', pooling: 'mean', normalization: 'l2', ...encoding, files })
+  const descriptor = parseMemoryEmbeddingManifest({ version: 1, dtype: 'q8', normalization: 'l2', ...encoding, files })
   await writeFile(path.join(modelRoot, MEMORY_EMBEDDING_MANIFEST), JSON.stringify(descriptor.manifest, null, 2) + '\n')
   await verifyMemoryEmbeddingAssets(modelRoot, descriptor)
   return descriptor

@@ -9,7 +9,7 @@ export async function pipeline(task: string, model: string, settings: {
   if (task !== 'feature-extraction' || settings.device !== 'cpu' || settings.dtype !== 'q8'
     || !settings.local_files_only || env.allowRemoteModels || env.useFSCache || env.useBrowserCache) throw new Error('local settings')
   const config = JSON.parse(readFileSync(path.join(model, 'config.json'), 'utf8')) as {
-    hidden_size: number, fixture_behavior?: string, fixture_token_limit?: number,
+    hidden_size: number, fixture_behavior?: string, fixture_token_limit?: number, fixture_pooling?: 'mean' | 'cls',
   }
   if (config.fixture_behavior === 'replace-on-load') writeFileSync(path.join(model, 'onnx/model_quantized.onnx'), 'changed during pipeline initialization')
   if (config.fixture_behavior === 'wrong-ready') process.send?.({ type: 'ready', fingerprint: 'unverified-space', dimensions: config.hidden_size })
@@ -23,7 +23,7 @@ export async function pipeline(task: string, model: string, settings: {
     }
   })
   const extract = async (prompts: string[], options: { pooling: string, normalize: boolean }) => {
-    if (options.pooling !== 'mean' || !options.normalize) throw new Error('pooling settings')
+    if (options.pooling !== (config.fixture_pooling ?? 'mean') || !options.normalize) throw new Error('pooling settings')
     if (prompts.some(prompt => prompt.includes('stop worker'))) process.exit(42)
     if (prompts.some(prompt => prompt.includes('hang worker'))) await new Promise(resolve => setTimeout(resolve, 30_000))
     const width = config.hidden_size + (config.fixture_behavior === 'wrong-width' ? 1 : 0)
