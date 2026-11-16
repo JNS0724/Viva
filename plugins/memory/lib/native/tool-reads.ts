@@ -116,5 +116,23 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       const call = sessions.get(session)?.calls.get(callId)
       return call?.token && !call.signal?.aborted && !sessions.get(session)?.assembly.signal.aborted && call.event.data.name === name ? call.active : undefined
     },
+    settledSpill(session: Session, exec: ToolExecution, callId: string, name: string) {
+      const step = sessions.get(session), parent = pending(session, exec), child = step?.calls.get(callId)
+      if (!step || !parent?.active || parent.token !== exec.token || !child?.active || !child.token
+        || child.parent !== parent || child.event.type !== 'tool/ptc-dispatch-start' || child.event.data.name !== name
+        || child.active.generation !== parent.active.generation) return
+      const chain: Array<{ node: PendingCall, token: ToolExecutionToken }> = []
+      for (let node: PendingCall | undefined = parent; node; node = node.parent) {
+        if (!node.token || node.active?.generation !== child.active.generation) return
+        chain.push({ node, token: node.token })
+      }
+      const token = child.token
+      // A settled PTC binding's log is drained after its body controller is
+      // normally aborted. Only this public log callback may finish that copy;
+      // reading still requires the live child body lease above.
+      return { call: child.active, current: () => sessions.get(session) === step && step.calls.get(callId) === child
+        && child.token === token && !exec.signal.aborted && !step.assembly.signal.aborted
+        && chain.every(({ node, token }) => node.token === token && !node.signal?.aborted) }
+    },
   }
 }

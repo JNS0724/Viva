@@ -68,14 +68,14 @@ function contextGeneration(directory: string, session: string): number {
   finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, ptc = false, ptcFailure = '' } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, ptc = false, ptcFailure = '', ptcDrainSpill = false } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
   if (ptc) {
     const profile = join(directory, 'dsh', 'profiles', 'viva')
     mkdirSync(profile, { recursive: true })
-    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n      config: ${JSON.stringify(ptcFailure === 'crash' ? { crashBeforeSearch: join(directory, 'ptc-prepared') } : { rejectSearch: ptcFailure === 'reject' })}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
+    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n      config: ${JSON.stringify(ptcFailure === 'crash' ? { crashBeforeSearch: join(directory, 'ptc-prepared') } : { rejectSearch: ptcFailure === 'reject', ...(ptcDrainSpill ? { drainReadLog: join(directory, 'ptc-drained-read-log') } : {}) })}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
   }
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
@@ -238,7 +238,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
       return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); return note;` } } }
     }
     return { text: 'PTC completed.' }
-  }, { dailyNotes: true, ptc: true })
+  }, { dailyNotes: true, ptc: true, ptcDrainSpill: !nextFails })
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
   assert.equal(created.status, 'applied')
   fileId = created.receipt.identity.id
@@ -263,7 +263,8 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     const spills = db.prepare('SELECT intent,file FROM owner_native_spills').all()
     if (!nextFails) {
       assert.equal(spills.length, 2, JSON.stringify(spills))
-      assert.ok(spills.every(row => row.file !== null))
+      assert.equal(fs.existsSync(join(app.directory, 'ptc-drained-read-log')), true)
+      assert.ok(spills.every(row => row.file !== null), JSON.stringify(spills))
       for (const row of spills) assert.ok(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path))
       const leaf = spills.find(row => JSON.parse(String(row.intent)).call.ptc)
       assert.ok(leaf)

@@ -123,3 +123,43 @@ for (const cancellation of ['body', 'step'] as const) test(`native read lease re
   assert.equal(lease.current(), false)
   assert.equal(reads.spill(session, callId, exec.name), undefined)
 })
+
+for (const retirement of ['parent', 'ancestor', 'step', 'endpoint', 'next-step'] as const) {
+  test(`settled PTC log publication preserves exact copy authority and retires on ${retirement}`, () => {
+    const session = Session.create(SessionId(`ptc-log-${retirement}`)), step = new AbortController(), tools = toolSet()
+    const rootBody = new AbortController(), parentBody = new AbortController(), body = new AbortController()
+    const reads = trackNativeToolReads(() => {})
+    reads.assembly(session, step.signal, tools); reads.step(session, 1, 1, step.signal)
+    const rootId = ToolCallId('program'), parentId = ToolCallId('program:ptc:1'), childId = ToolCallId('program:ptc:1:ptc:1')
+    const root: ToolExecution = { callId: rootId, rootCallId: rootId, name: 'run_code', arguments: {}, signal: step.signal, toolSet: tools, token: token() }
+    reads.observe(session, session.append('tool/call', { turn: 1, step: 1, callId: rootId, name: root.name, arguments: '{}' }))
+    reads.bind(session, root); assert.ok(reads.acquire(session, { ...root, signal: rootBody.signal }, 0))
+    const parent: ToolExecution = { ...root, callId: parentId, parent: root.token, signal: parentBody.signal, token: token() }
+    reads.observe(session, session.append('tool/ptc-dispatch-start', { rootCallId: rootId, parentCallId: rootId, subCallId: parentId, name: parent.name, arguments: {} }))
+    reads.bind(session, parent); assert.ok(reads.acquire(session, parent, 0))
+    const child: ToolExecution = { ...parent, callId: childId, parent: parent.token, name: 'memory_read', signal: body.signal, token: token() }
+    const start = session.append('tool/ptc-dispatch-start', { rootCallId: rootId, parentCallId: parentId, subCallId: childId, name: child.name, arguments: {} })
+    reads.observe(session, start); reads.bind(session, child)
+    const read = reads.acquire(session, child, 0)!
+    assert.equal(read.current(), true)
+    body.abort('normal program body is closed')
+    assert.equal(read.current(), false, 'the ended binding never gains another read lease')
+    assert.equal(reads.spill(session, childId, child.name), undefined, 'a body may not write by borrowing a retired public call ID')
+    for (const other of [{ ...parent, token: token() }, { ...parent, toolSet: toolSet() }, { ...parent, arguments: { different: true } }]) {
+      assert.equal(reads.settledSpill(session, other, childId, child.name), undefined)
+    }
+    assert.equal(reads.settledSpill(session, root, childId, child.name), undefined, 'a real but different ancestor is not the dispatch parent')
+    assert.equal(reads.settledSpill(session, parent, childId, 'other'), undefined)
+    const publication = reads.settledSpill(session, parent, childId, child.name)!
+    assert.equal(publication.call, read.call)
+    assert.equal(publication.current(), true, 'only the settled-log copy remains publishable during normal SDK draining')
+    if (retirement === 'parent') parentBody.abort()
+    if (retirement === 'ancestor') rootBody.abort()
+    if (retirement === 'step') step.abort()
+    if (retirement === 'endpoint') reads.observe(session, session.append('tool/ptc-dispatch', { ...start.data, isError: false, content: [] }))
+    if (retirement === 'next-step') {
+      reads.assembly(session, step.signal, tools); reads.step(session, 1, 2, step.signal)
+    }
+    assert.equal(publication.current(), false)
+  })
+}
