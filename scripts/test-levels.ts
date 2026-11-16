@@ -199,6 +199,7 @@ export const testLevels = {
     'skill-import',
     'skill-spec',
     'skills',
+    'smoke-diagnostics',
     'smoke-fixtures',
     'smoke-isolation',
     'smoke-kit',
