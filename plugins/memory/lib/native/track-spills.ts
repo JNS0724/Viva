@@ -6,7 +6,7 @@ import { LocalSpillStore } from '@deepseek-ai/dsh-spill-local'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { openMemoryOwner } from '../../../../src/memory/node/owner.ts'
 import type { trackNativeToolReads } from './tool-reads.ts'
-import { verifyNativeSpill } from './local-spills.ts'
+import { publishGovernedNativeSpill, reserveNativeSpill } from './governed-spills.ts'
 
 export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMemoryOwner>, tools: ReturnType<typeof trackNativeToolReads>) {
   return ctx.inject(['spillStore'], scoped => {
@@ -19,14 +19,18 @@ export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMem
       if (!call || !owner.ready() || call.generation !== owner.contextGeneration(call.session) || !(store instanceof LocalSpillStore)) {
         throw new Error('Native spill has no authenticated local execution')
       }
+      if (!owner.nativeSpillGoverned(call)) return save.call(store, input)
       await mkdir(store.root, { recursive: true, mode: 0o700 })
       const intent = { call, root: await realpath(store.root), bytes: Buffer.byteLength(input.content, 'utf8'),
         hash: createHash('sha256').update(input.content).digest('hex') }
-      const id = owner.beginNativeSpill(intent)
-      const result = await save.call(store, input)
-      if (result.bytes !== intent.bytes) throw new Error('Native spill length differs from the saved file')
-      owner.finishNativeSpill(id, await verifyNativeSpill(intent, result.locator))
-      return result
+      const reserved = await reserveNativeSpill(intent, input.suggestedName)
+      let id: string
+      try { id = owner.beginNativeSpill(reserved.intent) }
+      catch (error) { await reserved.handle.close(); throw error }
+      const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, input.content,
+        () => owner.ready() && call.generation === owner.contextGeneration(call.session))
+      owner.finishNativeSpill(id, saved.receipt)
+      return saved.ref
     }
     store.saveText = wrapped
     scoped.effect(() => () => { if (store.saveText === wrapped) store.saveText = save }, 'memory spill receipts')

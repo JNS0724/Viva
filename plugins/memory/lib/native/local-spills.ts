@@ -8,11 +8,12 @@ import type { NativeSpillFile, NativeSpillIntent } from '../../../../src/memory/
 const absent = (error: unknown) => error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 
-async function directory(file: string) {
-  const stat = await lstat(file)
+export async function assertNativeSpillDirectory(file: string) {
+  const stat = await lstat(file, { bigint: true })
   if (!stat.isDirectory() || stat.isSymbolicLink() || process.platform !== 'win32'
-    && (stat.mode & 0o022 || process.getuid && stat.uid !== process.getuid())) throw new Error('Native spill directory is not private')
+    && (stat.mode & 0o022n || process.getuid && stat.uid !== BigInt(process.getuid()))) throw new Error('Native spill directory is not private')
 }
+const directory = assertNativeSpillDirectory
 
 async function syncDirectory(file: string) {
   // Windows cannot open directories as file handles; local file removal is synchronous there.
@@ -32,16 +33,17 @@ export async function verifyNativeSpill(intent: NativeSpillIntent, locator: stri
   const file = path.join(parent, path.basename(locator))
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
-    const stat = await handle.stat(), bytes = await handle.readFile()
-    if (!stat.isFile() || stat.nlink !== 1 || bytes.byteLength !== intent.bytes || hash(bytes) !== intent.hash) throw new Error('Native spill bytes differ from its receipt')
+    const stat = await handle.stat({ bigint: true }), bytes = await handle.readFile()
+    if (!stat.isFile() || stat.nlink !== 1n || bytes.byteLength !== intent.bytes || hash(bytes) !== intent.hash) throw new Error('Native spill bytes differ from its receipt')
     await handle.sync()
     await syncDirectory(parent)
-    return { path: file, dev: stat.dev, ino: stat.ino }
+    return { path: file, dev: stat.dev.toString(), ino: stat.ino.toString() }
   } finally { await handle.close() }
 }
 
 /** Missing or changed evidence remains pending; cold maintenance never guesses a spill file. */
 export async function eraseNativeSpill(target: NativeSpillIntent & { file: NativeSpillFile | null }, isCold: () => boolean) {
+  if (target.publication) return eraseGovernedNativeSpill(target, isCold)
   if (!target.file) return false
   if (!isCold()) throw new Error('Native spill erasure requires a cold lifecycle')
   const parent = sessionDir(target.root, target.call.session), file = target.file.path
@@ -58,8 +60,8 @@ export async function eraseNativeSpill(target: NativeSpillIntent & { file: Nativ
       return isCold()
     }
     try {
-      const stat = await handle.stat(), bytes = await handle.readFile(), current = await lstat(file)
-      if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== target.file.dev || stat.ino !== target.file.ino
+      const stat = await handle.stat({ bigint: true }), bytes = await handle.readFile(), current = await lstat(file, { bigint: true })
+      if (!stat.isFile() || stat.nlink !== 1n || stat.dev.toString() !== target.file.dev || stat.ino.toString() !== target.file.ino
         || current.dev !== stat.dev || current.ino !== stat.ino || current.isSymbolicLink()
         || bytes.byteLength !== target.bytes || hash(bytes) !== target.hash) return false
       if (!isCold()) throw new Error('Native spill lifecycle changed during erasure')
@@ -72,4 +74,42 @@ export async function eraseNativeSpill(target: NativeSpillIntent & { file: Nativ
     if (absent(error)) return isCold()
     throw error
   }
+}
+
+/** A preallocated empty staging inode is archived before any private byte is written.
+ * Atomic publication can therefore recover even before the final locator receipt. */
+async function eraseGovernedNativeSpill(target: NativeSpillIntent, isCold: () => boolean) {
+  const proof = target.publication!
+  const parent = sessionDir(target.root, target.call.session)
+  if (path.dirname(proof.target) !== parent || path.dirname(proof.stage.path) !== parent
+    || !path.basename(proof.target).startsWith(`viva-${proof.nonce}-`)
+    || path.basename(proof.stage.path) !== `.viva-${proof.nonce}.tmp`) return false
+  if (!isCold()) throw new Error('Native spill erasure requires a cold lifecycle')
+  try {
+    await directory(target.root)
+    await directory(parent)
+  } catch (error) { if (absent(error)) return isCold(); throw error }
+  if (await realpath(target.root) !== target.root || await realpath(parent) !== parent) return false
+  const files: { path: string, links: bigint }[] = []
+  for (const file of [proof.target, proof.stage.path]) {
+    let handle
+    try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW) }
+    catch (error) { if (absent(error)) continue; throw error }
+    try {
+      const stat = await handle.stat({ bigint: true }), current = await lstat(file, { bigint: true })
+      if (!stat.isFile() || stat.dev.toString() !== proof.stage.dev || stat.ino.toString() !== proof.stage.ino
+        || current.isSymbolicLink() || current.dev !== stat.dev || current.ino !== stat.ino || stat.nlink > 2n) return false
+      // Only staging may be incomplete; it was never returned to a caller.
+      if (file === proof.target) {
+        const bytes = await handle.readFile()
+        if (bytes.byteLength !== target.bytes || hash(bytes) !== target.hash) return false
+      }
+      files.push({ path: file, links: stat.nlink })
+    } finally { await handle.close() }
+  }
+  if (files.some(file => file.links !== BigInt(files.length))) return false
+  if (!isCold()) throw new Error('Native spill lifecycle changed during erasure')
+  for (const file of files) await unlink(file.path)
+  await syncDirectory(parent)
+  return isCold()
 }

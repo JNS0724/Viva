@@ -4,8 +4,9 @@ import { z } from 'zod'
 import { nativeToolCallShape, type NativeToolCall } from './native-tool-reads.ts'
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/u)
-const intent = z.strictObject({ call: nativeToolCallShape, root: z.string().min(1), hash, bytes: z.int().nonnegative() })
-const file = z.strictObject({ path: z.string().min(1), dev: z.int().nonnegative(), ino: z.int().nonnegative() })
+const file = z.strictObject({ path: z.string().min(1), dev: z.string().regex(/^\d+$/u), ino: z.string().regex(/^\d+$/u) })
+const intent = z.strictObject({ call: nativeToolCallShape, root: z.string().min(1), hash, bytes: z.int().nonnegative(),
+  publication: z.strictObject({ nonce: z.uuid(), stage: file, target: z.string().min(1) }).optional() })
 export type NativeSpillIntent = z.output<typeof intent>
 export type NativeSpillFile = z.output<typeof file>
 
@@ -16,6 +17,13 @@ export function createNativeSpills(db: DatabaseSync) {
   )`)
   const lookup = db.prepare('SELECT intent,file,erased FROM owner_native_spills WHERE id=?')
   return {
+    governed(call: NativeToolCall) {
+      if (db.prepare('SELECT 1 FROM owner_native_tool_reads WHERE call=? LIMIT 1').get(call.id)) return true
+      if (!call.outputAttempt) return false
+      return Boolean(db.prepare(`SELECT 1 FROM owner_native_output_reads WHERE attempt=?
+        AND (json_array_length(evidence,'$.sources')>0 OR json_array_length(evidence,'$.fileRanges')>0
+          OR json_array_length(evidence,'$.memoryIds')>0) LIMIT 1`).get(call.outputAttempt))
+    },
     begin(value: NativeSpillIntent) {
       const id = randomUUID()
       db.prepare('INSERT INTO owner_native_spills VALUES (?,?,NULL,0)').run(id, JSON.stringify(intent.parse(value)))
@@ -35,7 +43,8 @@ export function createNativeSpills(db: DatabaseSync) {
       })
     },
     complete(id: string) {
-      if (!lookup.get(id)?.file) throw new Error('Native spill has no verified file receipt')
+      const row = lookup.get(id)
+      if (!row || !row.file && !intent.parse(JSON.parse(String(row.intent))).publication) throw new Error('Native spill has no verified file receipt')
       db.prepare('UPDATE owner_native_spills SET erased=1 WHERE id=?').run(id)
     },
   }

@@ -36,6 +36,7 @@ export const testLevels = {
     'memory-delivery-provenance',
     'memory-native-tool-reads',
     'memory-native-retries',
+    'memory-native-spills',
     'memory-native-derived',
     'memory-native-recovery-messages',
     'memory-file-commands',

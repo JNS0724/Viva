@@ -1096,6 +1096,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     finishNativeOutput: nativeOutputs.finish,
     finishNativeToolRead: nativeToolReads.finish,
     beginNativeSpill: nativeSpills.begin, finishNativeSpill: nativeSpills.finish,
+    nativeSpillGoverned: nativeSpills.governed,
     withNativeToolRead<T>(scope: { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }, read: () => T): T {
       return toolReadScope.run(scope, read)
     },
