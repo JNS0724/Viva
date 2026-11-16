@@ -17,6 +17,7 @@ import { openScheduleStore } from '../src/backend/schedule-store.ts'
 import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import type { HostMemoryApi, HostMemoryCaller } from '../src/memory/contracts/host.ts'
 import type { MemoryHostEffect, MemoryHostErasureRange } from '../src/memory/contracts/service.ts'
+import { t as translate } from '../src/shared/i18n/translate.ts'
 
 test('host erasure preserves unrelated original messages, rejects stale-save resurrection, retries ack without echo', async t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close())
@@ -318,7 +319,7 @@ test('file forgetting physically removes affected schedules, run inputs and feed
   assert.equal(effects.get('feed-notice', raw), null)
   assert.equal(effects.get('feed-notice', related), null)
   assert(effects.get('feed-notice', retained))
-  assert.throws(() => derived('Raw source result', base), /失效|no longer/)
+  assert.throws(() => derived('Raw source result', base), { message: translate('main.feed.erased') })
   for (const file of [path, path + '-wal']) {
     const bytes = readFileSync(file)
     for (const erased of ['Raw source result', 'File A result', 'Erase report']) assert.equal(bytes.includes(Buffer.from(erased)), false)

@@ -22,6 +22,7 @@ export const en = {
   "main.schedule-runs.memory.stale": "The memory used to create this schedule changed. Review its instructions before running it again.",
   "main.schedule-runs.memory.result.stale": "Memory used during this run changed before the result could be saved.",
   "main.feed.memory.stale": "This result uses memory that changed. You can still read it in Updates.",
+  "main.feed.erased": "This update was removed and can no longer be continued.",
   "main.feed.memory.unavailable": "The memory connection is unavailable. Try again after the assistant reconnects.",
   "main.feed.edit.continuation": "Keep the original Updates text and add your instructions after a blank line.",
   "main.feed.rewind.derived": "Continue this result from Updates to check whether its sources are still current.",

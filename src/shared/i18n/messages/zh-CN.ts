@@ -23,6 +23,7 @@ export const zhCN = {
   "main.schedule-runs.memory.stale": "创建这个定时任务时用到的记忆已变更。请检查任务说明后再运行。",
   "main.schedule-runs.memory.result.stale": "本次执行用到的记忆在保存结果前已变更。",
   "main.feed.memory.stale": "这个结果用到了已变更的记忆。你仍可在「动态」中查看。",
+  "main.feed.erased": "这条动态已删除，无法继续。",
   "main.feed.memory.unavailable": "记忆连接暂不可用，请等助手重新连接后再试。",
   "main.feed.edit.continuation": "请保留「动态」的原文，空一行后再添加你的要求。",
   "main.feed.rewind.derived": "请从「动态」继续这个结果，以便检查来源是否仍有效。",
