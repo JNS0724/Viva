@@ -203,7 +203,7 @@ try {
     await until(() => /https?:\/\/(?:127\.0\.0\.1|localhost)[^\s\x1b]+/u.test(launchLog) || proc?.exitCode !== null || errors.length > 0, 'DSH Web startup')
     const url = launchLog.match(/https?:\/\/(?:127\.0\.0\.1|localhost)[^\s\x1b]+/u)?.[0]
     assert.ok(url, 'DSH Web must report its local URL')
-    const page = await browser!.newPage()
+    const page = await browser!.newPage({ locale: 'en-US' })
     page.on('pageerror', error => errors.push(error.message))
     await page.goto(url)
     const editor = page.locator('textarea,[contenteditable=true]').first()
