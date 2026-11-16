@@ -50,6 +50,7 @@ export const testLevels = {
     'memory-plugin-ingestion',
     'memory-plugin-lifecycle',
     'memory-plugin-model',
+    'memory-plugin-browser',
     'memory-send-fence',
     'acp-bridge-resume',
     'acp-memory-context-recovery',

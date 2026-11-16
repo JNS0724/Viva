@@ -21,6 +21,7 @@ import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { buildMemoryPlugin } from './build-memory-plugin.ts'
+import { beginMemoryWebSession, submitMemoryWebMessage } from './memory-plugin-browser.ts'
 import { startFakeLlm } from '../test/fixtures/fake-llm.ts'
 import { createVenueModelFixture, venue } from '../test/fixtures/memory-plugin-venue.ts'
 
@@ -222,8 +223,8 @@ try {
     await editor.pressSequentially(text, { delay: 5 })
     // A retained editor can stay visible while its session binding changes. Never
     // submit a partial draft or silently repair it after that transition.
-    await expect.poll(() => editorText(editor)).toBe(text)
-    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await submitMemoryWebMessage(text, { read: () => editorText(editor),
+      submit: () => page.getByRole('button', { name: 'Send message', exact: true }).click() })
     await expect.poll(() => page.getByText(expected, { exact: false }).count(), { timeout: 30_000 }).toBeGreaterThan(previousReplies)
     await page.getByText(expected, { exact: false }).last().waitFor({ state: 'visible', timeout: 30_000 })
     await page.getByRole('button', { name: 'Send message', exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
@@ -301,17 +302,22 @@ try {
   writeFileSync(path.join(output, 'web-before-venue-aria.yml'), await page.locator('body').ariaSnapshot())
   // New Session keeps the old editor DOM mounted while the native session is
   // created. Visibility alone can start typing into the previous binding.
-  const previousSession = await page.getByRole('treeitem', { selected: true }).getAttribute('data-row-key')
-  assert.ok(previousSession, 'the previous session has an observable row identity')
-  // The visible caption is "New Session"; the public AX label is "New session".
-  await page.getByRole('button', { name: 'New session', exact: true }).last().click()
-  const newSession = page.getByRole('treeitem', { name: 'New Session', exact: true, selected: true })
-  await expect(newSession).toHaveAttribute('data-row-key', /^session:/u, { timeout: 30_000 })
-  await expect(newSession).not.toHaveAttribute('data-row-key', previousSession)
-  await page.getByText('Into the Unknown', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
-  const venueEditor = page.locator('textarea,[contenteditable=true]').first()
-  await expect(venueEditor).toBeEditable({ timeout: 30_000 })
-  await expect.poll(() => editorText(venueEditor)).toBe('')
+  await beginMemoryWebSession({
+    async read() {
+      const selected = page.getByRole('treeitem', { selected: true })
+      const editor = page.locator('textarea,[contenteditable=true]').first()
+      const hasEditor = await editor.count() > 0
+      return {
+        sessionKey: await selected.count() === 1 ? await selected.getAttribute('data-row-key') : null,
+        blank: await page.getByRole('treeitem', { name: 'New Session', exact: true, selected: true }).count() === 1
+          && await page.getByText('Into the Unknown', { exact: true }).isVisible(),
+        editable: hasEditor && await editor.isEditable(), text: hasEditor ? await editorText(editor) : '',
+      }
+    },
+    // The visible caption is "New Session"; the public AX label is "New session".
+    create: () => page.getByRole('button', { name: 'New session', exact: true }).last().click(),
+    wait: check => expect.poll(check, { timeout: 30_000 }).toBe(true),
+  })
   for (const fact of venue.facts) await send(page, fact, `收到：「${fact}`)
   const venueDaily = () => collectMarkdown(dataRoot).filter(file => file.includes(`${path.sep}daily${path.sep}`)
     && venue.facts.every(fact => readFileSync(file, 'utf8').includes(fact)))
