@@ -34,6 +34,7 @@ export const testLevels = {
     'memory-owner-context-recovery',
     'memory-context-recovery',
     'memory-delivery-provenance',
+    'memory-native-tool-reads',
     'memory-native-schedule',
     'memory-plugin-ingestion',
     'memory-plugin-lifecycle',

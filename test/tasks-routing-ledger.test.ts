@@ -51,7 +51,10 @@ test('undecided requests are reminded at most twice, then left for the host to f
 
 test('the main agent\'s tools: route, context and app queries free; app changes need a grant each; the rest never', () => {
   assert.equal(layerOf('commit_route'), 'route')
-  assert.equal(layerOf('memory_recall'), 'context')
+  for (const tool of ['memory_recall', 'memory_read', 'memory_node_search', 'memory_clarify']) {
+    assert.equal(layerOf(tool), 'context')
+    assert.ok(MAIN_SCOPE.includes(tool))
+  }
   assert.equal(layerOf('schedule_list'), 'app-query')
   assert.equal(layerOf('schedule_create'), 'app-change')
   for (const tool of ['bash', 'pwsh', 'write', 'web_fetch', 'subagent', 'ask_user_question', 'mcp__demo__send_email']) {

@@ -2,6 +2,7 @@ import { createOwnerContextRecovery } from './owner-context-recovery.ts'
 import { removeAbandonedMemoryTemps } from './memory-file-store.ts'
 import { memoryProjectScope } from './project-scope.ts'
 import path from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID, createHmac } from 'node:crypto'
 import { lockMemoryRoot } from './owner-lock.ts'
 import { openMemoryStore, memoryHash } from './memory-store.ts'
@@ -27,6 +28,7 @@ import type { TextSpan } from '../contracts/text-spans.ts'
 import { createOwnerNativeOriginals } from './owner-native-originals.ts'
 import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
+import { createNativeToolReads, type NativeToolCall } from './native-tool-reads.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
@@ -81,6 +83,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const generalQuestions = new Map<string, { session: string, cards: readonly { id: string, question: string }[], check(): boolean }>()
   const dispatch = createMemoryDispatch(store, (items, at) => runtime.dependenciesCurrent(items, at),
     (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
+  const nativeToolReads = createNativeToolReads(db)
+  const toolReadScope = new AsyncLocalStorage<{ call: NativeToolCall, current(): boolean }>()
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
     dailyNotes: options.dailyNotes ?? true, fileMode: options.fileMode ?? false,
     // P2 captures completed daily turns while retaining the existing fact engine until the planned switch.
@@ -93,7 +97,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
     validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly, fileClarificationDispatch: dispatch,
     runDocumentMutation: work => fence.mutate(work),
-    fileDependencies: dispatch.recordFiles,
+    fileDependencies(session, files, sources) {
+      const scope = toolReadScope.getStore()
+      if (!files.length || scope?.call.session !== session) return dispatch.recordFiles(session, files, sources)
+      if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(session)) throw new Error('Native tool changed before its read was committed')
+      store.tx(() => {
+        nativeToolReads.record(scope.call, files, sources)
+        dispatch.recordFiles(session, files, sources)
+      })
+    },
     canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
   })
   const removedSession = (session: string) => Boolean(db.prepare(`SELECT 1 FROM owner_occurrences o WHERE o.session=? AND o.removed=1
@@ -558,6 +570,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const sessions = [...new Set(invalidated)]
     for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges, memoryIds))) nativeSessions.add(session)
     for (const { session } of nativeOutputs.affected(ranges, memoryIds)) nativeSessions.add(session)
+    for (const { session } of nativeToolReads.affected(ranges)) nativeSessions.add(session)
     if (nativeSessions.size) {
       const originals = nativeOriginals.replicas(ranges)
       db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)')
@@ -992,6 +1005,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     finishNativeOutput: nativeOutputs.finish,
+    finishNativeToolRead: nativeToolReads.finish,
+    withNativeToolRead<T>(scope: { call: NativeToolCall, current(): boolean }, read: () => T): T {
+      return toolReadScope.run(scope, read)
+    },
     acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string) {
       const output = 'session' in origin ? origin.output : undefined
       if ('session' in origin) {

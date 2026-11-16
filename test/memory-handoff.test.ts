@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -13,6 +13,7 @@ import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
+import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
 import { NATIVE_OUTPUT_MARKER, nativeOutputDigest } from '../plugins/memory/lib/native/output-attempts.ts'
 import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
@@ -189,6 +190,66 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
     assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   } finally { db.close() }
+})
+
+test('a real DSH tool read archives exact file evidence even when the next model send fails', { timeout: 45_000 }, async t => {
+  const text = 'The file-only proof ORDINAL controls the native result.'
+  const prompt = '执行单次工具归档测试'
+  let fileId: string | undefined, requested = false
+  const app = await setup(t, request => {
+    if (requested || !fileId || questionOf(request.messages) !== prompt) return null
+    requested = true
+    return { tool: { name: 'memory_read', input: { id: fileId } } }
+  }, { dailyNotes: true, fileMode: true })
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text })
+  assert.equal(created.status, 'applied')
+  fileId = created.receipt.identity.id
+  const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const source = file.sources[0]
+  assert.ok(source?.sourceId)
+  const memoryRoot = join(app.directory, 'memory')
+  const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  let affected: ReturnType<ReturnType<typeof createNativeToolReads>['affected']> = []
+  try {
+    control.exec(`CREATE TRIGGER fail_body_after_tool_read BEFORE INSERT ON owner_native_output_reads
+      WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads)
+      BEGIN SELECT RAISE(ABORT, 'no model request may consume the tool result'); END`)
+    await app.ask(prompt)
+    assert.equal(requested, true)
+    const receipts = createNativeToolReads(control)
+    affected = await eventually(() => {
+      const found = receipts.affected([{ sourceId: source.sourceId, spans: [{ start: 0, end: text.length }] }])
+      return found.some(call => call.result) ? found : undefined
+    }) ?? []
+    assert.equal(affected.length, 1, JSON.stringify({
+      calls: control.prepare('SELECT identity,result FROM owner_native_tool_calls').all(),
+      seen: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_read')),
+      errors: app.events.filter(event => event.type === 'error'),
+    }))
+    assert.ok(affected[0]?.result)
+    assert.doesNotMatch(JSON.stringify(control.prepare('SELECT evidence FROM owner_native_tool_reads').all()), /ORDINAL/)
+    assert.ok(app.model.requests.every(raw => modelToolResults(raw as Request, 'memory_read').length === 0),
+      'the next physical request must not get the tool result')
+  } finally {
+    await app.stopBackend()
+    control.close()
+  }
+  const saved = affected[0]!, result = saved.result!
+  const provider = new Context(), mounted = await provider.plugin(jsonl, { root: join(app.directory, 'dsh', 'sessions') })
+  try {
+    const reader = await provider.sessionPersistence.open(SessionId(saved.session), 'read')
+    try {
+      const { events } = await reader.read()
+      const call = events[saved.seq], outcome = events[result.seq]
+      assert.equal(call?.type, 'tool/call')
+      assert.equal(outcome?.type, 'tool/result')
+      const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+      assert.equal(digest(call), saved.digest)
+      assert.equal(digest(outcome), result.digest)
+      assert.deepEqual(outcome.sourceEventSeqs, [saved.seq])
+      assert.match(JSON.stringify(outcome.data.message.content), /ORDINAL/)
+    } finally { await reader.close() }
+  } finally { await mounted.dispose() }
 })
 
 test('trace erasure preserves another projection that reused the same session and sequence', t => {
