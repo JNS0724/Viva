@@ -40,7 +40,7 @@ const descriptions: Record<ToolName, string> = {
   node_search: 'Search all authorized digest node names, descriptions and tags, without returning document bodies. Search before choosing an integration target; read matching nodes to distinguish same_abstraction, related or unrelated.',
   read: 'Read authorized daily/digest Markdown with independent 1-based line bounds. Read a matching digest before changing it. Reads add document/source versions to this job dependency set.',
   frontmatter_read: 'Read frontmatter of an authorized daily/digest file. Does not read another workspace or grant permission to change sources.',
-  write: 'Write a complete isolated digest draft. Exactly one target is allowed per unit; CREATE must use the unit bucket. Preserve existing metadata, supporting Sources and related links. Nothing is committed by this tool.',
+  write: 'Write a complete isolated digest draft. Exactly one target is allowed per unit; CREATE must use the unit bucket. Preserve existing metadata, supporting Sources and related links. Every supplied daily path must appear as a real [[daily/...md]] wikilink in a Sources sentence explaining its support; plain paths and links inside code do not count. Repair rejected drafts before reporting success. Nothing is committed by this tool.',
   edit: 'Replace one unique exact text occurrence in the isolated digest draft. Read the existing digest first. Ambiguous or missing text is rejected; there is no global replacement.',
   frontmatter_update: 'Merge JSON fields into the isolated digest draft frontmatter while preserving its body and unrelated fields. Exactly one target is allowed.',
 }
@@ -131,6 +131,13 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     if (!snapshot || snapshot.applicability?.state === 'unavailable') return reject('memory-dream-document-unavailable')
     return observe(snapshot)
   }
+  function unitSourceLinks(markdown: string) {
+    const links = new Set(memoryDocumentLinks(markdown))
+    for (const source of unit.paths) {
+      if (![...links].some(link => link.split('#')[0] === source)) return reject('memory-dream-unit-source-missing')
+    }
+    return links
+  }
   function draft(path: string, markdown: string) {
     if (!searched) return reject('memory-dream-search-required')
     if (target && target.path !== path) return reject('memory-dream-single-target-required')
@@ -139,6 +146,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     if (before && !bodyReads.has(path)) return reject('memory-dream-read-target-first')
     // Parse before mutating draft state; an invalid attempt does not poison later corrections.
     try { parseMemoryDocument(markdown) } catch { return reject('memory-dream-invalid-document') }
+    unitSourceLinks(markdown)
     target = { path, before: before ? observed.get(path)! : null, markdown }
     return { path, staged: true }
   }
@@ -205,7 +213,10 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
       return { callId: invocation.callId, state: 'completed', content: JSON.stringify(result), sources: sources() }
     } catch (error) {
       if (!(error instanceof DreamToolError)) throw error
-      return { callId: invocation.callId, state: 'rejected', content: error.message, sources: sources() }
+      const content = error.message === 'memory-dream-unit-source-missing' ? JSON.stringify({ code: error.message,
+        message: 'Cite every required daily path as a real [[workspace-relative/path.md]] wikilink in a meaningful Sources sentence, outside code. Then retry the draft tool.',
+        requiredPaths: unit.paths }) : error.message
+      return { callId: invocation.callId, state: 'rejected', content, sources: sources() }
     }
   }
   function finish(value: unknown): DreamDraftResult<S> {
@@ -217,9 +228,8 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     const final = parseMemoryDocument(target.markdown)
     if (typeof final.metadata.name !== 'string' || !final.metadata.name.trim()
       || typeof final.metadata.description !== 'string' || !final.metadata.description.trim()) return reject('memory-dream-summary-required')
-    const links = new Set(memoryDocumentLinks(target.markdown))
+    const links = unitSourceLinks(target.markdown)
     for (const source of unit.paths) {
-      if (![...links].some(link => link.split('#')[0] === source)) return reject('memory-dream-unit-source-missing')
       read(source)
     }
     if (target.before) {

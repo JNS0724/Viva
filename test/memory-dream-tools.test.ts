@@ -151,8 +151,28 @@ test('finish verifies action, target bucket, required metadata, and original sup
 test('wikilink validation ignores code/escapes and requires explicit full paths', async () => {
   assert.deepEqual(memoryDocumentLinks(`\`[[${daily}]]\`\n\`\`\`md\n[[${oldDaily}]]\n\`\`\`\n\\[[${target}]]\n[[${related}#Checks|label]]\n[[daily/2026-11-16/work]]`), [`${related}#Checks`])
   const { call, search, tools } = setup()
-  await search(); await call('write', { path: target, markdown: content('Deployment', `Only a code example: \`[[${daily}]]\``) })
-  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Not an actual evidence link' }), /unit-source-missing/)
+  await search()
+  const rejected = await call('write', { path: target, markdown: content('Deployment', `Only a code example: \`[[${daily}]]\``) })
+  assert.equal(rejected.state, 'rejected')
+  assert.equal(JSON.parse(rejected.content).code, 'memory-dream-unit-source-missing')
+  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Not an actual evidence link' }), /missing-draft/)
+})
+
+test('a plain Sources path is rejected before staging so the same model loop can repair it', async () => {
+  const { call, search, tools } = setup()
+  await search()
+  const missing = await call('write', { path: target, markdown: content('Deployment', `## Sources\n${daily} supports the deployment decision.`) })
+  assert.equal(missing.state, 'rejected')
+  const diagnostic = JSON.parse(missing.content) as { code: string, message: string, requiredPaths: string[] }
+  assert.equal(diagnostic.code, 'memory-dream-unit-source-missing')
+  assert.deepEqual(diagnostic.requiredPaths, [daily])
+  assert.match(diagnostic.message, /\[\[workspace-relative\/path\.md\]\]/u)
+  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Claimed success without valid sources' }), /missing-draft/)
+  assert.equal((await call('write', { path: target, markdown: content() })).state, 'completed')
+  assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Repaired sources' }).path, target)
+  const rejectedEdit = await call('edit', { path: target, old_text: `[[${daily}]]`, new_text: daily })
+  assert.equal(rejectedEdit.state, 'rejected')
+  assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Keep the prior valid draft' }).markdown, content())
 })
 
 test('new read dependencies and usage versions invalidate next tool call and commit', async () => {
