@@ -1360,3 +1360,32 @@ test('a stale native read of a different note does not create a new erasure obli
   const outcome = await f.owner.handleHost('getOperation', { operationId }) as HostMemoryApi['getOperation']['output']
   assert.equal(outcome?.cleanup, 'complete')
 })
+
+test('a disjoint read after partial erasure cannot strand a later independent completed human turn', async t => {
+  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
+  const offset = source.text!.indexOf('Tea')
+  const kept = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Tea is served on Monday.', sources: [{ id: source.id,
+      token: memorySourceToken(source), spans: [{ start: offset, end: source.text!.length }] }], reads: [] })
+  const detail = (await f.client.readFile(f.identity))!
+  await f.client.forgetFile({ operationId: randomUUID(), identity: f.identity, version: detail.version })
+  assert.ok(f.store.readSource(f.sourceId)?.erasure)
+  const reader = randomUUID(), message = randomUUID(), words = 'The reading group has not decided which venue to use.'
+  await f.owner.receiveSource({ sessionId: reader, messageId: message, text: words, at: Date.now(), timezone: 'UTC',
+    turn: 1, step: 1, admitted: true, inherited: false })
+  const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: kept.documentId }, f.owner.sessionContext(reader))
+  assert.match(packet, /Tea is served on Monday/)
+  assert.ok(f.owner.dispatch.snapshot(reader).fileSources?.includes(f.sourceId), 'the exact remaining fragment is still authorized')
+  await f.owner.completeTurn({ sessionId: reader, turn: 1, eventSeq: 4, sourceIds: [message], assistant: 'The group is still choosing a venue.',
+    completed: true, at: Date.now(), timezone: 'UTC' })
+  assert.equal(f.store.db.prepare('SELECT state FROM owner_turns WHERE session=? AND turn=1').get(reader)?.state, 'completed')
+  const note = f.store.db.prepare('SELECT source_tokens,assistant_sources FROM memory_note_turns WHERE session=?').get(reader)
+  assert.ok(note, 'the independent human turn reaches the real session/daily intake')
+  assert.deepEqual((JSON.parse(String(note.source_tokens)) as Array<{ id: string }>).map(ref => ref.id), [message])
+  assert.deepEqual(JSON.parse(String(note.assistant_sources)), [], 'unmapped generated prose must not expand a partial file proof to a whole source')
+  const notes = openMemoryNotes(f.store, id => Boolean(f.store.readSource(id)?.text))
+  const groups = notes.pendingGroups().filter(group => group.session === reader)
+  assert.equal(groups.length, 1)
+  assert.equal(notes.pending(groups[0]!.note)[0]?.assistant, '')
+  assert.match(f.owner.runtime.handle({ op: 'file_read', session: reader, id: kept.documentId }, f.owner.sessionContext(reader)), /Tea is served on Monday/)
+})

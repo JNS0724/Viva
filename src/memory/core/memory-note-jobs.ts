@@ -59,7 +59,9 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const seen = store.dispatch.snapshot(session)
     const dependencies = [...new Set([...notes.contextSources(session, source), ...seen.sources])]
     // Assistant replies may restate any context the session saw. Keep that provenance, never promote the reply to independent evidence.
-    const contextCurrent = assistantContextCurrent(seen) && dependencies.every(id => readable(id))
+    // This capture stores source IDs, not the precise ranges a file read may
+    // have proved. Do not widen a surviving fragment into whole-source proof.
+    const contextCurrent = assistantContextCurrent(seen) && allowsDerived(dependencies) && dependencies.every(id => readable(id))
     const safeAssistant = contextCurrent ? assistant : ''
     const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant ? dependencies : [], assistant,
       { questionSources: dependencies, questionCurrent: contextCurrent })
