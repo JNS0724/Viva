@@ -90,6 +90,7 @@ export const testLevels = {
     'extensions-state',
     'extensions',
     'feed-actions',
+    'feed-continuation',
     'feed-state',
     'feed-store',
     'files-state',
