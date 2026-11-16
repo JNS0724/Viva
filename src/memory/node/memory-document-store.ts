@@ -7,7 +7,7 @@ import { parseMemoryDocument, readMemoryLines, memoryDocumentLines } from '../co
 import { memoryFileRevision } from './memory-file-store.ts'
 import { openMemoryFileJournal } from './memory-file-journal.ts'
 import type { FileCheckpoint, FilePlan } from './memory-file-journal.ts'
-import { documentSourceRestricted } from '../core/memory-document-restrictions.ts'
+import { documentSourceProofCurrent, documentSourceRestricted } from '../core/memory-document-restrictions.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
@@ -26,10 +26,11 @@ const readVersions = (reads: readonly DocumentReadRef[]): DocumentReadRef[] =>
 const correctionsOf = (row: Row): DocumentSupersession[] => JSON.parse(row.corrections) as DocumentSupersession[]
 
 /** Persistence adapter: current Markdown is authoritative; SQL stores identities, revisions and recovery metadata. */
-export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoint, onCommitted = () => {}, onRenamed = () => {}, externalCurrent = () => false, managementCurrent = () => false, deferRecovery = false }: {
+export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoint, erasures = () => [], onCommitted = () => {}, onRenamed = () => {}, externalCurrent = () => false, managementCurrent = () => false, deferRecovery = false }: {
   db: DatabaseSync, root: string,
-  source: (id: string) => { token: string, workspace: string, text: string } | undefined,
+  source: (id: string) => { token: string, workspace: string, text: string, erasure?: DocumentSourceRef } | undefined,
   now?: () => number,
+  erasures?: (workspace: string) => DocumentSourceRef[],
   onCommitted?: (receipt: DocumentReceipt) => void,
   onRenamed?: (input: DocumentRename) => void,
   externalCurrent?: (input: DocumentExternalEdit) => boolean,
@@ -82,7 +83,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   function currentSources(scope: string, refs: readonly DocumentSourceRef[]) {
     return refs.length > 0 && new Set(refs.map(ref => ref.id)).size === refs.length && refs.every(ref => {
       const actual = source(ref.id)
-      return actual?.workspace === scope && actual.token === ref.token && (!ref.spans || ref.spans.length > 0 && ref.spans.every(span => Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start && span.end <= actual.text.length))
+      return actual?.workspace === scope && documentSourceProofCurrent(ref, actual.text, actual.token, actual.erasure)
     })
   }
   function currentReads(scope: string, refs: readonly DocumentReadRef[], changing?: Mutation): boolean {
@@ -613,7 +614,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   function sourceRestrictions(scope: string, except?: string): DocumentSourceRef[] {
     workspace(scope)
-    return useRestrictions.sources(scope, except ? { kind: 'digest', workspace: scope, key: except } : undefined)
+    return [...erasures(scope), ...useRestrictions.sources(scope, except ? { kind: 'digest', workspace: scope, key: except } : undefined)]
   }
   const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count)
   if (!deferRecovery) recover()

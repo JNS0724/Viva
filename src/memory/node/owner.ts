@@ -229,7 +229,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const saved = storeAlias(input) // Validate before any session/source registration.
     const fingerprint = hash(input)
     const old = db.prepare('SELECT fingerprint,revoked FROM owner_aliases WHERE id=?').get(input.operationId)
-    if (store.sourceExcluded(input.sourceId) || old?.revoked) throw new Error('Source alias was withdrawn')
+    const source = store.readSource(input.sourceId)
+    if (store.sourceExcluded(input.sourceId) || source?.erasure || old?.revoked
+      || source && input.origin !== 'derived' && !runtime.dispatchSourceCurrent(input.sourceId)) {
+      throw new Error('Source alias was withdrawn or is unavailable')
+    }
     if (old && old.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict', 'Memory operation ID conflicts')
     const context = input.context ? JSON.stringify(input.context) : null
     const previous = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(input.session) as Session | undefined
@@ -642,7 +646,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const input = command.input, sourceId = input.operationId
         const existing = store.readSource(sourceId)
         if (existing) {
-          if (existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
+          if (existing.erasure || existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
             || existing.requestId !== input.requestId || existing.conversation !== input.conversation) throw new Error('Answer operation identity conflicts')
           return { sourceId }
         }

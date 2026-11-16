@@ -46,6 +46,18 @@ test('session JSONL owns role-separated source versions; request replay is idemp
 const dbColumns = (store: ReturnType<typeof openMemoryStore>, table: string) =>
   (store.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name)
 
+test('independent user evidence survives a third-party replacement of generated transcript text', t => {
+  const { store, notes, source, key } = setup(t)
+  const [workspace] = readdirSync(store.fileRoot)
+  const path = join(store.fileRoot, workspace!, 'session/dialog', memoryFileRevision('session') + '.jsonl')
+  assert.equal(notes.pending(key)[0]?.assistant, '先检查版本')
+  writeFileSync(path, readFileSync(path, 'utf8').replace('先检查版本', 'Previously removed original'))
+  const [turn] = notes.rebuildRows(key)
+  assert.deepEqual(turn?.sourceIds, [source.id])
+  assert.equal(turn?.assistant, '')
+  assert.deepEqual(turn?.assistantSourceIds, [])
+})
+
 test('daily content is a file, its index and receipt commit together, and source metadata cannot come from model frontmatter', t => {
   const { store, notes, key, commit } = setup(t)
   assert.equal(commit(), true)
@@ -221,6 +233,28 @@ test('a session append intent survives process death before its transcript write
   assert.equal(notes.pending(group.note)[0]?.assistant, '已完成这个回合')
   assert.equal(notes.add('new-session', '2026-11-14', [source], '已完成这个回合'), null)
   assert.equal(notes.pending(group.note).length, 1)
+})
+
+test('a prepared append retains just the new line and rolls back without restoring a transcript copy', t => {
+  const { store, notes, key, source } = setup(t)
+  const oldMarker = source.text!
+  const newMarker = 'Independent second turn'
+  assert.equal(notes.pending(key).length, 1)
+  const second = noteSource(store, { text: newMarker, length: newMarker.length, hash: memoryFileRevision(newMarker) })
+  const partial = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), at => {
+    if (at === 'replace') throw new Error('crash after append')
+  })
+  assert.throws(() => partial.add('session', '2026-11-14', [second], ''), /crash after append/)
+  const plan = String(store.db.prepare('SELECT plan FROM memory_file_intents WHERE id=?').get(`notes:turn:${second.id}`)?.plan)
+  assert.match(plan, /Independent second turn/)
+  assert(!plan.includes(oldMarker))
+  store.withdrawSource(second.id)
+  const restarted = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text))
+  assert.deepEqual(restarted.pending(key).map(row => row.sourceIds), [[source.id]])
+  const [workspace] = readdirSync(store.fileRoot)
+  const path = join(store.fileRoot, workspace!, 'session/dialog', memoryFileRevision('session') + '.jsonl')
+  assert.equal(readFileSync(path, 'utf8').includes(newMarker), false)
+  assert(readFileSync(path, 'utf8').includes(oldMarker))
 })
 
 test('a crashed title update recovers one stable card and preserves incoming links and index', async t => {

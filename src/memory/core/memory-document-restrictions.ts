@@ -1,3 +1,4 @@
+import type { MemorySource } from '../contracts/records.ts'
 import type { DocumentSourceRef } from './ports/documents.ts'
 
 type Span = { start: number, end: number }
@@ -47,6 +48,30 @@ export function documentSourceRestricted(source: DocumentSourceRef, restrictions
     if (restriction.spans && (!restriction.spans.length || !restriction.spans.every(valid))) throw new Error('invalid-document-restriction-spans')
     return !source.spans || !restriction.spans || source.spans.some(span => restriction.spans!.some(blocked => overlaps(span, blocked)))
   })
+}
+
+export function erasedDocumentSource(source: Pick<MemorySource, 'id' | 'erasure'>): DocumentSourceRef | undefined {
+  return source.erasure && { id: source.id, ...source.erasure }
+}
+
+/** A stable token proves coordinates inherited from the original source. After a
+ * partial erasure only explicit, disjoint ranges of that token can prove content. */
+export function documentSourceProofCurrent(ref: DocumentSourceRef, text: string, token: string, erasure?: DocumentSourceRef): boolean {
+  return ref.token === token && (!ref.spans || ref.spans.length > 0 && ref.spans.every(span => valid(span) && span.end <= text.length))
+    && (!erasure || !documentSourceRestricted(ref, [erasure]))
+}
+
+export function planDocumentSourceErasure(source: Pick<MemorySource, 'id' | 'text' | 'erasure'>, token: string, target: DocumentSourceRef) {
+  if (source.id !== target.id || !source.text || !documentSourceProofCurrent(target, source.text, token, erasedDocumentSource(source))) return null
+  const text = source.text
+  const selected = target.spans ?? [{ start: 0, end: text.length }]
+  // The persisted offsets are UTF-16. Do not create an isolated half of a
+  // surrogate pair when removing source fragments.
+  const splitsCharacter = (offset: number) => text.charCodeAt(offset - 1) >= 0xD800 && text.charCodeAt(offset - 1) <= 0xDBFF
+    && text.charCodeAt(offset) >= 0xDC00 && text.charCodeAt(offset) <= 0xDFFF
+  if (selected.some(({ start, end }) => splitsCharacter(start) || splitsCharacter(end))) return null
+  const spans = orderedSpans([...(source.erasure?.spans ?? []), ...selected])
+  return { text: projectDocumentSource(text, target, [target]), erasure: { token, spans } }
 }
 
 /** Produce a model-visible canonical source view without renumbering its UTF-16 offsets.

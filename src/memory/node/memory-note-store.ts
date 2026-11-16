@@ -1,13 +1,13 @@
 import type { DailyAllocation } from '../core/ports/notes.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { truncateMemoryJournal } from './sqlite.ts'
-import { documentSourceRestricted } from '../core/memory-document-restrictions.ts'
+import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from '../core/memory-document-restrictions.ts'
 import { dailyPath } from '../contracts/memory-file-contract.ts'
 import type { DocumentRename, DocumentExternalEdit, DocumentSupersession } from '../core/ports/documents.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { memorySourceWorkspace as workspaceOf, memorySourceToken as token } from './source-identity.ts'
 import { openMemoryFileJournal } from './memory-file-journal.ts'
-import type { FileChange, FileCheckpoint, FilePlan } from './memory-file-journal.ts'
+import type { FileReplacement, FileCheckpoint, FilePlan } from './memory-file-journal.ts'
 import { formatMemoryDocument, parseMemoryDocument, memoryDocumentLines, readMemoryLines } from '../core/memory-document.ts'
 import type { MemorySource, MemoryStore } from './memory-store.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
@@ -25,7 +25,7 @@ type SourceRef = import('../core/ports/documents.ts').DocumentSourceRef
 type DialogTurn = { id: string, session: string, day: string, messages: Array<{
   role: 'user' | 'assistant', text: string, sourceId?: string, version?: number, author?: MemorySource['author'], at: number,
 }> }
-interface TurnRow { id: string, note: string, session: string, day: string, workspace: string, sources: string, source_tokens: string, assistant_sources: string, assistant_valid: number, question_sources: string, question_valid: number, written: number }
+interface TurnRow { id: string, note: string, session: string, day: string, workspace: string, sources: string, source_tokens: string, assistant_sources: string, assistant_digest: string | null, assistant_valid: number, question_sources: string, question_valid: number, written: number }
 interface NoteRow { key: string, day: string, workspace: string, path: string, revision: number, processed: number, updatedAt: number, file_revision: string | null }
 type Note = NoteRow & { file_revision: string, title: string, markdown: string, document: string, fileRevision: string }
 type Data = { refs: SourceRef[], indexKeys?: string[] } & (
@@ -46,7 +46,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     CREATE TABLE IF NOT EXISTS memory_note_aliases (workspace TEXT NOT NULL,path TEXT NOT NULL,note TEXT NOT NULL,PRIMARY KEY(workspace,path));
     CREATE TABLE IF NOT EXISTS memory_note_turns (
       id TEXT PRIMARY KEY, note TEXT NOT NULL, session TEXT NOT NULL, day TEXT NOT NULL,
-      workspace TEXT NOT NULL, sources TEXT NOT NULL, source_tokens TEXT NOT NULL, assistant_sources TEXT NOT NULL, assistant_valid INTEGER NOT NULL DEFAULT 1, question_sources TEXT NOT NULL, question_valid INTEGER NOT NULL, written INTEGER NOT NULL DEFAULT 0
+      workspace TEXT NOT NULL, sources TEXT NOT NULL, source_tokens TEXT NOT NULL, assistant_sources TEXT NOT NULL, assistant_digest TEXT, assistant_valid INTEGER NOT NULL DEFAULT 1, question_sources TEXT NOT NULL, question_valid INTEGER NOT NULL, written INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS memory_note_turns_group ON memory_note_turns(note,written);
     CREATE TABLE IF NOT EXISTS memory_daily_notes (
@@ -67,17 +67,18 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   }
   function validRef(ref: SourceRef): boolean {
     const source = store.readSource(ref.id)
-    return Boolean(source && readable(ref.id) && token(source) === ref.token && (!ref.spans || ref.spans.length > 0 && ref.spans.every(span => Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start && span.end <= (source.text?.length ?? 0))))
+    return Boolean(source?.text && readable(ref.id) && documentSourceProofCurrent(ref, source.text, token(source), erasedDocumentSource(source)))
   }
   const useRestrictions = openMemoryFileRestrictions(db)
-  const usePolicyToken = (workspace: string) => memoryFileRevision(JSON.stringify(useRestrictions.sources(workspace)))
+  const restrictions = (workspace: string) => [...store.fileErasures(workspace), ...useRestrictions.sources(workspace)]
+  const usePolicyToken = (workspace: string) => memoryFileRevision(JSON.stringify(restrictions(workspace)))
   const dailyPathBase = (day: string, key: string) => `daily/${day}/note-${memoryFileRevision(key)}`
   function canonicalLocator(path: string, day: string, key: string) {
     const base = dailyPathBase(day, key)
     return path === `${base}.md` || path.startsWith(`${base}-`) && /^-[0-9]+\.md$/u.test(path.slice(base.length))
   }
   function requiresOpaqueLocator(workspace: string, key: string): boolean {
-    const blocked = useRestrictions.sources(workspace)
+    const blocked = restrictions(workspace)
     if (!blocked.length) return false
     if (useRestrictions.forTarget({ kind: 'daily', workspace, key }).length) return true
     const turns = db.prepare('SELECT source_tokens,assistant_sources,question_sources FROM memory_note_turns WHERE note=?')
@@ -95,8 +96,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     finish(data) {
       if (data.kind === 'turn') {
         const row = data.row
-        db.prepare('INSERT INTO memory_note_turns(id,note,session,day,workspace,sources,source_tokens,assistant_sources,question_sources,question_valid) VALUES(?,?,?,?,?,?,?,?,?,?)')
-          .run(row.id, row.note, row.session, row.day, row.workspace, row.sources, row.source_tokens, row.assistant_sources, row.question_sources, row.question_valid)
+        db.prepare(`INSERT INTO memory_note_turns(id,note,session,day,workspace,sources,source_tokens,assistant_sources,assistant_digest,question_sources,question_valid)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(row.id, row.note, row.session, row.day, row.workspace, row.sources, row.source_tokens,
+          row.assistant_sources, row.assistant_digest, row.question_sources, row.question_valid)
       } else if (data.kind === 'note') {
         if (data.remove) {
           // Keep the allocation when a safe rebuild has no usable content. The
@@ -187,7 +189,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     const row = rawNote(key)
     if (!row?.file_revision || !journal.visible(row.workspace, row.path)) return
     const refs = references(key)
-    if (refs.some(ref => { const source = store.readSource(ref.id); return !source || !readable(ref.id) || token(source) !== ref.token })) return
+    if (!refs.every(validRef)) return
     try {
       const file = journal.files(row.workspace).read(row.path)
       if (!file || file.revision !== row.file_revision) return
@@ -213,18 +215,18 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     if (invalid.some(ref => !invalidAnswers.has(ref.id))) throw new Error('memory-source-version')
     const omitted = new Set(invalid.map(ref => ref.id))
     const dependencies = JSON.parse(row.assistant_sources) as SourceRef[]
-    const assistantCurrent = row.assistant_valid && dependencies.every(ref => {
-      const source = store.readSource(ref.id)
-      return source && readable(ref.id) && token(source) === ref.token
-    })
+    const assistant = saved.messages.filter(item => item.role === 'assistant').map(item => item.text).join('\n\n')
+    // User prose comes from the canonical store. Generated context is eligible
+    // only while the session copy matches the accepted intake.
+    const assistantCurrent = row.assistant_valid && row.assistant_digest === memoryFileRevision(assistant) && dependencies.every(validRef)
     return { ...row, sourceIds: sourceIds(row).filter(id => !omitted.has(id)), assistantSourceIds: assistantCurrent ? dependencies.map(ref => ref.id) : [],
       questionSourceIds: questionRefs.map(ref => ref.id), questionCurrent,
-      assistant: assistantCurrent ? saved.messages.filter(item => item.role === 'assistant').map(item => item.text).join('\n\n') : '' }
+      assistant: assistantCurrent ? assistant : '' }
 
   }
   function changes(workspace: string) {
     const files = journal.files(workspace)
-    const edits = new Map<string, FileChange>()
+    const edits = new Map<string, FileReplacement>()
     const indexKeys = new Set<string>()
     const put = (path: string, after: string | null) => {
       const before = files.read(path)?.markdown ?? null
@@ -318,17 +320,19 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       const questionCurrent = !hasQuestions || (options.questionCurrent === true && answers.every(source => Boolean(source.question)))
       const questionRefs = hasQuestions && questionCurrent ? snapshot(options.questionSources ?? []) : []
       const refs = [...new Map([...userRefs, ...assistantRefs, ...questionRefs].map(ref => [ref.id, ref])).values()]
-      const row: TurnRow = { id: requestId, note: key, session, day, workspace, sources: JSON.stringify(sources.map(source => source.id)), source_tokens: JSON.stringify(userRefs), assistant_sources: JSON.stringify(assistantRefs), assistant_valid: 1, question_sources: JSON.stringify(questionRefs), question_valid: questionCurrent ? 1 : 0, written: 0 }
+      const row: TurnRow = { id: requestId, note: key, session, day, workspace, sources: JSON.stringify(sources.map(source => source.id)), source_tokens: JSON.stringify(userRefs), assistant_sources: JSON.stringify(assistantRefs), assistant_digest: assistant ? memoryFileRevision(assistant) : null, assistant_valid: 1, question_sources: JSON.stringify(questionRefs), question_valid: questionCurrent ? 1 : 0, written: 0 }
       const input = memoryFileRevision(JSON.stringify([session, day, userRefs, inputAssistant]))
       const exists = Boolean(db.prepare('SELECT 1 FROM memory_note_turns WHERE id=?').get(requestId))
       const accepted = journal.commit(`turn:${requestId}`, input, () => {
         const path = sessionPath(session)
-        const before = journal.files(workspace).read(path)?.markdown ?? null
+        const before = journal.files(workspace).read(path)
         const entry: DialogTurn = { id: requestId, session, day, messages: [
           ...sources.map(source => ({ role: 'user' as const, sourceId: source.id, version: source.version, author: source.author, at: source.at, text: source.text! })),
           ...(assistant ? [{ role: 'assistant' as const, text: assistant, at: sources.at(-1)!.at }] : []),
         ] }
-        return { workspace, changes: [{ path, before, after: (before ?? '') + JSON.stringify(entry) + '\n' }], data: { kind: 'turn', row, refs } }
+        const append = JSON.stringify(entry) + '\n'
+        return { workspace, changes: [{ path, append, beforeRevision: before?.revision ?? null,
+          afterRevision: memoryFileRevision((before?.markdown ?? '') + append) }], data: { kind: 'turn', row, refs } }
       })
       return accepted && !exists ? key : null
     },
@@ -458,17 +462,17 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         enqueue(row, survivors.length ? 'source' : 'remove')
         if (survivors.length) {
           const refs = (JSON.parse(row.source_tokens) as SourceRef[]).filter(ref => ref.id !== sourceId)
-          db.prepare("UPDATE memory_note_turns SET sources=?,source_tokens=?,assistant_valid=0,assistant_sources='[]',question_valid=0,question_sources='[]',written=0 WHERE id=?")
+          db.prepare("UPDATE memory_note_turns SET sources=?,source_tokens=?,assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,question_valid=0,question_sources='[]',written=0 WHERE id=?")
             .run(JSON.stringify(survivors), JSON.stringify(refs), row.id)
         } else db.prepare('DELETE FROM memory_note_turns WHERE id=?').run(row.id)
       }
       for (const row of assistants) {
         enqueue(row, 'assistant')
-        db.prepare("UPDATE memory_note_turns SET assistant_valid=0,assistant_sources='[]',question_valid=0,question_sources='[]',written=0 WHERE id=?").run(row.id)
+        db.prepare("UPDATE memory_note_turns SET assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,question_valid=0,question_sources='[]',written=0 WHERE id=?").run(row.id)
       }
       for (const row of questions) {
         enqueue(row, 'assistant')
-        db.prepare("UPDATE memory_note_turns SET question_valid=0,question_sources='[]',assistant_valid=0,assistant_sources='[]',written=0 WHERE id=?").run(row.id)
+        db.prepare("UPDATE memory_note_turns SET question_valid=0,question_sources='[]',assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,written=0 WHERE id=?").run(row.id)
       }
       for (const key of keys) {
         const note = rawNote(key)

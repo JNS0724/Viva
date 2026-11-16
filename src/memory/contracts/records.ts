@@ -28,6 +28,10 @@ export type MemoryProvenance = {
     epoch: number;
     projects?: readonly string[];
 };
+export interface MemorySourceErasure {
+    token: string;
+    spans: Array<{ start: number; end: number }>;
+}
 export interface MemorySource {
     id: string;
     operation: string;
@@ -49,6 +53,7 @@ export interface MemorySource {
     outcome: string;
     withdrawn: boolean;
     rememberedHash?: string | null;
+    erasure?: MemorySourceErasure;
 }
 export type StoredFact = Pick<MemoryFact, 'subject' | 'predicate' | 'relation' | 'object' | 'polarity' | 'dated'> & {
     intendedFrom: number | null;

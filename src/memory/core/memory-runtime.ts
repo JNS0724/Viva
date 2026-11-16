@@ -48,7 +48,7 @@ import { createMemoryFileRetrieval, memoryFileChunkKey } from './memory-file-ret
 import type { FileApplicability, FileNeighbors, FileSearchResult } from './memory-file-retrieval.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
-import { documentSourceRestricted, availableDocumentSourceSpans, projectDocumentSource } from './memory-document-restrictions.ts'
+import { documentSourceRestricted, availableDocumentSourceSpans, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
 import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
 import { createDailySemanticSearch, dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
 import type { DailySearchDocument, SearchChunk } from './memory-daily-search.ts'
@@ -697,7 +697,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const current = store.readSource(source.id)
     return Boolean(current?.text && current.text === source.text && !current.withdrawn && current.version === source.version && current.hash === source.hash
       && current.question === source.question
-      && (historical ? contextSources.every(id => sourceCurrent(id, at, true))
+      && (historical ? contextSources.every(fileSourceCurrent)
         : !documentSourcesRestricted([source.id]) && contextSources.every(id => dispatchSourceCurrent(id, at))))
   }
 
@@ -739,8 +739,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   let queueRestrictedRebuilds: (() => void) | undefined
   const externalPolicy = (): ExternalEditPolicy => ({ documents: documents!,
     source: id => store.readSource(id) ?? undefined, sourceToken: resources.sourceToken, sourceWorkspace: resources.sourceWorkspace,
-    readable: id => !closed && sourceCurrent(id, now(), true), hash: memoryHash })
-  documents = hasFileStorage ? resources.openDocuments(id => sourceCurrent(id, now(), true), receipt => {
+    readable: id => !closed && fileSourceCurrent(id), hash: memoryHash })
+  documents = hasFileStorage ? resources.openDocuments(id => fileSourceCurrent(id), receipt => {
     store.nextRevision()
     // The journal receipt and the derived rebuilds must survive the same transaction.
     if (receipt.action === 'DISABLE') queueRestrictedRebuilds?.()
@@ -750,18 +750,21 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     deferRecovery: true }) : null
   const notes = hasFileStorage ? createMemoryNoteJobs({
     store, effects, now, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
-    readable: id => sourceCurrent(id, now(), true),
+    readable: id => fileSourceCurrent(id),
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
     allowsDerived: ids => !documentSourcesRestricted(ids),
     allowsReferences: refs => !documentReferencesRestricted(refs),
     projectSource(source, ref) {
       const workspace = memoryHash(JSON.stringify([source.scope, source.context, source.project ?? null]))
       const restrictions = useRestrictions.sources(workspace)
+      const erasure = erasedDocumentSource(source)
+      if (erasure) restrictions.push(erasure)
       return { text: projectDocumentSource(source.text ?? '', ref, restrictions),
         spans: availableDocumentSourceSpans(source.text ?? '', ref, restrictions) }
     },
     assistantContextCurrent: context => !context.turnOnly && context.epoch === store.epoch()
-      && dependenciesCurrent(context.dependencies) && fileDependenciesCurrent(context.files ?? []) && context.sources.every(id => sourceCurrent(id)),
+      && dependenciesCurrent(context.dependencies) && fileDependenciesCurrent(context.files ?? [], context.fileSources ?? [])
+      && context.sources.every(id => context.fileSources?.includes(id) || dispatchSourceCurrent(id)),
     allowsText: (text, source) => !looksSecret(text) && !excludedSourceText(text)
       && !excludedSourceText(text, source.context ?? source.scope)
       && (!source.project || !excludedSourceText(text, source.project)),
@@ -774,14 +777,14 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const fileIndex = hasFileStorage ? resources.openFileIndex() : null
   const fileCatalog = hasFileStorage ? resources.openFileCatalog() : null
   const documentEvidence = notes && documents ? createMemoryDocumentEvidence({ notes: notes.storage, documents, hash: memoryHash,
-      readable: id => sourceCurrent(id, now(), true), source: id => store.readSource(id) ?? undefined,
+      readable: id => fileSourceCurrent(id), source: id => store.readSource(id) ?? undefined,
       allowsText: (text, source) => !looksSecret(text) && !excludedSourceText(text)
         && !excludedSourceText(text, source.context ?? source.scope)
         && (!source.project || !excludedSourceText(text, source.project)),
     }) : null
   function reference(id: string) {
     const source = store.readSource(id)
-    return source && sourceCurrent(id, now(), true) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
+    return source && fileSourceCurrent(id) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
   }
   const filePolicy: ReturnType<typeof createMemoryDocumentReadPolicy> | null = notes && documents && documentEvidence ? createMemoryDocumentReadPolicy({ notes: notes.storage, documents, hash: memoryHash,
     ...documentEvidence, reference,
@@ -866,7 +869,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return unverified.size === 0
   }
   function sourceAllowsOrigin(source: MemorySource, origin: Origin, scope = origin.context ?? origin.scope) {
-    return sourceCurrent(source.id, now(), true) && (contextAllows(source.scope, scope) || contextAllows(source.scope, origin.project))
+    return fileSourceCurrent(source.id) && (contextAllows(source.scope, scope) || contextAllows(source.scope, origin.project))
       && (!source.project || Boolean(origin.project && sameScope(source.project, origin.project)))
       && (!source.context || contextAllows(source.context, origin.context ?? origin.scope))
   }
@@ -899,7 +902,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return refs.some(ref => {
       const source = store.readSource(ref.id)
       if (!source) return true
-      return documentSourceRestricted(ref, useRestrictions.sources(resources.sourceWorkspace(source)))
+      const erasure = erasedDocumentSource(source)
+      return Boolean(erasure && documentSourceRestricted(ref, [erasure]))
+        || documentSourceRestricted(ref, useRestrictions.sources(resources.sourceWorkspace(source)))
     })
   }
   function documentChanged(_receipt: DocumentReceipt) {
@@ -911,7 +916,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const model = route(), sources = request.sourceIds()
       if (!model || !sources.length || !request.current()) return
       const id = randomUUID(), snapshotRevision = store.revision()
-      const current = () => !closed && request.current() && request.sourceIds().every(sourceId => sourceCurrent(sourceId, now(), true))
+      const current = () => !closed && request.current() && request.sourceIds().every(sourceId => fileSourceCurrent(sourceId))
       runningComputations.set(id, {
         ready: () => !mutation && store.revision() === snapshotRevision && current(),
         current, get deadline() { return dispatchDeadline([], request.sourceIds(), now()) },
@@ -927,12 +932,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
     notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx,
     settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
-    readable: id => sourceCurrent(id, now(), true),
+    readable: id => fileSourceCurrent(id),
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
     source: id => store.readSource(id) ?? undefined,
     reference(id) {
       const source = store.readSource(id)
-      return source && sourceCurrent(id, now(), true) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
+      return source && fileSourceCurrent(id) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
     },
     allowsText: (text, source) => !looksSecret(text) && !excludedSourceText(text)
       && !excludedSourceText(text, source.context ?? source.scope)
@@ -944,7 +949,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const fileMaintenance = notes && documents && fileCatalog && documentEvidence ? createMemoryFileMaintenance({
     notes: notes.storage, documents, catalog: fileCatalog, effects, commands: store, identity: resources.identity, now,
     source: id => store.readSource(id) ?? undefined, sourceToken: resources.sourceToken, sourceWorkspace: resources.sourceWorkspace,
-    readable: id => !closed && sourceCurrent(id, now(), true), materialAllowed: documentEvidence.materialAllowed,
+    readable: id => !closed && fileSourceCurrent(id), materialAllowed: documentEvidence.materialAllowed,
     calculate: request => calculateDocument({ ...request, stage: 'verify' }), mutate: runDocumentMutation,
     changed() { syncFileIndex(); publish(store.revision(), []); notes.refreshRestrictions() },
   }) : null
@@ -1654,9 +1659,17 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (before !== store.revision()) publish(store.revision(), [...touched], undefined, [...touched])
   }
 
-  function sourceCurrent(id: string, at = now(), historical = false) {
+  function canonicalSource(id: string) {
     const source = store.readSource(id)
-    if (!source?.hash || source.withdrawn || store.sourceExcluded(id) || sourceBlocked(source)) return false
+    return source?.hash && !source.withdrawn && !store.sourceExcluded(id) && !sourceBlocked(source) ? source : null
+  }
+  // File proof validation already tracks disjoint source ranges and versions.
+  // Rows and supersession rules in the legacy fact projection cannot qualify them.
+  function fileSourceCurrent(id: string) {
+    return Boolean(canonicalSource(id)?.text)
+  }
+  function sourceCurrent(id: string, at = now(), historical = false) {
+    if (!canonicalSource(id)) return false
     if (!historical && store.hasChangeSource(id)) return false
     return store.memoriesFrom(id).every(memoryId => {
       const entry = store.get(memoryId)
@@ -1681,8 +1694,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function recordDeliveredSource(id: string, conversation: string, derived = false) {
     operationId.parse(id)
     const prior = store.deliveredSource(id)
-    const owner = prior?.conversation ?? store.readSource(id)?.conversation
-    if ((owner && owner !== conversation) || (prior && Boolean(prior.derived) !== derived) || store.sourceExcluded(id)) {
+    const source = store.readSource(id), owner = prior?.conversation ?? source?.conversation
+    if (source?.erasure || (owner && owner !== conversation) || (prior && Boolean(prior.derived) !== derived) || store.sourceExcluded(id)) {
       throw domainError('operation.conflict')
     }
     store.recordDeliveredSource(id, conversation, derived)
@@ -1690,6 +1703,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 
   function dispatchSourceCurrent(id: string, at = now()) {
     const source = store.readSource(id)
+    if (source?.erasure) return false
     if (source?.hash) return sourceCurrent(id, at) && !documentSourcesRestricted([id])
     const conversation = store.deliveredSource(id)?.conversation
     return Boolean(conversation && !source?.withdrawn && !store.sourceExcluded(id) && !sourceBlocked({ id, conversation }))

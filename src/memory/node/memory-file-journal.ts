@@ -4,7 +4,10 @@ import { join } from 'node:path'
 import { transaction } from './sqlite.ts'
 import { memoryFileRevision, openMemoryFileStore } from './memory-file-store.ts'
 
-export type FileChange = { path: string, before: string | null, after: string | null }
+export type FileReplacement = { path: string, before: string | null, after: string | null }
+/** A journaled append retains the new line and hashes, never the earlier transcript. */
+type FileAppend = { path: string, beforeRevision: string | null, afterRevision: string, append: string }
+export type FileChange = FileReplacement | FileAppend
 export type FilePlan<T> = { workspace: string, changes: FileChange[], data: T }
 type Intent<T> = { id: string, input: string, state: string, plan: FilePlan<T> }
 export type FileCheckpoint = 'intent' | 'replace' | 'receipt' | 'checkpoint'
@@ -37,6 +40,14 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
       Array<{ id: string, input: string, state: string, plan: string }>).map(row => ({ ...row, plan: JSON.parse(row.plan) as FilePlan<T> }))
   }
   const hash = (text: string | null) => text === null ? null : memoryFileRevision(text)
+  const beforeRevision = (change: FileChange) => 'append' in change ? change.beforeRevision : hash(change.before)
+  const afterRevision = (change: FileChange) => 'append' in change ? change.afterRevision : hash(change.after)
+  function targetText(change: FileChange, before: string | null, accepted: boolean): string | null | undefined {
+    if (!('append' in change)) return accepted ? change.after : change.before
+    if (accepted) return (before ?? '') + change.append
+    if (!before?.endsWith(change.append)) return undefined
+    return change.beforeRevision === null ? null : before.slice(0, -change.append.length)
+  }
   function apply(intent: Intent<T>) {
     if (db.isTransaction) throw new Error('memory-file-commit-inside-transaction')
     const store = files(intent.plan.workspace)
@@ -51,15 +62,18 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     // Preflight the ENTIRE plan, before writing any member. A third hash is never overwritten.
     const conflicts = intent.plan.changes.some(change => {
       const actual = store.read(change.path)?.revision ?? null
-      return actual !== hash(change.before) && actual !== hash(change.after)
+      return actual !== beforeRevision(change) && actual !== afterRevision(change)
     })
     if (conflicts) return conflict()
     const accepted = valid(intent.plan.data)
     for (const change of intent.plan.changes) {
-      const actual = store.read(change.path)?.revision ?? null
-      if (actual !== hash(change.before) && actual !== hash(change.after)) return conflict()
-      const target = accepted ? change.after : change.before
-      if (actual !== hash(target)) {
+      const file = store.read(change.path), actual = file?.revision ?? null
+      const previous = beforeRevision(change), next = afterRevision(change)
+      if (actual !== previous && actual !== next) return conflict()
+      const expected = accepted ? next : previous
+      if (actual !== expected) {
+        const target = targetText(change, file?.markdown ?? null, accepted)
+        if (target === undefined || hash(target) !== expected) return conflict()
         if (target === null) store.remove(change.path, actual!)
         else store.write(change.path, target, actual)
       }
@@ -101,7 +115,7 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     }
     const store = files(next.workspace)
     for (const change of next.changes) {
-      if ((store.read(change.path)?.revision ?? null) !== hash(change.before)) throw new Error('memory-file-version')
+      if ((store.read(change.path)?.revision ?? null) !== beforeRevision(change)) throw new Error('memory-file-version')
     }
     transaction(db, () => db.prepare('INSERT INTO memory_file_intents(id,input,state,workspace,plan,namespace) VALUES(?,?,?,?,?,?)')
       .run(id, input, 'pending', next.workspace, JSON.stringify(next), namespace))

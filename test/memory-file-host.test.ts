@@ -365,3 +365,52 @@ test('the transitional fact engine cannot inject or re-dispatch facts derived fr
   assert.ok(!next.packet.includes(text))
   assert.ok(!f.owner.dispatch.snapshot(next.session).dependencies.some(ref => ref.id === factId))
 })
+
+test('erased canonical coordinates reject raw and staged replay while a disjoint file remains usable after restart', async t => {
+  const f = await fixture(t), original = f.store.readSource(f.sourceId)!, text = original.text!
+  const token = memorySourceToken(original), forbidden = { id: original.id, token, spans: [{ start: 0, end: 25 }] }
+  const independent = { id: original.id, token, spans: [{ start: 26, end: text.length }] }
+  // Even when the old fact projection has an edge for this canonical source,
+  // advancing the source revision must leave independent file proof available.
+  const interval = { from: null, to: null }
+  f.store.tx(() => {
+    const id = f.store.insert({ text, kind: 'fact', modality: 'asserted', conditional: false, keywords: [],
+      scope: original.scope, source: 'agent', conversationId: original.conversation }, f.store.nextRevision(), original.at, interval)
+    f.store.evidence(id, original, 0, text.length, null, null, interval, [{ start: 0, end: text.length }])
+  })
+  const saved = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Tea is served on Monday.', sources: [independent], reads: [] })
+  const alias = { operationId: randomUUID(), sourceId: original.id, session: f.session, conversation: f.session, text }
+  await f.owner.handleHost('sourceAlias', alias)
+  const reader = randomUUID()
+  const read = () => f.owner.runtime.handle({ op: 'file_read', session: reader, id: saved.documentId }, { session: reader, conversation: reader })
+  assert.match(read(), /Tea is served on Monday/)
+  const before = f.owner.dispatch.snapshot(reader)
+  assert.equal(f.store.eraseFileSource(forbidden, original.version + 1), null)
+  assert.deepEqual(f.store.eraseFileSource(forbidden, original.version), { token, spans: forbidden.spans })
+  const erased = f.store.readSource(original.id)!
+  assert.equal(erased.version, original.version + 1)
+  assert.equal(erased.text?.length, text.length)
+  assert.equal(erased.text?.slice(0, 25), ' '.repeat(25))
+  assert.equal(erased.text?.slice(26), text.slice(26))
+  assert.equal(memorySourceToken(erased), token)
+  assert.equal(f.store.eraseFileSource(forbidden, erased.version), null)
+  const check = async () => {
+    assert.equal(f.owner.runtime.dispatchSourceCurrent(original.id), false)
+    assert.equal(f.owner.runtime.replaySource(original.id, text), false)
+    await assert.rejects(f.owner.handleHost('sourceAlias', { ...alias, operationId: randomUUID() }), /withdrawn|unavailable/)
+    await assert.rejects(f.owner.handleHost('bindWireAlias', { args: [f.session, text, text, original.id] }), /withdrawn|unavailable/)
+    assert.equal(await f.client.readFile(f.identity), null, 'trusted management may not bypass permanent erasure')
+    assert.equal(f.owner.dispatch.transferable(before), true)
+    assert.match(read(), /Tea is served on Monday/)
+    assert.throws(() => f.owner.acquireSend(randomUUID(), { session: f.session }, text), /denied/)
+  }
+  await check()
+  await f.reopen()
+  await check()
+
+  const fresh = randomUUID()
+  await f.owner.receiveSource({ sessionId: randomUUID(), messageId: fresh, text, at: Date.now(), timezone: 'UTC',
+    turn: 1, step: 1, admitted: true, inherited: false })
+  assert.equal(f.owner.runtime.dispatchSourceCurrent(fresh), true, 'an independent original is admitted normally')
+})

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { availableDocumentSourceSpans, documentSourceRestricted, projectDocumentSource } from '../src/memory/core/memory-document-restrictions.ts'
+import { availableDocumentSourceSpans, documentSourceProofCurrent, documentSourceRestricted, planDocumentSourceErasure, projectDocumentSource } from '../src/memory/core/memory-document-restrictions.ts'
 import type { DocumentSourceRef } from '../src/memory/core/ports/documents.ts'
 
 const source = { id: 'canonical-input', token: 'original-version' }
@@ -75,4 +75,18 @@ test('available evidence coalesces overlaps, preserves UTF-16 boundaries, and re
   assert.deepEqual(availableDocumentSourceSpans(text, ref, [{ ...source, spans: [{ start: 1, end: 3 }] }]), [{ start: 0, end: 1 }, { start: 3, end: 5 }])
   assert.throws(() => availableDocumentSourceSpans(text, { ...source, spans: [{ start: 0, end: 9 }] }, []), /invalid-document-source/)
   assert.throws(() => availableDocumentSourceSpans(text, source, [{ ...source, spans: [{ start: 0, end: 9 }] }]), /invalid-document-restriction/)
+})
+
+test('permanent removal preserves the coordinates of independent evidence and refuses to split a character', () => {
+  const original = { id: source.id, text: 'a🙂密\r\nB' }
+  assert.equal(planDocumentSourceErasure(original, source.token, { ...source, spans: [{ start: 2, end: 4 }] }), null)
+  const target = { ...source, spans: [{ start: 1, end: 4 }] }
+  const erased = planDocumentSourceErasure(original, source.token, target)!
+  assert.equal(erased.text, 'a   \r\nB')
+  assert.equal(erased.text.length, original.text.length)
+  assert.deepEqual(erased.erasure, { token: source.token, spans: target.spans })
+  assert.equal(documentSourceProofCurrent(source, erased.text, source.token, target), false)
+  assert.equal(documentSourceProofCurrent({ ...source, spans: [{ start: 6, end: 7 }] }, erased.text, source.token, target), true)
+  const next = planDocumentSourceErasure({ id: source.id, ...erased }, source.token, { ...source, spans: [{ start: 0, end: 1 }] })
+  assert.deepEqual(next?.erasure.spans, [{ start: 0, end: 4 }])
 })

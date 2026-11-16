@@ -2,6 +2,8 @@
 import type { MemoryKind, MemoryScope } from '../../contracts/memory-contract.ts'
 import type { MemoryFact } from '../memory-facts.ts'
 import type { MemoryInterval } from '../memory-intervals.ts'
+import type { DocumentSourceRef } from './documents.ts'
+import type { MemorySourceErasure } from '../../contracts/records.ts'
 import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
 export type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
 export interface MemoryStore {
@@ -34,6 +36,8 @@ export interface MemoryStore {
     insertSource: (source: MemorySource) => void;
     outcome: (id: string, state: string) => void;
     withdrawSource: (id: string) => void;
+    eraseFileSource: (target: DocumentSourceRef, version: number) => MemorySourceErasure | null;
+    fileErasures: (workspace: string) => DocumentSourceRef[];
     evidence: (memory: number, source: MemorySource, start: number, end: number, parts: MemoryFact["evidence"] | null, changeId: number | null, interval: MemoryInterval, spans: MemoryEvidence["spans"], inheritsChangeTime?: boolean) => number | bigint;
     storedEvidence: (id: number) => MemoryEvidence[];
     removeEvidence: (memory: number, source: string, start: number, end: number) => void;

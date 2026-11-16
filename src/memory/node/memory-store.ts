@@ -9,6 +9,10 @@ import { MEMORY_CONTRACT, memoryScope } from '../contracts/memory-contract.ts'
 import type { MemoryKind, MemoryScope } from '../contracts/memory-contract.ts'
 import { memoryFileDependencySchema } from '../contracts/provenance.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
+import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
+import { planDocumentSourceErasure } from '../core/memory-document-restrictions.ts'
+import type { DocumentSourceRef } from '../core/ports/documents.ts'
+import type { MemorySourceErasure } from '../contracts/records.ts'
 import { memoryRelationLabel } from '../core/memory-facts.ts'
 import type { MemoryFact } from '../core/memory-facts.ts'
 import type { MemoryInterval } from '../core/memory-intervals.ts'
@@ -118,7 +122,7 @@ type MemoryRow = Omit<MemoryEntry, 'scope' | 'conditional' | 'keywords' | 'evide
 type ChangeRow = Omit<MemoryChange, 'spans' | 'automatic' | 'intentWindows' | 'oldValueSpans' | 'needsConfirmation'>
   & { spans: string, automatic: number, intentWindows: string | null, oldValueSpans: string, needsConfirmation: number }
 type EvidenceRow = Omit<MemoryEvidence, 'parts' | 'spans' | 'inheritsChangeTime'> & { parts: string | null, spans: string, inheritsChangeTime: number }
-type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'withdrawn' | 'requestId' | 'questionId' | 'rememberedHash'> & { scope: string, context: string | null, project: string | null, withdrawn: number, request_id: string | null, question_id: string | null, remembered_hash: string | null }
+type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'withdrawn' | 'requestId' | 'questionId' | 'rememberedHash' | 'erasure'> & { scope: string, context: string | null, project: string | null, withdrawn: number, request_id: string | null, question_id: string | null, remembered_hash: string | null }
 const columns = 'id, revision, text, kind, scope, modality, conditional, keywords, source, conversation AS conversationId, created_at AS createdAt, updated_at AS updatedAt, state, retention, authorized_revision AS authorizedRevision, invalid_at AS invalidAt, invalidated_by AS invalidatedBy, valid_from AS validFrom, valid_to AS validTo, asserted_from AS assertedFrom, asserted_to AS assertedTo, windows'
 const changeColumns = 'id, revision, target AS targetId, replacement AS replacementId, kind, source AS sourceId, source_version AS sourceVersion, spans, affected_from AS "from", affected_to AS "to", effective_at AS effectiveAt, intent_from AS intentFrom, intent_to AS intentTo, derived_from AS derivedFrom, intent_windows AS intentWindows, old_value_spans AS oldValueSpans, needs_confirmation AS needsConfirmation, created_at AS createdAt, automatic, status'
 import { memoryScopeKey } from '../core/scope.ts'
@@ -163,6 +167,9 @@ export function openMemoryStore(file: string, now = Date.now) {
       db.prepare('INSERT INTO memory_meta (key,value) VALUES (?,?)').run('secret', randomBytes(32).toString('hex'))
     })
     db.exec(DERIVED_DISPATCH_SCHEMA)
+    db.exec(`CREATE TABLE IF NOT EXISTS memory_source_range_erasures (
+      source TEXT PRIMARY KEY REFERENCES memory_sources(id), workspace TEXT NOT NULL, token TEXT NOT NULL, spans TEXT NOT NULL
+    ); CREATE INDEX IF NOT EXISTS memory_source_range_erasures_workspace ON memory_source_range_erasures(workspace)`)
     if (!db.prepare("SELECT 1 FROM pragma_table_info('memory_sources') WHERE name='project'").get()) {
       db.exec('ALTER TABLE memory_sources ADD COLUMN project TEXT')
     }
@@ -367,9 +374,35 @@ export function openMemoryStore(file: string, now = Date.now) {
   const recordFact = (id: number, fact: MemoryFact) =>
     db.prepare(`INSERT OR REPLACE INTO memory_facts VALUES (?,?,?,?,?,?,?,?,?)`).run(id, fact.subject, fact.predicate, fact.relation,
       fact.object, fact.polarity, Number(fact.dated), fact.dated && !fact.uncertain ? fact.from : null, fact.dated && !fact.uncertain ? fact.to : null)
+  const sourceById = db.prepare(`SELECT s.*, e.token AS erasure_token, e.spans AS erasure_spans FROM memory_sources s
+    LEFT JOIN memory_source_range_erasures e ON e.source=s.id WHERE s.id=?`)
+  const erasuresByWorkspace = db.prepare('SELECT source,token,spans FROM memory_source_range_erasures WHERE workspace=? ORDER BY source')
+  function fileErasures(workspace: string): DocumentSourceRef[] {
+    const rows = erasuresByWorkspace.all(workspace) as Array<{ source: string, token: string, spans: string }>
+    return rows.map(row => ({ id: row.source, token: row.token, spans: JSON.parse(row.spans) as MemorySourceErasure['spans'] }))
+  }
   const readSource = (id: string): MemorySource | null => {
-    const row = db.prepare('SELECT * FROM memory_sources WHERE id=?').get(id) as SourceRow | undefined
-    return row ? { ...row, requestId: row.request_id, questionId: row.question_id, rememberedHash: row.remembered_hash, scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null, project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null, withdrawn: Boolean(row.withdrawn) } : null
+    const stored = sourceById.get(id) as (SourceRow & { erasure_token: string | null, erasure_spans: string | null }) | undefined
+    if (!stored) return null
+    const { erasure_token, erasure_spans, ...row } = stored
+    return { ...row, requestId: row.request_id, questionId: row.question_id, rememberedHash: row.remembered_hash,
+      scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null,
+      project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null, withdrawn: Boolean(row.withdrawn),
+      ...(erasure_token && erasure_spans ? { erasure: { token: erasure_token, spans: JSON.parse(erasure_spans) as MemorySourceErasure['spans'] } } : {}) }
+  }
+  function eraseFileSource(target: DocumentSourceRef, version: number): MemorySourceErasure | null {
+    return transaction(db, () => {
+      const source = readSource(target.id)
+      if (!source || source.withdrawn || source.version !== version || sourceExcluded(source.id)) return null
+      const plan = planDocumentSourceErasure(source, memorySourceToken(source), target)
+      if (!plan) return null
+      db.prepare(`UPDATE memory_sources SET text=?, hash=?,version=version+1,question=NULL,remembered_hash=NULL
+        WHERE id=? AND version=?`).run(plan.text, memoryHash(plan.text), source.id, version)
+      db.prepare(`INSERT INTO memory_source_range_erasures VALUES (?,?,?,?)
+        ON CONFLICT(source) DO UPDATE SET spans=excluded.spans`)
+        .run(source.id, memorySourceWorkspace(source), plan.erasure.token, JSON.stringify(plan.erasure.spans))
+      return plan.erasure
+    })
   }
   const insertSource = (source: MemorySource) => db.prepare(`INSERT INTO memory_sources
     (id, operation, version, conversation, session, scope, context, project, author, text, hash, remembered_hash, length, question, request_id, question_id, at, timezone, outcome)
@@ -616,7 +649,7 @@ export function openMemoryStore(file: string, now = Date.now) {
     return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-'))
       : path.join(path.dirname(file), 'memory-files')
   }, db, tx, revision, epoch, nextRevision, get, exists: (id: number) => Boolean(exists.get(id)), list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, profileCandidates, nextProfileBoundary, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
-    readSource, insertSource, outcome, withdrawSource, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
+    readSource, insertSource, outcome, withdrawSource, eraseFileSource, fileErasures, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
     insert, setAssertion, project, touch, authorize, remove, forgetEntry, restoreEntry, recordFact, setKeywords, touchChange,
     exclude, excluded, sourceExcluded, excludeSource, sourceIds, answerSourceIds, memoriesFrom, changesFrom, changesReferencing, hasChangeSource,
     deliveredSourceIds, deliveredSource, recordDeliveredSource, dispatch,

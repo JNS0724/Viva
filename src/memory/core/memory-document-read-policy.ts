@@ -3,7 +3,7 @@ import type { MemoryNotes } from './ports/notes.ts'
 import type { MemorySource } from './ports/store.ts'
 import { inspectMemoryDocumentText } from './memory-dream-material.ts'
 import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryDocuments } from './ports/documents.ts'
-import { documentSourceRestricted } from './memory-document-restrictions.ts'
+import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
 
 type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
@@ -60,7 +60,10 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
   const refsCurrent = (refs: readonly DocumentSourceRef[]) => {
     if (!refs.length || refs.some(ref => !readable(ref.id))) return false
     const latest = notes.snapshot(refs.map(ref => ref.id))
-    return refs.every(ref => latest.some(item => item.id === ref.id && item.token === ref.token) && Boolean(source(ref.id)?.text))
+    return refs.every(ref => {
+      const original = source(ref.id), token = latest.find(item => item.id === ref.id)?.token
+      return Boolean(original?.text && token && documentSourceProofCurrent(ref, original.text, token, erasedDocumentSource(original)))
+    })
   }
   const materialAllowed = (text: string, refs: readonly DocumentSourceRef[]) => {
     const ids = new Set(refs.map(ref => ref.id))

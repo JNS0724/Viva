@@ -13,6 +13,7 @@ import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { openMemoryFileCatalog } from './memory-file-catalog.ts'
+import { erasedDocumentSource } from '../core/memory-document-restrictions.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
 export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRuntime>[0], 'store' | 'resources'> & { store: MemoryStore }
@@ -34,11 +35,12 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
     openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
     semanticCopiesCleared: (ids, revision) => memorySemanticCopiesCleared(store.db, ids, revision),
     openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
-    openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed,
+    openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed, erasures: store.fileErasures,
       externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
       source(id) {
         const source = store.readSource(id)
-        return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source), text: source.text } : undefined
+        return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source),
+          text: source.text, erasure: erasedDocumentSource(source) } : undefined
       },
     }),
     createCleanup: callbacks => createMemoryCleanup({ db: store.db, effects, lexical, hasCandidateReference: store.hasCandidateReference, ...callbacks }),

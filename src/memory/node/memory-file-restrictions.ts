@@ -19,7 +19,11 @@ const refs = (row: { sources: string }): DocumentSourceRef[] => JSON.parse(row.s
 export function openMemoryFileRestrictions(db: DatabaseSync): MemoryFileRestrictions {
   const oldRestrictions = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_use_restrictions'").get()
   const oldDaily = db.prepare(`SELECT 1 FROM pragma_table_info('memory_daily_notes') WHERE name='file_revision' AND "notnull"=1`).get()
-  if (oldRestrictions || oldDaily) throw new Error('Memory file layout is incompatible; use a fresh memory data directory')
+  const incompleteTurns = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_note_turns'
+    AND NOT EXISTS (SELECT 1 FROM pragma_table_info('memory_note_turns') WHERE name='assistant_digest')`).get()
+  const incompletePurges = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_purges'
+    AND NOT EXISTS (SELECT 1 FROM pragma_table_info('memory_document_purges') WHERE name='expected_revision')`).get()
+  if (oldRestrictions || oldDaily || incompleteTurns || incompletePurges) throw new Error('Memory file layout is incompatible; use a fresh memory data directory')
   db.exec(`CREATE TABLE IF NOT EXISTS memory_file_use_restrictions (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, workspace TEXT NOT NULL, target TEXT NOT NULL,
     content_revision TEXT NOT NULL, usage_version INTEGER NOT NULL, sources TEXT NOT NULL, snapshot TEXT
