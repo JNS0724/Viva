@@ -135,9 +135,11 @@ function range(sourceId: string, revision: number, text: string, selection: stri
 }
 
 test('consecutive source cuts keep direct and formatted history, stars, and unrelated text across stale saves and reopening', t => {
-  const { dir } = scratch(t, 'memory-range-history-')
+  const { dir, defer } = scratch(t, 'memory-range-history-')
   const file = join(dir, 'host.db'), sourceId = randomUUID()
   const history = openHistoryDb({ file })
+  let ownedHistory: ReturnType<typeof openHistoryDb> | undefined = history
+  defer(() => ownedHistory?.close())
   const first = 'qxz🚲', second = 'zqw contract', independent = 'Keep separate plans'
   const original = `${first}\r\n${second}\n${independent}`
   const one = original.replace(first, ' '.repeat(first.length)), both = one.replace(second, ' '.repeat(second.length))
@@ -157,8 +159,10 @@ test('consecutive source cuts keep direct and formatted history, stars, and unre
   history.eraseFileRanges([b])
   history.eraseFileRanges([a])
   history.close()
+  ownedHistory = undefined
 
-  const reopened = openHistoryDb({ file }); t.after(() => reopened.close())
+  const reopened = openHistoryDb({ file })
+  ownedHistory = reopened
   reopened.save(direct, [{ ...row, sourceId: undefined }, { role: 'assistant', key: answerKey, text: 'Independent answer' }])
   reopened.save(formatted, [{ ...row, text: choices + one }])
   const fork = reopened.save(reopened.create({ sessionId: randomUUID() }), [{ ...row, sourceId: undefined, key: undefined }],
@@ -175,7 +179,7 @@ test('consecutive source cuts keep direct and formatted history, stars, and unre
   reopened.save(direct, [{ ...row, sourceId: randomUUID() }])
   assert.equal(reopened.get(direct.id)?.messages[0]?.text, original, 'distinct admitted input is scoped to its own identity')
   reopened.save(direct, [row])
-  const inspection = new DatabaseSync(file); t.after(() => inspection.close())
+  const inspection = new DatabaseSync(file); defer(() => inspection.close())
   for (const { block } of inspection.prepare('SELECT block FROM messages_fts_data').all()) {
     const bytes = Buffer.from(block as Uint8Array)
     assert.equal(bytes.includes(Buffer.from('qxz')), false)
@@ -269,15 +273,17 @@ test('one unverifiable source does not starve later independent host effects', a
 })
 
 test('file forgetting physically removes affected schedules, run inputs and feed items without touching a disjoint historical file', async t => {
-  const { dir } = scratch(t, 'memory-derived-erase-')
+  const { dir, defer } = scratch(t, 'memory-derived-erase-')
   const path = join(dir, 'app.db'), db = new DatabaseSync(path)
-  t.after(() => db.close())
+  defer(() => db.close())
   db.exec(APP_DB_PRAGMAS)
-  const history = openHistoryDb({ db }), effects = createEffects({ db }), feed = openFeedStore({ db })
+  const history = openHistoryDb({ db }), effects = createEffects({ db })
+  defer(() => effects.close())
+  const feed = openFeedStore({ db })
   const now = Date.parse('2026-11-06T10:00:00+08:00'), store = openScheduleStore({ db, now: () => now })
   const runner = createScheduleRuns({ db, store, feed, now: () => now,
     async run() { return { ok: true, text: '' } }, keep() {}, delivered() {} })
-  t.after(() => runner.close())
+  defer(() => runner.close())
   const sourceId = randomUUID(), text = 'erase report, keep tea'
   const a = range(sourceId, 1, text, 'erase report')
   const base: MemoryProvenance = { sources: [sourceId], turnOnly: false, epoch: 0 }
@@ -309,7 +315,7 @@ test('file forgetting physically removes affected schedules, run inputs and feed
   const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
     invalidate() {}, feedCopiesRemoved(ids) { invalidatedFeed.push([...ids].sort()) },
     apply: (_kind, _data, write) => ({ value: transaction(db, write) }) })
-  t.after(() => { host.close(); effects.close() })
+  defer(() => host.close())
   await host.recover()
   assert.deepEqual(invalidatedFeed, [[raw, related].sort()], 'only proved erased results are invalidated once')
   await host.recover()
@@ -329,9 +335,9 @@ test('file forgetting physically removes affected schedules, run inputs and feed
 })
 
 test('feed erasure replays exact durable identities after a failed volatile notification', async t => {
-  const { dir } = scratch(t, 'memory-feed-retry-')
+  const { dir, defer } = scratch(t, 'memory-feed-retry-')
   const db = new DatabaseSync(join(dir, 'app.db'))
-  t.after(() => db.close())
+  defer(() => db.close())
   db.exec(APP_DB_PRAGMAS)
   const history = openHistoryDb({ db }), feed = openFeedStore({ db })
   const sourceId = randomUUID(), text = 'private source'
@@ -349,7 +355,7 @@ test('feed erasure replays exact durable identities after a failed volatile noti
   const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
     apply: (_kind, _data, work) => ({ value: transaction(db, work) }), invalidate() {},
     feedCopiesRemoved(ids) { if (fail) throw new Error('window stream unavailable'); notices.push([...ids]) } })
-  t.after(() => host.close())
+  defer(() => host.close())
   await assert.rejects(host.recover(), /window stream unavailable/)
   assert.deepEqual(feed.list().map(item => item.id), [independent.id])
   fail = false

@@ -19,9 +19,9 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const proofOf = (sourceId: string): MemoryProvenance => ({ sources: [sourceId], turnOnly: false, epoch: 1 })
 
 test('host file erasure retires exact generated copies and task bodies through retry and WAL checkpoint', async t => {
-  const { dir } = scratch(t, 'viva-generated-replicas-')
+  const { dir, defer } = scratch(t, 'viva-generated-replicas-')
   const file = join(dir, 'app.db'), db = new DatabaseSync(file)
-  t.after(() => db.close())
+  defer(() => db.close())
   db.exec(APP_DB_PRAGMAS)
   const history = openHistoryDb({ db }), tasks = createTaskStore({ db, retainedReply: history.retainedReply })
   const source = randomUUID(), original = 'private fragment but independent tail'
@@ -74,7 +74,7 @@ test('host file erasure retires exact generated copies and task bodies through r
     invalidate() {}, invalidateTaskBodies(ids) { calls.push([...ids].sort()); if (calls.length === 1) throw new Error('task close interrupted') },
     generatedCopiesRemoved(copies) { removed.push(copies.map(copy => copy.key).sort()) },
     fileCopiesDurable(effect) { receipts.push(effect.effectId) } })
-  t.after(() => host.close())
+  defer(() => host.close())
   const reader = new DatabaseSync(file, { readOnly: true })
   try {
     reader.exec('BEGIN')

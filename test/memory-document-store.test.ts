@@ -4,13 +4,12 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { openMemoryFileJournal } from '../src/memory/node/memory-file-journal.ts'
 import type { FileCheckpoint } from '../src/memory/node/memory-file-journal.ts'
 import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 import type { DocumentCommit, DocumentSourceRef } from '../src/memory/core/ports/documents.ts'
+import { runToCrash } from './fixtures/memory-crash-process.ts'
 
 const workspace = memoryFileRevision('scope')
 const path = 'digest/personal/home.md'
@@ -320,12 +319,11 @@ test('a failed request-revision callback rolls back metadata and is replayed on 
 })
 
 for (const point of ['intent', 'replace', 'receipt', 'checkpoint'] as const) {
-  test(`killed process at ${point} recovers CORRECT metadata and supports safe undo`, t => {
+  test(`killed process at ${point} recovers CORRECT metadata and supports safe undo`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'memory-doc-process-'))
     let db: DatabaseSync | undefined
     t.after(() => { db?.close(); rmSync(root, { recursive: true, force: true }) })
-    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./fixtures/memory-document-crash.ts', import.meta.url)), root, point], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8' })
-    assert.equal(result.signal, 'SIGKILL', result.stderr)
+    await runToCrash(new URL('./fixtures/memory-document-crash.ts', import.meta.url), point, root)
     db = new DatabaseSync(join(root, 'memory.db'))
     const documents = openMemoryDocuments({ db, root, source: () => ({ workspace, token: 'v1', text: '原来在深圳，现在搬到上海。' }) })
     const corrected = documents.read(workspace, path)!

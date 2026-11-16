@@ -14,7 +14,7 @@ function file(id: string, text='喜欢茶', patch: Partial<MemoryFileSnapshot>={
 function fixture(t: test.TestContext) {
   const temp=scratch(t,'viva-file-index-'), path=join(temp.dir,'index.db'), db=new DatabaseSync(path)
   db.exec(APP_DB_PRAGMAS); temp.defer(()=>db.close())
-  return {db,path,index:openMemoryFileIndex({db})}
+  return {db,path,index:openMemoryFileIndex({db}),defer:temp.defer}
 }
 test('accepted snapshot CAS and authorization cover every candidate before applying hit quota',t=>{
   const {index}=fixture(t), authorized=file('authorized','tea tea tea'), hidden=file('hidden','tea')
@@ -83,11 +83,11 @@ test('restarting retains accepted chunks and completed vectors, reindex invalida
   assert.equal(reopened.lexical('喜欢茶',[a],10).hits.length,1)
 })
 test('withdrawal physically erases accepted projections and generations, rejects delayed reaccept, keeps WAL cleanup pending with a reader',t=>{
-  const {db,path,index}=fixture(t), marker='Archived sentence about quietly drinking peppermint tea.', a=file('private',marker)
+  const {db,path,index,defer}=fixture(t), marker='Archived sentence about quietly drinking peppermint tea.', a=file('private',marker)
   index.accept(a,null); const gen=index.beginVectors({fingerprint:'model',dimensions:2}), refs=index.missingVectors(gen).map(chunk=>chunk.ref)
   index.stageVectors(gen,refs.map(ref=>({ref,vectors:[new Float32Array([1,0])]})))
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-  const reader=new DatabaseSync(path); t.after(()=>reader.close()); reader.exec('BEGIN'); reader.prepare('SELECT * FROM memory_file_index_nodes').all()
+  const reader=new DatabaseSync(path); defer(()=>reader.close()); reader.exec('BEGIN'); reader.prepare('SELECT * FROM memory_file_index_nodes').all()
   index.withdraw(a.sources[0]!.id); index.recover()
   assert.equal(index.pendingCleanup(),1)
   assert.equal(index.snapshot(workspace,a.id),null)
