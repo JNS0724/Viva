@@ -11,7 +11,9 @@ import { APP_DB_PRAGMAS, transaction } from './sqlite.ts'
 import { createNativeOutputAttempts } from './native-output-attempts.ts'
 import { createNativeOutputJournal } from './native-output-journal.ts'
 import { createNativeToolReads } from './native-tool-reads.ts'
+import { createNativeSpills } from './native-spills.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
+import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 const span = z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() }).refine(x => x.end > x.start)
@@ -89,8 +91,10 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   const surface = nativeSurfaceInvalidation(db)
   const outputAttempts = createNativeOutputAttempts(db)
   const toolReads = createNativeToolReads(db)
+  const spills = createNativeSpills(db)
   const derived = createNativeDerivedMessages(db)
   const outputJournal = createNativeOutputJournal(db, surface.mark)
+  const cleanupReceipts = createNativeErasureReceipts(db)
   db.exec('CREATE TABLE IF NOT EXISTS owner_native_original_completed (operation TEXT PRIMARY KEY)')
   const hash = (value: string) => createHmac('sha256', secret).update(JSON.stringify(value)).digest('hex')
   const canonical = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -159,6 +163,13 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     }
     return {
       messageIds: new Set(replicas.keys()), authorize, publication,
+      satisfiesCuts(candidate: NativeOriginalCandidate) {
+        const original = replicas.get(candidate.messageId)
+        if (!original || maskTextSpans(candidate.wireText, original.wireCuts) !== candidate.wireText) return false
+        const actual = { messageId: candidate.messageId, wireHash: hash(candidate.wireText), contentHash: hash(candidate.contentDigest) }
+        return (knownMedia.get(candidate.messageId) ?? []).some(proof =>
+          proof.wireHash === actual.wireHash && proof.contentHash === actual.contentHash)
+      },
       prepare(session: string, entry: Publication) {
         transaction(db, () => {
           db.prepare('INSERT INTO owner_native_original_publications VALUES (?,?,?,0)').run(operationId, session, JSON.stringify(publicationShape.parse(entry)))
@@ -195,9 +206,27 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
       const operationId = z.uuid().parse(row.operation)
       const journal = outputJournal.forOperation(operationId + ':tool-results')
       const targets = () => toolReads.affected(ranges).flatMap(call =>
-        call.result && !outputJournal.erased(call.id) ? [{ ...call, result: call.result }] : [])
+        (call.result || call.absent && call.inputDerived) && !outputJournal.erased(call.id) ? [call] : [])
       return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets }] : []
     })
+  }
+
+  function spillOperations() {
+    return outputPlans.all().map(row => {
+      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
+      const targets = () => spills.affected(toolReads.affected(ranges), outputAttempts.affected(ranges, memoryIds ?? []))
+      return { operationId: z.uuid().parse(row.operation), targets, complete: spills.complete,
+        pending: () => targets().length > 0 }
+    }).filter(operation => operation.pending())
+  }
+
+  function ptcInputCuts() {
+    const cuts = new Map<string, ReturnType<typeof toolReads.readCuts>[number]>()
+    for (const row of outputPlans.all()) {
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
+      for (const cut of toolReads.readCuts(ranges)) if (!outputJournal.erased(cut.call.id)) cuts.set(JSON.stringify(cut), cut)
+    }
+    return [...cuts.values()]
   }
 
   function derivedMessageOperations() {
@@ -207,13 +236,89 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
       const journal = outputJournal.forOperation(operationId + ':derived-messages')
       const targets = () => derived.affected(ranges, memoryIds ?? [])
       return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets, complete: derived.erased,
-        verify: (target: { digest: string }, content: string) => hash(content) === target.digest,
+        verify: (target: { digest: string, envelope?: string }, content: string, messageDigest: string) => hash(content) === target.digest
+          && (!target.envelope || hash(messageDigest) === target.envelope),
       }] : []
     })
   }
 
+  db.exec(`CREATE TABLE IF NOT EXISTS owner_native_recovery_erased (
+    operation TEXT NOT NULL,ticket TEXT NOT NULL,PRIMARY KEY(operation,ticket)
+  ) WITHOUT ROWID`)
+  const recoveryTickets = db.prepare('SELECT id,payload FROM owner_context_recoveries')
+  const recovered = db.prepare('SELECT 1 FROM owner_native_recovery_erased WHERE operation=? AND ticket=?')
+  const eraseRecovery = db.prepare('INSERT OR IGNORE INTO owner_native_recovery_erased VALUES (?,?)')
+  function recoveryMessageOperations() {
+    return outputPlans.all().flatMap(row => {
+      const plan = planShape.parse(JSON.parse(String(row.payload)))
+      if (!plan.originals?.length) return []
+      const operationId = z.uuid().parse(row.operation), originals = operation(operationId, plan)
+      const messageIds = originals.messageIds
+      const journal = outputJournal.forOperation(operationId + ':recovery-messages')
+      const targets = () => recoveryTickets.all().flatMap(row => {
+        const ticket = z.strictObject({
+          ticketId: z.uuid(), sessionId: z.string(), state: z.enum(['prepared', 'bound', 'committed']),
+          replacementMessageId: z.string().optional(), replacementHash: digest.optional(),
+          retainedMessageIds: z.array(z.string()),
+        }).passthrough().parse(JSON.parse(String(row.payload)))
+        return ticket.state !== 'prepared' && ticket.replacementMessageId && ticket.replacementHash
+          && ticket.retainedMessageIds.some(id => messageIds.has(id)) && !recovered.get(operationId, ticket.ticketId)
+          ? [{ ticket: ticket.ticketId, message: ticket.replacementMessageId, hash: ticket.replacementHash, originals: ticket.retainedMessageIds }] : []
+      })
+      return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets,
+        contains: (message: string) => messageIds.has(message), authorize: originals.authorize, satisfies: originals.satisfiesCuts,
+        complete(tickets: readonly string[]) { transaction(db, () => { for (const id of tickets) eraseRecovery.run(operationId, id) }) },
+      }] : []
+    })
+  }
+
+  function unsettledReceipts() {
+    const attempts = new Map<string, ReturnType<typeof outputAttempts.affected>[number]>()
+    const tools = new Map<string, ReturnType<typeof toolReads.affected>[number]>()
+    for (const row of outputPlans.all()) {
+      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
+      for (const item of outputAttempts.affected(ranges, memoryIds ?? [])) if (item.result.state === 'open') attempts.set(item.id, item)
+      for (const item of toolReads.affected(ranges)) if (!item.result && !item.absent) tools.set(item.id, item)
+    }
+    return { attempts: [...attempts.values()], tools: [...tools.values()] }
+  }
+
+  function acknowledgeCatalog(catalog: string, uncertainSessions: ReadonlySet<string>) {
+    if (outputJournal.pending()) return
+    const completedOriginal = db.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?')
+    const activeRecoveries = new Set(recoveryMessageOperations().map(item => item.operationId))
+    const activeSpills = new Set(spillOperations().map(item => item.operationId))
+    const publishedOriginalSessions = db.prepare('SELECT session FROM owner_native_original_publications WHERE operation=?')
+    const publishedDerivedSessions = db.prepare('SELECT session FROM owner_native_output_publications WHERE operation=? OR operation LIKE ?')
+    for (const row of outputPlans.all()) {
+      const operationId = z.uuid().parse(row.operation), plan = planShape.parse(JSON.parse(String(row.payload)))
+      const sessions = [...plan.sessions, ...publishedOriginalSessions.all(operationId).map(row => String(row.session)),
+        ...publishedDerivedSessions.all(operationId, operationId + ':%').map(row => String(row.session))]
+      if (sessions.some(session => uncertainSessions.has(session)) || activeRecoveries.has(operationId) || activeSpills.has(operationId)
+        || plan.originals?.length && !completedOriginal.get(operationId)
+        || outputAttempts.affected(plan.ranges, plan.memoryIds ?? []).some(item => !outputJournal.erased(item.id))
+        || toolReads.affected(plan.ranges).some(item => !item.result && !item.absent || !outputJournal.erased(item.id))
+        || derived.affected(plan.ranges, plan.memoryIds ?? []).length) continue
+      cleanupReceipts.acknowledge(operationId, catalog)
+    }
+  }
+
   const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
-  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations,
+  return { operations, operation, outputOperations, toolResultOperations, spillOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
+    hasPlans: () => outputPlans.all().some(row => !cleanupReceipts.complete(String(row.operation))),
+    ptcInputCuts,
+    recoverPtcInput(call: Parameters<typeof toolReads.recoverInput>[0], evidence: Parameters<typeof toolReads.recoverInput>[1]) {
+      toolReads.recoverInput(call, evidence, outputJournal.forOperation('native-proof').provenTransition)
+    },
+    nativeTransition: outputJournal.forOperation('native-proof').provenTransition,
+    finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
+    finishAbsentTool(call: Parameters<typeof toolReads.finishAbsent>[0]) {
+      toolReads.finishAbsent(call)
+      if (!call.inputDerived) outputJournal.forOperation('native-absent-tools').complete([call.id])
+    },
+    toolSpillsPending: (call: Parameters<typeof toolReads.finishAbsent>[0]) => spillOperations().some(operation => operation.targets().some(spill =>
+      spill.call.id === call.id || spill.call.session === call.session && spill.call.generation === call.generation
+        && spill.call.ptc?.rootCallId === call.callId)),
     pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),
     carriesUnsettledPublication: () => Boolean(unsettled.get()) || outputJournal.pending(),
     close() { try { db.close() } finally { closeLock() } } }

@@ -29,6 +29,17 @@ export function memorySessionSurfaceHash(session: Session) {
 export function memoryRecoveryMessageHash(message: UserMessage) { return hash(message) }
 export function memoryOriginalContentDigest(message: Pick<UserMessage, 'content'>) { return hash(message.content) }
 
+export function memoryRecoveryContent(selected: readonly Pick<UserMessage, 'content'>[]): UserMessage['content'] {
+  return [
+    { type: 'text', text: 'The previous generated context has been retired. The following are authorized earlier user messages, retained as historical context.' },
+    ...selected.flatMap((original, index) => [
+      { type: 'text' as const, text: `\n[Earlier user message ${index + 1}]\n` },
+      ...original.content,
+    ]),
+    { type: 'text', text: '\n[End of earlier user messages]\n' },
+  ]
+}
+
 /** One positional replacement removes assistant/tool pairs together while leaving the human event log intact. */
 export function planMemoryContextRecovery(session: Session, ticketId: string, retainedMessageIds: readonly string[], replacementMessageId?: string) {
   const originals = originalEvents(session).map(event => event.data)
@@ -39,14 +50,7 @@ export function planMemoryContextRecovery(session: Session, ticketId: string, re
   const selected = originals.filter(message => retained.has(message.id))
   const created = createUserMessage({
     source: { kind: 'viva-memory-recovery', ticketId, originalMessageIds: selected.map(item => String(item.id)) },
-    content: [
-      { type: 'text', text: 'The previous generated context has been retired. The following are authorized earlier user messages, retained as historical context.' },
-      ...selected.flatMap((original, index) => [
-        { type: 'text' as const, text: `\n[Earlier user message ${index + 1}]\n` },
-        ...original.content,
-      ]),
-      { type: 'text', text: '\n[End of earlier user messages]\n' },
-    ],
+    content: memoryRecoveryContent(selected),
   })
   const message: UserMessage = replacementMessageId ? { ...created, id: MessageId(replacementMessageId) } : created
   const surface = [...session.surface.nodes]

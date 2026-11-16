@@ -7,7 +7,8 @@ import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
 import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
 import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
-import { continueText, matchesFeedContinuation } from '../shared/feed-continuation.ts'
+import { continueText } from '../shared/feed-continuation.ts'
+import { admitFeedContinuation } from './feed-continuation.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
@@ -1017,18 +1018,39 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** chat.said's route: the question goes to the conversation on screen. */
   async function sayInChat(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string) {
     const agent = requireBridge()
+    let feedOrigin = sessions.context()
+    const feedSelected = () => dsh.current === agent && !sessions.isChanging() && Boolean(feedOrigin.sessionId)
+      && agent.currentSession() === feedOrigin.sessionId && sameContext(feedOrigin, sessions.context())
+    const assertFeedSelected = () => { if (feedItemId && !feedSelected()) throw new Error(t('main.feed.memory.unavailable')) }
     if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
+    assertFeedSelected()
     const replay = Array.isArray(operation)
     if (replay && !await memory.replaySources(operation, question, currentMemoryProject())) throw new Error(t('main.memory.context.stale'))
     const id = agent.currentSession()
-    if (await staleMemorySession(id) || id && !await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())) await reopenMemorySession()
+    const stale = await staleMemorySession(id)
+    assertFeedSelected()
+    const projectAllowed = stale || !id || await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())
+    assertFeedSelected()
+    if (stale || !projectAllowed) {
+      await reopenMemorySession()
+      if (feedItemId) {
+        const recovered = sessions.context()
+        if (dsh.current !== agent || sessions.isChanging() || recovered.conversationId !== feedOrigin.conversationId
+          || agent.currentSession() !== recovered.sessionId) throw new Error(t('main.feed.memory.unavailable'))
+        feedOrigin = recovered
+        assertFeedSelected()
+      }
+    }
+    let feedCurrent: (() => boolean) | undefined
     if (feedItemId) {
       if (replay) throw new Error(t('main.memory.context.stale'))
-      const { item, memory: evidence } = await feedContinuation(feedItemId)
-      if (!matchesFeedContinuation(item, question)) throw new Error(t('main.feed.edit.continuation'))
-      const origin = sessions.context()
-      if (!origin.sessionId || !await memoryCoordination.transfer(origin.sessionId, evidence, currentMemoryProject(), agent.memory.ready())) throw new Error(t('main.feed.memory.unavailable'))
-      await recordDeliveredSource(operation, origin, { derived: true })
+      const origin = { ...feedOrigin }
+      feedCurrent = await admitFeedContinuation({ text: question, read: () => feedContinuation(feedItemId),
+        current: feedSelected,
+        transfer: evidence => memoryCoordination.transfer(origin.sessionId!, evidence, currentMemoryProject(), agent.memory.ready()),
+        record: () => recordDeliveredSource(operation, origin, { derived: true }),
+      })
+      if (!feedCurrent()) throw new Error(t('main.feed.memory.unavailable'))
     } else if (!replay) {
       await aliasMemory(question, operation)
     } else {
@@ -1037,7 +1059,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     turn = { active: true, startedAt: Date.now() }
     const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()
-    const held = carried ? () => historyDb.fileErasureRevision() === carryRevision : undefined
+    const held = carried || feedCurrent ? () => (!carried || historyDb.fileErasureRevision() === carryRevision) && (feedCurrent?.() ?? true) : undefined
     const words = carried ? `${carried}
 
 ${question}` : question
@@ -1148,11 +1170,16 @@ ${question}` : question
   }
 
   async function feedContinuation(id: string) {
-    const continuation = requireFeed().continuation(id)
-    if (!continuation || await memoryCoordination.transferStatus(continuation.memory, currentMemoryProject(), true) !== 'ready') {
+    const store = requireFeed(), project = currentMemoryProject()
+    const revision = historyDb.fileErasureRevision()
+    const continuation = store.continuation(id)
+    const current = () => revision === historyDb.fileErasureRevision() && project?.id === currentMemoryProject()?.id
+      && Boolean(continuation && store.continuationCurrent(continuation))
+    if (!continuation || await memoryCoordination.transferStatus(continuation.memory, project, true) !== 'ready'
+      || !current()) {
       throw new Error(t('main.feed.memory.stale'))
     }
-    return continuation
+    return { ...continuation, current }
   }
 
   /** A new item in 动态: its notification queued in the change that made it, so a quit before it goes loses nothing. */
@@ -1362,10 +1389,14 @@ ${question}` : question
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
+      fileCopiesDurable: async effect => {
+        await memory.call('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
+      },
       invalidateFileHistory: sessions.discardStaleCarry,
       eraseTaskBodies: taskStore.eraseMemoryBodies,
       invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
       generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
+      feedCopiesRemoved: erasedFeedIds => emitToRenderer({ type: 'memory_changed', erasedFeedIds }),
       eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
       traceInvalidated: traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }),

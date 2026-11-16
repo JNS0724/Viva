@@ -55,14 +55,15 @@ test('native remember binds the active canonical span and replay identity withou
   await owner.receiveSource({ sessionId: session, messageId: sourceId, text: original, turn: 1, step: 1,
     at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
   const call = { id: randomUUID(), session, generation: 0, callId: 'native-write', turn: 1, step: 1, seq: 3, digest: '1'.repeat(64) }
-  const write = () => owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text))
+  const write = () => owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text))
   assert.equal(await owner.rememberNativeFile(text), null, 'a caller without a native lease has no write authority')
-  assert.equal(await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile('模型改写的无原文事实')), null)
+  assert.equal(await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile('模型改写的无原文事实')), null)
   const first = await write()
   assert.ok(first)
   const proof = owner.dispatch.snapshot(session).files?.find(file => file.id === first.identity.id)
   assert.deepEqual(proof?.sourceRanges, [{ sourceId, spans: [{ start: 3, end: original.length }] }])
-  assert.deepEqual(await owner.withNativeToolRead({ call: { ...call, id: randomUUID() }, current: () => true },
+  const replayedCall = { ...call, id: randomUUID() }
+  assert.deepEqual(await owner.withNativeToolRead({ call: replayedCall, calls: [replayedCall], current: () => true },
     () => owner.rememberNativeFile(text)), first, 'the durable native event survives a new process-local lease ID')
   assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 1)
   const detail = owner.runtime.readFile(first.identity)!
@@ -78,7 +79,7 @@ test('native remember binds the active canonical span and replay identity withou
   await owner.receiveSource({ sessionId: session, messageId: independent, text: original, turn: 1, step: 2,
     at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
   const nextCall = { ...call, id: randomUUID(), callId: 'independent-write', seq: 5, digest: '4'.repeat(64), step: 2 }
-  const fresh = await owner.withNativeToolRead({ call: nextCall, current: () => true }, () => owner.rememberNativeFile(text))
+  const fresh = await owner.withNativeToolRead({ call: nextCall, calls: [nextCall], current: () => true }, () => owner.rememberNativeFile(text))
   assert.ok(fresh)
   assert.notEqual(fresh.identity.id, first.identity.id)
   assert.equal(owner.runtime.readFile(first.identity), null)
@@ -97,12 +98,12 @@ test('native remember rejects derived input and an execution retired while waiti
   const call = { id: randomUUID(), session, generation: 0, callId: 'native-write', turn: 1, step: 1, seq: 3, digest: '2'.repeat(64) }
   await owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: `记住：${text}`, derived: true,
     turn: 1, step: 1, at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-  assert.equal(await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text)), null)
+  assert.equal(await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text)), null)
   await owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: `记住：${text}`,
     turn: 1, step: 1, at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
   const permit = owner.acquireSend(randomUUID(), { session }, 'physical request')
   let current = true
-  const pending = owner.withNativeToolRead({ call, current: () => current }, () => owner.rememberNativeFile(text))
+  const pending = owner.withNativeToolRead({ call, calls: [call], current: () => current }, () => owner.rememberNativeFile(text))
   await new Promise<void>(resolve => setImmediate(resolve))
   current = false
   permit.settled()
@@ -124,7 +125,7 @@ test('native remember recovers the same file after publication precedes the owne
   db.exec(`CREATE TRIGGER lose_native_write_receipt BEFORE UPDATE OF state ON owner_operations
     WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'injected receipt interruption'); END`)
   const call = { id: randomUUID(), session, generation: 0, callId: 'native-write', turn: 1, step: 1, seq: 3, digest: '3'.repeat(64) }
-  await assert.rejects(owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text)), /receipt interruption/)
+  await assert.rejects(owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text)), /receipt interruption/)
   const before = owner.runtime.listFiles({ kind: 'digest' }).items
   assert.equal(before.length, 1)
   assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_tool_reads WHERE call=?').get(call.id)?.n, 1)
@@ -160,9 +161,9 @@ test('native remember cannot use an older explicit request replayed before a new
   await owner.completeTurn(done)
   await owner.receiveSource({ ...original, messageId: randomUUID(), text: '继续讨论周报。', turn: 2 })
   const call = { id: randomUUID(), session, generation: 0, callId: 'new-turn', turn: 2, step: 1, seq: 7, digest: '5'.repeat(64) }
-  assert.equal(await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text)), null)
+  assert.equal(await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text)), null)
   const current = await owner.receiveSource({ ...original, messageId: randomUUID(), turn: 2 })
-  const saved = await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text))
+  const saved = await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text))
   assert.ok(saved)
   assert.deepEqual(owner.runtime.readFile(saved.identity)?.sources.map(source => source.sourceId), [current.sourceId])
 })
@@ -184,7 +185,7 @@ test('native remember accepts arbitrary current-turn original fragments without 
       at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
     const call = { id: randomUUID(), session, generation: 0, callId: `fragment-${index}`, turn: index + 1, step: 1,
       seq: index * 4 + 3, digest: String(index + 6).repeat(64) }
-    const saved = await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(example.text))
+    const saved = await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(example.text))
     assert.ok(saved)
     assert.ok(owner.runtime.readFile(saved.identity)?.markdown.includes(example.text))
     const proof = owner.dispatch.snapshot(session).files?.find(file => file.id === saved.identity.id)
@@ -209,7 +210,7 @@ test('native files reuse authenticated user or project scope across topics and k
   }
   async function remember(session: string, text: string) {
     const call = { id: randomUUID(), session, generation: 0, callId: randomUUID(), turn: 1, step: 1, seq: 3, digest: 'a'.repeat(64) }
-    return owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text))
+    return owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text))
   }
   const personal = 'I keep personal notes in Spanish.'
   await original('personal', personal, { kind: 'user' })
@@ -245,4 +246,27 @@ test('native files reuse authenticated user or project scope across topics and k
   assert.ok(owner.runtime.handle({ op: 'file_read', session: task, id: taskFile.identity.id }, owner.sessionContext(task)).includes(answer))
   assert.ok(!owner.runtime.handle({ op: 'file_read', session: 'personal-next', id: taskFile.identity.id }, owner.sessionContext('personal-next')).includes(answer))
   assert.ok(!owner.runtime.fileProfile().user.some(item => item.text.includes('Icelandic')))
+})
+
+test('native remember archives the exact source span for every authenticated PTC ancestor', async t => {
+  const { dir, defer } = scratch(t, 'viva-native-remember-family-')
+  const owner = openMemoryOwner({ root: dir, dailyNotes: false, compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => owner.close())
+  await owner.recover()
+  const session = randomUUID(), sourceId = randomUUID(), text = 'I keep weekly status notes in French.'
+  await owner.receiveSource({ sessionId: session, messageId: sourceId, text, turn: 1, step: 1,
+    at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
+  const root = { id: randomUUID(), session, generation: 0, callId: 'ptc-root', turn: 1, step: 1, seq: 2, digest: '8'.repeat(64) }
+  const leaf = { ...root, id: randomUUID(), callId: 'remember-leaf', seq: 3, digest: '9'.repeat(64),
+    ptc: { rootCallId: root.callId, parentCallId: root.callId } }
+  const saved = await owner.withNativeToolRead({ call: leaf, calls: [root, leaf], current: () => true }, () => owner.rememberNativeFile(text))
+  assert.ok(saved)
+  const db = new DatabaseSync(join(dir, 'memory.db'))
+  defer(() => db.close())
+  const archived = db.prepare('SELECT c.identity,r.evidence FROM owner_native_tool_calls c JOIN owner_native_tool_reads r ON r.call=c.id').all()
+    .map(row => ({ call: JSON.parse(String(row.identity)) as { id: string }, evidence: JSON.parse(String(row.evidence)) as {
+      sources: string[], fileRanges: Array<{ sourceId: string, spans: Array<{ start: number, end: number }> }>, memoryIds: number[]
+    } }))
+  assert.deepEqual(new Set(archived.map(item => item.call.id)), new Set([root.id, leaf.id]))
+  for (const item of archived) assert.deepEqual(item.evidence, { sources: [], memoryIds: [], fileRanges: [{ sourceId, spans: [{ start: 0, end: text.length }] }] })
 })

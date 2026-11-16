@@ -5,6 +5,7 @@ import type { createMemoryDispatch } from '../../../src/memory/core/memory-dispa
 /** Adapter-owned identities and chronology, never inferred from model-visible prose. */
 export type ReceivedSource = {
   contentDigest?: string
+  nativeMessageDigest?: string
   contextGeneration?: number
   sessionId: string
   messageId: string
@@ -36,6 +37,7 @@ export type DerivedSource = {
   /** Set only by the native adapter after matching a captured causal delivery receipt. */
   verifiedDelivery?: true
   contentDigest?: string
+  nativeMessageDigest?: string
   nativeUserSource?: string
   contextGeneration?: number
   senderContextGeneration?: number

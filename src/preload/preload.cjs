@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   undoMemoryFile: (request) => ipcRenderer.invoke('memory:undo-file', request),
   createMemoryFile: (request) => ipcRenderer.invoke('memory:create-file', request),
   editMemoryFile: (request) => ipcRenderer.invoke('memory:edit-file', request),
+  forgetMemoryFile: (request) => ipcRenderer.invoke('memory:forget-file', request),
   saveProfile: (changes, operation) => ipcRenderer.invoke('memory:set-profile', changes, operation),
   rebuildMemoryIndexes: () => ipcRenderer.invoke('memory:rebuild-indexes'),
   setOnboarding: (status) => ipcRenderer.invoke('memory:onboarding', status),

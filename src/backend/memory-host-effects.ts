@@ -17,7 +17,7 @@ export function affectedTraceSessions(effect: MemoryHostEffect) {
   return effect.kind === 'erase-copies' ? effect.sessions ?? [] : []
 }
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, invalidateFileHistory = () => {}, fileCopiesDurable = () => {} }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, invalidateFileHistory = () => {}, feedCopiesRemoved = () => {}, fileCopiesDurable = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
   eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): readonly GeneratedHistoryScope[] | void,
@@ -25,6 +25,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   invalidateTaskBodies?(sessions: readonly string[]): void | Promise<void>,
   generatedCopiesRemoved?(copies: readonly GeneratedHistoryScope[]): void,
   invalidateFileHistory?(): void,
+  feedCopiesRemoved?(ids: readonly string[]): void,
   /** A local host receipt only. Native publishers and other replica owners acknowledge separately. */
   fileCopiesDurable?(effect: Extract<MemoryHostEffect, { kind: 'erase-file-copies' }>): void | Promise<void>,
   invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
@@ -68,6 +69,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   let closed = false
   const notifiedTraces = new Set<string>()
   const notifiedGeneratedCopies = new Set<string>()
+  const notifiedFeedCopies = new Set<string>()
   const discardedTaskCopies = new Map<string, Set<string>>()
   async function recover() {
     if (closed) return
@@ -92,10 +94,15 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
               const outputs = eraseFileHistory(effect.ranges, effect.memoryIds) ?? []
               const tasks = eraseTaskBodies(effect.effectId, matches, outputs)
               eraseRoutedMemory(matches)
-              return { scheduled: eraseScheduledMemoryCopies(db, matches), reports: eraseMemoryReportCopies(db, matches), outputs, tasks }
+              return { scheduled: eraseScheduledMemoryCopies(db, matches, effect.effectId), reports: eraseMemoryReportCopies(db, matches), outputs, tasks }
             })
             invalidateFileHistory()
-            invalidateScheduled(matches, scheduled)
+            invalidateScheduled(matches, scheduled.changed)
+            const feedIds = scheduled.feedIds.filter(id => !notifiedFeedCopies.has(id))
+            if (feedIds.length) {
+              feedCopiesRemoved(feedIds)
+              for (const id of feedIds) notifiedFeedCopies.add(id)
+            }
             if (reports.length) reportsRemoved(reports)
             const fresh = outputs.filter(copy => !notifiedGeneratedCopies.has(copy.key))
             if (fresh.length) {

@@ -9,7 +9,12 @@ import { projectNativeOriginals } from './project-native-originals.ts'
 import { eraseNativeOutputs } from './erase-native-outputs.ts'
 import { eraseNativeToolResults } from './erase-native-tool-results.ts'
 import { eraseNativeDerivedMessages } from './erase-native-derived-messages.ts'
+import { eraseNativeRecoveryMessages } from './erase-native-recovery-messages.ts'
 import type { NativeOutputTrace } from './publish-native-event-copies.ts'
+import { reconcileNativeReceipts } from './reconcile-native-receipts.ts'
+import { auditNativeErasure } from './audit-native-erasure.ts'
+import { eraseNativeSpill } from './local-spills.ts'
+import { recoverNativePtcInputs } from './recover-ptc-inputs.ts'
 
 export class PendingNativePublication extends Error {}
 
@@ -22,17 +27,21 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
   const owner = openNativeOriginalMaintenance(memoryRoot, hostNamespace)
   if (!owner) return
   try {
+    if (!owner.hasPlans()) return
+    const root = await realpath(sessionsRoot)
+    await recoverNativePtcInputs(root, owner)
+    await reconcileNativeReceipts(root, owner)
     const work = owner.operations()
     const outputs = owner.outputOperations(), tools = owner.toolResultOperations()
-    const derived = owner.derivedMessageOperations()
-    if (!work.length && !outputs.length && !tools.length && !derived.length) return
-    const root = await realpath(sessionsRoot)
+    const derived = owner.derivedMessageOperations(), recoveries = owner.recoveryMessageOperations()
     const pendingOriginals = owner.pendingOriginalOperations()
     const tasks = [
       ...work.map(item => ({ pending: pendingOriginals.has(item.operationId),
         run: () => eraseNativeOriginals({ root, storageRoot, owner, item, isCold }) })),
       ...tools.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
         run: () => eraseNativeToolResults({ root, storageRoot, operation, isCold, trace }) })),
+      ...recoveries.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
+        run: () => eraseNativeRecoveryMessages({ root, storageRoot, operation, isCold, trace }) })),
       ...derived.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
         run: () => eraseNativeDerivedMessages({ root, storageRoot, operation, isCold, trace }) })),
       ...outputs.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
@@ -42,6 +51,14 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
     // before another kind of erasure can alter the same session artifact.
     tasks.sort((a, b) => Number(b.pending) - Number(a.pending))
     for (const task of tasks) await task.run()
+    for (const operation of owner.spillOperations()) {
+      for (const target of operation.targets()) if (await eraseNativeSpill(target, isCold)) operation.complete(target.id)
+    }
+    // A complete cold catalog can attest no endpoint only after any local
+    // result spill has been proved erased. Revisit input-only dispatch copies.
+    await reconcileNativeReceipts(root, owner, true)
+    for (const operation of owner.toolResultOperations()) await eraseNativeToolResults({ root, storageRoot, operation, isCold, trace })
+    await auditNativeErasure(root, owner)
   } catch (error) {
     if (owner.carriesUnsettledPublication()) throw new PendingNativePublication('Native session publication must recover before startup', { cause: error })
     throw error

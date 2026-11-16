@@ -2,7 +2,7 @@ import { MAX_MESSAGE_CHARS } from '../../shared/text-limits.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import type { MemoryFileSummary } from '../../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView, MemoryFileSourceView } from '../../shared/ipc-results.ts'
-import { canEditMemoryFile } from '../memory-file-state.ts'
+import { canEditMemoryFile, canForgetMemoryFile } from '../memory-file-state.ts'
 import type { MemoryFileEditor } from '../action-types.ts'
 import { timelinePlace } from '../timeline-search.ts'
 import { h } from './dom.ts'
@@ -70,7 +70,9 @@ function detailsOf(detail: MemoryFileDetailView, busy: boolean, handlers: Handle
         text: t(id ? 'memory-files.restore.range' : enable ? 'memory-files.restore' : 'profile-panel.forget.memory'),
         onClick: () => handlers.setManagedMemoryEnabled(detail, enable, id) }) : null,
       !id && detail.actions.undo ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
-        text: t('profile-panel.memory.changes.undo'), onClick: () => handlers.undoManagedMemory(detail) }) : null),
+        text: t('profile-panel.memory.changes.undo'), onClick: () => handlers.undoManagedMemory(detail) }) : null,
+      canForgetMemoryFile(detail) ? h('button', { class: 'link-btn', name: 'memory-file-forget', 'data-tone': 'danger', type: 'button', disabled: busy,
+        text: t(id ? 'memory-files.forget.range' : 'memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null),
     snapshot ? h('p', { class: 'help', text: t('memory-files.restore.range.help') }) :
       restrictions.length ? h('div', { class: 'profile-section' },
         h('h5', { class: 'profile-heading', text: t('memory-files.stopped.ranges') }),
@@ -204,10 +206,47 @@ export function memoryFilesSection(memory: State['memory'], handlers: Handlers) 
   return h('section', { class: 'profile-section', 'aria-labelledby': 'memory-files-title' },
     h('h3', { class: 'profile-heading', id: 'memory-files-title', text: t('memory-files.title') }),
     files.editor ? editorView(files, files.editor, handlers) : files.selection ? detailView(files, handlers) : listView(files, handlers),
+    forgetView(files, handlers),
     memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',
       text: t('memory-files.storage.cleanup.pending', { count: memory.cleanupPending }) }) : null,
     !files.editor ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-rebuild-indexes', disabled: memory.rebuildingIndexes,
         text: t(memory.rebuildingIndexes ? 'profile-panel.memory.index.rebuilding' : 'profile-panel.memory.index.rebuild'),
         onClick: handlers.rebuildMemoryIndexes })) : null)
+}
+
+function forgetView(files: State['memory']['files'], handlers: Handlers) {
+  const { forget, writing } = files
+  if (!forget) return null
+  if (forget.phase !== 'confirm') return h('div', { class: 'profile-section', 'data-memory-file-forget-status': forget.phase },
+    h('p', { class: forget.error ? 'form-error' : 'help', role: forget.error ? 'alert' : 'status',
+      text: forget.error ?? t(forget.phase === 'complete' ? 'memory-files.forget.complete' : 'memory-files.forget.pending') }),
+    forget.phase === 'unconfirmed' || forget.phase === 'pending' ? h('div', { class: 'memory-actions' },
+      h('button', { class: 'link-btn', type: 'button', name: 'memory-file-forget-retry', disabled: writing,
+        text: t(writing ? 'extensions.working' : 'memory-files.forget.check'),
+        onClick: () => handlers.confirmManagedMemoryForget(forget.id) })) : null)
+  return h('section', { class: 'profile-section', role: 'group', 'data-memory-file-forget': forget.id,
+    'aria-labelledby': 'memory-file-forget-title', 'aria-describedby': 'memory-file-forget-description',
+    onKeyDown: (event: KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229) {
+        if (event.key === 'Enter') event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        handlers.cancelManagedMemoryForget(forget.id)
+      }
+    },
+  },
+  h('h4', { class: 'profile-heading memory-text', id: 'memory-file-forget-title',
+    text: t('memory-files.forget.confirm', { title: forget.title || t('memory-files.untitled') }) }),
+  h('p', { class: 'help', id: 'memory-file-forget-description',
+    text: t(forget.request.restrictionId ? 'memory-files.forget.range.help' : 'memory-files.forget.help') }),
+  h('div', { class: 'memory-actions' },
+    h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-file-forget-cancel', disabled: writing,
+      text: t('extensions.cancel'), onClick: () => handlers.cancelManagedMemoryForget(forget.id) }),
+    h('button', { class: 'link-btn', 'data-tone': 'danger', type: 'button', name: 'memory-file-forget-confirm', disabled: writing,
+      text: t('memory-files.forget.confirm.action'), onClick: () => handlers.confirmManagedMemoryForget(forget.id) })))
 }

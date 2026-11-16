@@ -9,13 +9,15 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
   fillComposer: (text: string, feedItemId: string) => void
 }) {
   const fail = (err: unknown) => dispatch({ type: 'feed_failed', message: errorMessage(err) })
+  let query = 0
 
   async function loadFeed() {
+    const request = ++query
     try {
       const [items, schedules] = await Promise.all([api.listFeed(), api.listSchedules()])
-      dispatch({ type: 'feed_loaded', items, schedules })
+      if (request === query) dispatch({ type: 'feed_loaded', items, schedules })
     } catch (err) {
-      fail(err)
+      if (request === query) fail(err)
     }
   }
 
@@ -35,6 +37,11 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
 
   return {
     loadFeed,
+    erased(ids: readonly string[]) {
+      query++
+      dispatch({ type: 'feed_erased', ids })
+      return loadFeed()
+    },
     /** Looked at and taken on: into the input, and no longer new. */
     async continueItem(id: string) {
       const item = itemOf(id)
@@ -42,7 +49,8 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
       await change(async () => {
         const origin = getState().conversationId
         const text = await api.continueFeed(id)
-        if (getState().conversationId !== origin || getState().newTopicPending || !getState().feed.open) return
+        if (getState().conversationId !== origin || getState().newTopicPending || !getState().feed.open
+          || getState().feed.erasedIds.includes(id) || !itemOf(id)) return
         fillComposer(text, id)
         if (item.seenAt === null) await api.markFeedSeen(id)
       })

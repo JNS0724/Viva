@@ -27,7 +27,7 @@ export type AgentEvent =
   | ({ type: 'error', message: string, context?: ConversationContext })
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
   | { type: 'memory_changed', failure?: string, memories?: readonly string[], invalidated?: readonly string[], traceSessions?: readonly string[],
-      erasedOutputs?: readonly { session: string, key: string }[] }
+      erasedOutputs?: readonly { session: string, key: string }[], erasedFeedIds?: readonly string[] }
   | { type: 'files_changed', path: string }
   | { type: 'feed_changed' | 'schedules_changed' }
   | { type: 'task_closed', taskId: string }

@@ -44,6 +44,7 @@ interface SegmentMessage {
   role: string
   text: string
   key?: string
+  feedItemId?: string
   receipt?: Receipt | null
   at?: number
   images?: ReadonlyArray<{ id: string }>
@@ -218,6 +219,7 @@ interface AgentApi extends DraftApi {
   undoMemoryFile: Invoke<'memory:undo-file'>
   createMemoryFile: Invoke<'memory:create-file'>
   editMemoryFile: Invoke<'memory:edit-file'>
+  forgetMemoryFile: Invoke<'memory:forget-file'>
   saveProfile: Invoke<'memory:set-profile'>
   rebuildMemoryIndexes: Invoke<'memory:rebuild-indexes'>
   setOnboarding: Invoke<'memory:onboarding'>

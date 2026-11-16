@@ -3,9 +3,10 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { openNativeOriginalMaintenance } from '../../../../src/memory/node/native-original-maintenance.ts'
-import { memoryOriginalContentDigest } from '../context-recovery.ts'
+import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from '../context-recovery.ts'
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
+import { addNativeCompactionCopies, asNativeCompactionCopy, projectNativeCompaction } from './project-native-compactions.ts'
 import { publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
 
 type Maintenance = NonNullable<ReturnType<typeof openNativeOriginalMaintenance>>
@@ -17,7 +18,8 @@ function messagesIn(event: SessionEvent): readonly UserMessage[] {
 }
 
 function redact(event: SessionEvent, selected: ReadonlySet<string>): SessionEvent | undefined {
-  const empty = (message: UserMessage): UserMessage => selected.has(message.id) ? { ...message, content: [] } : message
+  const empty = (message: UserMessage): UserMessage => selected.has(message.id)
+    ? { ...message, content: [], source: 'summary' in message.source ? { ...message.source, summary: '' } : message.source } : message
   if (event.type === 'user/message') return { ...event, data: empty(event.data) }
   if (event.type === 'agent/inbox/spliced') return { ...event, data: { ...event.data, inserted: event.data.inserted.map(empty) } }
 }
@@ -53,11 +55,13 @@ export async function eraseNativeDerivedMessages({ root, storageRoot, operation,
         for (const { message, target } of candidates) {
           if (message.source.kind !== target.source) { blocked.add(message.id); continue }
           if (previous && !message.content.length) continue
-          if (message.content.some(block => block.type !== 'text') || !verify(target, memoryOriginalContentDigest(message))) {
+          if (message.content.some(block => block.type !== 'text')
+            || 'summary' in message.source && !target.envelope
+            || !verify(target, memoryOriginalContentDigest(message), memoryRecoveryMessageHash(message))) {
             blocked.add(message.id)
             continue
           }
-          if (message.content.length) selected.add(message.id)
+          if (message.content.length || 'summary' in message.source && message.source.summary) selected.add(message.id)
         }
         if (!selected.size) continue
         const projected = redact(event, selected)!
@@ -66,11 +70,14 @@ export async function eraseNativeDerivedMessages({ root, storageRoot, operation,
           needsRewrite: true, tracePublished: false })
         selections.set(digest, selected)
       }
+      addNativeCompactionCopies(events, replacements, operationId, journal, receipts)
       if (replacements.size) copies.set(sessionId, replacements)
     })
   } finally { await mounted.dispose() }
   await publishNativeEventCopies({ root, storageRoot, operationId, journal, copies, isCold, trace,
     project(event) {
+      const compaction = asNativeCompactionCopy(event)
+      if (compaction) return projectNativeCompaction(compaction)
       const selected = selections.get(nativeEventDigest(event))
       return selected ? redact(event, selected) : undefined
     },

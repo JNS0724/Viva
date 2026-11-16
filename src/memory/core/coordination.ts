@@ -1,4 +1,5 @@
 import { MemoryDispatchConflict, needsMemoryTransport } from './memory-dispatch.ts'
+import { MemoryDomainError } from './presentation.ts'
 import type { MemoryProvenance } from './ports/store.ts'
 
 export type MemoryProject = { kind: 'project', id: string }
@@ -146,10 +147,21 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
     return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || allowsEvidence(dispatch()?.snapshot(row.sessionId), targetProject)
   }
   function useHistory(session: string | undefined, row: MemoryHistoryOccurrence) {
-    if (!session) return
+    const owner = runtime()
     const leases = dispatch()
-    if (row.sourceId) leases?.recordSource(session, row.sourceId)
-    if (row.sessionId && (row.role !== 'user' || !row.sourceId)) leases?.inherit(row.sessionId, session)
+    const sourceProject = row.sessionId ? owner?.sessionProject(row.sessionId) : undefined
+    if (busy() || !owner || !leases || !allowsHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined)) {
+      throw new MemoryDomainError('revision.conflict')
+    }
+    if (!session) return
+    const targetProject = owner.sessionProject(session)
+    const project = targetProject ? { kind: 'project' as const, id: targetProject } : undefined
+    if (row.sourceId && !owner.projectAllows({ dependencies: [], sources: [row.sourceId] }, project)
+      || row.sessionId && (row.role !== 'user' || !row.sourceId) && !allowsEvidence(leases.snapshot(row.sessionId), project)) {
+      throw new MemoryDomainError('revision.conflict')
+    }
+    if (row.sourceId) leases.recordSource(session, row.sourceId)
+    if (row.sessionId && (row.role !== 'user' || !row.sourceId)) leases.inherit(row.sessionId, session)
   }
 
   async function mutate<T>(work: () => T | Promise<T>, prepare?: () => void | Promise<void>): Promise<T> {

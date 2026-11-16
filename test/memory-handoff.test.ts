@@ -16,9 +16,11 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
+import { eraseColdNativeCopies } from '../plugins/memory/lib/native/maintenance.ts'
 import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
 import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { recordCompactionInputs } from '../plugins/memory/lib/native/compaction-inputs.ts'
+import { memoryOriginalContentDigest } from '../plugins/memory/lib/context-recovery.ts'
 import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -66,10 +68,15 @@ function contextGeneration(directory: string, session: string): number {
   finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, ptc = false, ptcFailure = '' } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
+  if (ptc) {
+    const profile = join(directory, 'dsh', 'profiles', 'viva')
+    mkdirSync(profile, { recursive: true })
+    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n      config: ${JSON.stringify(ptcFailure === 'crash' ? { crashBeforeSearch: join(directory, 'ptc-prepared') } : { rejectSearch: ptcFailure === 'reject' })}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
+  }
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
   delete process.env.DEEPSEEK_API_KEY
@@ -212,6 +219,177 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   } finally { db.close() }
 })
 
+for (const nextFails of [false, true]) test(`real PTC memory reads archive root/leaf and erase native/spill copies ${nextFails ? 'without a later send' : 'with the normal next send'}`, { timeout: 45_000 }, async t => {
+  const prompt = '执行 PTC 记忆读取验收'
+  const body = 'The PTC receipt PTC_BODY is independent of the question.' + (nextFails ? '' : ' Long receipt paragraph carrying evidence.'.repeat(85))
+  let fileId: string | undefined, requested = false, spillPath: string | undefined, readbackRequested = false
+  const app = await setup(t, request => {
+    if (spillPath && questionOf(request.messages) === '读取保存的工具长结果' && !readbackRequested) {
+      readbackRequested = true
+      return { tool: { name: 'read', input: { file_path: spillPath } } }
+    }
+    const routed = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
+      : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).findLast(row => row.words.startsWith(prompt))
+    if (!fileId) return null
+    if (routed && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) return { tool: { name: 'start_background_task', input: { title: prompt, brief: 'PTC task execution' } } }
+    if (questionOf(request.messages) !== 'PTC task execution') return null
+    if (!requested) {
+      requested = true
+      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); return note;` } } }
+    }
+    return { text: 'PTC completed.' }
+  }, { dailyNotes: true, ptc: true })
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
+  assert.equal(created.status, 'applied')
+  fileId = created.receipt.identity.id
+  const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    if (nextFails) db.exec(`CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
+      WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`)
+    await app.ask(prompt)
+    assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 3),
+      JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
+    if (!nextFails) assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
+    let calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
+    assert.equal(calls.length, 3, JSON.stringify({ calls, results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
+      errors: app.events.filter(event => event.type === 'error') }))
+    assert.ok(calls.every(row => row.result !== null))
+    const identities = calls.map(row => JSON.parse(String(row.identity)) as { ptc?: unknown, inputDerived?: boolean })
+    assert.equal(identities.filter(row => row.ptc).length, 2)
+    assert.equal(identities.filter(row => row.inputDerived).length, 1)
+    assert.equal(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'run_code')).includes('PTC_BODY')), !nextFails)
+    const spills = db.prepare('SELECT intent,file FROM owner_native_spills').all()
+    if (!nextFails) {
+      assert.equal(spills.length, 2, JSON.stringify(spills))
+      assert.ok(spills.every(row => row.file !== null))
+      for (const row of spills) assert.ok(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path))
+      const leaf = spills.find(row => JSON.parse(String(row.intent)).call.ptc)
+      assert.ok(leaf)
+      spillPath = (JSON.parse(String(leaf.file)) as {path:string}).path
+      if (process.platform !== 'win32') {
+        const alias = join(app.directory, 'spill-read-alias.txt')
+        fs.symlinkSync(spillPath, alias)
+        spillPath = alias
+      }
+      await app.newTopic()
+      await app.ask('读取保存的工具长结果')
+      assert.equal(readbackRequested, true)
+      assert.ok(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'read')).includes('PTC_BODY')))
+      calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
+      assert.equal(calls.length, 4, 'reading an exact spill locator archives a fresh native call readset')
+    }
+    await app.stopBackend()
+    // The native log can commit before the leaf endpoint receipt reaches the owner.
+    db.prepare("UPDATE owner_native_tool_calls SET result=NULL WHERE json_extract(identity,'$.ptc') IS NOT NULL").run()
+    if (nextFails) db.exec('DROP TRIGGER stop_after_ptc_read')
+    const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
+      compute: () => null, route: () => null, quiesce: async () => {} })
+    try {
+      await owner.recover()
+      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+    } finally { await owner.close() }
+    const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
+      isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
+    await erase()
+    await erase()
+    assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NULL').get()?.n, 0)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_spills WHERE erased=0').get()?.n, 0)
+    for (const row of spills) assert.equal(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path), false)
+    const catalog = new Context(), mounted = await catalog.plugin(jsonl, { root: sessionsRoot })
+    try {
+      for (const row of calls) {
+        const call = JSON.parse(String(row.identity)) as {session:string, seq:number, inputDerived?:true}, result = JSON.parse(String(row.result)) as {seq:number}
+        const reader = await catalog.sessionPersistence.open(SessionId(call.session), 'read')
+        try {
+          const event = (await reader.read()).events[result.seq]
+          assert.ok(event?.type === 'tool/result' || event?.type === 'tool/ptc-dispatch')
+          assert.deepEqual(event.type === 'tool/result' ? event.data.message.content : event.data.content, [])
+          if (call.inputDerived) {
+            const input = (await reader.read()).events[call.seq]
+            assert.equal(input?.type, 'tool/ptc-dispatch-start')
+            assert.deepEqual(input.data.arguments, {})
+            assert.equal(event.type, 'tool/ptc-dispatch')
+            assert.deepEqual(event.data.arguments, {})
+          }
+        } finally { await reader.close() }
+      }
+    } finally { await mounted.dispose() }
+  } finally { await app.stopBackend(); db.close() }
+})
+
+for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers secret arguments when the next SDK call ${failure === 'crash' ? 'crashes' : 'is rejected'} during prepare`, { timeout: 45_000 }, async t => {
+  const prompt = '验收工具准备阶段边界', brief = 'Prepare a private follow-up tool query', body = 'The prepare-stage value is PREPARE_SECRET.'
+  let id: string | undefined, requested = false
+  const app = await setup(t, request => {
+    const question = questionOf(request.messages)
+    if (question === prompt && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'start_background_task', input: { title: prompt, brief } } }
+    }
+    if (id && question === brief && !requested) {
+      requested = true
+      return { tool: { name: 'run_code', input: { description: 'Read and pass private data to a follow-up query',
+        code: `const note = await tools.memory_read({id:${JSON.stringify(id)}}); try { await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); } catch {} return note;` } } }
+    }
+    return null
+  }, { dailyNotes: true, ptc: true, ptcFailure: failure })
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
+  assert.equal(created.status, 'applied'); id = created.receipt.identity.id
+  const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  await app.ask(prompt)
+  if (failure === 'crash') assert.ok(await eventually(() => fs.existsSync(join(app.directory, 'ptc-prepared'))),
+    JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error'), results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')) }))
+  else assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
+  await app.stopBackend()
+  const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    const before = db.prepare('SELECT identity FROM owner_native_tool_calls').all()
+    assert.equal(before.length, 2, 'prepare never entered the follow-up body or acquired read authority')
+    const cuts = db.prepare('SELECT * FROM owner_native_tool_read_cuts').all()
+    assert.ok(cuts.length > 0, 'read evidence and native root cut committed before its private result was delivered')
+    assert.doesNotMatch(JSON.stringify(cuts), /PREPARE_SECRET/u)
+    const catalog = new Context(), catalogMount = await catalog.plugin(jsonl, { root: sessionsRoot })
+    try {
+      const origin = JSON.parse(String(before[0]!.identity)) as {session:string}
+      const reader = await catalog.sessionPersistence.open(SessionId(origin.session), 'read')
+      try {
+        const events = (await reader.read()).events
+        const start = events.find(event => event.type === 'tool/ptc-dispatch-start' && event.data.name === 'memory_node_search')
+        assert.ok(start?.type === 'tool/ptc-dispatch-start')
+        assert.match(JSON.stringify(start.data.arguments), /PREPARE_SECRET/u)
+        const outcome = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.subCallId === start.data.subCallId)
+        if (failure === 'reject') assert.match(JSON.stringify(outcome), /Fixture rejects preparation/u)
+        else assert.equal(outcome, undefined, 'the process died before prepare produced any SDK settlement')
+      } finally { await reader.close() }
+    } finally { await catalogMount.dispose() }
+    const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
+      compute: () => null, route: () => null, quiesce: async () => {} })
+    try {
+      await owner.recover()
+      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+    } finally { await owner.close() }
+    for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
+      isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
+    const recovered = db.prepare("SELECT identity,result FROM owner_native_tool_calls WHERE json_extract(identity,'$.inputDerived')=1").all()
+    assert.equal(recovered.length, 1)
+    const call = JSON.parse(String(recovered[0]!.identity)) as { session: string, seq: number }
+    const context = new Context(), mounted = await context.plugin(jsonl, { root: sessionsRoot })
+    try {
+      const reader = await context.sessionPersistence.open(SessionId(call.session), 'read')
+      try {
+        const events = (await reader.read()).events, start = events[call.seq]
+        assert.equal(start?.type, 'tool/ptc-dispatch-start')
+        assert.deepEqual(start.data.arguments, {})
+        assert.doesNotMatch(JSON.stringify(events), /PREPARE_SECRET/u)
+      } finally { await reader.close() }
+    } finally { await mounted.dispose() }
+    const admin = openNativeOriginalMaintenance(memoryRoot, 'viva')!
+    try { assert.deepEqual(admin.unsettledReceipts().tools, []) } finally { admin.close() }
+  } finally { db.close() }
+})
+
 test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {
   const text = 'The file-only proof ORDINAL controls the native result.'
   const prompt = '执行单次工具归档测试'
@@ -257,6 +435,8 @@ test('a real DSH tool read archives and erases native results even when the next
     control.close()
   }
   const saved = affected[0]!, result = saved.result!
+  const lostReceipt = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try { lostReceipt.prepare('UPDATE owner_native_tool_calls SET result=NULL WHERE id=?').run(saved.id) } finally { lostReceipt.close() }
   const sessionsRoot = join(app.directory, 'dsh', 'sessions')
   const sessionId = SessionId(saved.session), forkId = SessionId(randomUUID())
   const provider = new Context(), mounted = await provider.plugin(jsonl, { root: sessionsRoot, compression: 'zstd' })
@@ -396,6 +576,7 @@ test('cold Viva startup erases native originals and settled output in root and u
   let toolReply = -1, toolResult = -1
   const compactions = new Set<number>()
   let unconnectedSummary = -1
+  let derivedInjection: import('@deepseek-ai/dsh-llm').UserMessage | undefined
   const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
   try {
     const original = await cold.sessionPersistence.open(parentId, 'read')
@@ -467,7 +648,10 @@ test('cold Viva startup erases native originals and settled output in root and u
       const compactedOriginal = compact([titleMessage.seq], compactionSecret)
       const compactedCheckpoint = compact([compactedOriginal.checkpoint], compactionSecret)
       const compactedTool = compact([announcement.seq, result.seq], compactionSecret)
-      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool]) {
+      derivedInjection = createUserMessage({ source: { kind: 'viva-memory' }, content: [{ type: 'text', text: compactionSecret }] })
+      const injection = fixture.append('user/message', derivedInjection, { surfaceOp: 'append' })
+      const compactedInjection = compact([injection.seq], compactionSecret)
+      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool, compactedInjection]) {
         compactions.add(item.summary)
         compactions.add(item.checkpoint)
       }
@@ -485,7 +669,8 @@ test('cold Viva startup erases native originals and settled output in root and u
         const archive = createNativeOutputAttempts(proofDb)
         const evidence = { sources: [sourceId], dependencies: [], epoch: 0, turnOnly: false }
         archive.record(failedProof, evidence)
-        archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeEventDigest(failed) })
+        // The native event committed before a crash could store its settlement receipt.
+        affectedOutputs.add(failed.seq)
         archive.record(reasoningProof, evidence)
         archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
         archive.record(groupProof, evidence)
@@ -498,6 +683,10 @@ test('cold Viva startup erases native originals and settled output in root and u
           const marker = prefix && pluginRecordOf(prefix)
           assert.equal(marker?.type, NATIVE_OUTPUT_MARKER)
           assert.deepEqual(marker.data, { id, generation, turn, step })
+          if (result.state === 'open') {
+            assert.equal(id, failedProof.id)
+            continue
+          }
           assert.equal(result.state, 'settled')
           const event = events[result.terminal.seq]
           assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
@@ -523,6 +712,9 @@ test('cold Viva startup erases native originals and settled output in root and u
   const operationId = randomUUID(), nextOperation = randomUUID()
   try {
     await owner.recover()
+    assert.ok(derivedInjection)
+    await owner.registerDerived({ sessionId: parentId, messageId: derivedInjection.id, sourceIds: [sourceId], nativeUserSource: 'viva-memory',
+      contentDigest: memoryOriginalContentDigest(derivedInjection) })
     const store = openMemoryStore(join(memoryRoot, 'memory.db'))
     try {
       assert.equal(store.db.prepare('SELECT 1 FROM owner_occurrences WHERE session=?').get(forkId), undefined)
@@ -614,10 +806,11 @@ test('cold Viva startup erases native originals and settled output in root and u
     }
   } finally { publishedTrace.close() }
   assert.ok(await eventually(() => app.events.some(event => event.type === 'memory_changed' && event.traceSessions?.includes(parentId))))
-  const hiddenTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
-  assert.equal(hiddenTrace.available, false)
+  const safeTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
+  assert.equal(safeTrace.available, true)
+  assert.doesNotMatch(JSON.stringify(safeTrace), new RegExp([traceSecret, toolSecret].join('|'), 'u'))
   const rewindTrace = await app.call<Promise<{ commands: string[] }>>('timeline:rewind-effects', { keep: 0 })
-  assert.ok(!rewindTrace.commands.includes(awaitingToolCleanup))
+  assert.ok(rewindTrace.commands.includes(awaitingToolCleanup), 'independent trace content becomes readable after all participants finish')
   assert.equal(fs.existsSync(interruptedCache), false)
   assert.equal(fs.existsSync(backupCache), false)
   assert.equal(fs.existsSync(projectionTemp), false)
@@ -676,7 +869,7 @@ test('cold Viva startup erases native originals and settled output in root and u
         assert.equal(outcome.data.meta, undefined)
         assert.doesNotMatch(JSON.stringify(events), new RegExp(toolSecret, 'u'))
         const rewrittenCompactions = events.filter(event => compactions.has(event.seq))
-        assert.equal(rewrittenCompactions.length, 7)
+        assert.equal(rewrittenCompactions.length, 9)
         assert.doesNotMatch(JSON.stringify(rewrittenCompactions), new RegExp(compactionSecret, 'u'))
         assert.match(JSON.stringify(events[unconnectedSummary]), /independent compaction remains/)
       } finally { await reader.close() }
@@ -686,9 +879,13 @@ test('cold Viva startup erases native originals and settled output in root and u
   try {
     assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(operationId)?.count, 2)
     assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(nextOperation)?.count, 2)
-    for (const id of [operationId, nextOperation]) assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
+    for (const id of [operationId, nextOperation]) {
+      assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
+      assert.ok(settled.prepare('SELECT 1 FROM owner_native_cleanup_receipts WHERE operation=?').get(id))
+      assert.equal(settled.prepare('SELECT acked FROM owner_host_effects WHERE id=?').get(id)?.acked, 1)
+    }
     assert.ok(settled.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId),
-      'other native events and host replicas remain independently pending')
+      'the immutable native plan remains available after its participant acknowledges')
     assert.ok(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(forkId))
     assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
   } finally { settled.close() }

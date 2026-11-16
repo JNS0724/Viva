@@ -26,10 +26,12 @@ import { completeMemoryModel } from './model.ts'
 import { assertMemoryProviderSupported } from './providers.ts'
 import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
-import { memoryOriginalContentDigest } from './context-recovery.ts'
+import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from './context-recovery.ts'
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
 import { trackNativeOutputAttempts } from './native/output-attempts.ts'
 import { trackNativeToolReads, type NativeToolLease } from './native/tool-reads.ts'
+import { trackNativeSpills } from './native/track-spills.ts'
+import { trackNativeSpillReads } from './native/read-spills.ts'
 import { recordCompactionInputs, recordCompactionRequest } from './native/compaction-inputs.ts'
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
@@ -89,7 +91,14 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   })
   const transport = createMemoryTransport(owner)
   const outputAttempts = trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput)
-  const toolReads = trackNativeToolReads(owner.finishNativeToolRead)
+  const toolReads = trackNativeToolReads(owner.finishNativeToolRead, {
+    evidence: owner.nativeToolEvidence, archive: owner.inheritNativeToolRead,
+  })
+  trackNativeSpills(ctx, owner, toolReads)
+  trackNativeSpillReads(ctx, owner, () => {
+    const execution = caller.getStore()
+    return execution && 'agent' in execution ? execution.toolRead : undefined
+  })
   const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
     const proof = deliveries.get(message.id)
     if (!proof) return undefined
@@ -184,7 +193,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     if (input.op === 'remember') {
       if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
       const lease = execution.toolRead
-      const result = await owner.withNativeToolRead({ call: lease.call, current: () => lease.current() && !signal?.aborted },
+      const result = await owner.withNativeToolRead({ call: lease.call, calls: lease.calls, readCut: lease.readCut, current: () => lease.current() && !signal?.aborted },
         () => owner.rememberNativeFile(input.text.trim()))
       return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
         : { status: 'rejected', reason: 'no-explicit-user-source' })
@@ -293,7 +302,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision
     const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
-    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, nativeUserSource: memorySource.kind, sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
+    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, nativeUserSource: memorySource.kind, nativeMessageDigest: memoryRecoveryMessageHash(message), sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
       contextGeneration: owner.contextGeneration(String(agent.session.id)), contentDigest: memoryOriginalContentDigest(message) })
     return { ...decision, messages: [...decision.messages, message] }
   }), { prepend: true })

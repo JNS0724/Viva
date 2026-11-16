@@ -1,4 +1,4 @@
-import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
+import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult } from '../memory/contracts/file-management.ts'
 
 export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
 export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources' | 'stoppedSnapshot'> & {
@@ -88,6 +88,7 @@ export interface IpcResults {
   'memory:undo-file': MemoryFileMutationResult
   'memory:create-file': MemoryFileWriteResult
   'memory:edit-file': MemoryFileWriteResult
+  'memory:forget-file': MemoryFileForgetResult
   'memory:rebuild-indexes': { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }
 }
 

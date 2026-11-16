@@ -151,11 +151,17 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
   if (editor && deferMemoryFileEditorRender(container, editor, () => renderProfilePanel(container, memory, handlers))) return
   const shownView = container.querySelector<HTMLElement>('.profile')?.dataset.view ?? null
   const shownFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
+  const shownForget = container.querySelector<HTMLElement>('[data-memory-file-forget]')?.dataset.memoryFileForget
   keepingInput(container, () => container.replaceChildren(
     h('section', { class: 'settings profile', 'aria-labelledby': 'profile-title', 'data-view': memory.view },
       ...(memory.view === 'intro' ? introView(memory, handlers) : profileView(memory, handlers)).filter(Boolean))))
   if (shownView !== 'intro' && memory.view === 'intro') container.querySelector<HTMLElement>('[name="intro-role"]')?.focus()
   const nextFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
+  const nextForget = container.querySelector<HTMLElement>('[data-memory-file-forget]')?.dataset.memoryFileForget
+  if (shownForget !== nextForget) {
+    const target = nextForget ? '[name="memory-file-forget-cancel"]' : '[name="memory-file-forget"]'
+    container.querySelector<HTMLElement>(target)?.focus()
+  }
   if (shownFiles && nextFiles && shownFiles !== nextFiles) {
     const target = nextFiles === 'create' || nextFiles === 'edit' ? '[name="memory-file-draft-title"]'
       : nextFiles === 'list' ? shownFiles === 'create' ? '[name="memory-file-create"]' : '[name="memory-files-search"]'

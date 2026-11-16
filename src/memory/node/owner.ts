@@ -10,7 +10,7 @@ import { createMemoryRuntime } from './runtime.ts'
 import { createMemoryEmbedder } from './memory-embedder.ts'
 import type { NodeMemoryRuntimeOptions } from './runtime.ts'
 import type { DocumentSourceCut, DocumentSourceRef } from '../core/ports/documents.ts'
-import { combineMemoryProvenance, usesErasedMemory } from '../contracts/provenance.ts'
+import { combineMemoryProvenance, usesErasedMemory, type MemoryErasureEvidence } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
 import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
@@ -29,15 +29,17 @@ import type { TextSpan } from '../contracts/text-spans.ts'
 import { createOwnerNativeOriginals } from './owner-native-originals.ts'
 import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
-import { createNativeToolReads, type NativeToolCall } from './native-tool-reads.ts'
+import { createNativeToolReads, type NativeToolCall, type NativeToolReadScope } from './native-tool-reads.ts'
+import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
+import { createNativeSpills, nativeSpillProvenance, type NativeSpillIntent } from './native-spills.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
+  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, nativeMessageDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
 export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, contextGeneration?: number, sourceIds: readonly string[],
   assistant: string, completed: boolean, at: number, timezone: string }
-export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
+export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, nativeMessageDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
   root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
@@ -78,6 +80,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_file_native_erasures (operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_host_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0);
   `)
+  db.exec('CREATE TABLE IF NOT EXISTS owner_file_host_receipts (effect TEXT PRIMARY KEY,fingerprint TEXT NOT NULL) WITHOUT ROWID')
+  const nativeCleanup = createNativeErasureReceipts(db)
   const epoch = randomUUID()
   let state: 'recovering' | 'ready' | 'unavailable' = 'recovering'
   let closed = false
@@ -86,7 +90,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const dispatch = createMemoryDispatch(store, items => runtime.dependenciesCurrent(items),
     (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
   const nativeToolReads = createNativeToolReads(db)
-  const toolReadScope = new AsyncLocalStorage<{ call: NativeToolCall, current(): boolean }>()
+  const nativeSpills = createNativeSpills(db)
+  const toolReadScope = new AsyncLocalStorage<NativeToolReadScope>()
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
     dailyNotes: options.dailyNotes ?? true,
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding) } : {}),
@@ -100,7 +105,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!files.length || scope?.call.session !== session) return dispatch.recordFiles(session, files, sources)
       if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(session)) throw new Error('Native tool changed before its read was committed')
       store.tx(() => {
-        nativeToolReads.record(scope.call, files, sources)
+        for (const call of scope.calls) {
+          if (call.session !== session || call.generation !== scope.call.generation) throw new Error('Native tool ancestor changed its read origin')
+          nativeToolReads.record(call, files, sources, scope.readCut?.())
+        }
         dispatch.recordFiles(session, files, sources)
       })
     },
@@ -205,7 +213,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
     cleanup: item.state === 'completed' && runtime.cleanupPending() === 0
       && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
-      && !db.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(item.id) ? 'complete' : 'pending' })
+      && nativeCleanup.complete(item.id) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
   function reconcileChildren(session: string, visited = new Set<string>()) {
@@ -319,6 +327,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     requireContextGeneration(input.sessionId, input.contextGeneration)
     if (contextRecovery.retired(input.sessionId, input.messageId)) throw new Error('Source context was retired')
     if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid original content digest')
+    if (input.nativeMessageDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.nativeMessageDigest)) throw new Error('Invalid native message digest')
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
     if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) {
       if (noteInheritedNativeCut(input)) {
@@ -332,7 +341,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       LEFT JOIN owner_message_wires r ON r.message=m.id AND r.source_hash IS NULL WHERE m.id=?`).get(input.messageId) as
       { source: string, hash: string, kind: string, query_start: number | null, query_end: number | null, query_spans: string | null } | undefined
     if (known?.kind === 'host-derived' && known.hash === hash(input.text)) {
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', sourceIds: [], inherited: input.inherited })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: [], inherited: input.inherited })
       markLiveTurn(input)
       return { sourceId: known.source, text: '', handledIntent: true,
         retrievalQuery: known.query_spans ? originalFromWire(input.text, JSON.parse(known.query_spans) as TextSpan[])
@@ -340,7 +349,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     if (!known && input.derived) {
       if (input.inherited) throw new Error('Unregistered inherited source')
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', sourceIds: [] })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: [] })
       db.prepare("UPDATE owner_messages SET kind='host-derived',hash=?,query_start=0,query_end=? WHERE id=?").run(hash(input.text), input.text.length, input.messageId)
       markLiveTurn(input)
       const sourceId = db.prepare('SELECT source FROM owner_messages WHERE id=?').get(input.messageId)!.source as string
@@ -354,7 +363,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const mapped = !known && candidates[0] ? restoreAlias(JSON.parse(candidates[0].payload) as StoredAlias, input.text) : undefined
     if (mapped?.origin === 'derived') {
       const sources = mapped.dependencies?.sources ?? []
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', sourceIds: sources })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: sources })
       const canonical = store.tx(() => {
         db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
         db.prepare("UPDATE owner_messages SET kind='host-derived',hash=? WHERE id=?").run(hash(input.text), input.messageId)
@@ -425,6 +434,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         && input.verifiedDelivery !== true) throw new Error('Unverified delivery receipt across a recovered context')
     }
     if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid derived content digest')
+    if (input.nativeMessageDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.nativeMessageDigest)) throw new Error('Invalid native message digest')
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
     if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Derived content identity conflicts')
     let observed = dispatch.snapshot(input.sessionId)
@@ -450,7 +460,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       dispatch.attach(input.sessionId, evidence)
       db.prepare('INSERT OR IGNORE INTO owner_derived_occurrences VALUES (?,?)').run(input.sessionId, input.messageId)
       if (!saved && input.contentDigest) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
-      if (input.nativeUserSource && input.contentDigest && (!saved || contentIdentity)) nativeDerived.bind(input.messageId, input.nativeUserSource)
+      if (input.nativeUserSource && input.contentDigest && (!saved || contentIdentity)) nativeDerived.bind(input.messageId, input.nativeUserSource, input.nativeMessageDigest ? hash(input.nativeMessageDigest) : undefined)
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
     })
   }
@@ -609,6 +619,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (state === 'ready' && !hasPending()) await replayWrites()
     return outcome(operation(item.id)!)
   }
+  function completeFileEffects() {
+    if (runtime.cleanupPending() !== 0) return false
+    let changed = false
+    const waiting = db.prepare(`SELECT e.id,e.payload,r.fingerprint FROM owner_host_effects e JOIN owner_file_host_receipts r ON r.effect=e.id
+      WHERE e.acked=0 AND json_extract(e.payload,'$.kind')='erase-file-copies'`).all()
+    for (const row of waiting) {
+      if (row.fingerprint !== hash(String(row.payload))) throw new Error('Host erasure receipt differs from its effect')
+      if (nativeCleanup.complete(String(row.id))) {
+        db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=?').run(row.id)
+        changed = true
+      }
+    }
+    return changed
+  }
   async function recover() {
     if (closed) throw new Error('Memory owner is closed')
     db.prepare('DELETE FROM owner_active_turns').run()
@@ -619,6 +643,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       else if (item.state !== 'prepared') await prepare(input)
     }
     state = 'ready'
+    completeFileEffects()
     if (!hasPending()) await replayWrites()
     runtime.resumeDocumentClarifications()
     void runtime.wake()
@@ -691,6 +716,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const scope = toolReadScope.getStore()
     if (!scope || !scope.current()) return null
     const { call } = scope, origin = sessionContext(call.session)
+    if (!scope.calls.length || !scope.calls.some(ancestor => ancestor.id === call.id)) return null
     if (call.generation !== contextRecovery.contextGeneration(call.session) || origin.foregroundTurn !== String(call.turn)) return null
     const sources = db.prepare(`SELECT source FROM owner_turn_sources WHERE session=? AND turn=?
       UNION ALL SELECT source FROM owner_answer_sources WHERE session=? AND turn=?`).all(call.session, call.turn, call.session, String(call.turn))
@@ -703,7 +729,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const fingerprint = hash({ nativeRemember: plan }), previous = operation(id)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     store.tx(() => {
-      nativeToolReads.recordEvidence(call, { sources: [], fileRanges: [{ sourceId: proof.id, spans: proof.spans }], memoryIds: [] })
+      for (const ancestor of scope.calls) {
+        if (ancestor.session !== call.session || ancestor.generation !== call.generation) throw new Error('Native remember ancestor changed its origin')
+        nativeToolReads.recordEvidence(ancestor, { sources: [], fileRanges: [{ sourceId: proof.id, spans: proof.spans }], memoryIds: [] }, scope.readCut?.())
+      }
       if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ nativeRemember: plan }))
     })
     if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
@@ -850,8 +879,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     switch (command.method) {
       case 'prepareSourceChange': return prepare(command.input)
       case 'commitSourceChange': return commit(command.input)
-      case 'getOperation': { const item = operation(command.input.operationId); return item ? outcome(item) : null }
-      case 'pendingHostEffects': return pendingHostEffects()
+      case 'getOperation': { completeFileEffects(); const item = operation(command.input.operationId); return item ? outcome(item) : null }
+      case 'pendingHostEffects': completeFileEffects(); return pendingHostEffects()
       case 'nativeOutputEvidence': return nativeOutputs.outputEvidence(command.input.session, command.input.seq, command.input.digest)
       case 'cancelFileClarification': return runtime.cancelFileClarification(...command.input.args)
       case 'ackHostEffect': {
@@ -859,8 +888,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (!saved) throw new Error('Unknown host effect')
         const effect = JSON.parse(saved.payload as string) as MemoryHostEffect
         if ( (effect.causeOperationId !== command.input.causeOperationId || effect.revision !== command.input.revision)) throw new Error('Host effect version conflicts')
+        if (effect.kind === 'erase-file-copies') {
+          const fingerprint = hash(String(saved.payload))
+          const prior = db.prepare('SELECT fingerprint FROM owner_file_host_receipts WHERE effect=?').get(effect.effectId)
+          if (prior && prior.fingerprint !== fingerprint) throw new Error('Host erasure receipt differs from its effect')
+          const inserted = db.prepare('INSERT OR IGNORE INTO owner_file_host_receipts VALUES (?,?)').run(effect.effectId, fingerprint)
+          const completed = completeFileEffects()
+          if (inserted.changes || completed) options.onProjectionChanged?.()
+          return { accepted: true }
+        }
         const acknowledged = db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=? AND acked=0').run(command.input.effectId)
-        if (acknowledged.changes && (effect.kind === 'erase-file-copies' || effect.kind === 'erase-copies')) options.onProjectionChanged?.()
+        if (acknowledged.changes && effect.kind === 'erase-copies') options.onProjectionChanged?.()
         return { accepted: true }
       }
       case 'sourceAlias': return alias(command.input)
@@ -956,13 +994,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': {
+        completeFileEffects()
         const pending = runtime.cleanupPending()
-        const replicas = db.prepare(`SELECT count(*) AS count FROM (
-          SELECT operation AS id FROM owner_file_native_erasures
-          UNION SELECT id FROM owner_host_effects WHERE acked=0
-            AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')
-        )`).get()
-        return pending + Number(replicas?.count ?? 0)
+        const native = db.prepare('SELECT operation FROM owner_file_native_erasures').all()
+          .flatMap(row => nativeCleanup.complete(String(row.operation)) ? [] : [String(row.operation)])
+        const host = db.prepare(`SELECT id FROM owner_host_effects WHERE acked=0
+          AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')`).all().map(row => String(row.id))
+        return pending + new Set([...native, ...host]).size
       }
       case 'onboarding': return runtime.onboarding(...command.input.args)
       case 'sessionProject': return runtime.sessionProject(...command.input.args)
@@ -1034,7 +1072,38 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     finishNativeOutput: nativeOutputs.finish,
     finishNativeToolRead: nativeToolReads.finish,
-    withNativeToolRead<T>(scope: { call: NativeToolCall, current(): boolean }, read: () => T): T {
+    beginNativeSpill(intent: NativeSpillIntent) {
+      if (state !== 'ready' || replayingWrites || hasPending() || intent.call.generation !== contextRecovery.contextGeneration(intent.call.session)) throw new Error('Native spill belongs to a retired execution')
+      const evidence = nativeSpills.evidence(intent.call)
+      const provenance = nativeSpillProvenance(dispatch.snapshot(intent.call.session), evidence)
+      const { evidence: _claimed, provenance: _unchecked, ...identity } = intent
+      return nativeSpills.begin({ ...identity, evidence, ...(provenance ? { provenance } : {}) })
+    },
+    finishNativeSpill: nativeSpills.finish, nativeSpillCandidates: nativeSpills.candidates,
+    admitNativeSpillRead(id: string, scope: NativeToolReadScope) {
+      const saved = nativeSpills.read(id)
+      if (!saved || saved.erased || !saved.file || !saved.provenance || !saved.evidence?.length) throw new Error('Native spill proof is unavailable')
+      const generation = contextRecovery.contextGeneration(scope.call.session)
+      const proof = { ...saved.provenance, epoch: store.epoch() }
+      const current = () => state === 'ready' && !replayingWrites && !hasPending() && scope.current() && scope.call.generation === generation
+        && contextRecovery.contextGeneration(scope.call.session) === generation && nativeSpills.read(id)?.erased === false
+        && dispatch.transferable(proof) && coordination.allowsEvidence(proof, sessionContext(scope.call.session).project)
+      if (!current()) throw new Error('Native spill source or scope was retired')
+      store.tx(() => {
+        for (const call of scope.calls) for (const evidence of saved.evidence!) nativeToolReads.recordEvidence(call, evidence, scope.readCut?.())
+        dispatch.attach(scope.call.session, proof)
+      })
+      return { current }
+    },
+    nativeSpillGoverned: nativeSpills.governed,
+    nativeToolEvidence: nativeToolReads.evidence,
+    inheritNativeToolRead(scope: NativeToolReadScope, evidence: readonly MemoryErasureEvidence[]) {
+      if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(scope.call.session)) throw new Error('Native tool input changed its generation')
+      store.tx(() => {
+        for (const call of scope.calls) for (const item of evidence) nativeToolReads.recordEvidence(call, item, scope.readCut?.())
+      })
+    },
+    withNativeToolRead<T>(scope: NativeToolReadScope, read: () => T): T {
       return toolReadScope.run(scope, read)
     },
     acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string) {

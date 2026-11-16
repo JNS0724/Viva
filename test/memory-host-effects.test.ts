@@ -17,6 +17,7 @@ import { openScheduleStore } from '../src/backend/schedule-store.ts'
 import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import type { HostMemoryApi, HostMemoryCaller } from '../src/memory/contracts/host.ts'
 import type { MemoryHostEffect, MemoryHostErasureRange } from '../src/memory/contracts/service.ts'
+import { t as translate } from '../src/shared/i18n/translate.ts'
 
 test('host erasure preserves unrelated original messages, rejects stale-save resurrection, retries ack without echo', async t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close())
@@ -298,6 +299,7 @@ test('file forgetting physically removes affected schedules, run inputs and feed
     return item.id
   }
   const raw = derived('Raw source result', base), related = derived('File A result', affected), retained = derived('File B result', independent)
+  const invalidatedFeed: string[][] = []
   const effect: MemoryHostEffect = { kind: 'erase-file-copies', effectId: randomUUID(), causeOperationId: randomUUID(), revision: 10,
     sources: [{ namespace: 'canonical', sourceId, revision: 1 }], ranges: [a], hostNamespace: 'viva' }
   const call: HostMemoryCaller = async method => {
@@ -305,10 +307,13 @@ test('file forgetting physically removes affected schedules, run inputs and feed
     return [effect] as HostMemoryApi[typeof method]['output']
   }
   const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
-    invalidate() {}, apply: (_kind, _data, write) => ({ value: transaction(db, write) }) })
+    invalidate() {}, feedCopiesRemoved(ids) { invalidatedFeed.push([...ids].sort()) },
+    apply: (_kind, _data, write) => ({ value: transaction(db, write) }) })
   t.after(() => { host.close(); effects.close() })
   await host.recover()
+  assert.deepEqual(invalidatedFeed, [[raw, related].sort()], 'only proved erased results are invalidated once')
   await host.recover()
+  assert.equal(invalidatedFeed.length, 1)
   assert.equal(store.get(scheduleA.id), null)
   assert.equal(store.get(scheduleB.id)?.record.prompt, 'Keep tea')
   assert.deepEqual(db.prepare('SELECT key FROM schedule_runs').all().map(row => row.key), ['current-b'])
@@ -316,10 +321,41 @@ test('file forgetting physically removes affected schedules, run inputs and feed
   assert.equal(effects.get('feed-notice', raw), null)
   assert.equal(effects.get('feed-notice', related), null)
   assert(effects.get('feed-notice', retained))
+  assert.throws(() => derived('Raw source result', base), { message: translate('main.feed.erased') })
   for (const file of [path, path + '-wal']) {
     const bytes = readFileSync(file)
     for (const erased of ['Raw source result', 'File A result', 'Erase report']) assert.equal(bytes.includes(Buffer.from(erased)), false)
   }
+})
+
+test('feed erasure replays exact durable identities after a failed volatile notification', async t => {
+  const { dir } = scratch(t, 'memory-feed-retry-')
+  const db = new DatabaseSync(join(dir, 'app.db'))
+  t.after(() => db.close())
+  db.exec(APP_DB_PRAGMAS)
+  const history = openHistoryDb({ db }), feed = openFeedStore({ db })
+  const sourceId = randomUUID(), text = 'private source'
+  const proof: MemoryProvenance = { sources: [sourceId], dependencies: [], turnOnly: false, epoch: 0 }
+  const secret = feed.add({ source: 'schedule', key: 'same body', title: 'title', body: 'same body', memory: proof, origin: { label: 'run' } }).item
+  const independent = feed.add({ source: 'mail', key: 'same body', title: 'title', body: 'same body', origin: { label: 'mail' } }).item
+  const effect: MemoryHostEffect = { kind: 'erase-file-copies', effectId: randomUUID(), causeOperationId: randomUUID(), revision: 1,
+    hostNamespace: 'viva', sources: [], ranges: [range(sourceId, 1, text, text)] }
+  const call: HostMemoryCaller = async method => {
+    assert.equal(method, 'pendingHostEffects')
+    return [effect] as HostMemoryApi[typeof method]['output']
+  }
+  let fail = true
+  const notices: string[][] = []
+  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+    apply: (_kind, _data, work) => ({ value: transaction(db, work) }), invalidate() {},
+    feedCopiesRemoved(ids) { if (fail) throw new Error('window stream unavailable'); notices.push([...ids]) } })
+  t.after(() => host.close())
+  await assert.rejects(host.recover(), /window stream unavailable/)
+  assert.deepEqual(feed.list().map(item => item.id), [independent.id])
+  fail = false
+  await host.recover()
+  assert.deepEqual(notices, [[secret.id]])
+  assert.equal(feed.continuationCurrent(feed.continuation(independent.id)!), true)
 })
 
 test('saved reports retain proof across conversations and erase only the exact affected runs', async t => {

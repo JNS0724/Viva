@@ -35,8 +35,109 @@ function deferred<T>() {
 }
 
 /** The mutation fixture returns only a receipt, just like the owner. */
-const mutationReceipt = (operationId: string, detail: MemoryFileDetailView, action: 'ENABLE' | 'DISABLE' | 'UNDO' | 'CREATE' | 'EDIT') => ({
+const mutationReceipt = (operationId: string, detail: MemoryFileDetailView, action: 'ENABLE' | 'DISABLE' | 'UNDO' | 'CREATE' | 'EDIT' | 'FORGET') => ({
   operationId, identity: detail.identity, usageVersion: detail.version.usageVersion + 1, contentRevision: detail.version.contentRevision, action,
+})
+
+test('permanent file forget requires capability and current explicit confirmation before preserving one retry identity', async () => {
+  const old = detailOf('private'), allowed = { ...old, actions: { ...old.actions, forget: true } }
+  const requests: Parameters<AgentApi['forgetMemoryFile']>[0][] = []
+  const f = harness({ readMemoryFile: async () => requests.length ? null : allowed,
+    listMemoryFiles: async () => pageOf(requests.length ? [] : [allowed]),
+    forgetMemoryFile: async request => {
+      requests.push(request)
+      if (requests.length === 1) throw new Error('reply lost after owner commit')
+      return { status: 'applied', receipt: mutationReceipt(request.operationId, allowed, 'FORGET'),
+        cleanup: requests.length === 2 ? 'pending' : 'complete' }
+    },
+  })
+  await f.actions.refreshFiles()
+  await f.actions.showMemoryFile({ identity: old.identity })
+  f.actions.askManagedMemoryForget(old)
+  assert.equal(f.file().forget, null, 'a stale or disabled capability cannot open confirmation')
+  f.actions.askManagedMemoryForget(allowed)
+  const confirm = f.file().forget!
+  assert.equal(confirm.phase, 'confirm')
+  assert.equal(requests.length, 0)
+  assert.equal(await f.actions.confirmManagedMemoryForget(confirm.id + 1), false)
+  assert.equal(await f.actions.confirmManagedMemoryForget(confirm.id), false)
+  assert.equal(f.file().forget?.phase, 'unconfirmed')
+  assert.equal(f.file().forget?.title, undefined, 'potentially erased title is no longer retained')
+  assert.equal(f.file().detail, null)
+  assert.equal(f.file().selection, null)
+  assert.deepEqual(f.file().items, [], 'pre-erasure titles can share the withdrawn evidence')
+  assert.equal(await f.actions.undoManagedMemory(allowed), false, 'an old Undo closure cannot restore forgotten content')
+  f.actions.invalidateFiles()
+  assert.equal(f.file().forget?.request.operationId, confirm.request.operationId)
+  assert.equal(await f.actions.confirmManagedMemoryForget(confirm.id), true)
+  assert.equal(f.file().forget?.phase, 'pending', 'a FORGET receipt does not claim all copies were erased')
+  assert.equal(await f.actions.confirmManagedMemoryForget(confirm.id), true)
+  assert.equal(f.file().forget?.phase, 'complete')
+  assert.deepEqual(requests, [confirm.request, confirm.request, confirm.request])
+})
+
+test('daily permanent forget confirms the viewed archived version and never a different stopped range', async () => {
+  const current = detailOf('today', 'daily')
+  const restriction = { id: 'selected-range', version: version('selected') }
+  const file = { ...current, actions: { ...current.actions, forget: true }, restrictions: [restriction],
+    stoppedSnapshot: { restrictionId: restriction.id, markdown: 'Stopped content', sources: [] } }
+  const requests: Parameters<AgentApi['forgetMemoryFile']>[0][] = []
+  const f = harness({ readMemoryFile: async () => file, listMemoryFiles: async () => pageOf([]), forgetMemoryFile: async request => {
+    requests.push(request)
+    return { status: 'rejected', code: 'change.pending' }
+  } })
+  await f.actions.showMemoryFile({ identity: file.identity, restrictionId: restriction.id })
+  f.actions.askManagedMemoryForget(file)
+  const first = f.file().forget!
+  assert.deepEqual(first.request.version, restriction.version)
+  assert.equal(first.request.restrictionId, restriction.id)
+  assert.equal(await f.actions.confirmManagedMemoryForget(first.id), false)
+  assert.equal(await f.actions.confirmManagedMemoryForget(first.id), false)
+  assert.deepEqual(requests, [first.request, first.request], 'change.pending keeps the same operation and range')
+})
+
+test('new proof requires a new forget confirmation and stale responses cannot target a later selection', async () => {
+  const original = detailOf('changing'), current = { ...original, actions: { ...original.actions, forget: true } }
+  const other = detailOf('other'), pending = deferred<Awaited<ReturnType<AgentApi['forgetMemoryFile']>>>()
+  let calls = 0, request: Parameters<AgentApi['forgetMemoryFile']>[0] | undefined
+  const f = harness({ readMemoryFile: async identity => identity.id === other.identity.id ? other : current,
+    listMemoryFiles: async () => pageOf([other]), forgetMemoryFile: input => { calls++; request = input; return pending.promise } })
+  await f.actions.showMemoryFile({ identity: current.identity })
+  f.actions.askManagedMemoryForget(current)
+  const first = f.file().forget!
+  f.actions.invalidateFiles()
+  assert.equal(f.file().forget, null)
+  assert.equal(await f.actions.confirmManagedMemoryForget(first.id), false)
+  assert.equal(calls, 0)
+  await f.actions.reloadMemoryFile()
+  f.actions.askManagedMemoryForget(current)
+  const second = f.file().forget!
+  assert.notEqual(second.request.operationId, first.request.operationId)
+  const sending = f.actions.confirmManagedMemoryForget(second.id)
+  assert.equal(await f.actions.confirmManagedMemoryForget(second.id), false)
+  f.dispatch({ type: 'memory_close' })
+  f.dispatch({ type: 'memory_open' })
+  await f.actions.showMemoryFile({ identity: other.identity })
+  pending.resolve({ status: 'applied', receipt: mutationReceipt(request!.operationId, current, 'FORGET'), cleanup: 'complete' })
+  assert.equal(await sending, true)
+  assert.equal(f.file().detail, other)
+  assert.equal(f.file().forget, null)
+  assert.equal(calls, 1)
+})
+
+test('a forget version conflict does not retry the old confirmation against refreshed evidence', async () => {
+  const item = detailOf('changed'), enabled = { ...item, actions: { ...item.actions, forget: true } }
+  const f = harness({ readMemoryFile: async () => enabled, listMemoryFiles: async () => pageOf([enabled]),
+    forgetMemoryFile: async () => ({ status: 'rejected', code: 'revision.conflict' }) })
+  await f.actions.showMemoryFile({ identity: item.identity })
+  f.actions.askManagedMemoryForget(enabled)
+  const first = f.file().forget!
+  assert.equal(await f.actions.confirmManagedMemoryForget(first.id), false)
+  assert.equal(f.file().forget?.phase, 'conflict')
+  assert.equal(await f.actions.confirmManagedMemoryForget(first.id), false)
+  await f.actions.showMemoryFile({ identity: item.identity })
+  f.actions.askManagedMemoryForget(enabled)
+  assert.notEqual(f.file().forget?.request.operationId, first.request.operationId)
 })
 
 test('loading About You refreshes the file list after the profile', async () => {

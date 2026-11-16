@@ -9,6 +9,7 @@ export function createVivaMemoryClient(call: HostMemoryCaller) {
     listFiles: method('listFiles'), readFile: method('readFile'),
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
+    fileOperation: (operationId: string) => call('getOperation', { operationId }),
     recoverContext: method('recoverContext'),
     profile: method('profile'), fileProfile: method('fileProfile'),
     revision: method('revision'), cleanupPending: method('cleanupPending'),

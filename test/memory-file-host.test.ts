@@ -80,6 +80,39 @@ test('admitted routing evidence is withheld during a drained mutation and stays 
   assert.equal(await snapshot(stranger, evidence), null, 'a later readset cannot reauthorize the erased decision')
 })
 
+test('history use rejects a stale authorized original or generated reply before the host acknowledges erasure', async t => {
+  const f = await fixture(t), file = (await f.client.readFile(f.identity))!, original = f.store.readSource(f.sourceId)!
+  const rows = [
+    { segmentId: f.session, sessionId: f.session, role: 'user', text: original.text!, sourceId: original.id },
+    { segmentId: f.session, sessionId: f.session, role: 'assistant', text: 'Generated report guidance.', sourceId: null },
+  ]
+  for (const row of rows) assert.equal(await f.owner.handleHost('allowsProjectHistory', { args: [row, undefined, undefined] }), true)
+  const target = randomUUID()
+  f.owner.initializeSession({ sessionId: target, cwd: f.store.fileRoot })
+  const operationId = randomUUID()
+  await f.client.forgetFile({ operationId, identity: file.identity, version: file.version })
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.ok(effects.some(effect => effect.effectId === operationId), 'the host has not acknowledged the erasure')
+  for (const row of rows) {
+    await assert.rejects(f.owner.handleHost('useHistory', { args: [undefined, row] }), { code: 'revision.conflict' })
+    await assert.rejects(f.owner.handleHost('useHistory', { args: [target, row] }), { code: 'revision.conflict' })
+  }
+  assert.deepEqual(f.owner.dispatch.snapshot(target).sources, [])
+  assert.deepEqual(f.owner.dispatch.snapshot(target).files ?? [], [])
+  assert.equal(await f.owner.handleHost('transfer', { args: [target, f.owner.dispatch.snapshot(f.session), undefined, true] }), false)
+
+  const independentSession = randomUUID(), independentId = randomUUID(), independentText = 'A separately received original stays available.'
+  await f.owner.receiveSource({ sessionId: independentSession, messageId: independentId, text: independentText, at: Date.now(),
+    timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  const independent = { segmentId: independentSession, sessionId: independentSession, role: 'user', text: independentText, sourceId: independentId }
+  await f.owner.handleHost('useHistory', { args: [target, independent] })
+  assert.deepEqual(f.owner.dispatch.snapshot(target).sources, [independentId])
+  await f.reopen()
+  await assert.rejects(f.owner.handleHost('useHistory', { args: [undefined, rows[0]!] }), { code: 'revision.conflict' })
+  await f.owner.handleHost('useHistory', { args: [target, independent] })
+  assert.deepEqual(f.owner.dispatch.snapshot(target).sources, [independentId])
+})
+
 test('fast routing binds the exact host delivery even before native inbox intake', async t => {
   const f = await fixture(t), sourceId = randomUUID(), words = 'Add the Friday item to my task.'
   const session = f.session, conversation = f.session
@@ -346,8 +379,11 @@ test('file-mode cleanup stays pending until both host and native owners complete
   assert.equal(effect.kind, 'erase-file-copies')
   await f.owner.handleHost('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
   assert.equal(await f.client.cleanupPending(), 1, 'host acknowledgement cannot settle a pending native copy')
-  f.store.db.prepare('DELETE FROM owner_file_native_erasures WHERE operation=?').run(operationId)
+  const { createNativeErasureReceipts } = await import('../src/memory/node/native-erasure-receipts.ts')
+  createNativeErasureReceipts(f.store.db).acknowledge(operationId, 'c'.repeat(64))
   assert.equal(await f.client.cleanupPending(), 0)
+  assert.ok(f.store.db.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId), 'the immutable plan remains auditable')
+  assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
 })
 
 test('file profile keeps unrelated lines while withholding a verified superseded fragment', async t => {
@@ -786,6 +822,34 @@ test('manual IPC reports structured failures without accepting caller provenance
   assert.equal(result.status, 'applied')
 })
 
+test('permanent file forget IPC binds owner proof, replays one operation, and reports pending copies honestly', async t => {
+  const f = await fixture(t), created = await f.client.createFile({ operationId: randomUUID(), text: 'Explicit manual memory' })
+  const detail = (await f.client.readFile(created.identity))!
+  assert.equal(detail.actions.forget, false, 'production activation is still gated on end-to-end erasure acceptance')
+  const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
+  const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
+  registerRuntimeMemoryIpc(ipc, { client: f.client, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null })
+  const call = (value: unknown) => listeners.get('memory:forget-file')!({}, value) as Promise<import('../src/memory/contracts/file-management.ts').MemoryFileForgetResult>
+  const request = { operationId: randomUUID(), identity: detail.identity, version: detail.version }
+  assert.throws(() => call({ ...request, authorized: true }), /invalid memory:forget-file/)
+  assert.deepEqual(await call({ ...request, operationId: randomUUID(), version: { ...request.version, policyToken: 'obsolete' } }),
+    { status: 'rejected', code: 'revision.conflict' })
+  const result = await call(request)
+  assert.equal(result.status, 'applied')
+  assert.equal(result.status === 'applied' && result.cleanup, 'pending')
+  assert.equal(await f.client.readFile(created.identity), null)
+  assert.deepEqual(await call(request), result)
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  const effect = effects.find(item => item.effectId === request.operationId)!
+  assert.equal(effect.kind, 'erase-file-copies')
+  await f.owner.runtime.wake()
+  await f.owner.handleHost('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
+  const complete = await call(request)
+  assert.equal(complete.status === 'applied' && complete.cleanup, 'complete')
+  await assert.rejects(f.client.undoFile({ operationId: randomUUID(), identity: detail.identity, version: detail.version, changeId: 'before-forget' }),
+    { code: 'not.found' })
+})
+
 test('a concurrent edit cannot copy content across an exact forgetting boundary', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   const user = await f.client.createFile({ operationId: randomUUID(), text: 'New independent material for tea' })
@@ -1222,7 +1286,8 @@ for (const read of [true, false]) test(`file forget ${read ? 'retains' : 'omits'
   await f.owner.handleHost('ackHostEffect', { effectId: effect!.effectId, causeOperationId: operationId, revision: effect!.revision })
   await f.reopen()
   await f.owner.runtime.wake()
-  assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
+  const waiting = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.deepEqual(waiting.map(item => item.effectId), read ? [operationId] : [])
   assert.equal(f.owner.runtime.cleanupPending(), 0)
   const native = f.store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId)
   const outcome = await f.owner.handleHost('getOperation', { operationId }) as HostMemoryApi['getOperation']['output']

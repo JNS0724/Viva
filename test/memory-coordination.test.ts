@@ -167,6 +167,52 @@ test('history preserves genuine sources but checks derived session dependencies 
   } finally { store.close() }
 })
 
+for (const role of ['user', 'assistant']) {
+  test(`history consumption rechecks ${role} evidence after authorization and does not record a rejected replay`, () => {
+    const fixture = setup(), { coordinator, dispatch, store } = fixture
+    try {
+      dispatch.recordSource('origin', 'original')
+      const row = { segmentId: 'history', role, text: 'Previously authorized text', sessionId: 'origin', sourceId: role === 'user' ? 'original' : null }
+      assert.equal(coordinator.allowsHistory(row), true)
+      fixture.setValid(false)
+      assert.throws(() => coordinator.useHistory(undefined, row), { code: 'revision.conflict' })
+      assert.throws(() => coordinator.useHistory('target', row), { code: 'revision.conflict' })
+      assert.deepEqual(dispatch.snapshot('target').sources, [])
+      const previous = dispatch.snapshot('origin')
+      assert.equal(coordinator.transfer('target', previous, undefined, true), false)
+      fixture.setValid(true)
+      coordinator.useHistory('target', row)
+      assert.deepEqual(dispatch.snapshot('target').sources, ['original'])
+      assert.equal(coordinator.transfer('retry', dispatch.snapshot('target'), undefined, true), true)
+      fixture.setRuntimeBusy(true)
+      assert.throws(() => coordinator.useHistory(undefined, row), { code: 'revision.conflict' })
+    } finally { store.close() }
+  })
+}
+
+test('history consumption checks the target session’s current project before registering original or inherited evidence', () => {
+  const fixture = setup(), { coordinator, runtime, dispatch, store } = fixture
+  try {
+    runtime.recordSessionProject('origin', 'project-a')
+    store.recordSessionProject('origin', 'project-a')
+    runtime.recordSessionProject('target', 'project-a')
+    dispatch.recordSource('origin', 'original')
+    runtime.projectAllows = (evidence, project) => !evidence.sources.includes('original') || project?.id === 'project-a'
+    const original = { segmentId: 'history', role: 'user', text: 'Original project evidence', sessionId: 'origin', sourceId: 'original' }
+    const generated = { ...original, role: 'assistant', sourceId: null }
+    assert.equal(coordinator.allowsProjectHistory(original, fixture.project(), fixture.project()), true)
+    assert.equal(coordinator.allowsProjectHistory(generated, fixture.project(), fixture.project(), fixture.project()), true)
+    runtime.recordSessionProject('target', 'project-b')
+    assert.throws(() => coordinator.useHistory('target', original), { code: 'revision.conflict' })
+    assert.throws(() => coordinator.useHistory('target', generated), { code: 'revision.conflict' })
+    assert.deepEqual(dispatch.snapshot('target').sources, [])
+    runtime.recordSessionProject('target', 'project-a')
+    coordinator.useHistory('target', original)
+    coordinator.useHistory('target', generated)
+    assert.deepEqual(dispatch.snapshot('target').sources, ['original'])
+  } finally { store.close() }
+})
+
 test('in-turn inherited context and durable task payloads keep distinct transfer rules', () => {
   const fixture = setup()
   const { coordinator, dispatch, store } = fixture

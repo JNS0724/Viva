@@ -5,7 +5,7 @@ import type { openNativeOriginalMaintenance } from '../../../../src/memory/node/
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
 import { addNativeCompactionCopies, asNativeCompactionCopy, projectNativeCompaction } from './project-native-compactions.ts'
-import { inspectNativeOutputWindow, projectNativeOutput } from './project-native-outputs.ts'
+import { inspectNativeOutputWindow, projectNativeOutput, projectNativeRetry } from './project-native-outputs.ts'
 import { inspectNativeToolCompanions, projectToolCompanion } from './native-output-tool-group.ts'
 import { planNativeEventCopy, publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
 
@@ -37,6 +37,11 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
           if (origin || stored && nativeEventDigest(stored) === terminal.digest) blocked.add(target.id)
           continue
         }
+        if (!window.ambiguous && !window.event) {
+          // A fork can persist an inherited endpoint before its parent flushes it.
+          if (origin) verified.add(target.id)
+          continue
+        }
         const event = window.ambiguous ? undefined : window.event
         if (!event || event.seq !== terminal.seq || (event.type === 'assistant/message' ? 'reply' : 'attempt') !== terminal.kind) {
           blocked.add(target.id)
@@ -46,6 +51,12 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
           expected: terminal.digest, project: () => projectNativeOutput(event), trace: () => trace.key(event) })
         if (!primary) { blocked.add(target.id); continue }
         const matched = new Map<number, NativeEventCopy>([[terminal.seq, primary]])
+        for (const retry of window.retries ?? []) {
+          const copy = planNativeEventCopy({ event: retry, attempt: target.id, receipts, journal,
+            project: () => projectNativeRetry(retry), trace: () => trace.key(retry) })
+          if (copy) matched.set(retry.seq, copy)
+        }
+        if (matched.size !== 1 + (window.retries?.length ?? 0)) { blocked.add(target.id); continue }
         if (event.type === 'assistant/message') {
           const group = inspectNativeToolCompanions(events, event)
           if (!group) { blocked.add(target.id); continue }
@@ -55,7 +66,7 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
             })
             if (copy) matched.set(companion.seq, copy)
           }
-          if (matched.size !== 1 + group.size) { blocked.add(target.id); continue }
+          if (matched.size !== 1 + (window.retries?.length ?? 0) + group.size) { blocked.add(target.id); continue }
         }
         for (const [seq, copy] of matched) {
           if (occurrences.has(seq)) throw new Error('Native outputs have competing event identities')
@@ -72,7 +83,9 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
     project: event => {
       const output = outputEvent(event)
       if (output) return projectNativeOutput(output)
-      if (event.type === 'tool/call' || event.type === 'tool/result') return projectToolCompanion(event)
+      if (event.type === 'llm/retry') return projectNativeRetry(event)
+      if (event.type === 'tool/call' || event.type === 'tool/result' || event.type === 'tool/ptc-dispatch-start'
+        || event.type === 'tool/ptc-dispatch') return projectToolCompanion(event)
       const compaction = asNativeCompactionCopy(event)
       return compaction ? projectNativeCompaction(compaction) : undefined
     },

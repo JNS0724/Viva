@@ -1,10 +1,12 @@
 import { isDeepStrictEqual } from 'node:util'
+import type {} from '@deepseek-ai/dsh-llm-retry/types'
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { NativeOutputAttempt } from '../../../../src/memory/node/native-output-attempts.ts'
 import { NATIVE_OUTPUT_MARKER } from './output-attempts.ts'
 import { withdrawnToolCall } from './native-output-tool-group.ts'
 
 type OutputEvent = SessionEvent<'assistant/message' | 'assistant/attempt'>
+type RetryEvent = SessionEvent<'llm/retry'>
 
 /** A copied marker and its settlement must both be in the child's inherited prefix. */
 export function inspectNativeOutputWindow(events: readonly SessionEvent[], sessionId: string, inheritedEventCount: number, attempt: NativeOutputAttempt) {
@@ -17,15 +19,35 @@ export function inspectNativeOutputWindow(events: readonly SessionEvent[], sessi
   }
 
   let found: OutputEvent | undefined
+  const retries: RetryEvent[] = []
+  let provider: string | undefined
+  for (let seq = attempt.floor - 1; seq >= 0; seq--) {
+    const event = events[seq]!
+    if (event.type !== 'request/header') continue
+    provider = event.data.header.config.provider
+    break
+  }
   for (let seq = attempt.floor; seq < limit; seq++) {
     const event = events[seq]!
     if (event.type === 'session/end-seed' || event.type === 'step/end' || event.type === 'turn/end'
       || pluginRecordOf(event)?.type === NATIVE_OUTPUT_MARKER) break
+    if (event.type === 'llm/retry') {
+      if (!found || event.data.turn !== turn || event.data.step !== step || !provider || event.data.provider !== provider) {
+        return { marker: true as const, ambiguous: true as const }
+      }
+      retries.push(event)
+      continue
+    }
     if (event.type !== 'assistant/attempt' && event.type !== 'assistant/message') continue
     if (found || event.data.turn !== turn || event.data.step !== step) return { marker: true as const, ambiguous: true as const }
     found = event
   }
-  return { marker: true as const, ambiguous: false as const, event: found }
+  return { marker: true as const, ambiguous: false as const, event: found, retries }
+}
+
+/** Retry routing and backoff remain intact after the provider's echoed prose is erased. */
+export function projectNativeRetry(event: RetryEvent): RetryEvent {
+  return { ...event, data: { ...event.data, failure: { ...event.data.failure, message: 'Failure details were withdrawn.' } } }
 }
 
 /** Preserve the native envelope and accounting while removing the output payload. */

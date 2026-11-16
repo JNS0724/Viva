@@ -2,13 +2,13 @@ import type { MemoryManagedFileVersion, MemoryFileListResult } from '../memory/c
 import type { MemoryFileDetailView } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS } from '../shared/text-limits.ts'
 import { t } from '../shared/i18n/translate.ts'
-import { canEditMemoryFile, memoryFilePageOpen, sameMemoryFile, sameMemoryFileSelection } from './memory-file-state.ts'
+import { canEditMemoryFile, canForgetMemoryFile, memoryFilePageOpen, sameMemoryFile, sameMemoryFileSelection } from './memory-file-state.ts'
 import type { MemoryFileDraft, MemoryFileEditor, MemoryFileSelection } from './action-types.ts'
 
 const SEARCH_DEBOUNCE_MS = 200
 
 export function createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'showToast' | 'errorMessage'>) {
-  let listRequest = 0, detailRequest = 0, editorId = 0
+  let listRequest = 0, detailRequest = 0, editorId = 0, forgetId = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   const state = () => getState().memory.files
   const active = () => memoryFilePageOpen(getState().memory)
@@ -143,8 +143,72 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     }
   }
 
+  async function confirmManagedMemoryForget(id: number) {
+    const { forget, writing, detail, selection } = state()
+    if (!active() || !forget || forget.id !== id || writing
+      || !['confirm', 'unconfirmed', 'pending'].includes(forget.phase)) return false
+    const { request } = forget
+    if (forget.phase === 'confirm') {
+      const restriction = detail?.restrictions?.find(item => item.id === request.restrictionId)
+      const version = request.restrictionId ? restriction?.version : detail?.version
+      if (!canForgetMemoryFile(detail) || !selection || !sameMemoryFile(detail.identity, request.identity)
+        || selection.restrictionId !== request.restrictionId || !version
+        || version.contentRevision !== request.version.contentRevision || version.usageVersion !== request.version.usageVersion
+        || version.policyToken !== request.version.policyToken) return false
+    }
+    cancelReads()
+    dispatch({ type: 'memory_summaries_stale' })
+    dispatch({ type: 'memory_file_forget_started', id })
+    dispatch({ type: 'memory_file_write_busy', busy: true })
+    const current = () => active() && state().forget?.id === id
+    let refresh = false
+    try {
+      const result = await api.forgetMemoryFile(request)
+      if (result.status === 'rejected') {
+        if (current()) dispatch({ type: 'memory_file_forget', forget: { id, request,
+          phase: result.code === 'change.pending' ? 'unconfirmed' : 'conflict',
+          error: t(result.code === 'revision.conflict' ? 'memory-files.forget.conflict' : `main.memory.${result.code}`) } })
+        refresh = result.code !== 'change.pending'
+        return false
+      }
+      const { receipt, cleanup } = result
+      if (receipt.operationId !== request.operationId || receipt.action !== 'FORGET'
+        || !sameMemoryFile(receipt.identity, request.identity) || receipt.restrictionId !== request.restrictionId) {
+        throw new Error('Unexpected memory erasure receipt')
+      }
+      if (current()) dispatch({ type: 'memory_file_forgotten', id, cleanup })
+      refresh = true
+      return true
+    } catch {
+      // Retry only this approved request. A lost response may follow a committed erasure.
+      if (current()) dispatch({ type: 'memory_file_forget', forget: { id, request, phase: 'unconfirmed',
+        error: t('memory-files.forget.unconfirmed') } })
+      return false
+    } finally {
+      dispatch({ type: 'memory_file_write_busy', busy: false })
+      if (refresh) await refreshFiles()
+    }
+  }
+
   return {
     cancelReads,
+    confirmManagedMemoryForget,
+    askManagedMemoryForget(target: MemoryFileDetailView) {
+      const { detail, selection, writing, editor, forget } = state()
+      if (!active() || writing || editor || forget?.phase === 'unconfirmed' || detail !== target || !selection
+        || !canForgetMemoryFile(target) || target.stoppedSnapshot?.restrictionId !== selection.restrictionId) return
+      const restrictionId = selection.restrictionId
+      const version = restrictionId ? target.restrictions?.find(item => item.id === restrictionId)?.version : target.version
+      if (!version) return
+      dispatch({ type: 'memory_file_forget', forget: { id: ++forgetId, phase: 'confirm', title: target.title,
+        request: { operationId: globalThis.crypto.randomUUID(), identity: target.identity, version,
+          ...(restrictionId ? { restrictionId } : {}) } } })
+    },
+    cancelManagedMemoryForget(id: number) {
+      if (active() && !state().writing && state().forget?.id === id && state().forget?.phase === 'confirm') {
+        dispatch({ type: 'memory_file_forget', forget: null })
+      }
+    },
     saveMemoryFileEditor,
     startMemoryFileEditor(target?: MemoryFileDetailView) {
       const { selection, detail, editor, writing } = state()

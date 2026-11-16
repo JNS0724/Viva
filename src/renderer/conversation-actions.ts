@@ -38,6 +38,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       return false
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
+    if (feedItemId && getState().feed.erasedIds.includes(feedItemId)) return false
     if (feedItemId && isBusy(getState())) {
       showToast(t('feed.continue.wait'))
       return false
@@ -69,13 +70,14 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
     for (const { id } of images) keepPicture(id)
     const operation = globalThis.crypto.randomUUID()
-    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, pending: Boolean(feed) })
+    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, pending: Boolean(feed), ...(feed ? { feedItemId: feed.id } : {}) })
     if (feed) {
       // The same conversation can replace its DSH session before a send. Resolve the message by its operation.
       const pendingHere = () => getState().messages.some(message => message.pending && message.sourceId === operation)
       api.prompt(text, images, operation, feed.id).then(() => {
-        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: true })
-        feed.admitted?.(true)
+        const accepted = !getState().feed.erasedIds.includes(feed.id)
+        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted })
+        feed.admitted?.(accepted)
       }, error => {
         const message = errorMessage(error)
         if (pendingHere()) {

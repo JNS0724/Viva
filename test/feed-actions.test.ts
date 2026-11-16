@@ -41,13 +41,36 @@ function setup({ failing = '' } = {}) {
     errorMessage: (err) => (err instanceof Error ? err.message : String(err)), fillComposer: (text, id) => { filled.push(text); sources.push(id) },
   })
   state = reduce(state, { type: 'feed_open' })
-  return { actions, calls, filled, sources, state: () => state }
+  return { actions, api, calls, filled, sources, state: () => state }
 }
 
 test('loaded: the items and the schedules together', async () => {
   const { actions, state } = setup()
   await actions.loadFeed()
   assert.deepEqual([state().feed.items.length, state().feed.schedules.length], [2, 1])
+})
+
+test('erasure invalidates an older feed query and a pending continuation with its exact item identity', async () => {
+  const h = setup()
+  await h.actions.loadFeed()
+  type Feed = Awaited<ReturnType<typeof h.api.listFeed>>
+  let finishQuery!: (items: Feed) => void, finishContinue!: (text: string) => void
+  const stale = [item('i1'), item('i2')]
+  h.api.listFeed = () => new Promise(resolve => { finishQuery = resolve })
+  h.api.continueFeed = () => new Promise(resolve => { finishContinue = resolve })
+  const query = h.actions.loadFeed()
+  const continuation = h.actions.continueItem('i1')
+  h.api.listFeed = async () => [item('i2')]
+  await h.actions.erased(['i1'])
+  finishQuery(stale)
+  finishContinue('retired draft body')
+  await Promise.all([query, continuation])
+  assert.deepEqual(h.state().feed.items.map(item => item.id), ['i2'])
+  assert.deepEqual(h.filled, [])
+  assert.deepEqual(h.calls, [])
+  h.api.continueFeed = async () => 'independent result'
+  await h.actions.continueItem('i2')
+  assert.deepEqual(h.filled, ['independent result'])
 })
 
 test('在对话里继续: the item into the input, and no longer new; one seen already goes in as it is', async () => {

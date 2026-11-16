@@ -31,7 +31,7 @@ async function physicalArtifacts(root: string) {
   return names
 }
 
-type NativeCatalogItem = { sessionId: SessionId, inheritedEventCount: number, events: readonly SessionEvent[] }
+type NativeCatalogItem = { sessionId: SessionId, inheritedEventCount: number, events: readonly SessionEvent[], artifactDigest: string }
 
 /** Scan the actual durable artifacts, including branches never opened by the memory owner. */
 export async function visitNativeSessionCatalog(root: string, persistence: SessionPersistence, visit: (item: NativeCatalogItem) => void) {
@@ -45,7 +45,7 @@ export async function visitNativeSessionCatalog(root: string, persistence: Sessi
       const { events } = await handle.read()
       const fileDigest = createHash('sha256').update(await readFile(location.path)).digest('hex')
       await verifyCompleteArtifact(location.path, fileDigest, location.path.endsWith('.zstd'), events.length)
-      visit({ sessionId: header.id, inheritedEventCount: handle.inheritedEventCount, events })
+      visit({ sessionId: header.id, inheritedEventCount: handle.inheritedEventCount, events, artifactDigest: fileDigest })
     } finally { await handle.close() }
   }
   if (files.size) throw new Error('The native catalog omitted physical session files')

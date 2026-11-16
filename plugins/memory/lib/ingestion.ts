@@ -46,7 +46,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         const proof = await deliveryProof?.(session, message)
         const contentDigest = memoryOriginalContentDigest(message)
         if (proof && proof.contentDigest !== contentDigest) throw new Error('Derived delivery content differs from its causal receipt')
-        await owner.registerDerived({ sessionId: String(session.id), messageId: message.id, nativeUserSource: message.source.kind, sourceIds: [], senderSessionId, inherited: options.inherited,
+        await owner.registerDerived({ sessionId: String(session.id), messageId: message.id, nativeUserSource: message.source.kind, nativeMessageDigest: memoryRecoveryMessageHash(message), sourceIds: [], senderSessionId, inherited: options.inherited,
           contextGeneration: options.contextGeneration ?? current.generation, senderContextGeneration: 0, ...proof, contentDigest,
           ...(proof ? { verifiedDelivery: true as const } : {}) })
       }
@@ -54,7 +54,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
     }
     const text = memoryMessageText(message)
     const contentDigest = memoryOriginalContentDigest(message)
-    const identity = { sessionId: String(session.id), messageId: message.id, text, contentDigest, inherited: options.inherited ?? false }
+    const identity = { sessionId: String(session.id), messageId: message.id, text, contentDigest, nativeMessageDigest: memoryRecoveryMessageHash(message), inherited: options.inherited ?? false }
     if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) {
       owner.noteInheritedNativeCut?.(identity)
       return undefined
@@ -151,7 +151,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         if (receipt) current.events.set(event.seq, [receipt.sourceId])
         else {
           const dependencies = [...new Set([...(event.sourceEventSeqs ?? []).flatMap(seq => current.events.get(seq) ?? []), ...owner.dispatch.snapshot(String(session.id)).sources])]
-          await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.id, nativeUserSource: event.data.source.kind,
+          await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.id, nativeUserSource: event.data.source.kind, nativeMessageDigest: memoryRecoveryMessageHash(event.data),
             sourceIds: dependencies, eventSeq: event.seq, inherited, contextGeneration: current.generation, contentDigest: memoryOriginalContentDigest(event.data) })
           current.events.set(event.seq, dependencies)
         }
