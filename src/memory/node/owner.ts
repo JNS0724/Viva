@@ -602,7 +602,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
               db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
             }
             const sessions = [...new Set(invalidated)]
-            const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => ({ sourceId, revision, length, hash, spans }))
+            const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => {
+              const afterHash = store.readSource(sourceId)?.hash
+              if (!afterHash) throw new Error('Missing committed source erasure proof')
+              return { sourceId, revision, length, hash, afterHash, spans }
+            })
             if (native) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(id, JSON.stringify({ sessions, ranges }))
             if (options.hostNamespace) {
               const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,

@@ -1,19 +1,9 @@
 import type { MemorySource } from '../contracts/records.ts'
 import type { DocumentSourceRef } from './ports/documents.ts'
+import { maskTextSpans, mergeTextSpans, type TextSpan as Span } from '../contracts/text-spans.ts'
 
-type Span = { start: number, end: number }
 const valid = (span: Span) => Number.isSafeInteger(span.start) && Number.isSafeInteger(span.end) && span.start >= 0 && span.end > span.start
 const overlaps = (a: Span, b: Span) => a.start < b.end && b.start < a.end
-
-function orderedSpans(spans: readonly Span[]): Span[] {
-  const result: Span[] = []
-  for (const span of [...spans].sort((a, b) => a.start - b.start || a.end - b.end)) {
-    const previous = result.at(-1)
-    if (previous && span.start <= previous.end) previous.end = Math.max(previous.end, span.end)
-    else result.push({ ...span })
-  }
-  return result
-}
 
 /** Exact available evidence after subtracting disabled fragments. Used to rebuild a mixed
  * daily from still-authorized originals without granting the full original source anew. */
@@ -25,7 +15,7 @@ export function subtractDocumentSourceSpans(length: number, source: DocumentSour
   if (source.spans && (!source.spans.length || source.spans.some(span => !valid(span) || span.end > length))) {
     throw new Error('invalid-document-source-spans')
   }
-  let result = orderedSpans(source.spans ?? (length ? [{ start: 0, end: length }] : []))
+  let result = mergeTextSpans(source.spans ?? (length ? [{ start: 0, end: length }] : []))
   for (const restriction of restrictions) {
     if (restriction.id !== source.id || restriction.token !== source.token) continue
     if (!restriction.spans) return []
@@ -74,7 +64,7 @@ export function planDocumentSourceErasure(source: Pick<MemorySource, 'id' | 'tex
   const splitsCharacter = (offset: number) => text.charCodeAt(offset - 1) >= 0xD800 && text.charCodeAt(offset - 1) <= 0xDBFF
     && text.charCodeAt(offset) >= 0xDC00 && text.charCodeAt(offset) <= 0xDFFF
   if (selected.some(({ start, end }) => splitsCharacter(start) || splitsCharacter(end))) return null
-  const spans = orderedSpans([...(source.erasure?.spans ?? []), ...selected])
+  const spans = mergeTextSpans([...(source.erasure?.spans ?? []), ...selected])
   return { text: projectDocumentSource(text, target, [target]), erasure: { token, spans } }
 }
 
@@ -87,17 +77,11 @@ export function projectDocumentSource(text: string, source: DocumentSourceRef, r
   const spans: Span[] = []
   for (const restriction of restrictions) {
     if (restriction.id !== source.id || restriction.token !== source.token) continue
-    if (!restriction.spans) return text.replace(/[^\r\n]/g, ' ')
+    if (!restriction.spans) return maskTextSpans(text, [{ start: 0, end: text.length }])
     if (!restriction.spans.length || restriction.spans.some(span => !valid(span) || span.end > text.length)) {
       throw new Error('invalid-document-restriction-spans')
     }
     spans.push(...restriction.spans)
   }
-  const merged = orderedSpans(spans)
-  let projected = '', offset = 0
-  for (const span of merged) {
-    projected += text.slice(offset, span.start) + text.slice(span.start, span.end).replace(/[^\r\n]/g, ' ')
-    offset = span.end
-  }
-  return projected + text.slice(offset)
+  return maskTextSpans(text, spans)
 }

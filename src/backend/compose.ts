@@ -1273,6 +1273,7 @@ ${question}` : question
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
+      eraseFileHistory: historyDb.eraseFileRanges,
       invalidate: async effect => { if (effect.kind === 'erase-copies') await taskRuntime?.revokeMemorySessions(effect.sessions ?? []); sessions.carryNext(sessions.current().id, ''); emitToRenderer({ type: 'memory_changed' }); feedChanged(); emitToRenderer({ type: 'schedules_changed' }) },
     })
     effects.runs(REPORT, taskReports)

@@ -1,16 +1,17 @@
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { HostMemoryCaller } from '../memory/contracts/host.ts'
-import type { MemoryHostEffect } from '../memory/contracts/service.ts'
+import type { MemoryHostEffect, MemoryHostErasureRange } from '../memory/contracts/service.ts'
 import type { Apply } from './journal.ts'
 import { truncateMemoryJournal } from './app-db.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, invalidate }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
+  eraseFileHistory(ranges: readonly MemoryHostErasureRange[]): void,
   invalidate(effect: MemoryHostEffect): void | Promise<void>,
 }) {
   db.exec('CREATE TABLE IF NOT EXISTS memory_host_receipts (effect TEXT PRIMARY KEY,cause TEXT NOT NULL,revision INTEGER NOT NULL,fingerprint TEXT NOT NULL)')
@@ -52,10 +53,22 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, invalid
     clearTimeout(retry); retry = undefined
     running = (async () => {
       const effects = await call('pendingHostEffects', {})
+      let rangeError: { cause: unknown } | undefined
+      let checkpointRanges = false
+      const blockedRanges = new Set<string>()
       for (const effect of effects) {
-        // Range erasure stays pending until the host can prove selective cleanup.
-        // Applying the older whole-source path would erase unrelated user text.
-        if (effect.kind === 'erase-file-copies') continue
+        if (effect.kind === 'erase-file-copies') {
+          try {
+            if (effect.ranges.some(cut => blockedRanges.has(cut.sourceId))) continue
+            eraseFileHistory(effect.ranges)
+            checkpointRanges = true
+          } catch (error) {
+            rangeError ??= { cause: error }
+            for (const cut of effect.ranges) blockedRanges.add(cut.sourceId)
+          }
+          // History is only one replica; the effect stays pending until derived copies can be erased.
+          continue
+        }
         const fingerprint = createHash('sha256').update(JSON.stringify(effect)).digest('hex')
         const old = db.prepare('SELECT cause,revision,fingerprint FROM memory_host_receipts WHERE effect=?').get(effect.effectId)
         if (old && (old.cause !== effect.causeOperationId || old.revision !== effect.revision || old.fingerprint !== fingerprint)) throw new Error('Memory host effect identity conflicts')
@@ -77,6 +90,8 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, invalid
         }
         await call('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
       }
+      if (checkpointRanges && !truncateMemoryJournal(db)) throw new Error('Memory host replica cleanup is pending a durable checkpoint')
+      if (rangeError) throw rangeError.cause
     })()
     try { await running } catch (error) {
       if (!closed) { retry = setTimeout(() => { void recover().catch(() => {}) }, 1000); retry.unref() }

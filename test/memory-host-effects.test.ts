@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -9,7 +9,7 @@ import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createMemoryHostEffects } from '../src/backend/memory-host-effects.ts'
 import { APP_DB_PRAGMAS, transaction } from '../src/backend/app-db.ts'
 import type { HostMemoryApi, HostMemoryCaller } from '../src/memory/contracts/host.ts'
-import type { MemoryHostEffect } from '../src/memory/contracts/service.ts'
+import type { MemoryHostEffect, MemoryHostErasureRange } from '../src/memory/contracts/service.ts'
 
 test('host erasure preserves unrelated original messages, rejects stale-save resurrection, retries ack without echo', async t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close())
@@ -38,7 +38,7 @@ test('host erasure preserves unrelated original messages, rejects stale-save res
     } else assert.fail(`Unexpected outbound operation ${method}`)
     return result as HostMemoryApi[typeof method]['output']
   }
-  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, invalidate() {},
+  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges, invalidate() {},
     apply: (kind, _data, write) => { mutations.push(kind); return { value: transaction(db, write) } } })
   t.after(() => host.close())
   await assert.rejects(host.recover(), /lost ack/)
@@ -97,7 +97,7 @@ test('host erasure waits for the WAL and replays only the acknowledgement after 
     pending = false
     return { accepted: true } as HostMemoryApi[typeof method]['output']
   }
-  const openHost = () => createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, invalidate() {},
+  const openHost = () => createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges, invalidate() {},
     apply: (_kind, _data, write) => { applications++; return { value: transaction(db, write) } } })
   const host = openHost(), reader = new DatabaseSync(path)
   let reopened: ReturnType<typeof openHost> | undefined
@@ -116,4 +116,144 @@ test('host erasure waits for the WAL and replays only the acknowledgement after 
     assert.equal(pending, false)
     assert.equal(applications, 1)
   } finally { host.close(); reopened?.close(); reader.close(); db.close() }
+})
+
+function range(sourceId: string, revision: number, text: string, selection: string): MemoryHostErasureRange {
+  const start = text.indexOf(selection), end = start + selection.length
+  assert(start >= 0)
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex')
+  return { sourceId, revision, length: text.length, hash: digest(text),
+    afterHash: digest(text.slice(0, start) + ' '.repeat(selection.length) + text.slice(end)), spans: [{ start, end }] }
+}
+
+test('consecutive source cuts keep direct and formatted history, stars, and unrelated text across stale saves and reopening', t => {
+  const { dir } = scratch(t, 'memory-range-history-')
+  const file = join(dir, 'host.db'), sourceId = randomUUID()
+  const history = openHistoryDb({ file })
+  const first = 'qxz🚲', second = 'zqw contract', independent = 'Keep separate plans'
+  const original = `${first}\r\n${second}\n${independent}`
+  const one = original.replace(first, ' '.repeat(first.length)), both = one.replace(second, ' '.repeat(second.length))
+  const a = range(sourceId, 1, original, first), b = range(sourceId, 2, one, second)
+  const row = { role: 'user' as const, sourceId, key: 'first-user', text: original }
+  const choices = '保留选择、'
+  const direct = history.save(history.create({ sessionId: randomUUID() }), [row, { role: 'assistant', text: 'Independent answer' }])
+  const formatted = history.save(history.create({ sessionId: randomUUID() }), [{ ...row, text: choices + original }])
+  assert(history.setStar(direct.id, 0, true))
+  history.eraseFileRanges([a])
+  assert.deepEqual(history.get(direct.id)?.messages.map(({ text }) => text), [one, 'Independent answer'])
+  assert.deepEqual(history.get(formatted.id)?.messages.map(({ text }) => text), [choices + one])
+  assert.equal(history.searchMessages('qxz').length, 0)
+  assert.equal(history.search('qxz').length, 0)
+  history.eraseFileRanges([b])
+  history.eraseFileRanges([a])
+  history.close()
+
+  const reopened = openHistoryDb({ file }); t.after(() => reopened.close())
+  reopened.save(direct, [{ ...row, sourceId: undefined }, { role: 'assistant', text: 'Independent answer' }])
+  reopened.save(formatted, [{ ...row, text: choices + one }])
+  const fork = reopened.save(reopened.create({ sessionId: randomUUID() }), [{ ...row, sourceId: undefined, key: undefined }],
+    { copy: { from: direct.id, count: 1 } })
+  assert.deepEqual(reopened.get(direct.id)?.messages.map(({ text, sourceId }) => [text, sourceId]), [[both, sourceId], ['Independent answer', undefined]])
+  assert.equal(reopened.get(formatted.id)?.messages[0]?.text, choices + both)
+  assert.equal(reopened.get(fork.id)?.messages[0]?.text, both)
+  assert.equal(reopened.get(fork.id)?.messages[0]?.sourceId, sourceId)
+  assert.equal(reopened.starredMessages().length, 1)
+  assert.equal(reopened.searchMessages('zqw').length, 0)
+  assert.equal(reopened.searchMessages(independent).length, 3)
+  reopened.save(direct, [{ role: 'user', text: 'Another question' }, { role: 'user', text: original }])
+  assert.equal(reopened.get(direct.id)?.messages[1]?.text, both, 'a shifted source-less row from the same history cannot replay erased text')
+  reopened.save(direct, [{ ...row, sourceId: randomUUID() }])
+  assert.equal(reopened.get(direct.id)?.messages[0]?.text, original, 'distinct admitted input is scoped to its own identity')
+  reopened.save(direct, [row])
+  const inspection = new DatabaseSync(file); t.after(() => inspection.close())
+  for (const { block } of inspection.prepare('SELECT block FROM messages_fts_data').all()) {
+    const bytes = Buffer.from(block as Uint8Array)
+    assert.equal(bytes.includes(Buffer.from('qxz')), false)
+    assert.equal(bytes.includes(Buffer.from('zqw')), false)
+  }
+})
+
+test('range erasure rolls back on an unrecognized live replica and still fences late first saves', t => {
+  const db = new DatabaseSync(':memory:'); t.after(() => db.close())
+  const history = openHistoryDb({ db }), sourceId = randomUUID(), lateId = randomUUID()
+  const original = 'erase this piece then retain remaining'
+  const cut = range(sourceId, 1, original, 'erase this piece')
+  assert.throws(() => history.eraseFileRanges([{ ...cut, spans: [{ start: 0, end: original.length + 1 }] }]))
+  const row = { role: 'user' as const, sourceId, text: original }
+  const known = history.save(history.create(), [row])
+  const unexpected = history.save(history.create(), [{ ...row, text: `unexpected formatting ${original} trailing text` }])
+  assert.throws(() => history.eraseFileRanges([cut]), /no matching erasure proof/)
+  assert.equal(history.get(known.id)?.messages[0]?.text, original)
+  assert.equal(history.get(unexpected.id)?.messages[0]?.text, `unexpected formatting ${original} trailing text`)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM memory_erased_source_ranges').get()?.n, 0)
+  history.eraseFileRanges([{ ...cut, sourceId: lateId }])
+  const late = history.save(history.create(), [{ ...row, sourceId: lateId }])
+  assert.equal(history.get(late.id)?.messages[0]?.text, original.replace('erase this piece', ' '.repeat(16)))
+  history.save(late, [{ ...row, sourceId: lateId, text: 'unrecognized stale text' }])
+  assert.match(history.get(late.id)!.messages[0].text, /^\s+then retain remaining$/)
+})
+
+test('durable history range cleanup retains the host effect for the remaining copies', async t => {
+  const { dir } = scratch(t, 'memory-host-ranges-wal-')
+  const path = join(dir, 'host.db'), db = new DatabaseSync(path)
+  db.exec(APP_DB_PRAGMAS)
+  const history = openHistoryDb({ db }), sourceId = randomUUID(), reader = new DatabaseSync(path)
+  const marker = 'secret range phrase', original = `${marker} and retained history`
+  const effect: MemoryHostEffect = { effectId: randomUUID(), causeOperationId: randomUUID(), revision: 9,
+    hostNamespace: 'viva', kind: 'erase-file-copies', sources: [{ namespace: 'canonical', sourceId, revision: 1 }],
+    ranges: [range(sourceId, 1, original, marker)] }
+  const call: HostMemoryCaller = async method => {
+    assert.equal(method, 'pendingHostEffects', 'the host must not confirm outstanding derived and native copies')
+    return [effect] as HostMemoryApi[typeof method]['output']
+  }
+  const openHost = () => createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+    invalidate() {}, apply: (_kind, _data, write) => ({ value: transaction(db, write) }) })
+  const first = openHost()
+  let restarted: ReturnType<typeof openHost> | undefined
+  try {
+    reader.exec('BEGIN'); reader.prepare('SELECT count(*) FROM messages').get()
+    history.save(history.create(), [{ role: 'user', sourceId, text: original }])
+    await assert.rejects(first.recover(), /pending a durable checkpoint/)
+    assert.equal(history.searchMessages(marker).length, 0)
+    assert.equal(history.searchMessages('retained history').length, 1)
+    assert(readFileSync(path + '-wal').includes(Buffer.from(marker)))
+    first.close()
+    reader.exec('COMMIT')
+    restarted = openHost()
+    await restarted.recover()
+    assert.equal(readFileSync(path + '-wal').includes(Buffer.from(marker)), false)
+    assert.equal(readFileSync(path).includes(Buffer.from(marker)), false)
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM memory_erased_source_ranges').get()?.n, 1)
+  } finally { first.close(); restarted?.close(); reader.close(); db.close() }
+})
+
+test('one unverifiable source does not starve later independent host effects', async t => {
+  const db = new DatabaseSync(':memory:'); t.after(() => db.close())
+  db.exec(APP_DB_PRAGMAS)
+  const history = openHistoryDb({ db }), bad = randomUUID(), good = randomUUID()
+  const badRow = history.save(history.create(), [{ role: 'user', sourceId: bad, text: 'Unverified representation' }])
+  const text = 'Erase this part. Retain the rest.'
+  const goodRow = history.save(history.create(), [{ role: 'user', sourceId: good, text }])
+  const a = range(bad, 1, text, 'Erase this part.'), b = range(good, 1, text, 'Erase this part.')
+  const base = (revision: number) => ({ effectId: randomUUID(), causeOperationId: randomUUID(), revision, hostNamespace: 'viva', sources: [] })
+  const invalidation: MemoryHostEffect = { ...base(11), kind: 'invalidate-context' }
+  const effects: MemoryHostEffect[] = [
+    { ...base(9), kind: 'erase-file-copies', ranges: [a] },
+    { ...base(10), kind: 'erase-file-copies', ranges: [b] },
+    invalidation,
+  ]
+  const acknowledged: string[] = []
+  const call: HostMemoryCaller = async (method, input) => {
+    if (method === 'pendingHostEffects') return effects as HostMemoryApi[typeof method]['output']
+    assert.equal(method, 'ackHostEffect')
+    acknowledged.push((input as HostMemoryApi['ackHostEffect']['input']).effectId)
+    return { accepted: true } as HostMemoryApi[typeof method]['output']
+  }
+  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+    invalidate() {}, apply: (_kind, _data, write) => ({ value: transaction(db, write) }) })
+  t.after(() => host.close())
+  await assert.rejects(host.recover(), /no matching erasure proof/)
+  assert.deepEqual(acknowledged, [invalidation.effectId])
+  assert.equal(history.get(badRow.id)?.messages[0]?.text, 'Unverified representation')
+  assert.equal(history.get(goodRow.id)?.messages[0]?.text.trim(), 'Retain the rest.')
 })

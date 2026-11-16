@@ -7,6 +7,8 @@ import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
+import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
+import type { MemoryHostErasureRange } from '../memory/contracts/service.ts'
 import { retainedMessagePositions, retainedMessageBoundary } from '../shared/message-order.ts'
 
 const PAGE_SIZE = 50
@@ -219,6 +221,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   })
   db.exec(COUNT_MESSAGE_IDS)
   db.exec('CREATE INDEX IF NOT EXISTS messages_source ON messages(source_id) WHERE source_id IS NOT NULL')
+  const memoryRanges = createHistoryMemoryRanges(db)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
 
@@ -288,12 +291,37 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
 
-  const redactMessages = (messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined) => messages.map(message => {
-    const erased = message.sourceId && db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?').get(message.sourceId)
-      || message.role !== 'user' && sessionId && db.prepare('SELECT 1 FROM memory_erased_sessions WHERE id=?').get(sessionId)
-      || sessionId && db.prepare('SELECT 1 FROM memory_erased_task_briefs WHERE session=? AND digest=?').get(sessionId, createHash('sha256').update(message.text).digest('hex'))
-    return erased ? { ...message, text: '', images: undefined, receipt: null } : message
-  })
+  function redactMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined,
+    copy?: { from: string, count: number }) {
+    const hasRanges = memoryRanges.any()
+    const known = hasRanges ? sql.messages.all(id) : []
+    const inherited = hasRanges && copy ? sql.messages.all(copy.from).slice(0, copy.count) : []
+    const keys = new Map([...inherited, ...known].filter(row => row.source_key).map(row => [row.source_key, row]))
+    const replicaSources = hasRanges ? memoryRanges.replicaSources(id) : []
+    if (hasRanges && copy) replicaSources.push(...memoryRanges.replicaSources(copy.from))
+    const heldSources = new Set(replicaSources)
+    return messages.map((message, index) => {
+      const keyed = message.key ? keys.get(message.key) : undefined
+      const replicas = [keyed, known[index], inherited[index]]
+      let sourceId = message.sourceId
+      if (!sourceId && message.role === 'user') {
+        const identified = replicas.find(row => typeof row?.source_id === 'string' && memoryRanges.recognizes(row.source_id, message.text))
+        sourceId = identified?.source_id
+        if (!sourceId) for (const source of heldSources) {
+          if (!memoryRanges.recognizes(source, message.text)) continue
+          if (sourceId) throw new Error('Ambiguous memory history replica')
+          sourceId = source
+        }
+      }
+      const erased = sourceId && db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?').get(sourceId)
+        || message.role !== 'user' && sessionId && db.prepare('SELECT 1 FROM memory_erased_sessions WHERE id=?').get(sessionId)
+        || sessionId && db.prepare('SELECT 1 FROM memory_erased_task_briefs WHERE session=? AND digest=?').get(sessionId, createHash('sha256').update(message.text).digest('hex'))
+      if (erased) return { ...message, text: '', images: undefined, receipt: null }
+      const fallback = replicas.find(row => row?.source_id === sourceId)?.text
+      const text = sourceId ? memoryRanges.forSave(sourceId, message.text, fallback) : undefined
+      return text === undefined ? message : { ...message, text, receipt: null, sourceId }
+    })
+  }
 
   /**
    * Skip the unchanged prefix, including when committed output repairs an earlier message. An insertion preserves
@@ -303,7 +331,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    */
   function syncMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined, at: number,
     copy?: { from: string, count: number }) {
-    messages = redactMessages(messages, sessionId)
     const previous = sql.messages.all(id)
     let start = 0
     while (start < Math.min(previous.length, messages.length)) {
@@ -423,10 +450,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   function save<C extends Partial<Conversation> & { id: string }>(conversation: C, input: unknown,
     { keepEmpty = false, copy }: { keepEmpty?: boolean, copy?: { from: string, count: number } } = {}): C | Conversation {
     const id = assertId(conversation.id)
-    const messages = redactMessages(normalizeMessages(input), conversation.sessionId)
-    if (messages.length === 0 && !keepEmpty) return conversation
+    const incoming = normalizeMessages(input)
+    if (incoming.length === 0 && !keepEmpty) return conversation
     const at = now()
     return transaction(() => {
+      const messages = redactMessages(id, incoming, conversation.sessionId, copy)
       const existing = sql.anyConversation.get(id)
       sql.upsert.run({
         id,
@@ -442,6 +470,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         topicId: existing ? null : topicFor(id, conversation),
       })
       syncMessages(id, messages, conversation.sessionId, at, copy)
+      if (memoryRanges.any()) memoryRanges.bindSaved(id)
       return toConversation(sql.conversation.get(id) ?? { ...existing, ...conversation })
     })
   }
@@ -607,6 +636,24 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
+  /** Clean verified user text and its local projections together. */
+  function eraseFileRanges(ranges: readonly MemoryHostErasureRange[]) {
+    transaction(() => {
+      const { changed, conversations } = memoryRanges.erase(ranges)
+      if (!changed) return
+      for (const id of conversations) {
+        const rows = sql.messages.all(id)
+        db.prepare('UPDATE conversations SET title=? WHERE id=? AND title_custom=0').run(autoTitle(rows), id)
+      }
+      // Secure-delete removes retired FTS postings as content changes. Rebuild once to retire
+      // older tombstones produced before the option was enabled.
+      if (db.prepare("SELECT v FROM messages_fts_config WHERE k='secure-delete'").get()?.v !== 1) {
+        db.exec(`INSERT INTO messages_fts(messages_fts,rank) VALUES('secure-delete',1);
+          INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`)
+      }
+    })
+  }
+
   /** Core-requested cleanup is an internal write, never a new source-withdrawal request. */
   function eraseMemoryCopies(sources: readonly string[], sessions: readonly string[] = [], briefs: readonly { session: string, text: string }[] = []) {
     for (const brief of briefs) {
@@ -630,7 +677,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   return {
-    addRecord, hasRecord, moveRecords, recordsOf, bySession, eraseMemoryCopies,
+    addRecord, hasRecord, moveRecords, recordsOf, bySession, eraseMemoryCopies, eraseFileRanges,
     create, save, get, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

@@ -80,13 +80,15 @@ const hostEffect = {
   effectId: key, causeOperationId: z.uuid(), revision, hostNamespace: key,
   sources: sourceReferences, sessions: z.array(key).optional(), memoryIds: z.array(z.number().int().positive()).optional(),
 }
-const hostErasureRange = z.strictObject({
+export const memoryHostErasureRange = z.strictObject({
   sourceId: key, revision, length: z.int().positive(), hash: z.string().regex(/^[0-9a-f]{64}$/),
+  afterHash: z.string().regex(/^[0-9a-f]{64}$/),
   spans: z.array(z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() })).min(1),
 }).refine(cut => cut.spans.every(span => span.start < span.end && span.end <= cut.length))
+export type MemoryHostErasureRange = z.infer<typeof memoryHostErasureRange>
 export const memoryHostEffect = z.discriminatedUnion('kind', [
   z.strictObject({ ...hostEffect, kind: z.enum(['erase-copies', 'invalidate-context']) }),
-  z.strictObject({ ...hostEffect, kind: z.literal('erase-file-copies'), ranges: z.array(hostErasureRange).min(1) }),
+  z.strictObject({ ...hostEffect, kind: z.literal('erase-file-copies'), ranges: z.array(memoryHostErasureRange).min(1) }),
 ])
 export type MemoryHostEffect = z.infer<typeof memoryHostEffect>
 const ack = z.strictObject({ accepted: z.literal(true) })

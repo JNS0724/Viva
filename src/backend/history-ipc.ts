@@ -193,11 +193,14 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:restore', (id) => db.restore(id))
 
   handle('history:export', async (id) => {
-    const found = db.get(assertId(id))
+    const conversationId = assertId(id)
+    const found = db.get(conversationId)
     if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     const file = await chooseExportPath(exportFileName(found.conversation.title))
     if (!file) return { saved: false }
-    await fs.writeFile(file, toMarkdown(found.conversation, found.messages), 'utf8')
+    const current = db.get(conversationId)
+    if (!current) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
+    await fs.writeFile(file, toMarkdown(current.conversation, current.messages), 'utf8')
     return { saved: true, file }
   })
 }
