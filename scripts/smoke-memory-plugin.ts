@@ -11,7 +11,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium, expect } from '@playwright/test'
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -212,11 +212,17 @@ try {
     if (await proceed.isVisible()) await proceed.click()
     return page
   }
+  const editorText = (editor: Locator) => editor.evaluate(node =>
+    node instanceof HTMLTextAreaElement ? node.value : node.textContent ?? '')
   const send = async (page: Page, text: string, expected: string | RegExp) => {
     const previousReplies = await page.getByText(expected, { exact: false }).count()
     const editor = page.locator('textarea,[contenteditable=true]').first()
+    await expect(editor).toBeEditable({ timeout: 30_000 })
     await editor.click()
     await editor.pressSequentially(text, { delay: 5 })
+    // A retained editor can stay visible while its session binding changes. Never
+    // submit a partial draft or silently repair it after that transition.
+    await expect.poll(() => editorText(editor)).toBe(text)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await expect.poll(() => page.getByText(expected, { exact: false }).count(), { timeout: 30_000 }).toBeGreaterThan(previousReplies)
     await page.getByText(expected, { exact: false }).last().waitFor({ state: 'visible', timeout: 30_000 })
@@ -293,9 +299,19 @@ try {
   // the daily note. The sole fixture mutation below advances the persisted
   // scheduler deadline while the real Web owner is stopped.
   writeFileSync(path.join(output, 'web-before-venue-aria.yml'), await page.locator('body').ariaSnapshot())
+  // New Session keeps the old editor DOM mounted while the native session is
+  // created. Visibility alone can start typing into the previous binding.
+  const previousSession = await page.getByRole('treeitem', { selected: true }).getAttribute('data-row-key')
+  assert.ok(previousSession, 'the previous session has an observable row identity')
   // The visible caption is "New Session"; the public AX label is "New session".
   await page.getByRole('button', { name: 'New session', exact: true }).last().click()
-  await page.locator('textarea,[contenteditable=true]').first().waitFor({ state: 'visible', timeout: 30_000 })
+  const newSession = page.getByRole('treeitem', { name: 'New Session', exact: true, selected: true })
+  await expect(newSession).toHaveAttribute('data-row-key', /^session:/u, { timeout: 30_000 })
+  await expect(newSession).not.toHaveAttribute('data-row-key', previousSession)
+  await page.getByText('Into the Unknown', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+  const venueEditor = page.locator('textarea,[contenteditable=true]').first()
+  await expect(venueEditor).toBeEditable({ timeout: 30_000 })
+  await expect.poll(() => editorText(venueEditor)).toBe('')
   for (const fact of venue.facts) await send(page, fact, `收到：「${fact}`)
   const venueDaily = () => collectMarkdown(dataRoot).filter(file => file.includes(`${path.sep}daily${path.sep}`)
     && venue.facts.every(fact => readFileSync(file, 'utf8').includes(fact)))
