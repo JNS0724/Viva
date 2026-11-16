@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { SmokeAppWindow } from './smoke-kit.ts'
-import { openHistoryDb } from '../../src/backend/history-db.ts'
+import { openIndependentHistory } from '../fixtures/independent-history.ts'
 import { measureStreaming } from './smoke-streaming.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
@@ -82,11 +83,11 @@ function longMarkdown() {
 /** Writes the history into `userData` before the app opens it. Oldest first; the last is the conversation on screen. */
 export function seedPerf(userData: string, now = Date.now()) {
   let clock = now - (FAR_TOPICS + 100) * HOUR_MS
-  const db = openHistoryDb({ file: path.join(userData, 'app.db'), now: () => clock })
+  const db = openIndependentHistory({ file: path.join(userData, 'app.db'), now: () => clock })
   const cwd = path.join(userData, 'workspace')
   const save = (at: number, messages: object[]) => {
     clock = at
-    return db.save(db.create({ cwd }), messages)
+    return db.save(db.create({ sessionId: `fake-session-${randomUUID()}`, cwd }), messages)
   }
   save(clock, [user(`${FAR_WORDS}怎么定`), answer(`${FAR_WORDS}定在明年三月启动。`)])
   for (let i = 0; i < FAR_TOPICS; i += 1) save(now - (FAR_TOPICS + 50 - i) * HOUR_MS, [user(`第 ${i} 个话题：问点小事`), answer('好的，记下了。')])
