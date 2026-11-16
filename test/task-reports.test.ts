@@ -350,3 +350,27 @@ test('going back, a path opened, back onto a path: the window takes the records 
   assert.deepEqual(opened.rewind.openRecords.c1.map((record: ReportRecord) => record.reportId), ['task-0002:run-1'])
   assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'c1' }).rewind.openRecords, {})
 })
+
+test('report erasure removes live and cached copies and rejects late history, stream and fork snapshots', () => {
+  const erased = { reportId: 'run-a', at: 4, text: 'Erased report', after: 0 }, retained = { ...erased, reportId: 'run-b', text: 'Retained report' }
+  const records = [erased, retained]
+  const message = { role: 'user' as const, text: 'Independent' }
+  const segment = (id: string): Segment => ({ id, sourceSessionId: 's1', cwd: null, parentId: null, createdAt: 1, messages: [], records })
+  const loaded = { type: 'history_loaded' as const, conversationId: 'c1', messages: [message], records }
+  const folded = { type: 'fold_opened' as const, id: 'fold', messages: [], records }
+  let state = reduce(initialState, loaded)
+  state = reduce(state, folded)
+  state = reduce(state, { type: 'earlier_loaded', segments: [segment('before')], hasMore: true })
+  state = reduce(state, { type: 'reports_removed', reportIds: [erased.reportId] })
+  assert.deepEqual(state.records, [retained])
+  assert.deepEqual(state.earlier.segments[0]?.records, [retained])
+  assert.deepEqual(state.rewind.openRecords.fold, [retained])
+  state = reduce(state, { type: 'new_session' })
+  state = reduce(state, loaded)
+  state = reduce(state, { ...delivered('c1'), reportId: erased.reportId, text: erased.text })
+  state = reduce(state, folded)
+  state = reduce(state, { type: 'earlier_loaded', segments: [segment('older')], hasMore: false })
+  assert.deepEqual(state.records, [retained])
+  assert.deepEqual(state.rewind.openRecords.fold, [retained])
+  assert.deepEqual(state.earlier.segments[0]?.records, [retained])
+})

@@ -8,7 +8,9 @@ import { scratch } from './fixtures/scratch.js'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createMemoryHostEffects } from '../src/backend/memory-host-effects.ts'
 import { APP_DB_PRAGMAS, transaction } from '../src/backend/app-db.ts'
-import { createEffects } from '../src/backend/effects.ts'
+import { createEffects, type Effect } from '../src/backend/effects.ts'
+import { createReportRecords } from '../src/backend/report-records.ts'
+import { REPORT, type ReportPayload } from '../src/backend/task-reports.ts'
 import { openFeedStore } from '../src/backend/feed-store.ts'
 import { createScheduleRuns, SCHEDULE_SOURCE } from '../src/backend/schedule-runs.ts'
 import { openScheduleStore } from '../src/backend/schedule-store.ts'
@@ -316,4 +318,66 @@ test('file forgetting physically removes affected schedules, run inputs and feed
     const bytes = readFileSync(file)
     for (const erased of ['Raw source result', 'File A result', 'Erase report']) assert.equal(bytes.includes(Buffer.from(erased)), false)
   }
+})
+
+test('saved reports retain proof across conversations and erase only the exact affected runs', async t => {
+  const { dir } = scratch(t, 'memory-report-erase-scope-')
+  const path = join(dir, 'app.db'), db = new DatabaseSync(path)
+  db.exec(APP_DB_PRAGMAS)
+  const history = openHistoryDb({ db }), effects = createEffects({ db }), sourceId = randomUUID()
+  const here = history.save(history.create({ sessionId: randomUUID() }), [{ role: 'user', text: 'Independent recipient conversation' }])
+  const apply: Parameters<typeof createMemoryHostEffects>[0]['apply'] = (_kind, _data, write) => ({ value: transaction(db, write) })
+  const shown: string[] = [], removed: string[] = []
+  const records = createReportRecords({ history: () => history, effects: () => effects, current: () => here, apply,
+    show: item => { shown.push(item.reportId) } })
+  const secret = 'The private report body', retained = 'The retained independent report', original = `${secret} then ${retained}`
+  const provenance = (start: number, end: number): MemoryProvenance => ({ dependencies: [], epoch: 0, turnOnly: false,
+    sources: [sourceId], fileSources: [sourceId], files: [{ workspace: 'f'.repeat(64), id: `doc-${start}`, path: 'digest/wiki/notes.md',
+      revision: 'read-before-rebuild', usageVersion: 2, policyToken: `proof-${start}`,
+      sourceRanges: [{ sourceId, spans: [{ start, end }] }] }] })
+  const afflicted = provenance(0, secret.length), independent = provenance(secret.length + 6, original.length)
+  const id = (run: string) => `same-task:${run}`
+  const queue = (runId: string, output: string, memory: MemoryProvenance) => {
+    const report: ReportPayload = { taskId: 'same-task', runId, title: 'Report', status: 'done', host: null,
+      output, memory, deliveredTo: here.sessionId }
+    effects.queue(REPORT, id(runId), report)
+    return effects.get(REPORT, id(runId)) as Effect<ReportPayload>
+  }
+  records.read(queue('independent', retained, independent))
+  const caught = queue('read', secret, afflicted)
+  records.read(caught)
+  const moved = history.save(history.create({ sessionId: randomUUID() }), [{ role: 'user', text: 'Folded recipient timeline' }])
+  assert.equal(history.moveRecords({ from: here.id, to: moved.id, upTo: 1 }), 2)
+  const waiting = queue('queued', secret, afflicted)
+  const clean = queue('other-queued', retained, independent)
+  records.written(waiting)
+  const exposed = queue('shown-only', secret, afflicted)
+  records.written(exposed)
+  effects.cancel(REPORT, exposed.key)
+  const erasure: MemoryHostEffect = { kind: 'erase-file-copies', hostNamespace: 'viva', effectId: randomUUID(), causeOperationId: randomUUID(), revision: 2,
+    ranges: [range(sourceId, 1, original, secret)], sources: [{ namespace: 'canonical', sourceId, revision: 1 }] }
+  const call: HostMemoryCaller = async method => {
+    assert.equal(method, 'pendingHostEffects')
+    return [erasure] as HostMemoryApi[typeof method]['output']
+  }
+  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+    reportsRemoved: ids => removed.push(...ids), invalidate() {}, apply })
+  try {
+    await host.recover()
+    await host.recover()
+    assert.deepEqual(history.recordsOf(moved.id).map(row => row.reportId), [id('independent')])
+    assert(effects.holds(clean))
+    assert.deepEqual(new Set(removed), new Set([id('read'), id('queued'), id('shown-only')]))
+    assert.equal(removed.length, 3, 'recovery does not repeat renderer invalidation')
+    records.read(waiting)
+    const late = queue('late', secret, afflicted)
+    records.written(late)
+    records.read(late)
+    assert(!shown.includes(late.key))
+    assert.equal(history.hasRecord(late.key), false)
+    await host.recover()
+    for (const file of [path, path + '-wal']) {
+      assert.equal(readFileSync(file).includes(Buffer.from(secret)), false)
+    }
+  } finally { host.close(); effects.close(); db.close() }
 })

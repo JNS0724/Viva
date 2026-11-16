@@ -9,6 +9,7 @@ import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
 import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
 import type { MemoryHostErasureRange } from '../memory/contracts/service.ts'
+import { memoryProvenanceSchema, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { retainedMessagePositions, retainedMessageBoundary } from '../shared/message-order.ts'
 
 const PAGE_SIZE = 50
@@ -100,6 +101,7 @@ const SCHEMA = `
     at INTEGER NOT NULL,
     text TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS memory_report_proofs (report_id TEXT PRIMARY KEY, memory TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS report_records_conversation ON report_records (conversation_id, after_seq);
   -- A conversation not stored yet (a blank topic) may already have a record, so no foreign key: they go with it.
   CREATE TRIGGER IF NOT EXISTS report_records_gone AFTER DELETE ON conversations BEGIN
@@ -253,6 +255,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
+    reportProof: db.prepare('SELECT memory FROM memory_report_proofs WHERE report_id=?'),
+    putReportProof: db.prepare('INSERT INTO memory_report_proofs VALUES (?,?)'),
     hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
     moveRecords: db.prepare('UPDATE report_records SET conversation_id = ? WHERE conversation_id = ? AND after_seq <= ?'),
     bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
@@ -404,9 +408,22 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
    * now. False when it is kept already.
    */
-  function addRecord({ conversationId, reportId, at, text }: { conversationId: string, reportId: string, at: number, text: string }): boolean {
+  function addRecord({ conversationId, reportId, at, text, memory }: { conversationId: string, reportId: string, at: number, text: string, memory?: MemoryProvenance }): boolean {
     const id = assertId(conversationId)
-    return Number(sql.addRecord.run(reportId, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
+    return transaction(() => {
+      if (memory && !recordReportProof(reportId, memory)) return false
+      return Number(sql.addRecord.run(reportId, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
+    })
+  }
+
+  /** Also covers a report shown to the renderer whose delivery was canceled before it became a history record. */
+  function recordReportProof(reportId: string, evidence: MemoryProvenance): boolean {
+    const checked = memoryProvenanceSchema.parse(evidence)
+    if (memoryRanges.affects(checked)) return false
+    const proof = JSON.stringify(checked), previous = sql.reportProof.get(reportId)
+    if (previous && previous.memory !== proof) throw new Error('Memory report proof conflicts')
+    if (!previous) sql.putReportProof.run(reportId, proof)
+    return true
   }
 
   const withRecords = (id: string): { records?: ReportRecord[] } => {
@@ -637,9 +654,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
   /** Clean verified user text and its local projections together. */
-  function eraseFileRanges(ranges: readonly MemoryHostErasureRange[]) {
+  function eraseFileRanges(ranges: readonly MemoryHostErasureRange[], memoryIds: readonly number[] = []) {
     transaction(() => {
-      const { changed, conversations } = memoryRanges.erase(ranges)
+      const { changed, conversations } = memoryRanges.erase(ranges, memoryIds)
       if (!changed) return
       for (const id of conversations) {
         const rows = sql.messages.all(id)
@@ -677,7 +694,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   return {
-    addRecord, hasRecord, moveRecords, recordsOf, bySession, eraseMemoryCopies, eraseFileRanges, fileErasureRevision: memoryRanges.revision,
+    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges, fileErasureRevision: memoryRanges.revision, evidenceErased: memoryRanges.affects,
     create, save, get, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

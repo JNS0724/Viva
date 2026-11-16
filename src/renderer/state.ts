@@ -34,6 +34,7 @@ export const initialState = Object.freeze({
   ...initialConversation,
   /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
   records: [] as readonly ReportRecord[],
+  erasedReportIds: [] as readonly string[],
   drawer: null as string | null,
   island: false,
   picker: false,
@@ -181,7 +182,7 @@ const ACTION_HANDLERS: ActionHandlers = {
         id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
         ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
       })),
-      records: recordsFrom(records),
+      records: recordsFrom(records, state.erasedReportIds),
       restored: messages.length ? { count: messages.length, savedAt } : null,
     }
   },
@@ -218,6 +219,7 @@ const ACTION_HANDLERS: ActionHandlers = {
     drawer: state.drawer,
     settings: state.settings,
     history: state.history,
+    erasedReportIds: state.erasedReportIds,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
     // Background tasks go on whatever the conversation on screen does.

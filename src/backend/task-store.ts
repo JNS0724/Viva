@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Background tasks (task-runtime.ts, their one writer), kept in the app database (src/backend/app-db.ts): dsh ends with the app, so a task
@@ -14,7 +15,7 @@ const SCHEMA = `
 `
 
 /** A task as kept; task-runtime.ts adds what else it needs (words, cwd, startedAt, endedAt, status). */
-export interface StoredTask { id: string, segmentId: string, title: string, [field: string]: any }
+export interface StoredTask { id: string, segmentId: string, title: string, requestMemory?: MemoryProvenance, [field: string]: any }
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const isTask = (entry: any): entry is StoredTask => Boolean(entry) && typeof entry === 'object' && isText(entry.id) && isText(entry.segmentId) && isText(entry.title)

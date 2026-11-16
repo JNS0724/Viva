@@ -23,6 +23,7 @@ export type AgentEvent =
   | ({ type: 'waits' } & Scoped & ForegroundWaits)
   | ({ type: 'memory_context' } & Scoped & Payload<'memory_context'>)
   | ({ type: 'report_delivered' } & Scoped & ConversationPayloads['report_delivered'])
+  | { type: 'reports_removed', reportIds: readonly string[] }
   | ({ type: 'error', message: string, context?: ConversationContext })
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
   | { type: 'memory_changed', failure?: string, memories?: readonly string[], invalidated?: readonly string[] }

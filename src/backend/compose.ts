@@ -676,8 +676,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
    * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
    * it: no words of the user's.
    */
-  const eligibleTaskReport = async (taskId: string, session: string) =>
-    memoryCoordination.canInherit(taskId, await projectOfSession(taskId), await projectOfSession(session), Boolean(dsh.current?.memory.ready()))
+  async function eligibleTaskReport(taskId: string, session: string, evidence?: MemoryProvenance) {
+    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready())
+    if (evidence) return await memoryCoordination.transferStatus(evidence, project, ready) === 'ready'
+    return memoryCoordination.canInherit(taskId, await projectOfSession(taskId), project, ready)
+  }
+  async function inheritTaskReport(taskId: string, session: string, evidence?: MemoryProvenance) {
+    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready())
+    if (evidence) return memoryCoordination.transfer(session, evidence, project, ready)
+    return memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), project, ready)
+  }
   const taskReports = createTaskReports({
     eligible: eligibleTaskReport,
     conversation: async () => (!dsh.current || memoryBusy() || await staleMemorySession(dsh.current.currentSession())
@@ -685,9 +693,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
-    deliver: async (session, reportId, token, text, taskId, held) => {
-      if (!await allowMemorySession(session) || !await eligibleTaskReport(taskId, session)) return Promise.resolve('unavailable')
-      if (!await memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), await projectOfSession(session), Boolean(dsh.current?.memory.ready()))) return Promise.resolve('unavailable')
+    deliver: async (session, reportId, token, text, taskId, held, evidence) => {
+      if (!await allowMemorySession(session) || !await eligibleTaskReport(taskId, session, evidence)) return 'unavailable'
+      if (!held() || !await inheritTaskReport(taskId, session, evidence)) return 'unavailable'
       if (!held()) return 'unavailable'
       return dsh.current?.deliverReport(session, reportId, token, text, held) ?? Promise.resolve('unavailable')
     },
@@ -702,16 +710,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
     },
     currentConversation: () => sessions.current().id,
-    superseded: async (taskId, runId) => await staleMemorySession(taskId) || (taskRuntime?.reports.superseded(taskId, runId) ?? false),
-    report: async (note, taskIds, held) => {
+    superseded: async (taskId, runId, evidence) => (taskRuntime?.reports.superseded(taskId, runId) ?? false)
+      || (evidence ? historyDb.evidenceErased(evidence) : await staleMemorySession(taskId)),
+    report: async (note, reports, held) => {
       const agent = dsh.current
       if (!agent || memoryBusy()) return false
       const context = sessions.context()
       const session = context.sessionId
       if (!session || !await allowMemorySession(session)) return false
-      for (const taskId of taskIds) {
-        if (!await eligibleTaskReport(taskId, session)) return false
-        if (!await memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), await projectOfSession(session), agent.memory.ready())) return false
+      for (const { taskId, memory: evidence } of reports) {
+        if (!held() || !await eligibleTaskReport(taskId, session, evidence) || !await inheritTaskReport(taskId, session, evidence)) return false
       }
       if (dsh.current !== agent || !held()) return false
       turn = { active: true, startedAt: Date.now() }
@@ -1283,6 +1291,7 @@ ${question}` : question
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
+      reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
       invalidateScheduled: (matches, changed) => {
         schedules?.discardMemory(matches)
         const discarded = scheduleRuns?.discardMemory(matches)
@@ -1311,6 +1320,7 @@ ${question}` : question
       publish: emitToRenderer,
       // Once a task's end is kept: its result back to the conversation.
       onEnd: () => wakeEffects(),
+      captureReportMemory: taskId => memory.provenance(taskId),
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
@@ -1331,7 +1341,9 @@ ${question}` : question
         if (sessions.current().sessionId !== place.sessionId || !await allowMemorySession(place.sessionId, place.cwd ?? undefined)
           || !await allowMemorySession(taskId, targetCwd) || !canTransferMemoryToModel(taskId)) return false
         const project = targetCwd === undefined ? await projectOfSession(taskId) : memoryProjectScope(targetCwd)
-        return await memoryCoordination.transfer(taskId, evidence, project, Boolean(dsh.current?.memory.ready())) && sessions.current().sessionId === place.sessionId
+        if (!await memoryCoordination.transfer(taskId, evidence, project, Boolean(dsh.current?.memory.ready()))
+          || sessions.current().sessionId !== place.sessionId) return false
+        return evidence ?? true
       }
     }
     requests = createRequestRuntime({
@@ -1425,6 +1437,7 @@ ${question}` : question
     memoryHostRecovery.close()
     memoryHostEffects?.close()
     scheduleRuns?.close()
+    taskRuntime?.dispose()
     historyDb?.close()
     appDb?.close()
     effects?.close()
