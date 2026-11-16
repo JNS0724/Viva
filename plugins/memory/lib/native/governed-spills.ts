@@ -41,6 +41,7 @@ export async function publishGovernedNativeSpill(handle: FileHandle, intent: Nat
     // preexisting file; both locations retain the intent's exact staging inode.
     await link(proof.stage.path, proof.target)
     await unlink(proof.stage.path)
+    await handle.close()
     const receipt = await verifyNativeSpill(intent, proof.target)
     if (!current()) throw new Error('Native spill execution changed before its locator was returned')
     const ref: SpillRef = { locator: SpillLocator(proof.target), bytes: intent.bytes,

@@ -80,7 +80,7 @@ test('forked into another directory, the session works there and keeps the conve
   await agent.prompt('换了个项目，继续')
   const seen = requestFor(llm, '换了个项目，继续')
   assert.ok(seen.includes('蓝色鲸鱼'), 'the whole conversation comes along to the new directory')
-  assert.ok(seen.includes(JSON.stringify(other).slice(1, -1)), 'the model is told it works in the new directory now')
+  assert.ok(seen.includes(JSON.stringify(`Current working directory: ${JSON.stringify(other)}`).slice(1, -1)), 'the model is told it works in the new directory now')
 })
 
 test('in the forked session the agent can still ask and be answered', { timeout: DSH_TIMEOUT_MS }, async (t) => {
