@@ -52,6 +52,10 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
     for (const operation of owner.spillOperations()) {
       for (const target of operation.targets()) if (await eraseNativeSpill(target, isCold)) operation.complete(target.id)
     }
+    // A complete cold catalog can attest no endpoint only after any local
+    // result spill has been proved erased. Revisit input-only dispatch copies.
+    await reconcileNativeReceipts(root, owner, true)
+    for (const operation of owner.toolResultOperations()) await eraseNativeToolResults({ root, storageRoot, operation, isCold, trace })
     await auditNativeErasure(root, owner)
   } catch (error) {
     if (owner.carriesUnsettledPublication()) throw new PendingNativePublication('Native session publication must recover before startup', { cause: error })

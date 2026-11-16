@@ -10,7 +10,7 @@ import { createMemoryRuntime } from './runtime.ts'
 import { createMemoryEmbedder } from './memory-embedder.ts'
 import type { NodeMemoryRuntimeOptions } from './runtime.ts'
 import type { DocumentSourceCut } from '../core/ports/documents.ts'
-import { combineMemoryProvenance, usesErasedMemory } from '../contracts/provenance.ts'
+import { combineMemoryProvenance, usesErasedMemory, type MemoryErasureEvidence } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
 import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
@@ -1097,6 +1097,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     finishNativeToolRead: nativeToolReads.finish,
     beginNativeSpill: nativeSpills.begin, finishNativeSpill: nativeSpills.finish,
     nativeSpillGoverned: nativeSpills.governed,
+    nativeToolEvidence: nativeToolReads.evidence,
+    inheritNativeToolRead(scope: { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }, evidence: readonly MemoryErasureEvidence[]) {
+      if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(scope.call.session)) throw new Error('Native tool input changed its generation')
+      store.tx(() => {
+        for (const call of scope.calls) for (const item of evidence) nativeToolReads.recordEvidence(call, item)
+      })
+    },
     withNativeToolRead<T>(scope: { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }, read: () => T): T {
       return toolReadScope.run(scope, read)
     },

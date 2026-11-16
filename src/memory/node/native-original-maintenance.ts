@@ -206,7 +206,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
       const operationId = z.uuid().parse(row.operation)
       const journal = outputJournal.forOperation(operationId + ':tool-results')
       const targets = () => toolReads.affected(ranges).flatMap(call =>
-        call.result && !outputJournal.erased(call.id) ? [{ ...call, result: call.result }] : [])
+        (call.result || call.absent && call.inputDerived) && !outputJournal.erased(call.id) ? [call] : [])
       return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets }] : []
     })
   }
@@ -269,7 +269,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     for (const row of outputPlans.all()) {
       const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
       for (const item of outputAttempts.affected(ranges, memoryIds ?? [])) if (item.result.state === 'open') attempts.set(item.id, item)
-      for (const item of toolReads.affected(ranges)) if (!item.result) tools.set(item.id, item)
+      for (const item of toolReads.affected(ranges)) if (!item.result && !item.absent) tools.set(item.id, item)
     }
     return { attempts: [...attempts.values()], tools: [...tools.values()] }
   }
@@ -288,7 +288,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
       if (sessions.some(session => uncertainSessions.has(session)) || activeRecoveries.has(operationId) || activeSpills.has(operationId)
         || plan.originals?.length && !completedOriginal.get(operationId)
         || outputAttempts.affected(plan.ranges, plan.memoryIds ?? []).some(item => !outputJournal.erased(item.id))
-        || toolReads.affected(plan.ranges).some(item => !item.result || !outputJournal.erased(item.id))
+        || toolReads.affected(plan.ranges).some(item => !item.result && !item.absent || !outputJournal.erased(item.id))
         || derived.affected(plan.ranges, plan.memoryIds ?? []).length) continue
       cleanupReceipts.acknowledge(operationId, catalog)
     }
@@ -298,6 +298,13 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   return { operations, operation, outputOperations, toolResultOperations, spillOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
     hasPlans: () => outputPlans.all().some(row => !cleanupReceipts.complete(String(row.operation))),
     finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
+    finishAbsentTool(call: Parameters<typeof toolReads.finishAbsent>[0]) {
+      toolReads.finishAbsent(call)
+      if (!call.inputDerived) outputJournal.forOperation('native-absent-tools').complete([call.id])
+    },
+    toolSpillsPending: (call: Parameters<typeof toolReads.finishAbsent>[0]) => spillOperations().some(operation => operation.targets().some(spill =>
+      spill.call.id === call.id || spill.call.session === call.session && spill.call.generation === call.generation
+        && spill.call.ptc?.rootCallId === call.callId)),
     pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),
     carriesUnsettledPublication: () => Boolean(unsettled.get()) || outputJournal.pending(),
     close() { try { db.close() } finally { closeLock() } } }

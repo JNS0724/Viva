@@ -10,6 +10,7 @@ export const nativeToolCallShape = z.strictObject({
   id: z.uuid(), session: z.string().min(1).max(256), callId: z.string().min(1).max(256),
   generation: ordinal, turn: ordinal, step: ordinal, seq: ordinal, digest,
   outputAttempt: z.uuid().optional(),
+  inputDerived: z.literal(true).optional(),
   ptc: z.strictObject({ rootCallId: z.string().min(1).max(256), parentCallId: z.string().min(1).max(256) }).optional(),
 })
 const resultShape = z.strictObject({ seq: ordinal, digest })
@@ -56,15 +57,32 @@ export function createNativeToolReads(db: DatabaseSync) {
     if (prior.result !== null) throw new Error('Native tool result conflicts with its receipt')
     settle.run(encoded, call.id)
   }
+  function finishAbsent(call: NativeToolCall) {
+    const prior = existing.get(call.id), absent = JSON.stringify({ state: 'absent' })
+    if (!prior || prior.identity !== JSON.stringify(nativeToolCallShape.parse(call))) throw new Error('Native tool absence changed its call identity')
+    if (prior.result === absent) return
+    if (prior.result !== null) throw new Error('Native tool absence conflicts with a settled result')
+    settle.run(absent, call.id)
+  }
   function affected(ranges: Parameters<typeof intersectsMemoryErasure>[1]) {
-    const matches = new Map<string, NativeToolCall & { result: NativeToolResult | null }>()
+    const matches = new Map<string, NativeToolCall & { result: NativeToolResult | null, absent?: true }>()
     for (const row of reads.iterate()) {
       const evidence = memoryErasureEvidenceSchema.parse(JSON.parse(String(row.evidence)))
       if (!intersectsMemoryErasure(evidence, ranges)) continue
       const call = nativeToolCallShape.parse(JSON.parse(String(row.identity)))
-      matches.set(call.id, { ...call, result: row.result === null ? null : resultShape.parse(JSON.parse(String(row.result))) })
+      const absent = row.result === JSON.stringify({ state: 'absent' })
+      matches.set(call.id, { ...call, ...(absent ? { absent: true as const } : {}), result: row.result === null || absent ? null : resultShape.parse(JSON.parse(String(row.result))) })
     }
     return [...matches.values()]
   }
-  return { record, recordEvidence, finish, affected }
+  function evidence(calls: readonly NativeToolCall[]) {
+    const result = new Map<string, MemoryErasureEvidence>()
+    const rows = db.prepare('SELECT evidence FROM owner_native_tool_reads WHERE call=?')
+    for (const call of calls) for (const row of rows.all(call.id)) {
+      const value = memoryErasureEvidenceSchema.parse(JSON.parse(String(row.evidence)))
+      result.set(JSON.stringify(value), value)
+    }
+    return [...result.values()]
+  }
+  return { record, recordEvidence, evidence, finish, finishAbsent, affected }
 }

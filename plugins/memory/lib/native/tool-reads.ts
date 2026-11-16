@@ -7,15 +7,19 @@ import type { NativeToolCall, NativeToolResult } from '../../../../src/memory/no
 import { nativeEventDigest } from './event-digest.ts'
 import { NATIVE_OUTPUT_MARKER } from './output-attempts.ts'
 import { objectOf } from '../../../../src/memory/contracts/unknown-value.ts'
+import type { MemoryErasureEvidence } from '../../../../src/memory/contracts/provenance.ts'
 
 type CallEvent = SessionEvent<'tool/call' | 'tool/ptc-dispatch-start'>
-type PendingCall = { event: CallEvent, token?: ToolExecutionToken, active?: NativeToolCall, parent?: PendingCall }
+type PendingCall = { event: CallEvent, token?: ToolExecutionToken, active?: NativeToolCall, parent?: PendingCall, input?: readonly MemoryErasureEvidence[] }
 type Assembly = { signal: AbortSignal, tools: ResolvedToolSet }
 type Step = { turn: number, step: number, assembly: Assembly, calls: Map<string, PendingCall>, outputAttempt?: string }
 export type NativeToolLease = { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }
 
 /** The native tool call event is published before the executor can start the body. */
-export function trackNativeToolReads(finish: (call: NativeToolCall, result: NativeToolResult) => void) {
+export function trackNativeToolReads(finish: (call: NativeToolCall, result: NativeToolResult) => void, inheritance?: {
+  evidence(calls: readonly NativeToolCall[]): readonly MemoryErasureEvidence[],
+  archive(scope: NativeToolLease, evidence: readonly MemoryErasureEvidence[]): void,
+}) {
   const assembling = new WeakMap<Session, Assembly>()
   const sessions = new WeakMap<Session, Step>()
   function pending(session: Session, exec: ToolExecution) {
@@ -55,7 +59,9 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
         const id = String(event.data.subCallId), parent = step.calls.get(String(event.data.parentCallId))
         const root = step.calls.get(String(event.data.rootCallId))
         if (!parent?.token || !root?.token || parent.active?.generation !== root.active?.generation || step.calls.has(id)) return
-        step.calls.set(id, { event, parent })
+        const ancestors: NativeToolCall[] = []
+        for (let node: PendingCall | undefined = parent; node; node = node.parent) if (node.active) ancestors.push(node.active)
+        step.calls.set(id, { event, parent, input: inheritance?.evidence(ancestors) })
         return
       }
       if (event.type !== 'tool/ptc-dispatch' && (event.type !== 'tool/result' || event.surfaceOp !== 'append')) return
@@ -86,6 +92,7 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       const call = { id: randomUUID(), session: String(session.id), callId, generation, turn, step,
         seq: current.event.seq, digest: nativeEventDigest(current.event),
         ...(outputAttempt ? { outputAttempt } : {}),
+        ...(current.input?.length ? { inputDerived: true as const } : {}),
         ...(current.event.type === 'tool/ptc-dispatch-start' ? { ptc: {
           rootCallId: String(current.event.data.rootCallId), parentCallId: String(current.event.data.parentCallId) } } : {}) }
       current.active = call
@@ -93,8 +100,10 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       for (let node: PendingCall | undefined = current; node; node = node.parent) chain.push(node)
       const calls = chain.flatMap(node => node.active?.generation === generation ? [node.active] : [])
       if (calls.length !== chain.length) return
-      return { call, calls, current: () => sessions.get(session)?.calls.get(callId) === current
+      const lease = { call, calls, current: () => sessions.get(session)?.calls.get(callId) === current
         && chain.every(node => Boolean(node.token) && node.active?.generation === generation) }
+      if (current.input?.length) inheritance?.archive(lease, current.input)
+      return lease
     },
     spill(session: Session, callId: string, name: string): NativeToolCall | undefined {
       const call = sessions.get(session)?.calls.get(callId)

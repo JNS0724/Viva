@@ -93,7 +93,9 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   })
   const transport = createMemoryTransport(owner)
   const outputAttempts = config.fileMode ? trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput) : null
-  const toolReads = config.fileMode ? trackNativeToolReads(owner.finishNativeToolRead) : null
+  const toolReads = config.fileMode ? trackNativeToolReads(owner.finishNativeToolRead, {
+    evidence: owner.nativeToolEvidence, archive: owner.inheritNativeToolRead,
+  }) : null
   if (toolReads) trackNativeSpills(ctx, owner, toolReads)
   const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
     const proof = deliveries.get(message.id)

@@ -215,7 +215,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     if (questionOf(request.messages) !== 'PTC task execution') return null
     if (!requested) {
       requested = true
-      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); return note;` } } }
+      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); await tools.memory_node_search({query: note.text.slice(0, 400)}); return note;` } } }
     }
     return { text: 'PTC completed.' }
   }, { dailyNotes: true, fileMode: true, ptc: true })
@@ -229,15 +229,16 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     if (nextFails) db.exec(`CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
       WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`)
     await app.ask(prompt)
-    assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 2),
+    assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 3),
       JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
     if (!nextFails) assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
     const calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
-    assert.equal(calls.length, 2, JSON.stringify({ calls, results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
+    assert.equal(calls.length, 3, JSON.stringify({ calls, results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
       errors: app.events.filter(event => event.type === 'error') }))
     assert.ok(calls.every(row => row.result !== null))
-    const identities = calls.map(row => JSON.parse(String(row.identity)) as { ptc?: unknown })
-    assert.equal(identities.filter(row => row.ptc).length, 1)
+    const identities = calls.map(row => JSON.parse(String(row.identity)) as { ptc?: unknown, inputDerived?: boolean })
+    assert.equal(identities.filter(row => row.ptc).length, 2)
+    assert.equal(identities.filter(row => row.inputDerived).length, 1)
     assert.equal(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'run_code')).includes('PTC_BODY')), !nextFails)
     const spills = db.prepare('SELECT intent,file FROM owner_native_spills').all()
     if (!nextFails) {
@@ -265,12 +266,19 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     const catalog = new Context(), mounted = await catalog.plugin(jsonl, { root: sessionsRoot })
     try {
       for (const row of calls) {
-        const call = JSON.parse(String(row.identity)) as {session:string}, result = JSON.parse(String(row.result)) as {seq:number}
+        const call = JSON.parse(String(row.identity)) as {session:string, seq:number, inputDerived?:true}, result = JSON.parse(String(row.result)) as {seq:number}
         const reader = await catalog.sessionPersistence.open(SessionId(call.session), 'read')
         try {
           const event = (await reader.read()).events[result.seq]
           assert.ok(event?.type === 'tool/result' || event?.type === 'tool/ptc-dispatch')
           assert.deepEqual(event.type === 'tool/result' ? event.data.message.content : event.data.content, [])
+          if (call.inputDerived) {
+            const input = (await reader.read()).events[call.seq]
+            assert.equal(input?.type, 'tool/ptc-dispatch-start')
+            assert.deepEqual(input.data.arguments, {})
+            assert.equal(event.type, 'tool/ptc-dispatch')
+            assert.deepEqual(event.data.arguments, {})
+          }
         } finally { await reader.close() }
       }
     } finally { await mounted.dispose() }

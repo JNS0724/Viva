@@ -18,6 +18,31 @@ export function ptcResultMatches(start: NativePtcStart, event: SessionEvent | un
     && event.data.name === start.data.name && isDeepStrictEqual(event.data.arguments, start.data.arguments)
 }
 
+/** PTC IDs restart for each root program. Never borrow a later step's identical subcall. */
+export function inspectPtcResultWindow(events: readonly SessionEvent[], call: NativeToolCall, limit = events.length) {
+  const start = events[call.seq]
+  if (!ptcStartMatches(start, call)) return
+  let root = -1
+  for (let seq = start.seq - 1; seq >= 0; seq--) {
+    const event = events[seq]!
+    if (event.type === 'step/end' || event.type === 'turn/end' || event.type === 'step/start') break
+    if (event.type === 'tool/call' && event.data.callId === call.ptc!.rootCallId && event.data.turn === call.turn && event.data.step === call.step) {
+      root = seq
+      break
+    }
+  }
+  if (root < 0 || call.seq >= limit) return
+  const results: NativePtcResult[] = []
+  for (let seq = root + 1; seq < limit; seq++) {
+    const event = events[seq]!
+    if (event.type === 'step/end' || event.type === 'turn/end' || event.type === 'step/start'
+      || event.type === 'assistant/message' || event.type === 'session/end-seed'
+      || event.type === 'tool/result' && event.data.message.toolCallId === call.ptc!.rootCallId) break
+    if (ptcResultMatches(start, event)) results.push(event)
+  }
+  return { start, results }
+}
+
 /** Retain pairing/outcome; arguments are withdrawn only with the root request's proven readset. */
 export function projectNativePtc(event: NativePtcEvent, argumentsToo = false): NativePtcEvent | undefined {
   if (event.type === 'tool/ptc-dispatch-start') return argumentsToo ? { ...event, data: { ...event.data, arguments: {} } } : event
