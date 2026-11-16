@@ -87,7 +87,7 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
 function currentProjection(markdown: string, supersessions: readonly DocumentSupersession[]): string | null {
   const lines = memoryDocumentLines(markdown)
   for (const item of supersessions) {
-    if (!Number.isSafeInteger(item.startLine) || !Number.isSafeInteger(item.endLine)
+    if (!item.text || !Number.isSafeInteger(item.startLine) || !Number.isSafeInteger(item.endLine)
       || item.startLine < 1 || item.endLine < item.startLine || item.endLine > lines.length
       || readMemoryLines(markdown, item.startLine, item.endLine) !== item.text) return null
   }

@@ -15,6 +15,10 @@ export interface DocumentCorrection {
 }
 export interface DocumentSupersession extends DocumentCorrection {
   sourceDocumentId: string
+  /** Storage-issued provenance of the old quotation, separate from the replacement's sources. */
+  anchorSources?: DocumentSourceRef[]
+  /** Body-free exclusion after erasing a quotation; applies only where its source still contributes. */
+  erasedAnchorSources?: string[]
   documentId: string
   replacementRevision: string
   operationId: string

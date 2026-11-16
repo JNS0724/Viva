@@ -26,7 +26,7 @@ type Row = Record<string, unknown>
 
 /** The connection settings every store on the app database relies on (history's cascades need foreign keys). */
 import { APP_DB_PRAGMAS } from '../memory/node/sqlite.ts'
-export { APP_DB_PRAGMAS, transaction } from '../memory/node/sqlite.ts'
+export { APP_DB_PRAGMAS, transaction, truncateMemoryJournal } from '../memory/node/sqlite.ts'
 
 export function openAppDb({ file }: { file: string }) {
   fs.mkdirSync(path.dirname(file), { recursive: true })

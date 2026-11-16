@@ -118,6 +118,47 @@ test('withdraw stages cleanup inside transaction and erases history and pending 
   assert.equal(f.db.prepare('SELECT payload FROM memory_document_deferred').get()?.payload, null)
 })
 
+test('withdrawing the source of a correction quotation erases it without removing an independent replacement', t => {
+  const f = fixture(t), documents = f.create()
+  const marker = 'Old private quotation text'
+  const original = documents.commit({ ...f.input, markdown: marker })
+  const target = 'digest/wiki/current.md', current = 'Shanghai is the new home'
+  const replacement = documents.commit({ ...f.input, operationId: 'new-file', path: target, markdown: 'Checking the new address',
+    sources: [{ id: 's2', token: 'v2' }] })
+  documents.commit({ ...f.input, operationId: 'correct-external', path: target, action: 'CORRECT', expectedRevision: replacement.revision,
+    markdown: current, sources: [{ id: 's2', token: 'v2' }],
+    corrections: [{ path, revision: original.revision!, startLine: 1, endLine: 1, text: marker, condition: 'Confidential condition', time: 'Private timeframe' }] })
+  const supersession = documents.supersessions(workspace, path)[0]!
+  assert.equal(supersession.text, marker)
+  assert.equal(supersession.anchorSources, undefined)
+  assert.equal(documents.undoCandidate(workspace, replacement.documentId)?.changeId, 'correct-external')
+  const snapshot = documents.read(workspace, target)!
+  const work = documents.defer({ operationId: 'deferred-after-correction', workspace, reason: 'Confidential condition',
+    unit: { name: 'Address', bucket: 'personal', summary: 'Check the address', paths: [] },
+    reads: [snapshot], files: [], sources: snapshot.sources })
+  assert.deepEqual(work.reads, [{ id: snapshot.id, revision: snapshot.revision, usageVersion: snapshot.usageVersion }])
+  assert.doesNotMatch(String(f.db.prepare('SELECT payload FROM memory_document_deferred').get()?.payload), /Old private quotation text/)
+  f.sources.delete('s1')
+  documents.withdraw('s1')
+  const reopened = f.create()
+  assert.equal(reopened.read(workspace, target)?.markdown, current)
+  assert.equal(reopened.acceptedSnapshot(workspace, replacement.documentId)?.markdown, current)
+  assert.equal(reopened.undoCandidate(workspace, replacement.documentId), null)
+  assert.equal(reopened.deferred(workspace, work.operationId), null)
+  assert.equal(f.db.prepare('SELECT payload FROM memory_document_deferred').get()?.payload, null)
+  const tombstone = reopened.supersessions(workspace, path)[0]!
+  assert.equal(tombstone.sourceDocumentId, original.documentId)
+  assert.deepEqual([tombstone.text, tombstone.time, tombstone.condition], ['', '', ''])
+  assert.equal(reopened.read(workspace, path), null)
+  assert.equal(reopened.pendingCleanup(), 0)
+  const replicas = JSON.stringify([
+    f.db.prepare('SELECT * FROM memory_documents').all(),
+    f.db.prepare('SELECT * FROM memory_document_revisions').all(),
+    f.db.prepare('SELECT plan FROM memory_file_intents').all(),
+  ])
+  assert.doesNotMatch(replicas, /Old private quotation text|Confidential condition|Private timeframe/)
+})
+
 test('deferred work only resumes on a current idempotent answer; changed nodes expire old questions', t => {
   const f = fixture(t), documents = f.create()
   documents.commit(f.input)
@@ -308,6 +349,27 @@ for (const point of ['intent', 'replace'] as const) test(`forgetting an abandone
   assert.equal(resumed.read(workspace, path)?.id, first.documentId)
   assert.equal(resumed.hasPendingCleanup('s2'), false)
   assert.equal(f.db.prepare('SELECT forgotten FROM memory_documents WHERE id=?').get(first.documentId)?.forgotten, 0)
+})
+
+test('withdrawing a prepared CREATE dependency preserves an external third hash and keeps cleanup pending', t => {
+  const f = fixture(t), documents = f.create()
+  const original = documents.commit(f.input), old = documents.read(workspace, path)!
+  const pendingPath = 'digest/personal/pending.md'
+  const interrupted = f.create(at => { if (at === 'intent') throw new Error('crash') })
+  assert.throws(() => interrupted.commit({ ...f.input, operationId: 'pending-create', path: pendingPath, markdown: 'Prepared document',
+    sources: [{ id: 's2', token: 'v2' }], reads: [old] }), /crash/)
+  const foreign = join(f.root, workspace, pendingPath)
+  writeFileSync(foreign, 'Independent external document')
+  f.sources.delete('s1')
+  interrupted.withdraw('s1')
+  const reopened = f.create()
+  assert.equal(reopened.receipt(workspace, original.operationId)?.documentId, original.documentId)
+  assert.equal(reopened.read(workspace, pendingPath), null)
+  assert.equal(readFileSync(foreign, 'utf8'), 'Independent external document')
+  assert.equal(reopened.hasPendingCleanup('s1'), true)
+  rmSync(foreign)
+  reopened.recover()
+  assert.equal(reopened.hasPendingCleanup('s1'), false)
 })
 
 test('an external conflict during abandoned-draft restoration remains pending without blocking unrelated documents', t => {

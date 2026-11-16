@@ -330,3 +330,42 @@ test('a daily projection with unavailable current applicability can still be sto
   await f.set(stopInput(pending))
   assert.doesNotMatch(examine(), /Prior original schedule Friday/)
 })
+
+test('a daily correction quotation is erased from the independent digest and its deferred work on source withdrawal', async t => {
+  const f = await fixture(t), marker = 'Confidential original detail on Monday.', original = await f.add(marker)
+  const daily = await f.find(), workspace = daily.identity.workspace, replacementText = 'The confirmed detail is now Tuesday.'
+  const replacementId = randomUUID()
+  await f.owner.receiveSource({ sessionId: randomUUID(), messageId: replacementId, text: replacementText,
+    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  const source = f.store.readSource(replacementId)!, documents = fixtureDocuments(f)
+  const base = { workspace, path: 'digest/wiki/confirmed-schedule.md',
+    sources: [{ id: source.id, token: memorySourceToken(source) }], reads: [] }
+  const draft = documents.commit({ ...base, operationId: randomUUID(), action: 'CREATE', expectedRevision: null, markdown: 'Draft' })
+  const line = daily.markdown.split('\n').indexOf(marker) + 1
+  documents.commit({ ...base, operationId: randomUUID(), action: 'CORRECT', expectedRevision: draft.revision, markdown: replacementText,
+    corrections: [{ path: daily.path, revision: daily.version.contentRevision, startLine: line, endLine: line, text: marker, condition: '', time: '' }] })
+  const snapshot = documents.read(workspace, base.path)!
+  const question = documents.defer({ ...base, operationId: randomUUID(), unit: { name: 'Schedule', bucket: 'personal', summary: 'Confirm the schedule', paths: [] },
+    reason: marker, reads: [snapshot], files: [] })
+  const operationId = randomUUID()
+  const { ticket } = await f.owner.handleHost('prepareSourceChange', { operationId, conversation: f.session,
+    onlySources: true, ids: [original.messageId] }) as { ticket: string }
+  await f.owner.handleHost('commitSourceChange', { operationId, ticket })
+  await f.reopen()
+  const reopened = fixtureDocuments(f)
+  assert.equal(reopened.deferred(workspace, question.operationId), null)
+  assert.equal(reopened.read(workspace, base.path)?.markdown, replacementText)
+  assert.equal(reopened.supersessions(workspace, daily.path)[0]?.text, '')
+  assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')
+  const retained = JSON.stringify(f.store.db.prepare('SELECT before,after FROM memory_document_revisions').all())
+  assert(!retained.includes(marker))
+  const later = 'An independent lavender routine.'
+  await f.add(later)
+  const fresh = await f.find()
+  assert.deepEqual(fresh.identity, daily.identity)
+  assert.equal(fresh.applicability, 'current')
+  const reader = randomUUID()
+  const packet = f.owner.runtime.handle({ op: 'recall', session: reader, query: 'lavender' }, { session: reader, conversation: reader })
+  assert.match(packet, /independent lavender routine/)
+  assert.doesNotMatch(packet, /Confidential original detail/)
+})

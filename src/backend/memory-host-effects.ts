@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { HostMemoryCaller } from '../memory/contracts/host.ts'
 import type { MemoryHostEffect } from '../memory/contracts/service.ts'
 import type { Apply } from './journal.ts'
+import { truncateMemoryJournal } from './app-db.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
@@ -68,6 +69,9 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, invalid
           db.prepare('INSERT INTO memory_host_receipts VALUES (?,?,?,?)').run(effect.effectId, effect.causeOperationId, effect.revision, fingerprint)
         })
         await invalidate(effect)
+        if (effect.kind === 'erase-copies' && !truncateMemoryJournal(db)) {
+          throw new Error('Memory host replica cleanup is pending a durable checkpoint')
+        }
         await call('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
       }
     })()
