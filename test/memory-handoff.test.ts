@@ -613,10 +613,11 @@ test('cold Viva startup erases native originals and settled output in root and u
     }
   } finally { publishedTrace.close() }
   assert.ok(await eventually(() => app.events.some(event => event.type === 'memory_changed' && event.traceSessions?.includes(parentId))))
-  const hiddenTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
-  assert.equal(hiddenTrace.available, false)
+  const safeTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
+  assert.equal(safeTrace.available, true)
+  assert.doesNotMatch(JSON.stringify(safeTrace), new RegExp([traceSecret, toolSecret].join('|'), 'u'))
   const rewindTrace = await app.call<Promise<{ commands: string[] }>>('timeline:rewind-effects', { keep: 0 })
-  assert.ok(!rewindTrace.commands.includes(awaitingToolCleanup))
+  assert.ok(rewindTrace.commands.includes(awaitingToolCleanup), 'independent trace content becomes readable after all participants finish')
   assert.equal(fs.existsSync(interruptedCache), false)
   assert.equal(fs.existsSync(backupCache), false)
   assert.equal(fs.existsSync(projectionTemp), false)
@@ -685,9 +686,13 @@ test('cold Viva startup erases native originals and settled output in root and u
   try {
     assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(operationId)?.count, 2)
     assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(nextOperation)?.count, 2)
-    for (const id of [operationId, nextOperation]) assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
+    for (const id of [operationId, nextOperation]) {
+      assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
+      assert.ok(settled.prepare('SELECT 1 FROM owner_native_cleanup_receipts WHERE operation=?').get(id))
+      assert.equal(settled.prepare('SELECT acked FROM owner_host_effects WHERE id=?').get(id)?.acked, 1)
+    }
     assert.ok(settled.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId),
-      'other native events and host replicas remain independently pending')
+      'the immutable native plan remains available after its participant acknowledges')
     assert.ok(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(forkId))
     assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
   } finally { settled.close() }

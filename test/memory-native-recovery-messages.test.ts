@@ -136,6 +136,7 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
     assert.ok(db.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(id))
   }
   assert.equal(db.prepare('SELECT count(*) n FROM owner_native_recovery_erased').get()?.n, tamperMarker ? 0 : 2)
+  assert.equal(db.prepare('SELECT count(*) n FROM owner_native_cleanup_receipts').get()?.n, tamperMarker ? 0 : 2)
   if (tamperMarker) assert.deepEqual((await eventsOf(thirdId))[markerSeq]!.data, thirdHashMessage,
     'a structurally valid third payload is retained and keeps the range cleanup pending')
   const resumedOwner = openMemoryOwner(options)

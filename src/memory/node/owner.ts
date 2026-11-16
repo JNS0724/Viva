@@ -30,6 +30,7 @@ import { createOwnerNativeOriginals } from './owner-native-originals.ts'
 import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
 import { createNativeToolReads, type NativeToolCall } from './native-tool-reads.ts'
+import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
@@ -78,6 +79,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_file_native_erasures (operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_host_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0);
   `)
+  db.exec('CREATE TABLE IF NOT EXISTS owner_file_host_receipts (effect TEXT PRIMARY KEY,fingerprint TEXT NOT NULL) WITHOUT ROWID')
+  const nativeCleanup = createNativeErasureReceipts(db)
   const epoch = randomUUID()
   let state: 'recovering' | 'ready' | 'unavailable' = 'recovering'
   let closed = false
@@ -94,7 +97,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding), maintainSemanticIndex: true } : {}),
     profilesEnabled: true, profileBusy: () => state !== 'ready' || Boolean(db.prepare('SELECT 1 FROM owner_active_turns LIMIT 1').get()),
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
-    projectionChanged: () => options.onProjectionChanged?.(),
+    projectionChanged: () => {
+      if (state === 'ready') completeFileEffects()
+      options.onProjectionChanged?.()
+    },
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
     validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly, fileClarificationDispatch: dispatch,
@@ -209,7 +215,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
     cleanup: item.state === 'completed' && runtime.cleanupPending() === 0
       && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
-      && !db.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(item.id) ? 'complete' : 'pending' })
+      && nativeCleanup.complete(item.id) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
   function reconcileChildren(session: string, visited = new Set<string>()) {
@@ -637,6 +643,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (state === 'ready' && !hasPending()) await replayWrites()
     return outcome(operation(item.id)!)
   }
+  function completeFileEffects() {
+    if (runtime.cleanupPending() !== 0) return false
+    let changed = false
+    const waiting = db.prepare(`SELECT e.id,e.payload,r.fingerprint FROM owner_host_effects e JOIN owner_file_host_receipts r ON r.effect=e.id
+      WHERE e.acked=0 AND json_extract(e.payload,'$.kind')='erase-file-copies'`).all()
+    for (const row of waiting) {
+      if (row.fingerprint !== hash(String(row.payload))) throw new Error('Host erasure receipt differs from its effect')
+      if (nativeCleanup.complete(String(row.id))) {
+        db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=?').run(row.id)
+        changed = true
+      }
+    }
+    return changed
+  }
   async function recover() {
     if (closed) throw new Error('Memory owner is closed')
     db.prepare('DELETE FROM owner_active_turns').run()
@@ -647,6 +667,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       else if (item.state !== 'prepared') await prepare(input)
     }
     state = 'ready'
+    completeFileEffects()
     if (!hasPending()) await replayWrites()
     runtime.resumeDocumentClarifications()
     void runtime.wake()
@@ -862,8 +883,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     switch (command.method) {
       case 'prepareSourceChange': return prepare(command.input)
       case 'commitSourceChange': return commit(command.input)
-      case 'getOperation': { const item = operation(command.input.operationId); return item ? outcome(item) : null }
-      case 'pendingHostEffects': return pendingHostEffects()
+      case 'getOperation': { completeFileEffects(); const item = operation(command.input.operationId); return item ? outcome(item) : null }
+      case 'pendingHostEffects': completeFileEffects(); return pendingHostEffects()
       case 'nativeOutputEvidence': return nativeOutputs.outputEvidence(command.input.session, command.input.seq, command.input.digest)
       case 'cancelFileClarification': return runtime.cancelFileClarification(...command.input.args)
       case 'ackHostEffect': {
@@ -871,8 +892,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (!saved) throw new Error('Unknown host effect')
         const effect = JSON.parse(saved.payload as string) as MemoryHostEffect
         if ( (effect.causeOperationId !== command.input.causeOperationId || effect.revision !== command.input.revision)) throw new Error('Host effect version conflicts')
+        if (effect.kind === 'erase-file-copies') {
+          const fingerprint = hash(String(saved.payload))
+          const prior = db.prepare('SELECT fingerprint FROM owner_file_host_receipts WHERE effect=?').get(effect.effectId)
+          if (prior && prior.fingerprint !== fingerprint) throw new Error('Host erasure receipt differs from its effect')
+          const inserted = db.prepare('INSERT OR IGNORE INTO owner_file_host_receipts VALUES (?,?)').run(effect.effectId, fingerprint)
+          const completed = completeFileEffects()
+          if (inserted.changes || completed) options.onProjectionChanged?.()
+          return { accepted: true }
+        }
         const acknowledged = db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=? AND acked=0').run(command.input.effectId)
-        if (options.fileMode && acknowledged.changes && (effect.kind === 'erase-file-copies' || effect.kind === 'erase-copies')) options.onProjectionChanged?.()
+        if (options.fileMode && acknowledged.changes && effect.kind === 'erase-copies') options.onProjectionChanged?.()
         return { accepted: true }
       }
       case 'sourceAlias': return alias(command.input)
@@ -972,14 +1002,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': {
+        completeFileEffects()
         const pending = runtime.cleanupPending()
         if (!options.fileMode) return pending
-        const replicas = db.prepare(`SELECT count(*) AS count FROM (
-          SELECT operation AS id FROM owner_file_native_erasures
-          UNION SELECT id FROM owner_host_effects WHERE acked=0
-            AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')
-        )`).get()
-        return pending + Number(replicas?.count ?? 0)
+        const native = db.prepare('SELECT operation FROM owner_file_native_erasures').all()
+          .flatMap(row => nativeCleanup.complete(String(row.operation)) ? [] : [String(row.operation)])
+        const host = db.prepare(`SELECT id FROM owner_host_effects WHERE acked=0
+          AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')`).all().map(row => String(row.id))
+        return pending + new Set([...native, ...host]).size
       }
       case 'onboarding': return runtime.onboarding(...command.input.args)
       case 'sessionProject': return runtime.sessionProject(...command.input.args)

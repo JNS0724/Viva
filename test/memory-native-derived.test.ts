@@ -123,9 +123,11 @@ test('cold native derived erasure groups inbox replicas and retains independent 
   assert.equal(db.prepare('SELECT erased FROM owner_native_derived_messages WHERE message=?').get(first.id)?.erased, 1)
   assert.equal(db.prepare('SELECT erased FROM owner_native_derived_messages WHERE message=?').get(second.id)?.erased, 0,
     'an unverified third payload keeps that evidence pending')
+  assert.ok(db.prepare('SELECT 1 FROM owner_native_cleanup_receipts WHERE operation=?').get(attemptA))
+  assert.equal(db.prepare('SELECT 1 FROM owner_native_cleanup_receipts WHERE operation=?').get(attemptB), undefined)
 })
 
-test('cold recovery restores a receipt from a flushed fork when the parent has only its attempt marker', async t => {
+for (const unknownFailure of [false, true]) test(`cold recovery restores a flushed fork receipt ${unknownFailure ? 'while an unattributed error stays pending' : 'when its parent has only the attempt marker'}`, async t => {
   const { createAssistantMessage } = await import('@deepseek-ai/dsh-llm')
   const { appendPluginRecord } = await import('@deepseek-ai/dsh-session')
   const { NATIVE_OUTPUT_MARKER } = await import('../plugins/memory/lib/native/output-attempts.ts')
@@ -158,10 +160,16 @@ test('cold recovery restores a receipt from a flushed fork when the parent has o
     await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
   } finally { await owner.close() }
 
+  const parentPrefix = Session.fromRestore(parent.id, prefix.slice(0, floor), parent.header, SessionLogOffset(0), 'detached')
+  if (unknownFailure) {
+    const compactionId = randomUUID() as import('@deepseek-ai/dsh-compaction').CompactionId
+    parentPrefix.append('compaction/start', { compactionId, turn: 1 })
+    parentPrefix.append('compaction/end', { compactionId, turn: 1, error: 'An unverified summarizer echoed private content.' })
+  }
   const context = new Context(), mounted = await context.plugin(jsonl, { root, compression: 'zstd' })
   try {
     const original = await context.sessionPersistence.create(parent.header)
-    try { await original.append(prefix.slice(0, floor)); await original.flush() } finally { await original.close() }
+    try { await original.append(parentPrefix.snapshotEvents()); await original.flush() } finally { await original.close() }
     const fork = await context.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
     try { await fork.append(child.snapshotEvents()); await fork.flush() } finally { await fork.close() }
   } finally { await mounted.dispose() }
@@ -174,6 +182,7 @@ test('cold recovery restores a receipt from a flushed fork when the parent has o
     assert.equal(result.state, 'settled')
     assert.equal(result.terminal.seq, terminal.seq)
     assert.ok(db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?').get(marker.id))
+    assert.equal(db.prepare('SELECT count(*) AS total FROM owner_native_cleanup_receipts').get()?.total, unknownFailure ? 0 : 1)
   } finally { db.close() }
   const verify = new Context(), installed = await verify.plugin(jsonl, { root })
   try {
@@ -247,4 +256,29 @@ test('cold recovery restores a tool receipt flushed only in an inherited fork an
       finally { await handle.close() }
     }
   } finally { await installed.dispose() }
+})
+
+test('a native participant waits for the memory WAL reader and binds its receipt to the exact plan', async t => {
+  const { createNativeErasureReceipts } = await import('../src/memory/node/native-erasure-receipts.ts')
+  const { dir } = scratch(t, 'viva-native-participant-checkpoint-')
+  const file = join(dir, 'participant.db'), db = new DatabaseSync(file)
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON; PRAGMA busy_timeout=0;
+    CREATE TABLE owner_file_native_erasures(operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
+    CREATE TABLE original(text TEXT); INSERT INTO original VALUES('retired private text');`)
+  const operation = randomUUID()
+  db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(operation, '{"range":"first"}')
+  const receipts = createNativeErasureReceipts(db)
+  const reader = new DatabaseSync(file, { readOnly: true })
+  try {
+    reader.exec('BEGIN')
+    assert.equal(reader.prepare('SELECT text FROM original').get()?.text, 'retired private text')
+    db.exec('UPDATE original SET text=NULL')
+    assert.throws(() => receipts.acknowledge(operation, 'a'.repeat(64)), /durable memory checkpoint/)
+    assert.equal(receipts.complete(operation), false)
+    reader.exec('ROLLBACK')
+    receipts.acknowledge(operation, 'a'.repeat(64))
+    assert.equal(receipts.complete(operation), true)
+    db.prepare('UPDATE owner_file_native_erasures SET payload=? WHERE operation=?').run('{"range":"changed"}', operation)
+    assert.equal(receipts.complete(operation), false, 'a modified plan cannot borrow the earlier receipt')
+  } finally { reader.close(); db.close() }
 })

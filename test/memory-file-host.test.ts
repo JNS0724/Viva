@@ -384,8 +384,11 @@ test('file-mode cleanup stays pending until both host and native owners complete
   assert.equal(effect.kind, 'erase-file-copies')
   await f.owner.handleHost('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
   assert.equal(await f.client.cleanupPending(), 1, 'host acknowledgement cannot settle a pending native copy')
-  f.store.db.prepare('DELETE FROM owner_file_native_erasures WHERE operation=?').run(operationId)
+  const { createNativeErasureReceipts } = await import('../src/memory/node/native-erasure-receipts.ts')
+  createNativeErasureReceipts(f.store.db).acknowledge(operationId, 'c'.repeat(64))
   assert.equal(await f.client.cleanupPending(), 0)
+  assert.ok(f.store.db.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId), 'the immutable plan remains auditable')
+  assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
 })
 
 test('file profile keeps unrelated lines while withholding a verified superseded fragment', async t => {
@@ -1295,7 +1298,8 @@ for (const read of [true, false]) test(`file forget ${read ? 'retains' : 'omits'
   await f.owner.handleHost('ackHostEffect', { effectId: effect!.effectId, causeOperationId: operationId, revision: effect!.revision })
   await f.reopen()
   await f.owner.runtime.wake()
-  assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
+  const waiting = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.deepEqual(waiting.map(item => item.effectId), read ? [operationId] : [])
   assert.equal(f.owner.runtime.cleanupPending(), 0)
   const native = f.store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId)
   const outcome = await f.owner.handleHost('getOperation', { operationId }) as HostMemoryApi['getOperation']['output']

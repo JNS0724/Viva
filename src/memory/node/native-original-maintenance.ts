@@ -12,6 +12,7 @@ import { createNativeOutputAttempts } from './native-output-attempts.ts'
 import { createNativeOutputJournal } from './native-output-journal.ts'
 import { createNativeToolReads } from './native-tool-reads.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
+import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 const span = z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() }).refine(x => x.end > x.start)
@@ -91,6 +92,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   const toolReads = createNativeToolReads(db)
   const derived = createNativeDerivedMessages(db)
   const outputJournal = createNativeOutputJournal(db, surface.mark)
+  const cleanupReceipts = createNativeErasureReceipts(db)
   db.exec('CREATE TABLE IF NOT EXISTS owner_native_original_completed (operation TEXT PRIMARY KEY)')
   const hash = (value: string) => createHmac('sha256', secret).update(JSON.stringify(value)).digest('hex')
   const canonical = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -261,9 +263,28 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     return { attempts: [...attempts.values()], tools: [...tools.values()] }
   }
 
+  function acknowledgeCatalog(catalog: string, uncertainSessions: ReadonlySet<string>) {
+    if (outputJournal.pending()) return
+    const completedOriginal = db.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?')
+    const activeRecoveries = new Set(recoveryMessageOperations().map(item => item.operationId))
+    const publishedOriginalSessions = db.prepare('SELECT session FROM owner_native_original_publications WHERE operation=?')
+    const publishedDerivedSessions = db.prepare('SELECT session FROM owner_native_output_publications WHERE operation=? OR operation LIKE ?')
+    for (const row of outputPlans.all()) {
+      const operationId = z.uuid().parse(row.operation), plan = planShape.parse(JSON.parse(String(row.payload)))
+      const sessions = [...plan.sessions, ...publishedOriginalSessions.all(operationId).map(row => String(row.session)),
+        ...publishedDerivedSessions.all(operationId, operationId + ':%').map(row => String(row.session))]
+      if (sessions.some(session => uncertainSessions.has(session)) || activeRecoveries.has(operationId)
+        || plan.originals?.length && !completedOriginal.get(operationId)
+        || outputAttempts.affected(plan.ranges, plan.memoryIds ?? []).some(item => !outputJournal.erased(item.id))
+        || toolReads.affected(plan.ranges).some(item => !item.result || !outputJournal.erased(item.id))
+        || derived.affected(plan.ranges, plan.memoryIds ?? []).length) continue
+      cleanupReceipts.acknowledge(operationId, catalog)
+    }
+  }
+
   const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
-  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts,
-    hasPlans: () => outputPlans.all().length > 0,
+  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
+    hasPlans: () => outputPlans.all().some(row => !cleanupReceipts.complete(String(row.operation))),
     finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
     pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),
     carriesUnsettledPublication: () => Boolean(unsettled.get()) || outputJournal.pending(),

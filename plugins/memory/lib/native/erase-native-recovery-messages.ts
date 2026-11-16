@@ -7,6 +7,7 @@ import type { openNativeOriginalMaintenance, NativeOriginalCandidate } from '../
 import { memoryMessageText, memoryOriginalContentDigest, memoryRecoveryContent, memoryRecoveryMessageHash } from '../context-recovery.ts'
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
+import { addNativeCompactionCopies, asNativeCompactionCopy, projectNativeCompaction } from './project-native-compactions.ts'
 import { projectNativeOriginals } from './project-native-originals.ts'
 import { publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
 
@@ -80,11 +81,15 @@ export async function eraseNativeRecoveryMessages({ root, storageRoot, operation
           needsRewrite: after !== digest, tracePublished: false })
         projections.set(digest, projected)
       }
+      addNativeCompactionCopies(events, replacements, operationId, journal, receipts)
       if (replacements.size) copies.set(sessionId, replacements)
     })
   } finally { await mounted.dispose() }
   await publishNativeEventCopies({ root, storageRoot, operationId, journal, copies, isCold, trace,
-    project: event => projections.get(nativeEventDigest(event)),
+    project: event => {
+      const compaction = asNativeCompactionCopy(event)
+      return compaction ? projectNativeCompaction(compaction) : projections.get(nativeEventDigest(event))
+    },
   })
   journal.complete([])
   operation.complete([...targets.values()].filter(target => !blocked.has(target.ticket)).map(target => target.ticket))
