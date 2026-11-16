@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { z } from 'zod'
 import { intersectsMemoryErasure, memoryErasureEvidence, memoryErasureEvidenceSchema } from '../contracts/provenance.ts'
+import type { MemoryErasureEvidence } from '../contracts/provenance.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import { transaction } from './sqlite.ts'
 
@@ -32,9 +33,12 @@ export function createNativeToolReads(db: DatabaseSync) {
     JOIN owner_native_tool_calls c ON c.id=r.call`)
   function record(call: NativeToolCall, files: readonly MemoryFileDependency[], sources: readonly string[]) {
     if (!files.length) return
+    recordEvidence(call, memoryErasureEvidence({ files: [...files], sources: [...sources], fileSources: [...sources],
+      dependencies: [], turnOnly: false, epoch: 0 }))
+  }
+  function recordEvidence(call: NativeToolCall, input: MemoryErasureEvidence) {
     const identity = JSON.stringify(callShape.parse(call))
-    const evidence = memoryErasureEvidence({ files: [...files], sources: [...sources], fileSources: [...sources],
-      dependencies: [], turnOnly: false, epoch: 0 })
+    const evidence = memoryErasureEvidenceSchema.parse(input)
     transaction(db, () => {
       const prior = existing.get(call.id)
       if (!prior) add.run(call.id, identity)
@@ -61,5 +65,5 @@ export function createNativeToolReads(db: DatabaseSync) {
     }
     return [...matches.values()]
   }
-  return { record, finish, affected }
+  return { record, recordEvidence, finish, affected }
 }

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import type { Context } from '@deepseek-ai/cordis'
 import * as memoryPlugin from '../plugins/memory/index.ts'
+import type { MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -39,7 +40,8 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
   const first = await mount()
   assert.notEqual(globalThis.fetch, originalFetch)
   const operationId = randomUUID()
-  const entry = await first.owner.handleHost('addMemory', { args: ['每周五交周报', 'fact', operationId] }) as { id: number }
+  const input = { operationId, text: '每周五交周报。' }
+  const entry = await first.owner.handleHost('createFile', { args: [input] }) as MemoryFileMutationResult
   const epoch = first.owner.epoch
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)
   await first.fiber.dispose()
@@ -47,10 +49,8 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
   assert.equal(ctx.tools.get('memory_recall'), undefined, 'fiber-owned tools are unregistered')
   const second = await mount()
   assert.notEqual(second.owner.epoch, epoch)
-  const records = await second.owner.handleHost('listMemories', { args: [] }) as { items: Array<{ id: number, text: string }> }
-  assert.ok(records.items.some(item => item.id === entry.id && item.text === '每周五交周报'))
-  assert.deepEqual(await second.owner.handleHost('addMemory', { args: ['每周五交周报', 'fact', operationId] }),
-    await second.owner.handleHost('addMemory', { args: ['每周五交周报', 'fact', operationId] }))
+  assert.ok(second.owner.runtime.readFile(entry.identity)?.markdown.includes(input.text))
+  assert.deepEqual(await second.owner.handleHost('createFile', { args: [input] }), entry)
   await second.fiber.dispose()
   assert.equal(globalThis.fetch, originalFetch)
   // Independent reopening proves the plugin released the OS/SQLite owner lock on both unloads.

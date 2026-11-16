@@ -70,10 +70,12 @@ test('npm-packed JS artifact installs offline and its Node API works without the
   const code = `
     import assert from 'node:assert/strict';
     import { createRequire } from 'node:module';
-    import { openMemoryStore, createMemoryRuntime } from 'viva-memory/node';
+    import { openMemoryOwner } from 'viva-memory/node';
+    import { randomUUID } from 'node:crypto';
     import { parseHostMemoryCommand, memoryDomainErrorCode, combineMemoryProvenance, MEMORY_HOST_PROTOCOL } from 'viva-memory/contracts';
     assert.equal(MEMORY_HOST_PROTOCOL, 1);
-    assert.deepEqual(parseHostMemoryCommand('listMemories', { args: [] }), { method: 'listMemories', input: { args: [] } });
+    assert.deepEqual(parseHostMemoryCommand('listFiles', { args: [{}] }), { method: 'listFiles', input: { args: [{}] } });
+    assert.throws(() => parseHostMemoryCommand('addMemory', { args: ['obsolete'] }));
     assert.throws(() => parseHostMemoryCommand('internalRuntimeProperty', { args: [] }));
     assert.equal(memoryDomainErrorCode.parse('revision.conflict'), 'revision.conflict');
     assert.equal(memoryDomainErrorCode.safeParse('unrecognized').success, false);
@@ -82,13 +84,20 @@ test('npm-packed JS artifact installs offline and its Node API works without the
     assert.throws(() => require.resolve('@deepseek-ai/dsh'));
     assert.throws(() => require.resolve('electron'));
     assert.equal(process.send, undefined);
-    const store = openMemoryStore('memory.db');
-    const runtime = createMemoryRuntime({ store, compute:()=>null, route:()=>null, quiesce:async()=>{}, changed:()=>{} });
-    const item = runtime.addMemory('Keep weekly summaries short.');
-    assert.ok(item);
-    assert.equal(runtime.listMemories().total,1);
-    assert.equal((await runtime.deleteMemory(item.id,item.revision)).status,'cleared');
-    runtime.close();
+    const options = { root: 'memory', fileMode: true, compute:()=>null, route:()=>null, quiesce:async()=>{} };
+    let owner = openMemoryOwner(options);
+    await owner.recover();
+    const input = { operationId: randomUUID(), text: 'Keep weekly summaries short.' };
+    const created = await owner.handleHost('createFile', { args: [input] });
+    assert.ok(owner.runtime.readFile(created.identity).markdown.includes(input.text));
+    await owner.close();
+    owner = openMemoryOwner(options);
+    await owner.recover();
+    assert.deepEqual(await owner.handleHost('createFile', { args: [input] }), created);
+    const current = owner.runtime.readFile(created.identity);
+    await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.identity, version: current.version }] });
+    assert.equal(owner.runtime.readFile(created.identity), null);
+    await owner.close();
     console.log('PACKAGED_NODE_OK');
   `
   const output = execFileSync(node, ['--input-type=module', '-e', code], { cwd: clean, encoding: 'utf8', timeout: 20_000,

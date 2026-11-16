@@ -180,9 +180,17 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     signal?.throwIfAborted()
     if (!owner.ready()) throw new Error('Memory owner is not ready')
     const context = owner.sessionContext(String(agent.session.id))
+    const execution = caller.getStore()
+    if (input.op === 'remember') {
+      if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
+      const lease = execution.toolRead
+      const result = await owner.withNativeToolRead({ call: lease.call, current: () => lease.current() && !signal?.aborted },
+        () => owner.rememberNativeFile(input.text.trim()))
+      return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
+        : { status: 'rejected', reason: 'no-explicit-user-source' })
+    }
     const read = () => owner.runtime.handleModelRequest(input, context, () => owner.ready() && !signal?.aborted, signal)
     if (!toolReads || !['recall', 'file_read', 'node_search', 'clarify'].includes(input.op)) return read()
-    const execution = caller.getStore()
     // File tools only return bytes through an authenticated native execution.
     if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
     return owner.withNativeToolRead(execution.toolRead, read)

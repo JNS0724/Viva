@@ -80,3 +80,18 @@ test('trusted source aliases retain exact user evidence and refuse reused operat
     assert.deepEqual(source, Object.assign(Object.create(null), { text, author: 'user' }))
   } finally { db.close() }
 })
+
+
+test('memory_remember saves exact current user evidence directly into a file', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { call, ask, events } = await setupMemory(t)
+  const text = '周报每周五提交，客户故障时另行确认。'
+  await ask(`记住：${text}`)
+  const files = await call('listFiles', { args: [{ kind: 'digest' }] })
+  const saved = files.items.find(item => item.title.includes('周报'))
+  assert.ok(saved, JSON.stringify(events))
+  const detail = await call('readFile', { args: [saved.identity] })
+  assert.ok(detail)
+  assert.ok(detail.markdown.includes(text))
+  assert.equal(detail.sources.length, 1)
+  assert.equal(detail.sources[0]?.namespace, 'canonical')
+})

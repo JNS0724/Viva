@@ -9,7 +9,7 @@ import { openMemoryStore, memoryHash } from './memory-store.ts'
 import { createMemoryRuntime } from './runtime.ts'
 import { createMemoryEmbedder } from './memory-embedder.ts'
 import type { NodeMemoryRuntimeOptions } from './runtime.ts'
-import type { DocumentSourceCut } from '../core/ports/documents.ts'
+import type { DocumentSourceCut, DocumentSourceRef } from '../core/ports/documents.ts'
 import { combineMemoryProvenance, usesErasedMemory } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
@@ -74,6 +74,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_derived(message TEXT PRIMARY KEY,evidence TEXT NOT NULL,origin_session TEXT NOT NULL,origin_turn TEXT,owner_epoch TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_turns(session TEXT NOT NULL,turn INTEGER NOT NULL,seq INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(session,turn));
     CREATE TABLE IF NOT EXISTS owner_operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,payload TEXT,ticket TEXT);
+    CREATE TABLE IF NOT EXISTS owner_turn_sources(session TEXT NOT NULL,turn INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(session,turn,source));
     CREATE TABLE IF NOT EXISTS owner_file_native_erasures (operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_host_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0);
   `)
@@ -401,7 +402,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,?) ON CONFLICT(session,message) DO UPDATE SET admitted=MAX(admitted,excluded.admitted)').run(input.sessionId, input.messageId, sourceId, context.conversation, Number(input.admitted))
       if (mapped) db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
-      if (input.admitted) { runtime.bindSource(sourceId, input.sessionId); dispatch.recordSource(input.sessionId, sourceId) }
+      if (input.admitted) {
+        runtime.bindSource(sourceId, input.sessionId)
+        dispatch.recordSource(input.sessionId, sourceId)
+        if (input.turn > 0) db.prepare('INSERT OR IGNORE INTO owner_turn_sources VALUES (?,?,?)').run(input.sessionId, input.turn, sourceId)
+      }
     })
     if (!runtime.dispatchSourceCurrent(sourceId)) throw new Error('Source is withdrawn or unavailable')
     // A rejected original remains withdrawable as a delivery, but cannot authorize a memory write.
@@ -628,9 +633,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     replayingWrites = true
     try {
       for (const item of db.prepare("SELECT * FROM owner_operations WHERE state='running'").all() as Operation[]) {
-        const payload = JSON.parse(item.payload!) as WritePayload | FileWritePayload | ManualFilePending
+        const payload = JSON.parse(item.payload!) as WritePayload | FileWritePayload | ManualFilePending | NativeRememberPayload
         try {
-          if ('manual' in payload) await completeManualFile(item.id, payload.manual)
+          if ('nativeRemember' in payload) await completeNativeRemember(item.id, payload.nativeRemember, () => !closed && !hasPending())
+          else if ('manual' in payload) await completeManualFile(item.id, payload.manual)
           else if ('standaloneSession' in payload && payload.standaloneSession) await durableFileWrite(payload.command, payload.standaloneSession)
           else await handleHost(payload.command.method, payload.command.input)
         } catch (error) { if (operation(item.id)?.state !== 'failed') throw error }
@@ -671,6 +677,45 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         || evidence.files?.some(file => file.workspace === identity.workspace && file.id === identity.id) ? [id] : []
     })
   }
+  type NativeRememberPlan = { session: string, source: DocumentSourceRef }
+  type NativeRememberPayload = { nativeRemember: NativeRememberPlan }
+  async function completeNativeRemember(id: string, plan: NativeRememberPlan, current: () => boolean) {
+    try {
+      return await runtime.writeSourceFile(id, plan.source, plan.session, result => {
+        db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
+      }, current)
+    } catch (error) {
+      if (error instanceof MemoryDomainError && error.code !== 'change.pending') {
+        db.prepare("UPDATE owner_operations SET state='failed',payload=NULL WHERE id=?").run(id)
+      }
+      throw error
+    }
+  }
+  async function rememberNativeFile(text: string) {
+    requireReady()
+    const scope = toolReadScope.getStore()
+    if (!scope || !scope.current()) return null
+    const { call } = scope, origin = sessionContext(call.session)
+    if (call.generation !== contextRecovery.contextGeneration(call.session) || origin.foregroundTurn !== String(call.turn)) return null
+    const sources = db.prepare('SELECT source FROM owner_turn_sources WHERE session=? AND turn=? ORDER BY rowid').all(call.session, call.turn)
+      .map(row => String(row.source))
+    const proof = runtime.explicitFileSource(text, origin, sources)
+    if (!proof) return null
+    const digest = hash(['native-remember', call.session, call.seq, call.digest, call.callId])
+    const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`
+    const plan: NativeRememberPlan = { session: call.session, source: proof }
+    const fingerprint = hash({ nativeRemember: plan }), previous = operation(id)
+    if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
+    store.tx(() => {
+      nativeToolReads.recordEvidence(call, { sources: [], fileRanges: [{ sourceId: proof.id, spans: proof.spans }], memoryIds: [] })
+      if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ nativeRemember: plan }))
+    })
+    if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    if (previous?.state === 'failed') throw new MemoryDomainError('operation.conflict')
+    return completeNativeRemember(id, plan, () => scope.current() && call.generation === contextRecovery.contextGeneration(call.session)
+      && sessionContext(call.session).foregroundTurn === String(call.turn))
+  }
+
   type ManualFileCommand = Extract<HostMemoryCommand, { method: 'createFile' | 'editFile' }>
   type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[], project?: MemoryProject }
   type ManualFilePending = { manual: ManualFilePlan }
@@ -988,7 +1033,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
     recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost, acceptFileClarification,
-    rememberStandaloneFile, forgetStandaloneFile,
+    rememberStandaloneFile, forgetStandaloneFile, rememberNativeFile,
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
     nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,

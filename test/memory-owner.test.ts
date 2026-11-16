@@ -103,7 +103,7 @@ test('completion promotes source once and keeps original capture time', async t 
   await owner.completeTurn(complete); await owner.completeTurn(complete)
   const db = new DatabaseSync(join(root, 'memory.db')); t.after(() => db.close())
   const row = db.prepare('SELECT outcome,at FROM memory_sources WHERE id=?').get(receipt.sourceId)
-  assert.equal(row?.outcome, 'pending'); assert.equal(row?.at, input.at)
+  assert.equal(row?.outcome, 'note-pending'); assert.equal(row?.at, input.at)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_turns').get()?.n, 1)
 })
 test('source alias matches only exact trusted wire text and does not strip user markers', async t => {
@@ -219,7 +219,7 @@ test('custom question answer uses the owner native turn and joins only completed
   assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
   await owner.completeTurn({ sessionId: original.sessionId, turn: 3, eventSeq: 10, sourceIds: [], assistant: '收到', completed: true, at: Date.now(), timezone: 'Asia/Shanghai' })
   const db = new DatabaseSync(join(root, 'memory.db'))
-  try { assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(operationId)?.outcome, 'pending') } finally { db.close() }
+  try { assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(operationId)?.outcome, 'note-pending') } finally { db.close() }
 })
 test('withdrawal tombstones an alias not yet delivered, including after process restart', async t => {
   const { owner, root } = fixture(t); await owner.recover()
