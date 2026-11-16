@@ -75,6 +75,7 @@ export interface HostMemoryApi {
   transfer: Args<[session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean], boolean>
   canInherit: Args<[source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
   inherit: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
+  inheritFork: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
   allowsProjectHistory: Args<[row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject], boolean>
   useHistory: Args<[session: string | undefined, row: MemoryHistoryOccurrence], void>
   provenance: Args<[session: string], MemoryProvenance>
@@ -142,6 +143,7 @@ export const hostMemoryInputSchemas = {
   allowsSession: args(z.tuple([key, project.optional()])), recoverContext: args(z.tuple([key])), transferable: args(z.tuple([maybeProvenance])),
   transferStatus: args(z.tuple(transfer)), transfer: args(z.tuple([key, ...transfer])),
   canInherit: args(z.tuple(inheritance)), inherit: args(z.tuple([key, ...inheritance])),
+  inheritFork: args(z.tuple([key, ...inheritance])),
   allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional()])),
   useHistory: args(z.tuple([key.optional(), occurrence])), provenance: args(z.tuple([key])), authorizedProvenance: z.strictObject({ session: key, prior: provenance.optional(), sourceId: key.optional() }),
   recordSession: args(z.tuple([key])), sessionProject: args(z.tuple([key])), recordSessionProject: args(z.tuple([key, z.string()])),

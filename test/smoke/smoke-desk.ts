@@ -85,20 +85,32 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: Smoke
     const multilineHeight: number = await run(page, heightWithDraft('整理会议纪要\n把待办事项单独列出来'))
     const clearedHeight: number = await run(page, heightWithDraft(''))
 
-    // The field and the document both hear the key. Neither may submit/dismiss an IME candidate.
-    const composition: Array<{ key: string, legacy: boolean, kept: boolean }> = []
-    for (const key of ['Enter', 'Escape']) for (const legacy of [false, true]) {
-      await run(page, `(() => {
-        const field = document.querySelector('.isl-field')
-        field.value = '尚未确认的中文 🐈'
-        field.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(key)}, bubbles: true, cancelable: true,
-          isComposing: ${!legacy}, keyCode: ${legacy ? 229 : 0} }))
-      })()`)
-      await wait(UI_WAIT_MS)
-      const kept = await run(page, `document.querySelector('.isl')?.dataset.form === 'input' && document.querySelector('.isl-field')?.value === '尚未确认的中文 🐈'`)
-      composition.push({ key, legacy, kept: Boolean(kept) })
-    }
-    await run(page, `document.querySelector('.isl-field').value = ''`)
+    // The field and the document both hear the key. Assert that neither consumes it in the
+    // dispatch itself, so a later native window blur cannot be reported as an IME key failure.
+    const readyForComposition = `(() => {
+      const field = document.querySelector('.isl[data-form="input"] .isl-field')
+      return field && !field.disabled && !field.readOnly
+    })()`
+    if (!await run(page, readyForComposition)) await desk.openInput()
+    await until(page, readyForComposition, 'the island draft being editable for IME confirmation')
+    const composition: Array<{ key: string, legacy: boolean, kept: boolean }> = await run(page, `(() => {
+      const field = document.querySelector('.isl-field')
+      const draft = field.value
+      const candidate = '尚未确认的中文 🐈'
+      const samples = []
+      field.value = candidate
+      try {
+        for (const key of ['Enter', 'Escape']) for (const legacy of [false, true]) {
+          const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true,
+            isComposing: !legacy, keyCode: legacy ? 229 : 0 })
+          const allowed = field.dispatchEvent(event)
+          const kept = allowed && field.value === candidate
+            && event.isComposing === !legacy && event.keyCode === (legacy ? 229 : 0)
+          samples.push({ key, legacy, kept })
+        }
+      } finally { field.value = draft }
+      return samples
+    })()`)
 
     await run(page, DRAG_OVER)
     const drop = await until(page, `document.querySelector('.isl')?.dataset.form === 'drop' && document.querySelector('.isl-drop')?.textContent`, 'the island opening for dropped files')

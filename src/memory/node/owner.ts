@@ -25,6 +25,7 @@ import type { MemoryScope } from '../contracts/memory-contract.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { TextSpan } from '../contracts/text-spans.ts'
 import { createOwnerNativeOriginals } from './owner-native-originals.ts'
+import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
@@ -96,8 +97,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   })
   const removedSession = (session: string) => Boolean(db.prepare(`SELECT 1 FROM owner_occurrences o WHERE o.session=? AND o.removed=1
     AND NOT EXISTS(SELECT 1 FROM owner_context_retired r WHERE r.session=o.session AND r.message=o.message) LIMIT 1`).get(session))
+  const nativeSurface = nativeSurfaceInvalidation(db)
   const coordinated = { ...runtime,
-    staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && removedSession(session)),
+    staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && (removedSession(session) || nativeSurface.has(session))),
     allowedHistory(row: MemoryHistoryOccurrence) {
       // Browsable history without original-source or generated-session provenance
       // cannot be replayed as model context.
@@ -143,7 +145,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   function requireReady() { if (state !== 'ready' || hasPending()) throw new Error('Memory owner is recovering') }
   const contextRecovery = createOwnerContextRecovery({ db, store, hash, requireReady, mutate: work => fence.mutate(work),
     sourceAllowed: (session, source) => runtime.canRecoverOriginal(source, sessionContext(session)),
-    replace: dispatch.replaceAfterRecovery,
+    resolveInherited(session, nativeParent) {
+      if (!nativeSurface.has(session)) return null
+      const forkParent = nativeSurface.parent(session) ?? nativeParent
+      if (forkParent && forkParent !== session) {
+        const parent = db.prepare('SELECT context,project FROM owner_sessions WHERE session=?').get(forkParent)
+        if (typeof parent?.context === 'string') {
+          db.prepare('UPDATE owner_sessions SET context=? WHERE session=? AND context IS NULL AND project IS ?')
+            .run(parent.context, session, parent.project ?? null)
+        }
+      }
+      return sessionContext(session).conversation
+    },
+    replace(session, sources) {
+      dispatch.replaceAfterRecovery(session, sources)
+      nativeSurface.clear(session)
+    },
     committed(session) {
       runtime.finishTurn(session)
       for (const [key, question] of generalQuestions) if (question.session === session) generalQuestions.delete(key)
@@ -153,7 +170,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   function needsContextRecovery(session: string, visited = new Set<string>()): boolean {
     if (visited.has(session)) return true
     visited.add(session)
-    if (contextRecovery.pending(session) || removedSession(session)) return true
+    if (contextRecovery.pending(session) || removedSession(session) || nativeSurface.has(session)) return true
     // New native sessions have no old model context to recover, even after a global memory epoch change.
     if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) return false
     if (runtime.staleSession(session) || dispatch.stale(session) || !runtime.provisionalReadsCurrent(session)) return true
@@ -279,13 +296,24 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   function markLiveTurn(input: ReceivedSource) {
     if (input.turn > 0 && !input.inherited && input.live !== false) db.prepare('INSERT INTO owner_active_turns VALUES (?,?) ON CONFLICT(session) DO UPDATE SET turn=excluded.turn').run(input.sessionId, String(input.turn))
   }
+  function noteInheritedNativeCut(input: Pick<ReceivedSource, 'sessionId' | 'messageId' | 'text' | 'contentDigest' | 'inherited'>) {
+    if (!input.inherited || !input.contentDigest || !nativeSurface.provesErasedOriginal(input.messageId, hash(input.text), hash(input.contentDigest))) return false
+    nativeSurface.mark(input.sessionId)
+    return true
+  }
   async function receiveSource(input: ReceivedSource) {
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
     if (contextRecovery.retired(input.sessionId, input.messageId)) throw new Error('Source context was retired')
     if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid original content digest')
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
-    if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Original content identity conflicts')
+    if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) {
+      if (noteInheritedNativeCut(input)) {
+        const sourceId = db.prepare("SELECT source FROM owner_messages WHERE id=? AND kind='original'").get(input.messageId)?.source
+        if (typeof sourceId === 'string') return { sourceId, text: '', handledIntent: true as const }
+      }
+      throw new Error('Original content identity conflicts')
+    }
 
     const known = db.prepare(`SELECT m.*, r.spans AS query_spans FROM owner_messages m
       LEFT JOIN owner_message_wires r ON r.message=m.id AND r.source_hash IS NULL WHERE m.id=?`).get(input.messageId) as
@@ -902,6 +930,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'transfer': return coordination.transfer(...command.input.args)
       case 'canInherit': return coordination.canInherit(...command.input.args)
       case 'inherit': return coordination.inherit(...command.input.args)
+      case 'inheritFork': {
+        const [parent, session] = command.input.args
+        const previous = nativeSurface.parent(session)
+        if (parent === session || previous && previous !== parent) return false
+        return store.tx(() => {
+          if (!coordination.inherit(...command.input.args)) return false
+          nativeSurface.bindFork(session, parent)
+          return true
+        })
+      }
       case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
       case 'useHistory': return coordination.useHistory(...command.input.args)
       case 'listFiles': return runtime.listFiles(command.input.args[0])
@@ -946,6 +984,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
     recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost, acceptFileClarification,
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
+    nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     acquireSend(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string) {
       if ('session' in origin) {

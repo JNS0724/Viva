@@ -43,6 +43,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   db: HistoryDb,
   dshHome: string,
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
+  readNative?: <T>(read: () => Promise<T>) => Promise<T>,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null },
   selectSession: SelectSession,
@@ -175,12 +176,12 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     })
   })
 
-  handle('history:trace', (id, until) => readSessionTrace({
+  handle('history:trace', (id, until) => (deps.readNative ?? (read => read()))(() => readSessionTrace({
     dshHome,
     traceDb: traceDb?.() ?? null,
     sessionIds: db.sessionIds(assertId(id)),
     until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now(),
-  }))
+  })))
 
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))

@@ -8,13 +8,14 @@ type Retained = { messageId: string, sourceId: string, token: string }
 type Saved = MemoryContextRecoveryTicket & { epoch: number, revision: number, evidence: string, candidatesHash: string, retained: Retained[] }
 
 /** Durable proof of a native model-context replacement. No native event or DSH type enters storage. */
-export function createOwnerContextRecovery({ db, store, hash, mutate, requireReady, sourceAllowed, replace, committed }: {
+export function createOwnerContextRecovery({ db, store, hash, mutate, requireReady, sourceAllowed, resolveInherited, replace, committed }: {
   db: DatabaseSync
   store: Pick<MemoryStore, 'tx' | 'epoch' | 'revision' | 'readSource' | 'deliveredSource' | 'dispatch'>
   hash(value: unknown): string
   mutate<T>(work: () => T): Promise<T>
   requireReady(): void
   sourceAllowed(session: string, source: string): boolean
+  resolveInherited?(session: string, parent?: string): string | null
   replace(session: string, sources: readonly string[]): void
   committed(session: string): void
 }) {
@@ -102,11 +103,28 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
       requireReady()
       const prior = latest(input.sessionId)
       if (prior && prior.state !== 'committed' && prior.baseSurfaceHash === input.baseSurfaceHash && prior.candidatesHash === hash(input.candidates) && current(prior)) return ticket(prior)
-      const retained = input.candidates.flatMap(candidate => {
-        const source = original(input.sessionId, candidate.messageId)
-        return source && !retired(input.sessionId, candidate.messageId) && source.hash === hash(candidate.content)
-          && (source.digest ? Boolean(candidate.contentDigest && source.digest === hash(candidate.contentDigest)) : candidate.contentDigest === undefined)
-          ? [{ messageId: candidate.messageId, sourceId: source.sourceId, token: source.token }] : []
+      const retained = store.tx(() => {
+        const inheritedConversation = resolveInherited?.(input.sessionId, input.nativeParentSessionId)
+        return input.candidates.flatMap(candidate => {
+          if (inheritedConversation && candidate.inherited && candidate.contentDigest) {
+            // A cold native fork can contain an authenticated original before the
+            // owner saw that occurrence. The fork's adapter supplies the actual
+            // inherited boundary, and both wire and full content must still match.
+            const shared = db.prepare(`SELECT m.source FROM owner_messages m
+              JOIN owner_message_content c ON c.message=m.id
+              WHERE m.id=? AND m.kind='original' AND m.hash=? AND c.digest=?
+              AND EXISTS(SELECT 1 FROM owner_occurrences o WHERE o.message=m.id AND o.source=m.source AND o.admitted=1 AND o.removed=0)`)
+              .get(candidate.messageId, hash(candidate.content), hash(candidate.contentDigest))
+            if (shared && sourceAllowed(input.sessionId, String(shared.source))) {
+              db.prepare('INSERT OR IGNORE INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,1)')
+                .run(input.sessionId, candidate.messageId, shared.source, inheritedConversation)
+            }
+          }
+          const source = original(input.sessionId, candidate.messageId)
+          return source && !retired(input.sessionId, candidate.messageId) && source.hash === hash(candidate.content)
+            && (source.digest ? Boolean(candidate.contentDigest && source.digest === hash(candidate.contentDigest)) : candidate.contentDigest === undefined)
+            ? [{ messageId: candidate.messageId, sourceId: source.sourceId, token: source.token }] : []
+        })
       })
       const item: Saved = { ticketId: randomUUID(), sessionId: input.sessionId, generation: contextGeneration(input.sessionId) + 1,
         baseSurfaceHash: input.baseSurfaceHash, state: 'prepared', retainedMessageIds: retained.map(r => r.messageId), retained,

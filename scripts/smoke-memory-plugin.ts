@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { createRequire, findPackageJSON } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -75,8 +75,13 @@ function installArtifact() {
     assert.ok(item && typeof item === 'object' && 'filename' in item && typeof item.filename === 'string')
     return path.join(temporary, item.filename)
   }
+  const packageRoot = (name: string) => {
+    const manifest = findPackageJSON(name, import.meta.url)
+    if (!manifest) throw new Error('Missing installed package: ' + name)
+    return path.dirname(manifest)
+  }
   const plugin = pack(artifact)
-  const dependencies = ['yaml', 'zod', 'marked'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
+  const dependencies = ['yaml', 'zod', 'marked'].map(name => pack(packageRoot(name)))
   writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   run(['install', plugin, ...dependencies, '--offline', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--package-lock=false'], installed)
   const manifest = JSON.parse(readFileSync(path.join(installed, 'node_modules/viva-memory/package.json'), 'utf8')) as { peerDependencies: Record<string, string> }
@@ -85,7 +90,7 @@ function installArtifact() {
   for (const name of Object.keys(manifest.peerDependencies)) {
     const target = path.join(installed, 'node_modules', name)
     mkdirSync(path.dirname(target), { recursive: true })
-    symlinkSync(path.dirname(require.resolve(`${name}/package.json`)), target, 'junction')
+    symlinkSync(packageRoot(name), target, 'junction')
   }
   rmSync(artifact, { recursive: true })
   rmSync(path.join(temporary, 'compiled'), { recursive: true })

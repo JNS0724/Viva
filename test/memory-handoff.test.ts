@@ -3,6 +3,14 @@ import { randomUUID } from 'node:crypto'
 import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { Context } from '@deepseek-ai/cordis'
+import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
@@ -177,6 +185,145 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
     assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   } finally { db.close() }
+})
+
+test('cold Viva startup erases native originals in a root log and a fork the owner has never seen', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null, { dailyNotes: true, fileMode: true })
+  const erased = '实体擦除样本只用于 R5a 验收', nearby = '独立片段仍在同一原生日志中'
+  const second = '另一个有独立依据的原文裁剪目标'
+  const survivor = '独立消息要在恢复后继续可用'
+  const text = [erased, nearby, second].join('。\n')
+  const sourceId = await app.ask(text)
+  const survivorId = await app.ask(survivor)
+  await app.call('history:save', [
+    { role: 'user', text, receipt: null, sourceId },
+    { role: 'user', text: survivor, receipt: null, sourceId: survivorId },
+  ])
+  const info = app.call<AgentInfo>('agent:info')
+  assert.ok(info.sessionId)
+  await app.stopBackend()
+  const sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const memoryRoot = join(app.directory, 'memory')
+  const parentId = SessionId(info.sessionId), forkId = SessionId(randomUUID())
+  const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
+  try {
+    const original = await cold.sessionPersistence.open(parentId, 'read')
+    try {
+      const { events } = await original.read()
+      assert.ok(JSON.stringify(events).includes(erased))
+      const inherited = SessionLogOffset(events.length)
+      const child = Session.create(forkId, events, { ...original.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
+      const image = child.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{
+        type: 'image', attachment: { attachmentId: AttachmentId('cold-offload'), mediaType: 'image/png', bytes: 80, width: 1, height: 1 },
+      }] }), { surfaceOp: 'append' })
+      child.append('image/offload', { targets: [{ seq: image.seq, imageIndexes: [0] }] })
+      const writer = await cold.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+      try { await writer.append(child.snapshotEvents()); await writer.flush() } finally { await writer.close() }
+    } finally { await original.close() }
+  } finally { await persistence.dispose() }
+
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true, fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  const operationId = randomUUID(), nextOperation = randomUUID()
+  try {
+    await owner.recover()
+    const store = openMemoryStore(join(memoryRoot, 'memory.db'))
+    try {
+      assert.equal(store.db.prepare('SELECT 1 FROM owner_occurrences WHERE session=?').get(forkId), undefined)
+      const source = store.readSource(sourceId)!
+      const workspace = memorySourceWorkspace(source)
+      const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, deferRecovery: true, source(id) {
+        const row = store.readSource(id)
+        return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+      } })
+      const makeDigest = (name: string, excerpt: string) => {
+        const start = text.indexOf(excerpt)
+        const entry = documents.commit({ operationId: randomUUID(), workspace, path: `digest/wiki/${name}.md`,
+          action: 'CREATE', expectedRevision: null, markdown: excerpt,
+          sources: [{ id: sourceId, token: memorySourceToken(source), spans: [{ start, end: start + excerpt.length }] }], reads: [] })
+        return { kind: 'digest', workspace, id: entry.documentId } as const
+      }
+      const first = makeDigest('native-erasure', erased), secondDigest = makeDigest('native-erasure-2', second)
+      for (const [identity, id] of [[first, operationId], [secondDigest, nextOperation]] as const) {
+        const detail = await owner.handleHost('readFile', { args: [identity] }) as MemoryFileDetail
+        await owner.handleHost('forgetFile', { args: [{ operationId: id, identity, version: detail.version }] })
+      }
+    } finally { store.close() }
+  } finally { await owner.close() }
+
+  const cache = join(app.directory, 'dsh', 'storages', 'session_projcache', 'sessions')
+  mkdirSync(cache, { recursive: true })
+  const interruptedCache = join(cache, `${forkId}.json.deleting`)
+  const backupCache = join(cache, `${parentId}.json.bak.202611161700`)
+  const independentCache = join(cache, 'independent.json.deleting')
+  const projectionTemp = join(cache, `.${randomUUID()}.tmp`)
+  for (const file of [interruptedCache, backupCache, independentCache, projectionTemp]) writeFileSync(file, erased)
+
+  openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
+  const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    control.exec(`CREATE TRIGGER interrupt_native_publication BEFORE UPDATE OF published ON owner_native_original_publications
+      BEGIN SELECT RAISE(ABORT, 'interrupted native erasure receipt'); END`)
+    const offset = app.model.requests.length
+    assert.equal(await app.startBackend(), null, 'a published artifact without a receipt must stop live DSH from opening its log')
+    assert.equal(app.model.requests.length, offset)
+    assert.equal(control.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=0')
+      .get(operationId)?.count, 1)
+    await app.stopBackend()
+    control.exec('DROP TRIGGER interrupt_native_publication')
+  } finally { control.close() }
+
+  const offset = app.model.requests.length
+  assert.ok(await app.startBackend())
+  assert.equal(fs.existsSync(interruptedCache), false)
+  assert.equal(fs.existsSync(backupCache), false)
+  assert.equal(fs.existsSync(projectionTemp), false)
+  assert.equal(fs.readFileSync(independentCache, 'utf8'), erased)
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, info.sessionId)
+  assert.ok(contextGeneration(app.directory, info.sessionId) > 0)
+  const question = '验证冷启动后还能继续使用安全历史'
+  const questionId = await app.ask(question)
+  const sent = app.model.requests.slice(offset) as Request[]
+  assert.ok(sent.some(request => questionOf(request.messages) === question && JSON.stringify(request.messages).includes(survivor)))
+  assert.ok(sent.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
+
+  const reopened = new Context(), mounted = await reopened.plugin(jsonl, { root: sessionsRoot })
+  try {
+    for (const id of [parentId, forkId]) {
+      const reader = await reopened.sessionPersistence.open(id, 'read')
+      try {
+        const { events } = await reader.read()
+        if (id === forkId) assert.ok(events.some(event => event.type === 'image/offload'))
+        const rawInputs = events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user')
+        const raw = JSON.stringify(rawInputs)
+        assert.ok(raw.includes(survivor) && raw.includes(nearby))
+        assert.ok(!raw.includes(erased) && !raw.includes(second))
+      } finally { await reader.close() }
+    }
+  } finally { await mounted.dispose() }
+  const settled = new DatabaseSync(join(memoryRoot, 'memory.db'), { readOnly: true })
+  try {
+    assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(operationId)?.count, 2)
+    assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(nextOperation)?.count, 2)
+    for (const id of [operationId, nextOperation]) assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
+    assert.ok(settled.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId),
+      'native derived and host obligations remain independently pending')
+    assert.ok(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(forkId))
+    assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
+  } finally { settled.close() }
+
+  const history = app.call<{ messages: unknown[] }>('history:load')
+  await app.call('history:save', [...history.messages, { role: 'user', text: question, receipt: null, sourceId: questionId }])
+  const forked = await app.call<Promise<{ ok: boolean, problem?: string, info?: AgentInfo }>>('timeline:rewind',
+    { words: question, keep: history.messages.length, text: question })
+  assert.ok(forked.ok, JSON.stringify(forked))
+  assert.notEqual(forked.info?.sessionId, parentId)
+  const branchProbe = '验证已擦除会话的新分叉仍保留独立原文'
+  const branchOffset = app.model.requests.length
+  await app.ask(branchProbe)
+  const branch = app.model.requests.slice(branchOffset) as Request[]
+  assert.ok(branch.some(request => questionOf(request.messages) === branchProbe && JSON.stringify(request.messages).includes(survivor)))
+  assert.ok(branch.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
 })
 
 test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 45_000 }, async t => {

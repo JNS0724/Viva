@@ -28,7 +28,7 @@ export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
 }
 
 /** DSH's feed announces in-memory commits; flush is the explicit durability boundary. */
-export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived'> & Partial<MemoryContextRecoveryOwner> & { dispatch: Pick<PluginMemoryOwner['dispatch'], 'snapshot'> }, flush: (session: Session) => Promise<unknown>,
+export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived' | 'noteInheritedNativeCut'> & Partial<MemoryContextRecoveryOwner> & { dispatch: Pick<PluginMemoryOwner['dispatch'], 'snapshot'> }, flush: (session: Session) => Promise<unknown>,
   deliveryProof?: (session: Session, message: UserMessage) => Promise<MemoryDeliveryProof | undefined>) {
   const states = new Map<string, Replay>()
   function state(session: Session) {
@@ -54,9 +54,14 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
       return undefined
     }
     const text = memoryMessageText(message)
-    if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) return undefined
-    const receipt = await owner.receiveSource({ sessionId: String(session.id), messageId: message.id, text, contentDigest: memoryOriginalContentDigest(message),
-      contextGeneration: current.generation, ...options, timezone: timezone(), inherited: options.inherited ?? false,
+    const contentDigest = memoryOriginalContentDigest(message)
+    const identity = { sessionId: String(session.id), messageId: message.id, text, contentDigest, inherited: options.inherited ?? false }
+    if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) {
+      owner.noteInheritedNativeCut?.(identity)
+      return undefined
+    }
+    const receipt = await owner.receiveSource({ ...identity,
+      contextGeneration: current.generation, ...options, timezone: timezone(), inherited: identity.inherited,
       derived: session.header.origin === 'subagent' && !options.inherited && !('rpcId' in message.source && typeof message.source.rpcId === 'string') })
     current.messages.set(message.id, receipt.sourceId)
     if (options.admitted && !receipt.handledIntent) current.sources.add(receipt.sourceId)
@@ -187,8 +192,11 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         if (await flush(session) !== true) throw new Error('Session has no durable persistence acknowledgment')
         // Reauthorize on every attempt. A replacement already landed before a failed owner CAS
         // can safely become the base of a new ticket; it must never authorize old source versions.
+        owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
+          ...(session.header.origin === 'subagent' ? { parentSessionId: session.header.parentSession } : {}) })
         let ticket = await owner.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
-          candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })
+          ...(session.header.parentSession ? { nativeParentSessionId: String(session.header.parentSession) } : {}),
+          candidates: memoryRecoveryCandidates(session).map(({ text, ...item }) => ({ ...item, content: text })) })
         let marker = recoveryEvent(session.snapshotEvents(), ticket)
         if (!marker) {
           if (memorySessionSurfaceHash(session) !== ticket.baseSurfaceHash) throw new Error('Session surface changed during context recovery')

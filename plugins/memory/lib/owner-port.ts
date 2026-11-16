@@ -56,6 +56,7 @@ export interface PluginMemoryOwner {
   status(): 'ready' | 'recovering' | 'unavailable'
   recover(): Promise<void>
   initializeSession(input: { sessionId: string, cwd?: string, parentSessionId?: string }): void
+  noteInheritedNativeCut?(input: Pick<ReceivedSource, 'sessionId' | 'messageId' | 'text' | 'contentDigest' | 'inherited'>): boolean
   receiveSource(input: ReceivedSource): Promise<SourceReceipt>
   completeTurn(input: CompletedTurn): Promise<void>
   sessionContext(sessionId: string): SessionContext

@@ -256,6 +256,17 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
 
   type DshContext = { config: Config, cwd: string, resumeSessionId: string | null }
   const dsh = createDshLifecycle({
+    beforeStart: async ({ config }: DshContext, isCold) => {
+      const memoryRoot = path.join(userData, 'memory')
+      if (!fs.existsSync(path.join(memoryRoot, 'memory.db'))) return
+      const { eraseColdNativeOriginals, PendingNativePublication } = await import('../../plugins/memory/lib/native/maintenance.ts')
+      const root = dshHomeOf(config)
+      try { await eraseColdNativeOriginals({ memoryRoot, sessionsRoot: path.join(root, 'sessions'), storageRoot: path.join(root, 'storages'), hostNamespace: 'viva', isCold }) }
+      catch (error) {
+        if (error instanceof PendingNativePublication) throw error
+        console.warn('[memory] Native original cleanup remains pending')
+      }
+    },
     create: ({ config, cwd }: DshContext, lifetime) => {
       return createBridge(config, cwd, lifetime)
     },
@@ -491,7 +502,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       allowSession: async (id, _transportReady, _isTask, targetCwd) => memory.allowsSession(id, await memoryProjectFor(id, targetCwd)),
       onSessionCreated: async (id, targetCwd, parent) => {
         await memory.recordSession(id)
-        if (parent && !await memory.inherit(parent, id, await projectOfSession(parent), memoryProjectScope(targetCwd), true)) throw new Error(t('main.memory.context.stale'))
+        if (parent && !await memory.call('inheritFork', { args: [parent, id, await projectOfSession(parent), memoryProjectScope(targetCwd), true] })) throw new Error(t('main.memory.context.stale'))
         if (!await bindSessionProject(id, memoryProjectScope(targetCwd))) throw new Error(t('main.memory.context.stale'))
       },
       taskSourceAlias: async (session, text) => {
@@ -1249,6 +1260,7 @@ ${question}` : question
       },
       dshHome: dshHomeOf(config),
       traceDb: () => traceDb,
+      readNative: dsh.readNative,
       current: sessions.current,
       // A report waiting for this conversation (task-reports.ts) may go now.
       setCurrent: sessions.select,

@@ -597,8 +597,9 @@ export function createAcpBridge({
       if (!result.ok) return result
       const directory = targetCwd ?? sessionCwd
       await onSessionCreated?.(result.sessionId, directory, sessionId ?? undefined)
-      if (!await allowSession(result.sessionId, directory)) return { ok: false, reason: 'missing' }
-      return { ok: true as const, info: await switchSession(result.sessionId, directory) }
+      // A new fork can inherit a retired native surface. Resume it without
+      // sending, so the human-session admission can replace that surface.
+      return { ok: true as const, info: await switchSession(result.sessionId, directory, { exactly: true }) }
     })
   }
 

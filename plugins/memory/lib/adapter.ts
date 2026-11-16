@@ -109,7 +109,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   }
   ctx.on('session/disposed', session => { disposed.add(session); deliveryBindings.release(String(session.id)) })
   const observe = (session: Session) => {
-    if (owner.ready()) {
+    if (owner.ready() && !owner.nativeContextRewritten(String(session.id))) {
       const pending = ingestion.synchronize(session)
       void pending.catch(error => report(error, session))
       return pending

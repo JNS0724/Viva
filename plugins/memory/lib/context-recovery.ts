@@ -1,22 +1,23 @@
 import { createHash } from 'node:crypto'
 import { createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEventInput } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, SessionEventInput } from '@deepseek-ai/dsh-session'
 import type {} from './source.ts'
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export function memoryMessageText(message: { content: readonly { type: string, text?: string }[] }) {
   return message.content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []).join('\n')
 }
-const originalMessages = (session: Session) => session.snapshotEvents().flatMap(event =>
-  event.type === 'user/message' && event.surfaceOp === 'append' && event.data.source.kind === 'user' ? [event.data] : [])
+const originalEvents = (session: Session) => session.snapshotEvents().filter((event): event is Extract<SessionEvent, { type: 'user/message' }> =>
+  event.type === 'user/message' && event.surfaceOp === 'append' && event.data.source.kind === 'user')
 
 /** Raw originals are candidates only. The owner authenticates their source, scope and current permission. */
 export function memoryRecoveryCandidates(session: Session) {
-  return originalMessages(session).map(message => ({
+  return originalEvents(session).map(({ data: message, seq }) => ({
     messageId: String(message.id),
     text: memoryMessageText(message),
     contentDigest: memoryOriginalContentDigest(message),
+    ...(seq < session.inheritedEventCount ? { inherited: true as const } : {}),
   }))
 }
 
@@ -30,7 +31,7 @@ export function memoryOriginalContentDigest(message: Pick<UserMessage, 'content'
 
 /** One positional replacement removes assistant/tool pairs together while leaving the human event log intact. */
 export function planMemoryContextRecovery(session: Session, ticketId: string, retainedMessageIds: readonly string[], replacementMessageId?: string) {
-  const originals = originalMessages(session)
+  const originals = originalEvents(session).map(event => event.data)
   const retained = new Set(retainedMessageIds)
   if (retained.size !== retainedMessageIds.length || retainedMessageIds.some(id => !originals.some(message => message.id === id))) {
     throw new Error('Recovery refers to an unavailable original message')
