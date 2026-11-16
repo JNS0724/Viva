@@ -2,6 +2,9 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { memoryFileListResult, memoryFileMutationResult } from '../../src/memory/contracts/file-management.ts'
+import type { MemoryManagedFileVersion, MemoryFileListResult } from '../../src/memory/contracts/file-management.ts'
+import type { MemoryFileDetailView } from '../../src/shared/ipc-results.ts'
 import { mayAutoApprove } from './live-approval.ts'
 import { capture, newTopic, run, submit, UI_WAIT_MS, until, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 
@@ -15,7 +18,7 @@ const POLL_MS = 300
 export const LIVE_TURN_MS = 240_000
 /** How long a turn may take to start once the question is sent. */
 const START_MS = 15_000
-/** The memory plugin's background pass writes after a turn (scripts/live-memory.js SETTLE_MS). */
+/** The memory plugin's daily/dream pass can finish after a visible turn. */
 export const MEMORY_SETTLE_MS = 20_000
 
 /** What one attempt of a scenario has to work with. */
@@ -268,17 +271,66 @@ export async function closeHub(win: SmokeWindow) {
 
 export const escape = (win: SmokeWindow) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 
-/** The memories the app keeps that mention `words` (valid ones only). */
-export async function memoriesWith(win: SmokeWindow, words: string): Promise<Array<{ id: number, revision: number, text: string }>> {
-  const list = await run(win, `window.agent.listMemories(${JSON.stringify(words)})`)
-  return (list?.items ?? []).filter((m: { text: string }) => m.text.includes(words))
+export type LiveMemoryFile = MemoryFileDetailView & { restrictionId?: string }
+const sameVersion = (a: MemoryManagedFileVersion, b: MemoryManagedFileVersion) =>
+  a.contentRevision === b.contentRevision && a.usageVersion === b.usageVersion && a.policyToken === b.policyToken
+
+/** Search authorized file bodies. The management query searches titles only. */
+export async function memoryFilesWith(win: SmokeWindow, words: string, includeStopped = false): Promise<LiveMemoryFile[]> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const matches: LiveMemoryFile[] = []
+    let cursor: NonNullable<MemoryFileListResult['nextCursor']> | undefined
+    let stale = false
+    do {
+      const page = memoryFileListResult.parse(await run(win,
+        `window.agent.listMemoryFiles(${JSON.stringify({ limit: 100, ...(cursor ? { cursor } : {}) })})`))
+      if (page.status === 'stale') { stale = true; break }
+      for (const item of page.items) {
+        if (!includeStopped && (!item.enabled || item.hasProjection === false || item.applicability !== 'current')) continue
+        const detail: MemoryFileDetailView | null = await run(win, `window.agent.readMemoryFile(${JSON.stringify(item.identity)})`)
+        if (!detail) continue
+        if (detail.identity.kind !== item.identity.kind || detail.identity.id !== item.identity.id || detail.identity.workspace !== item.identity.workspace) {
+          throw new Error('Live file reader returned a different identity')
+        }
+        if (!sameVersion(item.version, detail.version)) { stale = true; break }
+        if (detail.markdown.includes(words)) matches.push(detail)
+        if (includeStopped) for (const restriction of detail.restrictions ?? []) {
+          const stopped: MemoryFileDetailView | null = await run(win,
+            `window.agent.readMemoryFile(${JSON.stringify(item.identity)}, ${JSON.stringify(restriction.id)})`)
+          if (stopped?.stoppedSnapshot?.restrictionId === restriction.id && stopped.stoppedSnapshot.markdown?.includes(words)) {
+            matches.push({ ...stopped, version: restriction.version, restrictionId: restriction.id })
+          }
+        }
+      }
+      if (stale) break
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    if (!stale) return matches
+  }
+  throw new Error('Memory file snapshot kept changing while reading live acceptance evidence')
 }
 
-/** Forgets every memory that mentions `words`, so a later attempt starts without it. */
+/** Forget matching file evidence in this isolated live profile. Pending replicas await cold maintenance. */
 export async function forgetMemories(win: SmokeWindow, words: string) {
-  for (const memory of await memoriesWith(win, words)) {
-    await run(win, `window.agent.deleteMemory(${memory.id}, ${memory.revision}, crypto.randomUUID())`)
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const [file] = await memoryFilesWith(win, words, true)
+    if (!file) return
+    const request = { operationId: crypto.randomUUID(), identity: file.identity, version: file.version,
+      ...(file.restrictionId ? { restrictionId: file.restrictionId } : {}) }
+    const invoke = () => run(win, `window.agent.forgetMemoryFile(${JSON.stringify(request)})`)
+    // Lost transport replies retain the approved operation and exact evidence version.
+    const result: { status: 'applied', receipt: unknown } | { status: 'rejected', code: string } = await invoke().catch(() => invoke())
+    if (result.status === 'applied') {
+      const receipt = memoryFileMutationResult.parse(result.receipt)
+      if (receipt.action !== 'FORGET' || receipt.operationId !== request.operationId || receipt.identity.id !== file.identity.id
+        || receipt.identity.workspace !== file.identity.workspace || receipt.identity.kind !== file.identity.kind
+        || receipt.restrictionId !== request.restrictionId) throw new Error('Live cleanup received a different file erasure receipt')
+    }
+    if (result.status === 'rejected' && result.code !== 'revision.conflict' && result.code !== 'not.found') {
+      throw new Error(`Live memory cleanup was rejected: ${result.code}`)
+    }
   }
+  throw new Error('Live memory file cleanup did not converge')
 }
 
 /** Whether `file` (a database, a JSON file) holds `secret` anywhere in its bytes. */

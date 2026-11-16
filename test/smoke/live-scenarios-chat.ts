@@ -137,7 +137,8 @@ const askRemembered: LiveScenario = {
     const { win, expect } = ctx
     // Previous model answers may have independently learned a paraphrase. Each repeat must stand alone.
     await forgetMemories(win, '杭州')
-    await run(win, `window.agent.addMemory('我常住杭州', 'fact')`)
+    const saved = await run(win, `window.agent.createMemoryFile({operationId: crypto.randomUUID(), text: '我常住杭州'})`)
+    expect(saved.status === 'applied', 'the manual file seed must be accepted before checking question behavior', saved)
     try {
       await fresh(win)
       const out = await ask(win, '明天出门要不要带伞？', { answer: '杭州' })

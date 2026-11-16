@@ -1,6 +1,6 @@
 /**
  * Live check of the memory plugin against the real DeepSeek model: does the model save what it should,
- * with keywords, use what is pushed to it, and admit what it does not know? Costs a few model calls,
+ * as evidence-backed files, use what is pushed to it, and admit what it does not know? Costs a few model calls,
  * so it is run by hand (`npm run live:memory`), never by `npm test`.
  *
  * The key comes from the DEEPSEEK_API_KEY environment variable, or else from LIVE_ENV (default
@@ -12,11 +12,10 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { openMemoryStore } from '../src/memory/node/memory-store.ts'
-import type { MemoryEntry } from '../src/memory/core/ports/store.ts'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
+import type { HostMemoryCaller } from '../src/memory/contracts/host.ts'
 import { objectOf } from '../src/memory/contracts/unknown-value.ts'
-import type { SQLOutputValue } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { DEEPSEEK_DEFAULT, parseModelValue } from '../src/backend/model-providers.ts'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
@@ -83,6 +82,31 @@ type BridgeEvent = Parameters<Parameters<typeof createAcpBridge>[0]['emit']>[0]
 type ToolSummary = { name?: string, input?: unknown, status?: string }
 type Injection = { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }
 
+/** Collect the owner's authorized file view, including bodies and source references. */
+export async function fileSnapshot(call: HostMemoryCaller): Promise<MemoryFileDetail[]> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const files: MemoryFileDetail[] = []
+    let cursor: NonNullable<MemoryFileListResult['nextCursor']> | undefined
+    let stale = false
+    do {
+      const page = await call('listFiles', { args: [{ limit: 100, ...(cursor ? { cursor } : {}) }] })
+      if (page.status === 'stale') { stale = true; break }
+      for (const item of page.items) {
+        const detail = await call('readFile', { args: [item.identity] })
+        if (!detail) continue
+        if (detail.identity.kind !== item.identity.kind || detail.identity.id !== item.identity.id || detail.identity.workspace !== item.identity.workspace
+          || detail.version.contentRevision !== item.version.contentRevision || detail.version.usageVersion !== item.version.usageVersion
+          || detail.version.policyToken !== item.version.policyToken) { stale = true; break }
+        files.push(detail)
+      }
+      if (stale) break
+      cursor = page.nextCursor ?? undefined
+    } while (cursor)
+    if (!stale) return files
+  }
+  throw new Error('The memory file snapshot changed repeatedly')
+}
+
 /** One turn: the answer, the tool calls with their arguments, and the permissions refused. */
 async function ask(bridge: Bridge, events: readonly BridgeEvent[], question: string) {
   const from = events.length
@@ -116,8 +140,8 @@ async function ask(bridge: Bridge, events: readonly BridgeEvent[], question: str
 }
 
 /** Runs one dsh session over the shared memory.db; every permission request is refused. */
-async function runSession({ questions, key, env, dshHome, workspace, memoryFile }: {
-  questions: readonly string[], key: string, env: NodeJS.ProcessEnv, dshHome: string, workspace: string, memoryFile: string,
+async function runSession({ questions, key, env, dshHome, workspace }: {
+  questions: readonly string[], key: string, env: NodeJS.ProcessEnv, dshHome: string, workspace: string,
 }) {
   const events: BridgeEvent[] = [], injected: Injection[] = []
   const bridge = createAcpBridge({
@@ -128,6 +152,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
     overlay: vivaLayerFile(dshHome),
     cwd: workspace,
     memoryRequired: true,
+    memoryContextUsed: ({ session, turn, pushed }) => { injected.push({ session, turn, pushed }) },
     env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
       events.push(event)
@@ -145,7 +170,9 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
       turns.push(turn)
       process.stdout.write(`\n▶ ${question}\n  工具：${turn.tools.map((t) => t.name).join('、') || '无'}\n  回答：${turn.answer.slice(0, 160).replace(/\n/g, ' ')}\n`)
     }
-    return { sessionId, model, turns, injected }
+    return { sessionId, model, turns, injected, files: await fileSnapshot(bridge.memory.call),
+      cleanupPending: await bridge.memory.call('cleanupPending', { args: [] }),
+      profile: await bridge.memory.call('profile', { args: [] }) }
   } finally {
     await bridge.dispose()
   }
@@ -154,7 +181,6 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
 async function main() {
   const key = readKey()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-memory-'))
-  const memoryFile = path.join(dir, 'memory', 'memory.db')
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)
@@ -165,28 +191,27 @@ async function main() {
   const report: {
     startedAt: string,
     sessions: Awaited<ReturnType<typeof runSession>>[],
-    memories?: Pick<MemoryEntry, 'id' | 'text' | 'kind' | 'keywords' | 'source' | 'revision' | 'evidence'>[],
-    candidates?: Record<string, SQLOutputValue>[],
+    files?: MemoryFileDetail[],
+    cleanupPending?: number,
     profile?: Record<string, string>,
   } = { startedAt: new Date().toISOString(), sessions: [] }
   try {
     for (const questions of SESSIONS) {
-      report.sessions.push(await runSession({ questions, key, env, dshHome, workspace, memoryFile }))
+      report.sessions.push(await runSession({ questions, key, env, dshHome, workspace }))
     }
-    const store = openMemoryStore(memoryFile)
-    report.memories = store.list().map(({ id, text, kind, keywords, source, revision, evidence }) => ({ id, text, kind, keywords, source, revision, evidence }))
-    report.candidates = store.db.prepare('SELECT source,start,end,reason FROM memory_candidates').all()
-    report.profile = Object.fromEntries(Object.entries(store.profile()).map(([field, entry]) => [field, entry.value]))
-    store.close()
+    const latest = report.sessions.at(-1)
+    report.files = latest?.files ?? []
+    report.cleanupPending = latest?.cleanupPending ?? 0
+    report.profile = Object.fromEntries(Object.entries(latest?.profile ?? {}).map(([field, entry]) => [field, entry.value]))
   } finally {
     fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true })
     fs.writeFileSync(OUT_FILE, `${JSON.stringify(report, null, 2)}\n`)
     removeTree(dir)
   }
-  process.stdout.write(`\n记下的记忆：${JSON.stringify(report.memories)}\n候选：${JSON.stringify(report.candidates)}\n完整记录：${OUT_FILE}\n`)
+  process.stdout.write(`\n记忆文件：${JSON.stringify(report.files)}\n待清理副本：${report.cleanupPending}\n完整记录：${OUT_FILE}\n`)
 }
 
-main().catch((err) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().catch((err) => {
   process.stderr.write(`live-memory: ${err instanceof Error ? err.message : String(err)}\n`)
   process.exit(1)
 })

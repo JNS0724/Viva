@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { MAIN_SCOPE } from '../../plugins/routing/lib/policy.ts'
-import { ask, clip, escape, fileHolds, forgetMemories, fresh, latinShare, LIVE_TURN_MS, MEMORY_SETTLE_MS, memoriesWith, settle, writeWorkspace, type LiveContext, type LiveScenario } from './live-kit.ts'
+import { ask, clip, escape, fileHolds, forgetMemories, fresh, latinShare, LIVE_TURN_MS, MEMORY_SETTLE_MS, memoryFilesWith, settle, writeWorkspace, type LiveContext, type LiveScenario } from './live-kit.ts'
 import { run, submit, UI_WAIT_MS, until, wait } from './smoke-kit.ts'
 
 const TASK_DONE_MS = 6 * 60_000
@@ -381,7 +381,7 @@ const routeMemory: LiveScenario = {
       const numbers = summary(ctx, since)
       const change = appChange(numbers, 'memory_remember')
       expect(change.routed && change.called, 'remembering should be routed as an app operation, then done by its own tool', { ...change, ...brief(numbers) })
-      expect((await memoriesWith(win, boss)).length > 0, 'the fact should be kept in memory')
+      expect((await memoryFilesWith(win, boss)).length > 0, 'the original evidence should be retained in a current memory file')
       await fresh(win)
       const out = await ask(win, '我的直属上级是谁？只回答名字。')
       expect(out.answer.includes(boss), 'a new topic should know it', clip(out.answer))
