@@ -10,7 +10,7 @@ import { ensureDshProfile, vivaLayerFile } from '../../src/backend/dsh-profile.t
 import { dshEnv, dshRuntime } from '../../src/backend/dsh-runtime.ts'
 import { pnpmLauncher } from '../../src/backend/pnpm-launcher.ts'
 import { removeTree } from '../../src/backend/remove-tree.ts'
-import { startFakeLlm } from './fake-llm.js'
+import { startFakeLlm } from './fake-llm.ts'
 import { testRequests } from './request-routing.ts'
 
 /**
@@ -31,7 +31,7 @@ export const DSH_TIMEOUT_MS = 60_000
  *   allow: answer every approval request with "allow once" (otherwise they stay pending);
  *   imagesDir: Viva's pictures folder (dsh-profile.js), given the temporary directory; permission: the level picked (viva-permission);
  *   models: the profile's model section (see dsh-profile.js), given the fake Messages endpoint; env: added to dsh's
- *   environment; decideFirst: the fake model's answers tried before its rules (fake-llm.js), null to use the rules
+ *   environment; decideFirst: the fake model's answers tried before its rules (fake-llm.ts), null to use the rules
  *   tasks: what the app's request runtime does with a decision's task actions (none by default: each fails)
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  * `requests` is the app's request runtime every bridge of the harness routes through (request-runtime.ts).

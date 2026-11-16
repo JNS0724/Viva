@@ -21,7 +21,7 @@ import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { buildMemoryPlugin } from './build-memory-plugin.ts'
-import { startFakeLlm } from '../test/fixtures/fake-llm.js'
+import { startFakeLlm } from '../test/fixtures/fake-llm.ts'
 import { createVenueModelFixture, venue } from '../test/fixtures/memory-plugin-venue.ts'
 
 const project = path.resolve(import.meta.dirname, '..')

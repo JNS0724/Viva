@@ -6,7 +6,7 @@ import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js
 import { MAIN_SCOPE } from '../plugins/routing/lib/policy.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
 
-/** viva-routing inside the real dsh, with the fake model (fake-llm.js) routing as the main agent would. */
+/** viva-routing inside the real dsh, with the fake model (fake-llm.ts) routing as the main agent would. */
 
 type Part = { type: string, name?: string, text?: string, content?: unknown }
 type ModelRequest = { system?: unknown, tools?: Array<{ name: string }>, messages: Array<{ role: string, content: Part[] | string }> }

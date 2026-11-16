@@ -10,7 +10,7 @@ import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app
 import { ensureDshProfile, SUBAGENT_TOOLS, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { createTaskRegistry } from '../src/backend/task-registry.ts'
-import { startFakeLlm } from './fixtures/fake-llm.js'
+import { startFakeLlm } from './fixtures/fake-llm.ts'
 import { testRequests } from './fixtures/request-routing.ts'
 
 test('real DSH discovers both tools and queries main-process tasks over IPC with no permission prompt', { timeout: 60_000 }, async t => {
@@ -70,7 +70,7 @@ test('real DSH: the main agent routes work to a task, and the app is the one tha
     await closeLlm?.()
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
-  // The fake model routes 「后台做：X」 as a start with X its brief (fake-llm.js).
+  // The fake model routes 「后台做：X」 as a start with X its brief (fake-llm.ts).
   const llm = await startFakeLlm()
   closeLlm = llm.close
   const dshHome = path.join(dir, 'dsh-home')
@@ -111,7 +111,7 @@ test('real DSH: the model proposes a schedule with flat time arguments, and the 
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   })
   const weekly = { title: '周报', prompt: '按上周的模板起草周报', kind: 'weekly', time: '16:00:00', time_zone: 'Asia/Shanghai', weekdays: [5] }
-  // The fake model routes 「…到时候帮我…」 as an app operation (fake-llm.js); its tool is called with these arguments.
+  // The fake model routes 「…到时候帮我…」 as an app operation (fake-llm.ts); its tool is called with these arguments.
   const llm = await startFakeLlm({ decideFirst: (raw: object) => {
     const request = raw as { messages?: unknown[] }
     const messages = JSON.stringify(request.messages)

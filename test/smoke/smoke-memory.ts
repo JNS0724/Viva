@@ -8,7 +8,7 @@ import { taskSteps } from './smoke-tasks.ts'
 import type { MemoryManagedFileIdentity } from '../../src/memory/contracts/file-management.ts'
 
 /**
- * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.js): the
+ * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.ts): the
  * intro, the agent remembering through the plugin's tool, the profile page, a remembered name bringing its
  * memory along, the trace saying so, the agent asking a question and keeping the answer, the 扩展 section,
  * a model provider added in settings answering once picked, and the app bringing dsh back after it is killed.

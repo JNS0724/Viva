@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
-import { questionOf, routeFixtureTools } from './fixtures/fake-llm.js'
+import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /** Actual DSH child owns storage, ingestion, computation, tools and dispatch. The host only calls RPC. */

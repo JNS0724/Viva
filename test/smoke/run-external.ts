@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { startFakeLlm } from '../fixtures/fake-llm.js'
+import { startFakeLlm } from '../fixtures/fake-llm.ts'
 import { showcaseDecide } from '../fixtures/showcase-llm.js'
 import { createOwnedProfile, disposeOwnedProfile } from './owned-profile.ts'
 import { configureFakeProvider, launchSmokeApplication, type SmokeApplication } from './application.ts'

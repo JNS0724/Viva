@@ -4,7 +4,7 @@ import { answerFor, DECLINED } from '../plugins/questions/lib/channel.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 import type { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { objectOf } from '../src/shared/unknown-value.ts'
-import { CITY_QUESTION } from './fixtures/fake-llm.js'
+import { CITY_QUESTION } from './fixtures/fake-llm.ts'
 
 /**
  * The questions plugin inside the real dsh: a background task asks with ask_user_question, the app answers over IPC.

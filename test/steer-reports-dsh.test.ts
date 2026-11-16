@@ -9,7 +9,7 @@ import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app
 import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
-import { startFakeLlm } from './fixtures/fake-llm.js'
+import { startFakeLlm } from './fixtures/fake-llm.ts'
 import { randomUUID } from 'node:crypto'
 import { testRequests } from './fixtures/request-routing.ts'
 

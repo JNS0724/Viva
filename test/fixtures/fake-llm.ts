@@ -8,7 +8,7 @@
  * settings are an app_operation followed by their tool, a missing city is a clarify asked in text, anything else a
  * reply; then the rules below go on with the request's words. Without commit_route (a task) the rules apply as they are:
  *
- * - 「记住：X」 → calls memory_remember with X, and the names from KNOWN_NAMES in X as keywords;
+ * - 「记住：X」 → calls memory_remember with only the exact text X;
  * - 「查一下 X」 → calls memory_recall with X;
  * - 「…明天…天气…」 → asks which city with ask_user_question, then answers for the city it was told;
  * - 「…接入演示服务…」 → sets up DEMO_SERVER with viva_mcp_add (its key named, never given), then says the result,
@@ -22,15 +22,32 @@
  * - 「…到时候帮我…」 → proposes a schedule with schedule_create (FOLLOWUP below), due in a minute so a smoke run
  *   sees it run;
  * - anything else → 「收到：…」, prefixed with what background it was given;
- * - the memory plugin's background extractor gets the answers of `extract` below.
  */
 import http from 'node:http'
+import type { ServerResponse } from 'node:http'
+import { z } from 'zod'
+import { objectOf } from '../../src/shared/unknown-value.ts'
 import { currentTurnTextParts } from './model-user-text.ts'
 import { requestsIn, withoutHeaders } from '../../src/shared/request-routing/header.ts'
 import { APP_OPERATIONS } from '../../src/shared/request-routing/protocol.ts'
 
-/** The fake has no language understanding; these are the names it can pick out as keywords. */
-const KNOWN_NAMES = ['张三', '李四', '王五', '周报', '对账系统', '结算口径']
+type Message = { role?: string, content?: unknown }
+const partSchema = z.object({ type: z.string().optional(), text: z.string().optional(), name: z.string().optional(),
+  input: z.record(z.string(), z.unknown()).optional(), content: z.unknown().optional() }).passthrough()
+type Part = z.output<typeof partSchema>
+const requestSchema = z.object({ model: z.string().optional(), system: z.unknown().optional(),
+  messages: z.array(z.object({ role: z.string().optional(), content: z.unknown().optional() }).passthrough()),
+  tools: z.array(z.object({ name: z.string() }).passthrough()).optional() }).passthrough()
+type Request = z.output<typeof requestSchema>
+const answerSchema = z.object({ text: z.string().optional(), tool: z.object({ name: z.string(), input: z.record(z.string(), z.unknown()) }).optional(),
+  httpError: z.number().int().min(400).max(599).optional(), delayMs: z.number().nonnegative().optional(),
+  waitFor: z.custom<Promise<unknown>>(value => value instanceof Promise).optional() })
+  .refine(answer => answer.text !== undefined || answer.tool !== undefined || answer.httpError !== undefined, 'Fixture response requires text, a tool, or an HTTP failure')
+type Answer = z.output<typeof answerSchema>
+type Decide = (request: object) => object | null
+type Action = { kind: string, brief?: string, text?: string, question?: string } & Record<string, unknown>
+type Goal = { goal: string, disposition: string }
+
 const REMEMBER = /记住[:：]\s*(.+)$/s
 const RECALL = /查一下\s*(.+)$/s
 const WEATHER = /明天.*天气/
@@ -58,15 +75,16 @@ export const CITY_QUESTION = Object.freeze({
 const CONTEXT_OPEN = '<about-user>'
 const CARRY_CLOSE = '</以前的记录>\n\n用户现在说：'
 /** 「发邮件…」 / 「存草稿…」 call the MCP tool whose name ends so; dsh prefixes it with the hashed server name. */
-const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']]
+const MAIL = [[/^发邮件/, '__send_email'], [/^存草稿/, '__create_draft']] as const
 
-const partsOf = (message) => (Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }])
-const rawTexts = (message) => partsOf(message).filter((part) => part.type === 'text').map((part) => part.text)
+const partsOf = (message: Message | undefined): Part[] => (Array.isArray(message?.content) ? message.content : [{ type: 'text', text: message?.content }])
+  .flatMap((part: unknown) => { const parsed = partSchema.safeParse(part); return parsed.success ? [parsed.data] : [] })
+const rawTexts = (message: Message) => partsOf(message).flatMap(part => part.type === 'text' && part.text !== undefined ? [part.text] : [])
 /** The texts of a message, the app's request headers left out: the rules read the user's words. */
-const textParts = (message) => rawTexts(message).map(withoutHeaders)
+const textParts = (message: Message) => rawTexts(message).map(withoutHeaders)
 
 /** Says what background came with the question: the fixed layer, and how many pushed memories. */
-function backgroundOf(texts) {
+function backgroundOf(texts: readonly string[]) {
   const block = texts.find((text) => text.startsWith(CONTEXT_OPEN))
   if (!block) return ''
   const fixed = block.includes('【记忆规则】') ? '画像' : ''
@@ -76,13 +94,13 @@ function backgroundOf(texts) {
 }
 
 /** The text of the user's messages at the end of the request (this turn's), oldest first. */
-function trailingUserTexts(messages) {
+function trailingUserTexts(messages: readonly Message[]) {
   let start = messages.length
   while (start > 0 && messages[start - 1].role === 'user') start -= 1
   return messages.slice(start).flatMap(textParts)
 }
 
-function currentWords(text) {
+function currentWords(text: string) {
   // Test responder ignores the trusted delivery suffix; production admission uses exact owner aliases.
   text = text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
   if (!text.startsWith('以下是这个话题以前的记录（最近 ')) return text
@@ -94,10 +112,10 @@ function currentWords(text) {
  * The user's words: the first text of the turn's user messages that is not the memory block. What dsh and the
  * plugins add (the block, notices) comes after them, in the same message or, in a forked session, in others.
  */
-export const questionOf = (messages) => currentWords(currentTurnTextParts(trailingUserTexts(messages)).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
+export const questionOf = (messages: readonly Message[]) => currentWords(currentTurnTextParts(trailingUserTexts(messages)).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
 
 /** After a tool result the turn's last user message is that result: the words the user said come before it. */
-export const lastWords = (messages) => currentWords(messages
+export const lastWords = (messages: readonly Message[]) => currentWords(messages
   .filter((message) => message.role === 'user')
   .flatMap(textParts)
   .filter((text) => !text.startsWith(CONTEXT_OPEN))
@@ -107,8 +125,8 @@ export const lastWords = (messages) => currentWords(messages
  * What the user asked in this turn, for deciding after a tool result: the first words of the last run of user
  * messages with text. dsh may add messages of its own after the user's words (a fresh session's runtime context).
  */
-const askedWords = (messages) => {
-  const hasText = (message) => message.role === 'user' && textParts(message).length > 0
+const askedWords = (messages: readonly Message[]) => {
+  const hasText = (message: Message) => message.role === 'user' && textParts(message).length > 0
   let end = messages.length - 1
   while (end >= 0 && !hasText(messages[end])) end -= 1
   let start = end
@@ -116,7 +134,7 @@ const askedWords = (messages) => {
   return currentWords(messages.slice(start, end + 1).flatMap(textParts).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
 }
 
-function lastToolUse(messages) {
+function lastToolUse(messages: readonly Message[]) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const use = partsOf(messages[i]).find((part) => part.type === 'tool_use')
     if (use) return use
@@ -124,38 +142,46 @@ function lastToolUse(messages) {
   return null
 }
 
-const resultText = (result) => (Array.isArray(result.content) ? result.content.map((part) => part.text ?? '').join('') : String(result.content ?? ''))
+const resultText = (result: Part) => (Array.isArray(result.content) ? result.content.map((part: unknown) => {
+  const value = objectOf(part)?.text
+  return typeof value === 'string' ? value : ''
+}).join('') : String(result.content ?? ''))
 
-function memoryResult(result) {
+function memoryResult(result: Part): Record<string, unknown> | null {
   try {
-    const parsed = JSON.parse(resultText(result))
-    if (typeof parsed === 'string') return JSON.parse(parsed)
-    return typeof parsed?.text === 'string' ? JSON.parse(parsed.text) : parsed
+    const parsed: unknown = JSON.parse(resultText(result))
+    if (typeof parsed === 'string') return objectOf(JSON.parse(parsed))
+    const record = objectOf(parsed)
+    return typeof record?.text === 'string' ? objectOf(JSON.parse(record.text)) : record
   } catch {
     return null
   }
 }
 
 /** What the user answered to the city question, or null when the tool came back without an answer. */
-function cityFrom(result) {
+function cityFrom(result: Part): string | null {
   try {
-    const answer = JSON.parse(resultText(result)).answers?.find((item) => item.id === CITY_QUESTION.id)
-    return answer?.custom || answer?.selected?.[0] || null
+    const payload = memoryResult(result)
+    const answer = Array.isArray(payload?.answers) ? payload.answers.map((item: unknown) => objectOf(item)).find(item => item?.id === CITY_QUESTION.id) : null
+    const first = Array.isArray(answer?.selected) ? answer.selected[0] : null
+    return typeof answer?.custom === 'string' && answer.custom ? answer.custom : typeof first === 'string' ? first : null
   } catch {
     return null
   }
 }
 
 /** The task titled `title` in what list_background_tasks returned, or null. */
-function taskTitled(result, title) {
+function taskTitled(result: Part, title: string): string | null {
   try {
-    return JSON.parse(resultText(result)).tasks?.find((task) => task.title === title)?.taskId ?? null
+    const payload = memoryResult(result)
+    const task = Array.isArray(payload?.tasks) ? payload.tasks.map((item: unknown) => objectOf(item)).find(item => item?.title === title) : null
+    return typeof task?.taskId === 'string' ? task.taskId : null
   } catch {
     return null
   }
 }
 
-function afterTool(request, messages, result) {
+function afterTool(request: Request, messages: readonly Message[], result: Part): Answer {
   const use = lastToolUse(messages)
   if (use?.name === 'ask_user_question') {
     const city = cityFrom(result)
@@ -166,80 +192,28 @@ function afterTool(request, messages, result) {
     return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: `配置结果：${resultText(result)}。${CITY_QUESTION.question}` }
   }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
-  if (use?.name === 'memory_recall' && /(?:按记忆)?填写周报提交邮箱/.test(askedWords(messages))) {
-    const resultValue = memoryResult(result)
-    const alternative = [...(resultValue?.conflicts ?? []), ...(resultValue?.pendingChanges ?? [])].find(item => item.ref)
-    if (alternative) return { tool: { name: 'memory_clarify', input: { ref: alternative.ref } } }
+  if (use?.name === 'memory_recall') {
+    const clarification = objectOf(memoryResult(result)?.clarification)
+    if (typeof clarification?.ref === 'string') return { tool: { name: 'memory_clarify', input: { ref: clarification.ref } } }
   }
   if (use?.name === 'memory_clarify') {
-    const selected = memoryResult(result)?.answer?.answers?.[0]?.selected?.[0]
-    return { text: selected ? `这次填 ${selected}` : '先保留提交地址，继续处理其他内容。' }
+    const reply = memoryResult(result), answer = objectOf(reply?.answer)
+    const first = Array.isArray(answer?.answers) ? objectOf(answer.answers[0]) : null
+    const selected = Array.isArray(first?.selected) ? first.selected[0] : null
+    const value = typeof first?.custom === 'string' ? first.custom : typeof selected === 'string' ? selected : null
+    return { text: reply?.status === 'answered' && value ? `这次采用：${value}` : '没有获得可用的澄清回答。' }
   }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
-  const status = resultText(result)
-  const saved = output.includes('已记住') || output.includes('之前已经记过') || status.includes('"status":"accepted"')
-  return { text: saved ? `好的，我记住了：${use.input.text}`
-    : status.includes('"status":"pending"') ? `已收到，稍后整理：${use.input.text}` : `没能记住：${output}` }
+  return { text: memoryResult(result)?.status === 'accepted' && typeof use.input?.text === 'string'
+    ? `好的，我记住了：${use.input.text}` : `没能记住：${output}` }
+
 }
 
-const systemText = (request) => (Array.isArray(request.system) ? request.system.map((part) => part.text ?? '').join('\n') : String(request.system ?? ''))
-const EXTRACTOR = '记忆整理员'
-const MEMORY_REVIEWER = '记忆变更复核员'
-const MEMORY_QUESTION_REVIEWER = '记忆提问校验员'
-const MEMORY_PROFILER = '从已核验的记忆和用户手填资料中，选择最多六条'
-const modelInput = request => JSON.parse(textParts(request.messages.at(-1))[0])
-
-/** Plays the structured extractor for a preference, an open fact or a proposed change. */
-function extract(request) {
-  const input = modelInput(request)
-  const user = input.user
-  const span = input.explicitlySaved ? input.spans[0] : { start: 0, end: user.length }
-  const words = user.slice(span.start, span.end)
-  const proposals = []
-  const offset = (value, at = span.start) => {
-    const start = user.indexOf(value, at)
-    return { start, end: start + value.length }
-  }
-  const email = /^(?:(从现在起)[，,])?(我)(?:(唯一)的|的)(周报提交邮箱)(?:是\s+(\S+)|从\s+(\S+)\s+(改为|切换至|更新为)\s+(\S+))$/.exec(words)
-  if (email) {
-    const [, effective, subject, exclusive, relation, value, prior, action, next] = email
-    const object = value ?? next
-    const previous = (input.related ?? []).find(row => row.predicate === 'report_email'
-      && (prior ? row.text.includes(prior) : !row.text.includes(object)))
-    const reference = previous ? { id: previous.id, revision: previous.revision } : null
-    proposals.push({ spans: [span], kind: 'fact', scope: 'user', modality: 'asserted', attribution: 'self', keywords: [relation],
-      fact: { predicate: 'report_email', polarity: 'positive', subject: { kind: 'user', span: offset(subject) },
-        relation: offset(relation), object: offset(object, action ? user.indexOf(action, span.start) : span.start) },
-      ...(input.author === 'answer' ? { durableIntent: offset(effective ?? subject) } : {}),
-      ...(action && reference ? { change: { kind: 'supersede', target: reference, temporal: { kind: 'current' },
-        evidence: { action: offset(action), target: offset(prior), ...(effective ? { effective: offset(effective) } : {}) } } } : {}),
-      ...(!action && exclusive && reference ? { independent: true, change: { kind: 'possible_conflict', target: reference,
-        evidence: { action: offset(exclusive), target: offset(relation) } } } : {}) })
-  }
-  if (!email && input.explicitlySaved) proposals.push({ spans: input.spans, kind: 'fact', scope: 'user', modality: 'asserted', attribution: 'self',
-    keywords: KNOWN_NAMES.filter(name => words.includes(name)), temporal: { kind: 'current' } })
-  if (!input.explicitlySaved && /^以后/.test(words)) proposals.push({ spans: [span], kind: 'preference', scope: 'user', modality: 'asserted', attribution: 'self', keywords: [] })
-  return { text: JSON.stringify({ proposals }) }
-}
-
-function reviewMemory(request) {
-  const { user, proposals, related } = modelInput(request)
-  return { text: JSON.stringify({ reviews: proposals.map(({ index, proposal, draft }) => {
-    const { change } = proposal
-    const old = change && related.find(row => row.id === change.target.id && row.revision === change.target.revision)
-    const confirmed = draft.purpose === 'answer-intent' ? user.startsWith('从现在起')
-      : old?.predicate === 'report_email' && user.includes('周报提交邮箱')
-    return { index, verdict: confirmed ? 'confirmed' : 'rejected', draftId: draft.id }
-  }) }) }
-}
-
-function reviewMemoryQuestion(request) {
-  const { snapshotId, questions } = modelInput(request)
-  return { text: JSON.stringify({ snapshotId, verdict: questions.some(({ question }) => /平时把例行汇报交到哪里|两个周报提交邮箱要用哪一个/u.test(question))
-    ? 'related' : 'unrelated' }) }
-}
-
+const systemText = (request: Request) => (Array.isArray(request.system) ? request.system.map((part: unknown) => {
+  const value = objectOf(part)?.text
+  return typeof value === 'string' ? value : ''
+}).join('\n') : String(request.system ?? ''))
 /** dsh's Auto review asks the model about each pending step; its request starts with this section. */
 const REVIEWER = 'REVIEW_POLICY'
 /** 「删掉 X」: removes X with the shell, which the fake reviewer will not allow by itself. */
@@ -247,35 +221,35 @@ const DELETE = /^删掉\s*(\S+)/
 const SHELLS = ['bash', 'pwsh']
 
 /** Plays the Auto reviewer: removing anything goes to the user, everything else is let through. */
-function review(request) {
+function review(request: Request): Answer {
   const removes = /rm -rf|Remove-Item/.test(JSON.stringify(request.messages))
   return { text: JSON.stringify(removes ? { risk: 'medium', decision: 'deny', reason: '要删除原有的文件' } : { risk: 'low', decision: 'allow' }) }
 }
 
 const ROUTE = 'commit_route'
-const hasTool = (request, name) => (request.tools ?? []).some((tool) => tool.name === name)
+const hasTool = (request: Request, name: string) => (request.tools ?? []).some((tool) => tool.name === name)
 /** A routing decision; one handing work over says so to the user in its notice, as a main agent there does. */
-const commit = (requestId, goals, actions) => {
+const commit = (requestId: string, goals: readonly Goal[], actions: readonly Action[]): Answer => {
   const handed = actions.find((action) => action.kind === 'start' || action.kind === 'message' || action.kind === 'stop')
   const notice = handed?.kind === 'start' ? `已经交给后台：${handed.brief}` : handed?.kind === 'message' ? `已经转告：${handed.text}` : handed ? '已经停下那个任务' : undefined
   return { tool: { name: ROUTE, input: { requestId, ...(notice ? { notice } : {}), goals, actions } } }
 }
-const toolUses = (messages) => messages.flatMap((message) => partsOf(message).filter((part) => part.type === 'tool_use'))
+const toolUses = (messages: readonly Message[]) => messages.flatMap((message) => partsOf(message).filter((part) => part.type === 'tool_use'))
 /** The requests the app put in the conversation, oldest first, each with its words. */
-const requestsOf = (messages) => messages.filter((message) => message.role === 'user').flatMap(rawTexts).flatMap(requestsIn)
+const requestsOf = (messages: readonly Message[]) => messages.filter((message) => message.role === 'user').flatMap(rawTexts).flatMap(requestsIn)
   .map((request) => ({ id: request.id, words: currentWords(request.words).trim() }))
-const lastRouted = (messages) => toolUses(messages).filter((use) => use.name === ROUTE).at(-1)?.input?.requestId ?? null
-const pendingRequest = (messages) => {
+const lastRouted = (messages: readonly Message[]) => toolUses(messages).filter((use) => use.name === ROUTE).at(-1)?.input?.requestId ?? null
+const pendingRequest = (messages: readonly Message[]) => {
   const routed = new Set(toolUses(messages).filter((use) => use.name === ROUTE).map((use) => use.input?.requestId))
   return requestsOf(messages).find((entry) => !routed.has(entry.id))
 }
 /** The words of the request the last commit_route was for, or null. */
-function committedWords(messages) {
+function committedWords(messages: readonly Message[]) {
   const id = lastRouted(messages)
   return id ? requestsOf(messages).find((request) => request.id === id)?.words ?? null : null
 }
 /** The texts of the user's messages the last routed request came in with (its words, and what dsh and plugins added). */
-function routedTexts(messages) {
+function routedTexts(messages: readonly Message[]) {
   const id = lastRouted(messages)
   const at = messages.findIndex((message) => message.role === 'user' && rawTexts(message).some((text) => requestsIn(text).some((request) => request.id === id)))
   if (at < 0) return []
@@ -285,20 +259,20 @@ function routedTexts(messages) {
   return messages.slice(start, end + 1).flatMap(textParts)
 }
 /** What the assistant last said in text, before this request. */
-const lastSaid = (messages) => messages.filter((message) => message.role === 'assistant').flatMap(textParts).at(-1) ?? ''
+const lastSaid = (messages: readonly Message[]) => messages.filter((message) => message.role === 'assistant').flatMap(textParts).at(-1) ?? ''
 
 /**
  * The main agent's routing step: the first request not routed yet, routed as the rules would handle it. A message
  * for a task first looks it up (list_background_tasks, a context tool), then routes with the task's id.
  */
-function route(request) {
+function route(request: Request): Answer | null {
   if (!hasTool(request, ROUTE)) return null
   const messages = request.messages
   const pending = pendingRequest(messages)
   if (!pending) return null
   const { id, words } = pending
-  const goal = (disposition) => [{ goal: words.slice(0, 200) || '请求', disposition }]
-  const app = (operation, extra = []) => commit(id, [...goal('app_operation'), ...extra.map((action) => ({ goal: action.question, disposition: 'needs_input' }))], [{ kind: 'app_action', operation }, ...extra])
+  const goal = (disposition: string) => [{ goal: words.slice(0, 200) || '请求', disposition }]
+  const app = (operation: string, extra: Array<Action & { question: string }> = []) => commit(id, [...goal('app_operation'), ...extra.map((action) => ({ goal: action.question, disposition: 'needs_input' }))], [{ kind: 'app_action', operation }, ...extra])
   const tell = TELL.exec(words)
   if (tell) {
     const result = partsOf(messages.at(-1)).find((part) => part.type === 'tool_result')
@@ -321,24 +295,25 @@ function route(request) {
 /**
  * Lets an integration scenario choose the main agent's app tool without emulating both routing steps.
  * The real router still records the action and enforces each grant. Task commands become route actions.
- * @template {object} Request, Answer
- * @param {(request: Request) => Answer | null} decideFirst
  */
-export function routeFixtureTools(decideFirst) {
-  const actions = new Map()
-  return (/** @type {Request} */ request) => {
-    if (!hasTool(request, ROUTE)) return decideFirst(request)
+export function routeFixtureTools<Raw extends object, Reply extends object>(decideFirst: (request: Raw) => Reply | null) {
+  const actions = new Map<string, Reply>()
+  return (raw: object): Reply | Answer | null => {
+    const request = requestSchema.parse(raw)
+    if (!hasTool(request, ROUTE)) return decideFirst(raw as Raw)
     const messages = request.messages
     const last = toolUses(messages).at(-1)
     if (last?.name === ROUTE && partsOf(messages.at(-1)).some(part => part.type === 'tool_result')) {
-      const action = actions.get(last.input?.requestId)
-      actions.delete(last.input?.requestId)
+      const id = typeof last.input?.requestId === 'string' ? last.input.requestId : ''
+      const action = actions.get(id)
+      actions.delete(id)
       if (action) return action
     }
-    const answer = decideFirst(request)
+    const answer = decideFirst(raw as Raw)
     const pending = pendingRequest(messages)
-    if (!answer?.tool || !pending) return answer
-    const { name, input } = answer.tool
+    const parsed = answerSchema.safeParse(answer)
+    if (!answer || !parsed.success || !parsed.data.tool || !pending) return answer
+    const { name, input } = parsed.data.tool
     const goal = pending.words.slice(0, 200) || '请求'
     if (name === 'start_background_task') {
       return commit(pending.id, [{ goal, disposition: 'delegate' }], [{ kind: 'start', ...input }])
@@ -346,22 +321,16 @@ export function routeFixtureTools(decideFirst) {
     if (name === 'message_background_task') {
       return commit(pending.id, [{ goal, disposition: 'update_task' }], [{ kind: 'message', ...input }])
     }
-    if (!APP_OPERATIONS.includes(name)) return answer
+    if (!APP_OPERATIONS.some(operation => operation === name)) return answer
     actions.set(pending.id, answer)
     return commit(pending.id, [{ goal, disposition: 'app_operation' }], [{ kind: 'app_action', operation: name }])
   }
 }
 
-/** @returns {{ tool: { name: string, input: object } } | { text: string }} */
-export function decide(request) {
-  if (systemText(request).includes(MEMORY_PROFILER)) {
-    const { items } = modelInput(request)
-    return { text: JSON.stringify({ refs: items.slice(0, 6).map(({ ref }) => ref) }) }
-  }
-  if (systemText(request).includes(MEMORY_QUESTION_REVIEWER)) return reviewMemoryQuestion(request)
+/** Pick a deterministic scenario response; this never performs memory extraction or classification. */
+export function decide(raw: object): Answer {
+  const request = requestSchema.parse(raw)
   if (JSON.stringify(request.messages).includes(REVIEWER) || systemText(request).includes(REVIEWER)) return review(request)
-  if (systemText(request).includes(MEMORY_REVIEWER)) return reviewMemory(request)
-  if (systemText(request).includes(EXTRACTOR)) return extract(request)
   const routing = route(request)
   if (routing) return routing
   const messages = request.messages
@@ -377,13 +346,11 @@ export function decide(request) {
   const remember = REMEMBER.exec(question)
   if (remember) {
     const text = remember[1].trim()
-    const keywords = KNOWN_NAMES.filter((name) => text.includes(name)).sort((a, b) => text.indexOf(a) - text.indexOf(b))
-    return { tool: { name: 'memory_remember', input: { text, keywords } } }
+    return { tool: { name: 'memory_remember', input: { text } } }
   }
   const taskReport = TASK_REPORT.exec(question)
   if (taskReport) return { text: `已看过后台结果：${taskReport[1]}` }
   if (WEATHER.test(question)) return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: CITY_QUESTION.question }
-  if (/填写周报提交邮箱/.test(question)) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }
   if (FOLLOW.test(question)) return { tool: { name: 'schedule_create', input: followupProposal() } }
   const recall = RECALL.exec(question)
@@ -400,9 +367,9 @@ export function decide(request) {
   return { text: `${backgroundOf(texts)}收到：「${question}」` }
 }
 
-function stream(res, request, index, decideFirst) {
-  const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
-  const answer = decideFirst?.(request) ?? decide(request)
+function stream(res: ServerResponse, request: Request, index: number, decideFirst?: Decide | null) {
+  const send = (type: string, data: Record<string, unknown>) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
+  const answer = answerSchema.parse(decideFirst?.(request) ?? decide(request))
   if (answer.httpError) {
     res.writeHead(answer.httpError, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: 'Simulated model failure' } }))
     return
@@ -416,7 +383,7 @@ function stream(res, request, index, decideFirst) {
   return streamAnswer(res, request, index, answer, send)
 }
 
-function streamAnswer(res, request, index, answer, send) {
+function streamAnswer(res: ServerResponse, request: Request, index: number, answer: Answer, send: (type: string, data: Record<string, unknown>) => void) {
   res.writeHead(200, { 'content-type': 'text/event-stream' })
   send('message_start', {
     message: { id: `msg_${index}`, type: 'message', role: 'assistant', model: request.model, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 0 } },
@@ -441,19 +408,17 @@ export const LISTED_MODELS = Object.freeze([
 ])
 
 /**
- * @param {{ port?: number, decideFirst?: (request: object) => object | null }} [options] a fixed port, for smoke
- *   phases that share a profile (its models keep the URL); decideFirst, answers tried before the rules above
- *   (showcase-llm.js), null to fall back to them
- * @returns {Promise<{ url: string, requests: object[], close: () => Promise<void> }>}
+ * A fixed port supports smoke phases sharing a profile. Optional scenario
+ * answers run before the common rules; null falls back to those rules.
  */
-export function startFakeLlm({ port = 0, decideFirst = null } = {}) {
-  const requests = []
+export function startFakeLlm({ port = 0, decideFirst = null }: { port?: number, decideFirst?: Decide | null } = {}) {
+  const requests: Request[] = []
   const server = http.createServer((req, res) => {
     let body = ''
-    req.on('data', (chunk) => { body += chunk })
+    req.on('data', (chunk: Buffer | string) => { body += chunk })
     req.on('end', () => {
       // The path, not the whole URL: SDK clients add a query (`/v1/messages?beta=true`).
-      const { pathname } = new URL(req.url, 'http://fake')
+      const { pathname } = new URL(req.url ?? "/", 'http://fake')
       // 获取可用模型 (model-discovery.ts): the model the smoke picks, and one it leaves.
       if (req.method === 'GET' && pathname.endsWith('/models')) {
         res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ data: LISTED_MODELS }))
@@ -464,17 +429,24 @@ export function startFakeLlm({ port = 0, decideFirst = null } = {}) {
         return
       }
       try {
-        const request = JSON.parse(body)
+        const request = requestSchema.parse(JSON.parse(body))
         requests.push(request)
         stream(res, request, requests.length, decideFirst)
       } catch (err) {
-        res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: err.message } }))
+        res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: { message: err instanceof Error ? err.message : String(err) } }))
       }
     })
   })
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({
-    url: `http://127.0.0.1:${server.address().port}`,
-    requests,
-    close: () => new Promise((done) => server.close(() => done())),
-  })))
+  return new Promise<{ url: string, requests: Request[], close(): Promise<void> }>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(port, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') return reject(new Error('Fake model must use a TCP listener'))
+      resolve({
+        url: `http://127.0.0.1:${address.port}`,
+        requests,
+        close: () => new Promise<void>((done, fail) => server.close(error => error ? fail(error) : done())),
+      })
+    })
+  })
 }
