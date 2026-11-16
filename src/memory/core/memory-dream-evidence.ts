@@ -36,7 +36,7 @@ export function validateDreamReview({ value, action, sources, source, reads, uni
   if (review.verdict !== 'verified') throw new Error('memory-dream-review-verdict')
   if (review.action !== action) throw new Error('memory-dream-review-action')
   if ((action === 'CREATE') === (review.classification === 'same_abstraction')) {
-    return { verdict: 'deferred', reason: 'The proposed update does not establish the same abstraction.' }
+    return { verdict: 'rejected', reason: 'The verified classification contradicts the selected action: CREATE cannot be same_abstraction; updates require same_abstraction with the existing digest target.' }
   }
   if (action === 'CORRECT' ? !review.changeEvidence.length || !review.corrections.length : review.corrections.length > 0 || review.changeEvidence.length > 0) {
     throw new Error('memory-dream-correction-evidence')

@@ -256,15 +256,17 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     }
     const scope = scopedDocuments(item.workspace)
     const readSources = new Map(allSources([...files.flatMap(file => file.sources), ...previous?.answer ? [previous.answer.source] : []]).map(ref => [ref.id, ref]))
-    const tools = createMemoryDreamTools({ unit: item.unit, documents: scope,
+    const toolAttempts: ReturnType<typeof createMemoryDreamTools<ToolSnapshot>>[] = []
+    const newTools = () => createMemoryDreamTools({ unit: item.unit, documents: scope,
       allowsDraftMaterial: markdown => materialAllowed(markdown, [...readSources.values()]), onRead(snapshot) {
-      for (const ref of allSources([...readSources.values(), ...snapshot.sourceTokens, ...snapshot.correctionSources ?? []])) readSources.set(ref.id, ref)
-    } })
+        for (const ref of allSources([...readSources.values(), ...snapshot.sourceTokens, ...snapshot.correctionSources ?? []])) readSources.set(ref.id, ref)
+      } })
     const questionContexts = new Map<string, DocumentSourceRef[]>()
     const refs = () => [...readSources.values()]
-    const readDocuments = () => tools.reads().flatMap(snapshot => [...snapshot.backing ? [snapshot.backing] : [], ...snapshot.supporting])
+    const toolReads = () => toolAttempts.flatMap(tools => tools.reads())
+    const readDocuments = () => toolReads().flatMap(snapshot => [...snapshot.backing ? [snapshot.backing] : [], ...snapshot.supporting])
     const current = () => effects.holds(job) && files.every(fileCurrent) && extractedReadsCurrent(files) && refsCurrent(refs())
-      && refs().every(ref => { const original = source(ref.id); return original && eligible(original) }) && tools.current()
+      && refs().every(ref => { const original = source(ref.id); return original && eligible(original) }) && toolAttempts.every(tools => tools.current())
       && [...questionContexts].every(([id, refs]) => { const current = sourceQuestionContext(id);
         return current.current && JSON.stringify(current.refs) === JSON.stringify(refs) })
       && readDocuments().every(snapshot => {
@@ -280,7 +282,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
           if (previousOperationId) item.operationId = `dream:${identity.newId()}`
           documents.defer({ operationId: item.operationId, workspace: item.workspace, unit: item.unit, reason,
             sources: refs(), reads: readDocuments(),
-            readPolicies: tools.reads().map(snapshot => ({ path: snapshot.path, policyToken: snapshot.policyToken })), files: files.map(file => ({ path: file.path, revision: file.revision, policyToken: file.policyToken })) }, previousOperationId)
+            readPolicies: toolReads().map(snapshot => ({ path: snapshot.path, policyToken: snapshot.policyToken })), files: files.map(file => ({ path: file.path, revision: file.revision, policyToken: file.policyToken })) }, previousOperationId)
           item.state = 'deferred'
           persist(job, plan)
         })
@@ -292,78 +294,91 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       return 'deferred' as const
     }
     if (!current()) throw new MemoryDreamStaleError()
-    const project = (text: string) => documents.projectErasedLocators?.(item.workspace, text) ?? text
-    const raw = await calculate({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
-      input: { unit: item.unit, ...(previous?.answer ? { clarification: { text: project(projectDocumentSource(previous.answer.text, previous.answer.source, documents.sourceRestrictions(item.workspace))), sourceId: previous.answer.source.id } } : {}) },
-      sourceIds: () => [...readSources.keys()], current, tools: { tools: tools.tools, executeTool: tools.executeTool } })
-    if (raw === undefined) return 'wait'
-    if (!current()) throw new MemoryDreamStaleError()
-    const output = parse(raw)
-    const deferred = deferredReply.safeParse(output)
-    if (deferred.success) return defer(deferred.data.reason)
-    const draft = tools.finish(output)
-    // finish may add source reads; bind the expanded provenance before the independent review request.
-    const canonicalSources: Array<{ sourceId: string, version: number, author: MemorySource['author'], text: string,
-      question: string | null, questionUnavailable: boolean, at: number, timezone: string }> = []
-    const inspected = new Set<string>()
-    for (const [id, ref] of readSources) {
-      if (inspected.has(id)) continue
-      inspected.add(id)
-      const original = source(id)
-      if (!original?.text) throw new MemoryDreamStaleError()
-      const restrictions = documents.sourceRestrictions(item.workspace)
-      const context = sourceQuestionContext(id)
-      const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
-      const questionAllowed = Boolean(original.question) && wholeSource && context.current
-        && !documentSourceRestricted({ id, token: ref.token }, restrictions)
-        && context.refs.every(ref => !documentSourceRestricted(ref, restrictions))
-        && (!context.refs.length || refsCurrent(context.refs))
-        && allowsText(original.question!, original)
-        && context.refs.every(ref => { const dependency = source(ref.id); return dependency?.text && allowsText(dependency.text, dependency) })
-      if (questionAllowed) {
-        questionContexts.set(id, context.refs)
-        for (const dependency of allSources([...readSources.values(), ...context.refs])) readSources.set(dependency.id, dependency)
-      }
-      canonicalSources.push({ sourceId: original.id, version: original.version, author: original.author,
-        text: project(projectDocumentSource(original.text, ref, restrictions)), question: questionAllowed ? project(original.question!) : null,
-        questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed, at: original.at, timezone: original.timezone })
-    }
-    if (!materialAllowed(draft.markdown, refs()) || !current()) throw new MemoryDreamStaleError()
-    const reviewed = await calculate({ job, stage: 'verify', system: DREAM_VERIFY_SYSTEM,
-      input: { unit: item.unit, action: draft.receipt.action, note: draft.receipt.note, target_path: draft.path,
-        before: draft.before && { path: draft.before.path, revision: draft.before.revision, markdown: draft.before.markdown },
-        proposed: draft.markdown, documents: draft.reads.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown, applicability: doc.applicability })),
-        canonicalSources },
-      sourceIds: () => [...readSources.keys()], current })
-    if (reviewed === undefined) return 'wait'
-    if (!current()) throw new MemoryDreamStaleError()
-    const review = validateDreamReview({ value: parse(reviewed), action: draft.receipt.action, sources: refs(), source,
-      reads: draft.reads, unitSources: files.map(file => file.sources.map(ref => ref.id)),
-      restricted: ref => documentSourceRestricted(ref, documents.sourceRestrictions(item.workspace)) })
-    if (review.verdict === 'deferred') return defer(review.reason)
-    if (review.verdict === 'rejected') return 'retry'
-    const correctionSources = review.corrections.flatMap(correction => draft.reads.find(snapshot => snapshot.path === correction.path
-      && snapshot.revision === correction.revision)?.sourceTokens ?? [])
-    const evidence = allSources([...(draft.before?.sourceTokens ?? []), ...review.sources, ...review.sources.flatMap(ref => questionContexts.get(ref.id) ?? []), ...correctionSources])
-    if (!current()) throw new MemoryDreamStaleError()
-    const receipt = await mutate(() => {
+    let repair: { reason: string, rejected: { action: string, target_path: string, markdown: string } } | undefined
+    // One repair belongs to the same unit/operation. Both attempts retain their
+    // reads, but each gets an isolated draft so a wrong target can be corrected.
+    for (let attempt = 0; attempt < 2; attempt++) {
       if (!current()) throw new MemoryDreamStaleError()
-      return documents.commit({ operationId: item.operationId, workspace: item.workspace, path: draft.path,
-      expectedRevision: draft.before?.revision ?? null, markdown: draft.markdown, action: draft.receipt.action,
-      sources: evidence, reads: readDocuments(), corrections: review.corrections,
-        files: unique([...files.map(file => JSON.stringify({ path: file.path, revision: file.revision })),
-          ...draft.reads.filter(snapshot => snapshot.path.startsWith('daily/')).map(snapshot => JSON.stringify({ path: snapshot.path, revision: snapshot.revision }))])
-          .map(value => JSON.parse(value) as { path: string, revision: string }) })
-    })
-    advanceOwnReads(plan, item.workspace, receipt)
-    committed(receipt)
-    documents.resolve(item.workspace, item.operationId)
-    if (receipt.revision) {
-      const tag = plan.tags.find(tag => tag.workspace === item.workspace && tag.path === receipt.path)
-      if (tag) { tag.revision = receipt.revision; tag.attempted = false }
-      else plan.tags.push({ workspace: item.workspace, path: receipt.path, revision: receipt.revision, attempted: false })
+      const tools = newTools()
+      toolAttempts.push(tools)
+      const project = (text: string) => documents.projectErasedLocators?.(item.workspace, text) ?? text
+      const raw = await calculate({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
+        input: { unit: item.unit, ...(repair ? { repair } : {}), ...(previous?.answer ? { clarification: { text: project(projectDocumentSource(previous.answer.text, previous.answer.source, documents.sourceRestrictions(item.workspace))), sourceId: previous.answer.source.id } } : {}) },
+        sourceIds: () => [...readSources.keys()], current, tools: { tools: tools.tools, executeTool: tools.executeTool } })
+      if (raw === undefined) return 'wait'
+      if (!current()) throw new MemoryDreamStaleError()
+      const output = parse(raw)
+      const deferred = deferredReply.safeParse(output)
+      if (deferred.success) return defer(deferred.data.reason)
+      const draft = tools.finish(output)
+      // finish may add source reads; bind the expanded provenance before the independent review request.
+      const canonicalSources: Array<{ sourceId: string, version: number, author: MemorySource['author'], text: string,
+        question: string | null, questionUnavailable: boolean, at: number, timezone: string }> = []
+      const inspected = new Set<string>()
+      for (const [id, ref] of readSources) {
+        if (inspected.has(id)) continue
+        inspected.add(id)
+        const original = source(id)
+        if (!original?.text) throw new MemoryDreamStaleError()
+        const restrictions = documents.sourceRestrictions(item.workspace)
+        const context = sourceQuestionContext(id)
+        const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
+        const questionAllowed = Boolean(original.question) && wholeSource && context.current
+          && !documentSourceRestricted({ id, token: ref.token }, restrictions)
+          && context.refs.every(ref => !documentSourceRestricted(ref, restrictions))
+          && (!context.refs.length || refsCurrent(context.refs))
+          && allowsText(original.question!, original)
+          && context.refs.every(ref => { const dependency = source(ref.id); return dependency?.text && allowsText(dependency.text, dependency) })
+        if (questionAllowed) {
+          questionContexts.set(id, context.refs)
+          for (const dependency of allSources([...readSources.values(), ...context.refs])) readSources.set(dependency.id, dependency)
+        }
+        canonicalSources.push({ sourceId: original.id, version: original.version, author: original.author,
+          text: project(projectDocumentSource(original.text, ref, restrictions)), question: questionAllowed ? project(original.question!) : null,
+          questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed, at: original.at, timezone: original.timezone })
+      }
+      if (!materialAllowed(draft.markdown, refs()) || !current()) throw new MemoryDreamStaleError()
+      const reviewed = await calculate({ job, stage: 'verify', system: DREAM_VERIFY_SYSTEM,
+        input: { unit: item.unit, action: draft.receipt.action, note: draft.receipt.note, target_path: draft.path,
+          before: draft.before && { path: draft.before.path, revision: draft.before.revision, markdown: draft.before.markdown },
+          proposed: draft.markdown, documents: toolReads().map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown, applicability: doc.applicability })),
+          canonicalSources },
+        sourceIds: () => [...readSources.keys()], current })
+      if (reviewed === undefined) return 'wait'
+      if (!current()) throw new MemoryDreamStaleError()
+      const review = validateDreamReview({ value: parse(reviewed), action: draft.receipt.action, sources: refs(), source,
+        reads: toolReads(), unitSources: files.map(file => file.sources.map(ref => ref.id)),
+        restricted: ref => documentSourceRestricted(ref, documents.sourceRestrictions(item.workspace)) })
+      if (review.verdict === 'deferred') return defer(review.reason)
+      if (review.verdict === 'rejected') {
+        if (attempt === 1 || !materialAllowed(review.reason, refs())) return 'retry'
+        repair = { reason: review.reason, rejected: { action: draft.receipt.action, target_path: draft.path, markdown: draft.markdown } }
+        continue
+      }
+      const correctionSources = review.corrections.flatMap(correction => toolReads().find(snapshot => snapshot.path === correction.path
+        && snapshot.revision === correction.revision)?.sourceTokens ?? [])
+      const evidence = allSources([...(draft.before?.sourceTokens ?? []), ...review.sources, ...review.sources.flatMap(ref => questionContexts.get(ref.id) ?? []), ...correctionSources])
+      if (!current()) throw new MemoryDreamStaleError()
+      const receipt = await mutate(() => {
+        if (!current()) throw new MemoryDreamStaleError()
+        return documents.commit({ operationId: item.operationId, workspace: item.workspace, path: draft.path,
+        expectedRevision: draft.before?.revision ?? null, markdown: draft.markdown, action: draft.receipt.action,
+        sources: evidence, reads: readDocuments(), corrections: review.corrections,
+          files: unique([...files.map(file => JSON.stringify({ path: file.path, revision: file.revision })),
+            ...draft.reads.filter(snapshot => snapshot.path.startsWith('daily/')).map(snapshot => JSON.stringify({ path: snapshot.path, revision: snapshot.revision }))])
+            .map(value => JSON.parse(value) as { path: string, revision: string }) })
+      })
+      advanceOwnReads(plan, item.workspace, receipt)
+      committed(receipt)
+      documents.resolve(item.workspace, item.operationId)
+      if (receipt.revision) {
+        const tag = plan.tags.find(tag => tag.workspace === item.workspace && tag.path === receipt.path)
+        if (tag) { tag.revision = receipt.revision; tag.attempted = false }
+        else plan.tags.push({ workspace: item.workspace, path: receipt.path, revision: receipt.revision, attempted: false })
+      }
+      return 'done'
     }
-    return 'done'
+    return 'retry'
   }
   async function tag(job: Effect, plan: DreamPlan) {
     for (const item of plan.tags) {

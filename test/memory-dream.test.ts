@@ -66,6 +66,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number } = 
     setModel(next: DreamCalculate) { model = next },
     beforeMutation(next: () => void) { beforeMutation = next }, afterCommit(next: (receipt: DocumentReceipt) => void) { afterCommit = next },
     advance(ms: number) { now += ms },
+    replaceGeneration() { effects.queue('memory.dream', 'daily', null, now + 60_000) },
     async retry() { now += 60_000; await effects.wake() },
     restart() { effects.close(); effects = createEffects({ db: store.db, now: () => now, later: () => null, cancel: () => {} }); jobs = start() },
     sourceRef: (original: MemorySource) => ({ id: original.id, token: memorySourceToken(original) }),
@@ -106,6 +107,111 @@ test('unchanged ambiguous work is dormant across restart; an original answer res
   assert.equal(h.documents.pending(first.note.workspace).length, 0)
   assert.equal(h.documents.list(first.note.workspace).length, 1)
   assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
+})
+
+test('a rejected generated draft gets one precise repair with a fresh target and one recoverable commit', async t => {
+  const h = harness(t), first = h.add('The report is due Friday.')
+  const reason = 'The generated draft adds an unsupported permanent confirmation rule.'
+  let integrates = 0, verifies = 0, lost = true
+  h.afterCommit(() => { if (lost) { lost = false; throw new Error('lost completion after repaired commit') } })
+  h.setModel(async request => {
+    if (request.stage === 'integrate') {
+      integrates++
+      const input = request.input as { unit: { name: string }, repair?: { reason: string, rejected: { markdown: string } } }
+      if (integrates === 1) return h.defaultModel({ ...request, input: { ...input, unit: { ...input.unit, name: 'Rejected target' } } })
+      assert.equal(input.repair?.reason, reason)
+      assert.match(input.repair?.rejected.markdown ?? '', /Rejected target/u)
+    }
+    if (request.stage === 'verify' && ++verifies === 1) return JSON.stringify({ verdict: 'rejected', reason })
+    return h.defaultModel(request)
+  })
+  await h.run()
+  assert.equal(integrates, 2); assert.equal(verifies, 2)
+  assert.deepEqual(h.documents.list(first.note.workspace).map(doc => doc.path), ['digest/personal/Report.md'])
+  assert.equal(h.documents.pending(first.note.workspace).length, 0, 'a generated error must not ask the user to clarify')
+  h.restart(); await h.retry()
+  assert.equal(integrates, 2); assert.equal(verifies, 2, 'the durable repaired receipt must skip another model pass')
+  assert.equal(h.store.db.prepare('SELECT COUNT(*) AS n FROM memory_document_revisions WHERE before IS NULL').get()?.n, 1)
+  assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
+})
+
+test('a contradictory verified classification is repaired as a draft defect without a user question', async t => {
+  const h = harness(t), first = h.add('The report is due Friday.')
+  let verifies = 0
+  h.setModel(async request => {
+    const result = await h.defaultModel(request)
+    if (request.stage === 'verify' && ++verifies === 1) return JSON.stringify({ ...JSON.parse(result!), classification: 'same_abstraction' })
+    if (request.stage === 'integrate' && verifies) assert.match((request.input as { repair: { reason: string } }).repair.reason, /classification contradicts/u)
+    return result
+  })
+  await h.run()
+  assert.equal(verifies, 2)
+  assert.equal(h.documents.list(first.note.workspace).length, 1)
+  assert.equal(h.documents.pending(first.note.workspace).length, 0)
+})
+
+test('a second semantic rejection remains technical work after the bounded repair', async t => {
+  const h = harness(t), first = h.add('The report is due Friday.')
+  h.setModel(request => request.stage === 'verify' ? Promise.resolve('{"verdict":"rejected","reason":"The generated instruction is unsupported."}') : h.defaultModel(request))
+  await h.run()
+  assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 2)
+  assert.equal(h.requests.filter(request => request.stage === 'verify').length, 2)
+  assert.equal(h.documents.list(first.note.workspace).length, 0)
+  assert.equal(h.documents.pending(first.note.workspace).length, 0)
+  assert.equal(h.notes.read(first.key)?.processed, 0)
+  assert.ok(h.store.db.prepare("SELECT 1 FROM effects WHERE kind='memory.dream'").get())
+})
+
+test('a late rejected review cannot repair or commit a replaced effect generation', async t => {
+  const h = harness(t), first = h.add('The report is due Friday.')
+  h.setModel(async request => {
+    if (request.stage === 'verify') { h.replaceGeneration(); return '{"verdict":"rejected","reason":"Old generated draft is unsupported."}' }
+    return h.defaultModel(request)
+  })
+  await h.run()
+  assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 1)
+  assert.equal(h.documents.list(first.note.workspace).length, 0)
+  assert.equal(h.documents.pending(first.note.workspace).length, 0)
+  h.setModel(h.defaultModel)
+  await h.retry()
+  assert.equal(h.documents.list(first.note.workspace).length, 1)
+  assert.equal(h.store.db.prepare('SELECT COUNT(*) AS n FROM memory_document_revisions WHERE before IS NULL').get()?.n, 1)
+})
+
+test('a repair retains the first draft attempt file policy even when the second attempt does not read it', async t => {
+  const h = harness(t), first = h.add('The report is due Friday.')
+  const extra = h.addSource('An independent review checklist exists.')
+  const doc = h.documents.commit({ operationId: 'independent-review', workspace: first.note.workspace, path: 'digest/personal/checklist.md',
+    action: 'CREATE', expectedRevision: null, markdown: 'Independent checklist.', sources: [h.sourceRef(extra)], reads: [] })
+  let integrates = 0, verifies = 0
+  h.setModel(async request => {
+    if (request.stage === 'integrate') {
+      if (++integrates === 1) {
+        const result = await request.tools!.executeTool({ callId: 'prior-policy', name: 'read', input: { path: doc.path } })
+        assert.equal(result.state, 'completed')
+      } else {
+        h.documents.setEnabled({ operationId: 'disable-prior-read', workspace: first.note.workspace, documentId: doc.documentId,
+          expectedRevision: doc.revision!, expectedUsageVersion: doc.usageVersion, enabled: false })
+      }
+    }
+    if (request.stage === 'verify' && ++verifies === 1) return '{"verdict":"rejected","reason":"Remove the unsupported draft claim."}'
+    return h.defaultModel(request)
+  })
+  await h.run()
+  assert.equal(integrates, 2); assert.equal(verifies, 1)
+  assert.equal(h.documents.read(first.note.workspace, 'digest/personal/Report.md'), null)
+  assert.equal(h.documents.pending(first.note.workspace).length, 0)
+  assert.equal(h.notes.read(first.key)?.processed, 0)
+})
+
+test('a refused rejection reason never becomes another model request or user question', async t => {
+  const h = harness(t), first = h.add('The report is due Friday.')
+  h.setModel(request => request.stage === 'verify' ? Promise.resolve('{"verdict":"rejected","reason":"Use sk-abcdefghijklmnopqrstuv in the next draft."}') : h.defaultModel(request))
+  await h.run()
+  assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 1)
+  assert.equal(h.documents.list(first.note.workspace).length, 0)
+  assert.equal(h.documents.pending(first.note.workspace).length, 0)
+  assert.ok(h.requests.every(request => !JSON.stringify(request.input).includes('sk-abcdefghijklmnopqrstuv')))
 })
 
 test('an insufficient clarification creates a new dormant question and never loops on the old answer operation', async t => {
@@ -241,7 +347,7 @@ test('semantic review retains a separate model verdict and deterministic evidenc
   assert.equal(validateDreamReview(options).verdict, 'verified')
   assert.throws(() => validateDreamReview({ ...options, value: { ...value, evidence: [{ ...value.evidence[0], text: 'I moved to Paris.' }] } }), /evidence-span/u)
   assert.equal(validateDreamReview({ ...options, value: { verdict: 'deferred', reason: 'Attribution is ambiguous.' } }).verdict, 'deferred')
-  assert.equal(validateDreamReview({ ...options, value: { ...value, classification: 'same_abstraction' } }).verdict, 'deferred')
+  assert.equal(validateDreamReview({ ...options, value: { ...value, classification: 'same_abstraction' } }).verdict, 'rejected')
   assert.throws(() => validateDreamReview({ ...options, restricted: () => true }), /evidence-restricted/u)
 })
 
