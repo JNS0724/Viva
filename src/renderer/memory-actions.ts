@@ -25,11 +25,6 @@ export function introChanges(values: IntroValues) {
   return Object.fromEntries(INTRO_FIELDS.map((key) => [key, String(values[key] ?? '').trim()]).filter(([, value]) => value))
 }
 
-export function memoryNotice(memories: readonly string[] = []) {
-  if (memories.length === 1) return t('memory-actions.remembered', { value1: memories[0] })
-  return memories.length > 1 ? t('memory-actions.remembered.new.items', { length: memories.length }) : ''
-}
-
 /** The "关于你" page and the intro. */
 export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'>) {
   const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage })
@@ -137,11 +132,9 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       }
     },
 
-    /** The agent saved something during the last turn: say so, and keep an open page current. */
-    onMemoryChanged(event: { memories?: readonly string[], failure?: string }) {
+    /** Keep the profile and file views aligned with committed owner changes. */
+    onMemoryChanged(event: { failure?: string }) {
       if (event.failure) showToast(event.failure)
-      const text = memoryNotice(event.memories)
-      if (text) showToast(text, { action: { label: t("app.view"), kind: 'open-profile' }, ms: NOTICE_TOAST_MS })
       void refreshMemoryViews()
     },
   }

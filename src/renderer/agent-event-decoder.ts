@@ -173,7 +173,6 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'mcp_status') { const mcp = decodeMcp(item.mcp); return mcp ? { type, mcp } : null }
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
   if (type === 'memory_changed') {
-    const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
     const traceSessions = item.traceSessions === undefined ? undefined : texts(item.traceSessions)
     const erasedFeedIds = item.erasedFeedIds === undefined ? undefined : texts(item.erasedFeedIds)
     const erasedOutputs = item.erasedOutputs === undefined ? undefined : list(item.erasedOutputs, value => {
@@ -181,8 +180,8 @@ function eventOf(item: ObjectValue): AgentEvent | null {
       return string(output?.session) && Boolean(output.session) && string(output.key) && Boolean(output.key)
         ? { session: output.session, key: output.key } : null
     })
-    return memories !== null && invalidated !== null && traceSessions !== null && erasedOutputs !== null && erasedFeedIds !== null
-      ? { type, memories, invalidated, ...(traceSessions ? { traceSessions } : {}), ...(erasedOutputs ? { erasedOutputs } : {}),
+    return traceSessions !== null && erasedOutputs !== null && erasedFeedIds !== null
+      ? { type, ...(traceSessions ? { traceSessions } : {}), ...(erasedOutputs ? { erasedOutputs } : {}),
           ...(erasedFeedIds ? { erasedFeedIds } : {}),
           ...(string(item.failure) ? { failure: item.failure } : {}) } : null
   }

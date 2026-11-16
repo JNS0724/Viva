@@ -1,15 +1,9 @@
 import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
-import { createMemoryActions, introChanges, introPrompt, memoryNotice } from '../src/renderer/memory-actions.ts'
+import { createMemoryActions, introChanges, introPrompt } from '../src/renderer/memory-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { renderProfilePanel } from '../src/renderer/view/profile-panel.ts'
 import type { MemoryFileDetailView } from '../src/shared/ipc-results.ts'
-
-test('memory notices describe verified writes', () => {
-  assert.equal(memoryNotice(['周报填写说明']), '已记住：周报填写说明')
-  assert.equal(memoryNotice(['a', 'b']), '已记住 2 条新内容')
-  assert.equal(memoryNotice(), '')
-})
 
 function profileDom(t: TestContext) {
   const frames: Array<() => void> = []
