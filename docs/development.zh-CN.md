@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-应用从 `out/` 运行：`npm run build`（`scripts/build.mjs`）用 TypeScript 把 `src/` 和 `plugins/` 的代码写到 `out/src`、`out/plugins`，页面、样式、图标和插件的 `package.json` 原样复制过去，目录结构和仓库一样。`npm start`、`npm run smoke` 和打包会先自动构建；单独跑某个 smoke 阶段（如 `npm run smoke:memory`）前要自己先 `npm run build`。单元测试直接测 `src/`，不需要构建。类型检查是另一回事：`npm run typecheck`。
+应用从 `out/` 运行：`npm run build`（`scripts/build.ts`）用 TypeScript 把 `src/` 和 `plugins/` 的代码写到 `out/src`、`out/plugins`，页面、样式、图标和插件的 `package.json` 原样复制过去，目录结构和仓库一样。`npm start`、`npm run smoke` 和打包会先自动构建；单独跑某个 smoke 阶段（如 `npm run smoke:memory`）前要自己先 `npm run build`。单元测试直接测 `src/`，不需要构建。类型检查是另一回事：`npm run typecheck`。
 
 要逐个查看桌面岛的八组状态，运行 `npm start -- --hidden --debug-desk-states`，右键桌面岛后选择 **桌面岛状态预览**。菜单可以直接选组、切换上一组或下一组。第 05 组也可以切到草稿恢复后的画面。预览有键盘焦点时按 Esc，或选 **退出预览** 返回真实状态。预览窗口的任务和附件样例只保存在内存中。
 

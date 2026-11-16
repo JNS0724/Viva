@@ -1,6 +1,9 @@
 import type {} from '@deepseek-ai/dsh-llm'
 declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap { 'viva-memory': { kind: 'viva-memory' } }
+  interface MessageSourceMap {
+    'viva-memory': { kind: 'viva-memory' }
+    'viva-memory-recovery': { kind: 'viva-memory-recovery', ticketId: string, originalMessageIds: string[] }
+  }
 }
 /** Generated memory context is never an original user source. */
 export const memorySource = { kind: 'viva-memory' } as const

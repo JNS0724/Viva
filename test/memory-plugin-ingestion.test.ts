@@ -15,7 +15,7 @@ function fixture() {
     async completeTurn(input) { assert.ok(durable); completed.push(input) },
     registerDerived(input) { derived.push(input) },
     dispatch: { snapshot: () => ({ dependencies: [], sources: received.map(item => `source:${item.messageId}`), turnOnly: false, epoch: 0 }) },
-  }, async () => { durable = true })
+  }, async () => { durable = true; return true })
   return { ingestion, received, completed, derived }
 }
 
@@ -60,12 +60,27 @@ test('intake persistence failure blocks subsequent admission instead of skipping
     initializeSession() {},
     receiveSource: async () => { calls++; throw new Error('storage unavailable') }, completeTurn: async () => {}, registerDerived: () => {},
     dispatch: { snapshot: () => ({ dependencies: [], sources: [], turnOnly: false, epoch: 0 }) },
-  }, async () => {})
+  }, async () => true)
   const session = Session.create(SessionId('failed'))
   const message = createUserMessage({ content: [{ type: 'text', text: 'must persist' }], source: { kind: 'user' } })
   await assert.rejects(ingestion.receive(session, [message], 1, 1, false), /storage unavailable/)
   await assert.rejects(ingestion.receive(session, [message], 1, 1, true), /storage unavailable/)
   assert.equal(calls, 1)
+})
+
+test('resolved flush without a participating persistence listener is not a durable receipt', async () => {
+  let received = 0
+  const ingestion = createSessionIngestion({
+    initializeSession() {},
+    receiveSource: async () => { received++; return { sourceId: 'source', text: 'must persist' } },
+    completeTurn: async () => {}, registerDerived() {},
+    dispatch: { snapshot: () => ({ dependencies: [], sources: [], turnOnly: false, epoch: 0 }) },
+  }, async () => false)
+  const session = Session.create(SessionId('no-persistence-listener'))
+  const message = createUserMessage({ content: [{ type: 'text', text: 'must persist' }], source: { kind: 'user' } })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  await assert.rejects(ingestion.synchronize(session), /durable persistence acknowledgment/)
+  assert.equal(received, 0)
 })
 
 
@@ -137,7 +152,7 @@ test('trusted derived input queries memory but remains excluded from daily origi
       : { sourceId: 'human-source', text: input.text } },
     async completeTurn(input) { completed.push(input) }, registerDerived() {},
     dispatch: { snapshot: () => ({ dependencies: [], sources: ['human-source'], turnOnly: false, epoch: 0 }) },
-  }, async () => {})
+  }, async () => true)
   session.append('turn/start', { turn: 1 })
   const receipts = await ingestion.receive(session, [original, derived], 1, 1, true)
   assert.equal(retrievalQuestion(receipts), '原始工作要求\n项目任务')
@@ -168,7 +183,7 @@ test('native session workspace is bound before original or derived replay, indep
   const owner = openMemoryOwner({ root: join(root, 'memory'), compute: () => null, route: () => null, quiesce: async () => {} })
   t.after(async () => { await owner.close(); rmSync(root, { recursive: true, force: true }) })
   await owner.recover()
-  const ingestion = createSessionIngestion(owner, async () => {})
+  const ingestion = createSessionIngestion(owner, async () => true)
   const native = (id: string, cwd: string) => {
     const seed = Session.create(SessionId(id))
     return Session.create(seed.id, [], { ...seed.header, cwd })

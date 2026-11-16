@@ -17,7 +17,7 @@ function fixture() {
     async completeTurn() { registered++ },
     registerDerived() { registered++ },
     dispatch: { snapshot: () => ({ dependencies: [], sources: [], turnOnly: false, epoch: 0 }) },
-  }, async () => {})
+  }, async () => true)
   return { ingestion, registered: () => registered }
 }
 

@@ -4,6 +4,8 @@ import type { createMemoryDispatch } from '../../../src/memory/core/memory-dispa
 
 /** Adapter-owned identities and chronology, never inferred from model-visible prose. */
 export type ReceivedSource = {
+  contentDigest?: string
+  contextGeneration?: number
   sessionId: string
   messageId: string
   text: string
@@ -21,6 +23,7 @@ export type ReceivedSource = {
 export type MemoryControlReceipt = { operationId: string, kind: 'stop' | 'correct', targetId: number }
 export type SourceReceipt = { sourceId: string, text: string, handledIntent?: boolean, retrievalQuery?: string, controlReceipt?: MemoryControlReceipt }
 export type CompletedTurn = {
+  contextGeneration?: number
   sessionId: string
   turn: number
   eventSeq: number
@@ -31,6 +34,11 @@ export type CompletedTurn = {
   timezone: string
 }
 export type DerivedSource = {
+  /** Set only by the native adapter after matching a captured causal delivery receipt. */
+  verifiedDelivery?: true
+  contentDigest?: string
+  contextGeneration?: number
+  senderContextGeneration?: number
   sessionId: string
   messageId: string
   eventSeq?: number

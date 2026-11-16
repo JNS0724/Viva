@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { memoryProvenanceSchema } from './provenance.ts'
 import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, MemoryChange } from './records.ts'
 import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryInterval } from './facts.ts'
@@ -56,6 +57,8 @@ export interface HostMemoryApi {
   allowsEvidence: Args<[evidence: MemoryProvenance | null | undefined, project?: MemoryProject], boolean>
   stale: Args<[session: string | null | undefined, project?: MemoryProject], boolean>
   allowsSession: Args<[session: string, project?: MemoryProject], boolean>
+  /** Trusted native adapter only: rebuild an idle model surface and acknowledge its durable replacement. */
+  recoverContext: Args<[session: string], boolean>
   transferable: Args<[evidence: MemoryProvenance | null | undefined], boolean>
   transferStatus: Args<[evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean], 'ready' | 'stale' | 'memory-unavailable'>
   transfer: Args<[session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean], boolean>
@@ -93,8 +96,7 @@ const project = z.strictObject({ kind: z.literal('project'), id: key })
 const scope = z.union([z.strictObject({ kind: z.literal('user') }), z.strictObject({ kind: z.enum(['project', 'conversation', 'task']), id: key })])
 const side = z.strictObject({ id: integer, revision: integer })
 const interval = z.strictObject({ from: z.number().nullable(), to: z.number().nullable() })
-const dependency = side.extend({ asOf: z.string().optional(), asOfZone: z.string().optional(), disputed: z.boolean().optional(), expiresAt: z.number().optional(), collectionRevision: integer.optional() })
-const provenance = z.strictObject({ dependencies: z.array(dependency), sources: z.array(key), turnOnly: z.boolean(), epoch: integer, projects: z.array(key).optional() })
+const provenance = memoryProvenanceSchema
 const maybeProvenance = provenance.nullish()
 const occurrence = z.strictObject({ segmentId: key, role: key, text, sourceId: key.nullish(), sessionId: key.nullish() })
 // Node's JSON IPC encodes an undefined tuple slot as null. Only optional slots
@@ -119,7 +121,7 @@ export const hostMemoryInputSchemas = {
   undoChange: args(z.tuple([integer, integer, key.optional(), z.array(side)])),
   bindProject: args(z.tuple([key, project.optional()])), projectChanged: args(z.tuple([key.nullish(), project.optional()])),
   allowsEvidence: args(z.tuple([maybeProvenance, project.optional()])), stale: args(z.tuple([key.nullish(), project.optional()])),
-  allowsSession: args(z.tuple([key, project.optional()])), transferable: args(z.tuple([maybeProvenance])),
+  allowsSession: args(z.tuple([key, project.optional()])), recoverContext: args(z.tuple([key])), transferable: args(z.tuple([maybeProvenance])),
   transferStatus: args(z.tuple(transfer)), transfer: args(z.tuple([key, ...transfer])),
   canInherit: args(z.tuple(inheritance)), inherit: args(z.tuple([key, ...inheritance])),
   allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional()])),

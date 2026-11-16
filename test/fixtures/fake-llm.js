@@ -25,6 +25,7 @@
  * - the memory plugin's background extractor gets the answers of `extract` below.
  */
 import http from 'node:http'
+import { currentTurnTextParts } from './model-user-text.ts'
 import { requestsIn, withoutHeaders } from '../../src/shared/request-routing/header.ts'
 import { APP_OPERATIONS } from '../../src/shared/request-routing/protocol.ts'
 
@@ -93,7 +94,7 @@ function currentWords(text) {
  * The user's words: the first text of the turn's user messages that is not the memory block. What dsh and the
  * plugins add (the block, notices) comes after them, in the same message or, in a forked session, in others.
  */
-export const questionOf = (messages) => currentWords(trailingUserTexts(messages).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
+export const questionOf = (messages) => currentWords(currentTurnTextParts(trailingUserTexts(messages)).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
 
 /** After a tool result the turn's last user message is that result: the words the user said come before it. */
 export const lastWords = (messages) => currentWords(messages

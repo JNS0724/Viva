@@ -1,22 +1,23 @@
 import { fork } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { objectOf } from '../contracts/unknown-value.ts'
 
-import { MEMORY_EMBEDDING_DIMENSIONS, MEMORY_EMBEDDING_FINGERPRINT, MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from '../contracts/embedding.ts'
+import { MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from '../contracts/embedding.ts'
 import type { MemoryEmbeddingInput, MemoryEmbeddingResult, MemoryEmbedder } from '../contracts/embedding.ts'
+import { readMemoryEmbeddingDescriptor } from './memory-embedding-assets.ts'
+import type { MemoryEmbeddingDescriptor } from './memory-embedding-assets.ts'
 export * from '../contracts/embedding.ts'
 const INFERENCE_TIMEOUT_MS = 6000
 const RETRY_AFTER_MS = 30_000
 
-function vectorsFrom(message: unknown, count: number): MemoryEmbeddingResult | null {
+function vectorsFrom(message: unknown, count: number, dimensions: number): MemoryEmbeddingResult | null {
   if (!Array.isArray(message) || message.length !== count) return null
   const vectors: MemoryEmbeddingResult = []
   for (const row of message) {
     if (row === null) { vectors.push(null); continue }
-    if (!Array.isArray(row) || row.length !== MEMORY_EMBEDDING_DIMENSIONS
+    if (!Array.isArray(row) || row.length !== dimensions
       || !row.every((value: unknown) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1)) return null
     const vector = Float32Array.from(row as number[])
     const squared = vector.reduce((sum, value) => sum + value * value, 0)
@@ -35,6 +36,11 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
   let requestId = 0
   let retryAfter = 0
   let closed = false
+  let descriptor: MemoryEmbeddingDescriptor | undefined
+  try { descriptor = readMemoryEmbeddingDescriptor(modelRoot) } catch { /* Unknown assets cannot claim the default vector space. */ }
+  const fingerprint = descriptor?.fingerprint ?? 'memory-embedding-assets:unavailable'
+  const dimensions = descriptor?.manifest.dimensions ?? 0
+  const authenticated = new WeakSet<ChildProcess>()
 
   function retire(worker: ChildProcess, retry: boolean) {
     if (child !== worker) return
@@ -59,14 +65,10 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
   }
 
   async function embedBatch(inputs: readonly MemoryEmbeddingInput[], signal?: AbortSignal): Promise<MemoryEmbeddingResult | null> {
-    if (closed || signal?.aborted || pending || Date.now() < retryAfter) return null
+    if (!descriptor || closed || signal?.aborted || pending || Date.now() < retryAfter) return null
     if (!inputs.length) return []
     if (inputs.length > MEMORY_EMBEDDING_BATCH + 1 || inputs.some(({ kind, text }) =>
       (kind !== 'query' && kind !== 'passage') || !text.trim() || text.length > MEMORY_EMBEDDING_MAX_CHARS)) return null
-    if (!child && !existsSync(path.join(modelRoot, 'onnx', 'model_quantized.onnx'))) {
-      retryAfter = Date.now() + RETRY_AFTER_MS
-      return null
-    }
     let worker: ChildProcess
     try { worker = child ?? spawn() } catch {
       retryAfter = Date.now() + RETRY_AFTER_MS
@@ -84,8 +86,18 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
       const abort = () => retire(worker, false)
       const receive = (raw: unknown) => {
         const message = objectOf(raw)
-        if (child !== worker || message?.id !== id) return
-        const vectors = vectorsFrom(message.rows, inputs.length)
+        if (child !== worker) return
+        if (message?.type === 'ready') {
+          if (message.fingerprint !== fingerprint || message.dimensions !== dimensions) retire(worker, true)
+          else authenticated.add(worker)
+          return
+        }
+        if (message?.id !== id) return
+        if (message.type !== 'result' || !authenticated.has(worker) || message.fingerprint !== fingerprint || message.dimensions !== dimensions) {
+          retire(worker, true)
+          return
+        }
+        const vectors = vectorsFrom(message.rows, inputs.length, dimensions)
         if (vectors) finish(vectors)
         else retire(worker, true)
       }
@@ -96,18 +108,19 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
       else {
-        try { worker.send({ id, inputs }, error => { if (error) retire(worker, true) }) }
+        try { worker.send({ id, inputs, fingerprint, dimensions }, error => { if (error) retire(worker, true) }) }
         catch { retire(worker, true) }
       }
     })
   }
 
-  return {
-    fingerprint: MEMORY_EMBEDDING_FINGERPRINT,
+  return Object.freeze({
+    fingerprint,
+    dimensions,
     embedBatch,
     close() {
       closed = true
       if (child) retire(child, false)
     },
-  }
+  })
 }

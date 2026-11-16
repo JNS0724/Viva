@@ -9,17 +9,13 @@ import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream } from 'node:stream/web'
 import { parseArgs } from 'node:util'
+import { readMemoryEmbeddingDescriptor, verifyMemoryEmbeddingAssets, writeMemoryEmbeddingManifest } from '../src/memory/node/memory-embedding-assets.ts'
+
+import { memoryEmbeddingRecipe } from './memory-embedding-recipe.ts'
 
 const source = path.resolve(import.meta.dirname, '..', 'build', 'memory-embedding')
-const preparationVersion = 2
-const revision = '3acb1fa45c83e69002b1641b37f3cccc132cdd63'
-const modelUrl = `https://huggingface.co/Xenova/multilingual-e5-small/resolve/${revision}/`
-const files = [
-  ['config.json', 658, 'cb99455288675345e1a4f411438d5d0adbba5fbd3a67ea4fb03c015433b996c1'],
-  ['tokenizer.json', 17082730, '0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39'],
-  ['tokenizer_config.json', 443, 'a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b'],
-  ['onnx/model_quantized.onnx', 118308185, 'f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193'],
-] as const
+const preparationVersion = 3
+const { revision, modelUrl, files, encoding, descriptor, modelId } = memoryEmbeddingRecipe
 const runtimePath = (dir: string) => path.join(dir, 'runtime')
 const modelPath = (dir: string) => path.join(dir, 'model')
 const nativePath = 'node_modules/onnxruntime-node/bin/napi-v6'
@@ -60,6 +56,7 @@ async function prepareModel(dest: string, local?: string) {
     if (!await verified(file, size, hash)) throw new Error(`Embedding asset ${name} failed SHA-256 verification`)
   }
   await fs.copyFile(path.join(source, licensePath), path.join(dest, 'LICENSE'))
+  if ((await writeMemoryEmbeddingManifest(dest, encoding)).fingerprint !== descriptor.fingerprint) throw new Error('Prepared embedding descriptor differs from the pinned recipe')
 }
 
 async function installed(dir: string, packages: Lock['packages'], platform: string, arch: string, original?: Lock) {
@@ -112,11 +109,12 @@ async function prepare({ platform, arch, from, output }: { platform: string, arc
   if (!['darwin', 'win32'].includes(platform) || !['arm64', 'x64'].includes(arch)) throw new Error(`No local embedding runtime for ${platform}-${arch}`)
   const lockRaw = await fs.readFile(path.join(source, 'package-lock.json'))
   const lock = JSON.parse(lockRaw.toString()) as Lock
-  const stamp = JSON.stringify({ preparationVersion, revision, platform, arch, lock: createHash('sha256').update(lockRaw).digest('hex') })
+  const stamp = JSON.stringify({ preparationVersion, revision, platform, arch, identity: descriptor.fingerprint, lock: createHash('sha256').update(lockRaw).digest('hex') })
   if (!from) {
     try {
       if (await fs.readFile(path.join(output, 'manifest.json'), 'utf8') === stamp
-        && (await Promise.all(files.map(([name, size, hash]) => verified(path.join(modelPath(output), name), size, hash)))).every(Boolean)) {
+        && readMemoryEmbeddingDescriptor(modelPath(output)).fingerprint === descriptor.fingerprint) {
+        await verifyMemoryEmbeddingAssets(modelPath(output), descriptor)
         await installed(runtimePath(output), lock.packages, platform, arch)
         console.log(`[embedding] verified existing ${platform}-${arch} assets`)
         return
@@ -141,7 +139,7 @@ async function prepare({ platform, arch, from, output }: { platform: string, arc
         await fs.mkdir(path.dirname(dest), { recursive: true })
         await fs.cp(path.join(priorRuntime, name), dest, { recursive: true, dereference: true })
       }
-      await prepareModel(modelPath(stage), path.join(cache, 'models', 'Xenova', 'multilingual-e5-small'))
+      await prepareModel(modelPath(stage), path.join(cache, 'models', ...modelId.split('/')))
     } else {
       http.setGlobalProxyFromEnv?.()
       // --ignore-scripts avoids optional GPU downloads, keeping the locked CPU binaries from the npm tarballs.

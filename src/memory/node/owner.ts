@@ -1,3 +1,4 @@
+import { createOwnerContextRecovery } from './owner-context-recovery.ts'
 import { memoryProjectScope } from './project-scope.ts'
 import path from 'node:path'
 import { randomUUID, createHmac } from 'node:crypto'
@@ -9,6 +10,7 @@ import type { NodeMemoryRuntimeOptions } from './runtime.ts'
 import { combineMemoryProvenance } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
+import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { createMemorySendFence } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
@@ -18,12 +20,12 @@ import type { MemoryScope } from '../contracts/memory-contract.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, step: number, eventSeq?: number, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
-export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, sourceIds: readonly string[],
+  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
+export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, contextGeneration?: number, sourceIds: readonly string[],
   assistant: string, completed: boolean, at: number, timezone: string }
-export type DerivedSource = { sessionId: string, messageId: string, eventSeq?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
+export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
-  root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
+  root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], fileMode?: boolean, embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
   onProjectionChanged?: () => void,
@@ -67,9 +69,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   let replayingWrites = false
   const generalQuestions = new Map<string, { session: string, cards: readonly { id: string, question: string }[], check(): boolean }>()
   const dispatch = createMemoryDispatch(store, (items, at) => runtime.dependenciesCurrent(items, at),
-    (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at))
+    (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), files => runtime.fileDependenciesCurrent(files))
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
-    dailyNotes: options.dailyNotes ?? true,
+    dailyNotes: options.dailyNotes ?? true, fileMode: options.fileMode ?? false,
     // P2 captures completed daily turns while retaining the existing fact engine until the planned switch.
     automaticFactProcessing: 'source',
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding), maintainSemanticIndex: true } : {}),
@@ -81,10 +83,32 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly,
     runDocumentMutation: work => fence.mutate(work),
     noteSourcesUsed: (session, sources) => { for (const source of sources) dispatch.recordSource(session, source) },
+    fileDependencies: dispatch.recordFiles,
     canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
   })
-  const removedSession = (session: string) => Boolean(db.prepare('SELECT 1 FROM owner_occurrences WHERE session=? AND removed=1 LIMIT 1').get(session))
-  const coordinated = { ...runtime, staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && removedSession(session)) }
+  const removedSession = (session: string) => Boolean(db.prepare(`SELECT 1 FROM owner_occurrences o WHERE o.session=? AND o.removed=1
+    AND NOT EXISTS(SELECT 1 FROM owner_context_retired r WHERE r.session=o.session AND r.message=o.message) LIMIT 1`).get(session))
+  const coordinated = { ...runtime,
+    staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && removedSession(session)),
+    allowedHistory(row: MemoryHistoryOccurrence) {
+      // Imported/audit-only generated text without an origin session has no active model provenance.
+      if (row.role !== 'user' && !row.sessionId) return false
+      if (row.sourceId) {
+        const message = db.prepare('SELECT id FROM owner_messages WHERE source=?').get(row.sourceId)
+        if (message && contextRecovery.retiredDerived(String(message.id))) return false
+        if (row.role === 'user' && !runtime.canRecoverOriginal(row.sourceId, sessionContext(row.sessionId ?? store.readSource(row.sourceId)?.session ?? ''))) return false
+      }
+      if (row.sessionId && contextRecovery.contextGeneration(row.sessionId) > 0) {
+        // Viva's segmentId identifies a timeline conversation, not a native message.
+        // Generated UI history has no durable generation/message mapping and therefore
+        // stays browseable only; it cannot re-enter auxiliary models after recovery.
+        if (row.role !== 'user') return false
+        if (row.sourceId && !db.prepare(`SELECT 1 FROM owner_occurrences o WHERE o.session=? AND o.source=? AND o.admitted=1 AND o.removed=0
+          AND NOT EXISTS(SELECT 1 FROM owner_context_retired r WHERE r.session=o.session AND r.message=o.message)`).get(row.sessionId, row.sourceId)) return false
+      }
+      return runtime.allowedHistory(row)
+    },
+  }
   const coordination = createMemoryCoordination({ runtime: () => coordinated, dispatch: () => dispatch })
   function sessionContext(session: string) {
     const saved = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(session) as Session | undefined
@@ -99,13 +123,43 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (state !== 'ready' || replayingWrites || hasPending()) return null
     if ('jobId' in origin) return runtime.computeAdmission(origin.jobId)
     const session = origin.session, project = sessionContext(session).project
+    if (contextRecovery.pending(session) || (origin.contextGeneration ?? 0) !== contextRecovery.contextGeneration(session)) return null
     const admission = dispatch.admission(session)
     if (!admission.allowed || !coordination.allowsSession(session, project)) return null
     const deadline = runtime.provisionalDeadline(session, Date.now())
-    return { current: () => state === 'ready' && !hasPending() && coordination.allowsSession(session, project),
+    return { current: () => state === 'ready' && !hasPending() && !contextRecovery.pending(session)
+      && (origin.contextGeneration ?? 0) === contextRecovery.contextGeneration(session) && coordination.allowsSession(session, project),
       deadline: deadline === undefined ? admission.deadline : Math.min(deadline, admission.deadline ?? Infinity) }
   } })
   function requireReady() { if (state !== 'ready' || hasPending()) throw new Error('Memory owner is recovering') }
+  const contextRecovery = createOwnerContextRecovery({ db, store, hash, requireReady, mutate: work => fence.mutate(work),
+    sourceAllowed: (session, source) => runtime.canRecoverOriginal(source, sessionContext(session)),
+    replace: dispatch.replaceAfterRecovery,
+    committed(session) {
+      runtime.finishTurn(session)
+      for (const [key, question] of generalQuestions) if (question.session === session) generalQuestions.delete(key)
+    },
+  })
+  function needsContextRecovery(session: string, visited = new Set<string>()): boolean {
+    if (visited.has(session)) return true
+    visited.add(session)
+    if (contextRecovery.pending(session) || removedSession(session)) return true
+    // New native sessions have no old model context to recover, even after a global memory epoch change.
+    if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) return false
+    if (runtime.staleSession(session) || dispatch.stale(session) || !runtime.provisionalReadsCurrent(session)) return true
+    for (const row of db.prepare(`SELECT p.session FROM owner_session_parents p WHERE p.parent=?
+      AND NOT EXISTS(SELECT 1 FROM owner_context_retired_children r WHERE r.parent=p.parent AND r.child=p.session)`).all(session)) {
+      const child = String(row.session)
+      if (needsContextRecovery(child, visited) || !dispatch.transferable(dispatch.snapshot(child))
+        || !coordination.allowsEvidence(dispatch.snapshot(child), sessionContext(session).project)) return true
+    }
+    visited.delete(session)
+    return false
+  }
+  function requireContextGeneration(session: string, generation?: number) {
+    if ((generation ?? 0) !== contextRecovery.contextGeneration(session)) throw new Error('Memory context generation changed')
+  }
+
   const operation = (id: string) => db.prepare('SELECT * FROM owner_operations WHERE id=?').get(id) as Operation | undefined
   const outcome = (item: Operation): MemoryOperationOutcome => ({ operationId: item.id, state: item.state,
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
@@ -118,6 +172,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     visited.add(session)
     for (const row of db.prepare('SELECT session FROM owner_session_parents WHERE parent=?').all(session)) {
       const child = String(row.session)
+      if (db.prepare('SELECT 1 FROM owner_context_retired_children WHERE parent=? AND child=?').get(session, child)) continue
       reconcileChildren(child, visited)
       const evidence = dispatch.snapshot(child)
       if (!coordination.allowsSession(child, sessionContext(child).project) || !dispatch.transferable(evidence)
@@ -129,7 +184,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   /** Native session metadata binds workspace identity before original or derived replay. */
   function initializeSession(input: { sessionId: string, cwd?: string, parentSessionId?: string }) {
     requireReady()
-    if (input.cwd === undefined && input.parentSessionId === undefined) { reconcileChildren(input.sessionId); return }
+    if (input.cwd === undefined && input.parentSessionId === undefined) { if (!needsContextRecovery(input.sessionId)) reconcileChildren(input.sessionId); return }
     const project = input.cwd === undefined ? sessionContext(input.sessionId).project : memoryProjectScope(input.cwd)
     const saved = db.prepare('SELECT project FROM owner_sessions WHERE session=?').get(input.sessionId)
     if (saved && saved.project !== (project?.id ?? null)) throw new Error('Session project context changed')
@@ -153,7 +208,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare('INSERT INTO owner_session_parents VALUES (?,?)').run(input.sessionId, input.parentSessionId)
       }
     })
-    reconcileChildren(input.sessionId)
+    if (!needsContextRecovery(input.sessionId)) reconcileChildren(input.sessionId)
   }
   function storeAlias(input: MemorySourceAlias): StoredAlias {
     const { text, wireText, ...metadata } = input
@@ -192,16 +247,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   async function receiveSource(input: ReceivedSource) {
     requireReady()
+    requireContextGeneration(input.sessionId, input.contextGeneration)
+    if (contextRecovery.retired(input.sessionId, input.messageId)) throw new Error('Source context was retired')
+    if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid original content digest')
+    const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
+    if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Original content identity conflicts')
+
     const known = db.prepare('SELECT * FROM owner_messages WHERE id=?').get(input.messageId) as { source: string, hash: string, kind: string, query_start: number | null, query_end: number | null } | undefined
     if (known?.kind === 'host-derived' && known.hash === hash(input.text)) {
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, sourceIds: [], inherited: input.inherited })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, sourceIds: [], inherited: input.inherited })
       markLiveTurn(input)
       return { sourceId: known.source, text: '', handledIntent: true,
         retrievalQuery: known.query_start === null || known.query_end === null ? '' : input.text.slice(known.query_start, known.query_end) }
     }
     if (!known && input.derived) {
       if (input.inherited) throw new Error('Unregistered inherited source')
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, sourceIds: [] })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, sourceIds: [] })
       db.prepare("UPDATE owner_messages SET kind='host-derived',hash=?,query_start=0,query_end=? WHERE id=?").run(hash(input.text), input.text.length, input.messageId)
       markLiveTurn(input)
       const sourceId = db.prepare('SELECT source FROM owner_messages WHERE id=?').get(input.messageId)!.source as string
@@ -217,7 +278,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const start = input.text.indexOf(mapped.text)
       if (start < 0) throw new Error('Derived source alias does not identify its wire text')
       const sources = mapped.dependencies?.sources ?? []
-      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, sourceIds: sources })
+      await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, sourceIds: sources })
       db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
       db.prepare("UPDATE owner_messages SET kind='host-derived',hash=?,query_start=?,query_end=? WHERE id=?").run(hash(input.text), start, start + mapped.text.length, input.messageId)
       const canonical = db.prepare('SELECT source FROM owner_messages WHERE id=?').get(input.messageId)!.source as string
@@ -247,6 +308,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
       }
       db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'original')").run(input.messageId, sourceId, hash(input.text))
+      if (input.contentDigest && !known) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
       db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,?) ON CONFLICT(session,message) DO UPDATE SET admitted=MAX(admitted,excluded.admitted)').run(input.sessionId, input.messageId, sourceId, context.conversation, Number(input.admitted))
       if (mapped) db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
       if (input.admitted) { runtime.bindSource(sourceId, input.sessionId); dispatch.recordSource(input.sessionId, sourceId) }
@@ -281,10 +343,23 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   async function registerDerived(input: DerivedSource) {
     requireReady()
+    requireContextGeneration(input.sessionId, input.contextGeneration)
+    if (contextRecovery.retired(input.sessionId, input.messageId) || contextRecovery.retiredDerived(input.messageId)) throw new Error('Derived context was retired')
     const old = db.prepare('SELECT kind,hash,source FROM owner_messages WHERE id=?').get(input.messageId)
     if (old && old.kind !== 'derived' && old.kind !== 'host-derived') throw new Error('Derived identity conflicts')
     if (!old && input.inherited) throw new Error('Unregistered inherited derived context')
     const saved = db.prepare('SELECT * FROM owner_derived WHERE message=?').get(input.messageId)
+    if (!saved && input.senderSessionId) {
+      requireContextGeneration(input.senderSessionId, input.senderContextGeneration)
+      // Generation numbers alone do not prove when a queued cross-session delivery was
+      // produced. After either side has recovered, only the native adapter's captured
+      // causal receipt may authorize a new delivery; saved receipts keep their old proof.
+      if ((contextRecovery.contextGeneration(input.sessionId) > 0 || contextRecovery.contextGeneration(input.senderSessionId) > 0)
+        && input.verifiedDelivery !== true) throw new Error('Unverified delivery receipt across a recovered context')
+    }
+    if (input.contentDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.contentDigest)) throw new Error('Invalid derived content digest')
+    const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
+    if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Derived content identity conflicts')
     let observed = dispatch.snapshot(input.sessionId)
     if (!saved && input.senderSessionId) {
       const sender = input.senderSessionId
@@ -306,11 +381,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'derived')").run(input.messageId, canonical, hash(evidence))
       db.prepare('INSERT OR IGNORE INTO owner_derived VALUES (?,?,?,?,?)').run(input.messageId, JSON.stringify(evidence), input.sessionId, active ?? null, epoch)
       dispatch.attach(input.sessionId, evidence)
+      db.prepare('INSERT OR IGNORE INTO owner_derived_occurrences VALUES (?,?)').run(input.sessionId, input.messageId)
+      if (!saved && input.contentDigest) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
     })
   }
   async function completeTurn(input: CompletedTurn) {
     requireReady()
+    requireContextGeneration(input.sessionId, input.contextGeneration)
     const answers = db.prepare('SELECT source FROM owner_answer_sources WHERE session=? AND turn=?').all(input.sessionId, String(input.turn)) as Array<{source: string}>
     input = { ...input, sourceIds: [...new Set([...input.sourceIds, ...answers.map(row => row.source)])] }
     const receipt = db.prepare('SELECT state FROM owner_turns WHERE session=? AND turn=?').get(input.sessionId, input.turn)
@@ -562,6 +640,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'projectChanged': return coordination.projectChanged(...command.input.args)
       case 'allowsEvidence': return coordination.allowsEvidence(...command.input.args)
       case 'stale': return coordination.stale(...command.input.args)
+      case 'recoverContext': throw new Error('Context recovery requires the native host adapter')
       case 'allowsSession': return coordination.allowsSession(...command.input.args)
       case 'transferable': return coordination.transferable(...command.input.args)
       case 'transferStatus': return coordination.transferStatus(...command.input.args)
@@ -587,8 +666,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
     recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost,
-    acquireSend(id: string, origin: { session: string } | { jobId: string }, payload: string) {
-      if ('session' in origin) reconcileChildren(origin.session)
+    contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
+    prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
+    acquireSend(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string) {
+      if ('session' in origin) {
+        if (contextRecovery.pending(origin.session) || (origin.contextGeneration ?? 0) !== contextRecovery.contextGeneration(origin.session)) throw new Error('Memory context generation changed')
+        reconcileChildren(origin.session)
+      }
       const admission = 'session' in origin
         ? coordination.beginSession(id, origin.session, sessionContext(origin.session).project, () => sessionContext(origin.session).project)
         : coordination.beginJob(id, origin.jobId)

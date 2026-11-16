@@ -1,7 +1,7 @@
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
 import { MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from '../contracts/embedding.ts'
 import type { MemoryEmbedder } from '../contracts/embedding.ts'
-import { memorySearchTokens } from './search-tokens.ts'
+import { memoryFileLexicalQuery, memorySearchTokens } from './search-tokens.ts'
 
 export type SearchChunk = { text: string, startLine: number, endLine: number }
 export type DailySearchDocument = { key: string, text: string, keywords?: readonly string[] }
@@ -42,7 +42,7 @@ type Ranked<T> = { document: T, score: number, semantic?: boolean }
 
 export function rankDailyMemory<T extends DailySearchDocument>(documents: readonly T[], query: string,
   limit: number, minScore: number, semanticScores: ReadonlyMap<string, number> = new Map()) {
-  const terms = new Set(memorySearchTokens(query, false))
+  const terms = new Set(memorySearchTokens(memoryFileLexicalQuery(query), false))
   const frequencies = new Map<string, number>()
   const corpus = documents.map(document => {
     const tokens = memorySearchTokens([document.text, ...document.keywords ?? []].join(' '), true)
@@ -88,7 +88,7 @@ export function rankDailyMemory<T extends DailySearchDocument>(documents: readon
 }
 
 /** The local encoder's maximum only controls passage boundaries. Continue through the whole chunk. */
-function* embeddingPassages(text: string, width = MEMORY_EMBEDDING_MAX_CHARS) {
+export function* embeddingPassages(text: string, width = MEMORY_EMBEDDING_MAX_CHARS) {
   let index = 0
   while (index < text.length) {
     let end = Math.min(index + width, text.length)
@@ -110,12 +110,13 @@ export function createDailySemanticSearch(embedder: MemoryEmbedder, hash: (text:
   const cache = new Map<string, { hash: string, vectors: Float32Array[] }>()
 
   async function rank(documents: readonly DailySearchDocument[], query: string, signal: AbortSignal, {
-    scores = new Map<string, number>(), indexed,
-  }: { scores?: Map<string, number>, indexed?: (query: Float32Array) => ReadonlyMap<string, number> } = {}) {
+    scores = new Map<string, number>(), indexed, indexedOnly,
+  }: { scores?: Map<string, number>, indexed?: (query: Float32Array) => ReadonlyMap<string, number>, indexedOnly?: ReadonlySet<string> } = {}) {
     const incomplete = () => ({ scores, incomplete: true })
     const [queryVector] = await embedder.embedBatch([{ kind: 'query', text: query }], signal) ?? []
     if (!queryVector || signal.aborted) return incomplete()
     const indexedScores = indexed?.(queryVector)
+    let indexIncomplete = false
     type Missing = { key: string, hash: string, passages: string[], vectors: Float32Array[], outstanding: number }
     const missing: Missing[] = []
     function score(key: string, vectors: Float32Array[]) {
@@ -125,6 +126,13 @@ export function createDailySemanticSearch(embedder: MemoryEmbedder, hash: (text:
       const stored = indexedScores?.get(doc.key)
       if (stored !== undefined) {
         scores.set(doc.key, stored)
+        continue
+      }
+      if (indexedOnly?.has(doc.key)) {
+        // Accepted file chunks must use their versioned persistent index, never an old
+        // process cache or an on-demand fallback that can outlive their read policy.
+        scores.delete(doc.key)
+        indexIncomplete = true
         continue
       }
       const contentHash = hash(doc.text)
@@ -158,7 +166,7 @@ export function createDailySemanticSearch(embedder: MemoryEmbedder, hash: (text:
         }
       }
     }
-    return { scores, incomplete: false }
+    return { scores, incomplete: indexIncomplete }
   }
   return { rank, clear: () => cache.clear() }
 }

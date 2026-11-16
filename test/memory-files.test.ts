@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openMemoryFileStore, MemoryFileError } from '../src/memory/node/memory-file-store.ts'
-import { formatMemoryDocument, parseMemoryDocument, readMemoryLines, updateMemoryFrontmatter } from '../src/memory/core/memory-document.ts'
+import { formatMemoryDocument, memoryDocumentLines, parseMemoryDocument, readMemoryLines, updateMemoryFrontmatter } from '../src/memory/core/memory-document.ts'
 import { parseDreamUnits, parseIntegrateReceipt, validMemoryPath } from '../src/memory/contracts/memory-file-contract.ts'
 
 const a = 'daily/2026-11-15/project.md'
@@ -103,7 +103,7 @@ test('line reads preserve original CRLF and frontmatter offsets', () => {
   const markdown = '---\r\nname: 测试\r\n---\r\n# 标题\r\n正文\r\n'
   const document = parseMemoryDocument(markdown)
   assert.equal(document.bodyStartLine, 4)
-  assert.equal(readMemoryLines(markdown, 4, 5), '# 标题\r\n正文\r')
+  assert.equal(readMemoryLines(markdown, 4, 5), '# 标题\r\n正文')
   assert.equal(readMemoryLines(markdown, 4), document.body)
   assert.equal(readMemoryLines(markdown, 99), '')
   for (const [start, end] of [[0, 2], [3, 2], [1.5, 3], [1, Infinity]]) {
@@ -144,4 +144,32 @@ test('integrate requires one actual digest target, four actions and no skip', ()
   }
   assert.throws(() => parseIntegrateReceipt({ action: 'SKIP', target_path: target, note: 'skip' }, [target]))
   assert.throws(() => parseIntegrateReceipt({ action: 'CREATE', target_path: a, note: 'bad' }, [a]))
+})
+
+
+test('shared line ranges preserve complete UTF16 content and each kind of newline', () => {
+  const markdown = '😀first\r\nsecond\rthird\n'
+  const positions = memoryDocumentLines(markdown)
+  assert.deepEqual(positions, [
+    { startOffset: 0, contentEndOffset: 7, endOffset: 9 },
+    { startOffset: 9, contentEndOffset: 15, endOffset: 16 },
+    { startOffset: 16, contentEndOffset: 21, endOffset: 22 },
+    { startOffset: 22, contentEndOffset: 22, endOffset: 22 },
+  ])
+  assert.equal(positions.map(line => markdown.slice(line.startOffset, line.endOffset)).join(''), markdown)
+  assert.equal(readMemoryLines(markdown, 1, 3), '😀first\r\nsecond\rthird')
+  assert.equal(readMemoryLines(markdown), markdown)
+  assert.equal(readMemoryLines(markdown, 2, 2), 'second')
+})
+
+test('frontmatter booleans and body separators agree for LF, CRLF and lone CR', () => {
+  for (const newline of ['\n', '\r\n', '\r']) {
+    const body = ['first', 'needle'].join(newline)
+    const markdown = ['---', 'name: title', 'enabled: true', '---', body].join(newline)
+    const parsed = parseMemoryDocument(markdown)
+    assert.deepEqual(parsed.metadata, { name: 'title', enabled: true })
+    assert.equal(parsed.bodyStartLine, 5)
+    assert.equal(parsed.body, body)
+    assert.equal(readMemoryLines(markdown, 6, 6), 'needle')
+  }
 })

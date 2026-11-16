@@ -33,3 +33,10 @@ export function memoryIdentifierTokens(text: string) {
   return (text.normalize('NFKC').toLowerCase().match(words) ?? [])
     .filter(part => /^\p{L}[\p{L}\p{M}\p{N}]*([-_./][\p{L}\p{M}\p{N}]+)+$/u.test(part) && /\p{N}/u.test(part))
 }
+
+// General English function words, deliberately independent of memory subjects/predicates.
+// Keep the original query for the encoder; only the lexical lane omits these weak signals.
+const functionWords = new Set('a an and are as at be by for from in is it of on or that the this to was were will with'.split(' '))
+export function memoryFileLexicalQuery(query: string): string {
+  return query.replace(/(?<![\p{L}\p{M}\p{N}_./@-])[a-z]+(?![\p{L}\p{M}\p{N}_./@-])/giu, word => word !== word.toUpperCase() && functionWords.has(word.toLowerCase()) ? ' ' : word)
+}

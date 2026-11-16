@@ -27,7 +27,7 @@ test('memory contracts/core/node obey the declared dependency direction, includi
     const layer = file.split(/[\\/]/u)[0]
     for (const imported of imports) {
       if (!imported.startsWith('.')) {
-        assert.ok(imported === 'zod' || imported === 'yaml' || layer === 'node' && imported.startsWith('node:'), `${file}: forbidden dependency ${imported}`)
+        assert.ok(imported === 'zod' || imported === 'yaml' || imported === 'marked' && file.replaceAll('\\', '/') === 'core/memory-markdown.ts' || layer === 'node' && imported.startsWith('node:'), `${file}: forbidden dependency ${imported}`)
         continue
       }
       const target = relative(memory, resolve(dirname(full), imported)).replaceAll('\\', '/')
@@ -45,7 +45,7 @@ test('copied Node memory runs in a clean project without Viva, DSH or Electron i
     mkdirSync(join(dir, 'test/fixtures'), { recursive: true })
     cpSync(join(root, 'test/fixtures/memory-standalone.ts'), join(dir, 'test/fixtures/memory-standalone.ts'))
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
-    for (const dependency of ['zod', 'yaml']) {
+    for (const dependency of ['zod', 'yaml', 'marked']) {
       const packageRoot = dirname(require.resolve(`${dependency}/package.json`))
       cpSync(realpathSync(packageRoot), join(dir, 'node_modules', dependency), { recursive: true })
     }

@@ -14,7 +14,7 @@ export interface MemoryCoordinationRuntime {
   staleSession(session: string): boolean
   sessionProject(session: string): string | undefined
   recordSessionProject(session: string, project: string): void
-  projectAllows(evidence: Pick<MemoryProvenance, 'dependencies' | 'sources' | 'projects'>, project?: MemoryProject): boolean
+  projectAllows(evidence: Pick<MemoryProvenance, 'dependencies' | 'sources' | 'projects' | 'files'>, project?: MemoryProject): boolean
   provisionalReadsCurrent(session: string, at?: number): boolean
   provisionalDeadline(session: string, at: number): number | undefined
   computeAdmission(job: string): { current(): boolean, deadline: number | null } | null
@@ -87,7 +87,7 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
     const evidence = dispatch()?.snapshot(session)
     if (isTask) return !needsMemoryTransport(evidence)
     const admission = dispatch()?.admission(session)
-    return !evidence?.turnOnly && !evidence?.dependencies.length && (!admission || admission.allowed && admission.deadline === null)
+    return !evidence?.turnOnly && !evidence?.dependencies.length && !evidence?.files?.length && (!admission || admission.allowed && admission.deadline === null)
   }
 
   function beginSession(id: string, session: string, project: MemoryProject | undefined, currentProject: () => MemoryProject | undefined) {

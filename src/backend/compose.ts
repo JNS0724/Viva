@@ -118,8 +118,8 @@ function assertText(value: unknown, name: string, maxLength: number): string {
   return value
 }
 
-export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_MEMORY !== '0' }: {
-  host: HostCapabilities, ipc: IpcRegistry, dailyNotes?: boolean,
+export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_MEMORY !== '0', fileMode = process.env.VIVA_FILE_MEMORY === '1' }: {
+  host: HostCapabilities, ipc: IpcRegistry, dailyNotes?: boolean, fileMode?: boolean,
 }) {
   const userData = host.paths.userData
   // What the user does in a page is a signal first (commands.ts); every channel below is registered through this.
@@ -398,7 +398,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     try {
       const embeddingRoot = path.extname(APP_ROOT) === '.asar' ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
-        memory: { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime'), dailyNotes } })
+        memory: { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime'), dailyNotes, ...(fileMode ? { fileMode } : {}) } })
       pluginProblems = problems
       problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })

@@ -174,7 +174,7 @@ test('superseded content carries trusted applicability outside Markdown and stat
   const snapshot = { ...document(target, 'Deployment', 'Old claim'), applicability: { state: 'superseded' as const, supersessions: [supersession] } }
   const { call, search, rows, tools } = setup([snapshot])
   const result = JSON.parse((await search()).content) as Array<{ applicability: DreamDocumentSnapshot['applicability'] }>
-  assert.deepEqual(result[0]!.applicability, snapshot.applicability)
+  assert.deepEqual(result, [])
   const raw = JSON.parse((await call('read', { path: target })).content) as { markdown: string, applicability: DreamDocumentSnapshot['applicability'] }
   assert.equal(raw.markdown, snapshot.markdown)
   assert.deepEqual(raw.applicability, snapshot.applicability)
@@ -186,4 +186,36 @@ test('superseded content carries trusted applicability outside Markdown and stat
   const unavailable = setup([{ ...snapshot, applicability: { state: 'unavailable', supersessions: [supersession] } }])
   assert.deepEqual(JSON.parse((await unavailable.search()).content), [])
   assert.equal((await unavailable.call('read', { path: target })).state, 'rejected')
+})
+
+test('node search omits superseded metadata while annotated evidence reads remain available', async () => {
+  const old = { ...document(target, 'Deployment', 'Old deployment.'), policyToken: 'old-policy',
+    applicability: { state: 'superseded' as const, supersessions: [] } }
+  const { search, call } = setup([old])
+  const result = await search()
+  assert.equal(result.content.includes(target), false)
+  const evidence = JSON.parse((await call('read', { path: target })).content)
+  assert.ok(evidence.markdown.includes('Old deployment.'))
+  assert.equal(evidence.applicability.state, 'superseded')
+})
+
+test('a transitive applicability policy change invalidates tool reads even with identical direct metadata and sources', async () => {
+  const observed = { ...document(target, 'Deployment', 'Original evidence.'), policyToken: 'A-B',
+    applicability: { state: 'superseded' as const, supersessions: [] } }
+  const { rows, tools, call } = setup([observed])
+  assert.equal((await call('read', { path: target })).state, 'completed')
+  assert.equal(tools.current(), true)
+  rows.set(target, { ...observed, policyToken: 'A-B-C' })
+  assert.equal(tools.current(), false)
+  await assert.rejects(call('read', { path: target }), MemoryDreamStaleError)
+})
+
+test('dream evidence reads use the shared original line map for lone CR files', async () => {
+  const { rows, call } = setup()
+  const original = rows.get(daily)!
+  rows.set(daily, { ...original, markdown: original.markdown.replaceAll('\n', '\r') })
+  const lines = original.markdown.split('\n'), line = lines.findIndex(value => value === 'We changed the deployment process.') + 1
+  const result = await call('read', { path: daily, start_line: line, end_line: line })
+  assert.equal(result.state, 'completed')
+  assert.equal(JSON.parse(result.content).markdown, lines[line - 1])
 })

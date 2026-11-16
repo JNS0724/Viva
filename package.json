@@ -13,7 +13,7 @@
   "type": "module",
   "main": "out/src/shell/main.js",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.ts",
     "prestart": "npm run build",
     "start": "electron .",
     "typecheck": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.plugins.json && tsc -p tsconfig.test.json",

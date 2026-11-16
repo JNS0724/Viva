@@ -462,3 +462,102 @@ test('reading a narrow existing node after a broader daily source never narrows 
   assert.deepEqual(planning.sources[0]?.spans, [{ start: split, end: text.length }])
   assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
 })
+
+// All revisions deliberately share one canonical source: source-ID/version checks
+// alone cannot notice a changed transitive applicability chain.
+function correctionChain(h: ReturnType<typeof harness>) {
+  const first = h.add('Old location. Intermediate location. Latest location.')
+  const workspace = first.note.workspace, source = h.sourceRef(first.source)
+  const middlePath = 'digest/personal/intermediate.md'
+  const create = h.documents.commit({ operationId: 'middle-create', workspace, path: middlePath, expectedRevision: null,
+    markdown: 'Initial summary.', action: 'CREATE', sources: [source], reads: [] })
+  const line = first.note.document.split('\n').findIndex(value => value === first.source.text) + 1
+  h.documents.commit({ operationId: 'middle-correct', workspace, path: middlePath, expectedRevision: create.revision,
+    markdown: 'Intermediate location.', action: 'CORRECT', sources: [source], reads: [],
+    files: [{ path: first.note.path, revision: first.note.fileRevision }],
+    corrections: [{ path: first.note.path, revision: first.note.fileRevision, startLine: line, endLine: line,
+      text: first.source.text!, condition: 'home', time: 'current' }] })
+  const extend = () => {
+    const middle = h.documents.read(workspace, middlePath)!, path = 'digest/personal/latest.md'
+    const created = h.documents.commit({ operationId: 'latest-create', workspace, path, expectedRevision: null,
+      markdown: 'Initial terminal summary.', action: 'CREATE', sources: [source], reads: [] })
+    h.documents.commit({ operationId: 'latest-correct', workspace, path, expectedRevision: created.revision,
+      markdown: 'Latest location.', action: 'CORRECT', sources: [source], reads: [middle],
+      corrections: [{ path: middle.path, revision: middle.revision, startLine: 1, endLine: 1,
+        text: middle.markdown, condition: 'home', time: 'current' }] })
+  }
+  return { first, extend, units: JSON.stringify({ units: [{ name: 'Home', bucket: 'personal', summary: 'Intermediate location.', paths: [first.note.path] }] }) }
+}
+
+test('transitive correction during extraction rejects output without relying on a runtime global revision', async t => {
+  const h = harness(t), chain = correctionChain(h)
+  h.setModel(async request => {
+    assert.equal(request.stage, 'extract')
+    chain.extend()
+    assert.equal(request.current(), false)
+    return chain.units
+  })
+  await h.run()
+  assert.deepEqual(h.requests.map(request => request.stage), ['extract'])
+  assert.equal(h.notes.read(chain.first.key)?.processed, 0)
+})
+
+test('persisted extraction policy rejects a new transitive correction before retrying an old unit', async t => {
+  const h = harness(t), chain = correctionChain(h)
+  h.setModel(async request => {
+    if (request.stage === 'extract') return chain.units
+    throw new Error('transport interrupted')
+  })
+  await h.run()
+  assert.deepEqual(h.requests.map(request => request.stage), ['extract', 'integrate'])
+  chain.extend(); h.restart(); await h.retry()
+  assert.deepEqual(h.requests.map(request => request.stage), ['extract', 'integrate'], 'stale unit is not sent again')
+  assert.equal(h.notes.read(chain.first.key)?.processed, 0)
+})
+
+test('a pending clarification is retired when its transitive file policy changes', async t => {
+  const h = harness(t), chain = correctionChain(h)
+  h.setModel(async request => request.stage === 'extract' ? chain.units : '{"status":"deferred","reason":"Which location applies?"}')
+  await h.run()
+  const original = h.documents.pending(chain.first.note.workspace)[0]!
+  assert.equal(original.status, 'pending_clarification')
+  assert.ok(original.files[0]?.policyToken)
+  chain.extend(); h.restart(); await h.run(); await h.retry()
+  assert.equal(h.documents.deferred(original.workspace, original.operationId), null)
+  assert.equal(h.store.db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(original.operationId)?.state, 'expired')
+  assert.equal(h.requests.filter(request => request.stage === 'extract').length, 2)
+})
+
+test('clarification persists dynamic digest policy reads and retires an obsolete question even when its daily file is unchanged', async t => {
+  const h = harness(t), daily = h.add('Current home details are under review.')
+  const workspace = daily.note.workspace, sources = [h.sourceRef(daily.source)]
+  const originalPath = 'digest/personal/original.md', middlePath = 'digest/personal/middle.md'
+  h.documents.commit({ operationId: 'dynamic-original', workspace, path: originalPath, expectedRevision: null,
+    markdown: 'Original home.', action: 'CREATE', sources, reads: [] })
+  const old = h.documents.read(workspace, originalPath)!
+  const middle = h.documents.commit({ operationId: 'dynamic-middle', workspace, path: middlePath, expectedRevision: null,
+    markdown: 'Summary.', action: 'CREATE', sources, reads: [] })
+  h.documents.commit({ operationId: 'dynamic-correct-middle', workspace, path: middlePath, expectedRevision: middle.revision,
+    markdown: 'Intermediate home.', action: 'CORRECT', sources, reads: [old], corrections: [{ path: old.path,
+      revision: old.revision, startLine: 1, endLine: 1, text: old.markdown, condition: 'home', time: 'current' }] })
+  h.setModel(async request => {
+    if (request.stage === 'extract') return JSON.stringify({ units: [{ name: 'Home', bucket: 'personal', summary: 'Review home.', paths: [daily.note.path] }] })
+    assert.equal(request.stage, 'integrate')
+    await request.tools!.executeTool({ callId: 'read-dynamic', name: 'read', input: { path: originalPath } })
+    return '{"status":"deferred","reason":"Which home applies?"}'
+  })
+  await h.run()
+  const question = h.documents.pending(workspace)[0]!
+  assert.deepEqual(question.readPolicies?.map(file => file.path), [originalPath])
+  const currentMiddle = h.documents.read(workspace, middlePath)!, path = 'digest/personal/terminal.md'
+  const terminal = h.documents.commit({ operationId: 'dynamic-terminal', workspace, path, expectedRevision: null,
+    markdown: 'Summary.', action: 'CREATE', sources, reads: [] })
+  h.documents.commit({ operationId: 'dynamic-correct-terminal', workspace, path, expectedRevision: terminal.revision,
+    markdown: 'Terminal home.', action: 'CORRECT', sources, reads: [currentMiddle], corrections: [{ path: middlePath,
+      revision: currentMiddle.revision, startLine: 1, endLine: 1, text: currentMiddle.markdown, condition: 'home', time: 'current' }] })
+  h.restart(); await h.run()
+  assert.equal(h.documents.deferred(workspace, question.operationId), null)
+  assert.equal(h.store.db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(question.operationId)?.state, 'expired')
+  assert.equal(h.requests.filter(request => request.stage === 'extract').length, 2, 'a fresh unit is extracted from the changed policy')
+  assert.ok(h.documents.pending(workspace).every(work => work.operationId !== question.operationId))
+})

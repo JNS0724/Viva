@@ -13,7 +13,7 @@ type Calculate = (job: Effect, source: MemorySource, stage: 'note' | 'dream', sy
   sources: string[], current: () => boolean) => Promise<unknown>
 
 /** Completed-turn daily capture. Document dream is independently orchestrated by memory-dream. */
-export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), assistantContextCurrent, calculate }: {
+export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), assistantContextCurrent, calculate, mutate = async work => work() }:  {
   store: MemoryStore, effects: Effects, now: () => number, settings?: DailyMemorySettings,
   openNotes: MemoryRuntimeResources['openNotes'],
   readable: (id: string) => boolean,
@@ -25,6 +25,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   projectSource?: (source: MemorySource, ref: DocumentSourceRef) => { text: string, spans?: MemorySpan[] },
   assistantContextCurrent: (context: MemoryProvenance) => boolean,
   calculate: Calculate,
+  mutate?: <T>(write: () => T) => Promise<T>,
 
 }) {
   const { timezone, noteInterval } = { ...defaults, ...settings }
@@ -71,7 +72,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   }
 
   async function write(job: Effect): Promise<Outcome> {
-    notes.recover()
+    await mutate(() => notes.recover())
     if (notes.jobState(job.key, job.generation) === 'done') {
       // The durable receipt/checkpoint may have committed just before the process died.
       // Remaining turns belong to a NEW operation, never reuse the completed generation.
@@ -92,6 +93,8 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (notes.jobState(job.key, job.generation) === 'conflict') return 'wait'
     if (notes.blocked(job.key)) return 'wait'
     const existing = notes.read(job.key)
+    // A registered but unavailable file awaits external verification; it is not a new empty card.
+    if (!existing && notes.registered().some(note => note.key === job.key)) return 'wait'
     const rebuilding = Boolean(existing && !allowsReferences(notes.references(job.key)))
       || Boolean(job.payload && typeof job.payload === 'object' && 'rebuild' in job.payload && job.payload.rebuild === true)
     const rows = rebuilding ? notes.rebuildRows(job.key) : notes.pending(job.key, noteInterval)
@@ -99,7 +102,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const priorRefs = existing && !rebuilding ? notes.references(job.key) : []
     const priorSources = priorRefs.map(ref => ref.id)
     if (rows.some(row => !row.sourceIds.every(readable)) || priorSources.some(id => !readable(id))) return 'wait'
-    const turns = rows.map(row => {
+    const projectTurns = (inputRows: typeof rows) => inputRows.map(row => {
       const sources = row.sourceIds.flatMap(id => sourceOf(id) ?? [])
       const assistantAllowed = allowsDerived([...row.sourceIds, ...row.assistantSourceIds])
       const user = sources.flatMap(source => {
@@ -112,10 +115,21 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       })
       return { row, user, assistant: assistantAllowed && user.length && sources.every(source => allowsText(row.assistant, source)) ? row.assistant : '' }
     })
+    const turns = projectTurns(rows)
     const sources = turns.flatMap(turn => turn.user.map(item => item.source))
     if (!sources.length) {
       if (rebuilding) {
-        if (!notes.commit(job.key, rows, { status: 'skip' }, job.generation, now(), [], existing, { rebuild: true })) return 'retry'
+        const ids = [...new Set(rows.flatMap(row => row.sourceIds))]
+        const versions = JSON.stringify(notes.snapshot(ids)), priorRows = JSON.stringify(rows)
+        if (!await mutate(() => {
+          const current = notes.read(job.key), latestRows = notes.rebuildRows(job.key)
+          // A restored source/question permission can make an empty projection useful again
+          // while physical requests drain. Never delete using that stale empty decision.
+          if (!effects.holds(job) || current?.fileRevision !== existing?.fileRevision || current?.revision !== existing?.revision
+            || !ids.every(readable) || JSON.stringify(notes.snapshot(ids)) !== versions || JSON.stringify(latestRows) !== priorRows
+            || projectTurns(latestRows).some(turn => turn.user.length > 0)) return false
+          return notes.commit(job.key, latestRows, { status: 'skip' }, job.generation, now(), [], existing, { rebuild: true })
+        })) return 'retry'
       } else store.tx(() => notes.finish(rows, false))
       store.tx(() => {
         effects.finishGeneration(job)
@@ -164,7 +178,10 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const reply = noteReply.parse(result)
     if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return 'retry'
     if (reply.status === 'write' && sources.some(source => !allowsText(`${reply.title}\n${reply.markdown}\n${reply.filename ?? ''}`, source))) return 'retry'
-    if (!notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })) {
+    if (!await mutate(() => {
+      if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return false
+      return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })
+    })) {
       store.tx(() => { effects.finishGeneration(job); schedule(job.key, true) })
       wake()
       return 'done'
@@ -194,8 +211,8 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   }
   const CLEAN = 'memory.note-cleanup'
   effects.runs(CLEAN, async jobs => {
-    notes.recover()
-    return new Map(jobs.map(job => [job.key, 'done' as const]))
+    await mutate(() => notes.recover())
+    return new Map(jobs.map(job => [job.key, notes.pendingCleanup() ? 'retry' as const : 'done' as const]))
   })
   effects.runs(WRITE_NOTE, run(write), attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))
   store.tx(() => {

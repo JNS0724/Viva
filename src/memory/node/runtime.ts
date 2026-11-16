@@ -10,6 +10,8 @@ import { openMemoryProfileStore } from './memory-profile-store.ts'
 import { openMemoryNotes } from './memory-note-store.ts'
 import { createMemoryCleanup } from './memory-cleanup.ts'
 import { openMemoryDocuments } from './memory-document-store.ts'
+import { openMemoryFileIndex } from './memory-file-index.ts'
+import { openMemoryFileCatalog } from './memory-file-catalog.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
 export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRuntime>[0], 'store' | 'resources'> & { store: MemoryStore }
@@ -19,13 +21,17 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
   const effects = createEffects({ db: store.db, now, onError: () => console.error('[memory] durable memory queue failed') })
   const lexical = openMemoryIndex(store.db)
   const resources: MemoryRuntimeResources = {
+    sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
     identity: { newId: randomUUID, hash: memoryHash },
     effects, lexical,
     projectionStore: openMemoryProfileStore(store.db),
     openSemantic: () => openMemorySemanticIndex(store.db),
+    openFileIndex: () => openMemoryFileIndex({ db: store.db, now }),
+    openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
     semanticCopiesCleared: (ids, revision) => memorySemanticCopiesCleared(store.db, ids, revision),
-    openNotes: (readable, currentJob) => openMemoryNotes(store, readable, undefined, currentJob),
-    openDocuments: (readable, onCommitted) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted,
+    openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
+    openDocuments: (readable, onCommitted, onRenamed, external) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed,
+      externalCurrent: external?.current, deferRecovery: external?.deferRecovery,
       source(id) {
         const source = store.readSource(id)
         return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source), text: source.text } : undefined

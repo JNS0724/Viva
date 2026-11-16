@@ -79,7 +79,7 @@ test('daily recall ranks persisted Viva memory vectors and daily notes together 
     store, dailyNotes: { noteInterval: 1 },
     route: () => ({ provider: 'test', model: 'test' }), quiesce: async () => {}, changed() {},
     embedder: {
-      fingerprint,
+      fingerprint, dimensions: MEMORY_EMBEDDING_DIMENSIONS,
       close() {},
       async embedBatch(inputs) {
         seen.push(...inputs)
@@ -314,7 +314,7 @@ function runtimeFixture(t: TestContext) {
         modality: 'asserted', attribution: 'self', keywords: [],
       }] }))
     },
-    embedder: { fingerprint, close: () => {}, embedBatch: (inputs, signal) => {
+    embedder: { fingerprint, dimensions: MEMORY_EMBEDDING_DIMENSIONS, close: () => {}, embedBatch: (inputs, signal) => {
       assert.ok(signal)
       return new Promise(resolve => { pending = { inputs, signal, resolve } })
     } },

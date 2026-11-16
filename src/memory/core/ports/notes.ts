@@ -19,6 +19,12 @@ type Note = NoteRow & {
     fileRevision: string;
 };
 export interface MemoryNotes {
+    pendingCleanup(): number;
+    reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined;
+    reconcileEdit(input: import('./documents.ts').DocumentExternalEdit): boolean;
+    reconcileRename(input: import('./documents.ts').DocumentRename): boolean;
+    aliases(): Array<{ workspace: string, path: string, id: string }>;
+    registered(): Array<NoteRow & { sources: DocumentSourceRef[], state: 'active' | 'withdrawing' }>;
     recover: () => void;
     read: (key: string) => Note | undefined;
     snapshot: (ids: readonly string[]) => SourceRef[];

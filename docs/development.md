@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-The app runs from out/. scripts/build.mjs emits src/ and plugins/ through TypeScript into matching out/src and out/plugins paths, then copies pages, styles, icons, and plugin manifests. Start, the combined smoke command, and packaging build first. Individual smoke phases require a prior build. Unit tests use source files directly. Type checking is separate: npm run typecheck.
+The app runs from out/. scripts/build.ts emits src/ and plugins/ through TypeScript into matching out/src and out/plugins paths, then copies pages, styles, icons, and plugin manifests. Start, the combined smoke command, and packaging build first. Individual smoke phases require a prior build. Unit tests use source files directly. Type checking is separate: npm run typecheck.
 
 To inspect all eight desktop island states, run `npm start -- --hidden --debug-desk-states`. Right-click the island and choose **Desktop island state preview**. The menu lets you jump to a group, move to the previous or next group, and show the restored-draft variant in group 05. Press Esc while the preview has focus, or use **Exit preview** to return to the live island. The preview window uses sample tasks and attachments in memory.
 

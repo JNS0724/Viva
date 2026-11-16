@@ -13,6 +13,7 @@ import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk, interjection } from './steer-channel.ts'
+import { memoryProjectScope } from './memory-project.ts'
 import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
 import { withRequestHeader } from '../shared/request-routing/header.ts'
@@ -146,6 +147,10 @@ export function createAcpBridge({
   const taskOf = (id: string) => taskSessions.taskOf(id)
   const isTask = (id: string | null) => id !== null && taskSessions.has(id)
   const allowSession = (id: string, cwd = id === sessionId ? sessionCwd : undefined) => sessionAllowed(id, memory.ready(), isTask(id), cwd)
+  async function allowHumanSession(id: string, cwd = id === sessionId ? sessionCwd : undefined) {
+    if (await allowSession(id, cwd)) return true
+    return !isTask(id) && memory.ready() && await memory.call('recoverContext', { args: [id] }) && await allowSession(id, cwd)
+  }
   const allowTask = (id: string, cwd?: string) => sessionAllowed(id, memory.ready(), true, cwd)
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
@@ -347,16 +352,26 @@ export function createAcpBridge({
    */
   async function resumeOrOpen(resumeSessionId: string | null, targetCwd = sessionCwd) {
     sessionCwd = targetCwd
-    if (!resumeSessionId || !canResume || !await allowSession(resumeSessionId, targetCwd)) return openSession()
+    if (!resumeSessionId || !canResume) return openSession()
+    // An identity mismatch is not a recoverable history surface: the saved session
+    // belongs to a different project. This non-exact acquisition path may open an
+    // empty session at startup, switch or reload; exact switches never use it.
+    // Storage, flush and recovery failures below still fail closed.
+    if (memory.ready() && await memory.call('projectChanged', { args: [resumeSessionId, memoryProjectScope(targetCwd)] })) return openSession()
+    let response
     try {
-      const response = await live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: [] })
-      sessionId = resumeSessionId
-      prepareFresh()
-      return { ...infoFrom(response.configOptions), resumed: true }
+      // Loading native history sends no model request. Recovery needs this real, idle
+      // session before it can replace and durably flush its model-visible surface.
+      response = await live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: [] })
     } catch (err) {
+      if (resumeReason(err) !== 'gone') throw err
       console.error('[acp-bridge] could not resume the saved session, starting a new one:', describeError(err))
       return openSession()
     }
+    if (!await allowHumanSession(resumeSessionId, targetCwd)) throw new Error(t('main.memory.context.stale'))
+    sessionId = resumeSessionId
+    prepareFresh()
+    return { ...infoFrom(response.configOptions), resumed: true }
   }
 
   /**
@@ -366,9 +381,11 @@ export function createAcpBridge({
    * screen without its session, nor puts a new one in its place.
    */
   async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
-    if (!await allowSession(targetSessionId, targetCwd)) throw new ResumeError('gone', t('main.memory.context.stale'))
     const leaving = sessionId
-    if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
+    if (targetSessionId === leaving) {
+      if (!await allowHumanSession(targetSessionId, targetCwd)) throw new ResumeError('unavailable', t('main.memory.context.stale'))
+      return { ...infoFrom(configNow ?? undefined), resumed: true }
+    }
     if (!canResume) throw new ResumeError('gone', t("session.resume.unsupported"))
     let response
     try {
@@ -379,6 +396,7 @@ export function createAcpBridge({
       console.error('[acp-bridge] could not resume the topic\'s session; staying where it was:', describeError(err))
       throw new ResumeError(resumeReason(err), describeError(err, stderrTail))
     }
+    if (!await allowHumanSession(targetSessionId, targetCwd)) throw new ResumeError('unavailable', t('main.memory.context.stale'))
     questions.declineAll()
     config?.closeAll()
     steering.closeAll()
@@ -440,7 +458,14 @@ export function createAcpBridge({
       return
     }
     const asked = sessionId
-    if (asked && !await allowSession(asked)) throw new Error(t('main.memory.context.stale'))
+    if (asked && !await allowSession(asked)) {
+      // Only a new human request may ask the native adapter to replace stale generated
+      // context. Relayed task output and retries must retain their original provenance.
+      if (!request || !userTurn || isTask(asked) || !memory.ready()
+        || !await memory.call('recoverContext', { args: [asked] }) || !await allowSession(asked)) {
+        throw new Error(t('main.memory.context.stale'))
+      }
+    }
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     const origin = contextFor(asked), context = origin ? { ...origin } : null
     let words = request && asked ? asRequest(text, asked, 'prompt').text : text

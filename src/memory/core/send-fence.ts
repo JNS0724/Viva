@@ -13,12 +13,12 @@ export interface MemorySendPermit {
 }
 
 export function createMemorySendFence({ epoch, admit, now = Date.now }: {
-  epoch: string, admit(origin: { session: string } | { jobId: string }): SendAdmission | null, now?: () => number,
+  epoch: string, admit(origin: { session: string, contextGeneration?: number } | { jobId: string }): SendAdmission | null, now?: () => number,
 }) {
   const attempts = new Map<string, { controller: AbortController, done: Promise<void>, finish(): void }>()
   let paused = false, closed = false
   let serial: Promise<unknown> = Promise.resolve()
-  function acquire(id: string, origin: { session: string } | { jobId: string }, payload: string, ownerEpoch = epoch): MemorySendPermit {
+  function acquire(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string, ownerEpoch = epoch): MemorySendPermit {
     if (closed || paused || ownerEpoch !== epoch || attempts.has(id)) throw new MemorySendDenied()
     const admission = admit(origin)
     if (!admission?.current() || admission.deadline !== null && admission.deadline <= now()) throw new MemorySendDenied()

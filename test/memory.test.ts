@@ -207,7 +207,7 @@ test('memory IPC rebuilds derived indexes without modifying the canonical record
     client: ownerClient(owner),
     habits: () => ({ text: '', samples: 0 }), cwd: () => dir, chooseDocs: async () => null,
   })
-  assert.deepEqual(await handlers.get('memory:rebuild-indexes')!({}), { fullText: true, semantic: true })
+  assert.deepEqual(await handlers.get('memory:rebuild-indexes')!({}), { fullText: true, semantic: true, files: { lexical: true, vectorGeneration: 1 } })
   assert.throws(() => handlers.get('memory:rebuild-indexes')!({}, 'invalid'), /invalid memory:rebuild-indexes arguments/)
   assert.deepEqual(runtime.listMemories(), before)
 })

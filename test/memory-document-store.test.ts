@@ -360,3 +360,33 @@ test('a locked WAL keeps replica cleanup pending until a later checkpoint succee
     assert.equal(documents.pendingCleanup(), 0)
   } finally { reader.close() }
 })
+
+test('policy expiration needs no commit receipt, is idempotent and cannot expire another workspace or resolved work', t => {
+  const f = fixture(t), documents = f.create()
+  documents.commit(f.input)
+  const before = documents.read(workspace, path)!
+  const proposal = { operationId: 'policy-question', workspace,
+    unit: { name: '位置', bucket: 'personal' as const, summary: '地点', paths: ['daily/2026-11-16.md'] },
+    reason: '需要确认', sources: f.input.sources, reads: [before], files: [] }
+  documents.defer(proposal)
+  documents.expire(memoryFileRevision('other'), proposal.operationId)
+  assert.equal(documents.deferred(workspace, proposal.operationId)?.status, 'pending_clarification')
+  documents.expire(workspace, proposal.operationId)
+  documents.expire(workspace, proposal.operationId)
+  assert.equal(documents.deferred(workspace, proposal.operationId), null)
+  assert.equal(documents.receipt(workspace, proposal.operationId), null)
+  assert.equal(f.db.prepare('SELECT state,payload FROM memory_document_deferred WHERE operation=?').get(proposal.operationId)?.state, 'expired')
+
+  documents.defer({ ...proposal, operationId: 'ready-question' })
+  documents.answer({ operationId: 'ready-answer', workspace, deferredId: 'ready-question', source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' })
+  documents.expire(workspace, 'ready-question')
+  assert.equal(documents.deferred(workspace, 'ready-question'), null)
+  assert.throws(() => documents.resolve(workspace, 'ready-question'), /expired/)
+
+  documents.defer({ ...proposal, operationId: 'completed-question' })
+  documents.answer({ operationId: 'completed-answer', workspace, deferredId: 'completed-question', source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' })
+  documents.commit({ ...f.input, operationId: 'completed-question', action: 'REFINE', expectedRevision: before.revision,
+    markdown: '明确的新位置', sources: [...before.sources, { id: 's2', token: 'v2' }], reads: [before] })
+  documents.expire(workspace, 'completed-question')
+  assert.equal(f.db.prepare("SELECT state FROM memory_document_deferred WHERE operation='completed-question'").get()?.state, 'resolved')
+})

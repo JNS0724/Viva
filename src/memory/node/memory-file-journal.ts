@@ -54,9 +54,11 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
       const actual = store.read(change.path)?.revision ?? null
       if (actual !== hash(change.before) && actual !== hash(change.after)) conflict()
       const target = accepted ? change.after : change.before
-      if (actual === hash(target)) continue
-      if (target === null) store.remove(change.path, actual!)
-      else store.write(change.path, target, actual)
+      if (actual !== hash(target)) {
+        if (target === null) store.remove(change.path, actual!)
+        else store.write(change.path, target, actual)
+      }
+      // A member is ready even when an external edit already supplied the exact target bytes.
       checkpoint('replace', change.path)
     }
     transaction(db, () => {

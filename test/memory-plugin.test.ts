@@ -56,7 +56,7 @@ test('the sole plugin owner injects manual profile and saves evidence from a nat
   assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')), 'raw session-log upload must stay disabled')
 })
 
-test('host forgetting invalidates dependent main and task requests at the plugin send boundary', { timeout: DSH_TIMEOUT_MS }, async t => {
+test('host forgetting rebuilds a main session from authorized originals while rejecting dependent task input', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, ask, call, agent, freshSession } = await setupMemory(t)
   const text = '周报发到 old-address@example.com'
   const entry = await call('addMemory', { args: [text] })
@@ -70,13 +70,38 @@ test('host forgetting invalidates dependent main and task requests at the plugin
   const current = (await call('listMemories', { args: [] })).items.find(item => item.id === entry.id)!
   await call('deleteMemory', { args: [current.id, current.revision, randomUUID()] })
   const before = llm.requests.length
-  await agent.prompt('禁止发送 stale-memory-marker').catch(() => {})
+  const sameSession = agent.currentSession()
+  await ask('安全恢复后回答 fresh-memory-marker')
+  assert.equal(agent.currentSession(), sameSession, 'recovery preserves the native and UI session identity')
+  assert.ok(llm.requests.slice(before).some(request => JSON.stringify(request).includes('fresh-memory-marker')), 'new original input can continue in the recovered main session')
   if (task.ok) await agent.promptTask(task.taskId, '禁止发送 stale-task-marker').catch(() => {})
-  assert.ok(llm.requests.slice(before).every(request => !/stale-(?:memory|task)-marker/u.test(JSON.stringify(request))), 'neither dependent request crosses the wire')
+  assert.ok(llm.requests.slice(before).every(request => !JSON.stringify(request).includes('stale-task-marker')), 'a task with no independent original evidence remains blocked')
   await freshSession()
   await ask('新会话可以继续')
   assert.ok(llm.requests.slice(before).some(request => JSON.stringify(request).includes('新会话可以继续')))
   assert.ok(llm.requests.slice(before).every(request => !JSON.stringify(request).includes('old-address@example.com')))
+})
+
+test('a stale main conversation resumes the same native session after a real DSH process restart', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { llm, ask, call, agent, bridge } = await setupMemory(t)
+  const old = await call('addMemory', { args: ['周报发送到 restart-private@example.com'] })
+  assert.ok(old)
+  await ask('周报应该发到哪里？')
+  assert.match(lastContext(llm), /restart-private@example.com/)
+  const session = agent.currentSession()!
+  const current = (await call('listMemories', { args: [] })).items.find(item => item.id === old.id)!
+  await call('deleteMemory', { args: [current.id, current.revision, randomUUID()] })
+  await agent.dispose()
+  const before = llm.requests.length
+  const restarted = bridge({ memoryRequired: true })
+  const resumed = await restarted.start({ resumeSessionId: session })
+  assert.equal(resumed.resumed, true)
+  assert.equal(restarted.currentSession(), session)
+  const text = '重启后继续 fresh-restart-marker', sourceId = randomUUID()
+  await restarted.memory.call('sourceAlias', { operationId: randomUUID(), sourceId, session, conversation: 'memory-integration', text })
+  await restarted.prompt(text, [], { userTurn: true, sourceId })
+  assert.ok(llm.requests.slice(before).some(request => JSON.stringify(request).includes('fresh-restart-marker')))
+  assert.ok(llm.requests.slice(before).every(request => !JSON.stringify(request).includes('restart-private@example.com')))
 })
 
 test('trusted source aliases are idempotent and preserve exact original evidence without interpreting headers', { timeout: DSH_TIMEOUT_MS }, async t => {

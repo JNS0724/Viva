@@ -2,7 +2,8 @@ import { z } from 'zod'
 import { dailyPath, digestPath, parseIntegrateReceipt } from '../contracts/memory-file-contract.ts'
 import type { DreamUnit, IntegrateReceipt } from '../contracts/memory-file-contract.ts'
 import type { MemoryModelJob, MemorySourceReference, MemoryToolExecutor } from '../contracts/service.ts'
-import { parseMemoryDocument, readMemoryLines, updateMemoryFrontmatter } from './memory-document.ts'
+import { parseMemoryDocument, memoryDocumentLines, readMemoryLines, updateMemoryFrontmatter } from './memory-document.ts'
+import { parseMemoryMarkdown } from './memory-markdown.ts'
 import { memorySearchTokens } from './search-tokens.ts'
 import type { DocumentSupersession } from './ports/documents.ts'
 
@@ -14,6 +15,7 @@ export interface DreamDocumentSnapshot {
   markdown: string
   sources: readonly MemorySourceReference[]
   usageVersion?: number
+  policyToken?: string
   /** Trusted applicability view from the document service, never model-supplied frontmatter. */
   applicability?: { state: 'current' | 'superseded' | 'unavailable', supersessions: readonly DocumentSupersession[] }
 }
@@ -51,37 +53,9 @@ export const memoryDreamToolDefinitions: MemoryModelJob['tools'] = Object.freeze
 
 /** Only real Markdown wikilinks count. Code examples and escaped syntax are not evidence. */
 export function memoryDocumentLinks(markdown: string): string[] {
-  const body = parseMemoryDocument(markdown).body
-  const links = new Set<string>()
-  let fence: { character: string, length: number } | null = null
-  for (const line of body.split('\n')) {
-    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line)
-    if (marker) {
-      const run = marker[1]!
-      if (!fence) fence = { character: run[0]!, length: run.length }
-      else if (run[0] === fence.character && run.length >= fence.length && !marker[2]!.trim()) fence = null
-      continue
-    }
-    if (fence || /^(?: {4}|\t)/u.test(line)) continue
-    // Inline code can use any matching backtick run; do not treat its contents as links.
-    let visible = '', position = 0
-    while (position < line.length) {
-      if (line[position] === '\\' && position + 1 < line.length) { position += 2; visible += ' '; continue }
-      if (line[position] !== '`') { visible += line[position]; position++; continue }
-      let end = position
-      while (line[end] === '`') end++
-      const run = line.slice(position, end)
-      let close = line.indexOf(run, end)
-      while (close !== -1 && (line[close - 1] === '`' || line[close + run.length] === '`')) close = line.indexOf(run, close + 1)
-      if (close === -1) { visible += run; position = end } else { visible += ' '; position = close + run.length }
-    }
-    for (const match of visible.matchAll(/\[\[([^\]\n]+)\]\]/gu)) {
-      const reference = match[1]!.split('|')[0]!.trim()
-      const path = reference.split('#')[0]!
-      if (readablePath.safeParse(path).success) links.add(reference)
-    }
-  }
-  return [...links]
+  return [...new Set(parseMemoryMarkdown(markdown).links
+    .filter(link => readablePath.safeParse(link.path).success)
+    .map(link => link.path + (link.anchor === undefined ? '' : `#${link.anchor}`)))]
 }
 
 function metadataSummary(snapshot: DreamDocumentSnapshot) {
@@ -98,7 +72,7 @@ export function searchMemoryNodes<S extends DreamDocumentSnapshot>(snapshots: re
   const input = inputSchemas.node_search.parse({ query, limit })
   const terms = [...new Set(memorySearchTokens(input.query, false))]
   if (!terms.length) return []
-  const nodes = snapshots.filter(snapshot => digestPath.safeParse(snapshot.path).success && snapshot.applicability?.state !== 'unavailable').map(snapshot => {
+  const nodes = snapshots.filter(snapshot => digestPath.safeParse(snapshot.path).success && (!snapshot.applicability || snapshot.applicability.state === 'current')).map(snapshot => {
     const summary = metadataSummary(snapshot)
     const tokens = memorySearchTokens([summary.name, summary.description, ...summary.tags].join(' '), true)
     return { snapshot, summary, tokens }
@@ -136,14 +110,14 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
   let searched = false
   const current = () => [...observed.values()].every(snapshot => {
     const latest = documents.read(snapshot.path)
-    return latest?.revision === snapshot.revision && latest?.usageVersion === snapshot.usageVersion
+    return latest?.revision === snapshot.revision && latest?.usageVersion === snapshot.usageVersion && latest?.policyToken === snapshot.policyToken
       && JSON.stringify(latest?.sources) === JSON.stringify(snapshot.sources)
       && JSON.stringify(latest?.applicability) === JSON.stringify(snapshot.applicability)
   }) && (!target || target.before !== null || documents.read(target.path) === null)
   const assertCurrent = () => { if (!current()) throw new MemoryDreamStaleError() }
   function observe(snapshot: S) {
     const previous = observed.get(snapshot.path)
-    if (previous && (previous.revision !== snapshot.revision || previous.usageVersion !== snapshot.usageVersion)) throw new MemoryDreamStaleError()
+    if (previous && (previous.revision !== snapshot.revision || previous.usageVersion !== snapshot.usageVersion || previous.policyToken !== snapshot.policyToken)) throw new MemoryDreamStaleError()
     if (!previous) {
       const captured = structuredClone(snapshot)
       // Bind dependencies before any part of the snapshot can reach model tool results.
@@ -192,7 +166,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
         case 'read': {
           const { path, start_line = 1, end_line } = inputSchemas.read.parse(invocation.input)
           const snapshot = target?.path === path ? { ...target.before, path, markdown: target.markdown } : read(path)
-          const total = snapshot.markdown.split('\n').length
+          const total = memoryDocumentLines(snapshot.markdown).length
           if (start_line > total || end_line !== undefined && end_line < start_line) return reject('memory-dream-line-range')
           const end = Math.min(end_line ?? total, total)
           bodyReads.add(path)

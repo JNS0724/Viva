@@ -55,12 +55,37 @@ export interface DeferredDocumentWork {
   sources: DocumentSourceRef[]
   reads: DocumentReadRef[]
   /** Daily versions are part of the readset even though they are not digest identities. */
-  files: Array<{ path: string, revision: string }>
+  files: Array<{ path: string, revision: string, policyToken?: string }>
+  /** Applicability state of dynamically read files, retained across clarification waits. */
+  readPolicies?: Array<{ path: string, policyToken: string }>
   status: 'pending_clarification' | 'ready' | 'resolved' | 'expired'
   answer?: { operationId: string, source: DocumentSourceRef, text: string }
 }
 export interface DocumentTagAttempt { workspace: string, operationId: string, path: string, revision: string, state: 'attempted' | 'failed' | 'completed', reason?: string }
+export interface DocumentRename { operationId: string, workspace: string, id: string, from: string, to: string, revision: string, usageVersion: number }
+export interface DocumentExternalEdit {
+  path: string
+  operationId: string
+  workspace: string
+  id: string
+  expectedRevision: string
+  expectedUsageVersion: number
+  observedRevision: string
+  sources: DocumentSourceRef[]
+  action?: 'REFINE' | 'CORRECT'
+  reads?: DocumentReadRef[]
+  files?: Array<{ path: string, revision: string }>
+  corrections?: DocumentCorrection[]
+  policyToken: string
+}
 export interface MemoryDocuments {
+  reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined
+  reconcileEdit(input: DocumentExternalEdit): DocumentReceipt | null
+  acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
+  reconcileRename(input: DocumentRename): boolean
+  aliases(workspace: string): Array<{ path: string, id: string }>
+  workspaces(): string[]
+  registered(workspace: string): Array<DocumentReadRef & { workspace: string, path: string, sources: DocumentSourceRef[], state: 'active' | 'disabled' | 'forgotten' }>
   recordTagAttempt(input: DocumentTagAttempt): void
   tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
   sourceRestrictions(workspace: string): DocumentSourceRef[]
@@ -81,4 +106,5 @@ export interface MemoryDocuments {
   pending(workspace: string): DeferredDocumentWork[]
   answer(input: { operationId: string, workspace: string, deferredId: string, source: DocumentSourceRef, text: string }): DeferredDocumentWork
   resolve(workspace: string, operationId: string): void
+  expire(workspace: string, operationId: string): void
 }

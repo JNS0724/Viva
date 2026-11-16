@@ -81,6 +81,8 @@ export const memoryRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('context'), session, turn: z.number().int().positive(), question: z.string().max(MAX_MESSAGE_CHARS) }),
   z.object({ op: z.literal('recall'), session, query, scope: z.literal('project').optional(), asOf: z.iso.date().optional(), deep: z.boolean().optional(),
     limit: z.number().int().optional(), min_score: z.number().optional(), start_date: z.iso.date().optional(), end_date: z.iso.date().optional() }),
+  z.object({ op: z.literal('file_read'), session, id: z.string().min(1).max(200), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional(), evidence: z.boolean().optional() }),
+  z.object({ op: z.literal('node_search'), session, query, limit: z.number().int().positive().max(50).optional() }),
   z.object({ op: z.literal('remember'), session, text, kind: memoryKind.optional(), keywords: z.array(z.string().max(20)).max(6).optional() }),
   z.object({ op: z.literal('forget'), session, id: z.number().int().positive() }),
   z.object({ op: z.literal('clarify'), session, ref: z.uuid() }),

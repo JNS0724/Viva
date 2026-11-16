@@ -10,7 +10,8 @@ import { MEMORY_PROFILE_SYSTEM } from '../src/memory/core/memory-profile.ts'
 import { createBackend } from '../src/backend/compose.ts'
 import type { FeedItem } from '../src/backend/feed-store.ts'
 import type { HostCapabilities, HostEvent } from '../src/backend/host.ts'
-import { MEMORY_EMBEDDING_DIMENSIONS, MEMORY_EMBEDDING_FINGERPRINT } from '../src/memory/node/memory-embedder.ts'
+import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
+const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
 import { memoryHash } from '../src/memory/node/memory-store.ts'
 import { openMemorySemanticIndex } from '../src/memory/node/memory-semantic.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
@@ -40,6 +41,12 @@ function makeScheduleDue(directory: string) {
     db.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'")
       .run(new Date(Date.now() - 1000).toISOString())
   } finally { db.close() }
+}
+
+function contextGeneration(directory: string, session: string): number {
+  const db = new DatabaseSync(join(directory, 'memory', 'memory.db'), { readOnly: true })
+  try { return Number(db.prepare('SELECT generation FROM owner_context_generations WHERE session=?').get(session)?.generation ?? 0) }
+  finally { db.close() }
 }
 
 async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false } = {}) {
@@ -205,6 +212,7 @@ test('startup completes a history withdrawal interrupted by process death before
   const survivorId = randomUUID()
   await app.call('agent:prompt', independent, [], survivorId)
   await app.call('history:save', [{ role: 'user', text: independent, receipt: null, sourceId: survivorId }])
+  const generationBeforeRestart = contextGeneration(app.directory, initial.sessionId!)
   await app.stopBackend()
   const copies = new DatabaseSync(memoryFile)
   try {
@@ -240,7 +248,8 @@ test('startup completes a history withdrawal interrupted by process death before
   const offset = app.model.requests.length
   assert.ok(await app.startBackend())
   assert.equal((await app.memories()).length, 0)
-  assert.notEqual(app.call<AgentInfo>('agent:info').sessionId, initial.sessionId)
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, initial.sessionId)
+  assert.ok(contextGeneration(app.directory, initial.sessionId!) > generationBeforeRestart, 'native history must be durably replaced before the same session can continue')
   const probe = '用保留的记录继续核对'
   await app.ask(probe)
   const continuationId = continuation.info.conversationId
@@ -499,7 +508,9 @@ test('a rejected original remains a dependency of resumed tasks and due schedule
 
   const offset = app.model.requests.length
   const switched = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('timeline:switch-path', host.conversationId)
-  assert.ok(switched.ok && switched.info.sessionId !== host.sessionId)
+  assert.ok(switched.ok)
+  assert.equal(switched.info.sessionId, host.sessionId)
+  assert.ok(contextGeneration(app.directory, host.sessionId!) > 0, 'the withdrawn branch must recover its native surface before reusing the session')
   await app.ask('回到旧分支后继续')
   await app.newTopic()
   const db = new DatabaseSync(join(app.directory, 'app.db'))

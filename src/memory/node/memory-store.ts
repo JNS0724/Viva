@@ -7,6 +7,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { APP_DB_PRAGMAS, transaction } from './sqlite.ts'
 import { MEMORY_CONTRACT, memoryScope } from '../contracts/memory-contract.ts'
 import type { MemoryKind, MemoryScope } from '../contracts/memory-contract.ts'
+import { memoryFileDependencySchema } from '../contracts/provenance.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import { memoryRelationLabel } from '../core/memory-facts.ts'
 import type { MemoryFact } from '../core/memory-facts.ts'
@@ -90,6 +91,9 @@ const DISPATCH_SCHEMA = `
 
 // Derived delivery metadata is additive. Existing session receipts do not have relation deadlines.
 const DERIVED_DISPATCH_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS memory_session_file_dependencies (
+    session TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(session,reference)
+  );
   CREATE TABLE IF NOT EXISTS memory_session_relation_dependencies (
     session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, expires INTEGER NOT NULL,
     PRIMARY KEY(session, fact, revision)
@@ -101,8 +105,8 @@ const DERIVED_DISPATCH_SCHEMA = `
   );
 `
 
-import type { MemoryDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../core/ports/store.ts'
-export type { MemoryDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../core/ports/store.ts'
+import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../core/ports/store.ts'
+export type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../core/ports/store.ts'
 
 const CANDIDATE_TARGET = "COALESCE(json_extract(proposal,'$.proposal.change.target.id'),json_extract(proposal,'$.change.target.id'))"
 
@@ -535,11 +539,23 @@ export function openMemoryStore(file: string, now = Date.now) {
       CASE WHEN expires IS NULL OR excluded.expires IS NULL THEN COALESCE(expires,excluded.expires) ELSE MIN(expires,excluded.expires) END`)
   const readProfileDependencies = db.prepare(`SELECT fact AS id, revision, collection_revision AS collectionRevision, expires
     FROM memory_session_profile_dependencies WHERE session=?`)
+  const insertSessionFile = db.prepare('INSERT OR IGNORE INTO memory_session_file_dependencies VALUES (?, ?)')
+  const readSessionFiles = db.prepare('SELECT reference FROM memory_session_file_dependencies WHERE session=? ORDER BY rowid')
   const insertSessionSource = db.prepare('INSERT OR IGNORE INTO memory_session_sources VALUES (?, ?)')
   const readSessionSources = db.prepare('SELECT source FROM memory_session_sources WHERE session = ?')
   const retainTurnOnly = db.prepare('INSERT OR IGNORE INTO memory_session_turn_only VALUES (?)')
   const usedTurnOnly = db.prepare('SELECT 1 FROM memory_session_turn_only WHERE session = ?')
   const dispatch = {
+    replace(session: string, sources: readonly string[]) {
+      tx(() => {
+        for (const table of ['memory_session_dependencies', 'memory_session_sources', 'memory_session_turn_only',
+          'memory_session_file_dependencies', 'memory_session_relation_dependencies', 'memory_session_profile_dependencies']) {
+          db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
+        }
+        for (const source of new Set(sources)) insertSessionSource.run(session, source)
+        db.prepare('INSERT INTO memory_sessions VALUES (?,?) ON CONFLICT(id) DO UPDATE SET epoch=excluded.epoch').run(session, epoch())
+      })
+    },
     dependencies(session: string, dependencies: readonly MemoryDependency[]) {
       tx(() => {
         for (const item of dependencies) {
@@ -553,10 +569,16 @@ export function openMemoryStore(file: string, now = Date.now) {
         }
       })
     },
+    files(session: string, files: readonly MemoryFileDependency[]) {
+      // Serialize a canonical field order; retain different scopes, versions and policies without overwriting.
+      const references = files.map(file => JSON.stringify(memoryFileDependencySchema.parse(file)))
+      tx(() => { for (const reference of references) insertSessionFile.run(session, reference) })
+    },
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
     snapshot(session: string): MemoryProvenance {
       const project = sessionProject(session)
+      const files = (readSessionFiles.all(session) as Array<{ reference: string }>).map(row => memoryFileDependencySchema.parse(JSON.parse(row.reference)))
       const rows = readDependencies.all(session) as Array<{ id: number, revision: number, asOf: string, disputed: number }>
       return {
         dependencies: [
@@ -572,6 +594,7 @@ export function openMemoryStore(file: string, now = Date.now) {
         turnOnly: Boolean(usedTurnOnly.get(session)),
         ...(project ? { projects: [project] } : {}),
         epoch: epoch(),
+        ...(files.length ? { files } : {}),
       }
     },
   }

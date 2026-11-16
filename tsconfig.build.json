@@ -1,4 +1,4 @@
-// What `npm run build` emits into out/ (scripts/build.mjs), laid out like the repository: out/src, out/plugins.
+// What `npm run build` emits into out/ (scripts/build.ts), laid out like the repository: out/src, out/plugins.
 // It only writes the code out; `npm run typecheck` is what checks it.
 {
   "extends": "./tsconfig.base.json",

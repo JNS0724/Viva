@@ -9,8 +9,18 @@ export type MemoryDependency = {
     expiresAt?: number;
     collectionRevision?: number;
 };
+/** Exact accepted file/policy snapshot carried by every derived request. */
+export type MemoryFileDependency = {
+    workspace: string;
+    id: string;
+    path: string;
+    revision: string;
+    usageVersion: number;
+    policyToken: string;
+};
 export type MemoryProvenance = {
     dependencies: MemoryDependency[];
+    files?: MemoryFileDependency[];
     sources: string[];
     turnOnly: boolean;
     epoch: number;

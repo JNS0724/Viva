@@ -2,8 +2,8 @@
 import type { MemoryKind, MemoryScope } from '../../contracts/memory-contract.ts'
 import type { MemoryFact } from '../memory-facts.ts'
 import type { MemoryInterval } from '../memory-intervals.ts'
-import type { MemoryDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
-export type { MemoryDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
+import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
+export type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
 export interface MemoryStore {
     tx: <T>(work: () => T) => T;
     revision: () => number;
@@ -69,7 +69,10 @@ export interface MemoryStore {
     } | undefined;
     recordDeliveredSource: (id: string, conversation: string, derived: boolean) => void;
     dispatch: {
+        /** Only after a durable host context replacement, under the owner send fence. */
+        replace(session: string, sources: readonly string[]): void;
         dependencies(session: string, dependencies: readonly MemoryDependency[]): void;
+        files(session: string, files: readonly MemoryFileDependency[]): void;
         source: (session: string, source: string) => void;
         turnOnly: (session: string) => void;
         snapshot(session: string): MemoryProvenance;

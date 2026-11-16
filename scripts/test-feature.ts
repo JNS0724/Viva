@@ -23,7 +23,7 @@ const FEATURES = {
   storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|feed-store|task-store)\.test\.(?:js|ts)$/,
   i18n: /^i18n[.-]/,
   shell: /^(?:desk-(?:island|place)|island-main|tray|window-options)\.test\.(?:js|ts)$/,
-  tooling: /^(?:asar-integrity|pnpm-launcher|live(?:-approval)?|maid|smoke-(?:kit|timeline-time|layout|fixtures)|ci-check|test-feature)\.test\.(?:js|ts)$/,
+  tooling: /^(?:asar-integrity|build-page-libraries|pnpm-launcher|live(?:-approval)?|maid|smoke-(?:kit|timeline-time|layout|fixtures)|ci-check|test-feature)\.test\.(?:js|ts)$/,
 } as const
 export type Feature = keyof typeof FEATURES
 export const featureNames = Object.keys(FEATURES) as Feature[]

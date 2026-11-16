@@ -8,6 +8,7 @@ import type { Apply } from '../src/backend/journal.ts'
 import { MAX_ATTEMPTS, MAX_WAIT_MS, RETRY_MS, createScheduleRuns } from '../src/backend/schedule-runs.ts'
 import { openScheduleStore } from '../src/backend/schedule-store.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
+import type { MemoryFileDependency, MemoryProvenance } from '../src/memory/contracts/records.ts'
 
 /** Schedules run when due (schedule-runs.ts): one timer, runs kept with what was taken, each answer one item in 动态. */
 
@@ -15,6 +16,31 @@ const at = (iso: string) => Date.parse(iso)
 type Timer = { run: () => void, ms: number }
 const UNAVAILABLE: RunResult = { ok: false, problem: 'unavailable', unavailable: true }
 const ONCE = { kind: 'at', at: '2026-11-06T11:00:00+08:00' } as const
+
+test('file dependencies survive saved schedules, retry recovery, result merging and feed continuation', async t => {
+  const ref: MemoryFileDependency = { workspace: 'a'.repeat(64), id: 'node', path: 'digest/wiki/report.md',
+    revision: 'body', usageVersion: 1, policyToken: 'policy' }
+  const initial: MemoryProvenance = { dependencies: [], sources: [], turnOnly: false, epoch: 0,
+    files: [ref, { ...ref, workspace: 'b'.repeat(64) }] }
+  const result: MemoryProvenance = { ...initial, files: [{ ...ref, id: 'related', path: 'digest/wiki/related.md' }] }
+  const app = setup([{ ok: false, problem: 'temporary transport failure' }, { ok: true, text: 'Current report', memory: result }])
+  const schedule = app.store.create({ title: 'Report', prompt: 'Summarize', cwd: '/work', rule: ONCE, memory: initial })
+  assert.deepEqual(app.store.get(schedule.id)?.memory, initial)
+  app.go('2026-11-06T11:00:00+08:00')
+  let runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  runner.wake(); await app.settle()
+  const parked = app.db.prepare('SELECT memory FROM schedule_runs').get() as { memory: string }
+  assert.deepEqual((JSON.parse(parked.memory) as MemoryProvenance).files, initial.files)
+  runner.close()
+  runner = app.make()
+  app.go('2026-11-06T11:02:00+08:00')
+  runner.wake(); await app.settle()
+  assert.equal(app.asked.length, 2)
+  const item = app.feed.list()[0]!
+  assert.equal(item.body, 'Current report')
+  assert.deepEqual(app.feed.continuation(item.id)?.memory?.files, [...initial.files!, ...result.files!])
+})
 
 function setup(answers: Array<RunResult | Promise<RunResult>> = [], memoryCurrent: NonNullable<Parameters<typeof createScheduleRuns>[0]['memoryCurrent']> = () => true) {
   let now = at('2026-11-06T10:00:00+08:00')

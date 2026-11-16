@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { DigestAction } from '../contracts/memory-file-contract.ts'
 import type { MemorySource } from './ports/store.ts'
 import type { DocumentCorrection, DocumentSourceRef } from './ports/documents.ts'
-import { readMemoryLines } from './memory-document.ts'
+import { memoryDocumentLines, readMemoryLines } from './memory-document.ts'
 
 const evidenceSpan = z.strictObject({
   sourceId: z.string().min(1), sourceVersion: z.int().positive(),
@@ -68,7 +68,7 @@ export function validateDreamReview({ value, action, sources, source, reads, uni
   for (const fragment of review.corrections) {
     const previous = reads.find(item => item.path === fragment.path && item.revision === fragment.revision)
     if (!previous || readMemoryLines(previous.markdown, fragment.startLine, fragment.endLine) !== fragment.text
-      || fragment.endLine > previous.markdown.split('\n').length) throw new Error('memory-dream-correction-fragment')
+      || fragment.endLine > memoryDocumentLines(previous.markdown).length) throw new Error('memory-dream-correction-fragment')
   }
   return { verdict: 'verified', sources: [...verified.values()], corrections: review.corrections }
 }

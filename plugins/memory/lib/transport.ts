@@ -3,7 +3,7 @@ import { channel } from 'node:diagnostics_channel'
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemorySendPermit } from '../../../src/memory/core/send-fence.ts'
 
-export type MemoryTransportOrigin = { session: string } | { jobId: string }
+export type MemoryTransportOrigin = { session: string, contextGeneration?: number } | { jobId: string }
 interface OriginContext { owner: MemoryTransportOwner; origin: MemoryTransportOrigin }
 interface Sending { permit: MemorySendPermit; created: boolean; origin?: string; path?: string }
 export interface MemoryTransportOwner {

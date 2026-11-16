@@ -9,15 +9,15 @@ import type { MemoryIdentity } from './ports/runtime.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemorySource } from './ports/store.ts'
-import type { DocumentReceipt, DocumentSnapshot, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
+import type { DeferredDocumentWork, DocumentReceipt, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
 import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import { todayAt } from './memory-facts.ts'
-import { readMemoryLines, updateMemoryFrontmatter } from './memory-document.ts'
+import { updateMemoryFrontmatter } from './memory-document.ts'
 import { createMemoryDreamTools, MemoryDreamStaleError } from './memory-dream-tools.ts'
-import type { DreamDocumentSnapshot } from './memory-dream-tools.ts'
+import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
+import type { MemoryDocumentView } from './memory-document-read-policy.ts'
 import { documentSourceRestricted, projectDocumentSource } from './memory-document-restrictions.ts'
-import { inspectMemoryDocumentText } from './memory-dream-material.ts'
 import { validateDreamReview } from './memory-dream-evidence.ts'
 import { DREAM_EXTRACT_SYSTEM, DREAM_INTEGRATE_SYSTEM, DREAM_TAG_SYSTEM, DREAM_VERIFY_SYSTEM } from './memory-dream-prompts.ts'
 
@@ -26,7 +26,7 @@ export type DreamCalculate = (request: {
   sourceIds: () => readonly string[], current: () => boolean, tools?: MemoryComputeTools,
 }) => Promise<string | undefined>
 const sourceRefSchema = z.object({ id: z.string(), token: z.string(), spans: z.array(z.object({ start: z.int().nonnegative(), end: z.int().positive() })).optional() })
-const fileRefSchema = z.object({ key: z.string(), workspace: z.string(), path: z.string(), revision: z.string(), checkpoint: z.int(), sources: z.array(sourceRefSchema), reads: z.array(z.object({ id: z.string(), revision: z.string(), usageVersion: z.int() })).default([]) })
+const fileRefSchema = z.object({ key: z.string(), workspace: z.string(), path: z.string(), revision: z.string(), policyToken: z.string().min(1), checkpoint: z.int(), sources: z.array(sourceRefSchema), reads: z.array(z.object({ id: z.string(), revision: z.string(), usageVersion: z.int() })).default([]) })
 const planSchema = z.object({
   version: z.literal(1), files: z.array(fileRefSchema),
   units: z.array(z.object({ workspace: z.string(), operationId: z.string(), unit: dreamUnitSchema, state: z.enum(['pending', 'done', 'deferred']) })),
@@ -37,7 +37,7 @@ type DreamPlan = z.infer<typeof planSchema>
 type FileRef = z.infer<typeof fileRefSchema>
 type PlannedUnit = DreamPlan['units'][number]
 type Note = NonNullable<ReturnType<MemoryNotes['read']>>
-type ToolSnapshot = DreamDocumentSnapshot & { backing: DocumentSnapshot | null, supporting: DocumentSnapshot[], sourceTokens: DocumentSourceRef[] }
+type ToolSnapshot = MemoryDocumentView
 const deferredReply = z.strictObject({ status: z.literal('deferred'), reason: z.string().trim().min(1) })
 const tagReply = z.strictObject({ memory_tags: z.array(z.string().trim().min(1)) })
 const DAILY = 'daily'
@@ -81,88 +81,45 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
   const schedule = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
-  const refOf = (note: Note): FileRef => ({ key: note.key, workspace: note.workspace, path: note.path, revision: note.fileRevision,
-    checkpoint: note.revision, sources: notes.references(note.key), reads: [] })
-  const refsCurrent = (refs: readonly DocumentSourceRef[]) => {
-    if (!refs.length || refs.some(ref => !readable(ref.id))) return false
-    const latest = notes.snapshot(refs.map(ref => ref.id))
-    return refs.every(ref => latest.some(item => item.id === ref.id && item.token === ref.token) && Boolean(source(ref.id)?.text))
+  const refOf = (note: Note, view = policy.read(note.workspace, note.path)): FileRef => {
+    if (!view || view.applicability.state === 'unavailable') throw new MemoryDreamStaleError()
+    return { key: note.key, workspace: note.workspace, path: note.path, revision: note.fileRevision,
+      policyToken: view.policyToken, checkpoint: note.revision, sources: notes.references(note.key), reads: [] }
   }
+  const { refsCurrent, materialAllowed } = createMemoryDocumentEvidence({ notes, documents, hash: identity.hash, source, readable, allowsText })
   const fileCurrent = (ref: FileRef) => {
     const latest = notes.read(ref.key)
-    return latest?.workspace === ref.workspace && latest.path === ref.path && latest.fileRevision === ref.revision && refsCurrent(ref.sources)
+    return latest?.workspace === ref.workspace && latest.path === ref.path && latest.fileRevision === ref.revision && policy.read(ref.workspace, ref.path)?.policyToken === ref.policyToken && refsCurrent(ref.sources)
       && !ref.sources.some(source => documentSourceRestricted(source, documents.sourceRestrictions(ref.workspace)))
   }
-  const materialAllowed = (text: string, refs: readonly DocumentSourceRef[]) => {
-    const ids = new Set(refs.map(ref => ref.id))
-    const scoped = notes.list(null, null).filter(note => notes.sources(note.key).some(id => ids.has(id)))
-    const workspaces = unique(scoped.map(note => note.workspace))
-    const paths = [...scoped.map(note => note.path), ...workspaces.flatMap(workspace => documents.list(workspace).map(doc => doc.path)),
-      ...refs.flatMap(ref => { const original = source(ref.id); return original?.session ? [`session/dialog/${identity.hash(original.session)}.jsonl`] : [] })]
-    const prose = inspectMemoryDocumentText(text, paths, refs.flatMap(ref => { const original = source(ref.id);
-      return original?.session ? [{ key: 'session_id', value: original.session }] : [] }))
-    return refs.every(ref => {
-      const original = source(ref.id)
-      return original?.text && allowsText(original.text, original) && allowsText(prose, original)
-    })
-  }
-  const allSources = (refs: readonly DocumentSourceRef[]) => {
-    const merged = new Map<string, DocumentSourceRef>()
-    for (const ref of refs) {
-      const prior = merged.get(ref.id)
-      if (prior && prior.token !== ref.token) throw new MemoryDreamStaleError()
-      const spans = prior ? prior.spans && ref.spans ? [...prior.spans, ...ref.spans] : undefined : ref.spans
-      const ranges: Array<{ start: number, end: number }> = []
-      for (const span of [...spans ?? []].sort((a, b) => a.start - b.start || a.end - b.end)) {
-        const last = ranges.at(-1)
-        if (last && span.start <= last.end) last.end = Math.max(last.end, span.end)
-        else ranges.push({ ...span })
-      }
-      merged.set(ref.id, { ...ref, spans: spans ? ranges : undefined })
-    }
-    return [...merged.values()]
-  }
-  const publicRefs = (refs: readonly DocumentSourceRef[]) => refs.map(ref => {
-    const result = reference(ref.id)
-    if (!result) throw new MemoryDreamStaleError()
-    return result
+  const allSources = mergeDocumentSources
+  const policy = createMemoryDocumentReadPolicy({ notes, documents, hash: identity.hash, refsCurrent, materialAllowed, reference })
+  const deferredPoliciesCurrent = (work: DeferredDocumentWork) => work.files.every(file =>
+    file.policyToken && policy.read(work.workspace, file.path)?.policyToken === file.policyToken)
+    && Boolean(work.readPolicies?.every(file => policy.read(work.workspace, file.path)?.policyToken === file.policyToken))
+  const scopedDocuments = (workspace: string) => ({
+    read: (path: string) => policy.read(workspace, path),
+    list: () => policy.list(workspace, 'digest'),
   })
-  function scopedDocuments(workspace: string) {
-    const daily = (path: string) => notes.list(null, null).find(note => note.workspace === workspace && note.path === path)
-    const snapshot = (path: string): ToolSnapshot | null => {
-      const note = path.startsWith('daily/') ? daily(path) : undefined
-      const digest = path.startsWith('digest/') ? documents.read(workspace, path) : null
-      if (!note && !digest) return null
-      const refs = note ? notes.references(note.key) : digest!.sources
-      if (note && refs.some(ref => documentSourceRestricted(ref, documents.sourceRestrictions(workspace)))) return null
-      const markdown = note ? note.document : digest!.markdown
-      if (!refsCurrent(refs) || !materialAllowed(markdown, refs)) return null
-      const stored = documents.supersessions(workspace, path)
-      const supersessions = stored.filter(item => !(digest?.id === item.documentId
-        && digest.corrections.some(active => active.operationId === item.operationId)))
-      const replacements = supersessions.map(item => documents.list(workspace).find(candidate => candidate.id === item.documentId
-        && candidate.corrections.some(active => active.operationId === item.operationId)))
-      const unmapped = supersessions.some(item => item.revision !== (note ? note.fileRevision : digest!.revision)
-        && readMemoryLines(markdown, item.startLine, item.endLine) !== item.text)
-      const supporting = replacements.filter((item): item is DocumentSnapshot => Boolean(item))
-      const state = unmapped || replacements.some(item => !item) ? 'unavailable' : supersessions.length ? 'superseded' : 'current'
-      const combined = allSources([...refs, ...supporting.flatMap(item => item.sources)])
-      return {
-        path, revision: note ? note.fileRevision : digest!.revision, markdown, sources: publicRefs(combined),
-        sourceTokens: combined, backing: digest, supporting, usageVersion: digest?.usageVersion,
-        applicability: { state, supersessions },
-      }
-    }
-    return { read: snapshot, list: () => documents.list(workspace).flatMap(doc => snapshot(doc.path) ?? []) }
-  }
   const extractedReadsCurrent = (files: readonly FileRef[]) => files.every(file => file.reads.every(ref =>
     documents.list(file.workspace).some(doc => doc.id === ref.id && doc.revision === ref.revision && doc.usageVersion === ref.usageVersion)))
   function advanceOwnReads(plan: DreamPlan, workspace: string, receipt: DocumentReceipt) {
     const latest = documents.read(workspace, receipt.path)
     if (!latest || latest.id !== receipt.documentId || latest.revision !== receipt.revision || latest.usageVersion !== receipt.usageVersion) return
     for (const file of plan.files) if (file.workspace === latest.workspace) {
-      if (file.reads.some(ref => ref.id === latest.id)) file.sources = allSources([...file.sources, ...latest.sources])
-      file.reads = file.reads.map(ref => ref.id === latest.id ? { id: latest.id, revision: latest.revision, usageVersion: latest.usageVersion } : ref)
+      const view = policy.read(file.workspace, file.path)
+      if (!view || view.applicability.state === 'unavailable' || view.revision !== file.revision) continue
+      const previous = new Map(file.reads.map(ref => [ref.id, ref]))
+      // Only this exact receipt can explain a changed dependency. A new replacement
+      // elsewhere in the chain must invalidate the persisted extraction instead.
+      if (!view.supporting.some(doc => doc.id === latest.id)
+        || view.supporting.some(doc => {
+          const expected = doc.id === latest.id ? latest : previous.get(doc.id)
+          return !expected || expected.revision !== doc.revision || expected.usageVersion !== doc.usageVersion
+        }) || file.reads.some(ref => !view.supporting.some(doc => doc.id === ref.id))) continue
+      file.sources = allSources([...file.sources, ...view.sourceTokens])
+      file.reads = view.supporting.map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion }))
+      file.policyToken = view.policyToken
     }
   }
   function persist(job: Effect, plan: DreamPlan) {
@@ -196,7 +153,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     const extracted: Array<{ workspace: string, unit: DreamUnit }> = []
     let count = 0
     for (const workspace of workspaces) {
-      const pending = documents.pending(workspace)
+      const pending = documents.pending(workspace).filter(work => {
+        if (work.status === 'resolved' || work.status === 'expired') return false
+        if (deferredPoliciesCurrent(work)) return true
+        // A clarification answers the exact observed state, not a newer correction chain.
+        documents.expire(workspace, work.operationId)
+        return false
+      })
       const scoped = changed.filter(note => note.workspace === workspace)
       // An unchanged ambiguous unit is dormant. A validated answer resumes that exact unit without another Extract.
       const dormant = pending.filter(work => work.status === 'pending_clarification' || work.status === 'ready')
@@ -204,8 +167,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         if (count >= dreamUnits) break
         const files = work.files.map(ref => allNotes.find(note => note.workspace === workspace && note.path === ref.path && note.fileRevision === ref.revision))
         if (files.some(file => !file)) continue
-        for (const note of files as Note[]) if (!plan.files.some(file => file.key === note.key)) plan.files.push({ ...refOf(note),
-          sources: allSources([...refOf(note).sources, ...work.sources]), reads: work.reads })
+        for (const note of files as Note[]) if (!plan.files.some(file => file.key === note.key)) {
+          const ref = refOf(note)
+          plan.files.push({ ...ref, sources: allSources([...ref.sources, ...work.sources]), reads: work.reads })
+        }
         plan.units.push({ workspace, operationId: work.operationId, unit: work.unit, state: 'pending' }); count++
       }
       const candidates = scoped.filter(note => !dormant.some(work => work.files.some(ref => ref.path === note.path && ref.revision === note.fileRevision))
@@ -216,11 +181,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         const snapshots = batch.map(note => view.read(note.path))
         if (snapshots.some(snapshot => !snapshot || snapshot.applicability?.state === 'unavailable')) return
         const seen = snapshots as ToolSnapshot[]
-        const refs = batch.map((note, index) => ({ ...refOf(note), sources: seen[index]!.sourceTokens,
+        const refs = batch.map((note, index) => ({ ...refOf(note, seen[index]!), sources: seen[index]!.sourceTokens,
           reads: seen[index]!.supporting.map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion })) }))
         const sources = allSources(refs.flatMap(ref => ref.sources))
         const current = () => effects.holds(job) && refs.every(fileCurrent) && extractedReadsCurrent(refs)
-          && seen.every(snapshot => JSON.stringify(view.read(snapshot.path)?.applicability) === JSON.stringify(snapshot.applicability))
+          && seen.every(snapshot => view.read(snapshot.path)?.policyToken === snapshot.policyToken)
         if (!current()) { plan.retryExtraction = true; return }
         let units: DreamUnit[] | undefined
         let invalid = false
@@ -273,6 +238,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     const files = plan.files.filter(file => file.workspace === item.workspace && item.unit.paths.includes(file.path))
     if (files.length !== unique(item.unit.paths).length || !files.every(fileCurrent)) throw new MemoryDreamStaleError()
     const previous = documents.deferred(item.workspace, item.operationId)
+    if (previous && !deferredPoliciesCurrent(previous)) throw new MemoryDreamStaleError()
     if (previous?.status === 'pending_clarification') return 'deferred'
     const scope = scopedDocuments(item.workspace)
     const readSources = new Map(allSources([...files.flatMap(file => file.sources), ...previous?.answer ? [previous.answer.source] : []]).map(ref => [ref.id, ref]))
@@ -298,7 +264,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         transaction(() => {
           if (previousOperationId) item.operationId = `dream:${identity.newId()}`
           documents.defer({ operationId: item.operationId, workspace: item.workspace, unit: item.unit, reason,
-            sources: refs(), reads: readDocuments(), files: files.map(file => ({ path: file.path, revision: file.revision })) }, previousOperationId)
+            sources: refs(), reads: readDocuments(),
+            readPolicies: tools.reads().map(snapshot => ({ path: snapshot.path, policyToken: snapshot.policyToken })), files: files.map(file => ({ path: file.path, revision: file.revision, policyToken: file.policyToken })) }, previousOperationId)
           item.state = 'deferred'
           persist(job, plan)
         })
@@ -388,6 +355,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       // Attempt is durable before model IO. Auto Tag is best-effort and never turns a completed integration into a retry loop.
       item.attempted = true; persist(job, plan)
       const target = documents.read(item.workspace, item.path)
+      const targetView = policy.read(item.workspace, item.path)
+      if (!targetView || targetView.applicability.state !== 'current') continue
       if (!target || target.revision !== item.revision || !refsCurrent(target.sources)) continue
       const operationId = `tag:${identity.hash(JSON.stringify([item.workspace, target.id, target.revision]))}`
       if (documents.tagAttempt(item.workspace, operationId)) continue
@@ -395,6 +364,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       documents.recordTagAttempt({ ...attempt, state: 'attempted' })
       const fail = (reason: string) => documents.recordTagAttempt({ ...attempt, state: 'failed', reason })
       const current = () => effects.holds(job) && refsCurrent(target.sources)
+        && policy.read(item.workspace, item.path)?.policyToken === targetView.policyToken
         && documents.read(item.workspace, item.path)?.revision === target.revision
         && documents.read(item.workspace, item.path)?.usageVersion === target.usageVersion
       try {
@@ -419,7 +389,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     }
   }
   async function runJob(job: Effect): Promise<Outcome> {
-    notes.recover(); await mutate(() => documents.recover())
+    await mutate(() => { notes.recover(); documents.recover() })
     let plan = planSchema.safeParse(job.payload).data
     if (!plan) plan = await extract(job)
     if (!plan) return 'done'
@@ -440,6 +410,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     if (plan.files.some(file => !fileCurrent(file))) {
       if (effects.holds(job)) effects.amend(job, {})
       return 'retry'
+    }
+    for (const item of plan.units) {
+      const work = documents.deferred(item.workspace, item.operationId)
+      if (work && (work.status === 'ready' || work.status === 'pending_clarification') && !deferredPoliciesCurrent(work)) {
+        documents.expire(item.workspace, item.operationId)
+        if (effects.holds(job)) effects.amend(job, {})
+        return 'retry'
+      }
     }
     let retry = false, wait = false
     for (const item of plan.units) {

@@ -8,6 +8,8 @@ export type { MemoryScope, MemorySpan, MemoryCompute } from './memory-contract.t
 export * from './host.ts'
 export * from './domain-error.ts'
 export type * from './records.ts'
-export { combineMemoryProvenance } from './provenance.ts'
+export { combineMemoryProvenance, memoryFileDependencySchema, memoryProvenanceSchema } from './provenance.ts'
 export * from './text-limits.ts'
 export type { MemoryComputeTools } from './compute.ts'
+
+export * from './context-recovery.ts'

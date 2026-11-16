@@ -9,14 +9,15 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { chromium } from '@playwright/test'
+import { chromium, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { buildMemoryPlugin } from './build-memory-plugin.ts'
 import { startFakeLlm } from '../test/fixtures/fake-llm.js'
 
 const project = path.resolve(import.meta.dirname, '..')
 const require = createRequire(import.meta.url)
-const output = path.join(project, 'smoke/memory-plugin')
+const fileMode = process.env.VIVA_SMOKE_FILE_MEMORY === '1'
+const output = path.join(project, fileMode ? 'smoke/memory-plugin-files' : 'smoke/memory-plugin')
 const temporary = mkdtempSync(path.join(os.tmpdir(), 'viva-plugin-web-'))
 const dataRoot = path.join(temporary, 'memory')
 const home = path.join(temporary, 'home')
@@ -35,6 +36,20 @@ function collectMarkdown(dir: string): string[] {
 async function until(check: () => boolean, label: string, timeout = 30_000) {
   const end = Date.now() + timeout
   while (!check()) { if (Date.now() >= end) throw new Error(`Timed out: ${label}`); await delay(100) }
+}
+function noteProgress() {
+  const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
+  try {
+    const row = db.prepare('SELECT key,revision,processed FROM memory_daily_notes ORDER BY processed DESC LIMIT 1').get()
+    return row ? { key: String(row.key), revision: Number(row.revision), processed: Number(row.processed) } : null
+  } finally { db.close() }
+}
+function noteContextGeneration(key: string) {
+  const identity: unknown = JSON.parse(key)
+  assert.ok(Array.isArray(identity) && typeof identity[1] === 'string')
+  const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
+  try { return Number(db.prepare('SELECT generation FROM owner_context_generations WHERE session=?').get(identity[1])?.generation ?? 0) }
+  finally { db.close() }
 }
 async function stop(proc: ChildProcess | undefined) {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return
@@ -61,7 +76,7 @@ function installArtifact() {
     return path.join(temporary, item.filename)
   }
   const plugin = pack(artifact)
-  const dependencies = ['yaml', 'zod'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
+  const dependencies = ['yaml', 'zod', 'marked'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
   writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   run(['install', plugin, ...dependencies, '--offline', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--package-lock=false'], installed)
   const manifest = JSON.parse(readFileSync(path.join(installed, 'node_modules/viva-memory/package.json'), 'utf8')) as { peerDependencies: Record<string, string> }
@@ -77,7 +92,7 @@ function installArtifact() {
   return path.join(installed, 'node_modules/viva-memory/index.js')
 }
 const llm = await startFakeLlm({ decideFirst: (request: object) => {
-  const input = request as { system?: unknown, messages?: Array<{ role?: string, content?: string | Array<{ type?: string, name?: string }> }> }
+  const input = request as { system?: unknown, tools?: Array<{ name?: string }>, messages?: Array<{ role?: string, content?: string | Array<{ type?: string, name?: string, text?: string }> }> }
   if (JSON.stringify(input.system).includes('整理最近完成的会话回合')) return {
     text: JSON.stringify({ status: 'write', title: '周报约定', markdown: `# 周报约定\n\n${marker}`, filename: 'weekly-summary' }),
   }
@@ -85,6 +100,15 @@ const llm = await startFakeLlm({ decideFirst: (request: object) => {
   const tool = Array.isArray(assistant?.content) ? assistant.content.find(part => part.type === 'tool_use') : undefined
   if (tool?.name === 'memory_recall' && JSON.stringify(input.messages?.at(-1)).includes('tool_result')) {
     return { text: `查到了：${JSON.stringify(input.messages?.at(-1)).includes(marker) ? marker : '没有相关记忆'}` }
+  }
+  const lastUser = input.messages?.findLast(message => message.role === 'user')
+  const blocks = Array.isArray(lastUser?.content) ? lastUser.content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []) : []
+  // Native providers coalesce adjacent user messages into one array of content blocks.
+  // The shared fixture reads only its first block; recovery history precedes the new
+  // question here. Require the actual latest question, not a match in retained history.
+  const latestText = blocks.filter(text => !text.trim().startsWith('<')).at(-1)
+  if (input.tools?.some(tool => tool.name === 'memory_recall') && latestText?.startsWith('查一下 ')) {
+    return { tool: { name: 'memory_recall', input: { query: latestText.slice(4).trim() } } }
   }
   return null
 } })
@@ -96,7 +120,7 @@ const errors: string[] = []
 try {
   const plugin = installArtifact()
   const patch = path.join(temporary, 'memory.patch.yml')
-  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- insert:\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n`)
+  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- insert:\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n        fileMode: ${fileMode}\n`)
   browser = await chromium.launch({ headless: true })
   const launch = async () => {
     let launchLog = ''
@@ -122,10 +146,12 @@ try {
     return page
   }
   const send = async (page: Page, text: string, expected: string | RegExp) => {
+    const previousReplies = await page.getByText(expected, { exact: false }).count()
     const editor = page.locator('textarea,[contenteditable=true]').first()
     await editor.click()
     await editor.pressSequentially(text, { delay: 5 })
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await expect.poll(() => page.getByText(expected, { exact: false }).count(), { timeout: 30_000 }).toBeGreaterThan(previousReplies)
     await page.getByText(expected, { exact: false }).last().waitFor({ state: 'visible', timeout: 30_000 })
     await page.getByRole('button', { name: 'Send message', exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
   }
@@ -140,6 +166,23 @@ try {
   await send(page, '查一下 周报', '查到了：')
   for (let turn = 1; turn <= 3; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
   await until(() => collectMarkdown(dataRoot).some(file => file.includes(`${path.sep}daily${path.sep}`) && readFileSync(file, 'utf8').includes(marker)), 'completed conversation daily note')
+  let recoveredGeneration = 0
+  if (fileMode) {
+    await send(page, '查一下 周报', `查到了：${marker}`)
+    const original = noteProgress()
+    assert.ok(original)
+    const previousGeneration = noteContextGeneration(original.key)
+    // Reading this card establishes a file dependency. Updating the same card must
+    // retire the old native context before the next request, not strand the session.
+    for (let turn = 4; turn <= 7; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
+    await until(() => {
+      const current = noteProgress()
+      return current?.key === original.key && current.revision > original.revision
+    }, 'same-session daily revision advances')
+    await send(page, '查一下 周报', `查到了：${marker}`)
+    recoveredGeneration = noteContextGeneration(original.key)
+    assert.ok(recoveredGeneration > previousGeneration, 'this same session is durably rebuilt after the next daily update')
+  }
   const requestText = JSON.stringify(llm.requests)
   assert.ok(requestText.includes('memory_remember') && requestText.includes('memory_recall'), 'native tools reach the model')
   assert.ok(llm.requests.some(request => JSON.stringify(request).includes('<about-user>') && JSON.stringify(request).includes(marker)), 'saved memory reaches an injected model request')
@@ -154,7 +197,8 @@ try {
   await page.screenshot({ path: path.join(output, 'web-after-restart.png'), fullPage: true })
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
-    ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart, restart: true, modelRequests: llm.requests.length, pageErrors: errors }
+    ipcParent: false, fileMode, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
+    ...(fileMode ? { sameSessionDailyUpdate: true, recoveredGeneration } : {}), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
   passed = true

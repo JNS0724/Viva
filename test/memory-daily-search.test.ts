@@ -20,7 +20,7 @@ test('daily Markdown chunks cover the full document and keep the original line b
 test('semantic search embeds the tail, reuses current vectors and fuses over BM25', async () => {
   const seen: string[] = []
   const search = createDailySemanticSearch({
-    fingerprint: 'test',
+    fingerprint: 'test', dimensions: 2,
     close() {},
     async embedBatch(inputs) {
       seen.push(...inputs.map(input => input.text))
@@ -46,4 +46,38 @@ test('semantic search embeds the tail, reuses current vectors and fuses over BM2
   search.clear()
   await search.rank(docs, 'original', signal)
   assert(seen.length > calls + 2)
+})
+
+
+test('indexed-only file chunks never fall back to cached or new embeddings while legacy facts still do', async () => {
+  const calls: Array<{ kind: string, text: string }> = []
+  const search = createDailySemanticSearch({ fingerprint: 'test', dimensions: 2, close() {}, async embedBatch(inputs) {
+    calls.push(...inputs); return inputs.map(() => Float32Array.of(1, 0))
+  } }, text => text)
+  const file = { key: 'file:accepted-v1', text: 'file body' }, legacy = { key: 'memory:1', text: 'legacy body' }
+  const signal = new AbortController().signal
+  // A stale in-process vector must not satisfy an explicitly index-only file lookup.
+  await search.rank([file], 'question', signal)
+  calls.length = 0
+  const result = await search.rank([file, legacy], 'question', signal, {
+    indexed: () => new Map(), indexedOnly: new Set([file.key]), scores: new Map([[file.key, 0.9]]),
+  })
+  assert.equal(result.incomplete, true)
+  assert.equal(result.scores.has(file.key), false)
+  assert.equal(result.scores.get(legacy.key), 1)
+  assert.deepEqual(calls.filter(input => input.kind === 'passage').map(input => input.text), ['legacy body'])
+})
+
+test('indexed-only scores reuse the persisted lane without invoking passage embedding', async () => {
+  const calls: string[] = []
+  const search = createDailySemanticSearch({ fingerprint: 'test', dimensions: 2, close() {}, async embedBatch(inputs) {
+    calls.push(...inputs.map(input => input.kind)); return inputs.map(() => Float32Array.of(1, 0))
+  } }, text => text)
+  const file = { key: 'file:accepted-v2', text: 'safe body' }
+  const result = await search.rank([file], 'question', new AbortController().signal, {
+    indexed: () => new Map([[file.key, 0.81]]), indexedOnly: new Set([file.key]),
+  })
+  assert.deepEqual(calls, ['query'])
+  assert.equal(result.incomplete, false)
+  assert.equal(result.scores.get(file.key), 0.81)
 })

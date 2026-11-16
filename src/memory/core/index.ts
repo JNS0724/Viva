@@ -8,3 +8,7 @@ export { createMemoryCoordination } from './coordination.ts'
 export { createMemoryDreamJobs } from './memory-dream-jobs.ts'
 export { createMemoryDreamTools } from './memory-dream-tools.ts'
 export type { MemoryDocuments } from './ports/documents.ts'
+
+export { createMemoryDocumentReadPolicy } from './memory-document-read-policy.ts'
+export { parseMemoryMarkdown } from './memory-markdown.ts'
+export type { MemoryFileIndex, MemoryFileCatalog } from './ports/file-index.ts'

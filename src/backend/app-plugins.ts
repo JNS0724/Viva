@@ -119,7 +119,7 @@ export interface AppPlugin {
   name: string
   dir: string
   contract: string
-  config: (data: { userData: string, permission: string, memory?: { modelRoot: string, runtimeRoot: string, dailyNotes: boolean } }) => PluginConfig
+  config: (data: { userData: string, permission: string, memory?: { modelRoot: string, runtimeRoot: string, dailyNotes: boolean, fileMode?: boolean } }) => PluginConfig
   stock?: StockEntry[]
 }
 
@@ -184,7 +184,7 @@ export interface UsablePlugin { name: string, dir: string, config: PluginConfig,
  * codeRoot: the folder with the app's plugins/ (config.ts CODE_ROOT); dshVersion: the dsh installed in the project.
  */
 export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS, memory }: {
-  codeRoot: string, userData: string, dshVersion: string, permission?: string, plugins?: readonly AppPlugin[], memory?: { modelRoot: string, runtimeRoot: string, dailyNotes: boolean },
+  codeRoot: string, userData: string, dshVersion: string, permission?: string, plugins?: readonly AppPlugin[], memory?: { modelRoot: string, runtimeRoot: string, dailyNotes: boolean, fileMode?: boolean },
 }): { plugins: UsablePlugin[], problems: Array<{ name: string, contract: string, problem: string }> } {
   return plugins.reduce(({ plugins: usable, problems }, plugin) => {
     const dir = path.join(codeRoot, plugin.dir)

@@ -59,7 +59,7 @@ test('npm-packed JS artifact installs offline and its Node API works without the
     return path.join(dir, item.filename)
   }
   const tarball = pack(artifact)
-  const libraries = ['zod', 'yaml'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
+  const libraries = ['zod', 'yaml', 'marked'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
   const clean = path.join(dir, 'clean-project')
   mkdirSync(clean)
   writeFileSync(path.join(clean, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
@@ -97,4 +97,5 @@ test('npm-packed JS artifact installs offline and its Node API works without the
   const manifest = JSON.parse(readFileSync(path.join(clean, 'node_modules/viva-memory/package.json'), 'utf8')) as { main: string, dependencies: Record<string, string> }
   assert.equal(manifest.main, 'index.js')
   assert.equal(manifest.dependencies.yaml, '2.9.1')
+  assert.equal(manifest.dependencies.marked, '18.0.14')
 })

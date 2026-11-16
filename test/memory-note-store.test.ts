@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryFileJournal } from '../src/memory/node/memory-file-journal.ts'
@@ -58,7 +59,7 @@ test('daily content is a file, its index and receipt commit together, and source
   assert.equal(notes.pending(key).length, 0)
   assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE state='done' AND plan IS NULL").get()?.n, 2)
   writeFileSync(path, readFileSync(path, 'utf8').replace('先核对版本，再发布。', '外部修改了文件正文。'))
-  assert.equal(notes.read(key)?.markdown, '外部修改了文件正文。')
+  assert.equal(notes.read(key), undefined, 'external changes remain unavailable until independently verified')
 })
 
 test('same session/day updates one stable path; title changes preserve index and inbound links', t => {
@@ -271,16 +272,17 @@ test('withdrawing a turn without a card never treats an unrelated missing.md as 
   assert.deepEqual(readdirSync(join(store.fileRoot, workspace, 'session/dialog')), [])
 })
 
-test('withdrawal does not delete a card rewritten by an external editor after the purge was queued', t => {
+test('withdrawal erases an externally rewritten managed card instead of allowing a hash change to evade cleanup', t => {
   const { store, notes, source, key, commit } = setup(t)
   commit()
   const card = notes.read(key)!
   const file = join(store.fileRoot, card.workspace, card.path)
   store.tx(() => notes.withdraw(source.id))
-  writeFileSync(file, 'An external replacement must not be deleted as the withdrawn card.')
+  writeFileSync(file, card.document + '\nAn external append still belongs to this managed identity.')
   notes.recover()
   const reopened = openMemoryNotes(store, () => true)
-  assert.equal(readFileSync(file, 'utf8'), 'An external replacement must not be deleted as the withdrawn card.')
+  assert.equal(existsSync(file), false)
+  assert.equal(reopened.pendingCleanup(), 0)
   assert.equal(reopened.read(key), undefined)
 })
 
@@ -296,15 +298,15 @@ test('a third-hash note conflict overlapping a purge does not prevent reopening 
   store.tx(() => notes.withdraw(source.id))
   const recovered = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text))
   assert.equal(recovered.read(key), undefined)
-  assert.equal(readFileSync(file, 'utf8'), 'External third hash after the interrupted write.')
-  assert.equal(recovered.jobState(key, 7), 'conflict')
+  assert.equal(existsSync(file), false)
+  assert.equal(recovered.jobState(key, 7), 'cancelled')
   const other = noteSource(store, { session: 'another-session', project: { kind: 'project', id: 'another-workspace' } })
   const otherKey = recovered.add('another-session', before.day, [other], 'Independent work can continue')!
   assert.ok(otherKey)
   assert.equal(recovered.commit(otherKey, recovered.pending(otherKey), { status: 'write', title: 'Independent card',
     markdown: 'Other workspace content.' }, 8, Date.now(), recovered.snapshot([other.id]), undefined), true)
   assert.equal(recovered.read(otherKey)?.markdown, 'Other workspace content.')
-  assert.equal(readFileSync(file, 'utf8'), 'External third hash after the interrupted write.')
+  assert.equal(existsSync(file), false)
 })
 
 for (const crash of [false, true]) test(`a ${crash ? 'recovered' : 'completed'} title update preserves inbound card versions for later withdrawal`, async t => {
@@ -341,4 +343,42 @@ for (const crash of [false, true]) test(`a ${crash ? 'recovered' : 'completed'} 
   assert.equal(recovered.read(inboundKey), undefined)
   assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_note_purges').get()?.n, 0)
   assert.equal(recovered.read(key)?.path, targetAfter.path)
+})
+
+
+test('a different registered identity at a former managed path is never erased by the old purge', t => {
+  const { store, notes, source, key, commit } = setup(t)
+  commit(); const old = notes.read(key)!
+  const independent = noteSource(store, { session: 'new-owner' })
+  const otherKey = notes.add('new-owner', old.day, [independent], '')!
+  notes.commit(otherKey, notes.pending(otherKey), { status: 'write', title: 'Independent', markdown: 'New independent content.' }, 2, Date.now(), notes.snapshot([independent.id]), undefined)
+  const other = notes.read(otherKey)!
+  store.tx(() => notes.withdraw(source.id))
+  renameSync(join(store.fileRoot, old.workspace, other.path), join(store.fileRoot, old.workspace, old.path))
+  assert.equal(notes.reconcileRename({ operationId: 'different-owner', workspace: old.workspace, id: otherKey, from: other.path,
+    to: old.path, revision: other.fileRevision, usageVersion: other.revision }), true)
+  notes.recover()
+  assert.equal(notes.read(otherKey)?.markdown, 'New independent content.')
+  assert.equal(notes.pendingCleanup(), 0)
+})
+
+
+test('note replica erasure remains pending while a WAL reader retains its before-image', t => {
+  const { dir, store, notes, source, key, commit } = setup(t)
+  const marker = 'Private derived peppermint preference retained only in a note.'
+  commit('Tea', marker)
+  const note = notes.read(key)!, file = join(store.fileRoot, note.workspace, note.path)
+  writeFileSync(file, note.document + '\nExternal appended text.')
+  store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  const reader = new DatabaseSync(join(dir, 'memory.db'))
+  try {
+    reader.exec('BEGIN'); reader.prepare('SELECT * FROM memory_daily_notes').all()
+    store.tx(() => notes.withdraw(source.id)); notes.recover()
+    assert.equal(existsSync(file), false)
+    assert.ok(notes.pendingCleanup() > 0)
+    reader.exec('COMMIT'); notes.recover()
+    assert.equal(notes.pendingCleanup(), 0)
+    store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    assert.equal(readFileSync(join(dir, 'memory.db')).includes(Buffer.from(marker)), false)
+  } finally { reader.close() }
 })
