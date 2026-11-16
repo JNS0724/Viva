@@ -22,6 +22,7 @@ import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/sou
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { buildMemoryPlugin } from './build-memory-plugin.ts'
 import { startFakeLlm } from '../test/fixtures/fake-llm.js'
+import { createVenueModelFixture, venue } from '../test/fixtures/memory-plugin-venue.ts'
 
 const project = path.resolve(import.meta.dirname, '..')
 const require = createRequire(import.meta.url)
@@ -153,7 +154,10 @@ function installArtifact() {
   rmSync(path.join(temporary, 'compiled'), { recursive: true })
   return path.join(installed, 'node_modules/viva-memory/index.js')
 }
+const venueModel = createVenueModelFixture()
 const llm = await startFakeLlm({ decideFirst: (request: object) => {
+  const venueReply = venueModel.decide(request)
+  if (venueReply) return venueReply
   const input = request as { system?: unknown, tools?: Array<{ name?: string }>, messages?: Array<{ role?: string, content?: string | Array<{ type?: string, name?: string, text?: string }> }> }
   if (JSON.stringify(input.system).includes('整理最近完成的会话回合')) return {
     text: JSON.stringify({ status: 'write', title: '周报约定', markdown: `# 周报约定\n\n${marker}`, filename: 'weekly-summary' }),
@@ -284,10 +288,89 @@ try {
 
   assert.ok((await page.locator('body').innerText()).includes(marker), 'memory survives ordinary Node DSH restart')
   await page.screenshot({ path: path.join(output, 'web-after-restart.png'), fullPage: true })
+
+  // Only browser-originated human turns produce these canonical sources and
+  // the daily note. The sole fixture mutation below advances the persisted
+  // scheduler deadline while the real Web owner is stopped.
+  writeFileSync(path.join(output, 'web-before-venue-aria.yml'), await page.locator('body').ariaSnapshot())
+  // The visible caption is "New Session"; the public AX label is "New session".
+  await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+  await page.locator('textarea,[contenteditable=true]').first().waitFor({ state: 'visible', timeout: 30_000 })
+  for (const fact of venue.facts) await send(page, fact, `收到：「${fact}`)
+  const venueDaily = () => collectMarkdown(dataRoot).filter(file => file.includes(`${path.sep}daily${path.sep}`)
+    && venue.facts.every(fact => readFileSync(file, 'utf8').includes(fact)))
+  await until(() => venueDaily().length > 0, 'the venue human turns reach a real daily file')
+  await page.close(); await stop(proc); proc = undefined
+  {
+    const db = new DatabaseSync(path.join(dataRoot, 'memory.db'))
+    try {
+      assert.equal(db.prepare("UPDATE effects SET due_at=0 WHERE kind='memory.dream'").run().changes, 1,
+        'accelerate only the already-persisted dream schedule')
+    } finally { db.close() }
+  }
+  page = await launch()
+  let deferredId = ''
+  const readDream = <T>(read: (db: DatabaseSync) => T): T => {
+    const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
+    try { return read(db) } finally { db.close() }
+  }
+  await until(() => readDream(db => {
+    const row = db.prepare("SELECT operation FROM memory_document_deferred WHERE state='pending_clarification' AND payload LIKE ?")
+      .get(`%${venue.topic}%`)
+    deferredId = typeof row?.operation === 'string' ? row.operation : ''
+    return Boolean(deferredId)
+  }), 'real Extract and Integrate defer an ambiguous venue')
+  assert.deepEqual(venueModel.report().stages, ['extract', 'integrate:deferred'])
+  assert.equal(await page.getByPlaceholder('Type your answer', { exact: true }).count(), 0,
+    'the background dream never asks the user')
+  const queryStart = llm.requests.length
+  await send(page, '帮我确认窗口对齐就好', '收到：「帮我确认窗口对齐就好')
+  assert.equal(await page.getByPlaceholder('Type your answer', { exact: true }).count(), 0)
+  assert.ok(llm.requests.slice(queryStart).every(request => {
+    const input = request as { messages?: Array<{ role?: string, content?: unknown }> }
+    return !input.messages?.some(message => message.role === 'assistant' && Array.isArray(message.content)
+      && message.content.some((part: unknown) => part && typeof part === 'object' && 'type' in part && part.type === 'tool_use'
+        && 'name' in part && part.name === 'memory_clarify'))
+  }),
+    'an unrelated turn does not initiate a native clarification call')
+  await page.screenshot({ path: path.join(output, 'web-dream-deferred.png'), fullPage: true })
+  const questionEditor = page.locator('textarea,[contenteditable=true]').first()
+  await questionEditor.fill(`查一下 ${venue.topic}`)
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  const answer = page.getByPlaceholder('Type your answer', { exact: true })
+  await answer.waitFor({ state: 'visible', timeout: 30_000 })
+  writeFileSync(path.join(output, 'web-dream-question-aria.yml'), await page.locator('body').ariaSnapshot())
+  await page.screenshot({ path: path.join(output, 'web-dream-question.png'), fullPage: true })
+  await answer.fill(venue.answer)
+  await page.getByRole('button', { name: 'Submit', exact: true }).click()
+  await page.getByText(venue.completed, { exact: false }).last().waitFor({ state: 'visible', timeout: 30_000 })
+  await until(() => readDream(db => db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(deferredId)?.state === 'resolved'),
+    'the genuine Web answer resolves the original deferred work')
+  await until(() => collectMarkdown(dataRoot).some(file => file.endsWith(venue.target.split('/').join(path.sep))
+    && readFileSync(file, 'utf8').includes(venue.summary) && readFileSync(file, 'utf8').includes('memory_tags:')), 'the verified and tagged digest is committed')
+  const dream = venueModel.report()
+  assert.deepEqual(dream.stages, ['extract', 'integrate:deferred', 'integrate:resumed', 'verify', 'tag'],
+    'the same dormant work resumes without another Extract')
+  assert.deepEqual(new Set(dream.tools), new Set(['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update']))
+  const checkpoint = readDream(db => {
+    const receipt = db.prepare('SELECT receipt FROM memory_document_receipts WHERE operation=?').get(deferredId)
+    assert.ok(receipt, 'the original deferred operation owns the committed document receipt')
+    const saved = JSON.parse(String(receipt.receipt)) as { path: string }
+    assert.equal(saved.path, venue.target)
+    const notes = db.prepare('SELECT path,revision,processed FROM memory_daily_notes').all()
+      .filter(note => venueDaily().some(file => file.endsWith(String(note.path).split('/').join(path.sep))))
+    assert.ok(notes.length && notes.every(note => note.revision === note.processed), 'successful dream checkpoints all of its real daily inputs')
+    assert.equal(db.prepare('SELECT count(*) n FROM memory_document_answers WHERE deferred=?').get(deferredId)?.n, 1,
+      'the native Web answer is admitted once')
+    return { operationId: deferredId, notes }
+  })
+  await page.screenshot({ path: path.join(output, 'web-dream-resolved.png'), fullPage: true })
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
     ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
-    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
+    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget), restart: true,
+    dream: { stages: dream.stages, tools: dream.tools, canonicalSources: dream.canonicalSources.length, checkpoint },
+    nativeWebClarification: true, unrelatedTurnDoesNotAsk: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
   passed = true
@@ -296,6 +379,7 @@ try {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: path.join(output, 'web-failure.png'), fullPage: true }).catch(() => {})
     writeFileSync(path.join(output, 'web-failure.txt'), await page.locator('body').innerText().catch(() => 'Page unavailable'))
+    writeFileSync(path.join(output, 'web-failure-aria.yml'), await page.locator('body').ariaSnapshot().catch(() => 'Page unavailable'))
   }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify({ passed: false, error: error instanceof Error ? error.message : String(error), modelRequests: llm.requests.length, pageErrors: errors }, null, 2) + '\n')
   throw error
