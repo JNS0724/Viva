@@ -5,6 +5,8 @@ export const testLevels = {
   fast: [
     'memory-dream-tools',
     'memory-markdown',
+    'memory-file-management',
+    'memory-file-host',
     'memory-file-index',
     'memory-file-evaluation',
     'memory-file-ranking',

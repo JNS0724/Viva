@@ -218,21 +218,22 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   store.tx(() => {
     for (const group of notes.pendingGroups()) schedule(group.note, true)
   })
+  function queueRestrictedRebuilds() {
+    store.tx(() => {
+      for (const note of notes.list(null, null)) {
+        if (allowsReferences(notes.references(note.key))) continue
+        const active = effects.get(WRITE_NOTE, note.key)
+        if (active?.payload && typeof active.payload === 'object' && 'rebuild' in active.payload && active.payload.rebuild === true) continue
+        effects.cancel(WRITE_NOTE, note.key)
+        effects.queue(WRITE_NOTE, note.key, { rebuild: true, flush: true })
+      }
+    })
+  }
   return {
     record,
     storage: notes,
-    refreshRestrictions() {
-      store.tx(() => {
-        for (const note of notes.list(null, null)) {
-          if (allowsReferences(notes.references(note.key))) continue
-          const active = effects.get(WRITE_NOTE, note.key)
-          if (active?.payload && typeof active.payload === 'object' && 'rebuild' in active.payload && active.payload.rebuild === true) continue
-          effects.cancel(WRITE_NOTE, note.key)
-          effects.queue(WRITE_NOTE, note.key, { rebuild: true, flush: true })
-        }
-      })
-      wake()
-    },
+    queueRestrictedRebuilds,
+    refreshRestrictions() { queueRestrictedRebuilds(); wake() },
     read: notes.read,
     sources: notes.sources,
     list: notes.list,

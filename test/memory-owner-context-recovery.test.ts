@@ -229,10 +229,14 @@ test('a stopped source span cannot return through full original recovery or host
   const home = documents.commit({ operationId: 'home', workspace, path: 'digest/personal/home.md', expectedRevision: null, action: 'CREATE', markdown: '深圳',
     sources: [{ id: source.id, token: memorySourceToken(source), spans: [{ start: 0, end: 5 }] }], reads: [] })
   await owner.runtime.setDocumentEnabled({ operationId: 'stop-home', workspace, documentId: home.documentId, expectedRevision: home.revision!, expectedUsageVersion: home.usageVersion, enabled: false })
-  assert.equal(owner.runtime.dispatchSourceCurrent(source.id), true, 'the remainder of this canonical source remains usable')
+  assert.equal(owner.runtime.dispatchSourceCurrent(source.id), false, 'the raw source includes a stopped span')
+  assert.equal(owner.needsContextRecovery(sessionId), true)
+  assert.throws(() => owner.acquireSend(randomUUID(), { session: sessionId }, 'the old original'), /denied/)
+  assert.equal(owner.runtime.allowedHistory({ segmentId: sessionId, sourceId: source.id, role: 'user', text: human.content }), false)
   const ticket = await owner.prepareContextRecovery({ sessionId, baseSurfaceHash: 'stopped-context', candidates: [human] })
   assert.deepEqual(ticket.retainedMessageIds, [], 'complete host messages cannot be safely split from text-only span permissions')
   assert.equal(owner.coordination.allowsProjectHistory({ segmentId: 'history-row', sourceId: source.id, sessionId, role: 'user', text: human.content }, undefined, undefined), false)
+  assert.equal(owner.coordination.allowsProjectHistory({ segmentId: 'unverified-copy', role: 'user', text: human.content }, undefined, undefined), false)
   assert.equal(owner.coordination.allowsProjectHistory({ segmentId: 'unknown-origin', role: 'assistant', text: 'Private previous answer' }, undefined, undefined), false)
 })
 

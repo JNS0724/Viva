@@ -22,6 +22,8 @@ export type MemoryProvenance = {
     dependencies: MemoryDependency[];
     files?: MemoryFileDependency[];
     sources: string[];
+    /** Subset of sources seen only through the exact accepted file dependencies. */
+    fileSources?: string[];
     turnOnly: boolean;
     epoch: number;
     projects?: readonly string[];

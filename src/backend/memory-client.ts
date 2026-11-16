@@ -6,6 +6,8 @@ export function createVivaMemoryClient(call: HostMemoryCaller) {
   const method = <M extends HostMemoryMethod>(name: M) => (...args: HostMemoryApi[M]['input'] extends { args: infer A extends unknown[] } ? A : never) =>
     call(name, { args } as unknown as HostMemoryApi[M]['input'])
   return {
+    listFiles: method('listFiles'), readFile: method('readFile'),
+    setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'),
     recoverContext: method('recoverContext'),
     listMemories: method('listMemories'), listInvalid: method('listInvalid'), listChanges: method('listChanges'),
     profile: method('profile'), profileView: method('profileView'), revision: method('revision'), cleanupPending: method('cleanupPending'),

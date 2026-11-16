@@ -13,3 +13,4 @@ export * from './text-limits.ts'
 export type { MemoryComputeTools } from './compute.ts'
 
 export * from './context-recovery.ts'
+export * from './file-management.ts'

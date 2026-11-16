@@ -1,3 +1,5 @@
+import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult } from '../memory/contracts/file-management.ts'
+
 /**
  * What the main process answers on a channel (ipc-contract.ts says what may be sent), for the channels whose answer
  * is written out so far: the background tasks' (task-runtime.ts). The backend's handlers return these types and the
@@ -104,6 +106,10 @@ export interface IpcResults {
   'agent:waits': true
   'task:close': void
   'task:stop': void
+  'memory:list-files': MemoryFileListResult
+  'memory:read-file': MemoryFileDetail | null
+  'memory:set-file-enabled': MemoryFileMutationResult
+  'memory:undo-file': MemoryFileMutationResult
   'memory:list-changes': readonly MemoryChangeRecord[]
   'memory:delete': MemoryDeleteResult
   'memory:undo-change': UndoMemoryChangeResult

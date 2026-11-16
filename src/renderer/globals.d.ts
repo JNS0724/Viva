@@ -213,6 +213,10 @@ interface AgentApi extends DraftApi {
   revealWorkDir: Invoke<'workdir:reveal'>
   getMemory: Invoke<'memory:get'>
   listMemories: Invoke<'memory:list'>
+  listMemoryFiles: Invoke<'memory:list-files'>
+  readMemoryFile: Invoke<'memory:read-file'>
+  setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>
+  undoMemoryFile: Invoke<'memory:undo-file'>
   saveProfile: Invoke<'memory:set-profile'>
   addMemory: Invoke<'memory:add'>
   updateMemory: Invoke<'memory:update'>

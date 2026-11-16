@@ -94,6 +94,9 @@ const DERIVED_DISPATCH_SCHEMA = `
   CREATE TABLE IF NOT EXISTS memory_session_file_dependencies (
     session TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(session,reference)
   );
+  CREATE TABLE IF NOT EXISTS memory_session_file_sources (
+    session TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(session,source)
+  );
   CREATE TABLE IF NOT EXISTS memory_session_relation_dependencies (
     session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, expires INTEGER NOT NULL,
     PRIMARY KEY(session, fact, revision)
@@ -543,13 +546,16 @@ export function openMemoryStore(file: string, now = Date.now) {
   const readSessionFiles = db.prepare('SELECT reference FROM memory_session_file_dependencies WHERE session=? ORDER BY rowid')
   const insertSessionSource = db.prepare('INSERT OR IGNORE INTO memory_session_sources VALUES (?, ?)')
   const readSessionSources = db.prepare('SELECT source FROM memory_session_sources WHERE session = ?')
+  const insertFileSource = db.prepare('INSERT OR IGNORE INTO memory_session_file_sources VALUES (?, ?)')
+  const readFileSources = db.prepare(`SELECT source FROM memory_session_file_sources f WHERE session=?
+    AND NOT EXISTS (SELECT 1 FROM memory_session_sources s WHERE s.session=f.session AND s.source=f.source) ORDER BY rowid`)
   const retainTurnOnly = db.prepare('INSERT OR IGNORE INTO memory_session_turn_only VALUES (?)')
   const usedTurnOnly = db.prepare('SELECT 1 FROM memory_session_turn_only WHERE session = ?')
   const dispatch = {
     replace(session: string, sources: readonly string[]) {
       tx(() => {
         for (const table of ['memory_session_dependencies', 'memory_session_sources', 'memory_session_turn_only',
-          'memory_session_file_dependencies', 'memory_session_relation_dependencies', 'memory_session_profile_dependencies']) {
+          'memory_session_file_dependencies', 'memory_session_file_sources', 'memory_session_relation_dependencies', 'memory_session_profile_dependencies']) {
           db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
         }
         for (const source of new Set(sources)) insertSessionSource.run(session, source)
@@ -569,10 +575,14 @@ export function openMemoryStore(file: string, now = Date.now) {
         }
       })
     },
-    files(session: string, files: readonly MemoryFileDependency[]) {
+    files(session: string, files: readonly MemoryFileDependency[], sources: readonly string[] = []) {
       // Serialize a canonical field order; retain different scopes, versions and policies without overwriting.
       const references = files.map(file => JSON.stringify(memoryFileDependencySchema.parse(file)))
-      tx(() => { for (const reference of references) insertSessionFile.run(session, reference) })
+      if (sources.length && !references.length) throw new Error('File sources require file dependencies')
+      tx(() => {
+        for (const reference of references) insertSessionFile.run(session, reference)
+        for (const source of sources) insertFileSource.run(session, source)
+      })
     },
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
@@ -580,6 +590,8 @@ export function openMemoryStore(file: string, now = Date.now) {
       const project = sessionProject(session)
       const files = (readSessionFiles.all(session) as Array<{ reference: string }>).map(row => memoryFileDependencySchema.parse(JSON.parse(row.reference)))
       const rows = readDependencies.all(session) as Array<{ id: number, revision: number, asOf: string, disputed: number }>
+      const rawSources = (readSessionSources.all(session) as Array<{ source: string }>).map(row => row.source)
+      const fileSources = (readFileSources.all(session) as Array<{ source: string }>).map(row => row.source)
       return {
         dependencies: [
           ...rows.map(row => {
@@ -590,7 +602,8 @@ export function openMemoryStore(file: string, now = Date.now) {
           ...(readProfileDependencies.all(session) as { id: number, revision: number, collectionRevision: number, expires: number | null }[])
             .map(({ expires, ...item }) => ({ ...item, ...(expires === null ? {} : { expiresAt: expires }) })),
         ],
-        sources: (readSessionSources.all(session) as Array<{ source: string }>).map(row => row.source),
+        sources: [...rawSources, ...fileSources],
+        ...(fileSources.length ? { fileSources } : {}),
         turnOnly: Boolean(usedTurnOnly.get(session)),
         ...(project ? { projects: [project] } : {}),
         epoch: epoch(),

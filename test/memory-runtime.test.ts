@@ -9,6 +9,8 @@ import { createEffects } from '../src/backend/effects.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
+import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { historyRecall } from '../src/backend/history-recall.ts'
 import { localDay, resolveMemoryTime } from '../src/memory/core/memory-facts.ts'
@@ -31,7 +33,8 @@ const proposal = (text: string, props: Partial<MemoryProposal> = {}) => JSON.str
 }] })
 
 function fixture(t: TestContext, extract: (job: MemoryCompute) => Promise<string> | null = () => null, now = Date.now,
-  review: (job: MemoryCompute) => Promise<string> | null = job => Promise.resolve(confirmedReviews(job))) {
+  review: (job: MemoryCompute) => Promise<string> | null = job => Promise.resolve(confirmedReviews(job)),
+  { dailyNotes = false } = {}) {
   const { dir, defer } = scratch(t, 'viva-memory-runtime-')
   const file = path.join(dir, 'memory.db')
   let current: ReturnType<typeof createMemoryRuntime> | undefined
@@ -41,7 +44,7 @@ function fixture(t: TestContext, extract: (job: MemoryCompute) => Promise<string
     current?.close()
     store = openMemoryStore(file, now)
     current = createMemoryRuntime({ store, compute: job => job.stage === 'review' ? review(job) : extract(job), route: () => ({ provider: 'fake', model: 'fake' }),
-      now, quiesce: async () => {}, changed: change => notifications.push(change.ids) })
+      now, dailyNotes, automaticFactProcessing: 'source', quiesce: async () => {}, changed: change => notifications.push(change.ids) })
     return { memory: current, store }
   }
   defer(() => current?.close())
@@ -1426,6 +1429,45 @@ test('a change without a unique target does not become a current fact', async t 
   assert.equal(memory.provisionalReadsCurrent(origin.session), false)
   assert.equal(memory.clarificationQuestion(origin.session, foreground.foregroundTurn, card.question.id, 'check'), null)
   assert.deepEqual(recall('周报邮箱').pendingChanges, [])
+})
+
+test('stopping the source of a pending alternative revokes its existing question and hides later offers', async t => {
+  const before = '我的周报邮箱是 amber@example.test', other = '我的周报邮箱是 mint@example.test'
+  const update = '请把周报邮箱改为 cobalt@example.test'
+  let now = date('2026-07-01')
+  const { memory, store } = fixture(t, async ({ input }) => {
+    const { user, related } = computeInput(input)
+    const previous = related.find(entry => entry.text === before), object = user.split(' ').at(-1)!
+    const fact = user === update
+      ? { subject: { kind: 'user' as const }, polarity: 'positive' as const, predicate: 'report_email', relation: sourceSpan(user, '周报邮箱'), object: sourceSpan(user, object) }
+      : structured(user, '周报邮箱', object, 'report_email')
+    return proposal(user, { fact, ...(user === update && previous ? { change: proposedChange(user, 'supersede', previous, '改为', '周报邮箱') } : {}) })
+  }, () => now, job => Promise.resolve(reviewVerdict(job, 'uncertain')), { dailyNotes: true }).start()
+  const sourceId = randomUUID()
+  for (const text of [before, other, update]) {
+    now += 1_000
+    memory.accept(text, origin, text === update ? sourceId : undefined)
+    await memory.wake()
+  }
+  const foreground = { ...origin, foregroundTurn: 'pending-restriction' }
+  const recall = () => memory.handle({ op: 'recall', session: origin.session, query: '周报邮箱' }, foreground)
+  const [pending] = JSON.parse(recall()).pendingChanges
+  assert.equal(pending.alternative.value, 'cobalt@example.test')
+  const card = JSON.parse(memory.handle({ op: 'clarify', session: origin.session, ref: pending.ref }, foreground))
+  assert.equal(card.status, 'ready')
+  const source = store.readSource(sourceId)!, workspace = memorySourceWorkspace(source)
+  const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source(id) {
+    const row = store.readSource(id)
+    return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+  } })
+  const saved = documents.commit({ operationId: randomUUID(), workspace, path: 'digest/wiki/replacement.md',
+    expectedRevision: null, action: 'CREATE', markdown: update, sources: [{ id: sourceId, token: memorySourceToken(source) }], reads: [] })
+  await memory.setDocumentEnabled({ operationId: randomUUID(), workspace, documentId: saved.documentId,
+    expectedRevision: saved.revision!, expectedUsageVersion: saved.usageVersion, enabled: false })
+  assert.equal(memory.provisionalReadsCurrent(origin.session), false)
+  assert.equal(memory.clarificationQuestion(origin.session, foreground.foregroundTurn, card.question.id, 'check'), null)
+  assert.deepEqual(JSON.parse(recall()).pendingChanges, [])
+  assert.doesNotMatch(recall(), /cobalt@example\.test/)
 })
 
 test('review can expose a provisional alternative expressed with a different relation phrase', async t => {

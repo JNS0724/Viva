@@ -72,7 +72,7 @@ export interface MemoryStore {
         /** Only after a durable host context replacement, under the owner send fence. */
         replace(session: string, sources: readonly string[]): void;
         dependencies(session: string, dependencies: readonly MemoryDependency[]): void;
-        files(session: string, files: readonly MemoryFileDependency[]): void;
+        files(session: string, files: readonly MemoryFileDependency[], sources?: readonly string[]): void;
         source: (session: string, source: string) => void;
         turnOnly: (session: string) => void;
         snapshot(session: string): MemoryProvenance;

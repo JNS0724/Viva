@@ -39,6 +39,10 @@ export interface DocumentCommit {
   corrections?: DocumentCorrection[]
   files?: Array<{ path: string, revision: string }>
 }
+/** Latest reversible semantic edit; excludes private historical Markdown. */
+export interface DocumentUndoCandidate { changeId: string, revision: string, usageVersion: number }
+/** Policy validation for a prepared management operation, including journal recovery. */
+export type DocumentManagementGuard = { policyToken: string, changeId?: string }
 export interface DocumentReceipt {
   operationId: string
   documentId: string
@@ -90,14 +94,17 @@ export interface MemoryDocuments {
   tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
   sourceRestrictions(workspace: string): DocumentSourceRef[]
   recover(): void
+  /** Recover one authorized management intent after host withdrawal recovery. */
+  recoverManagement(operationId: string): 'cancelled' | undefined
   receipt(workspace: string, operationId: string): DocumentReceipt | null
   hasPendingCleanup(sourceId: string): boolean
   pendingCleanup(): number
   read(workspace: string, path: string, options?: { includeDisabled?: boolean }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt
-  undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number }): DocumentReceipt
-  setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean }): DocumentReceipt
+  undoCandidate(workspace: string, documentId: string): DocumentUndoCandidate | null
+  undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number, expectedChangeId?: string, expectedPolicyToken?: string }): DocumentReceipt
+  setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean, expectedPolicyToken?: string }): DocumentReceipt
   /** Caller excludes the canonical source before invoking physical cleanup. */
   withdraw(sourceId: string): string[]
   supersessions(workspace: string, path: string): DocumentSupersession[]

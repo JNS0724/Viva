@@ -1,4 +1,5 @@
 import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemoryStore } from './ports/store.ts'
+import { rawMemorySources } from '../contracts/provenance.ts'
 export type { MemoryDependency, MemoryFileDependency, MemoryProvenance } from './ports/store.ts'
 
 export function needsMemoryTransport(evidence: MemoryProvenance | null | undefined) {
@@ -19,26 +20,27 @@ export class MemoryDispatchConflict extends Error {
 export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoch'>, current: (items: readonly MemoryDependency[], at?: number) => boolean,
   sourceCurrent: (id: string, at?: number) => boolean,
   nextBoundary?: (items: readonly MemoryDependency[], sources: readonly string[], at: number) => number | null,
-  fileCurrent: (files: readonly MemoryFileDependency[], at: number) => boolean = files => files.length === 0,
+  fileCurrent: (files: readonly MemoryFileDependency[], at: number, fileSources: readonly string[]) => boolean = (files, _, sources) => !files.length && !sources.length,
 ) {
   const { snapshot, dependencies: record, files: recordFiles, source: recordSource, turnOnly: retainTurnOnly } = store.dispatch
   const liveTurnOnly = new Set<string>()
   const leases = new Map<string, { current: () => boolean, session?: string }>()
   const waiters = new Set<() => void>()
-  function evidenceCurrent({ dependencies, sources, files = [] }: MemoryProvenance, at: number) {
-    return current(dependencies, at) && sources.every(id => sourceCurrent(id, at)) && fileCurrent(files, at)
+  function evidenceCurrent(evidence: MemoryProvenance, at: number) {
+    return current(evidence.dependencies, at) && rawMemorySources(evidence).every(id => sourceCurrent(id, at))
+      && fileCurrent(evidence.files ?? [], at, evidence.fileSources ?? [])
   }
   function attach(session: string, evidence: MemoryProvenance) {
     record(session, evidence.dependencies)
-    if (evidence.files?.length) recordFiles(session, evidence.files)
-    for (const source of evidence.sources) recordSource(session, source)
+    if (evidence.files?.length) recordFiles(session, evidence.files, evidence.fileSources)
+    for (const source of rawMemorySources(evidence)) recordSource(session, source)
     if (evidence.turnOnly) retainTurnOnly(session)
   }
   function admission(session: string) {
     const at = Date.now()
     const evidence = snapshot(session)
     if ((evidence.turnOnly && !liveTurnOnly.has(session)) || !evidenceCurrent(evidence, at)) return { allowed: false } as const
-    return { allowed: true, deadline: nextBoundary?.(evidence.dependencies, evidence.sources, at) ?? null, evidence, at } as const
+    return { allowed: true, deadline: nextBoundary?.(evidence.dependencies, rawMemorySources(evidence), at) ?? null, evidence, at } as const
   }
   return {
     record, recordFiles, recordSource,

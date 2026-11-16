@@ -10,9 +10,10 @@ type Intent<T> = { id: string, input: string, state: string, plan: FilePlan<T> }
 export type FileCheckpoint = 'intent' | 'replace' | 'receipt' | 'checkpoint'
 
 /** One backend owner. Intent commits precede IO; receipt and application checkpoint share one SQL transaction. */
-export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes' }: {
+export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes', cancelOnConflict = () => false }: {
   db: DatabaseSync, root: string, valid: (data: T) => boolean, finish: (data: T) => void,
   checkpoint?: (point: FileCheckpoint, path?: string) => void, namespace?: string,
+  cancelOnConflict?: (data: T) => boolean,
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS memory_file_intents (
     id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL, workspace TEXT NOT NULL, plan TEXT, namespace TEXT NOT NULL
@@ -40,6 +41,10 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     if (db.isTransaction) throw new Error('memory-file-commit-inside-transaction')
     const store = files(intent.plan.workspace)
     const conflict = () => {
+      if (cancelOnConflict(intent.plan.data)) {
+        db.prepare("UPDATE memory_file_intents SET state='cancelled',plan=NULL WHERE id=?").run(intent.id)
+        return false
+      }
       db.prepare("UPDATE memory_file_intents SET state='conflict' WHERE id=?").run(intent.id)
       throw new Error('memory-file-plan-conflict')
     }
@@ -48,11 +53,11 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
       const actual = store.read(change.path)?.revision ?? null
       return actual !== hash(change.before) && actual !== hash(change.after)
     })
-    if (conflicts) conflict()
+    if (conflicts) return conflict()
     const accepted = valid(intent.plan.data)
     for (const change of intent.plan.changes) {
       const actual = store.read(change.path)?.revision ?? null
-      if (actual !== hash(change.before) && actual !== hash(change.after)) conflict()
+      if (actual !== hash(change.before) && actual !== hash(change.after)) return conflict()
       const target = accepted ? change.after : change.before
       if (actual !== hash(target)) {
         if (target === null) store.remove(change.path, actual!)
@@ -69,8 +74,9 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     })
     return accepted
   }
-  function recover() {
+  function recover(id?: string, includes = (_data: T) => true) {
     for (const intent of pending()) {
+      if (id !== undefined && intent.id !== operationKey(id) || !includes(intent.plan.data)) continue
       try { apply(intent) } catch (error) {
         if (!(error instanceof Error && error.message === 'memory-file-plan-conflict')) throw error
       }

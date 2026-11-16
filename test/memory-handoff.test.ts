@@ -12,7 +12,10 @@ import type { FeedItem } from '../src/backend/feed-store.ts'
 import type { HostCapabilities, HostEvent } from '../src/backend/host.ts'
 import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
 const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
-import { memoryHash } from '../src/memory/node/memory-store.ts'
+import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
+import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
+import type { MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
 import { openMemorySemanticIndex } from '../src/memory/node/memory-semantic.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
@@ -49,7 +52,7 @@ function contextGeneration(directory: string, session: string): number {
   finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, fileMode = false } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
@@ -90,7 +93,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   function openBackend() {
     assert.equal(backend, null)
-    backend = createBackend({ host, ipc: { handle: register, on: register }, dailyNotes })
+    backend = createBackend({ host, ipc: { handle: register, on: register }, dailyNotes, fileMode })
     backend.open()
     return backend
   }
@@ -911,4 +914,48 @@ test('custom human answers inside a background task are original sources with ta
     assert.deepEqual(JSON.parse(String(source.context)), { kind: 'task', id: event.taskId })
     assert.equal(history.prepare('SELECT text FROM messages WHERE conversation_id=? AND source_id=?').get(source.conversation, source.id)?.text, answer)
   } finally { memory.close(); history.close() }
+})
+
+test('the real DSH send surface removes a stopped original and still delivers a verified disjoint file fragment', { timeout: 45_000 }, async t => {
+  const old = '灰桦发布窗口定在周五。', safe = '红茶在周一供应。', query = '红茶什么时候供应？'
+  const app = await setup(t, request => {
+    if (questionOf(request.messages) === query && !modelToolResults(request, 'memory_recall').length) {
+      return { tool: { name: 'memory_recall', input: { query: '红茶' } } }
+    }
+    return null
+  }, { dailyNotes: true, fileMode: true })
+  const sourceId = randomUUID()
+  await app.call('agent:prompt', old + safe, [], sourceId)
+  const first = app.call<AgentInfo>('agent:info')
+  assert.ok(first.sessionId && first.conversationId)
+  assert.ok(app.model.requests.some(request => JSON.stringify(request).includes(old)))
+  const store = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
+  try {
+    const original = store.readSource(sourceId)
+    assert.equal(original?.text, old + safe)
+    const workspace = memorySourceWorkspace(original!)
+    const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, deferRecovery: true, source(id) {
+      const row = store.readSource(id)
+      return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+    } })
+    const digest = (slug: string, text: string, start: number, end: number) => documents.commit({
+      operationId: randomUUID(), workspace, path: `digest/wiki/${slug}.md`, action: 'CREATE', expectedRevision: null,
+      markdown: text, sources: [{ id: sourceId, token: memorySourceToken(original!), spans: [{ start, end }] }], reads: [],
+    })
+    const stopped = digest('release', old, 0, old.length)
+    digest('tea', safe, old.length, old.length + safe.length)
+    const list = await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'digest' })
+    const item = list.items.find(file => file.identity.id === stopped.documentId)
+    assert.ok(item)
+    await app.call('memory:set-file-enabled', { operationId: randomUUID(), identity: item.identity, version: item.version, enabled: false })
+  } finally { store.close() }
+  const offset = app.model.requests.length
+  await app.ask(query)
+  const after = app.model.requests.slice(offset) as Request[]
+  assert.ok(after.some(request => questionOf(request.messages) === query))
+  assert.ok(after.some(request => modelToolResults(request, 'memory_recall').some(result => JSON.stringify(result).includes(safe))))
+  assert.ok(!after.some(request => JSON.stringify(request).includes(old)), 'stopped raw history never reaches the provider')
+  const continued = app.call<AgentInfo>('agent:info')
+  assert.equal(continued.conversationId, first.conversationId)
+  assert.notEqual(continued.sessionId, first.sessionId)
 })

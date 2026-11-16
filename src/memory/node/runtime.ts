@@ -30,8 +30,8 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
     openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
     semanticCopiesCleared: (ids, revision) => memorySemanticCopiesCleared(store.db, ids, revision),
     openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
-    openDocuments: (readable, onCommitted, onRenamed, external) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed,
-      externalCurrent: external?.current, deferRecovery: external?.deferRecovery,
+    openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed,
+      externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
       source(id) {
         const source = store.readSource(id)
         return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source), text: source.text } : undefined

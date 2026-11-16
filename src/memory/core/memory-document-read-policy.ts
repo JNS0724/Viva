@@ -30,6 +30,8 @@ export interface MemoryDocumentView {
   supporting: DocumentSnapshot[]
   applicability: { state: 'current' | 'superseded' | 'unavailable', supersessions: DocumentSupersession[] }
 }
+/** Trusted management projection only; never an input to model retrieval/injection. */
+export interface MemoryDocumentManagementView extends MemoryDocumentView { enabled: boolean }
 
 export function mergeDocumentSources(refs: readonly DocumentSourceRef[]): DocumentSourceRef[] {
   const merged = new Map<string, DocumentSourceRef>()
@@ -107,18 +109,22 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
   function read(workspace: string, path: string, ancestors: ReadonlySet<string> = new Set()): MemoryDocumentView | null {
     try { return readAccepted(workspace, path, ancestors) } catch { return null }
   }
-  function readAccepted(workspace: string, path: string, ancestors: ReadonlySet<string>): MemoryDocumentView | null {
+  function readAccepted(workspace: string, path: string, ancestors: ReadonlySet<string>, includeDisabled = false, acceptedDigest?: DocumentSnapshot): MemoryDocumentView | null {
     const key = JSON.stringify([workspace, path])
     if (ancestors.has(key)) return null
     const chain = new Set([...ancestors, key])
     const registered = path.startsWith('daily/') ? notes.registered().find(item => item.workspace === workspace && item.path === path) : undefined
     const note = registered ? notes.read(registered.key) : undefined
     if (note && note.fileRevision !== registered?.file_revision) return null
-    const digest = path.startsWith('digest/') ? documents.read(workspace, path) : null
+    const digest = path.startsWith('digest/') ? acceptedDigest ?? documents.read(workspace, path, { includeDisabled }) : null
     if (!note && !digest) return null
     const refs = note ? notes.references(note.key) : digest!.sources
     const restrictions = documents.sourceRestrictions(workspace)
-    if (refs.some(ref => documentSourceRestricted(ref, restrictions))) return null
+    const applicableRestrictions = restrictions.filter(restriction => refs.some(ref => documentSourceRestricted(ref, [restriction])))
+    const useRestricted = applicableRestrictions.length > 0
+    // These are use-disable restrictions, not source authorization or erasure. Trusted
+    // management may inspect accepted content in order to re-enable it; model reads may not.
+    if (useRestricted && !includeDisabled) return null
     const markdown = note ? note.document : digest!.markdown
     if (!refsCurrent(refs) || !materialAllowed(markdown, refs)) return null
     // A correction of this same logical document describes the previous revision, not
@@ -145,15 +151,15 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       sources.push(value)
     }
     const projected = currentProjection(markdown, supersessions)
-    const state = projected === null || replacements.some(item => !item || item.currentMarkdown === null || item.applicability.state === 'unavailable') ? 'unavailable' : supersessions.length ? 'superseded' : 'current'
+    const state = useRestricted || projected === null || replacements.some(item => !item || item.currentMarkdown === null || item.applicability.state === 'unavailable') ? 'unavailable' : supersessions.length ? 'superseded' : 'current'
     const revision = note ? note.fileRevision : digest!.revision
     const usageVersion = note ? note.revision : digest!.usageVersion
     const policyToken = hash(JSON.stringify({ revision, usageVersion, sources: combined, supersessions,
       supporting: supporting.map(item => ({ id: item.id, revision: item.revision, usageVersion: item.usageVersion })),
-      replacementPolicies: replacements.map(item => item?.policyToken ?? null), state }))
+      replacementPolicies: replacements.map(item => item?.policyToken ?? null), ...(useRestricted ? { useRestrictions: applicableRestrictions } : {}), state }))
     return { id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
       revision, usageVersion, policyToken, ...(note ? { day: note.day } : {}), updatedAt: note?.updatedAt ?? 0,
-      markdown, currentMarkdown: projected, sources, sourceTokens: combined, backing: digest, supporting,
+      markdown, currentMarkdown: useRestricted ? null : projected, sources, sourceTokens: combined, backing: digest, supporting,
       applicability: { state, supersessions } }
   }
   function list(workspace: string, kind?: 'daily' | 'digest') {
@@ -163,5 +169,26 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     ]
     return [...new Set(paths)].flatMap(path => read(workspace, path) ?? [])
   }
-  return { read, list }
+  function managementRead(workspace: string, path: string): MemoryDocumentManagementView | null {
+    try {
+      const view = readAccepted(workspace, path, new Set(), true)
+      if (!view) return null
+      const enabled = view.backing?.enabled ?? true
+      return { ...view, enabled, currentMarkdown: enabled ? view.currentMarkdown : null }
+    } catch { return null }
+  }
+  function managementList(workspace: string): MemoryDocumentManagementView[] {
+    const paths = [...notes.registered().filter(item => item.workspace === workspace).map(item => item.path),
+      ...documents.registered(workspace).filter(item => item.state !== 'forgotten').map(item => item.path)]
+    return [...new Set(paths)].flatMap(path => managementRead(workspace, path) ?? [])
+  }
+  function managementCurrent(before: DocumentSnapshot, policyToken: string, after: DocumentSnapshot): boolean {
+    try {
+      // The journal has verified the accepted row and physical hashes. Its own pending
+      // replacement is hidden from ordinary reads until the receipt has been committed.
+      const view = readAccepted(before.workspace, before.path, new Set(), true, before)
+      return view?.policyToken === policyToken && refsCurrent(after.sources) && materialAllowed(after.markdown, after.sources)
+    } catch { return false }
+  }
+  return { read, list, managementRead, managementList, managementCurrent }
 }

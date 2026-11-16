@@ -15,7 +15,9 @@ import { MemoryDomainError } from '../core/presentation.ts'
 import { createMemorySendFence } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
 import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed } from '../contracts/host.ts'
-import type { MemoryOperationOutcome, MemoryHostEffect } from '../contracts/service.ts'
+import type { MemoryOperationOutcome, MemoryHostEffect, MemorySourceReference } from '../contracts/service.ts'
+import type { MemoryFileMutationResult, MemoryManagedFileIdentity } from '../contracts/file-management.ts'
+import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
@@ -69,7 +71,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   let replayingWrites = false
   const generalQuestions = new Map<string, { session: string, cards: readonly { id: string, question: string }[], check(): boolean }>()
   const dispatch = createMemoryDispatch(store, (items, at) => runtime.dependenciesCurrent(items, at),
-    (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), files => runtime.fileDependenciesCurrent(files))
+    (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
     dailyNotes: options.dailyNotes ?? true, fileMode: options.fileMode ?? false,
     // P2 captures completed daily turns while retaining the existing fact engine until the planned switch.
@@ -82,7 +84,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
     validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly,
     runDocumentMutation: work => fence.mutate(work),
-    noteSourcesUsed: (session, sources) => { for (const source of sources) dispatch.recordSource(session, source) },
     fileDependencies: dispatch.recordFiles,
     canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
   })
@@ -91,8 +92,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const coordinated = { ...runtime,
     staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && removedSession(session)),
     allowedHistory(row: MemoryHistoryOccurrence) {
-      // Imported/audit-only generated text without an origin session has no active model provenance.
-      if (row.role !== 'user' && !row.sessionId) return false
+      // Browsable history without original-source or generated-session provenance
+      // cannot be replayed as model context.
+      if (row.role === 'user' ? !row.sourceId : !row.sessionId) return false
       if (row.sourceId) {
         const message = db.prepare('SELECT id FROM owner_messages WHERE source=?').get(row.sourceId)
         if (message && contextRecovery.retiredDerived(String(message.id))) return false
@@ -287,6 +289,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     const sourceId = known?.source ?? mapped?.sourceId ?? input.messageId
     if (store.sourceExcluded(sourceId)) throw new Error('Source was withdrawn')
+    if ((known || store.readSource(sourceId)) && !runtime.dispatchSourceCurrent(sourceId)) throw new Error('Source is withdrawn or unavailable')
     const text = mapped?.text ?? (known ? store.readSource(sourceId)?.text ?? '' : input.text)
     let context = mapped ? { ...sessionContext(input.sessionId), conversation: mapped.conversation, context: mapped.context, project: mapped.project } : sessionContext(input.sessionId)
     if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(input.sessionId)) {
@@ -472,8 +475,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     replayingWrites = true
     try {
       for (const item of db.prepare("SELECT * FROM owner_operations WHERE state='running'").all() as Operation[]) {
-        const payload = JSON.parse(item.payload!) as WritePayload
-        try { await handleHost(payload.command.method, payload.command.input) }
+        const { command } = JSON.parse(item.payload!) as Pick<WritePayload | FileWritePayload, 'command'>
+        try { await handleHost(command.method, command.input) }
         catch (error) { if (operation(item.id)?.state !== 'failed') throw error }
       }
     } finally { replayingWrites = false }
@@ -525,6 +528,61 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       options.onHostEffects?.()
       return result
     })
+  }
+  type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' }>
+  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[] }
+  function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
+    const sourceIds = new Set(sources.map(ref => ref.sourceId))
+    return (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id }) => {
+      const evidence = dispatch.snapshot(id)
+      return evidence.sources.some(source => sourceIds.has(source))
+        || evidence.files?.some(file => file.workspace === identity.workspace && file.id === identity.id) ? [id] : []
+    })
+  }
+  /** The runtime owns the only send fence. The durable intent bridges its document receipt and
+   * this completion/outbox transaction if the process exits between the two commits. */
+  async function durableFileWrite(command: FileWriteCommand): Promise<MemoryFileMutationResult> {
+    requireReady()
+    const request = command.input.args[0], id = request.operationId, fingerprint = hash(command)
+    const previous = operation(id)
+    if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
+    if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    if (previous?.state === 'failed') {
+      const failure = JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }
+      throw new MemoryDomainError(failure.code)
+    }
+    const sources = previous?.payload ? (JSON.parse(previous.payload) as FileWritePayload).sources : runtime.readFile(request.identity)?.sources ?? []
+    const sessions = previous?.payload ? (JSON.parse(previous.payload) as FileWritePayload).sessions : fileSessions(request.identity, sources)
+    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command, sources, sessions } satisfies FileWritePayload))
+    let notify = false
+    const committed = (result: MemoryFileMutationResult) => {
+      store.tx(() => {
+        if (operation(id)?.state === 'completed') return
+        // Include readers attached while the mutation waited for outstanding physical sends.
+        const affectedSessions = [...new Set([...sessions, ...fileSessions(request.identity, sources)])]
+        if (options.hostNamespace && result.usageVersion !== request.version.usageVersion && (sources.length || affectedSessions.length)) {
+          const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
+            kind: 'invalidate-context', sources, sessions: affectedSessions }
+          db.prepare('INSERT OR IGNORE INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
+          notify = true
+        }
+        // Retain only the public immutable receipt; no Markdown, previous body or source copies.
+        db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
+      })
+    }
+    try {
+      const result = command.method === 'setFileEnabled'
+        ? await runtime.setFileEnabled(command.input.args[0], committed)
+        : await runtime.undoFile(command.input.args[0], committed)
+      if (notify) options.onHostEffects?.()
+      return result
+    } catch (error) {
+      if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
+        db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(JSON.stringify({ code: error.code }), id)
+      }
+      // Storage/flush failures keep the intent for recovery, including a committed document receipt.
+      throw error
+    }
   }
   async function handleHost(method: unknown, input: unknown): Promise<unknown> {
     const command = parseHostMemoryCommand(method, input)
@@ -649,6 +707,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'inherit': return coordination.inherit(...command.input.args)
       case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
       case 'useHistory': return coordination.useHistory(...command.input.args)
+      case 'listFiles': return runtime.listFiles(command.input.args[0])
+      case 'readFile': return runtime.readFile(command.input.args[0])
+      case 'setFileEnabled':
+      case 'undoFile': return durableFileWrite(command)
       case 'setOnboarding': return fence.mutate(() => runtime.setOnboarding(...command.input.args))
       case 'rebuildIndexes': return fence.mutate(() => runtime.rebuildIndexes(...command.input.args))
       case 'setProfile': { const a = command.input.args, id = a[1] ?? randomUUID(); return durableWrite(command, id, 1, [], () => runtime.setProfile(a[0], id)) }

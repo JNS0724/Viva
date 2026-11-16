@@ -81,6 +81,10 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     }
   })
   handle('memory:list', list)
+  handle('memory:list-files', client.listFiles)
+  handle('memory:read-file', client.readFile)
+  handle('memory:set-file-enabled', client.setFileEnabled)
+  handle('memory:undo-file', client.undoFile)
   handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
   handle('memory:add', (text, kind = 'fact', operation) => client.addMemory(assertMemoryText(text), kind, operation))
   handle('memory:update', (id, text, revision, operation) => client.editMemory(id, assertMemoryText(text), revision, operation))

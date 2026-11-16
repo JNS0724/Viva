@@ -4,6 +4,9 @@ import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, M
 import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryInterval } from './facts.ts'
 import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
+import { memoryFileListRequest, memoryFileIdentity, memoryFileSetEnabledRequest, memoryFileUndoRequest } from './file-management.ts'
+import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
+  MemoryFileSetEnabledRequest, MemoryFileUndoRequest, MemoryFileMutationResult } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
 export const MEMORY_HOST_PROTOCOL = 1
@@ -33,6 +36,10 @@ type EntryPage = { items: MemoryEntry[], total: number, invalid: number }
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
+  listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
+  readFile: Args<[identity: MemoryManagedFileIdentity], MemoryFileDetail | null>
+  setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
+  undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
   listMemories: Args<[query?: string], EntryPage>
   listInvalid: Args<[], Array<MemoryEntry & { pendingRelation?: boolean }>>
   listChanges: Args<[], MemoryChangeView[]>
@@ -109,6 +116,8 @@ const target = args(z.tuple([integer, integer, key.optional()]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
+  listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity])),
+  setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])),
   listMemories: args(z.tuple([text.optional()])), listInvalid: empty, listChanges: empty, profile: empty,
   profileView: args(z.tuple([z.union([project, z.strictObject({ kind: z.literal('user') })])])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,

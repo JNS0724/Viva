@@ -97,3 +97,16 @@ test('file-bearing foreground and background contexts both require a physical me
     assert.equal(coordinator.transferStatus(dispatch.snapshot('file-only'), undefined, false), 'memory-unavailable')
   } finally { store.close() }
 })
+
+
+test('raw use wins when file-only provenance joins a context that also saw the whole source', () => {
+  const raw = { ...evidence(), sources: ['mixed'] }
+  const bound = { ...evidence([file]), sources: ['mixed', 'only-file'], fileSources: ['mixed', 'only-file'] }
+  for (const result of [combineMemoryProvenance(raw, bound), combineMemoryProvenance(bound, raw)]) {
+    assert.deepEqual(result.fileSources, ['only-file'])
+    assert.deepEqual(result.files, [file])
+    assert.deepEqual(result.sources, ['mixed', 'only-file'])
+  }
+  assert.throws(() => memoryProvenanceSchema.parse({ ...bound, files: [] }))
+  assert.throws(() => memoryProvenanceSchema.parse({ ...bound, sources: ['other'] }))
+})

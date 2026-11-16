@@ -1,17 +1,19 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DeferredDocumentWork, DocumentTagAttempt, DocumentRename, DocumentExternalEdit } from '../core/ports/documents.ts'
+import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DeferredDocumentWork, DocumentTagAttempt, DocumentRename, DocumentExternalEdit, DocumentUndoCandidate, DocumentManagementGuard } from '../core/ports/documents.ts'
 import { digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument, readMemoryLines, memoryDocumentLines } from '../core/memory-document.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { openMemoryFileJournal } from './memory-file-journal.ts'
 import type { FileCheckpoint, FilePlan } from './memory-file-journal.ts'
+import { documentSourceRestricted } from '../core/memory-document-restrictions.ts'
+import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
 
 type Row = { id: string, workspace: string, path: string, revision: string, usage_version: number, enabled: number, forgotten: number, sources: string, corrections: string }
 type Revision = { operation: string, document: string, before: string | null, after: string | null }
-type Mutation = { kind: 'revision', input: string, receipt: DocumentReceipt, before: DocumentSnapshot | null, after: DocumentSnapshot | null, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }>, workspace: string, externalEdit?: DocumentExternalEdit }
+type Mutation = { kind: 'revision', input: string, receipt: DocumentReceipt, before: DocumentSnapshot | null, after: DocumentSnapshot | null, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }>, workspace: string, externalEdit?: DocumentExternalEdit, management?: DocumentManagementGuard }
 type Purge = { kind: 'purge', document: string, workspace: string, path: string }
 type Data = Mutation | Purge
 type Restore = { operation: string, document: string, workspace: string, path: string, revision: string, written: string, usage: number, markdown: string, sources: string, removed: string }
@@ -21,13 +23,14 @@ const refsOf = (row: Row): DocumentSourceRef[] => JSON.parse(row.sources) as Doc
 const correctionsOf = (row: Row): DocumentSupersession[] => JSON.parse(row.corrections) as DocumentSupersession[]
 
 /** Persistence adapter: current Markdown is authoritative; SQL stores identities, revisions and recovery metadata. */
-export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoint, onCommitted = () => {}, onRenamed = () => {}, externalCurrent = () => false, deferRecovery = false }: {
+export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoint, onCommitted = () => {}, onRenamed = () => {}, externalCurrent = () => false, managementCurrent = () => false, deferRecovery = false }: {
   db: DatabaseSync, root: string,
   source: (id: string) => { token: string, workspace: string, text: string } | undefined,
   now?: () => number,
   onCommitted?: (receipt: DocumentReceipt) => void,
   onRenamed?: (input: DocumentRename) => void,
   externalCurrent?: (input: DocumentExternalEdit) => boolean,
+  managementCurrent?: (before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot) => boolean,
   deferRecovery?: boolean,
   checkpoint?: (point: FileCheckpoint, path?: string) => void,
 }): MemoryDocuments {
@@ -38,6 +41,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
       usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
       sources TEXT NOT NULL, corrections TEXT NOT NULL, UNIQUE(workspace,path)
+    );
+    CREATE TABLE IF NOT EXISTS memory_document_use_restrictions (
+      document TEXT PRIMARY KEY, sources TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS memory_document_revisions (
       operation TEXT PRIMARY KEY, document TEXT NOT NULL, before TEXT, after TEXT, at INTEGER NOT NULL
@@ -88,9 +94,8 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     })
   }
   function restricted(scope: string, refs: readonly DocumentSourceRef[], except?: string): boolean {
-    const disabled = db.prepare('SELECT * FROM memory_documents WHERE workspace=? AND enabled=0 AND forgotten=0').all(scope) as unknown as Row[]
-    return disabled.some(row => row.id !== except && refsOf(row).some(blocked => refs.some(ref => ref.id === blocked.id && ref.token === blocked.token &&
-      (!ref.spans || !blocked.spans || ref.spans.some(part => blocked.spans!.some(other => part.start < other.end && other.start < part.end))))))
+    const restrictions = sourceRestrictions(scope, except)
+    return refs.some(ref => documentSourceRestricted(ref, restrictions))
   }
   function save(snapshot: DocumentSnapshot) {
     db.prepare(`INSERT INTO memory_documents(id,workspace,path,revision,usage_version,enabled,forgotten,sources,corrections)
@@ -99,11 +104,21 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       .run(snapshot.id, snapshot.workspace, snapshot.path, snapshot.revision, snapshot.usageVersion, snapshot.enabled ? 1 : 0, encode(snapshot.sources), encode(snapshot.corrections))
   }
   const journal = openMemoryFileJournal<Data>({ db, root, namespace: 'documents', checkpoint,
+    cancelOnConflict: data => data.kind === 'revision' && data.management !== undefined,
     valid(data): boolean {
       if (data.kind === 'purge') return Boolean(rowById(data.document)?.forgotten)
       const actual = rowByPath(data.workspace, data.receipt.path)
       const before = data.before
       const targetCurrent = before ? actual?.id === before.id && actual.revision === before.revision && actual.usage_version === before.usageVersion && !actual.forgotten : !actual
+      if (data.management) {
+        if (!targetCurrent || !before || !data.after || !actual) return false
+        const physical = journal.files(data.workspace).read(before.path)?.revision
+        if (physical !== before.revision && physical !== data.after.revision) return false
+        if (memoryFileRevision(before.markdown) !== before.revision || Boolean(actual.enabled) !== before.enabled
+          || !isDeepStrictEqual(refsOf(actual), before.sources) || !isDeepStrictEqual(correctionsOf(actual), before.corrections)) return false
+        if (data.management.changeId !== undefined && undoHistory(before)?.history.operation !== data.management.changeId) return false
+        if (!managementCurrent(before, data.management, data.after)) return false
+      }
       return targetCurrent && (!data.externalEdit || externalCurrent(data.externalEdit) && Boolean(actual?.enabled) && anchorsCurrent(data.workspace, actual!.id, data.after!.markdown)) && currentSources(data.workspace, data.sources) && (['ENABLE', 'DISABLE', 'UNDO'].includes(data.receipt.action) || !restricted(data.workspace, data.sources, data.receipt.documentId)) && currentReads(data.workspace, data.reads, data) && data.files.every(file => {
         const actual = journal.files(data.workspace).read(file.path)?.revision
         return (data.after?.path === file.path || journal.visible(data.workspace, file.path)) && (actual === file.revision || data.after?.path === file.path && actual === data.after.revision)
@@ -114,13 +129,22 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         db.prepare('DELETE FROM memory_document_purges WHERE document=?').run(data.document)
         return
       }
-      if (data.after) save(data.after)
-      else if (data.before) db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', '[]', data.before.id)
-      db.prepare('INSERT INTO memory_document_revisions(operation,document,before,after,at) VALUES(?,?,?,?,?)')
+      const unchanged = isDeepStrictEqual(data.before, data.after)
+      if (!unchanged && data.after) {
+        save(data.after)
+        if (data.receipt.action === 'ENABLE') {
+          db.prepare('DELETE FROM memory_document_use_restrictions WHERE document=?').run(data.after.id)
+        } else if (data.receipt.action === 'DISABLE') {
+          db.prepare('INSERT INTO memory_document_use_restrictions(document,sources) VALUES(?,?)').run(data.after.id, encode(data.after.sources))
+        }
+        // An undo on a disabled document must keep the original blocked ranges.
+      }
+      else if (!unchanged && data.before) db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', '[]', data.before.id)
+      if (!unchanged) db.prepare('INSERT INTO memory_document_revisions(operation,document,before,after,at) VALUES(?,?,?,?,?)')
         .run(data.receipt.operationId, data.receipt.documentId, data.before ? encode(data.before) : null, data.after ? encode(data.after) : null, now())
       db.prepare('INSERT INTO memory_document_receipts(operation,input,receipt) VALUES(?,?,?)').run(data.receipt.operationId, data.input, encode(data.receipt))
       db.prepare("UPDATE memory_document_deferred SET state='resolved',payload=NULL WHERE operation=? AND workspace=? AND state='ready'").run(data.receipt.operationId, data.workspace)
-      onCommitted(data.receipt)
+      if (!unchanged) onCommitted(data.receipt)
     },
   })
   function replay(operation: string, input: unknown): DocumentReceipt | undefined {
@@ -163,10 +187,15 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       if (!journal.visible(scope, correction.path)) throw new Error('memory-correction-pending')
     }
   }
-  function apply(input: unknown, before: DocumentSnapshot | null, after: DocumentSnapshot | null, receipt: DocumentReceipt, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }> = []) {
+  function apply(input: unknown, before: DocumentSnapshot | null, after: DocumentSnapshot | null, receipt: DocumentReceipt, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }> = [], management?: DocumentManagementGuard) {
     const scope = after?.workspace ?? before!.workspace
-    const data: Mutation = { kind: 'revision', input: hash(input), before, after, receipt, sources, reads, files, workspace: scope }
-    if (!journal.commit(receipt.operationId, data.input, () => ({ workspace: scope, changes: [{ path: receipt.path, before: before?.markdown ?? null, after: after?.markdown ?? null }], data }))) throw new Error('memory-document-invalidated')
+    const data: Mutation = { kind: 'revision', input: hash(input), before, after, receipt, sources, reads, files, workspace: scope, management }
+    try {
+      if (!journal.commit(receipt.operationId, data.input, () => ({ workspace: scope, changes: isDeepStrictEqual(before, after) ? [] : [{ path: receipt.path, before: before?.markdown ?? null, after: after?.markdown ?? null }], data }))) throw new Error('memory-document-invalidated')
+    } catch (error) {
+      if (management && error instanceof Error && ['memory-source-version', 'memory-document-invalidated'].includes(error.message)) throw new MemoryDomainError('revision.conflict')
+      throw error
+    }
     const committed = db.prepare('SELECT receipt FROM memory_document_receipts WHERE operation=?').get(receipt.operationId) as { receipt: string } | undefined
     if (!committed) throw new Error('memory-document-receipt-missing')
     return JSON.parse(committed.receipt) as DocumentReceipt
@@ -198,7 +227,33 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const receipt: DocumentReceipt = { operationId: input.operationId, documentId: id, path: input.path, revision, usageVersion, action: input.action }
     return apply(input, before, after, receipt, input.sources, input.reads, [...new Map([...(input.files ?? []), ...(input.corrections ?? []).map(item => ({ path: item.path, revision: item.revision }))].map(item => [item.path, item])).values()])
   }
-  function undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number }): DocumentReceipt {
+  /** Walk only the contiguous current chain. An UNDO ends it: this is undo, not redo or a history browser. */
+  function undoHistory(current: DocumentSnapshot): { history: Revision, original: DocumentSnapshot } | null {
+    const revisions = db.prepare('SELECT * FROM memory_document_revisions WHERE document=? ORDER BY rowid DESC').all(current.id) as Revision[]
+    let cursor = current
+    for (const item of revisions) {
+      if (!item.after) return null
+      const after = JSON.parse(item.after) as DocumentSnapshot
+      if (after.revision !== cursor.revision || after.usageVersion !== cursor.usageVersion) return null
+      const operation = readReceipt(current.workspace, item.operation)
+      if (!operation || !item.before) return null
+      const original = JSON.parse(item.before) as DocumentSnapshot
+      if (['ENABLE', 'DISABLE', 'TAG'].includes(operation.action)) { cursor = original; continue }
+      if (!['REFINE', 'CORRECT'].includes(operation.action) || !currentSources(current.workspace, original.sources)) return null
+      return { history: item, original }
+    }
+    return null
+  }
+  function undoCandidate(scope: string, documentId: string): DocumentUndoCandidate | null {
+    workspace(scope)
+    const row = rowById(documentId)
+    if (!row || row.workspace !== scope) return null
+    const current = read(scope, row.path, { includeDisabled: true })
+    if (!current) return null
+    const candidate = undoHistory(current)
+    return candidate ? { changeId: candidate.history.operation, revision: current.revision, usageVersion: current.usageVersion } : null
+  }
+  function undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number, expectedChangeId?: string, expectedPolicyToken?: string }): DocumentReceipt {
     workspace(input.workspace)
     const prior = replay(input.operationId, input)
     if (prior) return prior
@@ -206,25 +261,16 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (!row || row.workspace !== input.workspace) throw new Error('memory-document-unavailable')
     const current = read(input.workspace, row.path, { includeDisabled: true })
     if (!current || current.revision !== input.revision || current.usageVersion !== input.usageVersion) throw new Error('memory-document-version')
-    const revisions = db.prepare('SELECT * FROM memory_document_revisions WHERE document=? ORDER BY rowid DESC').all(row.id) as Revision[]
-    let cursor = current, history: Revision | undefined
-    for (const item of revisions) {
-      if (!item.after) break
-      const after = JSON.parse(item.after) as DocumentSnapshot
-      if (after.revision !== cursor.revision || after.usageVersion !== cursor.usageVersion) break
-      const operation = readReceipt(input.workspace, item.operation)
-      if (!['ENABLE', 'DISABLE', 'TAG'].includes(operation?.action ?? '')) { history = item; break }
-      if (!item.before) break
-      cursor = JSON.parse(item.before) as DocumentSnapshot
-    }
-    if (!history?.before) throw new Error('memory-document-undo-unavailable')
-    const original = JSON.parse(history.before) as DocumentSnapshot
-    if (!currentSources(input.workspace, [...original.sources])) throw new Error('memory-document-source-version')
+    const candidate = undoHistory(current)
+    if (!candidate) throw new Error('memory-document-undo-unavailable')
+    if (input.expectedChangeId !== undefined && input.expectedChangeId !== candidate.history.operation) throw new Error('memory-document-change-version')
+    const { original } = candidate
     const after = { ...original, path: current.path, enabled: current.enabled, usageVersion: current.usageVersion + 1 }
     const receipt: DocumentReceipt = { operationId: input.operationId, documentId: row.id, path: row.path, revision: after.revision, usageVersion: after.usageVersion, action: 'UNDO' }
-    return apply(input, current, after, receipt, [...new Map([...current.sources, ...original.sources].map(ref => [ref.id, ref])).values()], [])
+    const management = input.expectedPolicyToken === undefined ? undefined : { policyToken: input.expectedPolicyToken, changeId: candidate.history.operation }
+    return apply(input, current, after, receipt, [...new Map([...current.sources, ...original.sources].map(ref => [ref.id, ref])).values()], [], [], management)
   }
-  function setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean }): DocumentReceipt {
+  function setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean, expectedPolicyToken?: string }): DocumentReceipt {
     workspace(input.workspace)
     const prior = replay(input.operationId, input)
     if (prior) return prior
@@ -232,10 +278,12 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (!row || row.workspace !== input.workspace) throw new Error('memory-document-unavailable')
     const current = read(input.workspace, row.path, { includeDisabled: true })
     if (!current || current.revision !== input.expectedRevision || current.usageVersion !== input.expectedUsageVersion) throw new Error('memory-document-version')
-    const after = { ...current, enabled: input.enabled, usageVersion: current.usageVersion + 1 }
+    const after = { ...current, enabled: input.enabled, usageVersion: current.usageVersion + Number(current.enabled !== input.enabled) }
     const receipt: DocumentReceipt = { operationId: input.operationId, documentId: row.id, path: row.path, revision: after.revision, usageVersion: after.usageVersion, action: input.enabled ? 'ENABLE' : 'DISABLE' }
-    return apply(input, current, after, receipt, current.sources, [])
+    const management = input.expectedPolicyToken === undefined ? undefined : { policyToken: input.expectedPolicyToken }
+    return apply(input, current, after, receipt, current.sources, [], [], management)
   }
+  const managed = (data: Data) => data.kind === 'revision' && data.management !== undefined
   function recover() {
     // Only the previously committed, independently sourced body survives an abandoned draft.
     // Its replacement contains no forgotten text; hashes describe the discarded draft without retaining it.
@@ -254,7 +302,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         if (!(error instanceof Error && ['memory-document-restore-stale', 'memory-document-restore-conflict'].includes(error.message))) throw error
       }
     }
-    journal.recover()
+    // Owner management intents must wait for the persisted host withdrawal watermarks.
+    // Only an authenticated command replay may apply them under its send fence.
+    journal.recover(undefined, data => !managed(data))
     const purges = db.prepare('SELECT document,workspace,path,sources FROM memory_document_purges').all() as Array<Omit<Purge, 'kind'> & {sources:string}>
     for (const purge of purges) {
       try {
@@ -307,9 +357,15 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       for (const row of db.prepare('SELECT * FROM memory_documents WHERE forgotten=0').all() as unknown as Row[]) {
         if (!refsOf(row).some(ref => ref.id === sourceId)) continue
         affected.push(row.id)
+        db.prepare('DELETE FROM memory_document_use_restrictions WHERE document=?').run(row.id)
         db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(row.workspace, row.path)
         db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', encode(correctionsOf(row).map(item => ({ ...item, text: '', condition: '', time: '' }))), row.id)
         db.prepare('INSERT OR IGNORE INTO memory_document_purges(document,workspace,path,sources) VALUES(?,?,?,?)').run(row.id, row.workspace, row.path, row.sources)
+      }
+      for (const row of db.prepare('SELECT document,sources FROM memory_document_use_restrictions').all() as Array<{ document: string, sources: string }>) {
+        const refs = JSON.parse(row.sources) as DocumentSourceRef[]
+        const remaining = refs.filter(ref => ref.id !== sourceId)
+        if (remaining.length !== refs.length) db.prepare('UPDATE memory_document_use_restrictions SET sources=? WHERE document=?').run(encode(remaining), row.document)
       }
       for (const rev of db.prepare('SELECT * FROM memory_document_revisions').all() as unknown as Revision[]) {
         const contains = (value: string | null) => value && (JSON.parse(value) as DocumentSnapshot).sources.some(ref => ref.id === sourceId)
@@ -498,9 +554,11 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     db.prepare('INSERT INTO memory_document_tag_attempts(operation,workspace,path,revision,state,reason) VALUES(?,?,?,?,?,?)')
       .run(input.operationId, input.workspace, input.path, input.revision, input.state, input.reason ?? null)
   }
-  function sourceRestrictions(scope: string): DocumentSourceRef[] {
+  function sourceRestrictions(scope: string, except?: string): DocumentSourceRef[] {
     workspace(scope)
-    return (db.prepare('SELECT * FROM memory_documents WHERE workspace=? AND enabled=0 AND forgotten=0').all(scope) as unknown as Row[]).flatMap(refsOf)
+    const restrictions = db.prepare(`SELECT r.sources FROM memory_document_use_restrictions r JOIN memory_documents d ON r.document=d.id
+      WHERE d.workspace=? AND d.enabled=0 AND d.forgotten=0 AND (? IS NULL OR d.id<>?) ORDER BY d.id`).all(scope, except ?? null, except ?? null)
+    return restrictions.flatMap(row => JSON.parse(String(row.sources)) as DocumentSourceRef[])
   }
   const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count)
   if (!deferRecovery) recover()
@@ -513,7 +571,12 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, sources: refsOf(row), state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),
     workspaces: () => db.prepare('SELECT DISTINCT workspace FROM memory_documents').all().map(row => String(row.workspace)),
-    recover, sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup,
-    read, list, commit, undo, setEnabled, withdraw, supersessions, defer, deferred, pending, answer, resolve, expire,
+    recover,
+    recoverManagement(operationId) {
+      journal.recover(operationId, managed)
+      return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
+    },
+    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup,
+    read, list, commit, undoCandidate, undo, setEnabled, withdraw, supersessions, defer, deferred, pending, answer, resolve, expire,
   }
 }
