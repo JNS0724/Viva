@@ -43,6 +43,10 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
       }
     },
     deliver(event, receivedAt) {
+      if ((event.type === 'update' || event.type === 'task_update') && event.update.sessionUpdate === 'viva_stream') {
+        const session = event.type === 'update' ? event.context.sessionId : event.taskId
+        if (getState().erasedGeneratedKeys[event.update.key] === session) return
+      }
       const action = actionFor(event, receivedAt)
       if (action) dispatch(action)
       switch (event.type) {
@@ -61,6 +65,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
       const event = decodeAgentEvent(value, rejected)
       if (!event) return
       if (event.type === 'memory_changed') {
+        if (event.erasedOutputs?.length) dispatch({ type: 'generated_outputs_removed', copies: event.erasedOutputs })
         if (event.traceSessions?.length) {
           const sessions = new Set(event.traceSessions)
           ingress.reviseHeld(held => withoutHeldTrace(held, sessions))

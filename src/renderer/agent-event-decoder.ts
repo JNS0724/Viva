@@ -175,8 +175,14 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'memory_changed') {
     const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
     const traceSessions = item.traceSessions === undefined ? undefined : texts(item.traceSessions)
-    return memories !== null && invalidated !== null && traceSessions !== null
-      ? { type, memories, invalidated, ...(traceSessions ? { traceSessions } : {}), ...(string(item.failure) ? { failure: item.failure } : {}) } : null
+    const erasedOutputs = item.erasedOutputs === undefined ? undefined : list(item.erasedOutputs, value => {
+      const output = objectOf(value)
+      return string(output?.session) && Boolean(output.session) && string(output.key) && Boolean(output.key)
+        ? { session: output.session, key: output.key } : null
+    })
+    return memories !== null && invalidated !== null && traceSessions !== null && erasedOutputs !== null
+      ? { type, memories, invalidated, ...(traceSessions ? { traceSessions } : {}), ...(erasedOutputs ? { erasedOutputs } : {}),
+          ...(string(item.failure) ? { failure: item.failure } : {}) } : null
   }
   if (type === 'reports_removed') { const reportIds = texts(item.reportIds); return reportIds ? { type, reportIds } : null }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null

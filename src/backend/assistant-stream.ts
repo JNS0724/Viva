@@ -26,7 +26,7 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
 export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1000 }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
-  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<void>,
+  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
   timeoutMs?: number,
 }) {
   let ready = false
@@ -55,7 +55,8 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1
   }
   const finish = (operation: Operation) => {
     if (operations.get(operation.sessionId) !== operation) return
-    for (const key of operation.active) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+    const unfinished = recordOutputs ? [...operation.keys].filter(key => !operation.settled.has(key)) : operation.active
+    for (const key of unfinished) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
     operation.resolve?.(false)
     operation.flushed?.(false)
     operations.delete(operation.sessionId)
@@ -90,9 +91,11 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: message.kind, index: message.index, blockType: message.blockType, text: message.text })
     }
     if (message.kind === 'settle' && Array.isArray(message.blocks)) {
+      operation.active.delete(message.key); operation.closed.delete(message.key)
+      // In file mode a settled body must go through the owner before it can be published.
+      if (recordOutputs && message.blocks.length) return
       operation.settled.set(message.key, message.blocks)
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks })
-      operation.active.delete(message.key); operation.closed.delete(message.key)
     }
   }
   return { begin, finish, receive,
@@ -111,13 +114,17 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1
         })
         if (operations.get(operation.sessionId) !== operation) return
         if (operation.committed) {
-          await recordOutputs?.(operation.sessionId, operation.committed)
+          const committed = recordOutputs ? await recordOutputs(operation.sessionId, operation.committed) : operation.committed
           if (operations.get(operation.sessionId) !== operation) return
-          const keys = new Set(operation.committed.map(message => message.key))
-          for (const key of operation.keys) if (!keys.has(key)) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+          const keys = new Set(committed.map(message => message.key))
           const before: { text?: string, reasoning?: string } = {}
           let recovered = false
-          for (const message of [...operation.committed].reverse()) {
+          for (const key of operation.keys) {
+            if (keys.has(key)) continue
+            emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+            recovered = true
+          }
+          for (const message of [...committed].reverse()) {
             if (JSON.stringify(operation.settled.get(message.key)) !== JSON.stringify(message.blocks)) {
               emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks, before: { ...before } })
               recovered = true
@@ -125,11 +132,12 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1
             for (const block of message.blocks) if (block.text) before[block.type] = message.key
           }
           // Task previews consume settlements too. Finish recovery on the last committed text.
-          const lastText = operation.committed.findLast(message => message.blocks.some(block => block.type === 'text' && block.text))
+          const lastText = committed.findLast(message => message.blocks.some(block => block.type === 'text' && block.text))
           if (recovered && lastText) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: lastText.key, kind: 'settle', blocks: lastText.blocks })
           operation.active.clear()
+          operation.keys.clear()
           finish(operation)
-          return operation.finalReply
+          return operation.finalReply && (committed.length === operation.committed.length || Boolean(lastText))
         }
       }
       finish(operation)

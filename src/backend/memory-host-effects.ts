@@ -17,12 +17,13 @@ export function affectedTraceSessions(effect: MemoryHostEffect) {
   return effect.kind === 'erase-copies' ? effect.sessions ?? [] : []
 }
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, fileCopiesDurable = () => {} }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, fileCopiesDurable = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
   eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): readonly GeneratedHistoryScope[] | void,
   eraseTaskBodies?(effect: string, matches: (proof: MemoryProvenance) => boolean, erased: readonly GeneratedHistoryScope[]): readonly string[],
   invalidateTaskBodies?(sessions: readonly string[]): void | Promise<void>,
+  generatedCopiesRemoved?(copies: readonly GeneratedHistoryScope[]): void,
   /** A local host receipt only. Native publishers and other replica owners acknowledge separately. */
   fileCopiesDurable?(effect: Extract<MemoryHostEffect, { kind: 'erase-file-copies' }>): void | Promise<void>,
   invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
@@ -85,14 +86,15 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
           try {
             if (effect.ranges.some(cut => blockedRanges.has(cut.sourceId))) continue
             const matches = (memory: MemoryProvenance) => usesErasedMemory(memory, effect.ranges, effect.memoryIds)
-            const { scheduled, reports, tasks } = transaction(db, () => {
+            const { scheduled, reports, outputs, tasks } = transaction(db, () => {
               const outputs = eraseFileHistory(effect.ranges, effect.memoryIds) ?? []
               const tasks = eraseTaskBodies(effect.effectId, matches, outputs)
               eraseRoutedMemory(matches)
-              return { scheduled: eraseScheduledMemoryCopies(db, matches), reports: eraseMemoryReportCopies(db, matches), tasks }
+              return { scheduled: eraseScheduledMemoryCopies(db, matches), reports: eraseMemoryReportCopies(db, matches), outputs, tasks }
             })
             invalidateScheduled(matches, scheduled)
             if (reports.length) reportsRemoved(reports)
+            if (outputs.length) generatedCopiesRemoved(outputs)
             const discarded = discardedTaskCopies.get(effect.effectId) ?? new Set<string>()
             const pendingTasks = tasks.filter(task => !discarded.has(task))
             if (pendingTasks.length) {

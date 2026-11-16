@@ -70,6 +70,41 @@ test('a trace erasure notice removes older held reasoning and tool updates befor
   assert.deepEqual(h.issues, [])
 })
 
+test('a generated copy notice clears current and archived bodies and rejects late replay under the same key', async () => {
+  const h = harness()
+  const reply = (key: string, text: string) => ({ type: 'update', context,
+    update: { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [{ type: 'text', text }] } })
+  h.events.receive({ type: 'ready', info })
+  h.events.initialize()
+  await flush()
+  h.events.receive(reply('same-byte-independent', 'same body'))
+  h.events.receive(reply('retired', 'same body'))
+  h.events.receive(reply('current-copy', 'retired current'))
+  h.dispatch({ type: 'new_session', info })
+  h.events.receive(reply('current-copy', 'retired current'))
+  assert.equal(h.state().messages[0]?.text, 'retired current')
+  h.events.receive({ type: 'memory_changed', erasedOutputs: [{ session: 's', key: 'retired' }, { session: 's', key: 'current-copy' }] })
+  assert.deepEqual(h.state().earlier.segments[0]?.messages.map((message: SegmentMessage) => message.text), ['same body', '', ''])
+  assert.equal(h.state().messages[0]?.text, '')
+  h.events.receive(reply('current-copy', 'late generated completion'))
+  assert.equal(h.state().messages[0]?.text, '')
+  h.dispatch({ type: 'fold_opened', id: 'fold', messages: [{ seq: 0, role: 'assistant', key: 'retired', text: 'an old response' }] })
+  assert.equal(h.state().rewind.open.fold[0].text, '')
+  assert.deepEqual(h.issues, [])
+})
+
+test('an erased settlement still waiting for selection cannot enter the live view', async () => {
+  const h = harness()
+  h.events.receive({ type: 'ready', info })
+  h.events.receive({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'buffered', kind: 'settle',
+    blocks: [{ type: 'text', text: 'erased before initialization' }] } })
+  h.events.receive({ type: 'memory_changed', erasedOutputs: [{ session: 's', key: 'buffered' }] })
+  h.events.initialize()
+  await flush()
+  assert.deepEqual(h.state().messages, [])
+  assert.deepEqual(h.issues, [])
+})
+
 test('SDK null permission fields and broker waits retain their known tool fallback through the real entry', () => {
   const h = harness(), broker = createPermissionBroker()
   h.events.receive({ type: 'ready', info }); h.events.initialize()

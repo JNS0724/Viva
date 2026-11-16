@@ -73,6 +73,7 @@ export interface ActionPayloads extends ConversationPayloads {
   history_query: { query: string }
   history_results: { query: string, results: State['history']['results'] }
   reports_removed: { reportIds: readonly string[] }
+  generated_outputs_removed: { copies: readonly { session: string, key: string }[] }
   toast_show: { toast: NonNullable<State['toast']> }
   toast_hide: { key: number }
   feed_open: { kind?: FeedPick['kind'], id?: string }

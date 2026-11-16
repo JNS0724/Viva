@@ -68,9 +68,11 @@ test('host file erasure retires exact generated copies and task bodies through r
     return [effect] as HostMemoryApi[typeof method]['output']
   }
   const calls: string[][] = [], receipts: string[] = []
+  const removed: string[][] = []
   const host = createMemoryHostEffects({ db, call, apply: (_kind, _data, write) => ({ value: transaction(db, write) }),
     eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges, eraseTaskBodies: tasks.eraseMemoryBodies,
     invalidate() {}, invalidateTaskBodies(ids) { calls.push([...ids].sort()); if (calls.length === 1) throw new Error('task close interrupted') },
+    generatedCopiesRemoved(copies) { removed.push(copies.map(copy => copy.key).sort()) },
     fileCopiesDurable(effect) { receipts.push(effect.effectId) } })
   t.after(() => host.close())
   const reader = new DatabaseSync(file, { readOnly: true })
@@ -86,6 +88,7 @@ test('host file erasure retires exact generated copies and task bodies through r
   await host.recover()
   assert.deepEqual(receipts, [operation])
   assert.equal(calls.length, 2, 'recovering the checkpoint does not close tasks again')
+  assert.deepEqual(removed[0], [old.key, taskMessage.key, `preview-${survivorTask}`].sort())
   for (const kept of [before, copy]) {
     assert.deepEqual(history.get(kept.id)?.messages.map(row => row.text), [' '.repeat(16) + original.slice(16), '', independent.text, identical.text])
   }
@@ -143,7 +146,7 @@ test('authoritative stream completion binds the proof before delivering repaired
         stream.receive({ type: 'assistant_stream_flushed', version: 1, operation: action.operation, messages: [committed], finalReply: true })
       }
     },
-    async recordOutputs(session, settled) { assert.equal(session, 'session'); outputs.push(...settled); rows.push('proved') },
+    async recordOutputs(session, settled) { assert.equal(session, 'session'); outputs.push(...settled); rows.push('proved'); return settled },
     emit() { rows.push('delivered') },
   })
   stream.receive({ type: 'assistant_stream_ready', version: 1 })
@@ -152,4 +155,30 @@ test('authoritative stream completion binds the proof before delivering repaired
   assert.deepEqual(outputs, [committed])
   assert.equal(rows[0], 'proved')
   assert.ok(rows.includes('delivered'))
+})
+
+test('a late native completion withdraws its rejected active key and does not replay its blocks', async () => {
+  const output = { key: 'retired-output', native: { seq: 3, digest: hash('terminal') }, blocks: [{ type: 'text' as const, text: 'erased reply' }] }
+  const updates: unknown[] = []
+  const stream = createAssistantStream({
+    send(message) {
+      const action = message as { type: string, operation: string }
+      if (action.type === 'assistant_stream_bind') {
+        stream.receive({ type: 'assistant_stream_bound', version: 1, operation: action.operation })
+      } else {
+        stream.receive({ type: 'assistant_stream_flushed', version: 1, operation: action.operation, messages: [output], finalReply: true })
+      }
+    },
+    async recordOutputs() { return [] },
+    emit(_session, update) { updates.push(update) },
+  })
+  stream.receive({ type: 'assistant_stream_ready', version: 1 })
+  const operation = await stream.begin('session')
+  const event = { type: 'assistant_stream', version: 1, operation: operation.id, sessionId: 'session', key: output.key }
+  stream.receive({ ...event, kind: 'start' })
+  stream.receive({ ...event, kind: 'delta', index: 0, blockType: 'text', text: 'provisional' })
+  stream.receive({ ...event, kind: 'settle', blocks: output.blocks })
+  assert.deepEqual(updates, [{ sessionUpdate: 'viva_stream', key: output.key, kind: 'delta', index: 0, blockType: 'text', text: 'provisional' }])
+  assert.equal(await stream.complete(operation), false)
+  assert.deepEqual(updates.slice(1), [{ sessionUpdate: 'viva_stream', key: output.key, kind: 'settle', blocks: [] }])
 })

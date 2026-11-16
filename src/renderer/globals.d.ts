@@ -45,6 +45,7 @@ interface SegmentMessage {
   seq: number
   role: string
   text: string
+  key?: string
   receipt?: Receipt | null
   at?: number
   images?: ReadonlyArray<{ id: string }>

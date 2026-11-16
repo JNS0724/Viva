@@ -23,6 +23,7 @@ import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
+import { hideErasedHistoryCopies } from './generated-history-state.ts'
 
 function removeRestoredTrace(state: State): State {
   const restored = state.restoredTraceData
@@ -47,6 +48,7 @@ export const initialState = Object.freeze({
   /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
   records: [] as readonly ReportRecord[],
   erasedReportIds: [] as readonly string[],
+  erasedGeneratedKeys: Object.freeze({}) as Readonly<Record<string, string>>,
   drawer: null as string | null,
   island: false,
   picker: false,
@@ -235,6 +237,7 @@ const ACTION_HANDLERS: ActionHandlers = {
     settings: state.settings,
     history: state.history,
     erasedReportIds: state.erasedReportIds,
+    erasedGeneratedKeys: state.erasedGeneratedKeys,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
     // Background tasks go on whatever the conversation on screen does.
@@ -284,6 +287,11 @@ const ACTION_HANDLERS: ActionHandlers = {
       rewind: live.rewind.confirm ? { ...live.rewind, confirm: null } : live.rewind,
       restoredTrace: live.restoredTrace === null && !currentSession ? null : 'unavailable',
       ...(currentSession ? { thoughts: [], tools: {}, timeline: live.timeline.filter(item => item.kind !== 'thought' && item.kind !== 'tool' && item.kind !== 'memory') } : {}) }
+  },
+  generated_outputs_removed: (state, { copies }) => {
+    const fresh = copies.filter(copy => !Object.hasOwn(state.erasedGeneratedKeys, copy.key))
+    return fresh.length ? { ...state, erasedGeneratedKeys: { ...state.erasedGeneratedKeys,
+      ...Object.fromEntries(fresh.map(({ key, session }) => [key, session])) } } : state
   },
   reveal_tick: (state, { dt }) => (isRevealing(state)
     ? {
@@ -340,7 +348,7 @@ const ACTION_HANDLERS: ActionHandlers = {
 } satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {
-  const next = reduceOnce(state, action)
+  const next = hideErasedHistoryCopies(reduceOnce(state, action), state)
   // Results drawn in the conversation tell their tasks (tasks-state.ts) once the conversation is in view: not while a
   // hub page covers it, and again on coming back to it.
   const inView = hubPage(next) === null

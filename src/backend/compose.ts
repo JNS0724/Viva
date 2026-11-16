@@ -23,7 +23,8 @@ import { createMemoryHostRecovery } from './memory-host-recovery.ts'
 import { affectedTraceSessions, createMemoryHostEffects } from './memory-host-effects.ts'
 import { createMemoryWithdrawal } from './memory-withdrawal.ts'
 import type { MemoryProvenance } from '../memory/contracts/records.ts'
-import { memoryErasureEvidence } from '../memory/contracts/provenance.ts'
+import { intersectsMemoryErasure, memoryErasureEvidence, type MemoryErasureEvidence } from '../memory/contracts/provenance.ts'
+import type { CommittedOutput } from './assistant-stream.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
 import { carriedRecords } from './history-carry.ts'
 import { activeHours } from './habits.ts'
@@ -548,17 +549,27 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         return source.sourceId
       },
       recordOutputs: fileMode ? async (session, outputs) => {
-        for (const output of outputs) {
-          const text = output.blocks.filter(block => block.type === 'text').map(block => block.text).join('')
-          if (!text || !lifetime.isCurrent()) continue
-          try {
+        const candidates: Array<{ output: CommittedOutput, proof: readonly MemoryErasureEvidence[] }> = []
+        try {
+          for (const output of outputs) {
+            if (!output.blocks.length || !lifetime.isCurrent()) continue
             const request = output.requestId ? requests.outputEvidence(output.requestId, session) : null
             const proof = output.native ? await memory.call('nativeOutputEvidence', { session, ...output.native })
               : request ? [memoryErasureEvidence(request)] : null
-            if (proof && lifetime.isCurrent()) historyDb.bindGeneratedCopy(session, output.key, 'assistant', text, proof)
-          } catch (error) {
-            console.warn('[memory] Could not authenticate the generated history copy:', error instanceof Error ? error.message : 'unknown error')
+            if (proof) candidates.push({ output, proof })
           }
+          // Owner publication can precede the host transaction that installs its local erasure ranges.
+          const effects = (await memory.call('pendingHostEffects', {})).filter(effect => effect.kind === 'erase-file-copies')
+          if (!lifetime.isCurrent()) return []
+          const accepted = candidates.filter(({ output, proof }) =>
+            !effects.some(effect => proof.some(item => intersectsMemoryErasure(item, effect.ranges, effect.memoryIds)))
+            && historyDb.bindGeneratedCopy(session, output.key, 'assistant',
+              output.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), proof))
+          const kept = new Set(accepted.map(({ output }) => output.key))
+          return outputs.filter(output => !output.blocks.length || kept.has(output.key))
+        } catch (error) {
+          console.warn('[memory] Could not authenticate generated output:', error instanceof Error ? error.message : 'unknown error')
+          return []
         }
       } : undefined,
       readyMemory: () => { scheduleRuns?.wake() },
@@ -1370,6 +1381,7 @@ ${question}` : question
       eraseFileHistory: historyDb.eraseFileRanges,
       eraseTaskBodies: taskStore.eraseMemoryBodies,
       invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
+      generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
       eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
       traceInvalidated: fileMode ? traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }) : undefined,

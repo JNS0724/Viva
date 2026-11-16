@@ -116,7 +116,7 @@ export function createAcpBridge({
   memoryProjection?: (notice: import('../memory/contracts/host.ts').MemoryOwnerProjection) => void,
   memoryNotice?: (notice: import('../memory/contracts/host.ts').MemoryOwnerChange) => void,
   memoryStateChanged?: (state: import('../memory/contracts/host.ts').MemoryOwnerState) => void,
-  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<void>,
+  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
   onSessionCreated?: (id: string, cwd: string, parent?: string) => void | Promise<void>,
   onQuestionAnswer?: Parameters<typeof createQuestionDesk>[0]['onAnswer'],
   /**
