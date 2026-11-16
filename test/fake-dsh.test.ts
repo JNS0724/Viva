@@ -151,7 +151,11 @@ test('the fake stream authenticates its final reply through the production owner
   mkdirSync(workspace)
   const original = { AGENT_CWD: process.env.AGENT_CWD, DSH_BIN: process.env.DSH_BIN, DSH_NODE: process.env.DSH_NODE,
     FAKE_DSH_DELAY_MS: process.env.FAKE_DSH_DELAY_MS, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY }
-  Object.assign(process.env, { AGENT_CWD: workspace, DSH_BIN: FAKE_DSH, DSH_NODE: process.execPath, FAKE_DSH_DELAY_MS: '0', DEEPSEEK_API_KEY: '' })
+  Object.assign(process.env, { AGENT_CWD: workspace, DSH_BIN: FAKE_DSH, FAKE_DSH_DELAY_MS: '0', DEEPSEEK_API_KEY: '' })
+  // The default Electron runtime adds ELECTRON_RUN_AS_NODE; a plain Node override
+  // deliberately does not. Never pass the Electron executable as that override.
+  if (process.versions.electron) delete process.env.DSH_NODE
+  else process.env.DSH_NODE = process.execPath
   const events: CapturedEvent[] = [], handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   const register: IpcRegistry['handle'] = (channel, listener) => handlers.set(channel, listener as (event: unknown, ...args: unknown[]) => unknown)
   function call<T>(channel: string, ...args: unknown[]): T {
