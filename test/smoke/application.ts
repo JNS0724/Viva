@@ -23,6 +23,7 @@ export interface ApplicationOptions {
   executable?: string
   apiKey?: string
   fullAccessibility?: boolean
+  fileMemory?: boolean
   waitForAgent?: boolean
 }
 
@@ -77,7 +78,7 @@ export async function launchSmokeApplication(options: ApplicationOptions): Promi
     ...(options.fullAccessibility ? ['--force-renderer-accessibility'] : []),
   ]
   const importHome = path.join(options.profile.root, 'dsh-import')
-  const env = applicationEnvironment(process.env, { workspace: options.profile.workspace, projectRoot: PROJECT_ROOT, bridge: options.bridge, apiKey: options.apiKey, importHome })
+  const env = applicationEnvironment(process.env, { workspace: options.profile.workspace, projectRoot: PROJECT_ROOT, bridge: options.bridge, apiKey: options.apiKey, importHome, fileMemory: options.fileMemory })
   const redact = (message: string) => options.apiKey ? message.replaceAll(options.apiKey, '[REDACTED]') : message
   const receipt = { executable, args, profile: options.profile.userData, bridge: options.bridge, artifact, waitForAgent: options.waitForAgent ?? false, startedAt: new Date().toISOString() }
   fs.writeFileSync(path.join(output, 'launch.json'), JSON.stringify(receipt, null, 2))

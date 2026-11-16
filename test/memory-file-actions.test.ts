@@ -16,7 +16,7 @@ const detailOf = (id: string, kind: 'daily' | 'digest' = 'digest'): MemoryFileDe
 const pageOf = (items: MemoryFileListResult['items'], nextCursor: MemoryFileListResult['nextCursor'] = null): MemoryFileListResult => ({
   status: 'ok', snapshot: 'snapshot', items, nextCursor,
 })
-const getMemory = { fileMode: true, profile: {}, items: [], total: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
+const getMemory = { profile: {}, items: [], total: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
 
 function harness(api: Partial<AgentApi>) {
   const initial = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: getMemory })
@@ -39,17 +39,15 @@ const mutationReceipt = (operationId: string, detail: MemoryFileDetailView, acti
   operationId, identity: detail.identity, usageVersion: detail.version.usageVersion + 1, contentRevision: detail.version.contentRevision, action,
 })
 
-test('file mode refreshes the file list and never queries the legacy search, profile or change action paths', async () => {
+test('loading About You refreshes the file list after the profile', async () => {
   const file = detailOf('useful')
   const calls: string[] = []
   const f = harness({
-    getMemory: async () => { calls.push('mode'); return getMemory },
+    getMemory: async () => { calls.push('profile'); return getMemory },
     listMemoryFiles: async () => { calls.push('file list'); return pageOf([file]) },
-    listMemories: async () => { throw new Error('legacy fact search') },
   })
-  f.dispatch({ type: 'memory_query', query: 'stale fact search' })
   await f.all.loadMemory()
-  assert.deepEqual(calls, ['mode', 'file list'])
+  assert.deepEqual(calls, ['profile', 'file list'])
   assert.equal(f.file().items[0]?.identity.id, file.identity.id)
 })
 

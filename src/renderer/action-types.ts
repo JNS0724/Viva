@@ -92,30 +92,15 @@ export interface ActionPayloads extends ConversationPayloads {
   models_discovery_pick: { id: string }
   models_discovery_close: {}
   models_adopt: { rows: readonly ModelRow[] }
-  memory_loaded: { data: Partial<State['memory']> }
+  memory_loaded: { data: Pick<State['memory'], 'profile' | 'onboarding' | 'habits'> & { cleanupPending?: number } }
   memory_load_failed: { message: string }
   memory_open: { view?: string }
   memory_close: {}
   memory_edit: { key: string | null }
-  memory_edit_entry: { target: { id: number, revision: number } | null }
   memory_busy: {}
   memory_failed: { message: string }
   memory_profile_saved: { profile: State['memory']['profile'] }
-  memory_summaries_stale: {}
-  memory_query: { query: string }
-  memory_listed: { query: string, items: State['memory']['items'], total: number }
-  memory_added: { memory: State['memory']['items'][number] }
-  memory_removed: { id: string | number }
-  memory_invalid_opened: {}
-  memory_invalid_listed: { items: State['memory']['invalidItems'] }
-  memory_invalid_closed: {}
-  memory_conflict_edit: { key: string | null }
-  memory_change_busy: { busy: boolean }
   memory_index_rebuild: { busy: boolean }
-  memory_changes_opened: {}
-  memory_changes_listed: { changes: State['memory']['changes'] }
-  memory_changes_closed: {}
-  memory_revived: { memory: State['memory']['items'][number] }
   memory_onboarding: { status: State['memory']['onboarding'] }
   memory_docs_added: { docs: State['memory']['docs'] }
   memory_files_query: { query: string }

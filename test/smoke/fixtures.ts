@@ -10,6 +10,7 @@ import { failureDiagnostics, recordMemoryEvents } from './diagnostics.ts'
 import { seedTimeline } from './smoke-timeline.ts'
 import { seedPerf } from './smoke-perf.ts'
 import { runSmoke } from './smoke.ts'
+import { fileMemorySmokeAnswer } from './smoke-memory.ts'
 import { smokeStep, type SmokeModel } from './smoke-kit.ts'
 
 export type SmokePhase = 'setup' | 'language' | 'walkthrough' | 'relaunch' | 'memory' | 'schedules' | 'resume-prepare' | 'resume' | 'timeline' | 'perf' | 'showcase' | 'live' | 'live-resume'
@@ -35,7 +36,9 @@ export class Scenario {
 
   async prepare(): Promise<void> {
     if (!['setup', 'language'].includes(this.options.phase) && !this.options.apiKey) {
-      this.model = await startFakeLlm({ decideFirst: this.options.phase === 'showcase' ? showcaseDecide : undefined })
+      const decideFirst = this.options.phase === 'showcase' ? showcaseDecide
+        : this.options.phase === 'memory' ? fileMemorySmokeAnswer : undefined
+      this.model = await startFakeLlm({ decideFirst })
       const initial = await this.start('bootstrap')
       await configureFakeProvider(initial, this.model, this.info.outputPath('model-picker.png'))
       // These seeds must be written while the app is closed. Installed checks keep their cold launch too.
@@ -57,6 +60,7 @@ export class Scenario {
     this.current = await smokeStep({ step: (name, action) => base.step(name, action) }, `launch ${label}`, () => launchSmokeApplication({
       profile: this.profile, outputDirectory: output, model: this.model, bridge: this.options.bridge,
       apiKey: this.options.apiKey, fullAccessibility: this.options.phase === 'perf',
+      fileMemory: this.options.phase === 'memory',
       waitForAgent: label !== 'bootstrap' && Boolean(this.model || this.options.apiKey),
     }))
     this.current.hooks.step = (name, action) => base.step(name, action)

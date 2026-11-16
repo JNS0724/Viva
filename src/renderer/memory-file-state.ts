@@ -36,7 +36,7 @@ export const sameMemoryFile = (a: MemoryManagedFileIdentity, b: MemoryManagedFil
 export const sameMemoryFileSelection = (a: MemoryFileSelection | null, b: MemoryFileSelection): boolean =>
   Boolean(a && a.restrictionId === b.restrictionId && sameMemoryFile(a.identity, b.identity))
 
-export const memoryFilePageOpen = (memory: State['memory']): boolean => memory.open && memory.view === 'profile' && memory.fileMode
+export const memoryFilePageOpen = (memory: State['memory']): boolean => memory.open && memory.view === 'profile'
 
 const withFiles = (state: State, patch: Partial<MemoryFileState>): State => memoryFilePageOpen(state.memory)
   ? { ...state, memory: { ...state.memory, files: { ...state.memory.files, ...patch } } }
