@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
+import { t } from '../shared/i18n/translate.ts'
 import { isTaskAction, parsePlan, type Receipt, type TaskAction } from '../shared/request-routing/protocol.ts'
 import type { Decided, FastOutcome } from '../shared/request-routing/channel.ts'
 import type { Apply } from './journal.ts'
@@ -20,7 +22,10 @@ import type { RequestKind, RequestStore, StoredRequest } from './request-store.t
 export type RequestFailure = 'unrouted' | 'turn_error' | 'cancelled' | 'undelivered' | 'interrupted'
 
 /** Where a request was said: its conversation and working folder, as kept when it arrived. */
-export interface RequestPlace { sessionId: string, conversationId: string | null, cwd: string | null }
+export interface RequestPlace {
+  sessionId: string, conversationId: string | null, cwd: string | null
+  memory?: MemoryProvenance
+}
 
 /**
  * The task runtime as the decisions use it (compose.ts): a task starts from the request's conversation, and only tasks
@@ -35,10 +40,11 @@ export interface RequestTasks {
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const NOT_SENT = '本轮已结束，这一步没有执行'
 
-export function createRequestRuntime({ store, apply, tasks, now = Date.now, newId = () => `r-${randomUUID()}` }: {
+export function createRequestRuntime({ store, apply, tasks, evidenceErased = () => false, now = Date.now, newId = () => `r-${randomUUID()}` }: {
   store: RequestStore
   apply: Apply
   tasks: RequestTasks
+  evidenceErased?(evidence: MemoryProvenance): boolean
   now?: () => number
   newId?: () => string
 }) {
@@ -50,9 +56,11 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
   const halted = new Set<string>()
 
   /** A request of the main conversation, as it arrives; its id goes into the header the agent reads it under. */
-  function receive({ sessionId, conversationId, cwd, kind }: { sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind }): string {
+  function receive({ sessionId, conversationId, cwd, kind, sourceId }: {
+    sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string,
+  }): string {
     const id = newId()
-    apply('request.received', { requestId: id, kind }, () => store.add({ id, sessionId, conversationId, cwd, kind, at: now() }))
+    apply('request.received', { requestId: id, kind }, () => store.add({ id, sessionId, conversationId, cwd, kind, sourceId, at: now() }))
     return id
   }
 
@@ -64,9 +72,9 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
     return null
   }
 
-  async function perform(request: StoredRequest, action: TaskAction, title: string): Promise<Receipt> {
+  async function perform(request: StoredRequest, action: TaskAction, title: string, memory?: MemoryProvenance): Promise<Receipt> {
     const { sessionId, conversationId, cwd } = request
-    const place = { sessionId, conversationId, cwd }
+    const place = { sessionId, conversationId, cwd, ...(memory ? { memory } : {}) }
     try {
       if (action.kind === 'start') return { kind: 'start', ok: true, taskId: (await tasks.start({ title, brief: action.brief }, place)).taskId }
       if (action.kind === 'message') await tasks.message(action.taskId, action.text, place)
@@ -82,14 +90,18 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
    * carried out in order, each receipt kept. A receipt that cannot be kept leaves its action pending, so the next launch
    * marks it uncertain instead of doing it again.
    */
-  async function decide({ requestId, sessionId, plan: raw }: { requestId: string, sessionId: string, plan: unknown }): Promise<Decided> {
+  async function decide({ requestId, sessionId, plan: raw }: { requestId: string, sessionId: string, plan: unknown },
+    evidence?: MemoryProvenance): Promise<Decided> {
     const request = store.get(requestId)
     const refused = refusal(request, requestId, sessionId)
     if (refused || !request) return { accepted: false, reason: refused ?? '' }
+    const erased = () => Boolean(evidence && evidenceErased(evidence))
+    const rejected = () => ({ accepted: false as const, reason: t('main.memory.context.stale') })
+    if (erased()) return rejected()
     const parsed = parsePlan(raw)
     if ('problem' in parsed) return { accepted: false, reason: parsed.problem }
     const { plan } = parsed
-    const accepted = apply('request.decided', { requestId, actions: plan.actions.map(action => action.kind) }, () => store.decide(requestId, plan, now())).value
+    const accepted = apply('request.decided', { requestId, actions: plan.actions.map(action => action.kind) }, () => store.decide(requestId, plan, now(), evidence)).value
     if (!accepted) return { accepted: false, reason: refusal(store.get(requestId), requestId, sessionId) ?? `请求 ${requestId} 不能再提交` }
     carrying.set(requestId, sessionId)
     // A start is named by its own title, or else by a goal it serves: the n-th start, the n-th goal delegated.
@@ -98,10 +110,12 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
     try {
       const receipts: Receipt[] = []
       for (const [idx, action] of plan.actions.entries()) {
+        if (erased()) return rejected()
         if (!isTaskAction(action)) { receipts.push({ kind: action.kind, ok: true }); continue }
         const goal = action.kind === 'start' ? delegated[starts++] : undefined
         const title = action.kind === 'start' ? (action.title ?? goal ?? '') : ''
-        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await perform(request, action, title)
+        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await perform(request, action, title, evidence)
+        if (erased()) return rejected()
         receipts.push(receipt)
         try {
           apply('request.acted', { requestId, idx, kind: action.kind, ok: receipt.ok }, () => store.settle(requestId, idx, receipt, now()))
@@ -153,7 +167,7 @@ export function createRequestRuntime({ store, apply, tasks, now = Date.now, newI
     return { failed: undecided.length, uncertain: unsettled }
   }
 
-  return { receive, decide, fail, endTurn, noteFast, recover }
+  return { receive, decide, source: store.source, eraseMemory: store.eraseMemory, fail, endTurn, noteFast, recover }
 }
 
 export type RequestRuntime = ReturnType<typeof createRequestRuntime>

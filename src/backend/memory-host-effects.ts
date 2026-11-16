@@ -11,11 +11,12 @@ import { objectOf } from '../shared/unknown-value.ts'
 
 type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, reportsRemoved = () => {} }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
   eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): void,
   invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
+  eraseRoutedMemory?(matches: (memory: MemoryProvenance) => boolean): void,
   reportsRemoved?(reportIds: readonly string[]): void,
   invalidate(effect: MemoryHostEffect): void | Promise<void>,
 }) {
@@ -68,6 +69,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
             const matches = (memory: MemoryProvenance) => usesErasedMemory(memory, effect.ranges, effect.memoryIds)
             const { scheduled, reports } = transaction(db, () => {
               eraseFileHistory(effect.ranges, effect.memoryIds)
+              eraseRoutedMemory(matches)
               return { scheduled: eraseScheduledMemoryCopies(db, matches), reports: eraseMemoryReportCopies(db, matches) }
             })
             invalidateScheduled(matches, scheduled)

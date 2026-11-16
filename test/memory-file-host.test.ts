@@ -55,6 +55,48 @@ async function aborted(signal: AbortSignal) {
   })
 }
 
+test('admitted routing evidence is withheld during a drained mutation and stays stale in a fresh session', async t => {
+  const f = await fixture(t), current = (await f.client.readFile(f.identity))!
+  const snapshot = async (session: string, prior?: NonNullable<HostMemoryApi['authorizedProvenance']['output']>) =>
+    await f.owner.handleHost('authorizedProvenance', { session, prior }) as HostMemoryApi['authorizedProvenance']['output']
+  const stranger = randomUUID()
+  assert.equal(await snapshot(stranger), null, 'a request must have a native owner session')
+  f.owner.initializeSession({ sessionId: f.session })
+  const evidence = await snapshot(f.session)
+  assert.ok(evidence && evidence.sources.includes(f.sourceId))
+  const permit = f.owner.acquireSend(randomUUID(), { session: f.session }, 'request carrying original proof')
+  const forgotten = f.client.forgetFile({ operationId: randomUUID(), identity: f.identity, version: current.version })
+  try {
+    await aborted(permit.signal)
+    assert.equal(await snapshot(f.session), null)
+  } finally { permit.settled() }
+  await forgotten
+  await f.owner.runtime.wake()
+  assert.equal(await snapshot(f.session), null)
+  f.owner.initializeSession({ sessionId: stranger, cwd: f.store.fileRoot })
+  assert.ok(await snapshot(stranger))
+  assert.equal(await snapshot(stranger, evidence), null, 'a later readset cannot reauthorize the erased decision')
+})
+
+test('fast routing binds the exact host delivery even before native inbox intake', async t => {
+  const f = await fixture(t), sourceId = randomUUID(), words = 'Add the Friday item to my task.'
+  const session = f.session, conversation = f.session
+  await f.owner.handleHost('sourceAlias', { operationId: sourceId, sourceId, session, conversation, text: words })
+  const read = (sessionId: string, id?: string) =>
+    f.owner.handleHost('authorizedProvenance', { session: sessionId, sourceId: id }) as Promise<HostMemoryApi['authorizedProvenance']['output']>
+  assert.equal(await read(session, sourceId), null, 'an alias without a wire binding is insufficient')
+  const bound = await f.owner.handleHost('bindWireAlias', { args: [session, words, `Late user message: ${words}`, sourceId] }) as { wireText: string }
+  assert.ok((await read(session, sourceId))?.sources.includes(sourceId))
+  assert.equal((await read(session))?.sources.includes(sourceId), false, 'the proof is request-local until native admission')
+  await f.owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: bound.wireText,
+    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: false, inherited: false })
+  assert.ok((await read(session, sourceId))?.sources.includes(sourceId))
+  assert.equal((await read(session))?.sources.includes(sourceId), false)
+  const other = randomUUID()
+  f.owner.initializeSession({ sessionId: other, cwd: f.store.fileRoot })
+  assert.equal(await read(other, sourceId), null, 'a different session cannot claim this input')
+})
+
 test('trusted file management can re-enable a disabled digest while model reads stay blocked', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   assert.ok(before)

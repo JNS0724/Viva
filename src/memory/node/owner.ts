@@ -766,6 +766,23 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'deleteMemory': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, [a[0]], () => runtime.deleteMemory(a[0], a[1], id)) }
       case 'stopMemory': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, [a[0]], () => runtime.forget(a[0], a[1], 'forget', id)) }
       case 'provenance': return dispatch.snapshot(...command.input.args)
+      case 'authorizedProvenance': {
+        const { session, prior, sourceId } = command.input
+        if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)
+          || fence.blocked() || contextRecovery.pending(session) || hasPending()) return null
+        const { project, conversation } = sessionContext(session)
+        if (!coordination.allowsSession(session, project)) return null
+        if (prior) return !sourceId && coordination.transferStatus(prior, project, true) === 'ready' ? prior : null
+        const evidence = dispatch.snapshot(session)
+        if (!sourceId) return evidence
+        // Fast routing may take the wire before native inbox intake. A host-bound
+        // delivery receipt still identifies the exact raw request independently.
+        if (!db.prepare('SELECT 1 FROM owner_aliases WHERE session=? AND conversation=? AND source=? AND delivery=1 AND revoked=0')
+          .get(session, conversation, sourceId)) return null
+        if (!store.readSource(sourceId) && !store.deliveredSource(sourceId)) runtime.recordDeliveredSource(sourceId, conversation)
+        if (!runtime.dispatchSourceCurrent(sourceId)) return null
+        return combineMemoryProvenance(evidence, { dependencies: [], sources: [sourceId], epoch: evidence.epoch, turnOnly: false })
+      }
       case 'replaySources': return runtime.replaySources(command.input.args[0], command.input.args[1])
     }
     throw new Error('Unsupported host operation')

@@ -7,6 +7,7 @@ export const testLevels = {
     'memory-markdown',
     'memory-daily-usage',
     'memory-file-management',
+    'memory-file-actions',
     'memory-file-host',
     'memory-file-index',
     'memory-file-evaluation',

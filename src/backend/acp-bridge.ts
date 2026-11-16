@@ -190,9 +190,9 @@ export function createAcpBridge({
   // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
   const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
   /** The user's words as the main agent reads them: under the header of the request they are taken as. */
-  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection') => {
+  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string) => {
     const context = contextFor(session)
-    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind })
+    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, ...(sourceId ? { sourceId } : {}) })
     return { requestId, text: withRequestHeader(words, requestId) }
   }
   const operations = createAcpOperations({
@@ -469,7 +469,7 @@ export function createAcpBridge({
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
-    let words = request && asked ? asRequest(text, asked, 'prompt').text : text
+    let words = request && asked ? asRequest(text, asked, 'prompt', sourceId).text : text
     if (asked && memory.ready()) words = (await memory.call('bindWireAlias', { args: [asked, sourceText ?? text, words, sourceId] })).wireText
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     const blocks: PromptBlocks = [
@@ -632,7 +632,7 @@ export function createAcpBridge({
     const asked = sessionId
     if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
-    const request = asRequest(text, asked, 'interjection')
+    const request = asRequest(text, asked, 'interjection', sourceId)
     const wire = memory.ready() ? (await memory.call('bindWireAlias', { args: [asked, text, interjection(request.text), sourceId] })).wireText : interjection(request.text)
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
     const result = await steering.steer(wire, asked, { fast: memory.ready() })

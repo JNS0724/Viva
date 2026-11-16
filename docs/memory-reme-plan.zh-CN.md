@@ -562,6 +562,8 @@ Viva 用每次后台任务运行冻结的证据判断已保存报告和待发报
 
 类型检查、构建、macOS 记忆冒烟及打包后的独立 DSH Web 文件模式冒烟通过。四并发全量发现 1999 项，1997 项通过、2 项既有跳过。记录见 `/tmp/r5a-report-final-full.log`、`/tmp/r5a-report-final-smoke.log` 和 `/tmp/r5a-report-final-plugin.log`。
 
+Viva 路由账本将决策及后续动作绑定到同一份经 owner 验证的证据。快速插话在原生收件箱接收之前就绑定本次宿主投递的原始来源。本地范围遗忘在登记原文裁剪的事务中删除受影响的计划及动作错误。待回执动作标记为结果不确定，进行中的决策在证据擦除后不能写回迟到回执或继续执行剩余动作。类型检查、构建、2014 项 Electron 全量测试（2012 通过、2 项既有跳过）及 macOS 记忆冒烟通过。记录见 `/tmp/r5a-route-bound-full.log` 和 `/tmp/r5a-route-bound-smoke.log`。
+
 ## 17 R5b 默认嵌入模型确认
 
 R5b 将 R4 的 MiniLM 发布配方切换到 IBM Granite Embedding 97M Multilingual R2 Q8。已验证的发布产物为 `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`，固定 revision `536a9f241cb3f02a9c5995a1e708c784bd274859`，Apache-2.0。四个模型文件合计 123.2 MB。已验证配置为 384 维、CLS pooling、L2 归一化、空前缀和 128 tokens 上限。发布配方、worker 握手、归档与许可需与该 manifest 一致。资产内容和编码参数派生独立指纹。默认切换后旧向量退出检索，并重建新索引；两代模型维度相同，须在两个向量空间同时存在时验证隔离。

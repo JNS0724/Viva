@@ -557,9 +557,22 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         return result
       },
       taskAct: (request, sessionId) => actOnSchedule(request, sessionId),
-      routing: { receive: (request) => requests.receive(request), decide: async (decision) => await allowMemorySession(decision.sessionId) && decision.sessionId === sessions.current().sessionId
-        ? requests.decide(decision)
-        : Promise.resolve({ accepted: false, reason: t('main.memory.context.stale') }), fail: (failure) => requests.fail(failure), noteFast: (outcome) => requests.noteFast(outcome), endTurn: (turn) => requests.endTurn(turn) },
+      routing: {
+        receive: request => requests.receive(request),
+        async decide(decision) {
+          const bridge = dsh.current
+          if (bridge && decision.sessionId === sessions.current().sessionId) {
+            const evidence = await bridge.memory.call('authorizedProvenance', {
+              session: decision.sessionId, sourceId: requests.source(decision.requestId, decision.sessionId),
+            })
+            if (evidence && bridge === dsh.current && decision.sessionId === sessions.current().sessionId) {
+              return requests.decide(decision, evidence)
+            }
+          }
+          return { accepted: false, reason: t('main.memory.context.stale') }
+        },
+        fail: failure => requests.fail(failure), noteFast: outcome => requests.noteFast(outcome), endTurn: turn => requests.endTurn(turn),
+      },
       conversationContext: sessionId => {
         const context = sessions.context()
         return context.sessionId === sessionId ? context : { conversationId: null, sessionId }
@@ -1291,6 +1304,7 @@ ${question}` : question
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
+      eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
       invalidateScheduled: (matches, changed) => {
         schedules?.discardMemory(matches)
@@ -1331,10 +1345,16 @@ ${question}` : question
     const tasks = taskRuntime.agent
     const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { cwd: cwd ?? '' }) }
     async function requestEvidence(place: RequestPlace) {
-      const selected = sessions.current()
-      if (selected.id !== place.conversationId || selected.sessionId !== place.sessionId) throw new Error(t('main.requests.start.elsewhere'))
-      if (!await allowMemorySession(place.sessionId, place.cwd ?? undefined)) throw new Error(t('main.memory.context.stale'))
-      return memory.provenance(place.sessionId)
+      const bridge = dsh.current
+      const here = () => {
+        const selected = sessions.current()
+        return bridge === dsh.current && selected.id === place.conversationId && selected.sessionId === place.sessionId
+      }
+      if (!here()) throw new Error(t('main.requests.start.elsewhere'))
+      if (!bridge || !place.memory
+        || !await bridge.memory.call('authorizedProvenance', { session: place.sessionId, prior: place.memory })
+        || !here() || historyDb.evidenceErased(place.memory)) throw new Error(t('main.memory.context.stale'))
+      return place.memory
     }
     function admitTask(place: RequestPlace, evidence: MemoryProvenance | undefined, targetCwd?: string) {
       return async (taskId: string) => {
@@ -1348,6 +1368,7 @@ ${question}` : question
     }
     requests = createRequestRuntime({
       store: createRequestStore({ db: appDb.db }),
+      evidenceErased: historyDb.evidenceErased,
       apply: applyChange,
       tasks: {
         start: async ({ title, brief }, place) => {
