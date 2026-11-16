@@ -51,7 +51,7 @@ const SESSIONS = [
 ]
 
 /** The key from the environment (e.g. exported from the Keychain by the shell), else from ENV_FILE. */
-function readKey() {
+export function readLiveMemoryKey() {
   const fromEnv = process.env.DEEPSEEK_API_KEY?.trim()
   if (fromEnv) return fromEnv
   if (!fs.existsSync(ENV_FILE)) {
@@ -179,7 +179,7 @@ async function runSession({ questions, key, env, dshHome, workspace }: {
 }
 
 async function main() {
-  const key = readKey()
+  const key = readLiveMemoryKey()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-memory-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')

@@ -14,6 +14,7 @@ export const testLevels = {
     'memory-native-derived',
     'memory-file-index',
     'memory-file-evaluation',
+    'memory-semantic-evaluation',
     'memory-file-ranking',
     'memory-embedding-assets',
     'memory-embedding-recipe',
