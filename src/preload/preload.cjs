@@ -102,7 +102,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getMemory: () => ipcRenderer.invoke('memory:get'),
   listMemories: (query) => ipcRenderer.invoke('memory:list', query),
   listMemoryFiles: (request) => ipcRenderer.invoke('memory:list-files', request),
-  readMemoryFile: (identity) => ipcRenderer.invoke('memory:read-file', identity),
+  readMemoryFile: (identity, restrictionId) => ipcRenderer.invoke('memory:read-file', identity, restrictionId),
   setMemoryFileEnabled: (request) => ipcRenderer.invoke('memory:set-file-enabled', request),
   undoMemoryFile: (request) => ipcRenderer.invoke('memory:undo-file', request),
   saveProfile: (changes, operation) => ipcRenderer.invoke('memory:set-profile', changes, operation),

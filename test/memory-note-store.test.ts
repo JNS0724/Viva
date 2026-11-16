@@ -180,14 +180,15 @@ test('an external edit between members of a plan is rechecked, not overwritten b
   assert.equal(journal.visible(workspace, first), false)
 })
 
-test('long Chinese names fit the filesystem and filename collisions are resolved without adopting foreign content', t => {
+test('daily locators contain no title and collisions are resolved without adopting foreign content', t => {
   const { store, notes, key, commit } = setup(t)
   commit('发布核对'.repeat(100))
   const old = notes.read(key)!
-  assert(Buffer.byteLength(old.path.split('/').at(-1)!) < 255)
+  assert(!old.path.includes('发布核对'))
+  assert.equal(old.title, '发布核对'.repeat(100))
   const next = noteSource(store, { session: 'new-session' })
   const nextKey = notes.add('new-session', old.day, [next], '')!
-  const expected = `daily/${old.day}/collision-${memoryFileRevision('new-session')}.md`
+  const expected = `daily/${old.day}/note-${memoryFileRevision(nextKey)}.md`
   const location = join(store.fileRoot, old.workspace, expected)
   writeFileSync(location, 'foreign card')
   notes.commit(nextKey, notes.pending(nextKey), { status: 'write', title: 'collision', markdown: 'new content' }, 2, Date.now(), notes.snapshot([next.id]), undefined)

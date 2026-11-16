@@ -13,8 +13,8 @@ type Calculate = (job: Effect, source: MemorySource, stage: 'note' | 'dream', sy
   sources: string[], current: () => boolean) => Promise<unknown>
 
 /** Completed-turn daily capture. Document dream is independently orchestrated by memory-dream. */
-export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), assistantContextCurrent, calculate, mutate = async work => work() }:  {
-  store: MemoryStore, effects: Effects, now: () => number, settings?: DailyMemorySettings,
+export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, capture = true, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), assistantContextCurrent, calculate, mutate = async work => work() }:  {
+  store: MemoryStore, effects: Effects, now: () => number, settings?: DailyMemorySettings, capture?: boolean,
   openNotes: MemoryRuntimeResources['openNotes'],
   readable: (id: string) => boolean,
   eligible: (source: MemorySource) => boolean,
@@ -47,6 +47,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   }
   const wake = () => { void effects.wake() }
   function record(session: string, ids: readonly string[], assistant: string) {
+    if (!capture) return
     const sources = [...new Set(ids)].flatMap(id => {
       const source = sourceOf(id)
       return source?.session === session ? [source] : []
@@ -85,8 +86,14 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       wake()
       return 'done'
     }
+    const requestedRebuild = Boolean(job.payload && typeof job.payload === 'object' && 'rebuild' in job.payload && job.payload.rebuild === true)
     if (notes.jobState(job.key, job.generation) === 'cancelled') {
-      store.tx(() => { effects.finishGeneration(job); schedule(job.key, true) })
+      store.tx(() => {
+        if (!effects.holds(job)) return
+        effects.finishGeneration(job)
+        if (requestedRebuild) queueRebuild(job.key)
+        else schedule(job.key, true)
+      })
       wake()
       return 'done'
     }
@@ -96,9 +103,11 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     // A registered but unavailable file awaits external verification; it is not a new empty card.
     if (!existing && notes.registered().some(note => note.key === job.key)) return 'wait'
     const rebuilding = Boolean(existing && !allowsReferences(notes.references(job.key)))
-      || Boolean(job.payload && typeof job.payload === 'object' && 'rebuild' in job.payload && job.payload.rebuild === true)
+      || requestedRebuild
     const rows = rebuilding ? notes.rebuildRows(job.key) : notes.pending(job.key, noteInterval)
     if (!rows.length) return 'done'
+    const workspace = rows[0]!.workspace, policyToken = notes.usePolicyToken(workspace)
+    const policyCurrent = () => notes.usePolicyToken(workspace) === policyToken
     const priorRefs = existing && !rebuilding ? notes.references(job.key) : []
     const priorSources = priorRefs.map(ref => ref.id)
     if (rows.some(row => !row.sourceIds.every(readable)) || priorSources.some(id => !readable(id))) return 'wait'
@@ -125,7 +134,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
           const current = notes.read(job.key), latestRows = notes.rebuildRows(job.key)
           // A restored source/question permission can make an empty projection useful again
           // while physical requests drain. Never delete using that stale empty decision.
-          if (!effects.holds(job) || current?.fileRevision !== existing?.fileRevision || current?.revision !== existing?.revision
+          if (!effects.holds(job) || !policyCurrent() || current?.fileRevision !== existing?.fileRevision || current?.revision !== existing?.revision
             || !ids.every(readable) || JSON.stringify(notes.snapshot(ids)) !== versions || JSON.stringify(latestRows) !== priorRows
             || projectTurns(latestRows).some(turn => turn.user.length > 0)) return false
           return notes.commit(job.key, latestRows, { status: 'skip' }, job.generation, now(), [], existing, { rebuild: true })
@@ -168,10 +177,14 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     // Validate all text actually sent, including stored documents and question context, not only new sources.
     const material = [input.existing?.title, input.existing?.markdown, input.previousAssistant,
       ...input.turns.flatMap(turn => [turn.assistant, ...turn.user.flatMap(user => [user.text, user.question])])]
-    const current = () => notes.read(job.key)?.fileRevision === existing?.fileRevision
-      && related.every(readable) && JSON.stringify(notes.snapshot(related)) === JSON.stringify(versions)
-      && allowsReferences(refs) && turns.every(turn => turn.user.every(item => projectSource(item.source, item.ref).text === item.text))
-      && materialAllowed(material, related)
+    const current = () => {
+      if (!policyCurrent()) return false
+      const latest = notes.read(job.key)
+      return latest?.fileRevision === existing?.fileRevision && latest?.revision === existing?.revision
+        && related.every(readable) && JSON.stringify(notes.snapshot(related)) === JSON.stringify(versions)
+        && allowsReferences(refs) && turns.every(turn => turn.user.every(item => projectSource(item.source, item.ref).text === item.text))
+        && materialAllowed(material, related)
+    }
     if (!current()) return 'wait'
     const result = await calculate(job, sources[0]!, 'note', NOTE_SYSTEM, input, related, current)
     if (result === undefined) return 'wait'
@@ -182,6 +195,9 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return false
       return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })
     })) {
+      // Rebuilds can replay already checkpointed turns, including on an empty
+      // allocation. An ordinary pending-turn job would lose that work.
+      if (rebuilding) return 'retry'
       store.tx(() => { effects.finishGeneration(job); schedule(job.key, true) })
       wake()
       return 'done'
@@ -218,21 +234,24 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   store.tx(() => {
     for (const group of notes.pendingGroups()) schedule(group.note, true)
   })
+  function queueRebuild(key: string) {
+    effects.cancel(WRITE_NOTE, key)
+    effects.queue(WRITE_NOTE, key, { rebuild: true, flush: true })
+  }
   function queueRestrictedRebuilds() {
     store.tx(() => {
       for (const note of notes.list(null, null)) {
         if (allowsReferences(notes.references(note.key))) continue
         const active = effects.get(WRITE_NOTE, note.key)
         if (active?.payload && typeof active.payload === 'object' && 'rebuild' in active.payload && active.payload.rebuild === true) continue
-        effects.cancel(WRITE_NOTE, note.key)
-        effects.queue(WRITE_NOTE, note.key, { rebuild: true, flush: true })
+        queueRebuild(note.key)
       }
     })
   }
   return {
     record,
     storage: notes,
-    queueRestrictedRebuilds,
+    queueRebuild, queueRestrictedRebuilds,
     refreshRestrictions() { queueRestrictedRebuilds(); wake() },
     read: notes.read,
     sources: notes.sources,

@@ -22,7 +22,7 @@ export const NOTE_SYSTEM = [
   '记录以后可能用到的事实、决定及原因、进展、卡点和下一步。保留关键数字、说话人、时间、条件和不确定性。关键处可以引用原话。',
   '结合用户和助手的上下文理解简短回答。区分用户的陈述、助手的提问与建议，以及尚未确认的信息。',
   '已有笔记时追加历史事件，刷新当前状态，合并重复内容。纯寒暄或闲聊返回 {"status":"skip"}，有实质信息但价值不确定时写入。',
-  '可用 filename 建议简短文件名；后端决定归属和最终路径。返回 {"status":"write","title":"简练的主题","markdown":"完整笔记正文"}。',
+  '文件路径由后端分配。返回 {"status":"write","title":"简练的主题","markdown":"完整笔记正文"}。',
 ].join('\n')
 
 export function nextDreamAt(at: number, zone: string, time: string) {

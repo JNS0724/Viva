@@ -10,6 +10,7 @@ import type { FileCheckpoint, FilePlan } from './memory-file-journal.ts'
 import { documentSourceRestricted } from '../core/memory-document-restrictions.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
+import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 
 type Row = { id: string, workspace: string, path: string, revision: string, usage_version: number, enabled: number, forgotten: number, sources: string, corrections: string }
 type Revision = { operation: string, document: string, before: string | null, after: string | null }
@@ -42,9 +43,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
       sources TEXT NOT NULL, corrections TEXT NOT NULL, UNIQUE(workspace,path)
     );
-    CREATE TABLE IF NOT EXISTS memory_document_use_restrictions (
-      document TEXT PRIMARY KEY, sources TEXT NOT NULL
-    );
     CREATE TABLE IF NOT EXISTS memory_document_revisions (
       operation TEXT PRIMARY KEY, document TEXT NOT NULL, before TEXT, after TEXT, at INTEGER NOT NULL
     );
@@ -69,6 +67,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       document TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, sources TEXT NOT NULL
     );
   `)
+  const useRestrictions = openMemoryFileRestrictions(db)
   function workspace(value: string) {
     if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error('invalid-memory-workspace')
   }
@@ -133,9 +132,10 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       if (!unchanged && data.after) {
         save(data.after)
         if (data.receipt.action === 'ENABLE') {
-          db.prepare('DELETE FROM memory_document_use_restrictions WHERE document=?').run(data.after.id)
+          useRestrictions.removeTarget({ kind: 'digest', workspace: data.workspace, key: data.after.id })
         } else if (data.receipt.action === 'DISABLE') {
-          db.prepare('INSERT INTO memory_document_use_restrictions(document,sources) VALUES(?,?)').run(data.after.id, encode(data.after.sources))
+          useRestrictions.add({ kind: 'digest', workspace: data.workspace, key: data.after.id, id: data.receipt.operationId,
+            contentRevision: data.after.revision, usageVersion: data.after.usageVersion, sources: data.after.sources })
         }
         // An undo on a disabled document must keep the original blocked ranges.
       }
@@ -173,8 +173,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const document = rowByPath(scope, path)
     if (document) return document.id
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_daily_notes'").get()) {
-      const note = db.prepare('SELECT key FROM memory_daily_notes WHERE workspace=? AND path=?').get(scope, path) as { key: string } | undefined
-      if (note) return note.key
+      const note = db.prepare('SELECT key,file_revision FROM memory_daily_notes WHERE workspace=? AND path=? AND file_revision IS NOT NULL')
+        .get(scope, path) as { key: string, file_revision: string } | undefined
+      if (note && journal.files(scope).read(path)?.revision === note.file_revision) return note.key
     }
     throw new Error('memory-correction-source-identity')
   }
@@ -357,16 +358,12 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       for (const row of db.prepare('SELECT * FROM memory_documents WHERE forgotten=0').all() as unknown as Row[]) {
         if (!refsOf(row).some(ref => ref.id === sourceId)) continue
         affected.push(row.id)
-        db.prepare('DELETE FROM memory_document_use_restrictions WHERE document=?').run(row.id)
+        useRestrictions.removeTarget({ kind: 'digest', workspace: row.workspace, key: row.id })
         db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(row.workspace, row.path)
         db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', encode(correctionsOf(row).map(item => ({ ...item, text: '', condition: '', time: '' }))), row.id)
         db.prepare('INSERT OR IGNORE INTO memory_document_purges(document,workspace,path,sources) VALUES(?,?,?,?)').run(row.id, row.workspace, row.path, row.sources)
       }
-      for (const row of db.prepare('SELECT document,sources FROM memory_document_use_restrictions').all() as Array<{ document: string, sources: string }>) {
-        const refs = JSON.parse(row.sources) as DocumentSourceRef[]
-        const remaining = refs.filter(ref => ref.id !== sourceId)
-        if (remaining.length !== refs.length) db.prepare('UPDATE memory_document_use_restrictions SET sources=? WHERE document=?').run(encode(remaining), row.document)
-      }
+      useRestrictions.withdrawSource(sourceId)
       for (const rev of db.prepare('SELECT * FROM memory_document_revisions').all() as unknown as Revision[]) {
         const contains = (value: string | null) => value && (JSON.parse(value) as DocumentSnapshot).sources.some(ref => ref.id === sourceId)
         if (contains(rev.before) || contains(rev.after)) db.prepare('UPDATE memory_document_revisions SET before=NULL,after=NULL WHERE operation=?').run(rev.operation)
@@ -556,9 +553,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   function sourceRestrictions(scope: string, except?: string): DocumentSourceRef[] {
     workspace(scope)
-    const restrictions = db.prepare(`SELECT r.sources FROM memory_document_use_restrictions r JOIN memory_documents d ON r.document=d.id
-      WHERE d.workspace=? AND d.enabled=0 AND d.forgotten=0 AND (? IS NULL OR d.id<>?) ORDER BY d.id`).all(scope, except ?? null, except ?? null)
-    return restrictions.flatMap(row => JSON.parse(String(row.sources)) as DocumentSourceRef[])
+    return useRestrictions.sources(scope, except ? { kind: 'digest', workspace: scope, key: except } : undefined)
   }
   const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count)
   if (!deferRecovery) recover()

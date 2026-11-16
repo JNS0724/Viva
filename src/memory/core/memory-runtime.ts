@@ -37,7 +37,9 @@ import { createMemoryNoteJobs } from './memory-note-jobs.ts'
 import { createMemoryDreamJobs } from './memory-dream-jobs.ts'
 import type { DreamCalculate } from './memory-dream-jobs.ts'
 import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy } from './memory-document-read-policy.ts'
+import { createMemoryDailyUsage } from './memory-daily-usage.ts'
 import { createMemoryFileManagement } from './memory-file-management.ts'
+import type { MemorySourceReference } from '../contracts/service.ts'
 import { memoryFileMutation } from '../contracts/file-management.ts'
 import type { MemoryFileMutation, MemoryFileMutationResult, MemoryFileListRequest, MemoryManagedFileIdentity,
   MemoryFileSetEnabledRequest, MemoryFileUndoRequest } from '../contracts/file-management.ts'
@@ -52,6 +54,8 @@ import { createDailySemanticSearch, dailySearchLimit, rankDailyMemory } from './
 import type { DailySearchDocument, SearchChunk } from './memory-daily-search.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
+
+type FileMutationCommitted = (result: MemoryFileMutationResult, affectedSources?: readonly MemorySourceReference[]) => void
 
 type ConflictSide = Pick<MemoryEntry, 'id' | 'revision'>
 type ConflictResolution = { kind: 'keep-first' | 'keep-both' | 'discard-both' } | { kind: 'replace', text: string }
@@ -154,6 +158,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const blockedSources = new Set<string>()
   const sourceBlocked = (source: Pick<MemorySource, 'id' | 'conversation'>) => blockedSources.has(source.id)
     || (source.conversation !== null && blocked.has(source.conversation))
+  const useRestrictions = resources.openFileRestrictions()
+  const hasFileStorage = Boolean(dailyNotes) || resources.hasFileStorage()
   let documents: MemoryDocuments | null = null
   function legacySourceBlocked(source: Pick<MemorySource, 'id' | 'conversation'>) {
     // Legacy fact records have no accepted file proof. Treat their canonical
@@ -734,7 +740,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const externalPolicy = (): ExternalEditPolicy => ({ documents: documents!,
     source: id => store.readSource(id) ?? undefined, sourceToken: resources.sourceToken, sourceWorkspace: resources.sourceWorkspace,
     readable: id => !closed && sourceCurrent(id, now(), true), hash: memoryHash })
-  documents = dailyNotes ? resources.openDocuments(id => sourceCurrent(id, now(), true), receipt => {
+  documents = hasFileStorage ? resources.openDocuments(id => sourceCurrent(id, now(), true), receipt => {
     store.nextRevision()
     // The journal receipt and the derived rebuilds must survive the same transaction.
     if (receipt.action === 'DISABLE') queueRestrictedRebuilds?.()
@@ -742,15 +748,15 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()),
     managementCurrent: (before, guard, after) => filePolicy?.managementCurrent(before, guard.policyToken, after) === true,
     deferRecovery: true }) : null
-  const notes = dailyNotes ? createMemoryNoteJobs({
-    store, effects, now, mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
+  const notes = hasFileStorage ? createMemoryNoteJobs({
+    store, effects, now, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: id => sourceCurrent(id, now(), true),
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
     allowsDerived: ids => !documentSourcesRestricted(ids),
     allowsReferences: refs => !documentReferencesRestricted(refs),
     projectSource(source, ref) {
       const workspace = memoryHash(JSON.stringify([source.scope, source.context, source.project ?? null]))
-      const restrictions = documents?.sourceRestrictions(workspace) ?? []
+      const restrictions = useRestrictions.sources(workspace)
       return { text: projectDocumentSource(source.text ?? '', ref, restrictions),
         spans: availableDocumentSourceSpans(source.text ?? '', ref, restrictions) }
     },
@@ -765,20 +771,20 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
   }) : null
 
-  const fileIndex = dailyNotes ? resources.openFileIndex() : null
-  const fileCatalog = dailyNotes ? resources.openFileCatalog() : null
+  const fileIndex = hasFileStorage ? resources.openFileIndex() : null
+  const fileCatalog = hasFileStorage ? resources.openFileCatalog() : null
   const documentEvidence = notes && documents ? createMemoryDocumentEvidence({ notes: notes.storage, documents, hash: memoryHash,
       readable: id => sourceCurrent(id, now(), true), source: id => store.readSource(id) ?? undefined,
       allowsText: (text, source) => !looksSecret(text) && !excludedSourceText(text)
         && !excludedSourceText(text, source.context ?? source.scope)
         && (!source.project || !excludedSourceText(text, source.project)),
     }) : null
-  const filePolicy = notes && documents && documentEvidence ? createMemoryDocumentReadPolicy({ notes: notes.storage, documents, hash: memoryHash,
-    ...documentEvidence,
-    reference(id) {
-      const source = store.readSource(id)
-      return source && sourceCurrent(id, now(), true) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
-    },
+  function reference(id: string) {
+    const source = store.readSource(id)
+    return source && sourceCurrent(id, now(), true) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
+  }
+  const filePolicy: ReturnType<typeof createMemoryDocumentReadPolicy> | null = notes && documents && documentEvidence ? createMemoryDocumentReadPolicy({ notes: notes.storage, documents, hash: memoryHash,
+    ...documentEvidence, reference,
   }) : null
   // Recovery needs the full source and applicability policy. The owner is still
   // initializing and has not opened model admission.
@@ -786,9 +792,22 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   documents?.recover()
   documentsReady = true
   documentStorageReady = true
-  const fileWorkspaces = () => [...new Set([...(notes?.storage.registered().map(note => note.workspace) ?? []), ...(documents?.workspaces() ?? [])])]
+  const fileWorkspaces = () => [...new Set([...(notes?.storage.allocations().map(note => note.workspace) ?? []), ...(documents?.workspaces() ?? [])])]
+  function dailySources(refs: readonly DocumentSourceRef[], markdown = ''): MemorySourceReference[] | null {
+    if (!documentEvidence?.refsCurrent(refs) || !documentEvidence.materialAllowed(markdown, refs)) return null
+    const items = [...new Set(refs.map(ref => ref.id))].map(reference)
+    return items.every(item => item !== null) ? items : null
+  }
   const fileManagement = filePolicy && documents ? createMemoryFileManagement({ policy: filePolicy, documents,
-    workspaces: fileWorkspaces, hash: memoryHash }) : null
+    workspaces: fileWorkspaces, hash: memoryHash,
+    daily: notes && documentEvidence ? {
+      allocations: notes.storage.allocations, references: notes.storage.references, ledger: useRestrictions, sources: dailySources,
+    } : undefined,
+  }) : null
+  const dailyUsage = notes ? createMemoryDailyUsage({ ledger: useRestrictions, notes: notes.storage, sourceReferences: dailySources,
+    hash: memoryHash, now, transaction: store.tx, revisionChanged: () => { store.nextRevision(); validateDispatch() },
+    queueRebuild: notes.queueRebuild, queueRestrictedRebuilds: notes.queueRestrictedRebuilds,
+  }) : null
   // Only the trusted owner host API calls this management surface. Model requests retain
   // their narrower scoped fileAllowsOrigin checks and ordinary model read policy.
   const managementAllows = (view: MemoryDocumentView) => !closed && fileWorkspaces().includes(view.workspace)
@@ -871,19 +890,16 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       && (!source.project || !excludedSourceText(source.text, source.project))
   }
   function documentSourcesRestricted(ids: readonly string[]): boolean {
-    if (!documents) return false
     return ids.some(id => {
       const source = store.readSource(id)
       return !source || documentReferencesRestricted([{ id, token: resources.sourceToken(source) }])
     })
   }
   function documentReferencesRestricted(refs: readonly DocumentSourceRef[]): boolean {
-    const available = documents
-    if (!available) return false
     return refs.some(ref => {
       const source = store.readSource(ref.id)
       if (!source) return true
-      return documentSourceRestricted(ref, available.sourceRestrictions(resources.sourceWorkspace(source)))
+      return documentSourceRestricted(ref, useRestrictions.sources(resources.sourceWorkspace(source)))
     })
   }
   function documentChanged(_receipt: DocumentReceipt) {
@@ -908,7 +924,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         return current() && store.revision() === snapshotRevision ? text : undefined
       } finally { runningComputations.delete(id) }
     }
-  const dream = notes && documents ? createMemoryDreamJobs({
+  const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
     notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx,
     settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: id => sourceCurrent(id, now(), true),
@@ -2701,12 +2717,22 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return offset === text.length
   }
 
-  async function mutateManagedFile(input: MemoryFileMutation, committed?: (result: MemoryFileMutationResult) => void): Promise<MemoryFileMutationResult> {
+  async function mutateManagedFile(input: MemoryFileMutation, committed?: FileMutationCommitted): Promise<MemoryFileMutationResult> {
     const command = memoryFileMutation.parse(input)
     if (!documents || !fileManagement) throw domainError('not.found')
     let changed = false
     const result = await runDocumentMutation(() => {
-      if (closed || command.identity.kind !== 'digest' || !fileWorkspaces().includes(command.identity.workspace)) throw domainError('not.found')
+      if (closed) throw domainError('not.found')
+      if (command.identity.kind === 'daily') {
+        if (!dailyUsage) throw domainError('not.found')
+        const applied = dailyUsage.command(command, () => fileManagement.validate(command, managementAllows))
+        changed = applied.changed
+        if (changed) publish(store.revision(), [])
+        committed?.(applied.result, applied.sources)
+        return applied.result
+      }
+      if (!fileWorkspaces().includes(command.identity.workspace)) throw domainError('not.found')
+      if (command.action === 'setEnabled' && command.restrictionId !== undefined) throw domainError('invalid.text')
       const { identity, version, operationId } = command
       const alreadyCommitted = documents.receipt(identity.workspace, operationId)
       if (!alreadyCommitted && documents.recoverManagement(operationId) === 'cancelled') throw domainError('revision.conflict')
@@ -2730,7 +2756,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       committed?.(response)
       return response
     })
-    if (changed) dream?.run()
+    if (changed) { dream?.run(); void effects.wake() }
     return result
   }
 
@@ -2739,13 +2765,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!fileManagement || closed) throw new Error('Document memory is not enabled')
       return fileManagement.list(input, managementAllows)
     },
-    readFile(identity: MemoryManagedFileIdentity) {
+    readFile(identity: MemoryManagedFileIdentity, restrictionId?: string) {
       if (!fileManagement || closed) return null
-      return fileManagement.detail(identity, managementAllows)
+      return fileManagement.detail(identity, managementAllows, restrictionId)
     },
-    setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: (result: MemoryFileMutationResult) => void) =>
+    setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'setEnabled' }, committed),
-    undoFile: (input: MemoryFileUndoRequest, committed?: (result: MemoryFileMutationResult) => void) =>
+    undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'undo' }, committed),
     runDocumentDream: () => { dream?.run(); return effects.wake() },
     readDocument: documents?.read,

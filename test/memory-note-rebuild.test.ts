@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { join } from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
+import { openMemoryFileRestrictions } from '../src/memory/node/memory-file-restrictions.ts'
+import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 
 test('daily rebuild can replay contributed, skipped and pending turns without crossing a day or session', t => {
   const { dir, defer } = scratch(t, 'memory-note-rebuild-')
@@ -97,4 +99,165 @@ test('withdrawn question context remains invalid even after canonical question t
   const independent = noteSource(store)
   notes.add('session', '2026-11-14', [independent], '')
   assert.deepEqual(notes.rebuildRows(key).flatMap(row => row.sourceIds), [independent.id])
+})
+
+test('an empty daily projection preserves its allocation across restart and a later independent turn', t => {
+  const { dir, defer } = scratch(t, 'memory-empty-daily-')
+  const file = join(dir, 'memory.db'), day = '2026-11-14'
+  let store = openMemoryStore(file)
+  defer(() => store.close())
+  const open = () => openMemoryNotes(store, id => Boolean(store.readSource(id)?.text))
+  const notes = open(), first = noteSource(store)
+  const key = notes.add('session', day, [first], '')!
+  notes.commit(key, notes.pending(key), { status: 'write', title: 'Old title', markdown: 'Old projection' },
+    1, Date.now(), notes.snapshot([first.id]), undefined)
+  const old = notes.read(key)!
+  notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 2, Date.now(), [], old, { rebuild: true })
+  store.close()
+  store = openMemoryStore(file)
+  const reopened = open()
+  assert.equal(reopened.read(key), undefined)
+  assert.equal(reopened.blocked(key), false)
+  assert.equal(reopened.registered().length, 0, 'empty projections are not accepted files')
+  const index = join(store.fileRoot, old.workspace, `daily/${day}.md`)
+  assert.ok(!readFileSync(index, 'utf8').includes(old.path))
+  const fresh = noteSource(store, { text: 'This is an unrelated new turn.' })
+  assert.equal(reopened.add('session', day, [fresh], ''), key)
+  reopened.commit(key, reopened.pending(key), { status: 'write', title: 'New title', filename: 'new-file', markdown: fresh.text! },
+    3, Date.now(), reopened.snapshot([fresh.id]), undefined)
+  const projected = reopened.read(key)!
+  assert.equal(projected.path, old.path)
+  assert.ok(projected.revision > old.revision + 1)
+  assert.equal(projected.markdown, fresh.text)
+  assert.deepEqual(reopened.sources(key), [fresh.id])
+  assert.ok(readFileSync(index, 'utf8').includes(old.path))
+})
+
+
+test('withdrawing a source does not erase external bytes at an empty daily allocation', t => {
+  const { dir, defer } = scratch(t, 'memory-empty-daily-external-')
+  const store = openMemoryStore(join(dir, 'memory.db'))
+  defer(() => store.close())
+  const notes = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text)), source = noteSource(store)
+  const key = notes.add('session', '2026-11-14', [source], '')!
+  notes.commit(key, notes.pending(key), { status: 'write', title: 'Previously accepted', markdown: 'Accepted body' },
+    1, Date.now(), notes.snapshot([source.id]), undefined)
+  const old = notes.read(key)!, path = join(store.fileRoot, old.workspace, old.path)
+  notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 2, Date.now(), [], old, { rebuild: true })
+  writeFileSync(path, 'An independent external file.')
+  assert.equal(notes.read(key), undefined)
+  const fresh = noteSource(store, { text: 'A new turn.' })
+  notes.add('session', '2026-11-14', [fresh], '')
+  assert.throws(() => notes.commit(key, notes.pending(key), { status: 'write', title: 'New', markdown: fresh.text! },
+    3, Date.now(), notes.snapshot([fresh.id]), undefined), /memory-file-version/)
+  notes.withdraw(source.id)
+  notes.recover()
+  assert.equal(readFileSync(path, 'utf8'), 'An independent external file.')
+  assert.deepEqual(notes.rebuildRows(key).flatMap(row => row.sourceIds), [fresh.id])
+})
+
+
+test('external bytes at an empty daily allocation cannot anchor a digest correction', t => {
+  const { dir, defer } = scratch(t, 'memory-empty-daily-anchor-')
+  const store = openMemoryStore(join(dir, 'memory.db'))
+  defer(() => store.close())
+  const notes = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text)), source = noteSource(store)
+  const key = notes.add('session', '2026-11-14', [source], '')!
+  notes.commit(key, notes.pending(key), { status: 'write', title: 'Daily', markdown: 'Accepted body' },
+    1, Date.now(), notes.snapshot([source.id]), undefined)
+  const old = notes.read(key)!
+  notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 2, Date.now(), [], old, { rebuild: true })
+  const external = 'Unaccepted body'
+  writeFileSync(join(store.fileRoot, old.workspace, old.path), external)
+  const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source(id) {
+    const row = store.readSource(id)
+    return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+  } })
+  const input = { workspace: old.workspace, path: 'digest/wiki/independent.md', sources: notes.snapshot([source.id]), reads: [] }
+  const first = documents.commit({ ...input, operationId: 'create', expectedRevision: null, action: 'CREATE', markdown: 'Current digest' })
+  assert.throws(() => documents.commit({ ...input, operationId: 'unsafe-correction', expectedRevision: first.revision, action: 'CORRECT', markdown: 'Suspect change',
+    corrections: [{ path: old.path, revision: memoryFileRevision(external), startLine: 1, endLine: 1, text: external, condition: '', time: '' }],
+  }), /memory-correction-source-identity/)
+  assert.equal(documents.read(old.workspace, first.path)?.revision, first.revision)
+})
+
+
+test('withdrawal removes an empty rebuild before-image even when an external index change blocks ordinary recovery', t => {
+  const { dir, defer } = scratch(t, 'memory-empty-daily-withdrawal-')
+  const store = openMemoryStore(join(dir, 'memory.db')), day = '2026-11-14'
+  defer(() => store.close())
+  let crash = false
+  const notes = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), point => {
+    if (crash && point === 'intent') throw new Error('simulated interruption')
+  })
+  const source = noteSource(store), body = 'Private before-image of the daily card.'
+  const key = notes.add('session', day, [source], '')!
+  notes.commit(key, notes.pending(key), { status: 'write', title: 'Previous card', markdown: body },
+    1, Date.now(), notes.snapshot([source.id]), undefined)
+  const old = notes.read(key)!
+  crash = true
+  assert.throws(() => notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 2, Date.now(), [], old, { rebuild: true }), /simulated interruption/)
+  crash = false
+  const index = join(store.fileRoot, old.workspace, `daily/${day}.md`)
+  writeFileSync(index, 'Index changed externally')
+  const plans = () => store.db.prepare("SELECT plan FROM memory_file_intents WHERE plan IS NOT NULL").all()
+  assert.ok(JSON.stringify(plans()).includes(body))
+  notes.withdraw(source.id)
+  notes.recover()
+  assert.ok(!JSON.stringify(plans()).includes(body))
+  assert.equal(existsSync(join(store.fileRoot, old.workspace, old.path)), false)
+  assert.equal(notes.pendingCleanup(), 0)
+})
+
+
+test('withdrawal cleans a shared day index without erasing a different card from a prepared plan', t => {
+  const { dir, defer } = scratch(t, 'memory-shared-day-index-')
+  const store = openMemoryStore(join(dir, 'memory.db')), day = '2026-11-14'
+  defer(() => store.close())
+  let crash = false
+  const notes = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), point => {
+    if (crash && point === 'intent') throw new Error('simulated interruption')
+  })
+  const first = noteSource(store), second = noteSource(store, { session: 'unrelated' })
+  const firstKey = notes.add('session', day, [first], '')!, secondKey = notes.add('unrelated', day, [second], '')!
+  notes.commit(firstKey, notes.pending(firstKey), { status: 'write', title: 'A', markdown: 'The first note' },
+    1, Date.now(), notes.snapshot([first.id]), undefined)
+  const saved = notes.read(firstKey)!
+  crash = true
+  assert.throws(() => notes.commit(secondKey, notes.pending(secondKey), { status: 'write', title: 'B', markdown: 'The second note' },
+    1, Date.now(), notes.snapshot([second.id]), undefined), /simulated interruption/)
+  crash = false
+  const index = join(store.fileRoot, saved.workspace, `daily/${day}.md`)
+  writeFileSync(index, 'Index edited externally')
+  notes.withdraw(first.id)
+  notes.recover()
+  assert.equal(notes.pendingCleanup(), 0)
+  const surviving = notes.read(secondKey)!
+  assert.equal(surviving.markdown, 'The second note')
+  assert.deepEqual(notes.sources(secondKey), [second.id])
+  assert.equal(existsSync(join(store.fileRoot, saved.workspace, saved.path)), false)
+  assert.doesNotMatch(readFileSync(index, 'utf8'), new RegExp(saved.path))
+  assert.ok(readFileSync(index, 'utf8').includes(surviving.path))
+})
+
+test('a prepared daily rebuild cannot recover using a previous workspace restriction snapshot', t => {
+  const { dir, defer } = scratch(t, 'memory-stale-note-restrictions-')
+  const store = openMemoryStore(join(dir, 'memory.db')), day = '2026-11-14'
+  defer(() => store.close())
+  let crash = false
+  const notes = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), point => {
+    if (crash && point === 'intent') throw new Error('simulated interruption')
+  })
+  const source = noteSource(store), key = notes.add('session', day, [source], '')!
+  const refs = notes.snapshot([source.id])
+  notes.commit(key, notes.pending(key), { status: 'write', title: 'Earlier', markdown: 'Original' }, 1, Date.now(), refs, undefined)
+  const prior = notes.read(key)!
+  crash = true
+  assert.throws(() => notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 2, Date.now(), [], prior, { rebuild: true }), /simulated interruption/)
+  crash = false
+  openMemoryFileRestrictions(store.db).add({ id: 'new-scope', kind: 'digest', key: 'other-card', workspace: prior.workspace,
+    contentRevision: prior.fileRevision, usageVersion: 1, sources: refs })
+  notes.recover()
+  assert.equal(notes.jobState(key, 2), 'cancelled')
+  assert.equal(notes.read(key)?.fileRevision, prior.fileRevision)
 })

@@ -551,18 +551,19 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const failure = JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }
       throw new MemoryDomainError(failure.code)
     }
-    const sources = previous?.payload ? (JSON.parse(previous.payload) as FileWritePayload).sources : runtime.readFile(request.identity)?.sources ?? []
-    const sessions = previous?.payload ? (JSON.parse(previous.payload) as FileWritePayload).sessions : fileSessions(request.identity, sources)
+    const pending = previous?.payload ? JSON.parse(previous.payload) as FileWritePayload : null
+    const sources = pending?.sources ?? (request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
+    const sessions = pending?.sessions ?? fileSessions(request.identity, sources)
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command, sources, sessions } satisfies FileWritePayload))
     let notify = false
-    const committed = (result: MemoryFileMutationResult) => {
+    const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
       store.tx(() => {
         if (operation(id)?.state === 'completed') return
         // Include readers attached while the mutation waited for outstanding physical sends.
-        const affectedSessions = [...new Set([...sessions, ...fileSessions(request.identity, sources)])]
-        if (options.hostNamespace && result.usageVersion !== request.version.usageVersion && (sources.length || affectedSessions.length)) {
+        const affectedSessions = [...new Set([...sessions, ...fileSessions(request.identity, affectedSources)])]
+        if (options.hostNamespace && result.usageVersion !== request.version.usageVersion && (affectedSources.length || affectedSessions.length)) {
           const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-            kind: 'invalidate-context', sources, sessions: affectedSessions }
+            kind: 'invalidate-context', sources: [...affectedSources], sessions: affectedSessions }
           db.prepare('INSERT OR IGNORE INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
           notify = true
         }
@@ -708,7 +709,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
       case 'useHistory': return coordination.useHistory(...command.input.args)
       case 'listFiles': return runtime.listFiles(command.input.args[0])
-      case 'readFile': return runtime.readFile(command.input.args[0])
+      case 'readFile': return runtime.readFile(...command.input.args)
       case 'setFileEnabled':
       case 'undoFile': return durableFileWrite(command)
       case 'setOnboarding': return fence.mutate(() => runtime.setOnboarding(...command.input.args))

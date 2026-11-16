@@ -11,6 +11,7 @@ import { openMemoryNotes } from './memory-note-store.ts'
 import { createMemoryCleanup } from './memory-cleanup.ts'
 import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
+import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { openMemoryFileCatalog } from './memory-file-catalog.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
@@ -26,6 +27,9 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
     effects, lexical,
     projectionStore: openMemoryProfileStore(store.db),
     openSemantic: () => openMemorySemanticIndex(store.db),
+    hasFileStorage: () => Boolean(store.db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table'
+      AND name IN ('memory_documents','memory_note_turns','memory_daily_notes','memory_file_intents') LIMIT 1`).get()),
+    openFileRestrictions: () => openMemoryFileRestrictions(store.db),
     openFileIndex: () => openMemoryFileIndex({ db: store.db, now }),
     openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
     semanticCopiesCleared: (ids, revision) => memorySemanticCopiesCleared(store.db, ids, revision),

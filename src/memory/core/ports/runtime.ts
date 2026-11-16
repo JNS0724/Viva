@@ -6,6 +6,7 @@ import type { MemoryProfileStore } from './profile-store.ts'
 import type { MemoryNotes } from './notes.ts'
 import type { MemoryCleanup } from './cleanup.ts'
 import type { MemoryDocuments, DocumentReceipt, DocumentRename, DocumentExternalEdit, DocumentSnapshot, DocumentManagementGuard } from './documents.ts'
+import type { MemoryFileRestrictions } from './file-restrictions.ts'
 import type { MemoryFileIndex, MemoryFileCatalog } from './file-index.ts'
 
 /** Stable identity generation and hashing are supplied by the host's platform adapter. */
@@ -23,6 +24,8 @@ export interface MemoryRuntimeResources {
   projectionStore: MemoryProfileStore
   lexical: MemoryIndex
   openSemantic(): MemorySemanticIndex | null
+  hasFileStorage(): boolean
+  openFileRestrictions(): MemoryFileRestrictions
   openFileIndex(): MemoryFileIndex
   openFileCatalog(): MemoryFileCatalog
   semanticCopiesCleared(ids: readonly number[], revision: number): boolean

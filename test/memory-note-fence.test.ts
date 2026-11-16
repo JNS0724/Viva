@@ -10,6 +10,7 @@ import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { createMemorySendFence } from '../src/memory/core/send-fence.ts'
 import { createMemoryNoteJobs } from '../src/memory/core/memory-note-jobs.ts'
+import { openMemoryFileRestrictions } from '../src/memory/node/memory-file-restrictions.ts'
 import { createEffects } from '../src/memory/node/effects.ts'
 import { WRITE_NOTE } from '../src/memory/core/memory-notes.ts'
 import type { MemorySendPermit } from '../src/memory/core/send-fence.ts'
@@ -123,3 +124,55 @@ for (const changed of ['unchanged', 'projection-restored', 'generation-cancelled
     } finally {permit.settled();await work;await fence.close()}
   })
 }
+
+test('an enable rebuild keeps its replay intent when another restriction wins the send fence', async t => {
+  const { dir, defer } = scratch(t, 'memory-note-restore-race-')
+  const store = openMemoryStore(join(dir, 'memory.db'))
+  defer(() => store.close())
+  const source = noteSource(store), unrelated = noteSource(store, { session: 'independent' })
+  const notes = openMemoryNotes(store, () => true), ledger = openMemoryFileRestrictions(store.db)
+  const key = notes.add('session', '2026-11-14', [source], '')!
+  assert.ok(notes.commit(key, notes.pending(key), { status: 'write', title: 'Original', markdown: source.text! },
+    98, 1, notes.snapshot([source.id]), undefined))
+  assert.ok(notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 99, 2, [], notes.read(key), { rebuild: true }))
+  assert.equal(notes.read(key), undefined)
+
+  let now = 1000, calculations = 0
+  let otherStop: Promise<void> | undefined
+  const fence = createMemorySendFence({ epoch: 'test', admit: () => ({ current: () => true, deadline: null }) })
+  const effects = createEffects({ db: store.db, now: () => now, later: () => null, cancel: () => {} })
+  defer(() => effects.close())
+  const jobs = createMemoryNoteJobs({ store, effects, now: () => now, openNotes: () => notes, readable: () => true,
+    eligible: () => true, allowsText: () => true, assistantContextCurrent: () => true,
+    mutate: write => fence.mutate(write), settings: { noteInterval: 1 },
+    async calculate() {
+      if (++calculations === 1) {
+        const permit = fence.acquire('held', { session: 'independent' }, 'pending body')
+        otherStop = fence.mutate(() => {
+          ledger.add({ kind: 'digest', id: randomUUID(), workspace: notes.allocations()[0]!.workspace, key: 'other',
+            contentRevision: 'independent', usageVersion: 1, sources: notes.snapshot([unrelated.id]) })
+          jobs.queueRestrictedRebuilds()
+        })
+        try {
+          await aborted(permit.signal)
+          // Let the computed result queue its commit after the new stop and before transport settles.
+          setImmediate(permit.settled)
+        } catch (error) {
+          permit.settled()
+          throw error
+        }
+      }
+      return { status: 'write', title: 'Restored', markdown: source.text! }
+    },
+  })
+  defer(() => fence.close())
+  jobs.queueRebuild(key)
+  await effects.wake()
+  await otherStop
+  assert.equal(notes.read(key), undefined, 'the pre-stop calculation cannot commit')
+  assert.deepEqual(effects.get(WRITE_NOTE, key)?.payload, { rebuild: true, flush: true })
+  now += 1000
+  await effects.wake()
+  assert.equal(calculations, 2)
+  assert.equal(notes.read(key)?.markdown, source.text)
+})

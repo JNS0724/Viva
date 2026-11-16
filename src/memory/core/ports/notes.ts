@@ -18,7 +18,18 @@ type Note = NoteRow & {
     document: string;
     fileRevision: string;
 };
+export interface DailyAllocation {
+    key: string;
+    day: string;
+    workspace: string;
+    path: string;
+    revision: number;
+    updatedAt: number;
+}
 export interface MemoryNotes {
+    allocations(): DailyAllocation[];
+    advanceUseVersion(key: string, revision: number, at: number): boolean;
+    usePolicyToken(workspace: string): string;
     pendingCleanup(): number;
     reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined;
     reconcileEdit(input: import('./documents.ts').DocumentExternalEdit): boolean;
