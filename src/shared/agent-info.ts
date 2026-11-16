@@ -11,4 +11,4 @@ export interface AgentInfo {
   efforts?: readonly { value: string, name: string }[]
   mcp?: { active: readonly string[], connecting?: readonly { name: string, reason: string }[], dropped: readonly { name: string, reason: string }[] }
 }
-export interface SteerResult { ok: boolean, reason?: string }
+export interface SteerResult { ok: boolean, reason?: string, delivery?: 'pending' | 'not-sent' | 'sent', message?: string }

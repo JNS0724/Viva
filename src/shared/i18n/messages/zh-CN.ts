@@ -874,6 +874,8 @@ export const zhCN = {
   "thread.sent.during.work": "工作中插话",
   "thread.sent.from.viva.island": "从 Viva 岛发送",
   "thread.not.delivered": "没有送到",
+  "thread.delivery.pending": "等待确认送达",
+  "app.message.delivery.unknown": "还无法确认这条消息是否送达，原文已保留。",
   "thread.risky.actions.require.your.approval": "有风险的操作总会先问你",
   "thread.submit": "提交",
   "thread.you.can.also.type.your.answer.below": "也可以直接在下面输入你的回答",

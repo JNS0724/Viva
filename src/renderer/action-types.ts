@@ -7,7 +7,7 @@ import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
 import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
 
 type Info = AgentInfo
-type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' | 'sourceId'> & { key?: string }
+type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' | 'sourceId' | 'delivery'> & { key?: string }
 type ReadConversation = { id: string, messages: readonly SavedMessage[], records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
 type Settings = Partial<State['settings']>
 type Review = State['review']

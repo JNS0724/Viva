@@ -4,11 +4,43 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
+import { openHistoryDb as openReceiptHistory } from '../src/backend/history-db.ts'
+import { verifiedHistoryCarry } from '../src/backend/history-carry.ts'
+import { scratch } from './fixtures/scratch.js'
+import { randomUUID } from 'node:crypto'
 
 const receipt = { ms: 4200, tools: 2, thoughts: 1, stopReason: 'end_turn' }
 const user = (text: string) => ({ role: 'user', text, receipt: null })
 const answer = (text: string, withReceipt: typeof receipt | null = receipt) => ({ role: 'assistant', text, receipt: withReceipt })
 const DAY = 86_400_000
+
+test('trusted unsent and unknown delivery receipts survive saves, forks and cold reads without entering carry', async t => {
+  const { dir, defer } = scratch(t, 'history-delivery-'), file = path.join(dir, 'app.db')
+  let db = openReceiptHistory({ file })
+  let open = true
+  defer(() => { if (open) db.close() })
+  const pending = randomUUID(), unsent = randomUUID(), sent = randomUUID()
+  db.reservePromptDelivery([pending, unsent, sent])
+  db.settlePromptDelivery([unsent], false); db.settlePromptDelivery([sent], true)
+  const conversation = db.create({ sessionId: 'delivery-session' })
+  const rows = [pending, unsent, sent].map((sourceId, index) => ({ role: 'user', text: `independent words ${index}`, sourceId, receipt: null }))
+  db.save(conversation, rows)
+  db.close(); open = false; db = openReceiptHistory({ file }); open = true
+  const restored = db.get(conversation.id)!
+  assert.deepEqual(restored.messages.map(row => row.delivery), ['pending', 'not-sent', undefined])
+  // Renderer-supplied flags, including a forged "sent", never alter host authority.
+  db.save(restored.conversation, rows.map(row => ({ ...row, delivery: 'sent', failed: false })))
+  assert.deepEqual(db.get(conversation.id)!.messages.map(row => row.delivery), ['pending', 'not-sent', undefined])
+  const fork = db.create({ sessionId: 'delivery-fork', parentId: conversation.id })
+  db.save(fork, rows)
+  const read = db.read(`s:${fork.id}`, { whole: true })!
+  assert.deepEqual(read.messages.map(row => row.delivery), ['pending', 'not-sent', undefined])
+  const carry = await verifiedHistoryCarry(read.messages, async row => db.promptDeliverable(row.sourceId), 0, () => 0)
+  assert.deepEqual(carry.evidence.map(row => row.sourceId), [sent])
+  assert.ok(!carry.text.includes(rows[0]!.text) && !carry.text.includes(rows[1]!.text))
+  db.reservePromptDelivery([sent]); db.settlePromptDelivery([sent], false)
+  assert.equal(db.promptDeliverable(sent), true, 'a later rejected retry cannot undo a real native-start receipt')
+})
 
 function freshDb() {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-db-')), 'history.db')

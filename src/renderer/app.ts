@@ -55,7 +55,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error'])
+const SAVE_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'steer_failed', 'steer_delivery', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)

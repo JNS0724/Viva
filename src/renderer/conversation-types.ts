@@ -7,6 +7,7 @@ export interface TurnReceipt { ms: number, stopReason?: string, tools?: number, 
 export interface ConversationMessage extends StreamText {
   role: string
   sourceId?: string
+  delivery?: 'pending' | 'not-sent'
   pending?: boolean
   feedItemId?: string
   shown?: number
@@ -89,6 +90,7 @@ export interface ConversationPayloads {
   prompt_admitted: { sourceId: string, accepted: boolean }
   user_steer: { text: string, sourceId?: string, via?: string | null }
   steer_failed: { id: string | undefined }
+  steer_delivery: { sourceId: string, delivery: 'pending' | 'not-sent' | 'sent' }
   steer_resent: { at: number }
   agent_turn_started: { at: number, by?: string | null }
   acp_update: { update: ConversationUpdate, at: number }

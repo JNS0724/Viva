@@ -194,9 +194,10 @@ const ACTION_HANDLERS: ActionHandlers = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string }, i: number) => ({
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string, delivery?: 'pending' | 'not-sent' }, i: number) => ({
         id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
         ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
+        ...(m.delivery ? { delivery: m.delivery, failed: m.delivery === 'not-sent' } : {}),
       })),
       records: recordsFrom(records, state.erasedReportIds),
       restored: messages.length ? { count: messages.length, savedAt } : null,

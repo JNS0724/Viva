@@ -134,7 +134,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   }
 
   const first = register()
-  const texts = (segmentId: string) => db.get(segmentId)?.messages.map((m: Message) => m.text)
+  const texts = (segmentId: string) => db.get(segmentId)?.messages.map(m => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
   return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length }
 }

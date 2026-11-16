@@ -45,6 +45,7 @@ interface SegmentMessage {
   text: string
   key?: string
   feedItemId?: string
+  delivery?: 'pending' | 'not-sent'
   receipt?: Receipt | null
   at?: number
   images?: ReadonlyArray<{ id: string }>

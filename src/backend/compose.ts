@@ -1,7 +1,9 @@
 import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
 import { createConversationSession } from './conversation-session.ts'
+import { createForegroundRequests, ForegroundRequestRetired } from './foreground-requests.ts'
 import { sameContext } from '../shared/conversation-context.ts'
 import { objectOf } from '../shared/unknown-value.ts'
+import type { IpcResults } from '../shared/ipc-results.ts'
 import { createConfigActions } from './config-actions.ts'
 import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
@@ -107,7 +109,7 @@ type Bridge = ReturnType<typeof createAcpBridge>
 type AgentInfo = import('../shared/agent-info.ts').AgentInfo
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar', 'reservePromptDelivery', 'settlePromptDelivery'] as const)
 
 const isFolder = (dir: string) => {
   try {
@@ -185,6 +187,23 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let personal!: ReturnType<typeof createPersonal>
   /** The foreground turn in progress. */
   let turn = { active: false, startedAt: 0 }
+  const foregroundRequests = createForegroundRequests()
+  const pendingHumanPrompts = new Map<string, { fingerprint: string, sources: readonly string[], started(): boolean, promise: Promise<IpcResults['agent:prompt']> }>()
+  let closed = false
+  const knownUnsentPrompts = new Set<string>()
+  let humanAdmission: { started: boolean, completed: Promise<void>[], delivered(): void, current(): boolean, recovered(): void } | null = null
+  function retireForegroundRequests() {
+    try {
+      if (!closed) knownUnsentPrompts.clear()
+      if (!closed) for (const pending of pendingHumanPrompts.values()) if (!pending.started()) {
+        historyDb?.settlePromptDelivery(pending.sources, false)
+        for (const id of historyDb?.promptUndelivered(pending.sources) ?? []) knownUnsentPrompts.add(id)
+      }
+    } catch (error) {
+      // A failed receipt stays pending. It cannot prevent cancellation or release.
+      console.error('[prompts] could not persist delivery retirement:', error instanceof Error ? error.message : String(error))
+    } finally { foregroundRequests.invalidate() }
+  }
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
   const sessions = createConversationSession({
     history: () => historyDb,
@@ -307,6 +326,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       scheduleRuns?.wake()
     },
     onGone: () => {
+      retireForegroundRequests()
       taskRuntime?.dsh.gone(); unattended.gone()
       // Retired generations cannot deliver a final error/turn_end. Settle the foreground here too,
       // including deliberate model/key restarts, before publishing the replacement's readiness.
@@ -365,13 +385,15 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function historyForProject(project: ReturnType<typeof memoryProjectScope>) {
     const bySegment = new Map<string, string | undefined>()
     return async (row: HistoryEvidence) => {
+      if (!historyDb.promptDeliverable(row.sourceId)) return false
       if (!bySegment.has(row.segmentId)) {
         const location = historyDb.workspaceOf(row.segmentId)
         const saved = location?.sessionId ? await memory.sessionProject(location.sessionId) : undefined
         bySegment.set(row.segmentId, saved === undefined ? memoryProjectScope(location?.cwd)?.id : saved || undefined)
       }
       const sourceProject = bySegment.get(row.segmentId)
-      return memoryCoordination.allowsProjectHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, project, await projectOfSession(row.sessionId ?? undefined))
+      const allowed = await memoryCoordination.allowsProjectHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, project, await projectOfSession(row.sessionId ?? undefined))
+      return allowed && historyDb.promptDeliverable(row.sourceId)
     }
   }
   const usedHistory = memoryCoordination.useHistory
@@ -808,14 +830,17 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       for (const { taskId, memory: evidence } of reports) {
         if (!held() || !await eligibleTaskReport(taskId, session, evidence) || !await inheritTaskReport(taskId, session, evidence)) return false
       }
-      if (dsh.current !== agent || !held()) return false
+      if (dsh.current !== agent || !sameContext(context, sessions.context()) || sessions.isChanging()
+        || agent.isSwitching() || turn.active || !held()) return false
+      const claim = foregroundRequests.reserveReport()
+      if (!claim) return false
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task', context })
-      agent.prompt(note, [], { request: false, held }).catch((err: Error) => {
-        if (dsh.current !== agent || !sameContext(context, sessions.context())) return
+      void agent.prompt(note, [], { request: false, held: () => claim.current() && held() }).catch((err: Error) => {
+        if (!claim.current() || dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
         emitToRenderer({ type: 'error', message: err.message, context })
-      })
+      }).finally(() => { claim.finish(); wakeEffects() })
       return true
     },
   })
@@ -959,18 +984,50 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
       // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
       if (agent.isSwitching()) throw new Error(switchingMessage())
-      if (turn.active) throw new Error(t('main.main.wait.for.this.turn.to.finish.before'))
-      return signal({ kind: 'chat.said', text: question, images: pictures, operation, feedItemId })
+      const retrying = operation !== undefined && pendingHumanPrompts.has(JSON.stringify(operation))
+      // Following questions already shown while a turn ended register together
+      // in FIFO order. A first delivery needs the host's definite not-sent receipt;
+      // canonical replay arrays still undergo the owner's exact source checks.
+      const following = foregroundRequests.busy() && (Array.isArray(operation) || typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent')
+      if ((turn.active || foregroundRequests.busy()) && !foregroundRequests.deferred() && !retrying && !following) throw new Error(t('main.main.wait.for.this.turn.to.finish.before'))
+      return sendHumanPrompt(question, pictures, operation, feedItemId)
     })
     /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
     ipcMain.handle('agent:steer', async (_event, text, operation) => {
       const words = assertText(text, 'steer', MAX_PROMPT_CHARS)
-      if (memoryBusy()) return { ok: false, reason: 'unavailable' }
-      const sourceId = await aliasMemory(words, operation ?? randomUUID())
-      if (!turn.active) return { ok: false, reason: 'idle' }
-      return requireBridge().steer(words, sourceId)
+      const deliveryId = operation ?? randomUUID()
+      if (foregroundRequests.deferred()) {
+        const result = await sendHumanPrompt(words, [], deliveryId)
+        return result?.accepted === false ? { ok: false, reason: 'unavailable', delivery: !closed ? historyDb.promptDelivery(deliveryId) ?? 'pending' as const
+          : result.sourceIds.includes(deliveryId) ? 'not-sent' as const : 'pending' as const }
+          : { ok: true, delivery: 'sent' as const }
+      }
+      if (historyDb.promptPending([deliveryId])) throw new Error(t('main.memory.change.pending'))
+      historyDb.reservePromptDelivery([deliveryId])
+      const agent = requireBridge(), origin = sessions.context(), generation = foregroundRequests.lease(), admitted = humanAdmission, originalTurn = turn
+      const selected = () => generation() && dsh.current === agent
+        && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
+      const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
+      // A normally finished turn asks the renderer to resend as a new question;
+      // cancellation or a replacement selection must never do so.
+      const retiredReason = (): 'idle' | 'unavailable' => selected() ? 'idle' : 'unavailable'
+      if (memoryBusy()) {
+        historyDb.settlePromptDelivery([deliveryId], false)
+        return { ok: false, reason: 'unavailable', delivery: historyDb.promptDelivery(deliveryId) }
+      }
+      let sourceId: string
+      try { sourceId = await aliasMemory(words, deliveryId, origin) }
+      catch (error) {
+        if (!closed) historyDb.settlePromptDelivery([deliveryId], false)
+        return { ok: false, reason: 'unavailable', delivery: closed ? 'pending' as const : historyDb.promptDelivery(deliveryId),
+          message: error instanceof Error ? error.message : String(error) }
+      }
+      const result = !held() ? { ok: false, reason: retiredReason(), delivery: 'not-sent' as const }
+        : await agent.steer(words, sourceId, held, retiredReason)
+      if (!closed && (result.ok || result.reason === 'idle' || result.delivery === 'not-sent')) historyDb.settlePromptDelivery([deliveryId], result.ok)
+      return { ...result, delivery: closed ? result.delivery ?? (result.ok ? 'sent' as const : 'pending' as const) : historyDb.promptDelivery(deliveryId) }
     })
-    ipcMain.handle('agent:cancel', () => dsh.current?.cancel())
+    ipcMain.handle('agent:cancel', () => { retireForegroundRequests(); return dsh.current?.cancel() })
     ipcMain.handle('agent:new-session', async () => {
       if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
       const info = await sessions.newTopic()
@@ -1015,9 +1072,80 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
+  /** A retained prompt keeps its original selection and operation through a report turn. */
+  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string): Promise<IpcResults['agent:prompt']> {
+    const agent = requireBridge()
+    let origin = sessions.context()
+    const retained = foregroundRequests.deferred()
+    const key = JSON.stringify(operation)
+    const fingerprint = createHash('sha256').update(JSON.stringify({ origin, question, pictures, feedItemId })).digest('hex')
+    const prior = pendingHumanPrompts.get(key)
+    if (prior) return prior.fingerprint === fingerprint ? prior.promise
+      : Promise.reject(new Error(t('main.memory.context.stale')))
+    const sources = feedItemId ? [] : typeof operation === 'string' ? [operation] : [...operation]
+    if (historyDb.promptPending(sources)) return Promise.reject(new Error(t('main.memory.change.pending')))
+    historyDb.reservePromptDelivery(sources)
+    let nativeStarted = false, deliveryError: unknown
+    let accepted = (_value: IpcResults['agent:prompt']) => {}, refused = (_error: unknown) => {}
+    // Feed IPC acknowledges native admission early; the scheduling lease below
+    // must still hold until that native turn actually settles.
+    const admitted = feedItemId ? new Promise<IpcResults['agent:prompt']>((resolve, reject) => { accepted = resolve; refused = reject }) : null
+    const selected = () => dsh.current === agent && !sessions.isChanging() && !agent.isSwitching()
+      && !dsh.isQuitting() && sameContext(origin, sessions.context())
+    const lifetime = foregroundRequests.human(selected, async current => {
+      const own = { started: false, completed: [] as Promise<void>[], delivered() {
+        own.started = true
+        nativeStarted = true
+        // This callback runs after connection.prompt. A failed receipt must not
+        // throw out of native onStart or turn an unknown delivery into not-sent.
+        try { historyDb.settlePromptDelivery(sources, true) }
+        catch (error) { deliveryError = error }
+      }, current, recovered() {
+        const recovered = sessions.context()
+        if (dsh.current !== agent || origin.conversationId !== recovered.conversationId
+          || agent.currentSession() !== recovered.sessionId || sessions.isChanging()) throw new ForegroundRequestRetired()
+        origin = recovered
+      } }
+      humanAdmission = own
+      try {
+        await signal({ kind: 'chat.said', text: question, images: pictures, operation, feedItemId })
+        accepted(undefined)
+        await Promise.all(own.completed)
+        if (deliveryError) throw deliveryError
+      }
+      catch (error) {
+        if (!own.started && !closed) historyDb.settlePromptDelivery(sources, false)
+        if (retained && !feedItemId && !own.started) return { accepted: false as const,
+          sourceIds: closed ? sources.filter(id => knownUnsentPrompts.has(id)) : historyDb.promptUndelivered(sources),
+          message: error instanceof Error && error.message ? error.message : t('app.your.message.did.not.reach.the.assistant') }
+        throw error
+      }
+      finally { if (humanAdmission === own) humanAdmission = null }
+    }).catch((error: unknown) => {
+      if (error instanceof ForegroundRequestRetired && !feedItemId && !nativeStarted) {
+        if (!closed) historyDb.settlePromptDelivery(sources, false)
+        return { accepted: false as const, sourceIds: closed ? sources.filter(id => knownUnsentPrompts.has(id)) : historyDb.promptUndelivered(sources),
+          message: t('app.your.message.did.not.reach.the.assistant') }
+      }
+      throw error
+    })
+    const promise = admitted ?? lifetime
+    if (admitted) void lifetime.then(accepted, refused)
+    const pending = { fingerprint, sources, started: () => nativeStarted, promise }
+    pendingHumanPrompts.set(key, pending)
+    void lifetime.finally(() => {
+      if (pendingHumanPrompts.get(key) === pending) pendingHumanPrompts.delete(key)
+      wakeEffects()
+    }).catch(() => {})
+    return promise
+  }
+
   /** chat.said's route: the question goes to the conversation on screen. */
   async function sayInChat(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string) {
     const agent = requireBridge()
+    const admission = humanAdmission
+    const assertAdmitted = () => { if (admission && !admission.current()) throw new ForegroundRequestRetired() }
+    assertAdmitted()
     let feedOrigin = sessions.context()
     const feedSelected = () => dsh.current === agent && !sessions.isChanging() && Boolean(feedOrigin.sessionId)
       && agent.currentSession() === feedOrigin.sessionId && sameContext(feedOrigin, sessions.context())
@@ -1026,13 +1154,18 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     assertFeedSelected()
     const replay = Array.isArray(operation)
     if (replay && !await memory.replaySources(operation, question, currentMemoryProject())) throw new Error(t('main.memory.context.stale'))
+    assertAdmitted()
     const id = agent.currentSession()
     const stale = await staleMemorySession(id)
+    assertAdmitted()
     assertFeedSelected()
     const projectAllowed = stale || !id || await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())
+    assertAdmitted()
     assertFeedSelected()
     if (stale || !projectAllowed) {
       await reopenMemorySession()
+      admission?.recovered()
+      assertAdmitted()
       if (feedItemId) {
         const recovered = sessions.context()
         if (dsh.current !== agent || sessions.isChanging() || recovered.conversationId !== feedOrigin.conversationId
@@ -1054,16 +1187,19 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     } else if (!replay) {
       await aliasMemory(question, operation)
     } else {
-      for (const sourceId of operation) await recordDeliveredSource(sourceId)
+      for (const sourceId of operation) { await recordDeliveredSource(sourceId); assertAdmitted() }
     }
+    assertAdmitted()
     turn = { active: true, startedAt: Date.now() }
     const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()
-    const held = carried || feedCurrent ? () => (!carried || historyDb.fileErasureRevision() === carryRevision) && (feedCurrent?.() ?? true) : undefined
+    const held = carried || feedCurrent || admission ? () => (!carried || historyDb.fileErasureRevision() === carryRevision)
+      && (feedCurrent?.() ?? true) && (admission?.current() ?? true) : undefined
     const words = carried ? `${carried}
 
 ${question}` : question
     const failed = (error: unknown) => {
+      if (admission && !admission.current()) throw error
       finishForegroundTurn()
       if (id !== agent.currentSession()) {
         emitToRenderer({ type: 'error', message: error instanceof Error ? error.message : String(error), context: sessions.context() })
@@ -1071,11 +1207,18 @@ ${question}` : question
       }
       throw error
     }
-    if (!feedItemId) return await agent.prompt(words, pictures, { userTurn: true, sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText: question, held }).catch(failed)
+    if (!feedItemId) {
+      let started = false
+      await agent.prompt(words, pictures, { userTurn: true, onStart: () => { started = true; admission?.delivered() },
+        sourceId: typeof operation === 'string' ? operation : operation.length === 1 ? operation[0] : undefined, sourceText: question, held }).catch(failed)
+      if (!started) throw new ForegroundRequestRetired()
+      return
+    }
     return await new Promise<void>((resolve, reject) => {
-      void agent.prompt(words, pictures, { userTurn: true, onStart: resolve, sourceId: undefined, held }).then(() => {
+      const complete = agent.prompt(words, pictures, { userTurn: true, onStart: () => { admission?.delivered(); resolve() }, sourceId: undefined, held }).then(() => {
         reject(new Error(t('main.memory.context.stale')))
-      }, error => { finishForegroundTurn(); reject(error) })
+      }, error => { if (!admission || admission.current()) finishForegroundTurn(); reject(error) })
+      admission?.completed.push(complete)
     })
   }
 
@@ -1547,6 +1690,8 @@ ${question}` : question
   }
 
   function close() {
+    retireForegroundRequests()
+    closed = true
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
     memoryHostRecovery.close()

@@ -66,7 +66,8 @@ export interface IpcResults {
   'island:begin-image-import': string | null
   'draft:append-files': void
   'agent:info': import('./agent-info.ts').AgentInfo
-  'agent:prompt': void
+  /** A negative receipt proves native dispatch never began; void preserves normal turn completion. */
+  'agent:prompt': void | { accepted: false, message: string, sourceIds: readonly string[] }
   'agent:steer': import('./agent-info.ts').SteerResult
   'agent:cancel': void
   'agent:new-session': import('./agent-info.ts').AgentInfo

@@ -873,6 +873,8 @@ export const en = {
   "thread.sent.during.work": "Sent during work",
   "thread.sent.from.viva.island": "Sent from Viva island",
   "thread.not.delivered": "Not delivered",
+  "thread.delivery.pending": "Delivery awaiting confirmation",
+  "app.message.delivery.unknown": "Delivery could not be confirmed. Your message has been kept.",
   "thread.risky.actions.require.your.approval": "Risky actions require your approval",
   "thread.submit": "Submit",
   "thread.you.can.also.type.your.answer.below": "You can also type your answer below",

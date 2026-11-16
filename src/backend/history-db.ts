@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
-import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
+import { assertId, autoTitle, normalizeMessages, normalizeTitle, type StoredMessage } from './history-schema.ts'
 import { createHistoryGeneratedCopies } from './history-generated-copies.ts'
 import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
 import type { MemoryHostErasureRange } from '../memory/contracts/service.ts'
@@ -89,6 +89,8 @@ const SCHEMA = `
     INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
   END;
   CREATE TABLE IF NOT EXISTS memory_erased_sources (id TEXT PRIMARY KEY);
+  -- Host-owned admission receipts. Renderer saves cannot change delivery authority.
+  CREATE TABLE IF NOT EXISTS prompt_deliveries (source TEXT PRIMARY KEY,state TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS memory_erased_sessions (id TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS memory_erased_task_briefs (session TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,digest));
   CREATE TABLE IF NOT EXISTS id_counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -170,10 +172,11 @@ const toSummary = (row: Row) => ({
 export interface ReportRecord { reportId: string, at: number, text: string, after: number }
 const toRecord = (row: Row): ReportRecord => ({ reportId: row.report_id, at: Number(row.at), text: row.text, after: Number(row.after_seq) })
 
-const toMessage = (row: Row) => ({
+const toMessage = (row: Row): StoredMessage => ({
   role: row.role, text: row.text, receipt: row.receipt ? JSON.parse(row.receipt) : null,
   ...(row.images ? { images: JSON.parse(row.images) } : {}),
   ...(typeof row.source_id === 'string' ? { sourceId: row.source_id } : {}),
+  ...(row.delivery === 'pending' ? { delivery: 'pending' as const } : row.delivery === 'not-sent' ? { delivery: 'not-sent' as const } : {}),
   ...(typeof row.source_key === 'string' ? { key: row.source_key } : {}),
 })
 /** A message of an earlier segment of the timeline: its id, where it is, and when it was written (ms). */
@@ -252,8 +255,10 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     segmentsBefore: db.prepare(`SELECT * FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
-    timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, source_key, source_id, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
-    messages: db.prepare('SELECT role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    timelineMessages: db.prepare(`SELECT id, seq, role, text, receipt, images, source_key, source_id, created_at,
+      (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? ORDER BY seq`),
+    messages: db.prepare(`SELECT role, text, receipt, images, source_key, source_id, session_id,
+      (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? ORDER BY seq`),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
@@ -699,7 +704,22 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     }
   }
 
+  function reservePromptDelivery(sources: readonly string[]) {
+    return transaction(() => sources.reduce((count, source) => count + Number(db.prepare(`INSERT INTO prompt_deliveries VALUES (?,'pending')
+      ON CONFLICT(source) DO UPDATE SET state='pending' WHERE state='not-sent'`).run(source).changes), 0))
+  }
+  function settlePromptDelivery(sources: readonly string[], delivered: boolean) {
+    return transaction(() => sources.reduce((count, source) => count + Number(db.prepare(`UPDATE prompt_deliveries SET state=? WHERE source=? AND state!='sent'`)
+      .run(delivered ? 'sent' : 'not-sent', source).changes), 0))
+  }
+  const promptDeliverable = (source?: string | null) => !source || !db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state!='sent'").get(source)
+  const promptPending = (sources: readonly string[]) => sources.some(source => Boolean(db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='pending'").get(source)))
+  const promptUndelivered = (sources: readonly string[]) => sources.filter(source => Boolean(db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='not-sent'").get(source)))
+  const promptDelivery = (source: string): 'pending' | 'not-sent' | 'sent' | undefined =>
+    (db.prepare('SELECT state FROM prompt_deliveries WHERE source=?').get(source) as { state: 'pending' | 'not-sent' | 'sent' } | undefined)?.state
+
   return {
+    reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
     addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects,

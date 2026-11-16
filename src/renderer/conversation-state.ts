@@ -148,7 +148,14 @@ export const CONVERSATION_ACTIONS = {
   /** The words could not reach the agent: they stay in the thread, marked as not sent. */
   steer_failed: (view, { id }) => ({
     ...view,
-    messages: view.messages.map((message) => (message.id === id ? { ...message, failed: true } : message)),
+    messages: view.messages.map((message) => (message.id === id ? { ...message, failed: true, delivery: 'not-sent' as const } : message)),
+  }),
+  steer_delivery: (view, { sourceId, delivery }) => ({
+    ...view, messages: view.messages.map(message => {
+      if (message.sourceId !== sourceId) return message
+      const { delivery: _delivery, failed: _failed, ...kept } = message
+      return { ...kept, ...(delivery === 'sent' ? {} : { delivery, failed: delivery === 'not-sent' }) }
+    }),
   }),
 
   acp_update: (view, { update, at }) => {

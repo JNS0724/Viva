@@ -7,6 +7,62 @@ import { earlierRows, historyMessages } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { recordsAt } from '../src/renderer/report-state.ts'
 import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/shared/task-report.ts'
+import { createForegroundRequests, ForegroundRequestRetired } from '../src/backend/foreground-requests.ts'
+
+const admissionGate = () => {
+  let release = () => {}
+  const promise = new Promise<void>(resolve => { release = resolve })
+  return { promise, release }
+}
+
+test('a synchronous human reservation excludes a report throughout asynchronous admission', async () => {
+  const requests = createForegroundRequests(), gate = admissionGate()
+  let entered = false
+  const prompt = requests.human(() => true, async () => { entered = true; await gate.promise })
+  assert.equal(requests.reserveReport(), null, 'the human owns the start before its first await')
+  await Promise.resolve(); await Promise.resolve()
+  assert.equal(requests.reserveReport(), null)
+  gate.release(); await prompt
+  assert.equal(entered, true)
+  const report = requests.reserveReport()
+  assert.ok(report); report.finish()
+})
+
+test('human requests waiting on a report keep arrival order and cannot be overtaken by another report', async () => {
+  const requests = createForegroundRequests(), report = requests.reserveReport()!, gate = admissionGate()
+  const started: number[] = []
+  const first = requests.human(() => true, async held => { assert.ok(held()); started.push(1); await gate.promise })
+  const next = requests.human(() => true, async held => { assert.ok(held()); started.push(2) })
+  assert.deepEqual(started, [])
+  assert.equal(requests.deferred(), true)
+  report.finish()
+  await report.done; await Promise.resolve(); await Promise.resolve()
+  assert.deepEqual(started, [1])
+  assert.equal(requests.reserveReport(), null)
+  gate.release(); await Promise.all([first, next])
+  assert.deepEqual(started, [1, 2])
+  assert.equal(requests.busy(), false)
+})
+
+test('cancelled or reselected queued prompts cannot cross a bridge generation', async () => {
+  const requests = createForegroundRequests(), report = requests.reserveReport()!
+  let sent = false
+  const old = requests.human(() => true, async () => { sent = true })
+  const refused = assert.rejects(old, ForegroundRequestRetired)
+  requests.invalidate()
+  await refused
+  assert.equal(sent, false)
+  const fresh = requests.reserveReport()!
+  report.finish()
+  assert.equal(fresh.current(), true, 'a late old report cannot release its replacement')
+  let selected = true
+  const changed = requests.human(() => selected, async () => { sent = true })
+  const changedRejected = assert.rejects(changed, ForegroundRequestRetired)
+  selected = false; fresh.finish()
+  await changedRejected
+  assert.equal(sent, false)
+  assert.equal(requests.busy(), false)
+})
 
 /**
  * A background task's result comes back to the main conversation: into the turn running there, or as a turn of its

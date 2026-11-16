@@ -120,7 +120,7 @@ function timelineDay(ts: number, now: number) {
 export type EarlierRow = { segment: string | null } & (
   | { kind: 'day', label: string }
   | { kind: 'workdir', cwd: string, continues: boolean }
-  | { kind: 'message', id: string, role: string, text: string, receipt: Receipt | null, images?: Array<{ id: string }> }
+  | { kind: 'message', id: string, role: string, text: string, receipt: Receipt | null, images?: Array<{ id: string }>, delivery?: 'pending' | 'not-sent' }
   | { kind: 'record', id: string, record: ReportRecord }
 )
 
@@ -168,6 +168,7 @@ export function earlierRows(earlier: State['earlier'], { currentCwd = null, now 
       own.push({
         kind: 'message', id: `${segment.id}-${message.seq}`, role: message.role, text: message.text, receipt: message.receipt,
         segment: segment.id, ...(message.images ? { images: message.images } : {}),
+        ...(message.delivery ? { delivery: message.delivery } : {}),
       })
       before += 1
       const last = before === segment.messages.length

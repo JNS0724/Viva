@@ -9,7 +9,7 @@ import { testRequests, withPluginSide } from './fixtures/request-routing.ts'
 import { currentTurnTextParts } from './fixtures/model-user-text.ts'
 import { parseHostMemoryCommand } from '../src/memory/contracts/host.ts'
 
-function fixture({ recovered = true, admittedAfter = true, projectChanged = false, recoveryError = false, resumeError = '' } = {}) {
+function fixture({ recovered = true, admittedAfter = true, projectChanged = false, recoveryError = false, resumeError = '', beforeAlias = async () => {} } = {}) {
   let allowed = false
   let created = 0
   const calls: string[] = []
@@ -21,6 +21,7 @@ function fixture({ recovered = true, admittedAfter = true, projectChanged = fals
   const send = transport.send
   transport.send = (message, callback) => {
     const input = message as { type?: string, method?: unknown, input?: unknown, requestId?: string, epoch?: string }
+    if (input.type === 'steer') calls.push('steer:wire')
     if (input.type !== 'memory_host_request') return send(message, callback)
     const command = parseHostMemoryCommand(input.method, input.input)
     calls.push(command.method)
@@ -33,7 +34,9 @@ function fixture({ recovered = true, admittedAfter = true, projectChanged = fals
     else if (command.method === 'recoverContext') { allowed = admittedAfter; result = recovered }
     else if (command.method === 'bindWireAlias') result = { wireText: command.input.args[2] }
     else throw new Error(`Unexpected command ${command.method}`)
-    setImmediate(() => child.emit('message', { type: 'memory_host_result', requestId: input.requestId, epoch: input.epoch, ok: true, result }))
+    const respond = () => setImmediate(() => child.emit('message', { type: 'memory_host_result', requestId: input.requestId, epoch: input.epoch, ok: true, result }))
+    if (command.method === 'bindWireAlias') void beforeAlias().then(respond)
+    else respond()
     callback?.(null)
     return true
   }
@@ -46,10 +49,29 @@ function fixture({ recovered = true, admittedAfter = true, projectChanged = fals
     async cancel() {}, async authenticate() { return {} },
   }
   new AgentSideConnection(() => agent as never, ndJsonStream(Writable.toWeb(child.stdout), Readable.toWeb(child.stdin) as never))
-  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', emit() {},
+  const routing = testRequests()
+  const bridge = createAcpBridge({ routing, dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', emit() {},
     allowSession: () => { calls.push('allowsSession'); return allowed }, spawnFn: (() => child) as never })
-  return { bridge, calls, ready() { bridge.memory.receive({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: 'owner', state: 'ready', revision: 1, coreEpoch: 0 }) } }
+  return { bridge, calls, routing, ready() { bridge.memory.receive({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: 'owner', state: 'ready', revision: 1, coreEpoch: 0 }) } }
 }
+
+for (const reason of ['unavailable', 'idle'] as const) test(`ordinary steer rechecks its captured lease after the native wire alias await (${reason})`, async t => {
+  let armed = false, selected = true, release = () => {}, arrived = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve }), seen = new Promise<void>(resolve => { arrived = resolve })
+  const { bridge, calls, routing, ready } = fixture({ beforeAlias: async () => { if (armed) { arrived(); await gate } } })
+  t.after(() => { release(); void bridge.dispose() })
+  await bridge.start(); ready(); await bridge.prompt('original turn')
+  armed = true
+  const result = bridge.steer('old words', undefined, () => selected, () => reason)
+  await seen
+  const request = routing.store.undecided().map(id => routing.store.get(id)).find(entry => entry?.kind === 'interjection')
+  assert.ok(request)
+  selected = false; release()
+  assert.deepEqual(await result, { ok: false, reason, delivery: 'not-sent' })
+  assert.equal(routing.store.get(request.id)?.status, 'failed')
+  assert.equal(routing.store.get(request.id)?.failure, 'undelivered')
+  assert.ok(!calls.includes('steer:wire'))
+})
 
 test('a new Viva human request performs native durable recovery before rechecking admission and constructing its prompt', async t => {
   const { bridge, calls, ready } = fixture(); t.after(() => { void bridge.dispose() }); await bridge.start(); ready()

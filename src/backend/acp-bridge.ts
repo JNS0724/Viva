@@ -631,20 +631,32 @@ export function createAcpBridge({
    * The user's words into the running turn of the conversation on screen, marked as said mid-turn, a request of their
    * own; one that reached no turn fails, since the window asks the words anew.
    */
-  async function steer(text: string, sourceId?: string) {
+  async function steer(text: string, sourceId?: string, held: () => boolean = () => true, retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable') {
+    const retired = () => ({ ok: false as const, reason: retiredReason(), delivery: 'not-sent' as const })
+    if (!held()) return retired()
     if (!sessionId) return steering.steer(interjection(text))
     const asked = sessionId
     if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
+    if (!held()) return retired()
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
     const request = asRequest(text, asked, 'interjection', sourceId)
     const wrapped = interjection(request.text)
     const prefixLength = wrapped.length - request.text.length
     const spans = request.spans.map(({ start, end }) => ({ start: start + prefixLength, end: end + prefixLength }))
-    const wire = memory.ready() ? (await memory.call('bindWireAlias', { args: [asked, text, wrapped, sourceId, spans] })).wireText : wrapped
-    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
-    const result = await steering.steer(wire, asked, { fast: memory.ready() })
-    if (!result.ok) routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
-    return result
+    let dispatched = false
+    const undelivered = () => routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
+    try {
+      const wire = memory.ready() ? (await memory.call('bindWireAlias', { args: [asked, text, wrapped, sourceId, spans] })).wireText : wrapped
+      if (!held()) { undelivered(); return retired() }
+      if (asked !== sessionId || isSwitching() || disposed) { undelivered(); return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const } }
+      dispatched = true
+      const result = await steering.steer(wire, asked, { fast: memory.ready() })
+      if (!result.ok) undelivered()
+      return result
+    } catch (error) {
+      if (!dispatched) undelivered()
+      throw error
+    }
   }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
   const deliverReport = async (session: string, reportId: string, token: string, text: string, held: () => boolean = () => true) => {
