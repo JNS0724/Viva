@@ -5,6 +5,8 @@ import { createMemoryDreamTools, memoryDocumentLinks, memoryDreamToolDefinitions
 import type { DreamDocumentSnapshot } from '../src/memory/core/memory-dream-tools.ts'
 import type { MemoryToolInvocation } from '../src/memory/contracts/service.ts'
 import { formatMemoryDocument, parseMemoryDocument } from '../src/memory/core/memory-document.ts'
+import { inspectMemoryDocumentText } from '../src/memory/core/memory-dream-material.ts'
+import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 
 const daily = 'daily/2026-11-16/work.md'
 const oldDaily = 'daily/2026-11-15/work.md'
@@ -173,6 +175,24 @@ test('a plain Sources path is rejected before staging so the same model loop can
   const rejectedEdit = await call('edit', { path: target, old_text: `[[${daily}]]`, new_text: daily })
   assert.equal(rejectedEdit.state, 'rejected')
   assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Keep the prior valid draft' }).markdown, content())
+})
+
+test('malformed copied backend metadata gets repair feedback without weakening credential validation', async () => {
+  const session = `session/dialog/${'a1'.repeat(32)}.jsonl`
+  const rows = [document(daily, 'Today', 'A confirmed deployment decision.')]
+  const tools = createMemoryDreamTools({ unit, documents: { list: () => rows, read: path => rows.find(row => row.path === path) ?? null },
+    allowsDraftMaterial: markdown => !looksSecret(inspectMemoryDocumentText(markdown, [daily, session])) })
+  const call = (name: string, input: MemoryToolInvocation['input']) => tools.executeTool({ callId: name, name, input })
+  await call('node_search', { query: 'Deployment' })
+  const malformed = content().replace('custom: retained', `source_conversation: "[[${session.slice(0, -6)}]]"`)
+  const rejected = await call('write', { path: target, markdown: malformed })
+  assert.equal(rejected.state, 'rejected')
+  assert.equal(JSON.parse(rejected.content).code, 'memory-dream-draft-material-unavailable')
+  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Unsupported identity' }), /missing-draft/u)
+  assert.equal((await call('write', { path: target, markdown: content() })).state, 'completed')
+  const secret = await call('write', { path: target, markdown: content() + '\nsk-abcdefghijklmnopqrstuv' })
+  assert.equal(secret.state, 'rejected')
+  assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Keep the valid draft' }).markdown, content())
 })
 
 test('new read dependencies and usage versions invalidate next tool call and commit', async () => {

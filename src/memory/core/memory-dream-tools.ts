@@ -99,10 +99,12 @@ export type DreamDraftResult<S extends DreamDocumentSnapshot> = {
 /** Isolated per-unit draft and readset. This module never opens files or invokes the model.
  * Structural link validation is not semantic evidence verification: the caller must review
  * attribution, polarity, time and conditions against canonical user sources before commit. */
-export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, documents, onRead = () => {} }: {
+export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, documents, onRead = () => {}, allowsDraftMaterial }: {
   unit: DreamUnit,
   documents: { list(): readonly S[], read(path: string): S | null, locatorRetired?: (path: string) => boolean },
   onRead?: (snapshot: S) => void,
+  /** Early repair feedback only. The caller must still revalidate material and evidence before commit. */
+  allowsDraftMaterial?: (markdown: string) => boolean,
 }) {
   const observed = new Map<string, S>()
   const bodyReads = new Set<string>()
@@ -147,6 +149,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     // Parse before mutating draft state; an invalid attempt does not poison later corrections.
     try { parseMemoryDocument(markdown) } catch { return reject('memory-dream-invalid-document') }
     unitSourceLinks(markdown)
+    if (allowsDraftMaterial && !allowsDraftMaterial(markdown)) return reject('memory-dream-draft-material-unavailable')
     target = { path, before: before ? observed.get(path)! : null, markdown }
     return { path, staged: true }
   }
@@ -215,7 +218,8 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
       if (!(error instanceof DreamToolError)) throw error
       const content = error.message === 'memory-dream-unit-source-missing' ? JSON.stringify({ code: error.message,
         message: 'Cite every required daily path as a real [[workspace-relative/path.md]] wikilink in a meaningful Sources sentence, outside code. Then retry the draft tool.',
-        requiredPaths: unit.paths }) : error.message
+        requiredPaths: unit.paths }) : error.message === 'memory-dream-draft-material-unavailable' ? JSON.stringify({ code: error.message,
+          message: 'The draft contains unavailable material or an invalid source reference. Do not copy or invent daily session_id/source_conversation metadata into a new digest. Keep backend-issued paths exact, remove unsupported material, and retry the draft tool.' }) : error.message
       return { callId: invocation.callId, state: 'rejected', content, sources: sources() }
     }
   }

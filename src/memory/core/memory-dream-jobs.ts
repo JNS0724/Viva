@@ -256,7 +256,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     }
     const scope = scopedDocuments(item.workspace)
     const readSources = new Map(allSources([...files.flatMap(file => file.sources), ...previous?.answer ? [previous.answer.source] : []]).map(ref => [ref.id, ref]))
-    const tools = createMemoryDreamTools({ unit: item.unit, documents: scope, onRead(snapshot) {
+    const tools = createMemoryDreamTools({ unit: item.unit, documents: scope,
+      allowsDraftMaterial: markdown => materialAllowed(markdown, [...readSources.values()]), onRead(snapshot) {
       for (const ref of allSources([...readSources.values(), ...snapshot.sourceTokens, ...snapshot.correctionSources ?? []])) readSources.set(ref.id, ref)
     } })
     const questionContexts = new Map<string, DocumentSourceRef[]>()
