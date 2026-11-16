@@ -94,8 +94,8 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const toolReads = trackNativeToolReads(owner.finishNativeToolRead, {
     evidence: owner.nativeToolEvidence, archive: owner.inheritNativeToolRead,
   })
-  trackNativeSpills(ctx, owner, toolReads)
-  trackNativeSpillReads(ctx, owner, () => {
+  const spillWriter = trackNativeSpills(ctx, owner, toolReads)
+  const spillReader = trackNativeSpillReads(ctx, owner, () => {
     const execution = caller.getStore()
     return execution && 'agent' in execution ? execution.toolRead : undefined
   })
@@ -344,6 +344,8 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   ctx.effect(() => async () => {
     if (config.host) port.off('message', receive)
     closing = true
+    await spillReader?.dispose()
+    await spillWriter?.dispose()
     lifetime.abort()
     deliveryBindings.close()
     deliveries.clear()

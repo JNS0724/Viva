@@ -42,6 +42,7 @@ export async function publishGovernedNativeSpill(handle: FileHandle, intent: Nat
     await link(proof.stage.path, proof.target)
     await unlink(proof.stage.path)
     const receipt = await verifyNativeSpill(intent, proof.target)
+    if (!current()) throw new Error('Native spill execution changed before its locator was returned')
     const ref: SpillRef = { locator: SpillLocator(proof.target), bytes: intent.bytes,
       retrievalHint: 'Use read with offset/limit, or grep this path to search within it.' }
     return { receipt, ref }

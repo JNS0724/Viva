@@ -101,6 +101,11 @@ export function createNativeToolReads(db: DatabaseSync) {
       return !call.ptc && intersectsMemoryErasure(evidence, ranges) ? [{ call, evidence, cut: cutShape.parse(JSON.parse(String(row.cut))) }] : []
     })
   }
+  function rootCuts(call: NativeToolCall) {
+    return db.prepare(`SELECT c.identity,r.cut FROM owner_native_tool_read_cuts r JOIN owner_native_tool_calls c ON c.id=r.call
+      WHERE json_extract(c.identity,'$.session')=? AND json_extract(c.identity,'$.callId')=?`).all(call.session, call.ptc?.rootCallId ?? call.callId).map(row =>
+      ({ call: nativeToolCallShape.parse(JSON.parse(String(row.identity))), cut: cutShape.parse(JSON.parse(String(row.cut))) }))
+  }
   function recoverInput(candidate: NativeToolCall, evidence: MemoryErasureEvidence,
     transition: (proof: { seq: number, before: string, after: string }) => boolean = () => false) {
     const call = nativeToolCallShape.parse(candidate)
@@ -116,5 +121,5 @@ export function createNativeToolReads(db: DatabaseSync) {
       append.run(saved.id, JSON.stringify(memoryErasureEvidenceSchema.parse(evidence)))
     })
   }
-  return { record, recordEvidence, evidence, readCuts, recoverInput, finish, finishAbsent, affected }
+  return { record, recordEvidence, evidence, readCuts, rootCuts, recoverInput, finish, finishAbsent, affected }
 }

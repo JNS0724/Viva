@@ -207,7 +207,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
       const journal = outputJournal.forOperation(operationId + ':tool-results')
       const targets = () => toolReads.affected(ranges).flatMap(call =>
         (call.result || call.absent && call.inputDerived) && !outputJournal.erased(call.id) ? [call] : [])
-      return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets }] : []
+      return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets, rootCuts: toolReads.rootCuts }] : []
     })
   }
 
@@ -307,6 +307,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   return { operations, operation, outputOperations, toolResultOperations, spillOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
     hasPlans: () => outputPlans.all().some(row => !cleanupReceipts.complete(String(row.operation))),
     ptcInputCuts,
+    toolInputRootCuts: toolReads.rootCuts,
     recoverPtcInput(call: Parameters<typeof toolReads.recoverInput>[0], evidence: Parameters<typeof toolReads.recoverInput>[1]) {
       toolReads.recoverInput(call, evidence, outputJournal.forOperation('native-proof').provenTransition)
     },

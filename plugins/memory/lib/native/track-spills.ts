@@ -12,7 +12,9 @@ import { replaceServiceMethod } from './service-method.ts'
 export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMemoryOwner>, tools: ReturnType<typeof trackNativeToolReads>) {
   return ctx.inject(['spillStore'], scoped => {
     const store = scoped.spillStore, save = store.saveText
+    let active = true
     const wrapped = async (input: SaveTextSpill): Promise<SpillRef> => {
+      if (!active) return save.call(store, input)
       const session = ctx.sessions.get(SessionId(input.owner.sessionId))
       const call = input.source.kind === 'tool' && session ? tools.spill(session, input.source.callId, input.source.toolName) : undefined
       // Other storage backends have no verified local erase seam. The policy
@@ -21,6 +23,8 @@ export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMem
         throw new Error('Native spill has no authenticated local execution')
       }
       if (!owner.nativeSpillGoverned(call)) return save.call(store, input)
+      const current = () => active && owner.ready() && call.generation === owner.contextGeneration(call.session) && Boolean(session
+        && input.source.kind === 'tool' && tools.spill(session, input.source.callId, input.source.toolName)?.id === call.id)
       await mkdir(store.root, { recursive: true, mode: 0o700 })
       const intent = { call, root: await realpath(store.root), bytes: Buffer.byteLength(input.content, 'utf8'),
         hash: createHash('sha256').update(input.content).digest('hex') }
@@ -28,12 +32,11 @@ export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMem
       let id: string
       try { id = owner.beginNativeSpill(reserved.intent) }
       catch (error) { await reserved.handle.close(); throw error }
-      const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, input.content,
-        () => owner.ready() && call.generation === owner.contextGeneration(call.session))
+      const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, input.content, current)
       owner.finishNativeSpill(id, saved.receipt)
       return saved.ref
     }
     const restore = replaceServiceMethod(store, 'saveText', wrapped)
-    scoped.effect(() => restore, 'memory spill receipts')
+    scoped.effect(() => () => { active = false; restore() }, 'memory spill receipts')
   })
 }

@@ -107,3 +107,19 @@ test('PTC read authority follows actual ancestor tokens, rejects lookalike dispa
   assert.equal(rootLease.current(), false)
   assert.equal(childLease.current(), false)
 })
+
+for (const cancellation of ['body', 'step'] as const) test(`native read lease retires on actual ${cancellation} cancellation before any endpoint`, () => {
+  const session = Session.create(SessionId(`cancel-${cancellation}`)), step = new AbortController(), body = new AbortController(), tools = toolSet()
+  const reads = trackNativeToolReads(() => assert.fail('no endpoint was published'))
+  reads.assembly(session, step.signal, tools); reads.step(session, 1, 1, step.signal)
+  const callId = ToolCallId('read')
+  const exec: ToolExecution = { callId, rootCallId: callId, name: 'read', arguments: {}, signal: step.signal, toolSet: tools, token: token() }
+  reads.observe(session, session.append('tool/call', { turn: 1, step: 1, callId, name: exec.name, arguments: '{}' }))
+  reads.bind(session, exec)
+  const lease = reads.acquire(session, { ...exec, signal: body.signal }, 0)!
+  assert.equal(lease.current(), true)
+  const controller = cancellation === 'body' ? body : step
+  controller.abort()
+  assert.equal(lease.current(), false)
+  assert.equal(reads.spill(session, callId, exec.name), undefined)
+})

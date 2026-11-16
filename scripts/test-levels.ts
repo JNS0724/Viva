@@ -39,6 +39,8 @@ export const testLevels = {
     'memory-native-tool-reads',
     'memory-native-retries',
     'memory-native-spills',
+    'memory-native-service-lifecycle',
+    'memory-native-repaired-endpoints',
     'memory-native-ptc',
     'memory-native-derived',
     'memory-native-recovery-messages',

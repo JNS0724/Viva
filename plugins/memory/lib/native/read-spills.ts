@@ -12,6 +12,7 @@ import { replaceServiceMethod } from './service-method.ts'
 export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof openMemoryOwner>, scope: () => NativeToolReadScope | undefined) {
   return ctx.inject(['fs'], scoped => {
     const fs = scoped.fs, read = fs.readText, stream = fs.streamText
+    let active = true
     async function admit(target: FsTarget, signal?: AbortSignal) {
       const actual = fs.processPath(target)
       for (const candidate of owner.nativeSpillCandidates()) {
@@ -25,13 +26,15 @@ export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof ope
         signal?.throwIfAborted()
         if (!candidate.file || candidate.file.path !== file.path) throw new Error('Native spill publication is unfinished')
         await verifyNativeSpill(candidate, file.path, false)
+        if (!active) throw new Error('Native spill guard retired during reading')
         const execution = scope()
         if (!execution) throw new Error('Native spill read has no authenticated execution')
         const lease = owner.admitNativeSpillRead(candidate.id, execution)
-        return { ...lease, hash: candidate.hash, bytes: candidate.bytes }
+        return { current: () => active && lease.current(), hash: candidate.hash, bytes: candidate.bytes }
       }
     }
     const guardedRead: typeof read = async (target, signal) => {
+      if (!active) return read.call(fs, target, signal)
       const permit = await admit(target, signal), value = await read.call(fs, target, signal)
       signal?.throwIfAborted()
       if (permit && (!permit.current() || Buffer.byteLength(value, 'utf8') !== permit.bytes
@@ -39,6 +42,7 @@ export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof ope
       return value
     }
     const guardedStream: typeof stream = async (target, signal) => {
+      if (!active) return stream.call(fs, target, signal)
       const permit = await admit(target, signal), chunks = await stream.call(fs, target, signal)
       if (!permit) return chunks
       // read/grep may close a stream after its first matching lines. Validate
@@ -64,6 +68,7 @@ export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof ope
     const restoreRead = replaceServiceMethod(fs, 'readText', guardedRead)
     const restoreStream = replaceServiceMethod(fs, 'streamText', guardedStream)
     scoped.effect(() => () => {
+      active = false
       restoreStream(); restoreRead()
     }, 'memory spill read provenance')
   })

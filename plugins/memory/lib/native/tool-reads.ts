@@ -10,7 +10,7 @@ import { objectOf } from '../../../../src/memory/contracts/unknown-value.ts'
 import type { MemoryErasureEvidence } from '../../../../src/memory/contracts/provenance.ts'
 
 type CallEvent = SessionEvent<'tool/call' | 'tool/ptc-dispatch-start'>
-type PendingCall = { event: CallEvent, token?: ToolExecutionToken, active?: NativeToolCall, parent?: PendingCall, input?: readonly MemoryErasureEvidence[] }
+type PendingCall = { event: CallEvent, token?: ToolExecutionToken, signal?: AbortSignal, active?: NativeToolCall, parent?: PendingCall, input?: readonly MemoryErasureEvidence[] }
 type Assembly = { signal: AbortSignal, tools: ResolvedToolSet }
 type Step = { turn: number, step: number, assembly: Assembly, calls: Map<string, PendingCall>, outputAttempt?: string }
 export type NativeToolLease = NativeToolReadScope
@@ -86,7 +86,7 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
     },
     acquire(session: Session, exec: ToolExecution, generation: number): NativeToolLease | undefined {
       const current = pending(session, exec)
-      if (!current || current.token !== exec.token || current.active) return
+      if (!current || current.token !== exec.token || current.active || exec.signal.aborted || sessions.get(session)?.assembly.signal.aborted) return
       const callId = String(exec.callId)
       const { turn, step, outputAttempt } = sessions.get(session)!
       const call = { id: randomUUID(), session: String(session.id), callId, generation, turn, step,
@@ -96,12 +96,14 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
         ...(current.event.type === 'tool/ptc-dispatch-start' ? { ptc: {
           rootCallId: String(current.event.data.rootCallId), parentCallId: String(current.event.data.parentCallId) } } : {}) }
       current.active = call
+      current.signal = exec.signal
       const chain: PendingCall[] = []
       for (let node: PendingCall | undefined = current; node; node = node.parent) chain.push(node)
       const calls = chain.flatMap(node => node.active?.generation === generation ? [node.active] : [])
       if (calls.length !== chain.length) return
       const lease = { call, calls, current: () => sessions.get(session)?.calls.get(callId) === current
-        && chain.every(node => Boolean(node.token) && node.active?.generation === generation),
+        && !sessions.get(session)?.assembly.signal.aborted
+        && chain.every(node => Boolean(node.token) && !node.signal?.aborted && node.active?.generation === generation),
         readCut() {
           const event = session.snapshotEvents().at(-1)
           if (!event) throw new Error('Native read has no current event cut')
@@ -112,7 +114,7 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
     },
     spill(session: Session, callId: string, name: string): NativeToolCall | undefined {
       const call = sessions.get(session)?.calls.get(callId)
-      return call?.token && call.event.data.name === name ? call.active : undefined
+      return call?.token && !call.signal?.aborted && !sessions.get(session)?.assembly.signal.aborted && call.event.data.name === name ? call.active : undefined
     },
   }
 }

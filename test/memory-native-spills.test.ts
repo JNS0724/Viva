@@ -7,6 +7,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { ToolExecution, ToolExecutionToken, ResolvedToolSet } from '@deepseek-ai/dsh-tools'
 import { saveTextFile, sessionDir } from '@deepseek-ai/dsh-spill-local'
 import { createNativeSpills, type NativeSpillIntent } from '../src/memory/node/native-spills.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -17,6 +20,7 @@ import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { reserveNativeSpill, publishGovernedNativeSpill } from '../plugins/memory/lib/native/governed-spills.ts'
 import { eraseNativeSpill } from '../plugins/memory/lib/native/local-spills.ts'
 import { trackNativeSpillReads } from '../plugins/memory/lib/native/read-spills.ts'
+import { trackNativeToolReads } from '../plugins/memory/lib/native/tool-reads.ts'
 import { scratch } from './fixtures/scratch.js'
 
 const body = 'Private memory-derived spill content.'
@@ -149,13 +153,27 @@ test('spill read-back archives its exact source proof before use and rejects a l
     const id = owner.beginNativeSpill(reserved.intent)
     const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, body, () => true)
     owner.finishNativeSpill(id, saved.receipt)
-    const consumer = { ...call, id: randomUUID(), session: 'consumer', callId: 'read-back', seq: 4 }
-    let live = true
-    const scope = { call: consumer, calls: [consumer], current: () => live }
-    const permit = owner.admitNativeSpillRead(id, scope)
+    function execution(name: string) {
+      owner.initializeSession({ sessionId: name })
+      const native = Session.create(SessionId(name)), tools: ResolvedToolSet = { dispose() {}, view: () => new Map() }
+      const step = new AbortController(), body = new AbortController(), tracker = trackNativeToolReads(owner.finishNativeToolRead)
+      tracker.assembly(native, step.signal, tools); tracker.step(native, 1, 1, step.signal)
+      const callId = ToolCallId('read-back')
+      const exec: ToolExecution = { callId, rootCallId: callId, name: 'read', arguments: {}, signal: step.signal, toolSet: tools, token: Symbol() as ToolExecutionToken }
+      tracker.observe(native, native.append('tool/call', { turn: 1, step: 1, callId, name: 'read', arguments: '{}' }))
+      tracker.bind(native, exec)
+      return { scope: tracker.acquire(native, { ...exec, signal: body.signal }, 0)!, abort: () => body.abort() }
+    }
+    let run = execution('consumer'), scope = run.scope
+    let permit = owner.admitNativeSpillRead(id, scope)
     assert.equal(permit.current(), true)
-    assert.ok(owner.nativeToolEvidence([consumer]).some(proof => proof.fileRanges.length > 0))
+    assert.ok(owner.nativeToolEvidence([scope.call]).some(proof => proof.fileRanges.length > 0))
     assert.ok(owner.dispatch.snapshot('consumer').files?.length)
+    run.abort()
+    assert.equal(permit.current(), false, 'an actual body cancellation retires read-back even without an FS signal')
+    assert.throws(() => owner.admitNativeSpillRead(id, scope), /retired/u)
+    run = execution('consumer-next'); scope = run.scope
+    permit = owner.admitNativeSpillRead(id, scope)
     const ctx = new Context(), filesystem = await ctx.plugin(LocalFileSystem, { cwd: dir })
     let mode: 'valid' | 'changed' | 'held' = 'valid', exhausted = false
     let entered!: () => void, release!: () => void
@@ -192,10 +210,9 @@ test('spill read-back archives its exact source proof before use and rejects a l
       assert.deepEqual(Object.getOwnPropertyDescriptor(ctx.fs, 'streamText'), unwrappedStream, 'reloading the memory plugin restores the original public filesystem adapter')
       await filesystem.dispose()
     }
-    live = false
+    run.abort()
     assert.equal(permit.current(), false, 'a delayed filesystem read cannot outlive its actual execution')
     assert.throws(() => owner.admitNativeSpillRead(id, scope), /retired/u)
-    live = true
     assert.equal(permit.current(), false, 'withdrawal invalidates in-flight reads before physical spill cleanup')
     assert.throws(() => owner.admitNativeSpillRead(id, scope), /retired/u)
     assert.equal(await readFile(saved.ref.locator, 'utf8'), body, 'the barrier rejects a still-present physical artifact')
