@@ -8,6 +8,7 @@
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
+    "./persistence": "./persistence.js",
     "./contracts": "./memory/contracts/index.js",
     "./core": "./memory/core/index.js",
     "./node": "./memory/node/index.js"
@@ -39,6 +40,7 @@
   "license": "MIT",
   "files": [
     "index.js",
+    "persistence.js",
     "lib",
     "memory",
     "README.md",

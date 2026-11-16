@@ -94,8 +94,10 @@ test('npm-packed JS artifact installs offline and its Node API works without the
   const output = execFileSync(node, ['--input-type=module', '-e', code], { cwd: clean, encoding: 'utf8', timeout: 20_000,
     env: { ...process.env, NODE_PATH: '', ELECTRON_RUN_AS_NODE: '1' } })
   assert.match(output, /PACKAGED_NODE_OK/u)
-  const manifest = JSON.parse(readFileSync(path.join(clean, 'node_modules/viva-memory/package.json'), 'utf8')) as { main: string, dependencies: Record<string, string> }
+  const manifest = JSON.parse(readFileSync(path.join(clean, 'node_modules/viva-memory/package.json'), 'utf8')) as { main: string, exports: Record<string, string>, dependencies: Record<string, string> }
   assert.equal(manifest.main, 'index.js')
+  assert.equal(manifest.exports['./persistence'], './persistence.js')
+  assert.ok(existsSync(path.join(clean, 'node_modules/viva-memory/persistence.js')))
   assert.equal(manifest.dependencies.yaml, '2.9.1')
   assert.equal(manifest.dependencies.marked, '18.0.14')
 })

@@ -60,7 +60,7 @@ export function nativeSurfaceInvalidation(db: DatabaseSync) {
 
 /** Offline adapter access to the owner's exact original plans. It takes the same
  * root lock as the live owner and stores only receipts and digests. */
-export function openNativeOriginalMaintenance(root: string, hostNamespace: string) {
+export function openNativeOriginalMaintenance(root: string, hostNamespace: string | undefined) {
   if (!existsSync(path.join(root, 'memory.db'))) return null
   const lock = lockMemoryRoot(root)
   let db: DatabaseSync | undefined

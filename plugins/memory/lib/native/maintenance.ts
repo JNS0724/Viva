@@ -14,7 +14,7 @@ export class PendingNativePublication extends Error {}
 
 /** Run inside the host's cold lifecycle gate with no live persistence readers. */
 export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot, hostNamespace, isCold, trace }: {
-  memoryRoot: string, sessionsRoot: string, storageRoot: string, hostNamespace: string, isCold(): boolean,
+  memoryRoot: string, sessionsRoot: string, storageRoot: string, hostNamespace: string | undefined, isCold(): boolean,
   trace: NativeOutputTrace,
 }) {
   if (!isCold()) throw new Error('Native maintenance requires an exclusive cold lifecycle')

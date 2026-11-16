@@ -1,5 +1,6 @@
 /** Real DSH Web acceptance of the packed plugin. Every model call stays on the local fixture. */
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { spawn, execFileSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -11,6 +12,14 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { Context } from '@deepseek-ai/cordis'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
+import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
+import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { buildMemoryPlugin } from './build-memory-plugin.ts'
 import { startFakeLlm } from '../test/fixtures/fake-llm.js'
 
@@ -25,6 +34,11 @@ const workspace = path.join(temporary, 'workspace')
 const installed = path.join(temporary, 'installed')
 for (const dir of [output, home, workspace, installed]) mkdirSync(dir, { recursive: true })
 const marker = '周报每周五下班前提交，保留项目决定和依据。'
+const erased = '银杏编号被指定移出独立会话'
+const kept = '白茶依然放在正方形桌上'
+const original = `${erased}，${kept}。`
+const sessionsRoot = path.join(home, 'sessions')
+const storageRoot = path.join(home, 'storages')
 const redact = (text: string) => text.replace(/https?:\/\/[^\s\x1b]+/gu, value => {
   try { const url = new URL(value); url.search = ''; url.hash = ''; return url.toString() } catch { return '[URL REDACTED]' }
 })
@@ -51,6 +65,50 @@ function noteContextGeneration(key: string) {
   try { return Number(db.prepare('SELECT generation FROM owner_context_generations WHERE session=?').get(identity[1])?.generation ?? 0) }
   finally { db.close() }
 }
+async function nativeMessages(session: string) {
+  const ctx = new Context(), mounted = await ctx.plugin(jsonl, { root: sessionsRoot, compression: 'zstd' })
+  try {
+    const reader = await ctx.sessionPersistence.open(SessionId(session), 'read')
+    try {
+      return (await reader.read()).events.flatMap(event => event.type === 'user/message' && event.data.source.kind === 'user'
+        ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []) : [])
+    } finally { await reader.close() }
+  } finally { await mounted.dispose() }
+}
+
+/** Exercise the shared trusted owner operation while Web is stopped. Web has no memory management page. */
+async function prepareStandaloneForget() {
+  const owner = openMemoryOwner({ root: dataRoot, dailyNotes: true, fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  try {
+    await owner.recover()
+    const store = openMemoryStore(path.join(dataRoot, 'memory.db'))
+    try {
+      const row = store.db.prepare('SELECT id FROM memory_sources WHERE text=? AND withdrawn=0').get(original)
+      const source = typeof row?.id === 'string' ? store.readSource(row.id) : undefined
+      assert.ok(source?.session, 'Web must have admitted the original human source')
+      const workspace = memorySourceWorkspace(source)
+      const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source(id) {
+        const current = store.readSource(id)
+        return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
+      } })
+      const created = documents.commit({ operationId: randomUUID(), workspace, path: 'digest/wiki/standalone-erasure-probe.md',
+        expectedRevision: null, action: 'CREATE', markdown: erased, sources: [{ id: source.id, token: memorySourceToken(source),
+          spans: [{ start: 0, end: erased.length }] }], reads: [] })
+      assert.ok(created?.documentId)
+      const identity = { kind: 'digest' as const, workspace, id: created.documentId }
+      const file = await owner.handleHost('readFile', { args: [identity] }) as HostMemoryApi['readFile']['output']
+      assert.ok(file)
+      const operationId = randomUUID()
+      await owner.handleHost('forgetFile', { args: [{ operationId, identity, version: file.version }] })
+      const plan = store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId)
+      assert.ok(plan && JSON.parse(String(plan.payload)).originals.length, 'owner must authenticate the exact native original before shutdown')
+      assert.ok((await nativeMessages(source.session)).includes(original), 'the old physical native log still contains the target')
+      return { operationId, session: source.session }
+    } finally { store.close() }
+  } finally { await owner.close() }
+}
+
 async function stop(proc: ChildProcess | undefined) {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return
   proc.kill('SIGTERM')
@@ -125,7 +183,8 @@ const errors: string[] = []
 try {
   const plugin = installArtifact()
   const patch = path.join(temporary, 'memory.patch.yml')
-  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- insert:\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n        fileMode: ${fileMode}\n`)
+  const persistence = pathToFileURL(createRequire(path.join(installed, 'package.json')).resolve('viva-memory/persistence')).href
+  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- id: session-persistence-jsonl\n  disabled: true\n- insert:\n    - id: viva-memory-session-persistence\n      name: ${JSON.stringify(persistence)}\n      config:\n        root: ${JSON.stringify(sessionsRoot)}\n        storageRoot: ${JSON.stringify(storageRoot)}\n        memoryRoot: ${JSON.stringify(dataRoot)}\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      inject: [sessionPersistence]\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n        fileMode: ${fileMode}\n`)
   browser = await chromium.launch({ headless: true })
   const launch = async () => {
     let launchLog = ''
@@ -191,19 +250,37 @@ try {
   const requestText = JSON.stringify(llm.requests)
   assert.ok(requestText.includes('memory_remember') && requestText.includes('memory_recall'), 'native tools reach the model')
   assert.ok(llm.requests.some(request => JSON.stringify(request).includes('<about-user>') && JSON.stringify(request).includes(marker)), 'saved memory reaches an injected model request')
+  if (fileMode) await send(page, original, `收到：「${erased}`)
   const beforeRestart = collectMarkdown(dataRoot).map(file => path.relative(dataRoot, file))
   await page.screenshot({ path: path.join(output, 'web-before-restart.png'), fullPage: true })
   await page.close()
   await stop(proc)
   proc = undefined
+  const forget = fileMode ? await prepareStandaloneForget() : null
   page = await launch()
+  if (forget) {
+    await until(() => {
+      const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
+      try {
+        return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name='owner_native_original_completed'").get())
+          && Boolean(db.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(forget.operationId))
+      } finally { db.close() }
+    }, 'the packed provider commits its cold original receipt')
+    const persisted = await nativeMessages(forget.session)
+    assert.ok(!persisted.some(text => text.includes(erased)), 'the replacement provider opens only after physical originals are erased')
+    assert.ok(persisted.some(text => text === ' '.repeat(erased.length) + original.slice(erased.length)), 'the disjoint part of the same native message survives unchanged')
+  }
+  const postRestart = llm.requests.length
   await send(page, '查一下 周报', '查到了：')
+  assert.ok(!forget || llm.requests.slice(postRestart).every(request => !JSON.stringify(request).includes(erased)),
+    'the first restarted model requests receive no erased original')
+
   assert.ok((await page.locator('body').innerText()).includes(marker), 'memory survives ordinary Node DSH restart')
   await page.screenshot({ path: path.join(output, 'web-after-restart.png'), fullPage: true })
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
     ipcParent: false, fileMode, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
-    ...(fileMode ? { sameSessionDailyUpdate: true, recoveredGeneration } : {}), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
+    ...(fileMode ? { sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget) } : {}), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
   passed = true
