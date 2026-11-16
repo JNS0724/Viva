@@ -50,6 +50,7 @@ import type { MemoryDocumentView } from './memory-document-read-policy.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey } from './memory-file-retrieval.ts'
 import type { FileApplicability, FileNeighbors, FileSearchResult } from './memory-file-retrieval.ts'
 import { maskMemoryWikiLinks, memoryWikiLink } from './memory-markdown.ts'
+import { mergeTextSpans } from '../contracts/text-spans.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
 import { documentSourceRestricted, documentSourceProofCurrent, availableDocumentSourceSpans, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
@@ -1847,6 +1848,42 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     effects.queue(DOCUMENT_CLEANUP, cut.id, null)
   }
 
+  function eraseRetiredManualLocators(legacy: Set<number>): DocumentSourceCut[] {
+    if (!documents) return []
+    const erased: DocumentSourceCut[] = []
+    for (;;) {
+      const originals = store.manualFileSources()
+      const cuts = originals.flatMap(original => {
+        if (!original.text || !original.hash || original.withdrawn || store.sourceExcluded(original.id)) return []
+        const projected = documents.projectErasedLocators(resources.sourceWorkspace(original), original.text)
+        const spans: MemorySpan[] = []
+        for (let offset = 0; offset < original.text.length; offset++) {
+          if (original.text[offset] === projected[offset]) continue
+          const last = spans.at(-1)
+          if (last?.end === offset) last.end++
+          else spans.push({ start: offset, end: offset + 1 })
+        }
+        return spans.length ? [{ id: original.id, token: resources.sourceToken(original), spans, version: original.version,
+          length: original.length, hash: original.hash }] : []
+      })
+      if (!cuts.length) return erased
+      // A user-authored file can retain its exact remaining wording. Model-derived
+      // documents still follow the ordinary erasure policy for the removed proof.
+      documents.preserveAuthoredLocatorSources(cuts, originals)
+      store.trimManualFileParents(cuts)
+      for (const cut of cuts) eraseCanonicalRange(cut, legacy)
+      erased.push(...cuts)
+    }
+  }
+  function mergedErasureCuts(cuts: readonly DocumentSourceCut[]) {
+    const sources = new Map<string, DocumentSourceCut>()
+    for (const cut of cuts) {
+      const first = sources.get(cut.id)
+      sources.set(cut.id, first ? { ...first, spans: mergeTextSpans([...first.spans, ...cut.spans]) } : cut)
+    }
+    return [...sources.values()]
+  }
+
   function withdraw(payload: MemoryWithdrawal) {
     const before = store.revision()
     const touched = new Set<number>(), legacy = new Set<number>()
@@ -3197,6 +3234,7 @@ ${node.description}`, origin, scope))
       beforeErasure?.()
       const revision = store.nextRevision(), legacy = new Set<number>()
       for (const cut of cuts) eraseCanonicalRange(cut, legacy)
+      cuts.push(...eraseRetiredManualLocators(legacy))
       if (legacy.size) cleanup.queue(input.operationId, [...legacy][0]!, [...legacy], revision)
       syncFileIndex()
       validateDispatch()
@@ -3207,7 +3245,7 @@ ${node.description}`, origin, scope))
       const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
         action: 'FORGET', contentRevision: input.version.contentRevision, usageVersion,
         ...(input.restrictionId ? { restrictionId: input.restrictionId } : {}) }
-      committed(result, cuts, [...legacy])
+      committed(result, mergedErasureCuts(cuts), [...legacy])
       return result
     }))
     publish(store.revision(), [])

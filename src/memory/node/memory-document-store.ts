@@ -8,7 +8,7 @@ import type { MemorySource } from '../contracts/records.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { fileErasure, openMemoryFileJournal } from './memory-file-journal.ts'
 import type { FileCheckpoint, FilePlan } from './memory-file-journal.ts'
-import { documentSourceProofCurrent, documentSourceRestricted } from '../core/memory-document-restrictions.ts'
+import { documentSourceProofCurrent, documentSourceRestricted, subtractDocumentSourceSpans } from '../core/memory-document-restrictions.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
 import { maskMemoryWikiLinks } from '../core/memory-markdown.ts'
@@ -438,6 +438,75 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   function locatorRetired(scope: string, path: string) {
     return Boolean(db.prepare('SELECT 1 FROM memory_document_erased_locators WHERE workspace=? AND fingerprint=?').get(scope, memoryFileRevision(path)))
+  }
+  function preserveAuthoredLocatorSources(cuts: readonly DocumentSourceCut[], sources: readonly MemorySource[]) {
+    if (!db.isTransaction) throw new Error('memory-locator-projection-outside-transaction')
+    const history = db.prepare('SELECT * FROM memory_document_revisions').all() as unknown as Revision[]
+    const manualOwners = new Map(history.flatMap(row => {
+      const original = sources.find(source => source.id === row.operation && source.author === 'manual')
+      const after = row.after ? JSON.parse(row.after) as DocumentSnapshot : null
+      return original && after?.sources.some(ref => ref.id === original.id) ? [[original.id, after.id] as const] : []
+    }))
+    function authored(snapshot: DocumentSnapshot) {
+      const document = parseMemoryDocument(snapshot.markdown)
+      const body = projectErasedLocators(snapshot.workspace, document.body)
+      const title = projectErasedLocators(snapshot.workspace, String(document.metadata.name ?? ''))
+      return snapshot.sources.some(ref => {
+        const original = sources.find(source => source.id === ref.id)
+        const text = original?.text ? projectErasedLocators(snapshot.workspace, original.text) : null
+        return manualOwners.get(ref.id) === snapshot.id && original?.text && original.hash
+          && documentSourceProofCurrent(ref, original.text, source(ref.id)?.token ?? '', original.erasure ? { id: ref.id, ...original.erasure } : undefined)
+          && (text === body || text === `${title}\n${body}`)
+      })
+    }
+    function remaining(refs: readonly DocumentSourceRef[]) {
+      return refs.flatMap(ref => {
+        const relevant = cuts.filter(cut => documentSourceRestricted(ref, [cut]))
+        if (!relevant.length) return [ref]
+        const spans = subtractDocumentSourceSpans(relevant[0]!.length, ref, relevant)
+        return spans.length ? [{ ...ref, spans }] : []
+      })
+    }
+    function preserve(snapshot: DocumentSnapshot | null) {
+      if (!snapshot || !authored(snapshot)) return snapshot
+      const refs = remaining(snapshot.sources)
+      return refs.length ? { ...snapshot, sources: refs } : snapshot
+    }
+    for (const row of db.prepare('SELECT * FROM memory_documents WHERE forgotten=0').all() as Row[]) {
+      const retained = history.filter(item => item.document === row.id).flatMap(item => [item.after, item.before])
+        .flatMap(encoded => encoded ? [JSON.parse(encoded) as DocumentSnapshot] : [])
+        .find(snapshot => snapshot.revision === row.revision && snapshot.usageVersion === row.usage_version
+          && memoryFileRevision(snapshot.markdown) === row.revision)
+      const current = read(row.workspace, row.path, { includeDisabled: true })
+        ?? (retained && currentSources(row.workspace, refsOf(row)) ? { ...retained, sources: refsOf(row), corrections: correctionsOf(row) } : null)
+      if (!current || !authored(current)) continue
+      const refs = remaining(current.sources)
+      if (refs.length) db.prepare('UPDATE memory_documents SET sources=? WHERE id=?').run(encode(refs), row.id)
+    }
+    for (const row of history) {
+      const project = (encoded: string | null) => {
+        const snapshot = encoded ? JSON.parse(encoded) as DocumentSnapshot : null
+        const updated = preserve(snapshot)
+        return updated !== snapshot ? encode(updated) : encoded
+      }
+      const before = project(row.before), after = project(row.after)
+      if (before !== row.before || after !== row.after) db.prepare('UPDATE memory_document_revisions SET before=?,after=? WHERE operation=?')
+        .run(before, after, row.operation)
+    }
+    for (const row of db.prepare("SELECT id,plan FROM memory_file_intents WHERE namespace='documents' AND plan IS NOT NULL").all()) {
+      const plan = JSON.parse(String(row.plan)) as FilePlan<Data>, data = plan.data
+      if (data.kind !== 'revision' || data.manualSource) continue
+      const before = preserve(data.before), after = preserve(data.after)
+      if (before === data.before && after === data.after) continue
+      const sources = after !== data.after ? remaining(data.sources) : data.sources
+      db.prepare('UPDATE memory_file_intents SET plan=? WHERE id=?').run(encode({ ...plan, data: { ...data, before, after, sources } }), row.id)
+    }
+    for (const row of db.prepare('SELECT * FROM memory_document_restores').all() as unknown as Restore[]) {
+      const snapshot = { id: row.document, workspace: row.workspace, path: row.path, revision: row.revision, usageVersion: row.usage,
+        markdown: row.markdown, sources: JSON.parse(row.sources) as DocumentSourceRef[], enabled: true, corrections: [] }
+      const updated = preserve(snapshot)
+      if (updated !== snapshot) db.prepare('UPDATE memory_document_restores SET sources=? WHERE operation=?').run(encode(updated!.sources), row.operation)
+    }
   }
   function locatorProjection(markdown: string, fingerprints: ReadonlySet<string>) {
     return fingerprints.size ? maskMemoryWikiLinks(markdown, path => fingerprints.has(memoryFileRevision(path))) : markdown
@@ -893,7 +962,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
-    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired,
+    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
     read, list, commit, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
   }
 }

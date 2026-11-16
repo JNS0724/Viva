@@ -2,7 +2,7 @@
 import type { MemoryKind, MemoryScope } from '../../contracts/memory-contract.ts'
 import type { MemoryFact } from '../memory-facts.ts'
 import type { MemoryInterval } from '../memory-intervals.ts'
-import type { DocumentSourceRef } from './documents.ts'
+import type { DocumentSourceRef, DocumentSourceCut } from './documents.ts'
 import type { MemorySourceErasure } from '../../contracts/records.ts'
 import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
 export type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
@@ -38,6 +38,8 @@ export interface MemoryStore {
     insertManualFileSource: (source: MemorySource, parents: readonly DocumentSourceRef[]) => void;
     manualFileParents: (source: string) => DocumentSourceRef[];
     manualFileCopies: (parent: string) => Array<{ source: string, reference: DocumentSourceRef }>;
+    manualFileSources: () => MemorySource[];
+    trimManualFileParents: (cuts: readonly DocumentSourceCut[]) => void;
     outcome: (id: string, state: string) => void;
     withdrawSource: (id: string) => void;
     eraseFileSource: (target: DocumentSourceRef, version: number) => MemorySourceErasure | null;

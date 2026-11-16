@@ -10,8 +10,8 @@ import type { MemoryKind, MemoryScope } from '../contracts/memory-contract.ts'
 import { memoryFileDependencySchema } from '../contracts/provenance.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
-import { planDocumentSourceErasure } from '../core/memory-document-restrictions.ts'
-import type { DocumentSourceRef } from '../core/ports/documents.ts'
+import { documentSourceRestricted, planDocumentSourceErasure, subtractDocumentSourceSpans } from '../core/memory-document-restrictions.ts'
+import type { DocumentSourceRef, DocumentSourceCut } from '../core/ports/documents.ts'
 import type { MemorySourceErasure } from '../contracts/records.ts'
 import { memoryRelationLabel } from '../core/memory-facts.ts'
 import type { MemoryFact } from '../core/memory-facts.ts'
@@ -430,6 +430,18 @@ export function openMemoryStore(file: string, now = Date.now) {
     }
     return false
   }
+  const manualFileSources = () => db.prepare("SELECT id FROM memory_sources WHERE author='manual' AND text IS NOT NULL AND withdrawn=0").all()
+    .flatMap(row => readSource(String(row.id)) ?? [])
+  function trimManualFileParents(cuts: readonly DocumentSourceCut[]) {
+    for (const cut of cuts) for (const row of copiesOfManualFile.all(cut.id)) {
+      const ref = JSON.parse(String(row.reference)) as DocumentSourceRef
+      if (!documentSourceRestricted(ref, [cut])) continue
+      const spans = subtractDocumentSourceSpans(cut.length, ref, [cut])
+      if (spans.length) db.prepare('UPDATE memory_manual_file_lineage SET reference=? WHERE source=? AND parent=?')
+        .run(JSON.stringify({ ...ref, spans }), row.source, cut.id)
+      else db.prepare('DELETE FROM memory_manual_file_lineage WHERE source=? AND parent=?').run(row.source, cut.id)
+    }
+  }
   const parentsOfManualFile = db.prepare('SELECT reference FROM memory_manual_file_lineage WHERE source=? ORDER BY parent')
   const copiesOfManualFile = db.prepare('SELECT source,reference FROM memory_manual_file_lineage WHERE parent=? ORDER BY source')
   const manualFileParents = (source: string) => parentsOfManualFile.all(source).map(row => JSON.parse(String(row.reference)) as DocumentSourceRef)
@@ -680,7 +692,7 @@ export function openMemoryStore(file: string, now = Date.now) {
     return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-'))
       : path.join(path.dirname(file), 'memory-files')
   }, db, tx, revision, epoch, nextRevision, get, exists: (id: number) => Boolean(exists.get(id)), list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, profileCandidates, nextProfileBoundary, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
-    readSource, insertSource, insertManualFileSource, manualFileRetainsText, manualFileParents, manualFileCopies, outcome, withdrawSource, eraseFileSource, fileErasures, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
+    readSource, insertSource, insertManualFileSource, manualFileRetainsText, manualFileParents, manualFileCopies, manualFileSources, trimManualFileParents, outcome, withdrawSource, eraseFileSource, fileErasures, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
     insert, setAssertion, project, touch, authorize, remove, forgetEntry, restoreEntry, recordFact, setKeywords, touchChange,
     exclude, excluded, sourceExcluded, excludeSource, sourceIds, answerSourceIds, memoriesFrom, changesFrom, changesReferencing, hasChangeSource,
     deliveredSourceIds, deliveredSource, recordDeliveredSource, dispatch,
