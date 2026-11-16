@@ -14,8 +14,9 @@ export type MemoryContextRecoveryTicket = {
 export type PrepareMemoryContextRecovery = {
   sessionId: string
   baseSurfaceHash: string
+  nativeParentSessionId?: string
   /** Original native message content, used transiently to authenticate its existing owner identity. */
-  candidates: readonly { messageId: string, content: string, contentDigest?: string }[]
+  candidates: readonly { messageId: string, content: string, contentDigest?: string, inherited?: true }[]
 }
 export type BindMemoryContextRecovery = { ticketId: string, replacementMessageId: string, replacementHash: string }
 export type CommitMemoryContextRecovery = BindMemoryContextRecovery & { baseSurfaceHash: string, persisted: true }

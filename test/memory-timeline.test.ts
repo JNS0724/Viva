@@ -397,9 +397,9 @@ test('editing a historical message withdraws only its original source while the 
     db, current: () => selected, agentInfo: () => ({}), isBusy: () => false, replaySource: memory.replaySource,
     canEditSource: () => canEditSource,
     commitEdit: coordinator.commitEdit,
-    rebuild: (_previous, kept, force) => {
+    rebuild: async (_previous, kept, force) => {
       assert.equal(force, true)
-      return { text: note.text, turns: 1, evidence: kept.map(row => ({ ...row, segmentId: first.id })) }
+      return { text: note.text, turns: 1, evidence: kept.map(row => ({ ...row, segmentId: first.id })), revision: db.fileErasureRevision() }
     },
     selectSession: work => work({
       select: row => { selected = row },

@@ -6,11 +6,16 @@ export type { MemoryProvenance } from './records.ts'
 
 const key = z.string().min(1).max(256)
 const integer = z.number().int().nonnegative()
+const ranges = z.strictObject({ sourceId: key, spans: z.array(z.strictObject({ start: integer, end: integer })
+  .refine(span => span.start < span.end)).min(1).optional() })
+export const memoryErasureEvidenceSchema = z.strictObject({
+  sources: z.array(key), fileRanges: z.array(ranges), memoryIds: z.array(integer),
+})
+export type MemoryErasureEvidence = z.output<typeof memoryErasureEvidenceSchema>
 export const memoryFileDependencySchema = z.strictObject({
   workspace: z.string().regex(/^[a-f0-9]{64}$/u), id: key, path: memoryFilePath,
   revision: key, usageVersion: integer, policyToken: key,
-  sourceRanges: z.array(z.strictObject({ sourceId: key, spans: z.array(z.strictObject({ start: integer, end: integer })
-    .refine(span => span.start < span.end)).min(1).optional() })).optional(),
+  sourceRanges: z.array(ranges).optional(),
 })
 export const memoryProvenanceSchema = z.strictObject({
   dependencies: z.array(z.strictObject({ id: integer, revision: integer, asOf: z.string().optional(),
@@ -26,17 +31,24 @@ export function rawMemorySources(evidence: Pick<MemoryProvenance, 'sources' | 'f
   return evidence.sources.filter(id => !bound.has(id))
 }
 
-/** A historical snapshot intersects only the erased sources or verified file ranges it actually used. */
-export function usesErasedMemory(evidence: MemoryProvenance, ranges: readonly { sourceId: string; spans: readonly TextSpan[] }[],
+/** Keep only the identities and source coordinates a future erasure needs. */
+export function memoryErasureEvidence(evidence: MemoryProvenance): MemoryErasureEvidence {
+  return { sources: rawMemorySources(evidence), fileRanges: evidence.files?.flatMap(file => file.sourceRanges ?? []) ?? [],
+    memoryIds: evidence.dependencies.map(ref => ref.id) }
+}
+
+export function intersectsMemoryErasure(evidence: MemoryErasureEvidence, ranges: readonly { sourceId: string; spans: readonly TextSpan[] }[],
   memoryIds: readonly number[] = []): boolean {
-  const raw = rawMemorySources(evidence)
-  if (evidence.dependencies.some(ref => memoryIds.includes(ref.id))) return true
-  const fileSources = evidence.files?.flatMap(file => file.sourceRanges ?? []) ?? []
-  return ranges.some(range => {
-    if (raw.includes(range.sourceId)) return true
-    return fileSources.some(ref => ref.sourceId === range.sourceId
-      && (!ref.spans || ref.spans.some(span => range.spans.some(cut => span.start < cut.end && cut.start < span.end))))
-  })
+  if (evidence.memoryIds.some(id => memoryIds.includes(id))) return true
+  return ranges.some(range => evidence.sources.includes(range.sourceId)
+    || evidence.fileRanges.some(ref => ref.sourceId === range.sourceId
+      && (!ref.spans || ref.spans.some(span => range.spans.some(cut => span.start < cut.end && cut.start < span.end)))))
+}
+
+/** A historical snapshot intersects only the erased sources or verified file ranges it actually used. */
+export function usesErasedMemory(evidence: MemoryProvenance, ranges: Parameters<typeof intersectsMemoryErasure>[1],
+  memoryIds: readonly number[] = []): boolean {
+  return intersectsMemoryErasure(memoryErasureEvidence(evidence), ranges, memoryIds)
 }
 
 /** Combine carried evidence without deciding its validity; authorization remains with the owner. */

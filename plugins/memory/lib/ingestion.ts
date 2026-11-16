@@ -3,7 +3,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PluginMemoryOwner, SourceReceipt, DerivedSource } from './owner-port.ts'
 import type { MemoryContextRecoveryOwner, MemoryContextRecoveryTicket } from '../../../src/memory/contracts/context-recovery.ts'
-import { memoryOriginalContentDigest, memoryRecoveryCandidates, memoryRecoveryMessageHash, memorySessionSurfaceHash, planMemoryContextRecovery } from './context-recovery.ts'
+import { memoryMessageText, memoryOriginalContentDigest, memoryRecoveryCandidates, memoryRecoveryMessageHash, memorySessionSurfaceHash, planMemoryContextRecovery } from './context-recovery.ts'
 import type { MemoryDeliveryProof } from './delivery-provenance.ts'
 
 import { assertMemorySourceSupported } from './source.ts'
@@ -14,7 +14,6 @@ const senderOf = (message: UserMessage): string | undefined => {
   return message.source.senderSessionId
 }
 const timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
-const textOf = (message: { content: readonly { type: string, text?: string }[] }) => message.content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []).join('\n')
 type Replay = {
   session: Session, cursor: number, turn: number, step: number, sources: Set<string>, assistant: string[],
   events: Map<number, readonly string[]>, messages: Map<string, string>, queue: Promise<void>,
@@ -29,7 +28,7 @@ export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
 }
 
 /** DSH's feed announces in-memory commits; flush is the explicit durability boundary. */
-export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived'> & Partial<MemoryContextRecoveryOwner> & { dispatch: Pick<PluginMemoryOwner['dispatch'], 'snapshot'> }, flush: (session: Session) => Promise<unknown>,
+export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived' | 'noteInheritedNativeCut'> & Partial<MemoryContextRecoveryOwner> & { dispatch: Pick<PluginMemoryOwner['dispatch'], 'snapshot'> }, flush: (session: Session) => Promise<unknown>,
   deliveryProof?: (session: Session, message: UserMessage) => Promise<MemoryDeliveryProof | undefined>) {
   const states = new Map<string, Replay>()
   function state(session: Session) {
@@ -48,16 +47,21 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         const proof = await deliveryProof?.(session, message)
         const contentDigest = memoryOriginalContentDigest(message)
         if (proof && proof.contentDigest !== contentDigest) throw new Error('Derived delivery content differs from its causal receipt')
-        await owner.registerDerived({ sessionId: String(session.id), messageId: message.id, sourceIds: [], senderSessionId, inherited: options.inherited,
+        await owner.registerDerived({ sessionId: String(session.id), messageId: message.id, nativeUserSource: message.source.kind, sourceIds: [], senderSessionId, inherited: options.inherited,
           contextGeneration: options.contextGeneration ?? current.generation, senderContextGeneration: 0, ...proof, contentDigest,
           ...(proof ? { verifiedDelivery: true as const } : {}) })
       }
       return undefined
     }
-    const text = textOf(message)
-    if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) return undefined
-    const receipt = await owner.receiveSource({ sessionId: String(session.id), messageId: message.id, text, contentDigest: memoryOriginalContentDigest(message),
-      contextGeneration: current.generation, ...options, timezone: timezone(), inherited: options.inherited ?? false,
+    const text = memoryMessageText(message)
+    const contentDigest = memoryOriginalContentDigest(message)
+    const identity = { sessionId: String(session.id), messageId: message.id, text, contentDigest, inherited: options.inherited ?? false }
+    if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) {
+      owner.noteInheritedNativeCut?.(identity)
+      return undefined
+    }
+    const receipt = await owner.receiveSource({ ...identity,
+      contextGeneration: current.generation, ...options, timezone: timezone(), inherited: identity.inherited,
       derived: session.header.origin === 'subagent' && !options.inherited && !('rpcId' in message.source && typeof message.source.rpcId === 'string') })
     current.messages.set(message.id, receipt.sourceId)
     if (options.admitted && !receipt.handledIntent) current.sources.add(receipt.sourceId)
@@ -148,7 +152,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         if (receipt) current.events.set(event.seq, [receipt.sourceId])
         else {
           const dependencies = [...new Set([...(event.sourceEventSeqs ?? []).flatMap(seq => current.events.get(seq) ?? []), ...owner.dispatch.snapshot(String(session.id)).sources])]
-          await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.id,
+          await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.id, nativeUserSource: event.data.source.kind,
             sourceIds: dependencies, eventSeq: event.seq, inherited, contextGeneration: current.generation, contentDigest: memoryOriginalContentDigest(event.data) })
           current.events.set(event.seq, dependencies)
         }
@@ -158,7 +162,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.message.id,
           sourceIds: dependencies, eventSeq: event.seq, inherited, contextGeneration: current.generation, contentDigest: memoryOriginalContentDigest(event.data.message) })
         current.events.set(event.seq, dependencies)
-        if (!event.data.interrupted) current.assistant.push(textOf(event.data.message))
+        if (!event.data.interrupted) current.assistant.push(memoryMessageText(event.data.message))
       }
       if (event.type === 'turn/end' && !inherited) {
         await owner.completeTurn({ sessionId: String(session.id), turn: event.data.turn, eventSeq: event.seq,
@@ -188,8 +192,11 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         if (await flush(session) !== true) throw new Error('Session has no durable persistence acknowledgment')
         // Reauthorize on every attempt. A replacement already landed before a failed owner CAS
         // can safely become the base of a new ticket; it must never authorize old source versions.
+        owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
+          ...(session.header.origin === 'subagent' ? { parentSessionId: session.header.parentSession } : {}) })
         let ticket = await owner.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
-          candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })
+          ...(session.header.parentSession ? { nativeParentSessionId: String(session.header.parentSession) } : {}),
+          candidates: memoryRecoveryCandidates(session).map(({ text, ...item }) => ({ ...item, content: text })) })
         let marker = recoveryEvent(session.snapshotEvents(), ticket)
         if (!marker) {
           if (memorySessionSurfaceHash(session) !== ticket.baseSurfaceHash) throw new Error('Session surface changed during context recovery')

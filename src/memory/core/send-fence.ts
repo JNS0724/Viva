@@ -39,7 +39,7 @@ export function createMemorySendFence({ epoch, admit, now = Date.now }: {
     const attempt = { controller, done, finish: () => { if (attempts.get(id) === attempt) { clearTimeout(expiry); attempts.delete(id); resolve() } } }
     attempts.set(id, attempt)
     return { id, payload, signal: controller.signal,
-      current: () => !closed && !paused && !controller.signal.aborted && admission.current()
+      current: () => attempts.get(id) === attempt && !closed && !paused && !controller.signal.aborted && admission.current()
         && (admission.deadline === null || now() < admission.deadline),
       settled: attempt.finish,
     }

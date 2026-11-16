@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { createHash } from 'node:crypto'
 import type { Step } from './steps.ts'
 
 /**
@@ -28,6 +29,11 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `
 
+export function traceStepDigest(step: Step) {
+  const payload = step.kind === 'thought' ? [step.text] : [step.callId, step.name, step.args]
+  return createHash('sha256').update(JSON.stringify([step.kind, step.seq, step.at, payload])).digest('hex')
+}
+
 /** A row of `steps`, as SCHEMA declares it. */
 interface StepRow {
   session_id: string, seq: number, at: number, kind: string, call_id: string | null, name: string | null,
@@ -41,7 +47,12 @@ const toStep = (row: StepRow): Step => (row.kind === 'thought'
 export function openTraceDb({ file }: { file: string }) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const db = new DatabaseSync(file)
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 3000;')
+  try { return bindTraceDb(db) }
+  catch (error) { db.close(); throw error }
+}
+
+function bindTraceDb(db: DatabaseSync) {
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 3000;')
   db.exec(SCHEMA)
   const sql = {
     upsert: db.prepare(`INSERT INTO steps (session_id, seq, at, kind, call_id, name, args, text, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -50,15 +61,14 @@ export function openTraceDb({ file }: { file: string }) {
     hasSession: db.prepare('SELECT 1 AS found FROM steps WHERE session_id = ? LIMIT 1'),
     newest: db.prepare('SELECT MAX(rowid) AS id FROM steps'),
     prune: db.prepare('DELETE FROM steps WHERE rowid <= ? - ?'),
+    atPosition: db.prepare('SELECT * FROM steps WHERE session_id=? AND seq=?'),
+    remove: db.prepare('DELETE FROM steps WHERE session_id=? AND seq=?'),
     meta: db.prepare('SELECT value FROM meta WHERE key = ?'),
     setMeta: db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value'),
   }
 
   const found = Number(sql.meta.get('contract_version')?.value ?? 0)
-  if (found > CONTRACT_VERSION) {
-    db.close()
-    throw new Error(`trace.db 由更新的版本（约定 ${found}）写入，当前只支持到 ${CONTRACT_VERSION}`)
-  }
+  if (found > CONTRACT_VERSION) throw new Error(`trace.db 由更新的版本（约定 ${found}）写入，当前只支持到 ${CONTRACT_VERSION}`)
   if (found < CONTRACT_VERSION) sql.setMeta.run('contract_version', String(CONTRACT_VERSION))
 
   /** Records a turn's steps; a step seen again (a tool that finished) only updates its status. */
@@ -78,8 +88,39 @@ export function openTraceDb({ file }: { file: string }) {
     }
   }
 
+  function checkpointErasure() {
+    db.exec('PRAGMA busy_timeout=0')
+    try {
+      const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
+      return checkpoint?.busy === 0 && checkpoint.log === checkpoint.checkpointed
+    } finally { db.exec('PRAGMA busy_timeout=3000') }
+  }
+
+  /** The cold host calls this with positions proven by native session receipts. */
+  function eraseSteps(sessionId: string, positions: readonly { seq: number, digest: string }[]) {
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const { seq, digest } of positions) {
+        const row = sql.atPosition.get(sessionId, seq) as unknown as StepRow | undefined
+        if (row && traceStepDigest(toStep(row)) === digest) sql.remove.run(sessionId, seq)
+      }
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    if (!checkpointErasure()) return false
+    // Existing trace files could have freed pages from pruning before secure_delete was enabled.
+    if (!sql.meta.get('secure-erasure')) {
+      db.exec('VACUUM')
+      sql.setMeta.run('secure-erasure', '1')
+      return checkpointErasure()
+    }
+    return true
+  }
+
   return {
-    recordSteps,
+    recordSteps, eraseSteps,
     /** The session's steps up to `until` (ms), in order. */
     stepsOf: (sessionId: string, until = Number.MAX_SAFE_INTEGER): Step[] => (sql.ofSession.all(String(sessionId), until) as unknown as StepRow[]).map(toStep),
     /** Whether the plugin recorded this session; older sessions are only in dsh's own log. */

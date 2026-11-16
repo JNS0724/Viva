@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
+import { createNativeOutputJournal } from '../src/memory/node/native-output-journal.ts'
 
 function fixture(t: import('node:test').TestContext, hostNamespace?: string) {
   const root = mkdtempSync(join(tmpdir(), 'memory-owner-'))
@@ -17,6 +19,64 @@ const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>
   sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1,
   admitted: true, inherited: false, ...overrides,
 })
+test('native output evidence retains exact file ranges across sends without persisting file names', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    const outputs = createNativeOutputAttempts(db)
+    const attempt = { id: randomUUID(), session: 'session', generation: 0, turn: 1, step: 2, floor: 12 }
+    const first = source().messageId, second = source().messageId
+    const fileProof = (sourceId: string, start: number, end: number) => ({
+      dependencies: [], sources: [sourceId], fileSources: [sourceId], epoch: 0, turnOnly: false,
+      files: [{ workspace: '0'.repeat(64), id: 'file', path: 'digest/wiki/sensitive-file-name.md', revision: 'rev',
+        usageVersion: 0, policyToken: 'policy', sourceRanges: [{ sourceId, spans: [{ start, end }] }] }],
+    })
+    outputs.record(attempt, fileProof(first, 2, 8))
+    outputs.record(attempt, fileProof(second, 9, 20))
+    outputs.record(attempt, fileProof(first, 2, 8))
+    const readsets = db.prepare('SELECT evidence FROM owner_native_output_reads').all()
+    assert.equal(readsets.length, 2)
+    assert.doesNotMatch(JSON.stringify(readsets), /sensitive-file-name|policy/)
+    assert.deepEqual(outputs.affected([{ sourceId: first, spans: [{ start: 8, end: 9 }] }], []), [])
+    const overlapping = [{ sourceId: second, spans: [{ start: 12, end: 13 }] }]
+    assert.deepEqual(outputs.affected(overlapping, []), [{ ...attempt, result: { state: 'open' } }])
+    const terminal = { seq: 14, kind: 'attempt', digest: 'a'.repeat(64) } as const
+    // A settlement may arrive after an erasure was planned from the open receipt.
+    outputs.finish(attempt, terminal)
+    outputs.finish(attempt, terminal)
+    assert.deepEqual(outputs.affected(overlapping, []), [{ ...attempt, result: { state: 'settled', terminal } }])
+    assert.throws(() => outputs.finish(attempt, { ...terminal, seq: 15 }), /settlement conflicts/)
+    const abandonedBeforeSend = { ...attempt, id: randomUUID() }
+    outputs.finish(abandonedBeforeSend)
+    assert.throws(() => outputs.record(abandonedBeforeSend, fileProof(second, 9, 20)), /attempt identity conflicts/)
+    assert.equal(outputs.affected(overlapping, []).length, 1)
+  } finally { db.close() }
+})
+test('settled native output publication leaves an immutable receipt when another target arrives', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    const invalidated: string[] = []
+    const journal = createNativeOutputJournal(db, session => invalidated.push(session))
+    const operation = journal.forOperation(randomUUID())
+    const session = randomUUID(), digest = (char: string) => char.repeat(64)
+    const first = { attempt: randomUUID(), seq: 32, before: digest('1'), after: digest('2'), trace: digest('3') }
+    const next = { attempt: randomUUID(), seq: 28, before: digest('4'), after: digest('5') }
+    const original = { before: digest('a'), after: digest('b'), events: digest('1') }
+    const followup = { before: digest('b'), after: digest('c'), events: digest('2') }
+    operation.prepare(session, { intent: original, replacements: [first] })
+    assert.throws(() => operation.prepare(session, { intent: followup, replacements: [first, next] }), /UNIQUE/u)
+    operation.finish(session, original)
+    operation.prepare(session, { intent: followup, replacements: [next] })
+    assert.deepEqual(operation.pendingSessions(), [session])
+    assert.deepEqual(operation.read(session).map(item => item.replacements), [[next], [first]])
+    assert.deepEqual(operation.provenProjection(first), first)
+    assert.equal(operation.provenProjection(next), undefined)
+    operation.finish(session, followup)
+    operation.complete([first.attempt, next.attempt])
+    assert.equal(journal.erased(next.attempt), true)
+    assert.deepEqual(invalidated, [session, session])
+  } finally { db.close() }
+})
+
 test('owner refuses a second process-local connection and can reopen after close', async t => {
   const { owner, root } = fixture(t)
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)
@@ -55,13 +115,34 @@ test('source alias matches only exact trusted wire text and does not strip user 
   assert.equal((await owner.receiveSource(next)).text, '真实原文')
   await assert.rejects(owner.receiveSource({ ...next, text: 'changed' }), /identity conflicts/)
 })
+test('native source proof keeps trusted wire locations after its delivery payload is consumed', async t => {
+  const { owner, root } = fixture(t); await owner.recover()
+  const input = source({ contentDigest: 'f'.repeat(64) }), sourceId = randomUUID()
+  const wireText = `${input.text}\n\n${input.text}`
+  await owner.handleHost('sourceAlias', { operationId: sourceId, sourceId, text: input.text, session: input.sessionId, conversation: 'host-thread' })
+  await assert.rejects(owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId] }), /unique verbatim/)
+  const spans = [{ start: input.text.length + 2, end: wireText.length }]
+  const delivery = await owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId, spans] }) as { wireText: string }
+  assert.equal((await owner.receiveSource({ ...input, text: delivery.wireText })).sourceId, sourceId)
+  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true }); t.after(() => db.close())
+  const proof = db.prepare('SELECT source_hash,spans FROM owner_message_wires WHERE message=?').get(input.messageId)
+  assert.ok(proof?.source_hash)
+  assert.deepEqual(JSON.parse(String(proof.spans)), spans)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM owner_aliases WHERE payload IS NOT NULL').get()?.n, 0)
+  const generated = await owner.handleHost('bindWireAlias', { args: [input.sessionId, 'id=', 'id='] }) as { wireText: string }
+  const message = source({ ...input, messageId: randomUUID(), text: generated.wireText })
+  assert.equal((await owner.receiveSource(message)).retrievalQuery, 'id=')
+  assert.equal((await owner.receiveSource(message)).retrievalQuery, 'id=')
+  assert.equal(db.prepare('SELECT source_hash FROM owner_message_wires WHERE message=?').get(message.messageId)?.source_hash, null)
+})
+
 test('prepared source change survives restart, denies send until host commit, and preserves live fork occurrence', async t => {
   const { owner, root } = fixture(t); await owner.recover()
   const input = source(), receipt = await owner.receiveSource(input)
   const fork = source({ ...input, sessionId: randomUUID(), inherited: true })
   await owner.receiveSource(fork)
   const operationId = randomUUID()
-  const prepared = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [receipt.sourceId] }) as { ticket: string }
+  const prepared = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [] }) as { ticket: string }
   assert.throws(() => owner.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'))
   await owner.close()
   const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
@@ -69,6 +150,8 @@ test('prepared source change survives restart, denies send until host commit, an
   await next.handleHost('commitSourceChange', { operationId, ticket: prepared.ticket })
   assert.equal(next.ready(), true)
   assert.equal(next.runtime.sourceCurrent(receipt.sourceId), true)
+  assert.equal(next.needsContextRecovery(input.sessionId), true)
+  assert.equal(next.needsContextRecovery(fork.sessionId), false)
   const permit = next.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'); permit.settled()
 })
 test('failed revision validation is terminal and cannot poison owner recovery', async t => {
@@ -141,7 +224,7 @@ test('withdrawal tombstones an alias not yet delivered, including after process 
   const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: 'host-thread', text: input.text }
   await owner.handleHost('sourceAlias', alias)
   const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: 'host-thread', ids: [id] }) as { ticket: string }
+  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: 'host-thread', ids: [] }) as { ticket: string }
   await owner.handleHost('commitSourceChange', { operationId, ticket })
   await assert.rejects(owner.receiveSource(input), /withdrawn/)
   await assert.rejects(owner.handleHost('sourceAlias', alias), /withdrawn/)

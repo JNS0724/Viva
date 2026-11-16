@@ -3,7 +3,8 @@ import { t } from '../../shared/i18n/translate.ts'
 import { PROFILE_FIELDS } from '../../shared/profile-fields.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { icon } from './icons.ts'
-import { memoryFilesSection } from './memory-files-panel.ts'
+import type { MemoryFileProfileItem } from '../../memory/contracts/file-management.ts'
+import { deferMemoryFileEditorRender, memoryFilesSection } from './memory-files-panel.ts'
 
 /** The 关于你 page's part of the state (personal-state.ts). */
 type MemoryPage = State['memory']
@@ -57,6 +58,19 @@ const habitsRow = (habits: { text?: string, samples?: number }) => (habits.text
   ? h('p', { class: 'help', text: t("profile-panel.usage.habits.based.on.your.last.questions", { samples: habits.samples ?? 0, text: habits.text }) })
   : null)
 
+function fileSummarySection(scope: 'user' | 'project', items: readonly MemoryFileProfileItem[] | null, handlers: Handlers) {
+  if (!items?.length) return null
+  return h('section', { class: 'profile-section', 'aria-labelledby': `profile-summary-${scope}`, 'data-profile-summary': scope },
+    h('h3', { class: 'profile-heading', id: `profile-summary-${scope}`, text: t(`profile-panel.summary.${scope}`) }),
+    h('ul', { class: 'memory-list' }, items.map(({ identity, text }, index) => {
+      const id = `profile-memory-${scope}-${index}`
+      return h('li', { class: 'memory-item' },
+        h('div', { class: 'memory-copy' }, h('span', { class: 'memory-text', id, text })),
+        h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
+          'aria-describedby': id, text: t('memory-files.profile.sources'), onClick: () => handlers.showMemoryFile({ identity }) })))
+    })))
+}
+
 function memoryLoadError(memory: MemoryPage, handlers: Handlers) {
   return memory.loadError ? h('div', { class: 'profile-section' },
     h('p', { class: 'form-error', role: 'alert', text: memory.loadError }),
@@ -65,6 +79,7 @@ function memoryLoadError(memory: MemoryPage, handlers: Handlers) {
 }
 
 function profileView(memory: MemoryPage, handlers: Handlers): View[] {
+  const fileProfile = !memory.loadError && !memory.files.selection && !memory.files.editor ? memory.fileProfile : null
   return [
     h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.about.you") }),
     h('p', { class: 'help', text: t('memory-files.intro') }),
@@ -73,7 +88,10 @@ function profileView(memory: MemoryPage, handlers: Handlers): View[] {
       h('h3', { class: 'profile-heading', text: t("profile-panel.your.profile") }),
       h('div', { class: 'profile-grid' }, PROFILE_FIELDS.map((field) => fieldCard(field, memory, handlers))),
       habitsRow(memory.habits)),
-    memory.loadError ? memoryLoadError(memory, handlers)
+    fileProfile ? fileSummarySection('user', fileProfile.user, handlers) : null,
+    fileProfile ? fileSummarySection('project', fileProfile.project, handlers) : null,
+    memoryLoadError(memory, handlers),
+    memory.files.editor ? memoryFilesSection(memory, handlers) : memory.loadError ? null
       : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
       : memoryFilesSection(memory, handlers),
   ]
@@ -129,6 +147,8 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
     container.replaceChildren()
     return
   }
+  const editor = memory.view === 'profile' ? memory.files.editor : null
+  if (editor && deferMemoryFileEditorRender(container, editor, () => renderProfilePanel(container, memory, handlers))) return
   const shownView = container.querySelector<HTMLElement>('.profile')?.dataset.view ?? null
   const shownFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
   keepingInput(container, () => container.replaceChildren(
@@ -137,7 +157,13 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
   if (shownView !== 'intro' && memory.view === 'intro') container.querySelector<HTMLElement>('[name="intro-role"]')?.focus()
   const nextFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
   if (shownFiles && nextFiles && shownFiles !== nextFiles) {
-    container.querySelector<HTMLElement>(nextFiles === 'detail' ? '[name="memory-file-back"]' : '[name="memory-files-search"]')?.focus()
+    const target = nextFiles === 'create' || nextFiles === 'edit' ? '[name="memory-file-draft-title"]'
+      : nextFiles === 'list' ? shownFiles === 'create' ? '[name="memory-file-create"]' : '[name="memory-files-search"]'
+        : '[name="memory-file-back"]'
+    const edit = nextFiles === 'detail' && shownFiles === 'edit'
+      ? container.querySelector<HTMLElement>('[name="memory-file-edit"]:enabled') : null
+    const focus = edit ?? container.querySelector<HTMLElement>(target)
+    focus?.focus()
   }
   container.querySelector<HTMLElement>('.profile-input')?.focus()
 }

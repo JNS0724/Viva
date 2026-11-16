@@ -193,9 +193,11 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (result === undefined) return 'wait'
     const reply = noteReply.parse(result)
     if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return 'retry'
-    if (reply.status === 'write' && (project(reply.markdown) !== reply.markdown || sources.some(source => !allowsText(`${reply.title}\n${reply.markdown}\n${reply.filename ?? ''}`, source)))) return 'retry'
+    const output = reply.status === 'write' ? [reply.title, reply.markdown, reply.filename ?? ''] : []
+    if (output.some(text => project(text) !== text) || output.length && sources.some(source => !allowsText(output.join('\n'), source))) return 'retry'
     if (!await mutate(() => {
       if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return false
+      if (output.some(text => project(text) !== text)) return false
       return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })
     })) {
       // Rebuilds can replay already checkpointed turns, including on an empty

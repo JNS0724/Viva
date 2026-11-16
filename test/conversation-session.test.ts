@@ -1,5 +1,6 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash, randomUUID } from 'node:crypto'
 import { createConversationSession, type ConversationInfo, type StartedConversation } from '../src/backend/conversation-session.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { ResumeError } from '../src/backend/resume-failure.ts'
@@ -37,6 +38,7 @@ function harness(t: TestContext, overrides: Partial<Runtime> = {}, saved = false
   const sessions = createConversationSession({
     history: () => db, agent: () => live, info: () => view, setInfo: value => { view = value },
     isBusy: () => busy, folderExists: dir => dir !== '/gone', selectedModel: () => selectedModel, changed: () => { changed++; onChanged() },
+    carryRevision: db.fileErasureRevision,
   })
   sessions.open('/work')
   if (!saved) sessions.select(seed)
@@ -267,6 +269,19 @@ test('records are carried once, for the selected conversation only', t => {
   assert.equal(h.sessions.takeCarried(), 'saved context'); assert.equal(h.sessions.takeCarried(), null)
   h.sessions.carryNext(previous.id, 'stale context'); h.live(null); h.sessions.reset()
   assert.equal(h.sessions.takeCarried(), null)
+})
+
+test('an erasure retires stored process carry and a fresh carry remains usable', t => {
+  const h = harness(t)
+  const sourceId = randomUUID(), text = 'private'
+  const digest = createHash('sha256').update(text).digest('hex')
+  const afterHash = createHash('sha256').update(' '.repeat(text.length)).digest('hex')
+  h.sessions.carryNext(h.sessions.current().id, text)
+  h.db.eraseFileRanges([{ sourceId, revision: 1, length: text.length, hash: digest, afterHash, spans: [{ start: 0, end: text.length }] }])
+  h.sessions.discardStaleCarry()
+  assert.equal(h.sessions.takeCarried(), null)
+  h.sessions.carryNext(h.sessions.current().id, 'new independent context')
+  assert.equal(h.sessions.takeCarried(), 'new independent context')
 })
 
 test('saving the selected conversation keeps its directory and one-time records', t => {

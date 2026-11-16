@@ -2,7 +2,7 @@
 import type { MemoryKind, MemoryScope } from '../../contracts/memory-contract.ts'
 import type { MemoryFact } from '../memory-facts.ts'
 import type { MemoryInterval } from '../memory-intervals.ts'
-import type { DocumentSourceRef } from './documents.ts'
+import type { DocumentSourceRef, DocumentSourceCut } from './documents.ts'
 import type { MemorySourceErasure } from '../../contracts/records.ts'
 import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
 export type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource, StoredFact, MemoryCandidate, MemoryEvidence, MemoryChangeKind, MemoryChangeStatus, MemoryChange, MemoryEntry } from '../../contracts/records.ts'
@@ -34,6 +34,12 @@ export interface MemoryStore {
     reviseDispute: (id: number, interval: MemoryInterval, revision: number) => void;
     readSource: (id: string) => MemorySource | null;
     insertSource: (source: MemorySource) => void;
+    /** Body-free ties from a manually edited draft to the exact proof it reused. */
+    insertManualFileSource: (source: MemorySource, parents: readonly DocumentSourceRef[]) => void;
+    manualFileParents: (source: string) => DocumentSourceRef[];
+    manualFileCopies: (parent: string) => Array<{ source: string, reference: DocumentSourceRef }>;
+    manualFileSources: () => MemorySource[];
+    trimManualFileParents: (cuts: readonly DocumentSourceCut[]) => void;
     outcome: (id: string, state: string) => void;
     withdrawSource: (id: string) => void;
     eraseFileSource: (target: DocumentSourceRef, version: number) => MemorySourceErasure | null;
@@ -79,6 +85,8 @@ export interface MemoryStore {
         files(session: string, files: readonly MemoryFileDependency[], sources?: readonly string[]): void;
         source: (session: string, source: string) => void;
         turnOnly: (session: string) => void;
+        offerFileClarification: (session: string, work: string) => void;
+        settleFileClarification: (session: string, work: string) => void;
         snapshot(session: string): MemoryProvenance;
     };
     priorSources: (source: MemorySource) => Array<{

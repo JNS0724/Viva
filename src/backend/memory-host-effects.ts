@@ -7,16 +7,30 @@ import { transaction, truncateMemoryJournal } from './app-db.ts'
 import { usesErasedMemory, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { eraseScheduledMemoryCopies } from './memory-scheduled-copies.ts'
 import { eraseMemoryReportCopies } from './memory-report-copies.ts'
+import type { GeneratedHistoryScope } from './history-generated-copies.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
+
+export function affectedTraceSessions(effect: MemoryHostEffect) {
+  if (effect.kind === 'erase-file-copies') return [...new Set([...effect.sessions ?? [], ...effect.traceSessions ?? []])]
+  return effect.kind === 'erase-copies' ? effect.sessions ?? [] : []
+}
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, reportsRemoved = () => {} }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, invalidateFileHistory = () => {}, fileCopiesDurable = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
-  eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): void,
+  eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): readonly GeneratedHistoryScope[] | void,
+  eraseTaskBodies?(effect: string, matches: (proof: MemoryProvenance) => boolean, erased: readonly GeneratedHistoryScope[]): readonly string[],
+  invalidateTaskBodies?(sessions: readonly string[]): void | Promise<void>,
+  generatedCopiesRemoved?(copies: readonly GeneratedHistoryScope[]): void,
+  invalidateFileHistory?(): void,
+  /** A local host receipt only. Native publishers and other replica owners acknowledge separately. */
+  fileCopiesDurable?(effect: Extract<MemoryHostEffect, { kind: 'erase-file-copies' }>): void | Promise<void>,
   invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
+  eraseRoutedMemory?(matches: (memory: MemoryProvenance) => boolean): void,
   reportsRemoved?(reportIds: readonly string[]): void,
+  traceInvalidated?(sessions: readonly string[]): void,
   invalidate(effect: MemoryHostEffect): void | Promise<void>,
 }) {
   db.exec('CREATE TABLE IF NOT EXISTS memory_host_receipts (effect TEXT PRIMARY KEY,cause TEXT NOT NULL,revision INTEGER NOT NULL,fingerprint TEXT NOT NULL)')
@@ -52,6 +66,9 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   let running: Promise<void> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   let closed = false
+  const notifiedTraces = new Set<string>()
+  const notifiedGeneratedCopies = new Set<string>()
+  const discardedTaskCopies = new Map<string, Set<string>>()
   async function recover() {
     if (closed) return
     if (running) return running
@@ -59,25 +76,45 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
     running = (async () => {
       const effects = await call('pendingHostEffects', {})
       let rangeError: { cause: unknown } | undefined
-      let checkpointRanges = false
+      const checkpointRanges: Extract<MemoryHostEffect, { kind: 'erase-file-copies' }>[] = []
       const blockedRanges = new Set<string>()
       for (const effect of effects) {
+        const trace = affectedTraceSessions(effect)
+        if (trace.length && !notifiedTraces.has(effect.effectId)) {
+          traceInvalidated(trace)
+          notifiedTraces.add(effect.effectId)
+        }
         if (effect.kind === 'erase-file-copies') {
           try {
             if (effect.ranges.some(cut => blockedRanges.has(cut.sourceId))) continue
             const matches = (memory: MemoryProvenance) => usesErasedMemory(memory, effect.ranges, effect.memoryIds)
-            const { scheduled, reports } = transaction(db, () => {
-              eraseFileHistory(effect.ranges, effect.memoryIds)
-              return { scheduled: eraseScheduledMemoryCopies(db, matches), reports: eraseMemoryReportCopies(db, matches) }
+            const { scheduled, reports, outputs, tasks } = transaction(db, () => {
+              const outputs = eraseFileHistory(effect.ranges, effect.memoryIds) ?? []
+              const tasks = eraseTaskBodies(effect.effectId, matches, outputs)
+              eraseRoutedMemory(matches)
+              return { scheduled: eraseScheduledMemoryCopies(db, matches), reports: eraseMemoryReportCopies(db, matches), outputs, tasks }
             })
+            invalidateFileHistory()
             invalidateScheduled(matches, scheduled)
             if (reports.length) reportsRemoved(reports)
-            checkpointRanges = true
+            const fresh = outputs.filter(copy => !notifiedGeneratedCopies.has(copy.key))
+            if (fresh.length) {
+              generatedCopiesRemoved(fresh)
+              for (const copy of fresh) notifiedGeneratedCopies.add(copy.key)
+            }
+            const discarded = discardedTaskCopies.get(effect.effectId) ?? new Set<string>()
+            const pendingTasks = tasks.filter(task => !discarded.has(task))
+            if (pendingTasks.length) {
+              await invalidateTaskBodies(pendingTasks)
+              for (const task of pendingTasks) discarded.add(task)
+              discardedTaskCopies.set(effect.effectId, discarded)
+            }
+            checkpointRanges.push(effect)
           } catch (error) {
             rangeError ??= { cause: error }
             for (const cut of effect.ranges) blockedRanges.add(cut.sourceId)
           }
-          // Keep the effect pending for the remaining task transcript, generated message and trace copies.
+          // The complete effect also covers native transcripts, later trace groups and host maintenance receipts.
           continue
         }
         const fingerprint = createHash('sha256').update(JSON.stringify(effect)).digest('hex')
@@ -101,7 +138,8 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
         }
         await call('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
       }
-      if (checkpointRanges && !truncateMemoryJournal(db)) throw new Error('Memory host replica cleanup is pending a durable checkpoint')
+      if (checkpointRanges.length && !truncateMemoryJournal(db)) throw new Error('Memory host replica cleanup is pending a durable checkpoint')
+      for (const effect of checkpointRanges) await fileCopiesDurable(effect)
       if (rangeError) throw rangeError.cause
     })()
     try { await running } catch (error) {

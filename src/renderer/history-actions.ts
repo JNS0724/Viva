@@ -15,6 +15,8 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
   openInReview: (hit: SearchHit) => Promise<void>,
 }) {
   let toastKey = 0
+  let traceRequest = 0
+  let searchRequest = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `action` ({ label, kind, payload }) adds a button; the app decides what each kind does. */
@@ -42,18 +44,29 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
 
   /** Searching finds messages anywhere in the one timeline (history-db.js searchMessages). */
   async function runSearch(query: string) {
+    const request = ++searchRequest
     try {
-      dispatch({ type: 'history_results', query, results: await api.searchTimeline(query.trim()) })
+      const results = await api.searchTimeline(query.trim())
+      if (request === searchRequest) dispatch({ type: 'history_results', query, results })
     } catch (err) {
-      report(t("history-actions.search.failed"))(err)
+      if (request === searchRequest) report(t("history-actions.search.failed"))(err)
     }
+  }
+
+  function refreshIfOpen() {
+    const { open, query } = getState().history
+    if (open && query.trim()) return runSearch(query)
   }
 
   /** Reads the restored messages' trace from dsh's logs, in the background. */
   async function loadTrace(conversationId: string) {
+    const request = ++traceRequest
+    const until = getState().restored?.savedAt ?? Date.now()
     try {
-      dispatch({ type: 'trace_restored', conversationId, ...await api.loadTrace(conversationId, Date.now()) })
+      const result = await api.loadTrace(conversationId, until)
+      if (request === traceRequest) dispatch({ type: 'trace_restored', conversationId, ...result })
     } catch (err) {
+      if (request !== traceRequest) return
       console.error('[history] could not read the trace from dsh logs:', errorMessage(err))
       dispatch({ type: 'trace_restored', conversationId, available: false, trace: null })
     }
@@ -67,10 +80,25 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
   return {
     showToast,
     loadTrace,
+    retryTrace() {
+      const { conversationId, restoredTrace } = getState()
+      if (conversationId && (restoredTrace === 'loading' || restoredTrace === 'unavailable')) return loadTrace(conversationId)
+    },
+    invalidateTrace(sessions: readonly string[]) {
+      if (!sessions.length) return
+      const { conversationId, restoredTrace, info } = getState()
+      const currentSession = Boolean(info.sessionId && sessions.includes(info.sessionId))
+      traceRequest++
+      dispatch({ type: 'trace_invalidated', currentSession })
+      if (conversationId && restoredTrace) return loadTrace(conversationId)
+    },
     /** After a save: an open search sees what was just said. */
-    refreshIfOpen() {
-      const { open, query } = getState().history
-      if (open && query.trim()) runSearch(query)
+    refreshIfOpen,
+    invalidateSearch() {
+      searchRequest++
+      clearTimeout(searchTimer)
+      dispatch({ type: 'history_results_invalidated' })
+      return refreshIfOpen()
     },
 
     toggleHistory() {
@@ -98,6 +126,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     },
 
     searchHistory(query: string) {
+      searchRequest++
       dispatch({ type: 'history_query', query })
       clearTimeout(searchTimer)
       if (query.trim()) searchTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS)

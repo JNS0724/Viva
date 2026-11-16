@@ -12,7 +12,7 @@ interface Turn<Reference, Pending> {
   pending: Map<string, Pending>
   observed: Map<string, Reference>
   incompleteDates: Set<string>
-  ticket?: { id: string, reference: Reference, shown: boolean }
+  ticket?: { id: string, reference: Reference, shown: boolean, cancelled?: boolean }
 }
 
 /** Keeps recall references and question authorization tied to a single host operation. */
@@ -27,7 +27,7 @@ export function createMemoryClarifications<Reference, Pending extends Reference>
     return turn
   }
 
-  function issue(session: string, id: string, ref: string, check: (questionId: string, reference: Reference) => Question | null) {
+  function issue<Visible extends Question>(session: string, id: string, ref: string, check: (questionId: string, reference: Reference) => Visible | null) {
     const turn = turns.get(session)
     if (turn?.id !== id) return { status: 'rejected', reason: 'unknown-dispute' } as const
     if (turn.ticket) return { status: 'rejected', reason: 'already-asked' } as const
@@ -39,11 +39,11 @@ export function createMemoryClarifications<Reference, Pending extends Reference>
     return { status: 'ready', question } as const
   }
 
-  function question(session: string, id: string, questionId: string, phase: 'show' | 'check',
-    check: (questionId: string, reference: Reference) => Question | null) {
+  function question<Visible extends Question>(session: string, id: string, questionId: string, phase: 'show' | 'check',
+    check: (questionId: string, reference: Reference) => Visible | null) {
     const turn = turns.get(session)
     const ticket = turn?.id === id ? turn.ticket : undefined
-    if (!ticket || ticket.id !== questionId || (phase === 'show') === ticket.shown) return null
+    if (!ticket || ticket.cancelled || ticket.id !== questionId || (phase === 'show') === ticket.shown) return null
     const result = check(questionId, ticket.reference)
     if (result && phase === 'show') ticket.shown = true
     return result
@@ -51,6 +51,17 @@ export function createMemoryClarifications<Reference, Pending extends Reference>
 
   return {
     track, issue, question,
+    ticketReference(session: string, id: string, questionId: string, requireShown: boolean): Reference | undefined {
+      const turn = turns.get(session)
+      const ticket = turn?.id === id ? turn.ticket : undefined
+      return ticket?.id === questionId && !ticket.cancelled && (!requireShown || ticket.shown) ? ticket.reference : undefined
+    },
+    cancel(session: string, questionId: string): boolean {
+      const ticket = turns.get(session)?.ticket
+      if (!ticket || ticket.id !== questionId) return false
+      ticket.cancelled = true
+      return true
+    },
     observed(session: string, turn?: string): Iterable<Reference> {
       const active = turns.get(session)
       return turn && active?.id === turn ? active.observed.values() : []

@@ -10,8 +10,8 @@ import type { MemoryKind, MemoryScope } from '../contracts/memory-contract.ts'
 import { memoryFileDependencySchema } from '../contracts/provenance.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
-import { planDocumentSourceErasure } from '../core/memory-document-restrictions.ts'
-import type { DocumentSourceRef } from '../core/ports/documents.ts'
+import { documentSourceRestricted, planDocumentSourceErasure, subtractDocumentSourceSpans } from '../core/memory-document-restrictions.ts'
+import type { DocumentSourceRef, DocumentSourceCut } from '../core/ports/documents.ts'
 import type { MemorySourceErasure } from '../contracts/records.ts'
 import { memoryRelationLabel } from '../core/memory-facts.ts'
 import type { MemoryFact } from '../core/memory-facts.ts'
@@ -105,6 +105,9 @@ const DERIVED_DISPATCH_SCHEMA = `
     session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, expires INTEGER NOT NULL,
     PRIMARY KEY(session, fact, revision)
   );
+  CREATE TABLE IF NOT EXISTS memory_session_file_clarifications (
+    session TEXT NOT NULL, work TEXT NOT NULL, PRIMARY KEY(session,work)
+  );
   CREATE TABLE IF NOT EXISTS memory_session_projects (session TEXT PRIMARY KEY, project TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS memory_session_profile_dependencies (
     session TEXT NOT NULL, fact INTEGER NOT NULL, revision INTEGER NOT NULL, collection_revision INTEGER NOT NULL, expires INTEGER,
@@ -169,7 +172,10 @@ export function openMemoryStore(file: string, now = Date.now) {
     db.exec(DERIVED_DISPATCH_SCHEMA)
     db.exec(`CREATE TABLE IF NOT EXISTS memory_source_range_erasures (
       source TEXT PRIMARY KEY REFERENCES memory_sources(id), workspace TEXT NOT NULL, token TEXT NOT NULL, spans TEXT NOT NULL
-    ); CREATE INDEX IF NOT EXISTS memory_source_range_erasures_workspace ON memory_source_range_erasures(workspace)`)
+    ); CREATE INDEX IF NOT EXISTS memory_source_range_erasures_workspace ON memory_source_range_erasures(workspace);
+    CREATE TABLE IF NOT EXISTS memory_manual_file_lineage (
+      source TEXT NOT NULL, parent TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(source,parent)
+    ); CREATE INDEX IF NOT EXISTS memory_manual_file_lineage_parent ON memory_manual_file_lineage(parent)`);
     if (!db.prepare("SELECT 1 FROM pragma_table_info('memory_sources') WHERE name='project'").get()) {
       db.exec('ALTER TABLE memory_sources ADD COLUMN project TEXT')
     }
@@ -409,6 +415,38 @@ export function openMemoryStore(file: string, now = Date.now) {
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
     memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.project ? memoryScopeKey(source.project) : null, source.author, source.text, source.hash, source.rememberedHash ?? null, source.length,
     source.question, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
+  function insertManualFileSource(source: MemorySource, parents: readonly DocumentSourceRef[]) {
+    tx(() => {
+      insertSource(source)
+      const insert = db.prepare('INSERT INTO memory_manual_file_lineage VALUES(?,?,?)')
+      for (const parent of parents) insert.run(source.id, parent.id, JSON.stringify(parent))
+    })
+  }
+  function manualFileRetainsText(matches: (workspace: string, text: string) => boolean) {
+    const ids = db.prepare("SELECT id FROM memory_sources WHERE author='manual' AND text IS NOT NULL").iterate()
+    for (const row of ids) {
+      const source = readSource(String(row.id))
+      if (source?.text && matches(memorySourceWorkspace(source), source.text)) return true
+    }
+    return false
+  }
+  const manualFileSources = () => db.prepare("SELECT id FROM memory_sources WHERE author='manual' AND text IS NOT NULL AND withdrawn=0").all()
+    .flatMap(row => readSource(String(row.id)) ?? [])
+  function trimManualFileParents(cuts: readonly DocumentSourceCut[]) {
+    for (const cut of cuts) for (const row of copiesOfManualFile.all(cut.id)) {
+      const ref = JSON.parse(String(row.reference)) as DocumentSourceRef
+      if (!documentSourceRestricted(ref, [cut])) continue
+      const spans = subtractDocumentSourceSpans(cut.length, ref, [cut])
+      if (spans.length) db.prepare('UPDATE memory_manual_file_lineage SET reference=? WHERE source=? AND parent=?')
+        .run(JSON.stringify({ ...ref, spans }), row.source, cut.id)
+      else db.prepare('DELETE FROM memory_manual_file_lineage WHERE source=? AND parent=?').run(row.source, cut.id)
+    }
+  }
+  const parentsOfManualFile = db.prepare('SELECT reference FROM memory_manual_file_lineage WHERE source=? ORDER BY parent')
+  const copiesOfManualFile = db.prepare('SELECT source,reference FROM memory_manual_file_lineage WHERE parent=? ORDER BY source')
+  const manualFileParents = (source: string) => parentsOfManualFile.all(source).map(row => JSON.parse(String(row.reference)) as DocumentSourceRef)
+  const manualFileCopies = (parent: string) => copiesOfManualFile.all(parent)
+    .map(row => ({ source: String(row.source), reference: JSON.parse(String(row.reference)) as DocumentSourceRef }))
   const outcome = (id: string, state: string) => db.prepare('UPDATE memory_sources SET outcome=? WHERE id=?').run(state, id)
   const withdrawSource = (id: string) => db.prepare("UPDATE memory_sources SET withdrawn=1,text=NULL,question=NULL,hash=NULL,remembered_hash=NULL,outcome='withdrawn' WHERE id=?").run(id)
   const evidence = (memory: number, source: MemorySource, start: number, end: number, parts: MemoryFact['evidence'] | null, changeId: number | null,
@@ -583,12 +621,15 @@ export function openMemoryStore(file: string, now = Date.now) {
   const readFileSources = db.prepare(`SELECT source FROM memory_session_file_sources f WHERE session=?
     AND NOT EXISTS (SELECT 1 FROM memory_session_sources s WHERE s.session=f.session AND s.source=f.source) ORDER BY rowid`)
   const retainTurnOnly = db.prepare('INSERT OR IGNORE INTO memory_session_turn_only VALUES (?)')
-  const usedTurnOnly = db.prepare('SELECT 1 FROM memory_session_turn_only WHERE session = ?')
+  const usedTurnOnly = db.prepare(`SELECT 1 FROM memory_session_turn_only WHERE session=?1
+    UNION ALL SELECT 1 FROM memory_session_file_clarifications WHERE session=?1 LIMIT 1`)
+  const offerFileClarification = db.prepare('INSERT OR IGNORE INTO memory_session_file_clarifications VALUES (?,?)')
+  const settleFileClarification = db.prepare('DELETE FROM memory_session_file_clarifications WHERE session=? AND work=?')
   const dispatch = {
     replace(session: string, sources: readonly string[]) {
       tx(() => {
         for (const table of ['memory_session_dependencies', 'memory_session_sources', 'memory_session_turn_only',
-          'memory_session_file_dependencies', 'memory_session_file_sources', 'memory_session_relation_dependencies', 'memory_session_profile_dependencies']) {
+          'memory_session_file_dependencies', 'memory_session_file_sources', 'memory_session_file_clarifications', 'memory_session_relation_dependencies', 'memory_session_profile_dependencies']) {
           db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
         }
         for (const source of new Set(sources)) insertSessionSource.run(session, source)
@@ -619,6 +660,8 @@ export function openMemoryStore(file: string, now = Date.now) {
     },
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
+    offerFileClarification: (session: string, work: string) => offerFileClarification.run(session, work),
+    settleFileClarification: (session: string, work: string) => settleFileClarification.run(session, work),
     snapshot(session: string): MemoryProvenance {
       const project = sessionProject(session)
       const files = (readSessionFiles.all(session) as Array<{ reference: string }>).map(row => memoryFileDependencySchema.parse(JSON.parse(row.reference)))
@@ -649,7 +692,7 @@ export function openMemoryStore(file: string, now = Date.now) {
     return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-'))
       : path.join(path.dirname(file), 'memory-files')
   }, db, tx, revision, epoch, nextRevision, get, exists: (id: number) => Boolean(exists.get(id)), list, listForScope, recentRecallRefs, relationRecallRefs, inactiveRecallRefs, profileCandidates, nextProfileBoundary, modelEligible, hasPendingEnding, pendingEndingsFor, sameText, getChange, listChanges, appliedChanges, changesFor, recordChange, setChangeStatus, projectChange, reviseDispute,
-    readSource, insertSource, outcome, withdrawSource, eraseFileSource, fileErasures, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
+    readSource, insertSource, insertManualFileSource, manualFileRetainsText, manualFileParents, manualFileCopies, manualFileSources, trimManualFileParents, outcome, withdrawSource, eraseFileSource, fileErasures, evidence, storedEvidence, removeEvidence, bindEvidenceChange, updateEvidenceSpans, redactSource, clearSourceQuestions,
     insert, setAssertion, project, touch, authorize, remove, forgetEntry, restoreEntry, recordFact, setKeywords, touchChange,
     exclude, excluded, sourceExcluded, excludeSource, sourceIds, answerSourceIds, memoriesFrom, changesFrom, changesReferencing, hasChangeSource,
     deliveredSourceIds, deliveredSource, recordDeliveredSource, dispatch,

@@ -2,6 +2,8 @@ import type { VivaMemoryClient } from './memory-client.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
+import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
+import type { MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
 import { MAX_MEMORY_CHARS } from '../memory/contracts/text-limits.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { IpcResults, MemoryFileSourceView, MemorySummaryView } from '../shared/ipc-results.ts'
@@ -45,6 +47,16 @@ function assertMemoryText(value: unknown) {
   return value
 }
 
+async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<MemoryFileWriteResult> {
+  try { return { status: 'applied', receipt: await write } }
+  catch (error) {
+    const code = memoryDomainErrorCode.safeParse(error && typeof error === 'object'
+      ? ('domainCode' in error ? error.domainCode : 'code' in error ? error.code : undefined) : undefined)
+    if (code.success) return { status: 'rejected', code: code.data }
+    throw error
+  }
+}
+
 export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope, fileMode = false }: {
   client: VivaMemoryClient,
   habits: () => { text: string, samples: number },
@@ -73,10 +85,13 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     })),
   })
   handle('memory:get', async () => {
-    if (fileMode) return {
-      fileMode: true,
-      profile: await client.profile(), items: [], total: 0, onboarding: await client.onboarding(),
-      cleanupPending: await client.cleanupPending(), revision: await client.revision(), habits: habits(),
+    if (fileMode) {
+      const profile = await client.profile(), onboarding = await client.onboarding()
+      const cleanupPending = await client.cleanupPending(), revision = await client.revision()
+      const project = projectScope?.()
+      const fileProfile = await client.fileProfile(project)
+      return { fileMode: true, profile, items: [], total: 0, onboarding, cleanupPending, revision, habits: habits(),
+        fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
     }
     const project = projectScope?.()
     return {
@@ -100,6 +115,8 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   })
   handle('memory:set-file-enabled', client.setFileEnabled)
   handle('memory:undo-file', client.undoFile)
+  handle('memory:create-file', request => fileWrite(client.createFile(request)))
+  handle('memory:edit-file', request => fileWrite(client.editFile(request)))
   handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
   handle('memory:add', (text, kind = 'fact', operation) => client.addMemory(assertMemoryText(text), kind, operation))
   handle('memory:update', (id, text, revision, operation) => client.editMemory(id, assertMemoryText(text), revision, operation))

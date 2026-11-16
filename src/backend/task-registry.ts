@@ -4,8 +4,8 @@ import type { ActiveTool } from '../shared/ipc-results.ts'
 
 import type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
-interface Task extends TaskSnapshot { cwd: string, request: string }
-export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string }
+interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string }
+export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string }
 export type TaskScope = { cwd: string } | { taskId: string }
 export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean }
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
@@ -24,7 +24,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const tools = new Map<string, Map<string, string>>()
   const streams = new Map<string, { key: string, blocks: Map<number, string> }>()
   const published = new Map<string, string>()
-  const snapshot = ({ cwd: _cwd, request: _request, ...value }: Task): TaskSnapshot => ({ ...value })
+  const snapshot = ({ cwd: _cwd, request: _request, resultKey: _resultKey, ...value }: Task): TaskSnapshot => ({ ...value })
   function publish(task: Task) {
     task.updatedAt = now(); task.revision++
     // Text chunks already have their own UI event. Do not double renderer work on every token.
@@ -39,14 +39,14 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const status: TaskStatus = restored ? (Number.isFinite(meta.endedAt) && ['done', 'stopped', 'error'].includes(meta.status ?? '') ? meta.status as TaskStatus : 'interrupted') : 'running'
     const task: Task = { taskId: meta.id, runId: meta.runId ?? '', title: meta.title.slice(0, 200), cwd: meta.cwd ?? '', request: (meta.words ?? '').slice(0, 20_000),
       status, currentAction: null, waitingFor: null, startedAt: meta.startedAt ?? now(), updatedAt: now(), endedAt: status === 'interrupted' ? null : meta.endedAt ?? null,
-      resultPreview: (meta.resultPreview ?? '').slice(-4000), revision: 0 }
+      resultPreview: (meta.resultPreview ?? '').slice(-4000), resultKey: meta.resultKey, revision: 0 }
     tasks.set(meta.id, task)
     publish(task)
   }
   function restart(id: string, runId = '') {
     const task = tasks.get(id); if (!task) return
     waits.delete(id); tools.delete(id); streams.delete(id)
-    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', startedAt: now() })
+    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', resultKey: undefined, startedAt: now() })
     publish(task)
   }
   /** How a task is now in every map, to be put back if the change it was part of is undone. */
@@ -86,14 +86,19 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         else if (toolId) active.set(toolId, text(update.title).slice(0, 200) || active.get(toolId) || t("main.task-registry.run.tool"))
         task.currentAction = [...active.values()].at(-1) ?? null
       }
-      if (kind === 'agent_message_chunk') task.resultPreview = (task.resultPreview + text(record(update.content).text)).slice(-4000)
+      if (kind === 'agent_message_chunk') {
+        task.resultKey = undefined
+        task.resultPreview = (task.resultPreview + text(record(update.content).text)).slice(-4000)
+      }
       if (kind === 'viva_stream') {
         const key = text(update.key)
         let stream = streams.get(id)
         if (!stream || stream.key !== key) { stream = { key, blocks: new Map() }; streams.set(id, stream) }
         if (update.kind === 'settle' && Array.isArray(update.blocks)) {
+          task.resultKey = key || undefined
           task.resultPreview = update.blocks.map(record).filter(block => block.type === 'text').map(block => text(block.text)).join('\n').slice(-4000)
         } else if (update.blockType === 'text' && typeof update.index === 'number') {
+          task.resultKey = key || undefined
           const old = stream.blocks.get(update.index) ?? ''
           stream.blocks.set(update.index, (update.kind === 'delta' ? old + text(update.text) : text(update.text)).slice(-4000))
           // Bound memory even for a long response with many text blocks.
@@ -107,7 +112,10 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     if (type === 'task_end') {
       task.status = endedStatus(event.stopReason)
       task.endedAt = now(); task.waitingFor = null; task.currentAction = null
-      if (event.message) task.resultPreview = text(event.message).slice(-4000)
+      if (event.message) {
+        task.resultKey = undefined
+        task.resultPreview = text(event.message).slice(-4000)
+      }
       waits.delete(id); tools.delete(id); streams.delete(id)
     }
     publish(task)
@@ -145,11 +153,12 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   }
   /** How many times a task has changed (its snapshots' `revision`), or null for one unknown. */
   const revisionOf = (id: string): number | null => tasks.get(id)?.revision ?? null
+  const resultKeyOf = (id: string) => tasks.get(id)?.resultKey
   /** The tool calls a task's run has at work now, in the order they began: for a window that opens (task-runtime.ts finished). */
   const activeTools = (id: string): ActiveTool[] => [...(tools.get(id) ?? new Map<string, string>())].map(([toolCallId, title]) => ({ toolCallId, title }))
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
+  return { put, restart, remove, resultKeyOf, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

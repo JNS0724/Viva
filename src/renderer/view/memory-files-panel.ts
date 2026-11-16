@@ -1,6 +1,9 @@
+import { MAX_MESSAGE_CHARS } from '../../shared/text-limits.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import type { MemoryFileSummary } from '../../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView, MemoryFileSourceView } from '../../shared/ipc-results.ts'
+import { canEditMemoryFile } from '../memory-file-state.ts'
+import type { MemoryFileEditor } from '../action-types.ts'
 import { timelinePlace } from '../timeline-search.ts'
 import { h } from './dom.ts'
 import { renderMarkdown } from './markdown.ts'
@@ -61,6 +64,8 @@ function detailsOf(detail: MemoryFileDetailView, busy: boolean, handlers: Handle
       text: t(snapshot ? 'memory-files.stopped.body.unavailable' : 'memory-files.empty.body') }),
     sourcesOf(snapshot?.sources ?? detail.sources, handlers),
     h('div', { class: 'memory-actions' },
+      canEditMemoryFile(detail) ? h('button', { class: 'link-btn', name: 'memory-file-edit', type: 'button', disabled: busy,
+        text: t('memory-files.editor.edit'), onClick: () => handlers.startMemoryFileEditor(detail) }) : null,
       action && detail.actions.setEnabled ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
         text: t(id ? 'memory-files.restore.range' : enable ? 'memory-files.restore' : 'profile-panel.forget.memory'),
         onClick: () => handlers.setManagedMemoryEnabled(detail, enable, id) }) : null,
@@ -94,7 +99,9 @@ function listView(files: State['memory']['files'], handlers: Handlers) {
   const search = h('input', { class: 'field', name: 'memory-files-search', type: 'search', value: files.query, maxlength: 500,
     'aria-label': t('memory-files.search'), placeholder: t('memory-files.search'), onInput: () => handlers.searchMemoryFiles(search.value) })
   return h('div', { class: 'profile-section', 'data-memory-files-view': 'list' },
-    h('div', { class: 'field-row' }, search),
+    h('div', { class: 'memory-file-tools' }, search,
+      h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-file-create', disabled: files.writing,
+        text: t('memory-files.editor.add'), onClick: () => handlers.startMemoryFileEditor() })),
     files.items.length ? h('ul', { class: 'memory-list', 'aria-label': t('memory-files.title') }, files.items.map(item => fileCard(item, handlers))) : null,
     files.listError ? h('div', { class: 'profile-section' },
       h('p', { class: 'form-error', role: 'alert', text: files.listError }),
@@ -107,14 +114,100 @@ function listView(files: State['memory']['files'], handlers: Handlers) {
       h('button', { class: 'link-btn', type: 'button', disabled: files.loading, text: t('memory-files.more'), onClick: handlers.loadMoreMemoryFiles })) : null)
 }
 
+function editConflict(files: State['memory']['files'], editor: MemoryFileEditor, handlers: Handlers) {
+  const { detail, detailError, writing } = files
+  if (detailError) return h('div', { class: 'profile-section' },
+    h('p', { class: 'form-error', role: 'alert', text: detailError }),
+    h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
+      text: t('memory-files.retry'), onClick: handlers.reloadMemoryFile })))
+  if (!detail) return h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
+  if (!canEditMemoryFile(detail)) return h('p', { class: 'help', text: t('memory-files.editor.unavailable') })
+  return h('div', { class: 'profile-section' },
+    h('div', { class: 'memory-copy' },
+      h('h5', { class: 'profile-heading', text: t('memory-files.editor.latest') }),
+      detail.editor.title ? h('strong', { class: 'memory-text', text: detail.editor.title }) : null),
+    h('textarea', { class: 'field', rows: 4, readonly: true, 'aria-label': t('memory-files.editor.latest') }, detail.editor.text),
+    h('div', { class: 'memory-actions' },
+      h('button', { class: 'link-btn', type: 'button', disabled: writing, text: t('memory-files.editor.use.latest'),
+        onClick: () => handlers.acceptMemoryFileEditVersion(editor.id, detail) })))
+}
+
+type EditorComposition = { active: boolean, redraw?: () => void }
+const editorCompositions = new WeakMap<HTMLFormElement, EditorComposition>()
+
+/** Rebuilding a composing input copies partial IME text and interrupts the native composition. */
+export function deferMemoryFileEditorRender(container: HTMLElement, editor: MemoryFileEditor, redraw: () => void): boolean {
+  const form = container.querySelector<HTMLFormElement>('[data-memory-file-editor]')
+  if (!form || form.dataset.memoryFileEditor !== String(editor.id)) return false
+  const composition = editorCompositions.get(form)
+  if (!composition?.active) return false
+  composition.redraw = redraw
+  return true
+}
+
+function editorView(files: State['memory']['files'], editor: MemoryFileEditor, handlers: Handlers) {
+  const { writing } = files
+  const composition: EditorComposition = { active: false }
+  const title = h('input', { class: 'field', type: 'text', name: 'memory-file-draft-title', maxlength: 200,
+    readonly: writing, 'data-version': editor.id, value: editor.draft.title })
+  const body = h('textarea', { class: 'field', name: 'memory-file-draft-text', maxlength: MAX_MESSAGE_CHARS, rows: 5,
+    required: true, readonly: writing, 'data-version': editor.id }, editor.draft.text)
+  const form = h('form', { class: 'profile-section', 'data-memory-files-view': editor.kind, 'data-memory-file-editor': editor.id,
+    'aria-labelledby': 'memory-file-editor-title',
+    'aria-busy': String(writing),
+    onCompositionStart: () => { composition.active = true },
+    onCompositionEnd: () => {
+      composition.active = false
+      if (!composition.redraw) return
+      // The next frame preserves the final native input value and drops detached editors.
+      requestAnimationFrame(() => {
+        if (composition.active || !form.isConnected) return
+        const redraw = composition.redraw
+        composition.redraw = undefined
+        redraw?.()
+      })
+    },
+    onKeyDown: (event: KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229 || composition.active) {
+        event.stopPropagation()
+        return
+      }
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!writing) handlers.cancelMemoryFileEditor(editor.id)
+    },
+    onSubmit: (event: SubmitEvent) => {
+      event.preventDefault()
+      if (!composition.active && !writing && !editor.conflict) {
+        handlers.saveMemoryFileEditor(editor.id, { title: title.value, text: body.value })
+      }
+    },
+  },
+  h('h4', { class: 'profile-heading', id: 'memory-file-editor-title',
+    text: t(editor.kind === 'create' ? 'memory-files.editor.add' : 'memory-files.editor.edit') }),
+  h('label', { class: 'intro-item' }, h('span', { class: 'label', text: t('memory-files.editor.title') }), title),
+  h('label', { class: 'intro-item' }, h('span', { class: 'label', text: t('memory-files.editor.body') }), body),
+  editor.error ? h('p', { class: 'form-error', role: 'alert', text: editor.error }) : null,
+  editor.conflict ? editConflict(files, editor, handlers) : null,
+  h('div', { class: 'profile-edit-actions' },
+    h('button', { class: 'btn btn-accent btn-small', type: 'submit', disabled: writing || Boolean(editor.conflict),
+      text: t(writing ? 'extensions.saving' : 'extensions.save') }),
+    h('button', { class: 'btn btn-outline btn-small', type: 'button', disabled: writing, text: t('extensions.cancel'),
+      onClick: () => handlers.cancelMemoryFileEditor(editor.id) })))
+  editorCompositions.set(form, composition)
+  return form
+}
+
 export function memoryFilesSection(memory: State['memory'], handlers: Handlers) {
+  const { files } = memory
   return h('section', { class: 'profile-section', 'aria-labelledby': 'memory-files-title' },
     h('h3', { class: 'profile-heading', id: 'memory-files-title', text: t('memory-files.title') }),
-    memory.files.selection ? detailView(memory.files, handlers) : listView(memory.files, handlers),
+    files.editor ? editorView(files, files.editor, handlers) : files.selection ? detailView(files, handlers) : listView(files, handlers),
     memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',
       text: t('memory-files.storage.cleanup.pending', { count: memory.cleanupPending }) }) : null,
-    h('div', { class: 'memory-actions' },
+    !files.editor ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-rebuild-indexes', disabled: memory.rebuildingIndexes,
         text: t(memory.rebuildingIndexes ? 'profile-panel.memory.index.rebuilding' : 'profile-panel.memory.index.rebuild'),
-        onClick: handlers.rebuildMemoryIndexes })))
+        onClick: handlers.rebuildMemoryIndexes })) : null)
 }

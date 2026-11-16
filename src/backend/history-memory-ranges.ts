@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { memoryHostErasureRange, type MemoryHostErasureRange } from '../memory/contracts/service.ts'
 import { maskTextSpans } from '../memory/contracts/text-spans.ts'
-import { usesErasedMemory, type MemoryProvenance } from '../memory/contracts/provenance.ts'
+import { intersectsMemoryErasure, memoryErasureEvidence, type MemoryErasureEvidence, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -39,12 +39,12 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
   const erasedDependency = db.prepare('SELECT 1 FROM memory_erased_dependency_ids WHERE id=?')
   const retireDependency = db.prepare('INSERT OR IGNORE INTO memory_erased_dependency_ids VALUES (?)')
 
-  function affects(evidence: MemoryProvenance) {
-    if (evidence.dependencies.some(ref => erasedDependency.get(ref.id))) return true
-    const sources = new Set(evidence.sources)
-    for (const file of evidence.files ?? []) for (const source of file.sourceRanges ?? []) sources.add(source.sourceId)
-    return usesErasedMemory(evidence, [...sources].flatMap(cutsOf))
+  function affectsProof(evidence: MemoryErasureEvidence) {
+    if (evidence.memoryIds.some(id => erasedDependency.get(id))) return true
+    const sources = new Set([...evidence.sources, ...evidence.fileRanges.map(ref => ref.sourceId)])
+    return intersectsMemoryErasure(evidence, [...sources].flatMap(cutsOf))
   }
+  const affects = (evidence: MemoryProvenance) => affectsProof(memoryErasureEvidence(evidence))
 
   function project(text: string, cuts: readonly MemoryHostErasureRange[]) {
     let current = text, matched = false
@@ -96,7 +96,7 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
   }
 
   return {
-    forSave, erase, affects,
+    forSave, erase, affects, affectsProof,
     any: () => revision() > 0,
     revision,
     replicaSources: (conversation: string) => replicas.all(conversation).map(row => String(row.source)),

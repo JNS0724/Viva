@@ -172,7 +172,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       // next). One made while the turn has more to say is mentioned at the end of that answer instead, said once.
       const notice = typeof args.notice === 'string' ? args.notice.trim().slice(0, MAX_NOTICE_CHARS) : ''
       const ends = planned === 'handed' && !hasOpenWork(decide(ledgerOf(id), requestId, planned))
-      const told = ends && notice !== '' && stream.announce(id, notice)
+      const told = ends && notice !== '' && stream.announce(id, notice, requestId)
       const status = ends && !told ? 'answering' : planned
       const ledger = update(id, l => decide(l, requestId, status))
       if (!hasOpenWork(ledger)) exec.concludeTurn()

@@ -1,8 +1,25 @@
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { Context } from '@deepseek-ai/cordis'
+import type { CompactionId } from '@deepseek-ai/dsh-compaction'
+import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction/checkpoint'
+import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
+import { AttachmentId } from '@deepseek-ai/dsh-attachment'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
+import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
+import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
+import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
+import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
+import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
+import { recordCompactionInputs } from '../plugins/memory/lib/native/compaction-inputs.ts'
+import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
@@ -15,7 +32,7 @@ const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
+import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
 import { openMemorySemanticIndex } from '../src/memory/node/memory-semantic.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
@@ -23,7 +40,7 @@ import type { IpcResults, MemorySummaryView } from '../src/shared/ipc-results.ts
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
 import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/eventually.ts'
-import { questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
+import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
@@ -117,7 +134,9 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     assert.ok(await eventually(() => events.findLast(event =>
       event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error')?.type !== 'turn_started'),
     'the foreground is ready for the next prompt')
-    await call<Promise<void>>('agent:prompt', text, [], randomUUID())
+    const sourceId = randomUUID()
+    await call<Promise<void>>('agent:prompt', text, [], sourceId)
+    return sourceId
   }
   const newTopic = () => call<Promise<AgentInfo>>('agent:new-session')
   const tasks = () => call<Task[]>('task:finished')
@@ -177,6 +196,501 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   } finally { db.close() }
 })
 
+test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {
+  const text = 'The file-only proof ORDINAL controls the native result.'
+  const prompt = '执行单次工具归档测试'
+  let fileId: string | undefined, requested = false
+  const app = await setup(t, request => {
+    if (requested || !fileId || questionOf(request.messages) !== prompt) return null
+    requested = true
+    return { tool: { name: 'memory_read', input: { id: fileId } } }
+  }, { dailyNotes: true, fileMode: true })
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text })
+  assert.equal(created.status, 'applied')
+  fileId = created.receipt.identity.id
+  const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const source = file.sources[0]
+  assert.ok(source?.sourceId)
+  const memoryRoot = join(app.directory, 'memory')
+  const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  let affected: ReturnType<ReturnType<typeof createNativeToolReads>['affected']> = []
+  let precedingSendUsedFile = false
+  try {
+    control.exec(`CREATE TRIGGER fail_body_after_tool_read BEFORE INSERT ON owner_native_output_reads
+      WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads)
+      BEGIN SELECT RAISE(ABORT, 'no model request may consume the tool result'); END`)
+    await app.ask(prompt)
+    assert.equal(requested, true)
+    const receipts = createNativeToolReads(control)
+    affected = await eventually(() => {
+      const found = receipts.affected([{ sourceId: source.sourceId, spans: [{ start: 0, end: text.length }] }])
+      return found.some(call => call.result) ? found : undefined
+    }) ?? []
+    assert.equal(affected.length, 1, JSON.stringify({
+      calls: control.prepare('SELECT identity,result FROM owner_native_tool_calls').all(),
+      seen: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_read')),
+      errors: app.events.filter(event => event.type === 'error'),
+    }))
+    assert.ok(affected[0]?.result)
+    assert.doesNotMatch(JSON.stringify(control.prepare('SELECT evidence FROM owner_native_tool_reads').all()), /ORDINAL/)
+    assert.ok(app.model.requests.every(raw => modelToolResults(raw as Request, 'memory_read').length === 0),
+      'the next physical request must not get the tool result')
+    precedingSendUsedFile = app.model.requests.some(raw => JSON.stringify(raw).includes(text))
+  } finally {
+    await app.stopBackend()
+    control.close()
+  }
+  const saved = affected[0]!, result = saved.result!
+  const sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const sessionId = SessionId(saved.session), forkId = SessionId(randomUUID())
+  const provider = new Context(), mounted = await provider.plugin(jsonl, { root: sessionsRoot, compression: 'zstd' })
+  let pruned = -1, independent = -1
+  try {
+    const reader = await provider.sessionPersistence.open(sessionId, 'read')
+    try {
+      const { events } = await reader.read()
+      const call = events[saved.seq], outcome = events[result.seq]
+      assert.equal(call?.type, 'tool/call')
+      assert.equal(outcome?.type, 'tool/result')
+      const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+      assert.equal(digest(call), saved.digest)
+      assert.equal(digest(outcome), result.digest)
+      assert.deepEqual(outcome.sourceEventSeqs, [saved.seq])
+      assert.match(JSON.stringify(outcome.data.message.content), /ORDINAL/)
+      const inherited = SessionLogOffset(events.length)
+      const child = Session.create(forkId, events, { ...reader.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
+      const turn = (events.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1, step = 1
+      child.append('turn/start', { turn })
+      child.append('step/start', { turn, step })
+      child.append('compaction/prune', { shadowedRange: { start: outcome.seq, end: outcome.seq }, shadowedSeqs: [outcome.seq], shadowedTokenCount: 1 })
+      pruned = child.append('tool/result', { ...outcome.data,
+        message: { ...outcome.data.message, content: [{ type: 'text', text: 'Pruned ORDINAL' }] },
+      }, { surfaceOp: { op: 'replace', startSeq: outcome.seq, endSeq: outcome.seq }, sourceEventSeqs: [outcome.seq] }).seq
+      const other = ToolCallId('independent-tool-call')
+      const block = { type: 'tool-call' as const, name: 'memory_read', id: other, arguments: '{}' }
+      child.append('assistant/message', { turn, step,
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [block] }), stream: [],
+      }, { surfaceOp: 'append' })
+      const otherCall = child.append('tool/call', { turn, step, callId: other, name: block.name, arguments: block.arguments })
+      independent = child.append('tool/result', { turn, step,
+        message: createToolResultMessage({ callId: other, isError: false, content: [{ type: 'text', text: 'Unrelated ORDINAL' }] }),
+      }, { surfaceOp: 'append', sourceEventSeqs: [otherCall.seq] }).seq
+      child.append('step/end', { turn, step })
+      child.append('turn/end', { turn, reason: { kind: 'completed' } })
+      const writer = await provider.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+      try { await writer.append(child.snapshotEvents()); await writer.flush() } finally { await writer.close() }
+    } finally { await reader.close() }
+  } finally { await mounted.dispose() }
+
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true, fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  const operationId = randomUUID()
+  try {
+    await owner.recover()
+    await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.receipt.identity, version: file.version }] })
+  } finally { await owner.close() }
+
+  openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    db.exec(`CREATE TRIGGER interrupt_native_tool_receipt BEFORE UPDATE OF published ON owner_native_output_publications
+      WHEN OLD.operation LIKE '%:tool-results' BEGIN SELECT RAISE(ABORT, 'crash before native tool result receipt'); END`)
+    assert.equal(await app.startBackend(), null)
+    assert.equal(db.prepare('SELECT count(*) AS total FROM owner_native_output_publications WHERE operation=? AND published=0')
+      .get(operationId + ':tool-results')?.total, 1)
+    await app.stopBackend()
+    db.exec('DROP TRIGGER interrupt_native_tool_receipt')
+    assert.ok(await app.startBackend(), 'recover the interrupted publication before live DSH begins')
+    assert.ok(db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?').get(saved.id))
+  } finally { db.close() }
+  await app.stopBackend()
+
+  const verify = new Context(), installed = await verify.plugin(jsonl, { root: sessionsRoot })
+  try {
+    for (const id of [sessionId, forkId]) {
+      const reader = await verify.sessionPersistence.open(id, 'read')
+      try {
+        const { events } = await reader.read()
+        const caller = events[saved.seq]
+        assert.equal(caller?.type, 'tool/call')
+        if (precedingSendUsedFile) assert.equal(caller.data.arguments, '{}')
+        else assert.equal(nativeEventDigest(caller), saved.digest, 'the independent caller is retained')
+        const rewritten = events[result.seq]
+        assert.equal(rewritten?.type, 'tool/result')
+        assert.deepEqual(rewritten.data.message.content, [])
+        assert.deepEqual(rewritten.sourceEventSeqs, [saved.seq])
+        if (id === forkId) {
+          const staleExcerpt = events[pruned], unrelated = events[independent]
+          assert.equal(staleExcerpt?.type, 'tool/result')
+          assert.deepEqual(staleExcerpt.data.message.content, [])
+          assert.equal(unrelated?.type, 'tool/result')
+          assert.match(JSON.stringify(unrelated.data.message.content), /Unrelated ORDINAL/)
+        }
+      } finally { await reader.close() }
+    }
+  } finally { await installed.dispose() }
+})
+
+test('trace erasure preserves another projection that reused the same session and sequence', t => {
+  const { dir, defer } = scratch(t, 'viva-trace-reused-offset-')
+  const trace = openTraceDb({ file: join(dir, 'trace.db') })
+  defer(() => trace.close())
+  const session = randomUUID()
+  const original = { kind: 'thought', seq: 18, at: 10, text: 'discarded generation' } as const
+  const retained = { ...original, at: 20, text: 'independent later generation' }
+  trace.recordSteps(session, [retained])
+  assert.equal(trace.eraseSteps(session, [{ seq: original.seq, digest: traceStepDigest(original) }]), true)
+  assert.deepEqual(trace.stepsOf(session), [retained])
+})
+
+test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 45_000 }, async t => {
+  const erased = '实体擦除样本只用于 R5a 验收', nearby = '独立片段仍在同一原生日志中'
+  const second = '另一个有独立依据的原文裁剪目标'
+  const survivor = '独立消息要在恢复后继续可用'
+  const derived = '档案里还有应擦除的助手转述'
+  const traceSecret = 'stored-private-trace-for-erasure'
+  const toolSecret = 'stored-derived-tool-argument-and-result'
+  const compactionSecret = 'stored-private-compaction-body'
+  const text = [erased, nearby, second].join('。\n')
+  const app = await setup(t, request => {
+    const routed = request.messages.flatMap(message => typeof message.content === 'string'
+      ? requestsIn(message.content) : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).at(-1)
+    return routed?.words.startsWith(text) && modelToolResults(request, 'commit_route').length ? { text: derived } : null
+  }, { dailyNotes: true, fileMode: true })
+  const sourceId = await app.ask(text)
+  const reply = app.events.find(event => event.type === 'update' && event.update.sessionUpdate === 'viva_stream'
+    && event.update.kind === 'settle' && event.update.blocks.some((block: { text?: string }) => block.text === derived))
+  assert.ok(reply, 'real DSH provides a settled reply under a stable stream key')
+  const survivorId = await app.ask(survivor)
+  const savedHistory = await app.call<{ id: string }>('history:save', [
+    { role: 'user', text, receipt: null, sourceId },
+    { role: 'assistant', text: derived, receipt: null, key: reply.update.key },
+    { role: 'user', text: survivor, receipt: null, sourceId: survivorId },
+  ])
+  assert.match(JSON.stringify(app.call('history:load')), new RegExp(derived, 'u'), 'authenticated reply survives its first history save')
+  const info = app.call<AgentInfo>('agent:info')
+  assert.ok(info.sessionId)
+  await app.stopBackend()
+  const sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const memoryRoot = join(app.directory, 'memory')
+  const parentId = SessionId(info.sessionId), forkId = SessionId(randomUUID())
+  const affectedOutputs = new Set<number>()
+  let traceStep: { kind: 'thought', seq: number, at: number, text: string } | undefined
+  let toolTrace: { kind: 'tool', seq: number, at: number, callId: string, name: string, args: object, status: string } | undefined
+  let toolReply = -1, toolResult = -1
+  const compactions = new Set<number>()
+  let unconnectedSummary = -1
+  const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
+  try {
+    const original = await cold.sessionPersistence.open(parentId, 'read')
+    try {
+      const persisted = (await original.read()).events
+      const fixture = Session.fromRestore(parentId, persisted, original.header, original.inheritedEventCount, 'detached')
+      const titleMessage = persisted.find(event => event.type === 'user/message' && event.data.source.kind === 'user'
+        && JSON.stringify(event.data.content).includes(erased))
+      assert.ok(titleMessage, 'an authentic human message supplies title provenance')
+      fixture.append('session/title', { title: erased, messageSeqs: [titleMessage.seq], source: { kind: 'fallback' } })
+      fixture.append('session/title-llm-request', { titleProvider: SessionTitleProviderId('fixture'), messageSeqs: [titleMessage.seq],
+        route: { provider: 'fixture', model: 'fixture' }, system: erased, maxTokens: 16,
+        messages: [createUserMessage({ source: { kind: 'dsh-session-title-llm' }, content: [{ type: 'text', text: second }] })] })
+      const independentTitleMessage = persisted.find(event => event.type === 'user/message'
+        && event.data.source.kind === 'user' && JSON.stringify(event.data.content).includes(survivor))
+      assert.ok(independentTitleMessage)
+      fixture.append('session/title', { title: '独立依据生成的会话名', messageSeqs: [independentTitleMessage.seq], source: { kind: 'fallback' } })
+      fixture.append('session/title', { title: '独立的手动会话名', messageSeqs: [], source: { kind: 'user' } })
+      const turn = (persisted.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1
+      const step = 1, at = Date.now()
+      fixture.append('turn/start', { turn })
+      fixture.append('step/start', { turn, step })
+      const bindAttempt = () => {
+        const marker = { id: randomUUID(), generation: 0, turn, step }
+        const floor = appendPluginRecord(fixture, NATIVE_OUTPUT_MARKER, marker) + 1
+        return { ...marker, session: parentId, floor }
+      }
+      const failedProof = bindAttempt()
+      const failed = fixture.append('assistant/attempt', { turn, step,
+        stream: [{ type: 'chunk', time: at, chunk: { type: 'text-delta', index: 0, text: traceSecret } }] })
+      const reasoningProof = bindAttempt()
+      const reasoning = fixture.append('assistant/message', { turn, step,
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'reasoning', text: traceSecret }] }),
+        stream: [{ type: 'chunk', time: at, chunk: { type: 'reasoning-delta', index: 0, text: traceSecret } }],
+      }, { surfaceOp: 'append' })
+      const groupProof = bindAttempt()
+      const tool = { type: 'tool-call' as const, id: ToolCallId('derived-native-tool'), name: 'bash', arguments: JSON.stringify({ command: toolSecret }) }
+      const announcement = fixture.append('assistant/message', { turn, step,
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: toolSecret }, tool] }),
+        stream: [{ type: 'chunk', time: at, chunk: { type: 'tool-call-delta', index: 1, id: tool.id, name: tool.name, argumentsDelta: tool.arguments } }],
+      }, { surfaceOp: 'append' })
+      const call = fixture.append('tool/call', { turn, step, callId: tool.id, name: tool.name, arguments: tool.arguments })
+      const result = fixture.append('tool/result', { turn, step,
+        message: createToolResultMessage({ callId: tool.id, content: [{ type: 'text', text: toolSecret }], isError: true }),
+        error: { name: 'ToolError', code: 'FAILED', reason: toolSecret }, meta: { body: toolSecret },
+      }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+      toolReply = announcement.seq
+      toolResult = result.seq
+      toolTrace = { kind: 'tool', seq: call.seq, at: call.time, callId: tool.id, name: tool.name,
+        args: { command: toolSecret }, status: 'failed' }
+      fixture.append('step/end', { turn, step })
+      fixture.append('turn/end', { turn, reason: { kind: 'completed' } })
+      function compact(shadowedSeqs: SessionSeq[], text: string) {
+        const compactionId = randomUUID() as CompactionId
+        const start = fixture.append('compaction/start', { compactionId, turn: null })
+        const region = { start: shadowedSeqs[0]!, end: shadowedSeqs.at(-1)! }
+        const content = [{ type: 'text' as const, text }]
+        const summary = fixture.append('compaction/summary', { compactionId, summary: content, rawOutput: content, llmStreamCall: true,
+          shadowedRange: region, shadowedSeqs, shadowedTokenCount: 99, provider: 'fixture', model: 'fixture' })
+        const checkpoint = fixture.append('user/message', createUserMessage({ source: compactCheckpointSource(compactionId), content }),
+          { surfaceOp: { op: 'replace', startSeq: region.start, endSeq: region.end }, sourceEventSeqs: [start.seq, summary.seq, ...shadowedSeqs] })
+        fixture.append('compaction/end', { compactionId, turn: null })
+        return { summary: summary.seq, checkpoint: checkpoint.seq }
+      }
+      const failedCompactionId = randomUUID() as CompactionId
+      fixture.append('compaction/start', { compactionId: failedCompactionId, turn: null })
+      recordCompactionInputs(fixture, [titleMessage.seq])
+      compactions.add(fixture.append('compaction/end', { compactionId: failedCompactionId, turn: null, error: compactionSecret }).seq)
+      const compactedOriginal = compact([titleMessage.seq], compactionSecret)
+      const compactedCheckpoint = compact([compactedOriginal.checkpoint], compactionSecret)
+      const compactedTool = compact([announcement.seq, result.seq], compactionSecret)
+      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool]) {
+        compactions.add(item.summary)
+        compactions.add(item.checkpoint)
+      }
+      unconnectedSummary = compact([independentTitleMessage.seq], 'independent compaction remains').summary
+      const writer = await cold.sessionPersistence.open(parentId, 'write')
+      try { await writer.append(fixture.snapshotEvents(SessionLogOffset(persisted.length))); await writer.flush() }
+      finally { await writer.close() }
+      traceStep = { kind: 'thought', seq: reasoning.seq, at: reasoning.time, text: traceSecret }
+
+      const events = fixture.snapshotEvents()
+      assert.ok(JSON.stringify(events).includes(erased))
+      assert.ok(JSON.stringify(events).includes(derived))
+      const proofDb = new DatabaseSync(join(memoryRoot, 'memory.db'))
+      try {
+        const archive = createNativeOutputAttempts(proofDb)
+        const evidence = { sources: [sourceId], dependencies: [], epoch: 0, turnOnly: false }
+        archive.record(failedProof, evidence)
+        archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeEventDigest(failed) })
+        archive.record(reasoningProof, evidence)
+        archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
+        archive.record(groupProof, evidence)
+        archive.finish(groupProof, { seq: announcement.seq, kind: 'reply', digest: nativeEventDigest(announcement) })
+        const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
+        assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
+        for (const { result, session, floor, id, generation, turn, step } of affected) {
+          assert.equal(session, parentId)
+          const prefix = events[floor - 1]
+          const marker = prefix && pluginRecordOf(prefix)
+          assert.equal(marker?.type, NATIVE_OUTPUT_MARKER)
+          assert.deepEqual(marker.data, { id, generation, turn, step })
+          assert.equal(result.state, 'settled')
+          const event = events[result.terminal.seq]
+          assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
+          assert.equal(nativeEventDigest(event), result.terminal.digest)
+          if (event.type === 'assistant/attempt' || !event.data.message.content.some(block => block.type === 'tool-call')) {
+            affectedOutputs.add(event.seq)
+          }
+        }
+      } finally { proofDb.close() }
+      const inherited = SessionLogOffset(events.length)
+      const child = Session.create(forkId, events, { ...original.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
+      const image = child.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{
+        type: 'image', attachment: { attachmentId: AttachmentId('cold-offload'), mediaType: 'image/png', bytes: 80, width: 1, height: 1 },
+      }] }), { surfaceOp: 'append' })
+      child.append('image/offload', { targets: [{ seq: image.seq, imageIndexes: [0] }] })
+      const branchWriter = await cold.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+      try { await branchWriter.append(child.snapshotEvents()); await branchWriter.flush() } finally { await branchWriter.close() }
+    } finally { await original.close() }
+  } finally { await persistence.dispose() }
+
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true, fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  const operationId = randomUUID(), nextOperation = randomUUID()
+  try {
+    await owner.recover()
+    const store = openMemoryStore(join(memoryRoot, 'memory.db'))
+    try {
+      assert.equal(store.db.prepare('SELECT 1 FROM owner_occurrences WHERE session=?').get(forkId), undefined)
+      const source = store.readSource(sourceId)!
+      const workspace = memorySourceWorkspace(source)
+      const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, deferRecovery: true, source(id) {
+        const row = store.readSource(id)
+        return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+      } })
+      const makeDigest = (name: string, excerpt: string) => {
+        const start = text.indexOf(excerpt)
+        const entry = documents.commit({ operationId: randomUUID(), workspace, path: `digest/wiki/${name}.md`,
+          action: 'CREATE', expectedRevision: null, markdown: excerpt,
+          sources: [{ id: sourceId, token: memorySourceToken(source), spans: [{ start, end: start + excerpt.length }] }], reads: [] })
+        return { kind: 'digest', workspace, id: entry.documentId } as const
+      }
+      const first = makeDigest('native-erasure', erased), secondDigest = makeDigest('native-erasure-2', second)
+      for (const [identity, id] of [[first, operationId], [secondDigest, nextOperation]] as const) {
+        const detail = await owner.handleHost('readFile', { args: [identity] }) as MemoryFileDetail
+        await owner.handleHost('forgetFile', { args: [{ operationId: id, identity, version: detail.version }] })
+      }
+    } finally { store.close() }
+  } finally { await owner.close() }
+
+  const cache = join(app.directory, 'dsh', 'storages', 'session_projcache', 'sessions')
+  mkdirSync(cache, { recursive: true })
+  const interruptedCache = join(cache, `${forkId}.json.deleting`)
+  const backupCache = join(cache, `${parentId}.json.bak.202611161700`)
+  const independentCache = join(cache, 'independent.json.deleting')
+  const projectionTemp = join(cache, `.${randomUUID()}.tmp`)
+  for (const file of [interruptedCache, backupCache, independentCache, projectionTemp]) writeFileSync(file, erased)
+
+  openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
+  const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    control.exec(`CREATE TRIGGER interrupt_native_publication BEFORE UPDATE OF published ON owner_native_original_publications
+      BEGIN SELECT RAISE(ABORT, 'interrupted native erasure receipt'); END`)
+    const offset = app.model.requests.length
+    assert.equal(await app.startBackend(), null, 'a published artifact without a receipt must stop live DSH from opening its log')
+    assert.equal(app.model.requests.length, offset)
+    const blockedTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
+    assert.equal(blockedTrace.available, false)
+    assert.doesNotMatch(JSON.stringify(blockedTrace), new RegExp(traceSecret, 'u'))
+    assert.equal(control.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=0')
+      .get(operationId)?.count, 1)
+    await app.stopBackend()
+    control.exec('DROP TRIGGER interrupt_native_publication')
+  } finally { control.close() }
+
+  assert.ok(traceStep && affectedOutputs.has(traceStep.seq), 'the verified native output owns the reasoning trace')
+  assert.ok(toolTrace)
+  const traceFile = join(app.directory, 'trace.db')
+  const independentTraceSession = randomUUID()
+  const awaitingToolCleanup = 'pending-native-tool-replica'
+  const trace = openTraceDb({ file: traceFile })
+  try {
+    trace.recordSteps(parentId, [traceStep, toolTrace])
+    trace.recordSteps(forkId, [traceStep, { ...toolTrace, status: 'in_progress' }])
+    trace.recordSteps(independentTraceSession, [{ ...traceStep, text: 'independent trace' }])
+    trace.recordSteps(parentId, [{ kind: 'tool', seq: traceStep.seq + 1, at: Date.now(), callId: 'pending-tool', name: 'bash',
+      args: { command: awaitingToolCleanup }, status: 'completed' }])
+  } finally { trace.close() }
+
+  const traceReader = new DatabaseSync(traceFile, { readOnly: true })
+  try {
+    traceReader.exec('BEGIN')
+    assert.equal(traceReader.prepare('SELECT text FROM steps WHERE session_id=? AND seq=?').get(parentId, traceStep.seq)?.text, traceSecret)
+    const offset = app.model.requests.length
+    assert.equal(await app.startBackend(), null, 'a trace reader that still sees erased bytes must delay starting DSH')
+    assert.equal(app.model.requests.length, offset)
+    await app.stopBackend()
+  } finally { traceReader.close() }
+
+  const offset = app.model.requests.length
+  assert.ok(await app.startBackend())
+  const cleanHistory = app.call('history:read', `s:${savedHistory.id}`, { from: Number.MAX_SAFE_INTEGER, count: 10 })
+  assert.doesNotMatch(JSON.stringify(cleanHistory), new RegExp(derived, 'u'), 'the generated host history copy is erased during recovery')
+  assert.match(JSON.stringify(cleanHistory), new RegExp(survivor, 'u'))
+  const publishedTrace = openTraceDb({ file: traceFile })
+  try {
+    assert.equal(publishedTrace.stepsOf(parentId).some(step => step.seq === traceStep.seq), false)
+    assert.equal(publishedTrace.stepsOf(forkId).some(step => step.seq === traceStep.seq), false)
+    assert.equal(publishedTrace.stepsOf(independentTraceSession).length, 1)
+    assert.ok([parentId, forkId].every(session => publishedTrace.stepsOf(session).every(step => step.seq !== toolTrace.seq)))
+    assert.match(JSON.stringify(publishedTrace.stepsOf(parentId)), new RegExp(awaitingToolCleanup, 'u'))
+    for (const file of [traceFile, traceFile + '-wal']) if (fs.existsSync(file)) {
+      assert.equal(fs.readFileSync(file).includes(traceSecret), false)
+      assert.equal(fs.readFileSync(file).includes(toolSecret), false)
+    }
+  } finally { publishedTrace.close() }
+  assert.ok(await eventually(() => app.events.some(event => event.type === 'memory_changed' && event.traceSessions?.includes(parentId))))
+  const hiddenTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
+  assert.equal(hiddenTrace.available, false)
+  const rewindTrace = await app.call<Promise<{ commands: string[] }>>('timeline:rewind-effects', { keep: 0 })
+  assert.ok(!rewindTrace.commands.includes(awaitingToolCleanup))
+  assert.equal(fs.existsSync(interruptedCache), false)
+  assert.equal(fs.existsSync(backupCache), false)
+  assert.equal(fs.existsSync(projectionTemp), false)
+  assert.equal(fs.readFileSync(independentCache, 'utf8'), erased)
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, info.sessionId)
+  assert.ok(contextGeneration(app.directory, info.sessionId) > 0)
+  const question = '验证冷启动后还能继续使用安全历史'
+  const questionId = await app.ask(question)
+  const sent = app.model.requests.slice(offset) as Request[]
+  assert.ok(sent.some(request => questionOf(request.messages) === question && JSON.stringify(request.messages).includes(survivor)))
+  assert.ok(sent.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
+
+  const reopened = new Context(), mounted = await reopened.plugin(jsonl, { root: sessionsRoot })
+  try {
+    for (const id of [parentId, forkId]) {
+      const reader = await reopened.sessionPersistence.open(id, 'read')
+      try {
+        const { events } = await reader.read()
+        if (id === forkId) assert.ok(events.some(event => event.type === 'image/offload'))
+        const rawInputs = events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user')
+        const raw = JSON.stringify(rawInputs)
+        assert.ok(raw.includes(survivor) && raw.includes(nearby))
+        assert.ok(!raw.includes(erased) && !raw.includes(second))
+        const titles = events.filter(event => event.type === 'session/title' || event.type === 'session/title-llm-request')
+        assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'user' && event.data.title === '独立的手动会话名'))
+        assert.ok(titles.some(event => event.type === 'session/title' && event.data.title === '独立依据生成的会话名'))
+        assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'fallback' && event.data.title === '…'))
+        assert.doesNotMatch(JSON.stringify(titles), new RegExp([erased, second].join('|'), 'u'))
+        const memoryInjected = events.flatMap(event => event.type === 'user/message' && event.data.source.kind === 'viva-memory' ? [event.data]
+          : event.type === 'agent/inbox/spliced' ? event.data.inserted.filter(message => message.source.kind === 'viva-memory') : [])
+        assert.ok(memoryInjected.some(message => !message.content.length), 'the authenticated memory injection is physically erased')
+        assert.doesNotMatch(JSON.stringify(memoryInjected), new RegExp([erased, second].join('|'), 'u'))
+        const generated = events.filter(event => affectedOutputs.has(event.seq))
+        assert.equal(generated.length, affectedOutputs.size)
+        for (const event of generated) {
+          assert.ok(event.type === 'assistant/message' || event.type === 'assistant/attempt')
+          if (event.type === 'assistant/message') {
+            assert.deepEqual(event.data.message.content, [])
+            assert.equal(event.data.message.source.replayState, undefined)
+          }
+          assert.ok(event.data.stream.every(record => record.type === 'chunk' && record.chunk.type === 'usage'))
+        }
+        assert.doesNotMatch(JSON.stringify(generated), new RegExp([derived, traceSecret].join('|'), 'u'))
+        const announcement = events[toolReply], outcome = events[toolResult]
+        const call: SessionEvent | undefined = events[toolTrace.seq]
+        assert.equal(announcement?.type, 'assistant/message')
+        assert.equal(call?.type, 'tool/call')
+        assert.equal(outcome?.type, 'tool/result')
+        assert.deepEqual(announcement.data.message.content, [{ type: 'tool-call', id: toolTrace.callId, name: toolTrace.name, arguments: '{}' }])
+        assert.deepEqual(announcement.data.stream.map(record => record.type === 'chunk' && record.chunk.type), ['tool-call-delta'])
+        assert.equal(call.data.arguments, '{}')
+        assert.deepEqual(outcome.sourceEventSeqs, [call.seq])
+        assert.equal(outcome.data.message.toolCallId, toolTrace.callId)
+        assert.deepEqual(outcome.data.message.content, [])
+        assert.deepEqual(outcome.data.error, { name: 'ToolError', code: 'FAILED' })
+        assert.equal(outcome.data.meta, undefined)
+        assert.doesNotMatch(JSON.stringify(events), new RegExp(toolSecret, 'u'))
+        const rewrittenCompactions = events.filter(event => compactions.has(event.seq))
+        assert.equal(rewrittenCompactions.length, 7)
+        assert.doesNotMatch(JSON.stringify(rewrittenCompactions), new RegExp(compactionSecret, 'u'))
+        assert.match(JSON.stringify(events[unconnectedSummary]), /independent compaction remains/)
+      } finally { await reader.close() }
+    }
+  } finally { await mounted.dispose() }
+  const settled = new DatabaseSync(join(memoryRoot, 'memory.db'), { readOnly: true })
+  try {
+    assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(operationId)?.count, 2)
+    assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(nextOperation)?.count, 2)
+    for (const id of [operationId, nextOperation]) assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
+    assert.ok(settled.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId),
+      'other native events and host replicas remain independently pending')
+    assert.ok(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(forkId))
+    assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
+  } finally { settled.close() }
+
+  const history = app.call<{ messages: unknown[] }>('history:load')
+  await app.call('history:save', [...history.messages, { role: 'user', text: question, receipt: null, sourceId: questionId }])
+  const forked = await app.call<Promise<{ ok: boolean, problem?: string, info?: AgentInfo }>>('timeline:rewind',
+    { words: question, keep: history.messages.length, text: question })
+  assert.ok(forked.ok, JSON.stringify(forked))
+  assert.notEqual(forked.info?.sessionId, parentId)
+  const branchProbe = '验证已擦除会话的新分叉仍保留独立原文'
+  const branchOffset = app.model.requests.length
+  await app.ask(branchProbe)
+  const branch = app.model.requests.slice(branchOffset) as Request[]
+  assert.ok(branch.some(request => questionOf(request.messages) === branchProbe && JSON.stringify(request.messages).includes(survivor)))
+  assert.ok(branch.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
+})
+
 test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 45_000 }, async t => {
   const app = await setup(t, () => null)
   const sourceId = randomUUID()
@@ -194,7 +708,7 @@ test('startup completes a history withdrawal interrupted by process death before
   try { assert.ok(await eventually(() => hasProfileRef(profileDb))) } finally { profileDb.close() }
   await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
   const profileProbe = '随手核对背景资料'
-  await app.ask(profileProbe)
+  const unsavedSource = await app.ask(profileProbe)
   assert.ok(app.model.requests.some(raw => {
     const request = raw as Request
     const content = request.messages.at(-1)?.content
@@ -215,6 +729,13 @@ test('startup completes a history withdrawal interrupted by process death before
   const survivorId = randomUUID()
   await app.call('agent:prompt', independent, [], survivorId)
   await app.call('history:save', [{ role: 'user', text: independent, receipt: null, sourceId: survivorId }])
+  const survivorStore = new DatabaseSync(memoryFile, { readOnly: true })
+  try {
+    // Finish the no-fact extraction before recovery so its cleanup cannot race this test.
+    assert.ok(await eventually(() => survivorStore.prepare(
+      "SELECT 1 FROM memory_sources WHERE id=? AND outcome='skipped'",
+    ).get(survivorId)), 'the independent prompt finished extraction without a memory fact')
+  } finally { survivorStore.close() }
   const generationBeforeRestart = contextGeneration(app.directory, initial.sessionId!)
   await app.stopBackend()
   const copies = new DatabaseSync(memoryFile)
@@ -276,6 +797,11 @@ test('startup completes a history withdrawal interrupted by process death before
     assert.equal(withdrawn?.text, null)
     assert.equal(withdrawn.withdrawn, 1)
     assert.ok(recoveredMemory.prepare('SELECT id FROM memory_excluded_sources WHERE id=?').get(sourceId))
+    assert.deepEqual({ ...recoveredMemory.prepare('SELECT text,withdrawn FROM memory_sources WHERE id=?').get(unsavedSource) },
+      { text: null, withdrawn: 1 }, 'whole history withdrawal includes originals absent from the renderer snapshot')
+    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=1').get(unsavedSource))
+    assert.equal(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(unsavedSource), undefined)
+    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(survivorId))
     assert.equal(hasProfileRef(recoveredMemory), false)
     assert.equal(recoveredMemory.prepare('SELECT rowid FROM memory_lexical_fts WHERE rowid=?').get(entry.id), undefined)
     assert.equal(recoveredMemory.prepare('SELECT memory FROM memory_semantic_vectors WHERE memory=?').get(entry.id), undefined)
@@ -959,3 +1485,91 @@ test('the real DSH send surface removes a stopped original and still delivers a 
   assert.equal(continued.conversationId, first.conversationId)
   assert.notEqual(continued.sessionId, first.sessionId)
 })
+
+for (const outcome of ['answer', 'stop'] as const) {
+  test(`real DSH recall asks through the foreground Viva card and handles ${outcome}`, { timeout: 45_000 }, async t => {
+    const topic = '会场安排', earlier = '会场安排原先是北厅，南厅尚未确认。', query = '这次会场安排是什么？', reply = '这次确定使用图书馆礼堂。'
+    let resolveWork: (() => void) | undefined
+    const app = await setup(t, request => {
+      if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
+        return { text: JSON.stringify({ status: 'write', title: topic, markdown: earlier }) }
+      }
+      if (questionOf(request.messages) !== query && lastWords(request.messages) !== query) return null
+      const recalled = modelToolResults(request, 'memory_recall')
+      if (!recalled.length) return { tool: { name: 'memory_recall', input: { query: topic } } }
+      const result = recalled.at(-1)
+      const ref = typeof result === 'string' ? (JSON.parse(result) as { clarification?: { ref: string } }).clarification?.ref : undefined
+      if (ref && !modelToolResults(request, 'memory_clarify').length) return { tool: { name: 'memory_clarify', input: { ref } } }
+      if (resolveWork && modelToolResults(request, 'memory_clarify').some(answer => JSON.stringify(answer).includes(reply))) {
+        const resolve = resolveWork
+        resolveWork = undefined
+        resolve()
+        return { tool: { name: 'memory_recall', input: { query: '图书馆礼堂' } } }
+      }
+      return null
+    }, { dailyNotes: true, fileMode: true })
+    const sourceId = randomUUID()
+    await app.call('agent:prompt', earlier, [], sourceId)
+    for (const prompt of ['准备下一次见面。', '先检查交通。', '还是要确认人数。', '我再同步日程。']) await app.ask(prompt)
+    const memory = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
+    const workId = `dream:${randomUUID()}`
+    try {
+      const summary = await eventually(async () => (await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'daily' })).items[0])
+      assert.ok(summary)
+      const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', summary.identity)
+      const original = memory.readSource(sourceId)!
+      const documents = openMemoryDocuments({ db: memory.db, root: memory.fileRoot, deferRecovery: true, source(id) {
+        const row = memory.readSource(id)
+        return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+      } })
+      const originalRef = { id: original.id, token: memorySourceToken(original) }
+      const seeded = documents.commit({ operationId: randomUUID(), workspace: file.identity.workspace, path: 'digest/wiki/follow-up-venue.md',
+        action: 'CREATE', expectedRevision: null, markdown: earlier, sources: [originalRef], reads: [] })
+      const digest = documents.read(file.identity.workspace, seeded.path)!
+      documents.defer({ operationId: workId, workspace: file.identity.workspace, unit: { name: topic, bucket: 'personal', summary: '确认本次会场安排', paths: [file.path] },
+        reason: '会场尚有不确定性', sources: [originalRef], reads: [{ id: digest.id, revision: digest.revision, usageVersion: digest.usageVersion }], readPolicies: [],
+        files: [{ path: file.path, revision: file.version.contentRevision, policyToken: file.version.policyToken }],
+      })
+      const offset = app.events.length, asked = app.ask(query)
+      const card = await eventually(() => app.events.slice(offset).find(event => event.type === 'question'))
+      assert.ok(card && 'questionId' in card && typeof card.questionId === 'string' && 'questions' in card && Array.isArray(card.questions),
+        JSON.stringify({ eventTypes: app.events.slice(offset).map(event => event.type), recall: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_recall')) }))
+      const question = card.questions[0] as { id: string; question: string; options: unknown[] }
+      assert.match(question.id, /^memory-clarify:file:/)
+      assert.match(question.question, /这次关于「会场安排」/)
+      assert.deepEqual(question.options, [])
+      const answer = () => app.call('agent:answer', card.questionId, [{ id: question.id, selected: [], custom: reply }], randomUUID())
+      if (outcome === 'stop') {
+        await app.call('agent:cancel')
+        await asked
+        assert.equal(await answer(), false)
+        assert.equal(documents.deferred(file.identity.workspace, workId)?.status, 'pending_clarification')
+        assert.equal(memory.readSource(question.id.slice('memory-clarify:file:'.length)), null)
+        return
+      }
+      resolveWork = () => {
+        // Consume the ready payload at the provider boundary to exercise the fast
+        // resolution race with a real subsequent memory tool and physical send.
+        const evidence = documents.deferred(file.identity.workspace, workId)?.answer?.source
+        assert.ok(evidence)
+        const line = file.markdown.split(/\r?\n/u).findIndex(value => value === earlier) + 1
+        assert.ok(line > 0)
+        documents.commit({ operationId: workId, workspace: file.identity.workspace, path: digest.path,
+          action: 'CORRECT', expectedRevision: digest.revision, markdown: reply, sources: [originalRef, evidence], reads: [digest],
+          corrections: [{ path: file.path, revision: file.version.contentRevision, startLine: line, endLine: line, text: earlier, condition: '本次会场', time: '当前' }] })
+        documents.resolve(file.identity.workspace, workId)
+      }
+      assert.equal(await answer(), true)
+      await asked
+      const receipts = memory.db.prepare('SELECT operation FROM memory_document_answers WHERE deferred=?').all(workId)
+      assert.deepEqual(receipts.map(row => row.operation), [question.id.slice('memory-clarify:file:'.length)])
+      assert.equal(documents.deferred(file.identity.workspace, workId), null)
+      assert.ok(documents.receipt(file.identity.workspace, workId))
+      const recalled = app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_recall'))
+      assert.doesNotMatch(JSON.stringify(recalled), /北厅|南厅/)
+      assert.ok(recalled.some(result => JSON.stringify(result).includes(reply)), 'the real provider receives a subsequent recall after resolution')
+      const answers = app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_clarify'))
+      assert.match(JSON.stringify(answers), /status.*answered.*图书馆礼堂/)
+    } finally { memory.close() }
+  })
+}

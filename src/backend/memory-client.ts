@@ -7,10 +7,12 @@ export function createVivaMemoryClient(call: HostMemoryCaller) {
     call(name, { args } as unknown as HostMemoryApi[M]['input'])
   return {
     listFiles: method('listFiles'), readFile: method('readFile'),
+    createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     recoverContext: method('recoverContext'),
     listMemories: method('listMemories'), listInvalid: method('listInvalid'), listChanges: method('listChanges'),
-    profile: method('profile'), profileView: method('profileView'), revision: method('revision'), cleanupPending: method('cleanupPending'),
+    profile: method('profile'), profileView: method('profileView'), fileProfile: method('fileProfile'),
+    revision: method('revision'), cleanupPending: method('cleanupPending'),
     onboarding: method('onboarding'), setOnboarding: method('setOnboarding'), rebuildIndexes: method('rebuildIndexes'),
     setProfile: (fields: Record<string, unknown>, operation: string = randomUUID()) => call('setProfile', { args: [fields, operation] }),
     resolveConflictPair: method('resolveConflictPair'), undoChange: method('undoChange'),

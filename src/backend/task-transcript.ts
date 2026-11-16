@@ -33,7 +33,8 @@ export function closed(transcript: Transcript): Transcript {
 }
 
 /** The user said something: words into the turn, or the next question. */
-export const said = (transcript: Transcript, words: string): Transcript => [...closed(transcript), { role: 'user', text: words }]
+export const said = (transcript: Transcript, words: string, key?: string): Transcript =>
+  [...closed(transcript), { role: 'user', text: words, ...(key ? { streamKey: key } : {}) }]
 
 /** The user answered what the agent asked: their reply, worded as the window words it. */
 export const answered = (transcript: Transcript, questions: readonly AnsweredQuestion[], answers: readonly QuestionAnswer[], sourceIds?: Readonly<Record<string, string>>): Transcript =>

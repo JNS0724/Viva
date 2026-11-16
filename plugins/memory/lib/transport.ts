@@ -3,11 +3,13 @@ import { channel } from 'node:diagnostics_channel'
 import { createHash, randomUUID } from 'node:crypto'
 import type { MemorySendPermit } from '../../../src/memory/core/send-fence.ts'
 
-export type MemoryTransportOrigin = { session: string, contextGeneration?: number } | { jobId: string }
+import type { NativeOutputAttempt } from '../../../src/memory/node/native-output-attempts.ts'
+
+export type MemoryTransportOrigin = { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }
 interface OriginContext { owner: MemoryTransportOwner; origin: MemoryTransportOrigin }
 interface Sending { permit: MemorySendPermit; created: boolean; origin?: string; path?: string }
 export interface MemoryTransportOwner {
-  acquireSend(id: string, origin: MemoryTransportOrigin, payload: string): MemorySendPermit
+  acquireSend(id: string, origin: MemoryTransportOrigin, payload: string): MemorySendPermit & { recordBody?(): void }
 }
 const calls = new AsyncLocalStorage<OriginContext>()
 const sends = new AsyncLocalStorage<Sending>()
@@ -76,6 +78,7 @@ const guardedFetch: typeof fetch = async (input, init) => {
           controller.error(new Error('Transport has no admitted observable request boundary'))
           return
         }
+        permit.recordBody?.()
         controller.enqueue(bytes); controller.close()
       } }, { highWaterMark: 0 }) }
     const result = await sends.run(sending, () => baseFetch!(input, options))

@@ -13,6 +13,7 @@ export const DREAM_INTEGRATE_SYSTEM = [
   'Do not infer replacement from recency, different names, memberships or arbitrary predicate categories. Unclear evidence must be deferred.',
   'Use write/edit/frontmatter_update only on one isolated draft. Keep name and description frontmatter, all existing metadata and source links. Add every supplied daily path in a full Sources sentence explaining what it supports; weave related digest links into contextual prose.',
   'CREATE must use digest/<unit bucket>/<name>.md. Updates may use an existing abstraction in another bucket. Preserve unrelated facts, negations, temporal qualifications and third-party attribution.',
+  'If the write tool rejects the new target as unavailable, choose a fresh filename in the same bucket, for example by adding a numeric suffix.',
   'After tools, return only JSON {"action":"CREATE|CORROBORATE|REFINE|CORRECT","target_path":"digest/...md","note":"what and why"}. There is no SKIP success.',
   'If information is ambiguous, return {"status":"deferred","reason":"the precise missing information"}; this is not a successful integration and no draft will be committed. Do not ask the user from this background job.',
 ].join('\n')

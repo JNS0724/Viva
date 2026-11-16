@@ -1,3 +1,4 @@
+import type { MemoryFileProfile } from '../memory/contracts/file-management.ts'
 import type { ActionHandlers } from './action-types.ts'
 import { initialMemoryFiles } from './memory-file-state.ts'
 /**
@@ -15,6 +16,7 @@ export const initialMemory = Object.freeze({
   /** Pending jobs in owner storage. Host and native receipts are tracked separately. */
   cleanupPending: 0,
   rebuildingIndexes: false,
+  fileProfile: null as MemoryFileProfile | null,
   onboarding: 'pending',
   habits: { text: '', samples: 0 },
   /** Profile field being edited in place, or null. */
@@ -68,6 +70,7 @@ export const PERSONAL_ACTIONS= {
     loadError: null,
     profile: data.profile,
     cleanupPending: data.cleanupPending ?? 0,
+    fileProfile: data.fileProfile ?? null,
     onboarding: data.onboarding,
     habits: data.habits,
     busy: false,
@@ -75,17 +78,18 @@ export const PERSONAL_ACTIONS= {
   memory_load_failed: (state, { message }) => withMemory(state, { loadError: message }),
   memory_open: (state, { view = 'profile' }) => withMemory(
     { ...state, island: false, picker: false, history: { ...state.history, open: false } },
-    { open: true, view, editing: null, error: null, loadError: null,
+    { open: true, view, fileProfile: null, editing: null, error: null, loadError: null,
       files: { ...initialMemoryFiles, writing: state.memory.files.writing }, docs: view === 'intro' ? [] : state.memory.docs },
   ),
   memory_close: (state) => withMemory(state, {
-    open: false, editing: null, error: null, loadError: null, busy: false,
+    open: false, fileProfile: null, editing: null, error: null, loadError: null, busy: false,
     files: { ...initialMemoryFiles, writing: state.memory.files.writing },
   }),
   memory_edit: (state, { key }) => withMemory(state, { editing: key, error: null }),
   memory_busy: (state) => withMemory(state, { busy: true, error: null }),
   memory_failed: (state, { message }) => withMemory(state, { busy: false, error: message }),
   memory_profile_saved: (state, { profile }) => withMemory(state, { profile, editing: null, busy: false, error: null }),
+  memory_summaries_stale: (state) => state.memory.fileProfile ? withMemory(state, { fileProfile: null }) : state,
   memory_index_rebuild: (state, { busy }) => withMemory(state, { rebuildingIndexes: busy }),
   memory_onboarding: (state, { status }) => withMemory(state, { onboarding: status }),
   memory_docs_added: (state, { docs }) => withMemory(state, {

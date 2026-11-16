@@ -55,6 +55,11 @@ export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoc
     snapshot,
     attach,
     transferable: (evidence: MemoryProvenance) => !evidence.turnOnly && evidence.epoch === store.epoch() && evidenceCurrent(evidence, Date.now()),
+    offerFileClarification(session: string, work: string) {
+      store.dispatch.offerFileClarification(session, work)
+      liveTurnOnly.add(session)
+    },
+    settleFileClarification: store.dispatch.settleFileClarification,
     recordTurnOnly(session: string) { retainTurnOnly(session); liveTurnOnly.add(session) },
     endTurn(session: string) { liveTurnOnly.delete(session) },
     resetLive() { liveTurnOnly.clear() },

@@ -8,10 +8,31 @@ const HEAD = '【请求 ID：'
  * A header inside the user's words (quoted from a log, say) is theirs, not a request: it goes in with a zero-width
  * space after its bracket, so only the app's own headers match, and comes back out as they said it.
  */
-const QUOTED = '【\u200B请求 ID：'
+const QUOTE = '\u200B'
+const QUOTED = `【${QUOTE}请求 ID：`
 const unquote = (text: string): string => text.replaceAll(QUOTED, HEAD)
 
-export const withRequestHeader = (words: string, requestId: string): string => `${HEAD}${requestId}】\n用户原话：${words.replaceAll(HEAD, QUOTED)}`
+const requestPrefix = (id: string) => `${HEAD}${id}】\n用户原话：`
+export const withRequestHeader = (words: string, requestId: string): string => requestPrefix(requestId) + words.replaceAll(HEAD, QUOTED)
+
+/** Locate original source text in the final wire, including headers quoted within it. */
+export function withRequestSource(words: string, requestId: string, source: string) {
+  if (!words.endsWith(source)) throw new Error('Request source is not the final part of its input')
+  const sourceStart = words.length - source.length
+  const spans: { start: number, end: number }[] = []
+  let cursor = 0, padding = requestPrefix(requestId).length
+  const locateThrough = (end: number) => {
+    const start = Math.max(cursor, sourceStart)
+    if (start < end) spans.push({ start: padding + start, end: padding + end })
+    cursor = end
+  }
+  for (let offset = words.indexOf(HEAD); offset !== -1; offset = words.indexOf(HEAD, offset + HEAD.length)) {
+    locateThrough(offset + 1)
+    padding += QUOTE.length
+  }
+  locateThrough(words.length)
+  return { text: withRequestHeader(words, requestId), spans }
+}
 
 /** The requests named in a message, in order, each with the words that follow its header. */
 export function requestsIn(text: string): Array<{ id: string, words: string }> {

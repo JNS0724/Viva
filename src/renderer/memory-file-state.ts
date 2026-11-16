@@ -1,6 +1,6 @@
 import type { MemoryFileSummary, MemoryManagedFileIdentity, MemoryFileListResult } from '../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView } from '../shared/ipc-results.ts'
-import type { ActionHandlers, MemoryFileSelection } from './action-types.ts'
+import type { ActionHandlers, MemoryFileEditor, MemoryFileSelection } from './action-types.ts'
 
 export interface MemoryFileState {
   query: string
@@ -12,6 +12,7 @@ export interface MemoryFileState {
   selection: MemoryFileSelection | null
   detail: MemoryFileDetailView | null
   detailError: string | null
+  editor: MemoryFileEditor | null
   writing: boolean
   writeError: string | null
 }
@@ -26,6 +27,7 @@ export const initialMemoryFiles = Object.freeze<MemoryFileState>({
   selection: null,
   detail: null,
   detailError: null,
+  editor: null,
   writing: false,
   writeError: null,
 })
@@ -35,6 +37,10 @@ export const sameMemoryFile = (a: MemoryManagedFileIdentity, b: MemoryManagedFil
 
 export const sameMemoryFileSelection = (a: MemoryFileSelection | null, b: MemoryFileSelection): boolean =>
   Boolean(a && a.restrictionId === b.restrictionId && sameMemoryFile(a.identity, b.identity))
+
+export function canEditMemoryFile(detail: MemoryFileDetailView | null): detail is MemoryFileDetailView & { editor: NonNullable<MemoryFileDetailView['editor']> } {
+  return Boolean(detail?.actions.edit && detail.editor && !detail.stoppedSnapshot)
+}
 
 export const memoryFilePageOpen = (memory: State['memory']): boolean => memory.open && memory.view === 'profile'
 
@@ -53,12 +59,13 @@ export const MEMORY_FILE_ACTIONS = {
     nextCursor: page.nextCursor, loaded: true, loading: false, listError: null,
   }) : state,
   memory_files_list_failed: (state, { message }) => withFiles(state, { loading: false, listError: message }),
-  memory_file_select: (state, { selection }) => withFiles(state, { selection, detail: null, detailError: null, writeError: null }),
+  memory_file_select: (state, { selection }) => withFiles(state, { selection, detail: null, detailError: null, editor: null, writeError: null }),
   memory_file_loading: (state) => withFiles(state, { detail: null, detailError: null }),
   memory_file_read: (state, { selection, detail }) => sameMemoryFileSelection(state.memory.files.selection, selection)
     ? withFiles(state, { detail, detailError: null }) : state,
   memory_file_read_failed: (state, { selection, message }) => sameMemoryFileSelection(state.memory.files.selection, selection)
     ? withFiles(state, { detail: null, detailError: message }) : state,
+  memory_file_editor: (state, { editor }) => withFiles(state, { editor }),
   memory_file_write_busy: (state, { busy }) => ({ ...state, memory: { ...state.memory, files: {
     ...state.memory.files, writing: busy, ...(busy ? { writeError: null } : {}),
   } } }),

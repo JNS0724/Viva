@@ -13,7 +13,7 @@ type Context = { sessionId: string }
 type Info = { sessionId: string }
 type Fake = { id: number, lifetime: DshLifetime, dispose: () => Promise<void>, disposed: number }
 
-function harness() {
+function harness(beforeStart?: (context: Context, isCold: () => boolean) => Promise<void>) {
   let time = 0
   const instances: Fake[] = [], order: string[] = [], ready: Info[] = [], connections: number[] = []
   const timers: Array<{ at: number, run: () => void, cancelled: boolean }> = []
@@ -23,6 +23,7 @@ function harness() {
   let createError: Error | null = null
   let afterCreate = () => {}
   const lifecycle = createDshLifecycle({
+    beforeStart,
     create: (_context: Context, lifetime): Fake => {
       if (createError) throw createError
       const gate = disposal
@@ -223,5 +224,42 @@ test('bounded shutdown returns on its deadline while later starts still await re
   h.disposing(null); const next = h.lifecycle.start({ sessionId: 'two' })
   await flush(); assert.equal(h.instances.length, 1)
   gate.resolve(); await next; assert.equal(h.instances.length, 2)
+  await h.lifecycle.stop()
+})
+
+test('cold startup waits for the old child and native readers and serializes new starts', async () => {
+  const firstCold = deferred<void>(), laterCold = deferred<void>(), oldReader = deferred<void>(), oldProcess = deferred<void>()
+  const entered: string[] = []
+  const h = harness(async ({ sessionId }, isCold) => {
+    assert.ok(isCold())
+    entered.push(sessionId)
+    if (sessionId === 'first') await firstCold.promise
+    if (sessionId === 'next') await laterCold.promise
+    assert.ok(isCold())
+  })
+  h.disposing(oldProcess.promise)
+  await h.lifecycle.start({ sessionId: 'old' })
+  const reading = h.lifecycle.readNative(() => oldReader.promise)
+  const stopped = h.lifecycle.stop(), first = h.lifecycle.start({ sessionId: 'first' })
+  let newReader = false
+  const waiting = h.lifecycle.readNative(async () => { newReader = true })
+  await flush()
+  assert.deepEqual(entered, ['old'])
+  oldProcess.resolve()
+  await stopped; await flush()
+  assert.deepEqual(entered, ['old'])
+  oldReader.resolve()
+  await reading; await flush()
+  assert.deepEqual(entered, ['old', 'first'])
+  const retiring = h.lifecycle.stop(), next = h.lifecycle.start({ sessionId: 'next' })
+  firstCold.resolve()
+  await retiring; assert.equal(await first, null); await flush()
+  assert.deepEqual(entered, ['old', 'first', 'next'])
+  assert.equal(h.instances.length, 1)
+  assert.equal(newReader, false)
+  laterCold.resolve()
+  assert.deepEqual(await next, { sessionId: 'next' })
+  await waiting
+  assert.equal(h.instances.length, 2)
   await h.lifecycle.stop()
 })

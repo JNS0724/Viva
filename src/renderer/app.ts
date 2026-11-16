@@ -967,9 +967,19 @@ function reportMcpProblems(info: AgentInfo | undefined, { fresh = false } = {}) 
 agentEvents = createAgentEvents({
   getState: () => state, dispatch, holdTask: taskActions.hold,
   afterTurn: sendAfterTurn, clearAfterTurn: conversationActions.clearAfterTurn,
-  ready: (info) => reportMcpProblems(info, { fresh: true }), mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo), refreshWorkDir: workDirActions.refresh,
+  ready: (info) => { reportMcpProblems(info, { fresh: true }); void historyActions.retryTrace() },
+  mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo),
+  refreshWorkDir: () => {
+    void workDirActions.refresh()
+    if (state.memory.open) memoryActions.onMemoryChanged({})
+  },
   refreshFiles: filesActions.filesAfterTurn,
-  memoryChanged: memoryActions.onMemoryChanged, filesChanged: filesActions.onFilesChanged,
+  memoryChanged: event => {
+    if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)
+    if (event.erasedOutputs?.length) void historyActions.invalidateSearch()
+    memoryActions.onMemoryChanged(event)
+  },
+  filesChanged: filesActions.onFilesChanged,
   refreshFeed: feedActions.loadFeed,
   rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),
 })

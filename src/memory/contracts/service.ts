@@ -88,7 +88,7 @@ export const memoryHostErasureRange = z.strictObject({
 export type MemoryHostErasureRange = z.infer<typeof memoryHostErasureRange>
 export const memoryHostEffect = z.discriminatedUnion('kind', [
   z.strictObject({ ...hostEffect, kind: z.enum(['erase-copies', 'invalidate-context']) }),
-  z.strictObject({ ...hostEffect, kind: z.literal('erase-file-copies'), ranges: z.array(memoryHostErasureRange).min(1) }),
+  z.strictObject({ ...hostEffect, kind: z.literal('erase-file-copies'), ranges: z.array(memoryHostErasureRange).min(1), traceSessions: z.array(key).optional() }),
 ])
 export type MemoryHostEffect = z.infer<typeof memoryHostEffect>
 const ack = z.strictObject({ accepted: z.literal(true) })

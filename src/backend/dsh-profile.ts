@@ -151,11 +151,11 @@ function modelLines({ providers, deepseek, defaultModel }: ProfileModels) {
  * Entries named by id are replaced whole (dsh patches by id do not merge), so both persona parts are
  * stated; then the plugins are inserted, with the stock dsh entries they serve.
  */
-export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null, webSearch = true }: {
+export function patchFor({ plugins, persona, models, imagesDir = null, pnpmCommand = null, registry = null, webSearch = true, dshHome }: {
   plugins: readonly ProfilePlugin[], persona?: Persona | null, models?: ProfileModels | null, imagesDir?: string | null, pnpmCommand?: string | null,
   registry?: string | null,
   /** 联网搜索 (settings): off takes web_search away from the model; web_fetch stays. */
-  webSearch?: boolean,
+  webSearch?: boolean, dshHome?: string,
 }) {
   const lines = [VIVA_LAYER_MARK]
   if (!webSearch) lines.push(...WEB_SEARCH_OFF)
@@ -175,6 +175,16 @@ export function patchFor({ plugins, persona, models, imagesDir = null, pnpmComma
   }
   // The memory owner is the sole conversation/daily-note writer. Keep the service registered but inert.
   if (plugins.some(plugin => plugin.name === 'viva-memory')) lines.push('- id: session-log-deepseek', "  name: '@deepseek-ai/dsh-session-log-deepseek'", '  disabled: false', '  config:', '    enabled: false')
+  if (dshHome && plugins.some(plugin => plugin.name === 'viva-memory')) {
+    const pin = (id: string, config: object) => [
+      `- id: ${id}`, `  name: '@deepseek-ai/dsh-${id}'`, '  disabled: false', `  config: ${JSON.stringify(config)}`,
+    ]
+    // The cold worker and the live DSH use the same private storage and cache.
+    lines.push(...pin('session-persistence-jsonl', { root: path.join(dshHome, 'sessions'), compression: 'zstd' }),
+      ...pin('storage-json', { root: path.join(dshHome, 'storages') }),
+      ...pin('storage-domain', { backend: 'json' }),
+      ...pin('session-query-sqlite', { path: ':memory:', openAt: 'never' }))
+  }
   lines.push(...pluginManagerLines(pnpmCommand, registry), ...subagentLines())
   return `${lines.join('\n')}\n${SAFETY_ROWS}`
 }
@@ -243,6 +253,6 @@ export function ensureDshProfile({ dshHome, profile, plugins, persona, models, i
   if (!fs.existsSync(path.join(dir, 'cordis.yml'))) fs.writeFileSync(path.join(dir, 'cordis.yml'), ROOT_CONFIG)
   if (!fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), WORKSPACE)
   ensureUserLayer(path.join(dir, 'cordis.patch.yml'))
-  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry, webSearch }))
+  writeIfChanged(vivaLayerFile(dshHome), patchFor({ plugins, persona, models, imagesDir, pnpmCommand, registry, webSearch, dshHome }))
   return dir
 }

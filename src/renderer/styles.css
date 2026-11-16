@@ -59,6 +59,7 @@
   /* The 打开任务 button's own padding, pulled back so its words line up with the note above. */
   --record-act-inset: -10px; --record-act-gap: 4px; --record-toggle-gap: 2px;
   --memory-action-gap: 12px; --memory-action-target: 28px;
+  --memory-file-search-min: 12rem;
   --cap-tab-gap: 4px; --cap-tab-padding: 6px;
   --toast-max-width: 560px; --toast-edge: 12px;
 }
@@ -856,6 +857,8 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
 
 /* Memory entry actions (view/profile-panel.ts, view/memory-files-panel.ts) */
 .memory-file-meta { margin: 0; }
+.memory-file-tools { display: flex; flex-wrap: wrap; gap: var(--memory-action-gap); align-items: center; }
+.memory-file-tools > .field { min-inline-size: min(100%, var(--memory-file-search-min)); }
 .memory-item[data-memory-file] > .memory-actions { flex: none; }
 .memory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--memory-action-gap); }
 .memory-actions > .link-btn { margin-left: 0; min-block-size: var(--memory-action-target); min-inline-size: var(--memory-action-target); text-align: start; }

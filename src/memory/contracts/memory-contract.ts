@@ -3,6 +3,7 @@ import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 
 export const MEMORY_CONTRACT = 6
 export const MEMORY_QUESTION_PREFIX = 'memory-clarify:'
+export const MEMORY_FILE_QUESTION_PREFIX = `${MEMORY_QUESTION_PREFIX}file:`
 export const memoryKinds = ['fact', 'preference', 'person', 'project', 'role'] as const
 export const memoryKind = z.enum(memoryKinds)
 export const operationId = z.uuid()
@@ -93,6 +94,9 @@ export const memoryClarificationResult = z.discriminatedUnion('status', [
   z.object({ status: z.literal('ready'), question: z.object({
     id: z.string().startsWith(MEMORY_QUESTION_PREFIX), question: z.string().min(1),
     options: z.tuple([clarificationOption, clarificationOption]),
+  }) }),
+  z.object({ status: z.literal('ready-file'), question: z.object({
+    id: z.string().startsWith(MEMORY_FILE_QUESTION_PREFIX), question: z.string().min(1), options: z.tuple([]),
   }) }),
   z.object({ status: z.literal('rejected'), reason: z.string() }),
 ])

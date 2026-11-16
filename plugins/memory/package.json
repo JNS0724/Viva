@@ -8,6 +8,7 @@
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
+    "./persistence": "./persistence.js",
     "./contracts": "./memory/contracts/index.js",
     "./core": "./memory/core/index.js",
     "./node": "./memory/node/index.js"
@@ -21,7 +22,15 @@
     "@deepseek-ai/schemastery": "~3.19.0",
     "@deepseek-ai/dsh-agent": "0.2.2-rc.2",
     "@deepseek-ai/dsh-commands": "0.2.2-rc.2",
-    "@deepseek-ai/dsh-subagent": "0.2.2-rc.2"
+    "@deepseek-ai/dsh-subagent": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-persistence": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.2-rc.2",
+    "koffi": "3.1.1",
+    "@deepseek-ai/dsh-storage": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-projection-cache": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-compaction-image-offload": "0.2.2-rc.2"
   },
   "viva": {
     "contract": {
@@ -31,6 +40,7 @@
   "license": "MIT",
   "files": [
     "index.js",
+    "persistence.js",
     "lib",
     "memory",
     "README.md",

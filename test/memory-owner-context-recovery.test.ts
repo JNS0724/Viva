@@ -79,6 +79,24 @@ test('a bound ticket survives owner restart and retired derived context cannot b
   assert.equal(owner.coordination.allowsProjectHistory({ segmentId: 'old-reply', sessionId: session, role: 'assistant', text: 'Old private content' }, undefined, undefined), false)
 })
 
+test('finishing extraction without a fact does not invalidate a bound recovery of the original', async t => {
+  const { dir, defer } = scratch(t, 'memory-context-extraction-')
+  const owner = openMemoryOwner({ root: dir, ...options, route: () => ({ provider: 'fake', model: 'fake' }),
+    compute: async () => '{"proposals":[]}' })
+  defer(() => owner.close()); await owner.recover()
+  const db = new DatabaseSync(join(dir, 'memory.db'), { readOnly: true }); defer(() => db.close())
+  const session = randomUUID(), human = await original(owner, session, 'Could you open the current project?')
+  const ticket = await owner.prepareContextRecovery({ sessionId: session, baseSurfaceHash: 'before-extraction', candidates: [human] })
+  assert.deepEqual(ticket.retainedMessageIds, [human.messageId])
+  const ack = bind(owner, ticket)
+  await owner.completeTurn({ sessionId: session, turn: 1, eventSeq: 2, sourceIds: [human.messageId],
+    assistant: '', completed: true, at: Date.now(), timezone: 'UTC' })
+  await owner.runtime.wake()
+  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(human.messageId)?.outcome, 'skipped')
+  await owner.commitContextRecovery(ack, () => true)
+  assert.deepEqual(owner.dispatch.snapshot(session).sources, [human.messageId])
+})
+
 test('stale acknowledgements cannot authorize a changed source or a newer recovery ticket', async t => {
   const { dir, defer } = scratch(t, 'memory-context-cas-')
   const owner = openMemoryOwner({ root: dir, ...options }); defer(() => owner.close()); await owner.recover()

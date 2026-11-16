@@ -1,12 +1,13 @@
 import { z } from 'zod'
-import { memoryProvenanceSchema } from './provenance.ts'
+import { memoryProvenanceSchema, type MemoryErasureEvidence } from './provenance.ts'
 import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, MemoryChange } from './records.ts'
 import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryInterval } from './facts.ts'
+import type { TextSpan } from './text-spans.ts'
 import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
-import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest } from './file-management.ts'
-import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
-  MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult } from './file-management.ts'
+import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
+import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail, MemoryFileProfile,
+  MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
 export const MEMORY_HOST_PROTOCOL = 1
@@ -20,11 +21,11 @@ export type MemoryChangeView = Pick<MemoryChange, 'id' | 'revision' | 'targetId'
   expectedRevisions: Array<{ id: number, revision: number }>,
   evidence: Array<{ start: number, end: number, sourceId: string, conversationId: string | null, text: string | null }>,
 }
-export type HostMemoryQuestion = { id: string, question: string, options: Array<{ label: string, description?: string }> }
+export type HostMemoryQuestion = { id: string, question: string, topic?: string, options: Array<{ label: string, description?: string }> }
 export type HostQuestionCard = HostMemoryQuestion & { header: string, multiSelect: boolean }
 export type MemorySourceAlias = {
   operationId: string, sourceId: string, session: string, conversation: string,
-  text: string, wireText?: string, context?: MemoryScope, project?: MemoryProject,
+  text: string, wireText?: string, wireSpans?: TextSpan[], context?: MemoryScope, project?: MemoryProject,
   origin?: 'original' | 'derived', dependencies?: MemoryProvenance,
 }
 export type SourceChangeInput = { operationId: string, conversation: string, ids: string[], onlySources?: true,
@@ -39,6 +40,8 @@ export interface HostMemoryApi {
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
   readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
   setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
+  createFile: Args<[request: MemoryFileCreateRequest], MemoryFileMutationResult>
+  editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
   forgetFile: Args<[request: MemoryFileForgetRequest], MemoryFileMutationResult>
   undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
   listMemories: Args<[query?: string], EntryPage>
@@ -46,9 +49,10 @@ export interface HostMemoryApi {
   listChanges: Args<[], MemoryChangeView[]>
   profile: Args<[], MemoryProfile>
   profileView: Args<[scope: Scope], MemoryProfileView>
+  fileProfile: Args<[project?: MemoryProject], MemoryFileProfile>
   revision: Args<[], number>
   epoch: Args<[], number>
-  cleanupPending: Args<[], boolean>
+  cleanupPending: Args<[], number>
   onboarding: Args<[], string>
   setOnboarding: Args<[status: string], string>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
@@ -72,9 +76,12 @@ export interface HostMemoryApi {
   transfer: Args<[session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean], boolean>
   canInherit: Args<[source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
   inherit: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
+  inheritFork: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
   allowsProjectHistory: Args<[row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject], boolean>
   useHistory: Args<[session: string | undefined, row: MemoryHistoryOccurrence], void>
   provenance: Args<[session: string], MemoryProvenance>
+  nativeOutputEvidence: { input: { session: string, seq: number, digest: string }, output: MemoryErasureEvidence[] | null }
+  authorizedProvenance: { input: { session: string, prior?: MemoryProvenance, sourceId?: string }, output: MemoryProvenance | null }
   recordSession: Args<[session: string], void>
   sessionProject: Args<[session: string], string | undefined>
   recordSessionProject: Args<[session: string, project: string], void>
@@ -83,7 +90,8 @@ export interface HostMemoryApi {
   replaySources: Args<[sources: readonly string[], text: string, project?: MemoryProject], boolean>
   forgetIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], MemoryEntry | false | null>
   correctionIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], { entry: MemoryEntry, text: string } | false | null>
-  bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string], { wireText: string }>
+  bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string, wireSpans?: TextSpan[]], { wireText: string }>
+  cancelFileClarification: Args<[session: string, questionId: string], boolean>
   clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check'], HostMemoryQuestion | null>
   authorizeGeneralQuestion: Args<[session: string, turn: string, cards: readonly HostQuestionCard[], conversation: string | null, context: MemoryScope, project?: MemoryProject, phase?: 'show' | 'check'], boolean>
   acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, question: string, requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
@@ -98,7 +106,9 @@ export type HostMemoryMethod = keyof HostMemoryApi
 export type HostMemoryCommand = { [M in HostMemoryMethod]: { method: M, input: HostMemoryApi[M]['input'] } }[HostMemoryMethod]
 export type HostMemoryCaller = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => Promise<HostMemoryApi[M]['output']>
 const key = z.string().min(1).max(256)
-const text = z.string().max(512_000)
+const MAX_HOST_TEXT = 512_000
+const text = z.string().max(MAX_HOST_TEXT)
+const wireSpans = z.array(z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() })).max(MAX_HOST_TEXT).optional()
 const integer = z.number().int().nonnegative()
 const project = z.strictObject({ kind: z.literal('project'), id: key })
 const scope = z.union([z.strictObject({ kind: z.literal('user') }), z.strictObject({ kind: z.enum(['project', 'conversation', 'task']), id: key })])
@@ -117,10 +127,12 @@ const target = args(z.tuple([integer, integer, key.optional()]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
+  createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
   listMemories: args(z.tuple([text.optional()])), listInvalid: empty, listChanges: empty, profile: empty,
   profileView: args(z.tuple([z.union([project, z.strictObject({ kind: z.literal('user') })])])),
+  fileProfile: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
   setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
   setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),
@@ -134,17 +146,20 @@ export const hostMemoryInputSchemas = {
   allowsSession: args(z.tuple([key, project.optional()])), recoverContext: args(z.tuple([key])), transferable: args(z.tuple([maybeProvenance])),
   transferStatus: args(z.tuple(transfer)), transfer: args(z.tuple([key, ...transfer])),
   canInherit: args(z.tuple(inheritance)), inherit: args(z.tuple([key, ...inheritance])),
+  inheritFork: args(z.tuple([key, ...inheritance])),
   allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional()])),
-  useHistory: args(z.tuple([key.optional(), occurrence])), provenance: args(z.tuple([key])),
+  useHistory: args(z.tuple([key.optional(), occurrence])), provenance: args(z.tuple([key])), authorizedProvenance: z.strictObject({ session: key, prior: provenance.optional(), sourceId: key.optional() }),
+  nativeOutputEvidence: z.strictObject({ session: key, seq: integer, digest: z.string().regex(/^[a-f0-9]{64}$/u) }),
   recordSession: args(z.tuple([key])), sessionProject: args(z.tuple([key])), recordSessionProject: args(z.tuple([key, z.string()])),
   recordDeliveredSource: args(z.tuple([key, key, z.boolean(), key])), isDerivedDelivery: args(z.tuple([key])),
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),
   forgetIntent: args(z.tuple([text, scope.optional(), project.optional()])), correctionIntent: args(z.tuple([text, scope.optional(), project.optional()])),
-  bindWireAlias: args(z.tuple([key, text, text, key.optional()])),
+  bindWireAlias: args(z.tuple([key, text, text, key.optional(), wireSpans])),
+  cancelFileClarification: args(z.tuple([key, key])),
   clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check'])])),
   authorizeGeneralQuestion: args(z.tuple([key, key, z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })), key.nullable(), scope, project.optional(), z.enum(['show', 'check']).optional()])),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, question: text, requestId: key, questionId: key, context: scope, project: project.optional() }),
-  sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),
+  sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), wireSpans, context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),
   prepareSourceChange: z.strictObject({ operationId: z.uuid(), conversation: key, ids: z.array(key), onlySources: z.literal(true).optional(), replacement: z.strictObject({ sourceId: key, segmentId: key, projectId: key.nullish() }).optional() }),
   commitSourceChange: z.strictObject({ operationId: z.uuid(), ticket: key }), getOperation: z.strictObject({ operationId: z.uuid() }),
   pendingHostEffects: z.strictObject({}), ackHostEffect: z.strictObject({ effectId: key, causeOperationId: z.uuid(), revision: integer }),

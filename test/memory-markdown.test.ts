@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseMemoryMarkdown } from '../src/memory/core/memory-markdown.ts'
+import { maskMemoryWikiLinks, parseMemoryMarkdown } from '../src/memory/core/memory-markdown.ts'
 import { memoryDocumentLinks } from '../src/memory/core/memory-dream-tools.ts'
 
 const length = (text: string) => new TextEncoder().encode(text).byteLength
@@ -65,6 +65,25 @@ test('wikilinks distinguish path, anchor and label with exact repeated occurrenc
     { path: 'digest/wiki/a.md', anchor: '主题', label: '显示', line: 5 },
     { path: 'digest/wiki/a.md', anchor: '主题', label: '显示', line: 7 },
   ])
+})
+
+test('retired wikilinks in YAML scalars preserve CRLF offsets, unrelated metadata and body', () => {
+  const path = 'digest/wiki/retired.md', body = 'Independent body: [[digest/wiki/current.md]]'
+  const escaped = String.raw`[[\u0009${path}\x20|citation]]`
+  const brackets = String.raw`\u005b\x5b${path}\x5d\u005d`
+  const literal = String.raw`[[\\t${path}]]`
+  const oneQuote = "digest/wiki/retired's.md"
+  const markdown = ['---', `name: "before ${escaped} after"`, `brackets: "${brackets}"`, `literal: "${literal}"`,
+    `single: '[[${oneQuote.replace("'", "''")}]]'`, 'keep: true', '---', body].join('\r\n')
+  const retired = (reference: string) => reference === path || reference === oneQuote
+  const projected = maskMemoryWikiLinks(markdown, retired)
+  const parsed = parseMemoryMarkdown(projected)
+  assert.equal(projected.length, markdown.length)
+  assert.equal(projected.indexOf(body), markdown.indexOf(body))
+  assert.deepEqual(projected.match(/\r\n/gu), markdown.match(/\r\n/gu))
+  assert.deepEqual(parsed.metadata, { name: `before ${' '.repeat(escaped.length)} after`, brackets: ' '.repeat(brackets.length),
+    literal: String.raw`[[\t${path}]]`, single: ' '.repeat(oneQuote.length + 5), keep: true })
+  assert.equal(maskMemoryWikiLinks(projected, retired), projected)
 })
 
 test('AST wikilinks ignore escaped, inline, fenced, indented and nested code', () => {

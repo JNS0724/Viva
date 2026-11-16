@@ -12,24 +12,36 @@ test('memory notices describe verified writes', () => {
 })
 
 function profileDom(t: TestContext) {
+  const frames: Array<() => void> = []
   class Element {
     textContent = ''
     children: Element[] = []
     attrs: Record<string, string> = {}
-    listeners: Record<string, () => unknown> = {}
+    listeners: Record<string, (event?: Partial<KeyboardEvent>) => unknown> = {}
+    value = ''
+    parent: Element | null = null
     readonly tag: string
     constructor(tag: string) { this.tag = tag }
     setAttribute(name: string, value: string) { this.attrs[name] = value }
-    addEventListener(name: string, listener: () => unknown) { this.listeners[name] = listener }
-    append(child: Element) { this.children.push(child) }
-    replaceChildren(...children: Element[]) { this.children = children }
-    querySelector() { return null }
+    addEventListener(name: string, listener: (event?: Partial<KeyboardEvent>) => unknown) { this.listeners[name] = listener }
+    append(child: Element) { child.parent = this; this.children.push(child) }
+    replaceChildren(...children: Element[]) {
+      for (const child of this.children) child.parent = null
+      this.children = []
+      for (const child of children) this.append(child)
+    }
+    get dataset() { return { memoryFileEditor: this.attrs['data-memory-file-editor'] } }
+    get isConnected(): boolean { return this.tag === 'root' || Boolean(this.parent?.isConnected) }
+    querySelector(selector: string): Element | null {
+      return selector === '[data-memory-file-editor]' ? flatten(this).find(node => node.dataset.memoryFileEditor) ?? null : null
+    }
     querySelectorAll() { return [] }
     contains() { return false }
   }
   function flatten(element: Element): Element[] { return [element, ...element.children.flatMap(flatten)] }
   const globals = globalThis as unknown as Record<string, unknown>
-  const before = Object.fromEntries(['Node', 'document', 'HTMLInputElement', 'HTMLTextAreaElement'].map(key => [key, globals[key]]))
+  const before = Object.fromEntries(['Node', 'document', 'HTMLInputElement', 'HTMLTextAreaElement', 'requestAnimationFrame'].map(key => [key, globals[key]]))
+  globals.requestAnimationFrame = (callback: () => void) => frames.push(callback)
   globals.Node = Element
   globals.HTMLInputElement = Element
   globals.HTMLTextAreaElement = Element
@@ -39,8 +51,9 @@ function profileDom(t: TestContext) {
   }
   t.after(() => { Object.assign(globals, before) })
   return {
-    draw(memory: State['memory'], handlers: Handlers) {
-      const panel = new Element('root')
+    root: () => new Element('root'),
+    flushFrames: () => { for (const callback of frames.splice(0)) callback() },
+    draw(memory: State['memory'], handlers: Handlers, panel = new Element('root')) {
       renderProfilePanel(panel as unknown as HTMLElement, memory, handlers)
       return flatten(panel)
     },
@@ -107,6 +120,85 @@ test('file details distinguish linked and unlocated sources without promoting th
   nodes = draw(state.memory, handlers)
   assert.ok(nodes.some(node => node.textContent === '原文尚未在本机定位。'))
   assert.ok(!nodes.some(node => node.tag === 'button' && node.textContent === '查看原文'))
+})
+
+test('file-backed profile opens the matching evidence by identity and clears obsolete project summaries', t => {
+  const { draw, flatten } = profileDom(t)
+  const identity = { kind: 'digest' as const, workspace: 'personal', id: 'file-a' }
+  const project = { kind: 'digest' as const, workspace: 'project', id: 'file-b' }
+  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
+    profile: {}, onboarding: 'done', habits: { text: '', samples: 0 }, fileProfile: {
+      user: [{ identity, text: '长期工作方式' }], project: [{ identity: project, text: '项目范围内的记忆' }],
+    },
+  } })
+  const selected: unknown[] = []
+  const handlers = { showMemoryFile: (item: unknown) => { selected.push(item) } } as Handlers
+  const sections = draw(state.memory, handlers).filter(node => node.attrs['data-profile-summary'])
+  assert.deepEqual(sections.map(node => node.attrs['data-profile-summary']), ['user', 'project'])
+  const projectNodes = flatten(sections[1])
+  const button = projectNodes.find(node => node.tag === 'button' && node.textContent === '查看依据')!
+  assert.ok(projectNodes.some(node => node.attrs.id === button.attrs['aria-describedby'] && node.textContent === '项目范围内的记忆'))
+  button.listeners.click()
+  assert.deepEqual(selected, [{ identity: project }])
+  state = reduce(state, { type: 'memory_summaries_stale' })
+  assert.ok(!draw(state.memory, handlers).some(node => node.attrs['data-profile-summary']))
+})
+
+test('the file editor keeps multiline submission and Escape separate from IME composition', t => {
+  const { draw } = profileDom(t)
+  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded',
+    data: { profile: {}, onboarding: 'done', habits: { text: '', samples: 0 } } })
+  state = reduce(state, { type: 'memory_file_editor', editor: { id: 3, kind: 'create', draft: { title: '', text: '' } } })
+  state = reduce(state, { type: 'memory_load_failed', message: 'Owner still syncing' })
+  const effects: unknown[] = []
+  const handlers = {
+    saveMemoryFileEditor: (id: number, draft: { title: string, text: string }) => effects.push({ id, ...draft }),
+    cancelMemoryFileEditor: (id: number) => effects.push(id),
+  } as unknown as Handlers
+  const nodes = draw(state.memory, handlers)
+  const form = nodes.find(node => node.tag === 'form')!
+  assert.equal(form.attrs['data-memory-files-view'], 'create', 'a refresh failure leaves the active draft visible')
+  nodes.find(node => node.attrs.name === 'memory-file-draft-title')!.value = '修订记录'
+  nodes.find(node => node.attrs.name === 'memory-file-draft-text')!.value = '第一段\n第二段'
+  const event = { preventDefault() {}, stopPropagation() {} }
+  form.listeners.compositionstart()
+  form.listeners.keydown({ ...event, key: 'Escape', isComposing: true })
+  form.listeners.submit(event)
+  form.listeners.compositionend()
+  form.listeners.keydown({ ...event, key: 'Escape', keyCode: 229 })
+  form.listeners.keydown({ ...event, key: 'Enter' })
+  assert.deepEqual(effects, [], 'native multiline and IME handling does not submit or cancel the editor')
+  form.listeners.submit(event)
+  form.listeners.keydown({ ...event, key: 'Escape' })
+  assert.deepEqual(effects, [{ id: 3, title: '修订记录', text: '第一段\n第二段' }, 3])
+})
+
+test('profile refresh waits for the active file editor IME composition and discards redraws from closed editors', t => {
+  const { draw, flatten, flushFrames, root } = profileDom(t)
+  const panel = root()
+  const handlers = {} as Handlers
+  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded',
+    data: { profile: {}, onboarding: 'done', habits: { text: '', samples: 0 } } })
+  state = reduce(state, { type: 'memory_file_editor', editor: { id: 1, kind: 'create', draft: { title: '', text: '' } } })
+  const form = draw(state.memory, handlers, panel).find(node => node.tag === 'form')!
+  form.listeners.compositionstart()
+  state = reduce(state, { type: 'memory_files_invalidated' })
+  assert.equal(draw(state.memory, handlers, panel).find(node => node.tag === 'form'), form)
+  state = reduce(state, { type: 'memory_load_failed', message: 'Latest owner state' })
+  assert.equal(draw(state.memory, handlers, panel).find(node => node.tag === 'form'), form)
+  form.listeners.compositionend()
+  assert.equal(flatten(panel).find(node => node.tag === 'form'), form, 'allow native input to finish before replacing the form')
+  flushFrames()
+  assert.ok(flatten(panel).some(node => node.textContent === 'Latest owner state'))
+  const current = flatten(panel).find(node => node.tag === 'form')!
+  assert.notEqual(current, form)
+  current.listeners.compositionstart()
+  draw(state.memory, handlers, panel)
+  current.listeners.compositionend()
+  state = reduce(state, { type: 'memory_close' })
+  draw(state.memory, handlers, panel)
+  flushFrames()
+  assert.equal(panel.children.length, 0)
 })
 
 test('the intro saves only the profile fields and lists sites and documents in the reading prompt', () => {

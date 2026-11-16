@@ -51,6 +51,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   }
 
   async function refreshMemoryViews() {
+    dispatch({ type: 'memory_summaries_stale' })
     files.invalidateFiles()
     await loadMemory()
   }

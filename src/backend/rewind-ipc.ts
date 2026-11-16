@@ -5,11 +5,12 @@ import { t } from '../shared/i18n/translate.ts'
  * folds at the point where the conversation branched.
  */
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
-import type { HistoryEvidence } from './history-recall.ts'
+import type { HistoryCarry } from './history-carry.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import type { StartedAgent } from './history-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
+import type { ReadNativeTrace } from './dsh-log.ts'
 import type { StoredMessage } from './history-schema.ts'
 import type { MemoryHistoryEdit } from './memory-withdrawal.ts'
 import { randomUUID } from 'node:crypto'
@@ -49,11 +50,11 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   derivedSource?: (id: string) => boolean | Promise<boolean>,
   canEditSource?: (id: string) => boolean | Promise<boolean>,
   commitEdit?: (edit: MemoryHistoryEdit) => Promise<Conversation>,
-  rebuild?: (previous: Conversation, kept: readonly StoredMessage[], force?: boolean) => { text: string, turns: number, evidence: HistoryEvidence[] } | null | Promise<{ text: string, turns: number, evidence: HistoryEvidence[] } | null>,
-  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void | Promise<void>,
-  carryNext?: (id: string, text: string) => void,
+  rebuild?: (previous: Conversation, kept: readonly StoredMessage[], force?: boolean) => Promise<HistoryCarry | null>,
+  publishCarry?: (target: Conversation, carry: HistoryCarry) => Promise<boolean>,
   onContinuation?: (conversation: Conversation, started: StartedAgent) => void | Promise<void>,
   traceDb?: () => Pick<ReturnType<typeof openTraceDb>, 'stepsOf'> | null,
+  readNativeTrace?: ReadNativeTrace,
 }) {
   const { db, current, isBusy, agentInfo, traceDb, selectSession } = deps
   async function rewind(request: Parameters<typeof checked>[0]) {
@@ -93,10 +94,10 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       const carried = edit ? await deps.rebuild?.(previous, kept, true) : fallback
       select(next)
       if (carried?.turns) {
-        await deps.onCarry?.(started.sessionId, carried.evidence)
-        deps.carryNext?.(next.id, carried.text)
+        await deps.publishCarry?.(next, carried)
       }
-      return { ok: true, info: { ...started, conversationId: next.id }, conversation: { id: next.id, messages: kept, ...withRecords(next.id) },
+      const messages = db.get(next.id)?.messages.slice(0, keep) ?? []
+      return { ok: true, info: { ...started, conversationId: next.id }, conversation: { id: next.id, messages, ...withRecords(next.id) },
         folds: db.foldsOf(next.id), ...(sourceId ? { sourceId } : {}), ...(edit ? { newSource: true } : {}) }
     })
   }
@@ -160,11 +161,15 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   function effects(request: { keep?: unknown } | null | undefined) {
     const keep = request?.keep
     if (!isCount(keep)) throw new Error('invalid rewind request')
-    const trace = traceDb?.()
-    const since = db.timelineOf(current().id)[keep]?.at
-    if (!trace || since === undefined) return { files: [], commands: [] }
-    const steps = db.sessionIds(current().id).flatMap((sessionId) => trace.stepsOf(sessionId))
-    return sideEffectsOf(steps, since)
+    const conversation = current().id
+    const since = db.timelineOf(conversation)[keep]?.at
+    if (since === undefined) return { files: [], commands: [] }
+    const sessions = db.sessionIds(conversation)
+    const read = (visible: readonly string[]) => {
+      const trace = traceDb?.()
+      return sideEffectsOf(trace ? visible.flatMap(session => trace.stepsOf(session)) : [], since)
+    }
+    return deps.readNativeTrace ? deps.readNativeTrace(sessions, read) : read(sessions)
   }
 
   ipcMain.handle('timeline:rewind', (_event, request) => rewind(request))

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { requestsIn, withoutHeaders, withRequestHeader } from '../src/shared/request-routing/header.ts'
+import { requestsIn, withoutHeaders, withRequestHeader, withRequestSource } from '../src/shared/request-routing/header.ts'
 import { parsePlan } from '../src/shared/request-routing/protocol.ts'
 import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
 import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
@@ -16,6 +16,18 @@ test('a request header round-trips, several in one message each keep their own w
   const quoted = '这段日志是什么意思：\n【请求 ID：r-9】\n用户原话：以前的话'
   assert.deepEqual(requestsIn(withRequestHeader(quoted, 'r-1')), [{ id: 'r-1', words: quoted }], 'a header the user quotes is part of their words, not a request')
   assert.equal(withoutHeaders(withRequestHeader(quoted, 'r-1')), quoted, 'and comes back as they said it')
+})
+
+test('routed request binds only the actual user input through carry and quoted headers', () => {
+  const original = '🧪 请解释 【请求 ID：r-3】\n用户原话：某条旧记录'
+  const carried = `${original}\n\n${original}`
+  const routed = withRequestSource(carried, 'new-1', original)
+  assert.equal(routed.text, withRequestHeader(carried, 'new-1'))
+  assert.deepEqual(requestsIn(routed.text), [{ id: 'new-1', words: carried }])
+  assert.equal(routed.spans.map(span => routed.text.slice(span.start, span.end)).join(''), original)
+  assert.ok(routed.spans[0]!.start > routed.text.length / 2)
+  assert.equal(routed.spans[1]!.start - routed.spans[0]!.end, 1)
+  assert.throws(() => withRequestSource(carried, 'new-1', 'missing'), /final part/)
 })
 
 test('a plan is accepted only when goals and actions agree both ways, flat, within limits', () => {
