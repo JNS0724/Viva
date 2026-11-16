@@ -854,7 +854,9 @@ body:has(.workdir-menu) .toast-root { visibility: hidden; }
   .hub-page { padding: 20px 16px 40px; }
 }
 
-/* Memory entry actions (view/profile-panel.ts) */
+/* Memory entry actions (view/profile-panel.ts, view/memory-files-panel.ts) */
+.memory-file-meta { margin: 0; }
+.memory-item[data-memory-file] > .memory-actions { flex: none; }
 .memory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--memory-action-gap); }
 .memory-actions > .link-btn { margin-left: 0; min-block-size: var(--memory-action-target); min-inline-size: var(--memory-action-target); text-align: start; }
 .memory-actions > [data-tone="danger"] { color: var(--error-ink); }

@@ -22,6 +22,7 @@ import { initialImportFlow, IMPORT_FLOW_ACTIONS } from './import-flow-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
+import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
 
 /**
  * Pure, immutable conversation state. ACP updates go in; the views read it out.
@@ -303,6 +304,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...taskActions(),
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
+  ...MEMORY_FILE_ACTIONS,
   ...MODEL_ACTIONS,
   ...PLUGIN_ACTIONS,
   ...FILES_ACTIONS,

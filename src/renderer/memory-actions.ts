@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import type { MemoryChangeRecord } from '../shared/ipc-results.ts'
+import { createMemoryFileActions } from './memory-file-actions.ts'
 const SEARCH_DEBOUNCE_MS = 200
 const NOTICE_TOAST_MS = 6000
 /** The profile fields the intro asks for: all three. Sites and documents are only read, not kept. */
@@ -40,6 +41,7 @@ export function memoryNotice({ memories = [], invalidated = [] }: { memories?: r
 
 /** The "关于你" page and the intro. */
 export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'>) {
+  const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage })
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   let memoryRequest = 0
   let searchRequest = 0
@@ -53,9 +55,10 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       const data = await api.getMemory()
       if (request !== memoryRequest) return false
       dispatch({ type: 'memory_loaded', data })
-      return true
+      await files.refreshFiles()
+      return request === memoryRequest
     } catch (err) {
-      if (request === memoryRequest) fail(err)
+      if (request === memoryRequest) dispatch({ type: 'memory_load_failed', message: errorMessage(err) })
       return false
     }
   }
@@ -95,7 +98,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     invalidRequest++
     changesRequest++
     dispatch({ type: 'memory_summaries_stale' })
-    if (!await loadMemory()) return
+    files.invalidateFiles()
+    if (!await loadMemory() || getState().memory.fileMode) return
     const current = getState().memory
     await Promise.all([
       current.open && current.query.trim() ? runSearch(current.query) : null,
@@ -136,12 +140,15 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   }
 
   return {
+    ...files,
     loadMemory,
     openProfile(view = 'profile') {
+      files.cancelReads()
       dispatch({ type: 'memory_open', view })
       loadMemory()
     },
     closeProfile() {
+      files.cancelReads()
       memoryRequest++
       searchRequest++
       invalidRequest++
@@ -270,7 +277,9 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       dispatch({ type: 'memory_index_rebuild', busy: true })
       try {
         const result = await api.rebuildMemoryIndexes()
-        const message = result.fullText && result.semantic ? t('memory-actions.index.rebuild.started')
+        const message = getState().memory.fileMode
+          ? t(result.files?.lexical ? 'memory-files.index.rebuilt' : 'memory-actions.index.rebuild.failed')
+          : result.fullText && result.semantic ? t('memory-actions.index.rebuild.started')
           : result.fullText ? t('memory-actions.index.rebuild.full-text-only')
             : result.semantic ? t('memory-actions.index.rebuild.semantic-only') : t('memory-actions.index.rebuild.failed')
         showToast(message)

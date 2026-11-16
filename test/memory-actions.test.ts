@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { createMemoryActions, introChanges, introPrompt, memoryNotice } from '../src/renderer/memory-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { renderProfilePanel } from '../src/renderer/view/profile-panel.ts'
+import type { MemoryFileDetailView } from '../src/shared/ipc-results.ts'
 
 test('memory notices distinguish saved memories from facts that stopped counting', () => {
   assert.equal(memoryNotice({ memories: ['直属上级是李四'], invalidated: ['张三是直属上级'] }), '已记住：直属上级是李四；「张三是直属上级」已不再使用')
@@ -87,16 +88,16 @@ test('a summary from an earlier load cannot replace the fallback after memory ch
   assert.equal(state.memory.summaries, null)
 })
 
-test('About You presents distinct summary scopes, fallback notice, and verified timeline navigation', () => {
+function profileDom(t: TestContext) {
   class Element {
     textContent = ''
     children: Element[] = []
     attrs: Record<string, string> = {}
-    listeners: Record<string, () => void> = {}
+    listeners: Record<string, () => unknown> = {}
     readonly tag: string
     constructor(tag: string) { this.tag = tag }
     setAttribute(name: string, value: string) { this.attrs[name] = value }
-    addEventListener(name: string, listener: () => void) { this.listeners[name] = listener }
+    addEventListener(name: string, listener: () => unknown) { this.listeners[name] = listener }
     append(child: Element) { this.children.push(child) }
     replaceChildren(...children: Element[]) { this.children = children }
     querySelector() { return null }
@@ -113,32 +114,100 @@ test('About You presents distinct summary scopes, fallback notice, and verified 
     createElement: (tag: string) => new Element(tag), createElementNS: (_ns: string, tag: string) => new Element(tag),
     createTextNode: (text: string) => Object.assign(new Element('#text'), { textContent: text }),
   }
-  try {
-    const link = 'viva://timeline/segment-1/0/88'
-    const summaries = {
-      user: { generated: true, items: [{ id: 1, text: '长期工作方式', source: { text: '原始发言', link } }] },
-      project: { generated: false, items: [{ id: 2, text: '<b>当前项目约束</b>', source: { text: null, link: 'javascript:bad()' } }] },
-    }
-    const loaded = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
-      summaries, profile: {}, habits: { text: '', samples: 0 }, total: 0, items: [],
-    } })
-    const navigated: string[] = []
-    const handlers = { closeProfile: () => { navigated.push('close') }, openLink: (url: string) => { navigated.push(url) } }
-    const panel = new Element('root')
-    renderProfilePanel(panel as unknown as HTMLElement, loaded.memory, handlers as Handlers)
-    const sections = flatten(panel).filter(node => node.attrs['data-profile-summary'])
-    assert.deepEqual(sections.map(node => node.attrs['data-profile-summary']), ['user', 'project'])
-    const user = flatten(sections[0]), project = flatten(sections[1])
-    assert.ok(user.some(node => node.textContent === '原始发言'))
-    assert.ok(!user.some(node => node.textContent.startsWith('摘要还没准备好')))
-    assert.ok(project.some(node => node.textContent.startsWith('摘要还没准备好')))
-    assert.ok(project.some(node => node.textContent === '<b>当前项目约束</b>'))
-    assert.ok(!project.some(node => node.tag === 'button'))
-    user.find(node => node.attrs['aria-label'] === '查看记忆 #1 的原文')?.listeners.click()
-    assert.deepEqual(navigated, ['close', link])
-  } finally {
-    Object.assign(globals, before)
+  t.after(() => { Object.assign(globals, before) })
+  return {
+    draw(memory: State['memory'], handlers: Handlers) {
+      const panel = new Element('root')
+      renderProfilePanel(panel as unknown as HTMLElement, memory, handlers)
+      return flatten(panel)
+    },
+    flatten,
   }
+}
+
+test('About You presents distinct summary scopes, fallback notice, and verified timeline navigation', t => {
+  const { draw, flatten } = profileDom(t)
+  const link = 'viva://timeline/segment-1/0/88'
+  const summaries = {
+    user: { generated: true, items: [{ id: 1, text: '长期工作方式', source: { text: '原始发言', link } }] },
+    project: { generated: false, items: [{ id: 2, text: '<b>当前项目约束</b>', source: { text: null, link: 'javascript:bad()' } }] },
+  }
+  const loaded = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
+    summaries, profile: {}, habits: { text: '', samples: 0 }, total: 0, items: [],
+  } })
+  const navigated: string[] = []
+  const handlers = { closeProfile: () => { navigated.push('close') }, openLink: (url: string) => { navigated.push(url) } }
+  const sections = draw(loaded.memory, handlers as Handlers).filter(node => node.attrs['data-profile-summary'])
+  assert.deepEqual(sections.map(node => node.attrs['data-profile-summary']), ['user', 'project'])
+  const user = flatten(sections[0]), project = flatten(sections[1])
+  assert.ok(user.some(node => node.textContent === '原始发言'))
+  assert.ok(!user.some(node => node.textContent.startsWith('摘要还没准备好')))
+  assert.ok(project.some(node => node.textContent.startsWith('摘要还没准备好')))
+  assert.ok(project.some(node => node.textContent === '<b>当前项目约束</b>'))
+  assert.ok(!project.some(node => node.tag === 'button'))
+  user.find(node => node.attrs['aria-label'] === '查看记忆 #1 的原文')?.listeners.click()
+  assert.deepEqual(navigated, ['close', link])
+})
+
+test('a failed reopen of About You offers an operable retry even when file mode was loaded before', async t => {
+  const { draw } = profileDom(t)
+  const data = { fileMode: true, profile: {}, items: [], total: 0, onboarding: 'done', habits: { text: '', samples: 0 } }
+  let rejectLoad = false, fileLists = 0, state: State = initialState
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  const api: Pick<AgentApi, 'getMemory' | 'listMemoryFiles'> = {
+    getMemory: async () => { if (rejectLoad) throw new Error('Disconnected from owner'); return data },
+    listMemoryFiles: async () => { fileLists++; return { status: 'ok', snapshot: 'snapshot', items: [], nextCursor: null } },
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast: () => {}, ask: () => false })
+  dispatch({ type: 'memory_open' })
+  assert.equal(await actions.loadMemory(), true)
+  assert.equal(state.memory.files.loaded, true)
+  actions.closeProfile()
+  dispatch({ type: 'memory_open' })
+  rejectLoad = true
+  assert.equal(await actions.loadMemory(), false)
+  assert.equal(state.memory.loaded, true, 'a previous capability load is cached')
+  const failed = draw(state.memory, actions as Handlers)
+  assert.ok(failed.some(node => node.attrs.role === 'alert' && node.textContent.includes('Disconnected from owner')))
+  assert.ok(!failed.some(node => node.textContent === '正在加载记忆…'))
+  const retry = failed.find(node => node.tag === 'button' && node.textContent === '重新加载')
+  assert.ok(retry?.listeners.click)
+  rejectLoad = false
+  assert.equal(await retry.listeners.click(), true)
+  assert.equal(state.memory.loadError, null)
+  assert.equal(state.memory.files.loaded, true)
+  assert.equal(fileLists, 2)
+})
+
+test('file details distinguish linked and unlocated sources without promoting the note text to evidence', t => {
+  const { draw } = profileDom(t)
+  const identity = { kind: 'daily' as const, id: 'note', workspace: 'workspace' }
+  const selection = { identity }
+  const link = 'viva://timeline/segment/0/88'
+  const unknown = { namespace: 'canonical', sourceId: 'unlocated', revision: 1, link: null }
+  const detail: MemoryFileDetailView = { identity, version: { contentRevision: 'body', usageVersion: 1, policyToken: 'policy' },
+    title: '日记', path: 'daily/note.md', enabled: true, applicability: 'current', actions: { setEnabled: true, edit: false, forget: false, undo: null },
+    markdown: '这是笔记内容。', sources: [{ ...unknown, sourceId: 'linked', link }, unknown],
+  }
+  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: { fileMode: true, cleanupPending: 2, profile: {}, habits: { text: '', samples: 0 } } })
+  state = reduce(state, { type: 'memory_file_select', selection })
+  state = reduce(state, { type: 'memory_file_read', selection, detail })
+  const links: string[] = []
+  const handlers = { closeProfile: () => {}, openLink: (url: string) => { links.push(url) } } as Handlers
+  let nodes = draw(state.memory, handlers)
+  assert.ok(nodes.some(node => node.textContent === '部分原文尚未在本机定位。'))
+  assert.ok(nodes.some(node => node.textContent === '记忆存储还有 2 项清理待处理。'))
+  const source = nodes.find(node => node.tag === 'button' && node.textContent === '查看原文')
+  assert.ok(source?.listeners.click)
+  source.listeners.click()
+  assert.deepEqual(links, [link])
+  const archived = { ...selection, restrictionId: 'archive' }
+  state = reduce(state, { type: 'memory_file_select', selection: archived })
+  state = reduce(state, { type: 'memory_file_read', selection: archived, detail: { ...detail,
+    stoppedSnapshot: { restrictionId: 'archive', markdown: '这是存档笔记。', sources: [unknown] } } })
+  nodes = draw(state.memory, handlers)
+  assert.ok(nodes.some(node => node.textContent === '原文尚未在本机定位。'))
+  assert.ok(!nodes.some(node => node.tag === 'button' && node.textContent === '查看原文'))
 })
 
 test('the intro saves only the profile fields and lists sites and documents in the reading prompt', () => {

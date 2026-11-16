@@ -231,13 +231,22 @@ test('Viva IPC forwards a versioned management command and rejects caller-suppli
   const f = await fixture(t)
   const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
-  registerRuntimeMemoryIpc(ipc, { client: f.client, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null })
-  const call = (channel: string, value: unknown) => listeners.get(channel)!({}, value)
+  const localLink = 'viva://timeline/segment/0/1'
+  registerRuntimeMemoryIpc(ipc, { fileMode: true, client: { ...f.client,
+    listMemories: () => { throw new Error('File mode must not list fact rows') },
+    profileView: () => { throw new Error('File mode must not read a fact summary') },
+  }, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null,
+  sourceLink: (sourceId) => sourceId === f.sourceId ? localLink : null })
+  const call = (channel: string, ...args: unknown[]) => listeners.get(channel)!({}, ...args)
+  const page = await call('memory:get') as { fileMode: boolean, items: unknown[], summaries?: unknown }
+  assert.equal(page.fileMode, true)
+  assert.deepEqual(page.items, [])
+  assert.equal(page.summaries, undefined)
   const detail = (await f.client.readFile(f.identity))!
   const command = { operationId: randomUUID(), identity: f.identity, version: detail.version, enabled: false }
   assert.throws(() => call('memory:read-file', { ...f.identity, authorized: true }), /invalid memory:read-file/)
   assert.throws(() => call('memory:set-file-enabled', { ...command, version: { ...detail.version, policyToken: undefined } }), /invalid memory:set-file-enabled/)
-  assert.deepEqual(await call('memory:read-file', f.identity), detail)
+  assert.deepEqual(await call('memory:read-file', f.identity), { ...detail, sources: detail.sources.map(source => ({ ...source, link: localLink })) })
   assert.equal(memoryFileMutationResult.parse(await call('memory:set-file-enabled', command)).action, 'DISABLE')
   assert.equal((await f.client.readFile(f.identity))?.enabled, false)
 })

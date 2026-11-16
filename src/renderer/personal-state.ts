@@ -1,5 +1,6 @@
 import type { ActionHandlers } from './action-types.ts'
 import type { MemoryChangeRecord, MemorySummaryView } from '../shared/ipc-results.ts'
+import { initialMemoryFiles } from './memory-file-state.ts'
 /**
  * The "关于你" page (profile, memories, intro) and the 扩展 section of settings (MCP servers, skills).
  * Pure and immutable like the rest of `state.js`, which merges these handlers into its reducer.
@@ -9,9 +10,13 @@ export const initialMemory = Object.freeze({
   /** 'profile' shows what the agent knows; 'intro' is the short get-to-know-you form. */
   view: 'profile',
   loaded: false,
+  loadError: null as string | null,
+  fileMode: false,
+  files: initialMemoryFiles,
   profile: {},
   items: [],
   total: 0,
+  /** Pending jobs in owner storage. Host and native receipts are tracked separately. */
   cleanupPending: 0,
   /** How many memories stopped counting (replaced or forgotten), and the list once opened. */
   invalid: 0,
@@ -80,6 +85,8 @@ export const PERSONAL_ACTIONS= {
   /** A reload keeps the hits of a search that is still typed. */
   memory_loaded: (state, { data }) => withMemory(state, {
     loaded: true,
+    loadError: null,
+    fileMode: data.fileMode ?? false,
     profile: data.profile,
     items: state.memory.query.trim() ? state.memory.items : data.items,
     total: data.total,
@@ -90,13 +97,16 @@ export const PERSONAL_ACTIONS= {
     habits: data.habits,
     busy: false,
   }),
+  memory_load_failed: (state, { message }) => withMemory(state, { loadError: message }),
   memory_open: (state, { view = 'profile' }) => withMemory(
     { ...state, island: false, picker: false, history: { ...state.history, open: false } },
-    { open: true, view, summaries: null, editing: null, editingMemory: null, error: null, query: '', docs: view === 'intro' ? [] : state.memory.docs },
+    { open: true, view, summaries: null, editing: null, editingMemory: null, error: null, loadError: null, query: '',
+      files: { ...initialMemoryFiles, writing: state.memory.files.writing }, docs: view === 'intro' ? [] : state.memory.docs },
   ),
   memory_close: (state) => withMemory(state, {
     open: false, summaries: null, editing: null, editingMemory: null, invalidOpen: false, invalidLoaded: false, invalidItems: [], conflictEditor: null,
-    changesOpen: false, changesLoaded: false, changes: [], error: null, busy: false,
+    changesOpen: false, changesLoaded: false, changes: [], error: null, loadError: null, busy: false,
+    files: { ...initialMemoryFiles, writing: state.memory.files.writing },
   }),
   memory_edit: (state, { key }) => withMemory(state, { editing: key, error: null }),
   memory_edit_entry: (state, { target }) => withMemory(state, { editingMemory: target, error: null }),

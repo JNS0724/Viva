@@ -1,5 +1,6 @@
 import type { ConversationPayloads } from './conversation-types.ts'
-import type { KeptTask } from '../shared/ipc-results.ts'
+import type { KeptTask, MemoryFileDetailView } from '../shared/ipc-results.ts'
+import type { MemoryFileListResult, MemoryManagedFileIdentity } from '../memory/contracts/file-management.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
@@ -10,6 +11,7 @@ type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' |
 type ReadConversation = { id: string, messages: readonly SavedMessage[], records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
 type Settings = Partial<State['settings']>
 type Review = State['review']
+export type MemoryFileSelection = { identity: MemoryManagedFileIdentity, restrictionId?: string }
 /** Closed payload table: adding a UI operation requires naming its payload, never an open action dictionary. */
 export interface ActionPayloads extends ConversationPayloads {
   ready: { info: Info }
@@ -91,6 +93,7 @@ export interface ActionPayloads extends ConversationPayloads {
   models_discovery_close: {}
   models_adopt: { rows: readonly ModelRow[] }
   memory_loaded: { data: Partial<State['memory']> }
+  memory_load_failed: { message: string }
   memory_open: { view?: string }
   memory_close: {}
   memory_edit: { key: string | null }
@@ -115,6 +118,17 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_revived: { memory: State['memory']['items'][number] }
   memory_onboarding: { status: State['memory']['onboarding'] }
   memory_docs_added: { docs: State['memory']['docs'] }
+  memory_files_query: { query: string }
+  memory_files_invalidated: {}
+  memory_files_loading: {}
+  memory_files_listed: { query: string, page: MemoryFileListResult, more: boolean }
+  memory_files_list_failed: { message: string }
+  memory_file_select: { selection: MemoryFileSelection | null }
+  memory_file_loading: {}
+  memory_file_read: { selection: MemoryFileSelection, detail: MemoryFileDetailView }
+  memory_file_read_failed: { selection: MemoryFileSelection, message: string }
+  memory_file_write_busy: { busy: boolean }
+  memory_file_write_failed: { message: string }
   extensions_loaded: { view: Partial<State['extensions']> }
   extensions_busy: {}
   extensions_failed: { message: string }

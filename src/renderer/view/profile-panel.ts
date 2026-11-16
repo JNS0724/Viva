@@ -6,6 +6,7 @@ import { formatDate } from '../../shared/i18n/format.ts'
 import { timelinePlace } from '../timeline-search.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { icon } from './icons.ts'
+import { memoryFilesSection } from './memory-files-panel.ts'
 import type { MemoryChangeRecord, MemorySummaryView } from '../../shared/ipc-results.ts'
 
 /** The 关于你 page's part of the state (personal-state.ts). */
@@ -306,10 +307,17 @@ function summarySection(scope: 'user' | 'project', summary: MemorySummaryView | 
     })))
 }
 
+function memoryLoadError(memory: MemoryPage, handlers: Handlers) {
+  return memory.loadError ? h('div', { class: 'profile-section' },
+    h('p', { class: 'form-error', role: 'alert', text: memory.loadError }),
+    h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
+      text: t('memory-files.retry'), onClick: handlers.loadMemory }))) : null
+}
+
 function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[] {
   return [
     h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.about.you") }),
-    h('p', { class: 'help', text: t("profile-panel.everything.the.assistant.knows.about.you.is") }),
+    h('p', { class: 'help', text: t(memory.fileMode ? 'memory-files.intro' : 'profile-panel.everything.the.assistant.knows.about.you.is') }),
     memory.error ? h('p', { class: 'form-error', role: 'alert', text: memory.error }) : null,
     h('section', { class: 'profile-section' },
       h('h3', { class: 'profile-heading', text: t("profile-panel.your.profile") }),
@@ -317,7 +325,9 @@ function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[
       habitsRow(memory.habits)),
     memory.summaries ? summarySection('user', memory.summaries.user, handlers) : null,
     memory.summaries ? summarySection('project', memory.summaries.project, handlers) : null,
-    memoriesSection(memory, handlers, now),
+    memory.loadError ? memoryLoadError(memory, handlers)
+      : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
+      : memory.fileMode ? memoryFilesSection(memory, handlers) : memoriesSection(memory, handlers, now),
   ]
 }
 
@@ -360,6 +370,7 @@ function introView(memory: MemoryPage, handlers: Handlers): View[] {
   return [
     h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.let.me.get.to.know.you") }),
     h('p', { class: 'help', text: t("profile-panel.every.field.is.optional.edit.them.anytime") }),
+    memoryLoadError(memory, handlers),
     form,
   ]
 }
@@ -371,10 +382,15 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
     return
   }
   const shownView = container.querySelector<HTMLElement>('.profile')?.dataset.view ?? null
+  const shownFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
   keepingInput(container, () => container.replaceChildren(
     h('section', { class: 'settings profile', 'aria-labelledby': 'profile-title', 'data-view': memory.view },
       ...(memory.view === 'intro' ? introView(memory, handlers) : profileView(memory, handlers, now)).filter(Boolean))))
   if (shownView !== 'intro' && memory.view === 'intro') container.querySelector<HTMLElement>('[name="intro-role"]')?.focus()
+  const nextFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
+  if (shownFiles && nextFiles && shownFiles !== nextFiles) {
+    container.querySelector<HTMLElement>(nextFiles === 'detail' ? '[name="memory-file-back"]' : '[name="memory-files-search"]')?.focus()
+  }
   container.querySelector<HTMLElement>('.profile-input')?.focus()
 }
 

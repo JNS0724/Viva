@@ -456,7 +456,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   /** The topic a stored segment is part of, or null when there is no such segment. */
   const topicOf = (id: unknown): string | null => sql.topicOf.get(assertId(id))?.topic_id ?? null
 
-  function sourceLink(sourceId: string, segmentId: string): string | null {
+  function sourceLink(sourceId: string, segmentId = ''): string | null {
     const row = db.prepare(`SELECT m.id,m.conversation_id,m.seq FROM messages m JOIN conversations c ON c.id=m.conversation_id
       WHERE m.source_id=? AND c.deleted_at IS NULL ORDER BY m.conversation_id=? DESC,m.id LIMIT 1`)
       .get(sourceId, segmentId) as { id: number, conversation_id: string, seq: number } | undefined

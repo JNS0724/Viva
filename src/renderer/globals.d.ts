@@ -27,6 +27,7 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends (...args: any[]) => any ? T
   : T extends BackgroundTask ? BackgroundTask
   : T extends MemoryChangeRecord ? MemoryChangeRecord
+  : T extends import('./memory-file-state.ts').MemoryFileState ? import('./memory-file-state.ts').MemoryFileState
   : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
   : T
 /** What the main process tells the window of the agent (session-info.ts, acp-bridge.ts): the fields the window reads. */

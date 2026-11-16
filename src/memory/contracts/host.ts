@@ -51,7 +51,7 @@ export interface HostMemoryApi {
   cleanupPending: Args<[], boolean>
   onboarding: Args<[], string>
   setOnboarding: Args<[status: string], string>
-  rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean }>
+  rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
   setProfile: Args<[fields: Record<string, unknown>, operation?: string], MemoryProfile>
   addMemory: Args<[text: string, category?: string, operation?: string], MemoryEntry | null>
   editMemory: Args<[id: number, text: string, revision: number, operation?: string], MemoryEntry | null>

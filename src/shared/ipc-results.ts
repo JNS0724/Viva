@@ -1,5 +1,11 @@
 import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult } from '../memory/contracts/file-management.ts'
 
+export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
+export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources' | 'stoppedSnapshot'> & {
+  sources: MemoryFileSourceView[]
+  stoppedSnapshot?: Omit<NonNullable<MemoryFileDetail['stoppedSnapshot']>, 'sources'> & { sources: MemoryFileSourceView[] }
+}
+
 /**
  * What the main process answers on a channel (ipc-contract.ts says what may be sent), for the channels whose answer
  * is written out so far: the background tasks' (task-runtime.ts). The backend's handlers return these types and the
@@ -107,13 +113,13 @@ export interface IpcResults {
   'task:close': void
   'task:stop': void
   'memory:list-files': MemoryFileListResult
-  'memory:read-file': MemoryFileDetail | null
+  'memory:read-file': MemoryFileDetailView | null
   'memory:set-file-enabled': MemoryFileMutationResult
   'memory:undo-file': MemoryFileMutationResult
   'memory:list-changes': readonly MemoryChangeRecord[]
   'memory:delete': MemoryDeleteResult
   'memory:undo-change': UndoMemoryChangeResult
-  'memory:rebuild-indexes': { fullText: boolean, semantic: boolean }
+  'memory:rebuild-indexes': { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }
   'memory:resolve-conflict-pair': boolean
 }
 

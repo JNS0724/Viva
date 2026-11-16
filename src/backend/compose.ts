@@ -1110,7 +1110,7 @@ ${question}` : question
 
   function registerPersonalIpc(config: Config) {
     registerRuntimeMemoryIpc(ipcMain, {
-      client: memory, projectScope: currentMemoryProject,
+      client: memory, projectScope: currentMemoryProject, fileMode,
       sourceLink: historyDb.sourceLink,
       habits: () => activeHours(historyDb.questionTimes()),
       cwd: () => config.cwd,

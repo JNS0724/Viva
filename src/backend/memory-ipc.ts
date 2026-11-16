@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { MAX_MEMORY_CHARS } from '../memory/contracts/text-limits.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
-import type { IpcResults, MemorySummaryView } from '../shared/ipc-results.ts'
+import type { IpcResults, MemoryFileSourceView, MemorySummaryView } from '../shared/ipc-results.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -45,13 +45,14 @@ function assertMemoryText(value: unknown) {
   return value
 }
 
-export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope }: {
+export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope, fileMode = false }: {
   client: VivaMemoryClient,
   habits: () => { text: string, samples: number },
   cwd: () => string,
   chooseDocs: () => Promise<string[] | null>,
   projectScope?: () => ReturnType<typeof import('./memory-project.ts').memoryProjectScope>,
-  sourceLink?: (sourceId: string, segmentId: string) => string | null,
+  sourceLink?: (sourceId: string, segmentId?: string) => string | null,
+  fileMode?: boolean,
 }) {
   const handle = handlerOf(ipcMain)
   const linkFor = (edge: { sourceId: string, conversationId: string | null }) =>
@@ -72,6 +73,11 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     })),
   })
   handle('memory:get', async () => {
+    if (fileMode) return {
+      fileMode: true,
+      profile: await client.profile(), items: [], total: 0, onboarding: await client.onboarding(),
+      cleanupPending: await client.cleanupPending(), revision: await client.revision(), habits: habits(),
+    }
     const project = projectScope?.()
     return {
       profile: await client.profile(), ...await list(), onboarding: await client.onboarding(),
@@ -82,7 +88,16 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   })
   handle('memory:list', list)
   handle('memory:list-files', client.listFiles)
-  handle('memory:read-file', client.readFile)
+  handle('memory:read-file', async (identity, restrictionId): Promise<IpcResults['memory:read-file']> => {
+    const item = await client.readFile(identity, restrictionId)
+    if (!item) return null
+    const link = (source: typeof item.sources[number]): MemoryFileSourceView => ({ ...source,
+      link: source.namespace === 'canonical' ? sourceLink?.(source.sourceId) ?? null : null,
+    })
+    const { sources, stoppedSnapshot, ...file } = item
+    return { ...file, sources: sources.map(link), ...(stoppedSnapshot
+      ? { stoppedSnapshot: { ...stoppedSnapshot, sources: stoppedSnapshot.sources.map(link) } } : {}) }
+  })
   handle('memory:set-file-enabled', client.setFileEnabled)
   handle('memory:undo-file', client.undoFile)
   handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
