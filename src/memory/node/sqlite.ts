@@ -33,3 +33,14 @@ export function transaction<T>(db: DatabaseSync, work: () => T): T {
     throw err
   }
 }
+
+/** Checkpoint after replica erasure; a live reader keeps cleanup pending rather than reporting success. */
+export function truncateMemoryJournal(db: DatabaseSync): boolean {
+  if (db.isTransaction || db.prepare('PRAGMA secure_delete').get()?.secure_delete !== 1) return false
+  const timeout = Number(db.prepare('PRAGMA busy_timeout').get()?.timeout ?? 0)
+  db.exec('PRAGMA busy_timeout=0')
+  try {
+    const result = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
+    return result?.busy === 0 && result.log === result.checkpointed
+  } finally { db.exec(`PRAGMA busy_timeout=${timeout}`) }
+}

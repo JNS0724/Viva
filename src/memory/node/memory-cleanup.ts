@@ -3,7 +3,7 @@ import { z } from 'zod'
 import type { MemorySpan } from '../contracts/memory-contract.ts'
 import { operationId } from '../contracts/memory-contract.ts'
 import type { MemoryDeleteResult } from '../core/ports/cleanup.ts'
-import { transaction } from './sqlite.ts'
+import { transaction, truncateMemoryJournal } from './sqlite.ts'
 import type { Effect, Effects, Outcome } from './effects.ts'
 
 export const MEMORY_CLEANUP = 'memory.cleanup'
@@ -61,17 +61,6 @@ export function createMemoryCleanup({ db, effects, lexical, clearSemantic, clear
     })
   }
 
-  function truncateJournal() {
-    if (db.prepare('PRAGMA secure_delete').get()?.secure_delete !== 1) return false
-    const timeout = Number(db.prepare('PRAGMA busy_timeout').get()?.timeout ?? 0)
-    db.exec('PRAGMA busy_timeout=0')
-    try {
-      const result = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
-      return result?.busy === 0 && result.log === result.checkpointed
-    } finally {
-      db.exec(`PRAGMA busy_timeout=${timeout}`)
-    }
-  }
 
   function clean(job: Effect): Outcome {
     try {
@@ -82,7 +71,7 @@ export function createMemoryCleanup({ db, effects, lexical, clearSemantic, clear
         || !lexical.purge(ids, plan.revision)
         || !clearSemantic(ids, plan.revision)
         || (clearProfile && !clearProfile(plan.revision))
-        || !truncateJournal()) return 'retry'
+        || !truncateMemoryJournal(db)) return 'retry'
       const recorded = transaction(db, () => {
         if (!effects.finishGeneration(job)) return false
         saveReceipt.run(RECEIPT_PREFIX + job.key, 'cleared')

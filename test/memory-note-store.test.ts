@@ -61,7 +61,7 @@ test('daily content is a file, its index and receipt commit together, and source
   assert.equal(notes.read(key)?.markdown, '外部修改了文件正文。')
 })
 
-test('same session/day updates one card, title rename removes old path and rewrites index and inbound links', t => {
+test('same session/day updates one stable path; title changes preserve index and inbound links', t => {
   const { store, notes, key, commit } = setup(t)
   commit()
   const old = notes.read(key)!
@@ -72,11 +72,12 @@ test('same session/day updates one card, title rename removes old path and rewri
   writeFileSync(inbound, `旧记录 [[${old.path}#步骤|流程]]\n`)
   commit('上线校验', '核对版本和发布人。', 2)
   const updated = notes.read(key)!
-  assert.notEqual(updated.path, old.path)
+  assert.equal(updated.path, old.path)
+  assert.equal(updated.title, '上线校验')
   assert.equal(notes.list(null, null).length, 1)
   assert.equal(readdirSync(join(root, 'daily/2026-11-14')).length, 1)
   assert.equal(readFileSync(inbound, 'utf8'), `旧记录 [[${updated.path}#步骤|流程]]\n`)
-  assert(!readFileSync(join(root, 'daily/2026-11-14.md'), 'utf8').includes(old.path))
+  assert(readFileSync(join(root, 'daily/2026-11-14.md'), 'utf8').includes(old.path))
 })
 
 test('identical titles from different sessions and scopes cannot overwrite each other', t => {
@@ -134,7 +135,7 @@ test('invalidated source rolls back partially replaced files and does not checkp
   const notes = openMemoryNotes(store, () => true)
   assert.equal(notes.read(key), undefined)
   assert.throws(() => notes.pending(key), /source-version/u)
-  assert.equal(store.db.prepare("SELECT state FROM memory_file_intents WHERE id LIKE 'note:%'").get()?.state, 'cancelled')
+  assert.equal(store.db.prepare("SELECT state FROM memory_file_intents WHERE id LIKE 'notes:note:%'").get()?.state, 'cancelled')
 })
 
 test('skip is a successful receipt with no card; a newer source version or file snapshot cannot commit', t => {
@@ -183,13 +184,14 @@ test('long Chinese names fit the filesystem and filename collisions are resolved
   commit('发布核对'.repeat(100))
   const old = notes.read(key)!
   assert(Buffer.byteLength(old.path.split('/').at(-1)!) < 255)
-  const next = noteSource(store)
-  notes.add('session', old.day, [next], '')
-  const expected = `daily/${old.day}/collision-${memoryFileRevision('session')}.md`
+  const next = noteSource(store, { session: 'new-session' })
+  const nextKey = notes.add('new-session', old.day, [next], '')!
+  const expected = `daily/${old.day}/collision-${memoryFileRevision('new-session')}.md`
   const location = join(store.fileRoot, old.workspace, expected)
   writeFileSync(location, 'foreign card')
-  commit('collision', 'updated content', 2)
-  assert.equal(notes.read(key)?.path, expected.replace('.md', '-1.md'))
+  notes.commit(nextKey, notes.pending(nextKey), { status: 'write', title: 'collision', markdown: 'new content' }, 2, Date.now(), notes.snapshot([next.id]), undefined)
+  assert.equal(notes.read(nextKey)?.path, expected.replace('.md', '-1.md'))
+  assert.equal(notes.read(key)?.path, old.path)
   assert.equal(readFileSync(location, 'utf8'), 'foreign card')
 })
 
@@ -205,7 +207,7 @@ test('purge operation IDs are not reused after earlier cleanup receipts have com
   notes.recover()
   assert.equal(notes.read(key), undefined)
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_note_purges').get()?.n, 0)
-  assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE id LIKE 'purge:%' AND state='done'").get()?.n, 2)
+  assert.equal(store.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE id LIKE 'notes:purge:%' AND state='done'").get()?.n, 2)
 })
 
 test('a session append intent survives process death before its transcript write and replays once', async t => {
@@ -219,7 +221,7 @@ test('a session append intent survives process death before its transcript write
   assert.equal(notes.pending(group.note).length, 1)
 })
 
-test('a crashed rename recovers one card, removes the old path, and finishes its incoming links and index', async t => {
+test('a crashed title update recovers one stable card and preserves incoming links and index', async t => {
   const { dir, store, notes, key, commit } = setup(t)
   commit('旧标题')
   const before = notes.read(key)!
@@ -230,11 +232,12 @@ test('a crashed rename recovers one card, removes the old path, and finishes its
   await runToCrash(new URL('./fixtures/memory-note-crash.ts', import.meta.url), 'replace', dir, key)
   const recovered = openMemoryNotes(store, () => true)
   const after = recovered.read(key)!
-  assert.notEqual(after.path, before.path)
+  assert.equal(after.path, before.path)
+  assert.equal(after.title, '发布流程')
   assert.deepEqual(readdirSync(join(root, 'daily/2026-11-14')), [after.path.split('/').at(-1)!])
   assert.equal(readFileSync(join(root, 'daily/2026-11-13.md'), 'utf8'), `来源 [[${after.path}|原记录]]`)
   assert.equal(recovered.pending(key).length, 0)
-  assert.equal(readFileSync(join(root, 'daily/2026-11-14.md'), 'utf8').includes(before.path), false)
+  assert.equal(readFileSync(join(root, 'daily/2026-11-14.md'), 'utf8').includes(before.path), true)
 })
 
 
@@ -304,7 +307,7 @@ test('a third-hash note conflict overlapping a purge does not prevent reopening 
   assert.equal(readFileSync(file, 'utf8'), 'External third hash after the interrupted write.')
 })
 
-for (const crash of [false, true]) test(`a ${crash ? 'recovered' : 'completed'} rename keeps inbound card versions current for later withdrawal`, async t => {
+for (const crash of [false, true]) test(`a ${crash ? 'recovered' : 'completed'} title update preserves inbound card versions for later withdrawal`, async t => {
   const { dir, store, notes, source, key, commit } = setup(t)
   commit('旧目标标题')
   const targetBefore = notes.read(key)!
@@ -325,8 +328,10 @@ for (const crash of [false, true]) test(`a ${crash ? 'recovered' : 'completed'} 
   const recovered = openMemoryNotes(store, () => true)
   const targetAfter = recovered.read(key)!
   const inboundAfter = recovered.read(inboundKey)!
-  assert.notEqual(targetAfter.path, targetBefore.path)
+  assert.equal(targetAfter.path, targetBefore.path)
+  assert.notEqual(targetAfter.fileRevision, targetBefore.fileRevision)
   assert.equal(inboundAfter.path, inboundBefore.path)
+  assert.equal(inboundAfter.fileRevision, inboundBefore.fileRevision)
   assert.equal(inboundAfter.markdown, `Use the procedure in [[${targetAfter.path}#检查|旧流程]] before releasing.`)
   assert.equal(inboundAfter.file_revision, inboundAfter.fileRevision)
   const inboundFile = join(store.fileRoot, inboundAfter.workspace, inboundAfter.path)

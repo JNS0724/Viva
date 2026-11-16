@@ -4,6 +4,7 @@ import type { MemorySemanticIndex } from './semantic.ts'
 import type { MemoryProfileStore } from './profile-store.ts'
 import type { MemoryNotes } from './notes.ts'
 import type { MemoryCleanup } from './cleanup.ts'
+import type { MemoryDocuments, DocumentReceipt } from './documents.ts'
 
 /** Stable identity generation and hashing are supplied by the host's platform adapter. */
 export interface MemoryIdentity {
@@ -20,6 +21,7 @@ export interface MemoryRuntimeResources {
   openSemantic(): MemorySemanticIndex | null
   semanticCopiesCleared(ids: readonly number[], revision: number): boolean
   openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean): MemoryNotes
+  openDocuments(readable: (id: string) => boolean, onCommitted: (receipt: DocumentReceipt) => void): MemoryDocuments
   createCleanup(callbacks: {
     clearSemantic(ids: readonly number[], revision: number): boolean
     clearProfile(revision: number): boolean

@@ -9,6 +9,8 @@ import { openMemorySemanticIndex, memorySemanticCopiesCleared } from './memory-s
 import { openMemoryProfileStore } from './memory-profile-store.ts'
 import { openMemoryNotes } from './memory-note-store.ts'
 import { createMemoryCleanup } from './memory-cleanup.ts'
+import { openMemoryDocuments } from './memory-document-store.ts'
+import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
 export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRuntime>[0], 'store' | 'resources'> & { store: MemoryStore }
 
@@ -23,6 +25,12 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
     openSemantic: () => openMemorySemanticIndex(store.db),
     semanticCopiesCleared: (ids, revision) => memorySemanticCopiesCleared(store.db, ids, revision),
     openNotes: (readable, currentJob) => openMemoryNotes(store, readable, undefined, currentJob),
+    openDocuments: (readable, onCommitted) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted,
+      source(id) {
+        const source = store.readSource(id)
+        return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source), text: source.text } : undefined
+      },
+    }),
     createCleanup: callbacks => createMemoryCleanup({ db: store.db, effects, lexical, hasCandidateReference: store.hasCandidateReference, ...callbacks }),
   }
   return resources

@@ -79,6 +79,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
     validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly,
+    runDocumentMutation: work => fence.mutate(work),
     noteSourcesUsed: (session, sources) => { for (const source of sources) dispatch.recordSource(session, source) },
     canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
   })
@@ -108,7 +109,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const operation = (id: string) => db.prepare('SELECT * FROM owner_operations WHERE id=?').get(id) as Operation | undefined
   const outcome = (item: Operation): MemoryOperationOutcome => ({ operationId: item.id, state: item.state,
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
-    cleanup: item.state === 'completed' && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id) ? 'complete' : 'pending' })
+    cleanup: item.state === 'completed' && runtime.cleanupPending() === 0
+      && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
   function reconcileChildren(session: string, visited = new Set<string>()) {

@@ -3,6 +3,12 @@
 // timing retains real long-duration deadlines. Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
+    'memory-dream-tools',
+    'memory-dream',
+    'memory-document-runtime',
+    'memory-document-barrier',
+    'memory-note-rebuild',
+    'memory-document-restrictions',
     'memory-owner',
     'memory-native-schedule',
     'memory-plugin-ingestion',
@@ -212,6 +218,8 @@ export const testLevels = {
     'workspace-files',
   ],
   integration: [
+    'memory-document-store',
+    'memory-dream-transport',
     'memory-boundaries',
     'memory-package',
     'memory-transport',

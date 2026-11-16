@@ -10,13 +10,15 @@ type Intent<T> = { id: string, input: string, state: string, plan: FilePlan<T> }
 export type FileCheckpoint = 'intent' | 'replace' | 'receipt' | 'checkpoint'
 
 /** One backend owner. Intent commits precede IO; receipt and application checkpoint share one SQL transaction. */
-export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {} }: {
+export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes' }: {
   db: DatabaseSync, root: string, valid: (data: T) => boolean, finish: (data: T) => void,
-  checkpoint?: (point: FileCheckpoint, path?: string) => void,
+  checkpoint?: (point: FileCheckpoint, path?: string) => void, namespace?: string,
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS memory_file_intents (
-    id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL, workspace TEXT NOT NULL, plan TEXT
-  )`)
+    id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL, workspace TEXT NOT NULL, plan TEXT, namespace TEXT NOT NULL
+  ); CREATE TABLE IF NOT EXISTS memory_file_reservations (workspace TEXT NOT NULL, path TEXT NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(workspace,path))`)
+  if (!/^[a-z][a-z0-9-]*$/u.test(namespace)) throw new Error('invalid-memory-journal-namespace')
+  const operationKey = (id: string) => `${namespace}:${id}`
   const stores = new Map<string, ReturnType<typeof openMemoryFileStore>>()
   function files(workspace: string) {
     if (!/^[a-f0-9]{64}$/u.test(workspace)) throw new Error('invalid-memory-workspace')
@@ -29,8 +31,8 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     }
     return store
   }
-  function pending() {
-    return (db.prepare("SELECT id,input,state,plan FROM memory_file_intents WHERE plan IS NOT NULL").all() as
+  function pending(all = false) {
+    return (db.prepare("SELECT id,input,state,plan FROM memory_file_intents WHERE plan IS NOT NULL AND (? OR namespace=?)").all(all ? 1 : 0, namespace) as
       Array<{ id: string, input: string, state: string, plan: string }>).map(row => ({ ...row, plan: JSON.parse(row.plan) as FilePlan<T> }))
   }
   const hash = (text: string | null) => text === null ? null : memoryFileRevision(text)
@@ -74,6 +76,7 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
   }
   function commit(id: string, input: string, plan: () => FilePlan<T>) {
     if (db.isTransaction) throw new Error('memory-file-commit-inside-transaction')
+    id = operationKey(id)
     const existing = db.prepare('SELECT input,state FROM memory_file_intents WHERE id=?').get(id) as { input: string, state: string } | undefined
     if (existing) {
       if (existing.input !== input) throw new Error('memory-request-input-mismatch')
@@ -85,21 +88,21 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     if (!valid(next.data)) throw new Error('memory-source-version')
     const paths = new Set(next.changes.map(change => change.path))
     if (paths.size !== next.changes.length) throw new Error('duplicate-memory-plan-path')
-    if (pending().some(item => item.plan.workspace === next.workspace && item.plan.changes.some(change => paths.has(change.path)))) {
+    if (next.changes.some(change => db.prepare('SELECT 1 FROM memory_file_reservations WHERE workspace=? AND path=?').get(next.workspace, change.path)) || pending(true).some(item => item.plan.workspace === next.workspace && item.plan.changes.some(change => paths.has(change.path)))) {
       throw new Error('memory-file-plan-busy')
     }
     const store = files(next.workspace)
     for (const change of next.changes) {
       if ((store.read(change.path)?.revision ?? null) !== hash(change.before)) throw new Error('memory-file-version')
     }
-    transaction(db, () => db.prepare('INSERT INTO memory_file_intents(id,input,state,workspace,plan) VALUES(?,?,?,?,?)')
-      .run(id, input, 'pending', next.workspace, JSON.stringify(next)))
+    transaction(db, () => db.prepare('INSERT INTO memory_file_intents(id,input,state,workspace,plan,namespace) VALUES(?,?,?,?,?,?)')
+      .run(id, input, 'pending', next.workspace, JSON.stringify(next), namespace))
     checkpoint('intent')
     return apply({ id, input, state: 'pending', plan: next })
   }
   function visible(workspace: string, path: string) {
-    return !pending().some(item => item.plan.workspace === workspace && item.plan.changes.some(change => change.path === path))
+    return !db.prepare('SELECT 1 FROM memory_file_reservations WHERE workspace=? AND path=?').get(workspace, path) && !pending(true).some(item => item.plan.workspace === workspace && item.plan.changes.some(change => change.path === path))
   }
-  const state = (id: string) => (db.prepare('SELECT state FROM memory_file_intents WHERE id=?').get(id) as { state: string } | undefined)?.state
+  const state = (id: string) => (db.prepare('SELECT state FROM memory_file_intents WHERE id=?').get(operationKey(id)) as { state: string } | undefined)?.state
   return { files, commit, recover, visible, state }
 }

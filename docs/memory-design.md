@@ -1,6 +1,6 @@
 # Viva Long Term Memory Implementation Plan
 
-> 2026-11-16: All further memory development and sequencing follows the [file memory and independent plugin plan](memory-reme-plan.md). R1/R2 completed their experimental scope and P1 core extraction is complete. P2 standalone-plugin implementation and its acceptance are complete; R3, R4, R5a and R5b remain. M1–M4 here document the old fact-store implementation and its authorization, evidence, forgetting and request barriers. They are historical reference, not the active delivery schedule or a substitute for acceptance of the new phases.
+> 2026-11-16: All further memory development and sequencing follows the [file memory and independent plugin plan](memory-reme-plan.md). R1/R2 completed their experimental scope and P1 core extraction is complete. P2 standalone-plugin and R3 document-dream implementation and acceptance are complete; R4, R5a and R5b remain. M1–M4 here document the old fact-store implementation and its authorization, evidence, forgetting and request barriers. They are historical reference, not the active delivery schedule or a substitute for acceptance of the new phases.
 
 English | [简体中文](memory-design.zh-CN.md)
 

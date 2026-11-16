@@ -1,9 +1,7 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
+import type { DocumentSourceRef } from './documents.ts'
 import type { MemorySource } from './store.ts'
-type SourceRef = {
-    id: string;
-    token: string;
-};
+type SourceRef = DocumentSourceRef
 export interface NoteRow {
     key: string;
     day: string;
@@ -17,6 +15,7 @@ export interface NoteRow {
 type Note = NoteRow & {
     title: string;
     markdown: string;
+    document: string;
     fileRevision: string;
 };
 export interface MemoryNotes {
@@ -26,7 +25,7 @@ export interface MemoryNotes {
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;
     contextSources(session: string, source: MemorySource): string[];
-    add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string): string | null;
+    add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string, options?: { questionSources?: readonly string[], questionCurrent?: boolean }): string | null;
     list(from: string | null, through: string | null): Note[];
     changed(from: string, through: string): Note[];
     pendingGroups: () => Array<{
@@ -38,6 +37,8 @@ export interface MemoryNotes {
     pending: (key: string, limit?: number) => {
         sourceIds: string[];
         assistantSourceIds: string[];
+        questionSourceIds: string[];
+        questionCurrent: boolean;
         assistant: string;
         id: string;
         note: string;
@@ -48,11 +49,15 @@ export interface MemoryNotes {
         source_tokens: string;
         assistant_sources: string;
         assistant_valid: number;
+        question_sources: string;
+        question_valid: number;
         written: number;
     }[];
     previous(_key: string, id: string): {
         sourceIds: string[];
         assistantSourceIds: string[];
+        questionSourceIds: string[];
+        questionCurrent: boolean;
         assistant: string;
         id: string;
         note: string;
@@ -63,9 +68,14 @@ export interface MemoryNotes {
         source_tokens: string;
         assistant_sources: string;
         assistant_valid: number;
+        question_sources: string;
+        question_valid: number;
         written: number;
     } | undefined;
+    sourceQuestionContext(sourceId: string): { current: boolean, refs: DocumentSourceRef[] };
     sources(key: string): string[];
+    references(key: string): DocumentSourceRef[];
+    rebuildRows(key: string): ReturnType<MemoryNotes['pending']>;
     finish(rows: Array<{
         id: string;
     }>, contributed: boolean): void;
@@ -78,7 +88,7 @@ export interface MemoryNotes {
         title: string;
         markdown: string;
         filename?: string;
-    }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined): boolean;
+    }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options?: { rebuild?: boolean }): boolean;
     markProcessed(key: string, revision: number): void;
     withdraw(sourceId: string): string[];
 }

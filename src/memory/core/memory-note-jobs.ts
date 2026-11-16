@@ -1,76 +1,33 @@
 import type { MemoryRuntimeResources } from './ports/runtime.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
-import { DREAM, DREAM_SYSTEM, NOTE_SYSTEM, WRITE_NOTE, dreamReply, nextDreamAt, noteReply } from './memory-notes.ts'
+import { NOTE_SYSTEM, WRITE_NOTE, noteReply } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import type { MemoryProvenance, MemorySource, MemoryStore } from './ports/store.ts'
 import { todayAt } from './memory-facts.ts'
-import { MemoryComputeError } from '../contracts/compute.ts'
+import type { DocumentSourceRef } from './ports/documents.ts'
+import type { MemorySpan } from '../contracts/memory-contract.ts'
 
 const DAILY = 'daily'
-const DAY_MS = 86_400_000
-
-type NoteRef = { key: string, revision: number }
-type DreamNote = NoteRef & { scopeKey: string, day: string, title: string, markdown: string, sources: string[], dependencies: string[] }
-type DreamPlan = { processed: Array<NoteRef & { sources: string[] }> }
-
-function groupBy<T>(items: Iterable<T>, keyOf: (item: T) => string) {
-  const groups = new Map<string, T[]>()
-  for (const item of items) {
-    const key = keyOf(item)
-    const group = groups.get(key) ?? []
-    group.push(item)
-    groups.set(key, group)
-  }
-  return groups
-}
-
-function dreamBatches(notes: DreamNote[], budget: number) {
-  if (!budget || !notes.length) return notes.length ? [notes] : []
-  const batches: DreamNote[][] = []
-  let batch: DreamNote[] = [], bytes = 0
-  const size = (note: DreamNote) => new TextEncoder().encode(note.title + '\n' + note.markdown).byteLength
-  const flush = () => {
-    if (batch.length) batches.push(batch)
-    batch = []
-    bytes = 0
-  }
-  const groups = groupBy(notes, note => note.day)
-  for (const day of groups.values()) {
-    const dayBytes = day.reduce((sum, note) => sum + size(note), 0)
-    if (bytes + dayBytes > budget) flush()
-    if (dayBytes <= budget) {
-      batch.push(...day)
-      bytes += dayBytes
-      continue
-    }
-    for (const note of day) {
-      const noteBytes = size(note)
-      if (bytes + noteBytes > budget) flush()
-      batch.push(note)
-      bytes += noteBytes
-    }
-  }
-  flush()
-  return batches
-}
-
 type Calculate = (job: Effect, source: MemorySource, stage: 'note' | 'dream', system: string, input: object,
   sources: string[], current: () => boolean) => Promise<unknown>
 
-/** Owns daily note and consolidation jobs. Formal facts are still committed by MemoryRuntime. */
-export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, readable, eligible, allowsText, assistantContextCurrent, calculate, queueExtraction, extractionPending }: {
+/** Completed-turn daily capture. Document dream is independently orchestrated by memory-dream. */
+export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), assistantContextCurrent, calculate }: {
   store: MemoryStore, effects: Effects, now: () => number, settings?: DailyMemorySettings,
   openNotes: MemoryRuntimeResources['openNotes'],
   readable: (id: string) => boolean,
   eligible: (source: MemorySource) => boolean,
   allowsText: (text: string, source: MemorySource) => boolean,
+  /** Unmapped summaries may not be sent while any of their evidence fragments is disabled. */
+  allowsDerived?: (ids: readonly string[]) => boolean,
+  allowsReferences?: (refs: readonly DocumentSourceRef[]) => boolean,
+  projectSource?: (source: MemorySource, ref: DocumentSourceRef) => { text: string, spans?: MemorySpan[] },
   assistantContextCurrent: (context: MemoryProvenance) => boolean,
   calculate: Calculate,
-  queueExtraction: (id: string, note: NoteRef, focuses: string[], supporting: NoteRef[]) => boolean,
-  extractionPending: (id: string) => boolean,
+
 }) {
-  const { timezone, dreamTime, noteInterval, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
+  const { timezone, noteInterval } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(noteInterval) || noteInterval < 1) throw new Error('invalid-note-interval')
   const notes = openNotes(readable, (key, generation) => effects.holds({ kind: WRITE_NOTE, key, generation }))
   const sourceOf = (id: string) => {
@@ -87,7 +44,6 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!current) effects.queue(WRITE_NOTE, key, flush ? { flush } : null)
     else if (flush && !current.payload) effects.amend(current, { flush })
   }
-  const scheduleDream = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
   const wake = () => { void effects.wake() }
   function record(session: string, ids: readonly string[], assistant: string) {
     const sources = [...new Set(ids)].flatMap(id => {
@@ -101,8 +57,10 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const dependencies = [...new Set([...notes.contextSources(session, source), ...seen.sources,
       ...seen.dependencies.flatMap(ref => store.get(ref.id)?.evidence.map(edge => edge.sourceId) ?? [])])]
     // Assistant replies may restate any context the session saw. Keep that provenance, never promote the reply to independent evidence.
-    const safeAssistant = assistantContextCurrent(seen) && dependencies.every(id => readable(id)) ? assistant : ''
-    const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant ? dependencies : [], assistant)
+    const contextCurrent = assistantContextCurrent(seen) && dependencies.every(id => readable(id))
+    const safeAssistant = contextCurrent ? assistant : ''
+    const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant ? dependencies : [], assistant,
+      { questionSources: dependencies, questionCurrent: contextCurrent })
     if (!key) return
     store.tx(() => {
       for (const group of notes.pendingGroups()) {
@@ -133,16 +91,33 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     }
     if (notes.jobState(job.key, job.generation) === 'conflict') return 'wait'
     if (notes.blocked(job.key)) return 'wait'
-    const rows = notes.pending(job.key, noteInterval)
-    if (!rows.length) return 'done'
     const existing = notes.read(job.key)
-    const priorSources = existing ? notes.sources(job.key) : []
+    const rebuilding = Boolean(existing && !allowsReferences(notes.references(job.key)))
+      || Boolean(job.payload && typeof job.payload === 'object' && 'rebuild' in job.payload && job.payload.rebuild === true)
+    const rows = rebuilding ? notes.rebuildRows(job.key) : notes.pending(job.key, noteInterval)
+    if (!rows.length) return 'done'
+    const priorRefs = existing && !rebuilding ? notes.references(job.key) : []
+    const priorSources = priorRefs.map(ref => ref.id)
     if (rows.some(row => !row.sourceIds.every(readable)) || priorSources.some(id => !readable(id))) return 'wait'
-    const turns = rows.map(row => ({ row, sources: row.sourceIds.flatMap(id => sourceOf(id) ?? []) }))
-    const sources = turns.flatMap(turn => turn.sources)
+    const turns = rows.map(row => {
+      const sources = row.sourceIds.flatMap(id => sourceOf(id) ?? [])
+      const assistantAllowed = allowsDerived([...row.sourceIds, ...row.assistantSourceIds])
+      const user = sources.flatMap(source => {
+        const ref = notes.snapshot([source.id])[0]!
+        const projection = projectSource(source, ref)
+        const questionAllowed = Boolean(source.question) && row.questionCurrent
+          && allowsDerived(row.questionSourceIds) && projection.text === source.text
+        if (!projection.text.trim() || (source.author === 'answer' && !questionAllowed)) return []
+        return [{ source, ref: { ...ref, spans: projection.spans }, text: projection.text, question: questionAllowed ? source.question : null }]
+      })
+      return { row, user, assistant: assistantAllowed && user.length && sources.every(source => allowsText(row.assistant, source)) ? row.assistant : '' }
+    })
+    const sources = turns.flatMap(turn => turn.user.map(item => item.source))
     if (!sources.length) {
+      if (rebuilding) {
+        if (!notes.commit(job.key, rows, { status: 'skip' }, job.generation, now(), [], existing, { rebuild: true })) return 'retry'
+      } else store.tx(() => notes.finish(rows, false))
       store.tx(() => {
-        notes.finish(rows, false)
         effects.finishGeneration(job)
         if (notes.pending(job.key, noteInterval).length) schedule(job.key, Boolean(job.payload))
       })
@@ -150,24 +125,38 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       return 'done'
     }
     if (sources.some(source => !eligible(source))) return 'wait'
-    const lastTurn = notes.previous(job.key, rows[0]!.id)
+    const lastTurn = rebuilding ? undefined : notes.previous(job.key, rows[0]!.id)
     const previousAssistant = lastTurn && [...lastTurn.sourceIds, ...lastTurn.assistantSourceIds].every(readable)
+      && allowsDerived([...lastTurn.sourceIds, ...lastTurn.assistantSourceIds])
       && sources.every(source => allowsText(lastTurn.assistant, source)) ? lastTurn.assistant : null
-    const related = [...new Set([...sources.map(source => source.id), ...priorSources, ...rows.flatMap(row => row.assistantSourceIds), ...(previousAssistant ? [...lastTurn!.sourceIds, ...lastTurn!.assistantSourceIds] : [])])]
-    const refs = notes.snapshot(related)
+    const assistantIds = [...new Set([...turns.flatMap(turn => [
+      ...(turn.assistant ? [...turn.row.sourceIds, ...turn.row.assistantSourceIds] : []),
+      ...(turn.user.some(item => item.question) ? turn.row.questionSourceIds : []),
+    ]),
+      ...(previousAssistant ? [...lastTurn!.sourceIds, ...lastTurn!.assistantSourceIds] : [])])]
+    const related = [...new Set([...sources.map(source => source.id), ...priorSources, ...assistantIds])]
+    const versions = notes.snapshot(related)
+    const used = new Map<string, DocumentSourceRef>()
+    const add = (ref: DocumentSourceRef) => {
+      const old = used.get(ref.id)
+      used.set(ref.id, !old ? ref : { ...ref, spans: old.spans && ref.spans ? [...old.spans, ...ref.spans] : undefined })
+    }
+    for (const ref of [...priorRefs, ...turns.flatMap(turn => turn.user.map(item => item.ref)), ...notes.snapshot(assistantIds)]) add(ref)
+    const refs = versions.map(ref => used.get(ref.id)!)
     const input = {
-      existing: existing && { title: existing.title, markdown: existing.markdown },
+      existing: existing && !rebuilding ? { title: existing.title, markdown: existing.markdown } : undefined,
       previousAssistant,
-      turns: turns.map(({ row, sources }) => ({
-        user: sources.map(source => ({ sourceId: source.id, text: source.text!, author: source.author, version: source.version, question: source.question, at: source.at })),
-        assistant: sources.length && sources.every(source => allowsText(row.assistant, source)) ? row.assistant : '',
+      turns: turns.map(({ row, user, assistant }) => ({
+        user: user.map(({ source, text, question }) => ({ sourceId: source.id, text, author: source.author, version: source.version, question, at: source.at })),
+        assistant,
       })),
     }
     // Validate all text actually sent, including stored documents and question context, not only new sources.
     const material = [input.existing?.title, input.existing?.markdown, input.previousAssistant,
       ...input.turns.flatMap(turn => [turn.assistant, ...turn.user.flatMap(user => [user.text, user.question])])]
     const current = () => notes.read(job.key)?.fileRevision === existing?.fileRevision
-      && related.every(readable) && JSON.stringify(notes.snapshot(related)) === JSON.stringify(refs)
+      && related.every(readable) && JSON.stringify(notes.snapshot(related)) === JSON.stringify(versions)
+      && allowsReferences(refs) && turns.every(turn => turn.user.every(item => projectSource(item.source, item.ref).text === item.text))
       && materialAllowed(material, related)
     if (!current()) return 'wait'
     const result = await calculate(job, sources[0]!, 'note', NOTE_SYSTEM, input, related, current)
@@ -175,7 +164,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const reply = noteReply.parse(result)
     if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return 'retry'
     if (reply.status === 'write' && sources.some(source => !allowsText(`${reply.title}\n${reply.markdown}\n${reply.filename ?? ''}`, source))) return 'retry'
-    if (!notes.commit(job.key, rows, reply, job.generation, now(), refs, existing)) {
+    if (!notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })) {
       store.tx(() => { effects.finishGeneration(job); schedule(job.key, true) })
       wake()
       return 'done'
@@ -188,131 +177,6 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     })
     console.info('[memory] daily note', { outcome: reply.status, turns: rows.length, sources: sources.length })
     wake()
-    return 'done'
-  }
-
-  async function dream(job: Effect): Promise<Outcome> {
-    const plan = job.payload as DreamPlan | null
-    if (plan) {
-      if (plan.processed.some(note => note.sources.some(extractionPending))) return 'wait'
-      if (!effects.holds(job)) return 'done'
-      store.tx(() => {
-        for (const note of plan.processed) {
-          const pending = note.sources.some(id => ['pending', 'note-ready'].includes(store.readSource(id)?.outcome ?? ''))
-          if (!pending) notes.markProcessed(note.key, note.revision)
-        }
-        effects.finishGeneration(job)
-        scheduleDream()
-      })
-      return 'done'
-    }
-    const today = todayAt(now(), timezone)
-    const first = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
-    const changed = notes.changed(first, today).flatMap(note => {
-      const dependencies = notes.sources(note.key)
-      if (!dependencies.length || !dependencies.every(readable)) return []
-      const sources = dependencies.filter(id => sourceOf(id)?.outcome === 'note-ready')
-      const scopes = new Set(dependencies.map(id => {
-        const source = store.readSource(id)!
-        return JSON.stringify([source.scope, source.context, source.project])
-      }))
-      return scopes.size === 1 ? [{ ...note, sources, dependencies, scopeKey: [...scopes][0]! }] : []
-    })
-    const units = new Map<string, { id: string, focus: string, note: NoteRef, supporting: Map<string, NoteRef> }>()
-    const processed = new Map<string, NoteRef & { sources: string[] }>()
-    let waiting = false, failed = 0, unitCount = 0
-    const current = (batch: DreamNote[]) => effects.holds(job) && batch.every(note =>
-      notes.read(note.key)?.revision === note.revision && note.dependencies.every(readable)
-      && materialAllowed([note.title, note.markdown], note.dependencies))
-    async function extractBatch(batch: DreamNote[]) {
-      if (unitCount >= dreamUnits || waiting) return
-      const anchor = batch.flatMap(note => note.sources).map(sourceOf).find(source => source !== undefined)
-      if (!current(batch) || anchor && !eligible(anchor)) { waiting = true; return }
-      if (!anchor) {
-        for (const { key, revision } of batch) processed.set(key, { key, revision, sources: [] })
-        return
-      }
-      const maxUnits = dreamUnits - unitCount
-      const material = batch.map(({ key, title, markdown, sources }) => {
-        const chars = [...markdown]
-        const body = chars.length > defaults.dreamFileChars ? chars.slice(0, defaults.dreamFileChars).join('') + '\n\n[truncated]' : markdown
-        return { key, title, markdown: body, sources }
-      })
-      const related = [...new Set(batch.flatMap(note => note.dependencies))]
-      function validate(result: unknown) {
-        const receipt = dreamReply.safeParse(result)
-        if (!receipt.success) return null
-        const candidates = []
-        for (const unit of receipt.data.units) {
-          const main = batch.find(note => note.key === unit.note && note.sources.includes(unit.sourceId))
-          const source = sourceOf(unit.sourceId)
-          const support = (unit.supportingNotes ?? []).flatMap(key => batch.find(note => note.key === key) ?? [])
-          if (!main || !source || !allowsText(unit.focus, source) || support.length !== (unit.supportingNotes?.length ?? 0)) return null
-          candidates.push({ id: source.id, focus: unit.focus, note: main, support: [main, ...support] })
-        }
-        return candidates
-      }
-      let accepted: ReturnType<typeof validate> = null
-      let hadInvalidReceipt = false
-      for (let attempt = 0; attempt < 2 && !accepted; attempt++) {
-        if (!current(batch)) { waiting = true; return }
-        try {
-          const result = await calculate(job, anchor, 'dream', DREAM_SYSTEM, {
-            maxUnits, notes: material,
-            ...(hadInvalidReceipt ? { retry: '上一条回执不符合格式或依据要求，请按输入中有效的笔记和原文 ID 重试。' } : {}),
-          }, related, () => current(batch))
-          if (result === undefined || !current(batch)) { waiting = true; return }
-          accepted = validate(result)
-          hadInvalidReceipt = !accepted
-        } catch (err) {
-          if (err instanceof SyntaxError) { hadInvalidReceipt = true; continue }
-          if (!current(batch) || err instanceof MemoryComputeError && ['dispatch-denied', 'aborted'].includes(err.reason)) {
-            waiting = true
-          } else if (batch.length > 1) {
-            const middle = Math.floor(batch.length / 2)
-            await extractBatch(batch.slice(0, middle))
-            await extractBatch(batch.slice(middle))
-          } else failed += batch.length
-          return
-        }
-      }
-      if (!accepted) { failed += batch.length; return }
-      for (const { key, revision } of batch) processed.set(key, { key, revision, sources: [] })
-      for (const unit of accepted.slice(0, maxUnits)) {
-        const key = JSON.stringify([unit.note.scopeKey, unit.focus.toLowerCase()])
-        const merged = units.get(key) ?? { id: unit.id, note: unit.note, focus: unit.focus, supporting: new Map() }
-        for (const { key, revision } of unit.support) merged.supporting.set(key, { key, revision })
-        units.set(key, merged)
-        unitCount++
-      }
-    }
-    for (const scoped of groupBy(changed, note => note.scopeKey).values()) {
-      for (const batch of dreamBatches(scoped, dreamBatchBytes)) await extractBatch(batch)
-    }
-    if (waiting) return 'wait'
-    if (!effects.holds(job)) return 'done'
-    const bySource = groupBy(units.values(), unit => unit.id)
-    store.tx(() => {
-      for (const [id, group] of bySource) {
-        const supporting = [...new Map(group.flatMap(unit => [...unit.supporting])).values()]
-        const queued = queueExtraction(id, group[0]!.note, group.map(unit => unit.focus), supporting)
-        for (const { key } of supporting) {
-          if (queued) processed.get(key)?.sources.push(id)
-          else processed.delete(key)
-        }
-      }
-      if (bySource.size) effects.amend(job, { processed: [...processed.values()] } satisfies DreamPlan)
-      else {
-        for (const note of processed.values()) notes.markProcessed(note.key, note.revision)
-        effects.finishGeneration(job)
-        scheduleDream()
-      }
-    })
-    console.info('[memory] daily consolidation', { notes: processed.size, units: units.size, failed })
-    if (bySource.size) {
-      wake()
-      return 'wait'
-    }
     return 'done'
   }
 
@@ -334,13 +198,24 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     return new Map(jobs.map(job => [job.key, 'done' as const]))
   })
   effects.runs(WRITE_NOTE, run(write), attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))
-  effects.runs(DREAM, run(dream))
   store.tx(() => {
-    if (!effects.get(DREAM, DAILY)) scheduleDream()
     for (const group of notes.pendingGroups()) schedule(group.note, true)
   })
   return {
     record,
+    storage: notes,
+    refreshRestrictions() {
+      store.tx(() => {
+        for (const note of notes.list(null, null)) {
+          if (allowsReferences(notes.references(note.key))) continue
+          const active = effects.get(WRITE_NOTE, note.key)
+          if (active?.payload && typeof active.payload === 'object' && 'rebuild' in active.payload && active.payload.rebuild === true) continue
+          effects.cancel(WRITE_NOTE, note.key)
+          effects.queue(WRITE_NOTE, note.key, { rebuild: true, flush: true })
+        }
+      })
+      wake()
+    },
     read: notes.read,
     sources: notes.sources,
     list: notes.list,

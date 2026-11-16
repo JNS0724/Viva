@@ -34,7 +34,9 @@ import { objectOf } from '../contracts/unknown-value.ts'
 import { createMemoryClarifications } from './memory-clarification.ts'
 import { connected, projectTimeline } from './memory-timeline.ts'
 import { createMemoryNoteJobs } from './memory-note-jobs.ts'
-import { dreamExtraction } from './memory-notes.ts'
+import { createMemoryDreamJobs } from './memory-dream-jobs.ts'
+import { documentSourceRestricted, availableDocumentSourceSpans, projectDocumentSource } from './memory-document-restrictions.ts'
+import type { DocumentReceipt, DocumentSourceRef } from './ports/documents.ts'
 import { createDailySemanticSearch, dailySearchLimit, markdownSearchChunks, rankDailyMemory } from './memory-daily-search.ts'
 import type { DailySearchDocument, SearchChunk } from './memory-daily-search.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
@@ -94,11 +96,11 @@ const automaticSource = (source: MemorySource) => source.author === 'user' || so
 
 export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, maintainSemanticIndex = false, profilesEnabled = false, profileDelayMs, profileBusy = () => false, projectionChanged, quiesce, changed, injected, dependencies, provisionalRead,
   dailyNotes = false, automaticFactProcessing = dailyNotes ? 'daily' : 'source', noteSourcesUsed,
-  canCommit = () => true, validateDispatch = () => {}, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
+  canCommit = () => true, validateDispatch = () => {}, runDocumentMutation = async work => work(), now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
   resources: MemoryRuntimeResources,
   presentation?: MemoryPresentation,
-  compute: (request: MemoryCompute, signal?: AbortSignal) => Promise<string> | null,
+  compute: (request: MemoryCompute, signal?: AbortSignal, tools?: import('../contracts/compute.ts').MemoryComputeTools) => Promise<string> | null,
   route: () => Route | null,
   embedder?: Pick<MemoryEmbedder, 'fingerprint' | 'embedBatch' | 'close'>,
   maintainSemanticIndex?: boolean,
@@ -119,6 +121,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   provisionalRead?: (session: string) => void,
   canCommit?: (source: MemorySource) => boolean,
   validateDispatch?: () => void,
+  /** The transport owner drains physical send permits before changing document usage. */
+  runDocumentMutation?: <T>(work: () => T) => Promise<T>,
 }) {
   const { effects, projectionStore, lexical, identity: { newId: randomUUID, hash: memoryHash } } = resources
   const presentMessage = presentation.text ?? defaultMemoryText
@@ -704,6 +708,14 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     store, effects, now, openNotes: resources.openNotes, settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: id => sourceCurrent(id, now(), true),
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
+    allowsDerived: ids => !documentSourcesRestricted(ids),
+    allowsReferences: refs => !documentReferencesRestricted(refs),
+    projectSource(source, ref) {
+      const workspace = memoryHash(JSON.stringify([source.scope, source.context, source.project ?? null]))
+      const restrictions = documents?.sourceRestrictions(workspace) ?? []
+      return { text: projectDocumentSource(source.text ?? '', ref, restrictions),
+        spans: availableDocumentSourceSpans(source.text ?? '', ref, restrictions) }
+    },
     assistantContextCurrent: context => !context.turnOnly && context.epoch === store.epoch()
       && dependenciesCurrent(context.dependencies) && context.sources.every(id => sourceCurrent(id)),
     allowsText: (text, source) => !looksSecret(text) && !excludedSourceText(text)
@@ -713,14 +725,78 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const model = route()
       if (model) return calculate(source, job, store.revision(), model, stage, input, sources, [], system, current)
     },
-    queueExtraction(id, note, focuses, supporting) {
-      if (store.readSource(id)?.outcome !== 'note-ready' || effects.get(EXTRACT, id)) return false
-      store.outcome(id, 'pending')
-      effects.queue(EXTRACT, id, { noteKey: note.key, noteRevision: note.revision, focuses, supporting })
-      return true
-    },
-    extractionPending: id => Boolean(effects.get(EXTRACT, id)),
   }) : null
+
+  let documentsReady = false
+  const documents = dailyNotes ? resources.openDocuments(id => sourceCurrent(id, now(), true), () => {
+    store.nextRevision()
+    // Startup recovery precedes the owner's runtime binding; admission is still closed then.
+    if (documentsReady) validateDispatch()
+  }) : null
+  documentsReady = true
+  function documentSourcesRestricted(ids: readonly string[]): boolean {
+    if (!documents || !notes) return false
+    return documentReferencesRestricted(notes.storage.snapshot(ids))
+  }
+  function documentReferencesRestricted(refs: readonly DocumentSourceRef[]): boolean {
+    if (!documents) return false
+    return refs.some(ref => {
+      const source = store.readSource(ref.id)
+      if (!source) return true
+      const workspace = memoryHash(JSON.stringify([source.scope, source.context, source.project ?? null]))
+      return documentSourceRestricted(ref, documents.sourceRestrictions(workspace))
+    })
+  }
+  function documentChanged(_receipt: DocumentReceipt) {
+    publish(store.revision(), [])
+    notes?.refreshRestrictions()
+  }
+  notes?.refreshRestrictions()
+  const dream = notes && documents ? createMemoryDreamJobs({
+    notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx,
+    settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
+    readable: id => sourceCurrent(id, now(), true),
+    eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
+    source: id => store.readSource(id) ?? undefined,
+    reference(id) {
+      const source = store.readSource(id)
+      return source && sourceCurrent(id, now(), true) ? { namespace: 'canonical', sourceId: id, revision: source.version } : null
+    },
+    allowsText: (text, source) => !looksSecret(text) && !excludedSourceText(text)
+      && !excludedSourceText(text, source.context ?? source.scope)
+      && (!source.project || !excludedSourceText(text, source.project)),
+    committed: documentChanged,
+    mutate: runDocumentMutation,
+    async calculate(request) {
+      const model = route(), sources = request.sourceIds()
+      if (!model || !sources.length || !request.current()) return
+      const id = randomUUID(), snapshotRevision = store.revision()
+      const current = () => !closed && request.current() && request.sourceIds().every(sourceId => sourceCurrent(sourceId, now(), true))
+      runningComputations.set(id, {
+        ready: () => !mutation && store.revision() === snapshotRevision && current(),
+        current, get deadline() { return dispatchDeadline([], request.sourceIds(), now()) },
+      })
+      try {
+        const result = compute({ id, sourceId: sources[0]!, stage: 'dream', generation: request.job.generation,
+          ...model, system: request.system, input: JSON.stringify(request.input) }, undefined, request.tools)
+        if (!result) return
+        const text = await result
+        return current() && store.revision() === snapshotRevision ? text : undefined
+      } finally { runningComputations.delete(id) }
+    },
+  }) : null
+  const DOCUMENT_CLEANUP = 'memory.document-cleanup'
+  effects.runs(DOCUMENT_CLEANUP, async jobs => {
+    // Recovery may also finish a prepared revision, so it shares the physical send fence.
+    await runDocumentMutation(() => documents?.recover())
+    return new Map(jobs.map(job => [job.key, documents?.hasPendingCleanup(job.key) ? 'retry' as const : 'done' as const]))
+  })
+  function withdrawNotes(id: string) {
+    notes?.withdraw(id)
+    dream?.withdraw(id)
+    documents?.withdraw(id)
+    if (documents) effects.queue(DOCUMENT_CLEANUP, id, null)
+  }
 
   effects.runs(EXTRACT, async jobs => {
     const outcomes = new Map<string, Outcome>()
@@ -728,22 +804,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (closed) break
       const source = store.readSource(job.key)
       const structure = structureJob.safeParse(job.payload).data
-      const fromNote = dreamExtraction.safeParse(job.payload).data
       const existing = structure && store.get(structure.id)
       if (!source?.text || source.withdrawn || store.sourceExcluded(job.key)
         || (structure ? !existing || existing.fact || !retained(existing) || !available(existing) : source.outcome !== 'pending')) {
         outcomes.set(job.key, 'done')
-        continue
-      }
-      const noteCurrent = () => !fromNote || Boolean(notes &&
-        [{ key: fromNote.noteKey, revision: fromNote.noteRevision }, ...fromNote.supporting ?? []].every(ref =>
-          notes.read(ref.key)?.revision === ref.revision && notes.sources(ref.key).every(id => sourceCurrent(id, now(), true))))
-      if (!noteCurrent()) {
-        store.tx(() => {
-          if (!effects.holds(job)) return
-          store.outcome(source.id, 'note-ready')
-          effects.finishGeneration(job)
-        })
         continue
       }
       if (looksSecret(source.text) || (!structure && (excludedSourceText(source.text, source.context ?? source.scope) || source.project && excludedSourceText(source.text, source.project)))) {
@@ -804,14 +868,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           && !excludedSourceText(source.question, source.context ?? source.scope) ? source.question : null
         const input = { sourceId: source.id, sourceVersion: source.version, author: source.author,
           user: source.text, spans, ...(structure ? { explicitlySaved: true } : {}), ...(question ? { question } : {}),
-          ...(fromNote ? { noteFocuses: fromNote.focuses } : {}),
           nearby: nearby.map(({ id, text }) => ({ id, text })), related: extraction.related, relatedComplete: extraction.complete,
           assertedAt: source.at, timezone: source.timezone, assertedLocalDate: todayAt(source.at, source.timezone) }
-        const system = fromNote ? EXTRACT_SYSTEM + '\n本轮由日记整理选出 noteFocuses。只提出这些条目中由 user 原文支持的长期记忆。' : EXTRACT_SYSTEM
-        const result = await calculate(source, job, snapshotRevision, model, 'extract', input, extraction.dependencies, extraction.shown, system, noteCurrent)
+        const result = await calculate(source, job, snapshotRevision, model, 'extract', input, extraction.dependencies, extraction.shown)
         if (result === undefined) continue
         const parsed = memoryProposals.parse(result)
-        if (!noteCurrent() || !currentExtraction(source, job, snapshotRevision, extraction.dependencies)) { outcomes.set(job.key, 'retry'); continue }
+        if (!currentExtraction(source, job, snapshotRevision, extraction.dependencies)) { outcomes.set(job.key, 'retry'); continue }
         const selected = parsed.proposals.flatMap((proposal, index) => {
           const evidence = proposalSpans(source.text!, proposal, spans)
           return evidence ? [{ index, proposal, evidence }] : []
@@ -852,7 +914,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           if (reviewInput.complete) {
             const result = await calculate(source, job, snapshotRevision, model, 'review',
               { ...input, related: reviewInput.related, relatedComplete: true,
-                proposals: reviewDrafts }, dependencies, reviewInput.shown, REVIEW_SYSTEM, noteCurrent)
+                proposals: reviewDrafts }, dependencies, reviewInput.shown, REVIEW_SYSTEM)
             if (result === undefined) continue
             const { reviews: reported } = memoryReviews.parse(result)
             for (const review of reported) {
@@ -876,12 +938,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
             }
           }
         }
-        if (!noteCurrent() || !currentExtraction(source, job, snapshotRevision, dependencies)) { outcomes.set(job.key, 'retry'); continue }
+        if (!currentExtraction(source, job, snapshotRevision, dependencies)) { outcomes.set(job.key, 'retry'); continue }
         if (!canCommit(source)) continue
         const changedIds = new Set<number>()
         const invalidated = new Set<number>()
         const entries = store.tx(() => {
-          if (!noteCurrent() || !currentExtraction(source, job, snapshotRevision, dependencies)) { outcomes.set(job.key, 'retry'); return [] }
+          if (!currentExtraction(source, job, snapshotRevision, dependencies)) { outcomes.set(job.key, 'retry'); return [] }
           const before = store.revision()
           let revision: number | undefined
           // All plans were checked against the same pre-write revision. Earlier
@@ -913,8 +975,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         if (!closed && !(error instanceof MemoryDispatchConflict)) outcomes.set(job.key, 'retry')
       }
     }
-    if (!closed && jobs.some(job => dreamExtraction.safeParse(job.payload).success &&
-      (!effects.holds(job) || outcomes.get(job.key) === 'done'))) void effects.wake()
     return outcomes
   })
 
@@ -989,7 +1049,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       store.excludeSource(edge.sourceId)
       store.clearCandidates(edge.sourceId)
       effects.cancel(EXTRACT, edge.sourceId)
-      notes?.withdraw(edge.sourceId)
+      withdrawNotes(edge.sourceId)
       if (mode === 'delete') redact(source.id, edge.spans)
     }
     for (const change of store.changesReferencing(entry.id)) {
@@ -1028,7 +1088,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         store.excludeSource(id)
         store.clearCandidates(id)
         effects.cancel(EXTRACT, id)
-        notes?.withdraw(id)
+        withdrawNotes(id)
         if (!source?.text || !spans.length) continue
         const cuts = spans.map(span => ({ from: span.start, to: span.end }))
         const overlapsCut = (span: MemorySpan) => cuts.some(cut => intersect(cut, { from: span.start, to: span.end }))
@@ -1412,7 +1472,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         store.excludeSource(source.id)
         store.clearCandidates(source.id)
         effects.cancel(EXTRACT, source.id)
-        notes?.withdraw(source.id)
+        withdrawNotes(source.id)
         for (const id of store.memoriesFrom(source.id)) touched.add(id)
         for (const change of store.changesFrom(source.id)) {
           store.setChangeStatus(change.id, 'withdrawn', rev)
@@ -1884,6 +1944,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     for (const note of notes?.list(from, through) ?? []) {
       if (request.asOf && note.updatedAt >= interval.to!) continue
       const sourceIds = notes?.sources(note.key) ?? []
+      if (documentReferencesRestricted(notes!.storage.references(note.key))) continue
       const body = `${note.title}
 ${note.markdown}`
       if (!sourceIds.length || looksSecret(body) || !sourceIds.every(id => {
@@ -2438,6 +2499,28 @@ ${chunk.text}`
   }
 
   return {
+    runDocumentDream: () => { dream?.run(); return effects.wake() },
+    readDocument: documents?.read,
+    listDocuments: documents?.list,
+    pendingDocumentClarifications: documents?.pending,
+    async undoDocument(input: Parameters<NonNullable<typeof documents>['undo']>[0]) {
+      if (!documents) throw new Error('Document memory is not enabled')
+      const result = await runDocumentMutation(() => { const receipt = documents.undo(input); documentChanged(receipt); return receipt })
+      dream?.run()
+      return result
+    },
+    async setDocumentEnabled(input: Parameters<NonNullable<typeof documents>['setEnabled']>[0]) {
+      if (!documents) throw new Error('Document memory is not enabled')
+      const result = await runDocumentMutation(() => { const receipt = documents.setEnabled(input); documentChanged(receipt); return receipt })
+      dream?.run()
+      return result
+    },
+    async answerDocumentClarification(input: Parameters<NonNullable<typeof documents>['answer']>[0]) {
+      if (!documents) throw new Error('Document memory is not enabled')
+      const result = await mutate(() => documents.answer(input))
+      dream?.run()
+      return result
+    },
     accept, bindSource, recordNoteTurn: notes?.record, flushNoteTurns: notes?.flush, handle, handleModelRequest, rebuildIndexes, forgetIntent, clarificationQuestion, computeCurrent, computeAdmission, provisionalReadsCurrent, provisionalDeadline,
     authorizeGeneralQuestion,
     correctionIntent(text: string, scope?: MemoryScope, project?: Origin['project']) {
@@ -2452,9 +2535,13 @@ ${chunk.text}`
     replaySources,
     async deleteMemory(id: number, revision: number, operation: string = randomUUID()) {
       await forget(id, revision, 'delete', operation)
+      // Do not await the shared runner: an unrelated model job can be waiting for its caller.
+      // Source exclusion already fenced the affected reads; physical document cleanup is synchronous.
+      try { documents?.recover() } catch { return { status: 'stopped' as const } }
+      if (documents?.pendingCleanup()) return { status: 'stopped' as const }
       return cleanup.status(operation)
     },
-    cleanupPending: cleanup.pending,
+    cleanupPending: () => cleanup.pending() + (documents?.pendingCleanup() ?? 0),
     projectAllows(evidence: Pick<MemoryProvenance, 'dependencies' | 'sources' | 'projects'>, project?: Origin['project']) {
       const allowed = (scope?: MemoryScope | null) => scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
       return (evidence.projects ?? []).every(id => id === project?.id) && evidence.dependencies.every(item => {

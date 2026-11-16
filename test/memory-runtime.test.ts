@@ -14,6 +14,8 @@ import { historyRecall } from '../src/backend/history-recall.ts'
 import { localDay, resolveMemoryTime } from '../src/memory/core/memory-facts.ts'
 import { memoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import type { MemoryCompute, MemoryProposal, MemoryTemporal } from '../src/memory/contracts/memory-contract.ts'
+import { dreamModelStep } from './fixtures/dream-model.ts'
+import { DREAM_EXTRACT_SYSTEM, DREAM_VERIFY_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { scratch } from './fixtures/scratch.js'
 
 function deferred<T>() {
@@ -64,7 +66,7 @@ test('receipt and extraction recover with the same source ID after restart', asy
   assert.equal(second.store.db.prepare('SELECT count(*) AS n FROM effects').get()?.n, 0)
 })
 
-test('daily notes are recalled after five rounds and long-term admission reads the selected source', async t => {
+test('daily notes are recalled after five rounds and document dream verifies the selected original source', async t => {
   const { dir, defer } = scratch(t, 'viva-daily-memory-')
   let now = Date.parse('2026-11-03T12:00:00Z')
   const stages: string[] = []
@@ -73,7 +75,7 @@ test('daily notes are recalled after five rounds and long-term admission reads t
   const memory = createMemoryRuntime({
     store, now: () => now, timezone: () => 'UTC', dailyNotes: { timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
-    async compute(job) {
+    async compute(job, _signal, tools) {
       stages.push(job.stage)
       if (job.stage === 'note') {
         const input = JSON.parse(job.input) as { turns: Array<{ user: Array<{ text: string }>, assistant: string }> }
@@ -82,19 +84,12 @@ test('daily notes are recalled after five rounds and long-term admission reads t
         assert.equal(input.turns[1]?.assistant, '记下当前进展')
         return JSON.stringify({ status: 'write', title: '周报安排', markdown: '周五提交周报。草稿尚未完成。' })
       }
-      if (job.stage === 'dream') {
-        const input = JSON.parse(job.input) as { notes: Array<{ key: string, markdown: string, sources: string[] }> }
-        const [note] = input.notes
-        assert.match(note!.markdown, /周五提交周报/)
-        return JSON.stringify({ units: [{ note: note!.key, sourceId: note!.sources[0], focus: '每周五提交周报' }] })
+      assert.equal(job.stage, 'dream')
+      if (job.system === DREAM_VERIFY_SYSTEM) {
+        const input = JSON.parse(job.input) as { canonicalSources: Array<{ text: string, sourceId: string }> }
+        assert.equal(input.canonicalSources.find(source => source.sourceId === ids[0])?.text, firstText)
       }
-      if (job.stage === 'extract') {
-        const input = JSON.parse(job.input) as { user: string, noteFocuses: string[] }
-        assert.equal(input.user, firstText)
-        assert.deepEqual(input.noteFocuses, ['每周五提交周报'])
-        return proposal(firstText)
-      }
-      throw new Error(job.stage)
+      return dreamModelStep(job, tools, { name: '周报安排', summary: '每周五提交周报', evidenceId: ids[0] })
     },
   })
   defer(() => memory.close())
@@ -112,13 +107,14 @@ test('daily notes are recalled after five rounds and long-term admission reads t
   assert.match(recalled.notes[0].markdown, /草稿尚未完成/)
   now = Date.parse('2026-11-03T23:00:00Z')
   await memory.wake()
-  assert.deepEqual(stages, ['note', 'dream', 'extract'])
-  assert.equal(memory.listMemories().items[0]?.text, firstText)
-  assert.equal(memory.listMemories().items[0]?.evidence[0]?.sourceId, ids[0])
+  assert.deepEqual(stages, ['note', 'dream', 'dream', 'dream', 'dream'])
+  assert.equal(memory.listMemories().items.length, 0, 'dream never queues the legacy fact extractor')
+  const document = store.db.prepare('SELECT sources FROM memory_documents').get()!
+  assert.deepEqual(JSON.parse(String(document.sources)).map((ref: { id: string }) => ref.id), [ids[0]])
   memory.withdraw({ ids: [ids[1]], conversation: origin.conversation, onlySources: true })
   const after = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '周报' }, origin))
   assert.deepEqual(after.notes, [])
-  assert.equal(memory.listMemories().items[0]?.text, firstText)
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents WHERE forgotten=0').get()?.n, 1)
 })
 
 test('daily notes and long-term memories share five ranked recall results', async t => {
@@ -217,7 +213,7 @@ test('daily recall searches past 64 newer notes and returns a match at the end w
   assert.equal(JSON.parse(memory.handle({ ...request, query: 'meeting', limit: 99 }, contextualOrigin)).notes.length, 50)
 })
 
-test('consolidation waits for exact-source admission before checkpointing and reattempts structural errors once', async t => {
+test('document consolidation waits for semantic evidence review before checkpointing and retries structural errors once', async t => {
   const { dir, defer } = scratch(t, 'viva-dream-checkpoint-')
   let now = Date.parse('2026-11-06T13:59:00Z')
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
@@ -229,19 +225,22 @@ test('consolidation waits for exact-source admission before checkpointing and re
   const memory = createMemoryRuntime({
     store, now: () => now, dailyNotes: { noteInterval: 1 },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
-    async compute(job) {
+    async compute(job, _signal, tools) {
       if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', markdown: fact })
-      if (job.stage === 'dream') {
+      assert.equal(job.stage, 'dream')
+      if (job.system === DREAM_EXTRACT_SYSTEM) {
         const input = JSON.parse(job.input)
         assert.equal(input.maxUnits, 5)
         if (++dreams === 1) return '{"units": ['
         assert(input.retry)
-        return JSON.stringify({ units: [{ note: input.notes[0].key, sourceId: id, focus: fact }] })
       }
-      assert.equal(job.stage, 'extract')
-      assert.equal(JSON.parse(job.input).user, fact)
-      beganExtraction.resolve()
-      return completeExtraction.promise
+      if (job.system === DREAM_VERIFY_SYSTEM) {
+        const input = JSON.parse(job.input) as { canonicalSources: Array<{ text: string }> }
+        assert.equal(input.canonicalSources[0]?.text, fact)
+        beganExtraction.resolve()
+        await completeExtraction.promise
+      }
+      return dreamModelStep(job, tools, { summary: fact })
     },
   })
   defer(() => memory.close())
@@ -255,7 +254,8 @@ test('consolidation waits for exact-source admission before checkpointing and re
   completeExtraction.resolve(proposal(fact))
   await running
   assert.equal(dreams, 2)
-  assert.equal(memory.listMemories().items[0]?.text, fact)
+  assert.equal(memory.listMemories().items.length, 0)
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents').get()?.n, 1)
   const note = store.db.prepare('SELECT processed,revision FROM memory_daily_notes').get()!
   assert.equal(note.processed, note.revision)
 })
@@ -1860,7 +1860,7 @@ test('a malformed note response is retried and never counted as a successful ski
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_daily_notes').get()?.n, 0)
 })
 
-for (const extraction of ['partial', 'empty'] as const) test(`daily files retain full session evidence after ${extraction} legacy dream extraction and accept the next turn`, async t => {
+for (const extraction of ['partial', 'empty'] as const) test(`daily files retain full session evidence after ${extraction} document dream integration and accept the next turn`, async t => {
   const { dir, defer } = scratch(t, 'viva-note-extraction-retention-')
   let now = Date.parse('2026-11-14T12:00:00Z'), notesWritten = 0
   const sourceId = randomUUID(), fact = '我的周报每周五提交'
@@ -1868,17 +1868,13 @@ for (const extraction of ['partial', 'empty'] as const) test(`daily files retain
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
   const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 1 },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
-    async compute(job) {
+    async compute(job, _signal, tools) {
       if (job.stage === 'note') {
         notesWritten++
         return JSON.stringify({ status: 'write', title: '周报安排', markdown: text })
       }
-      if (job.stage === 'dream') {
-        const input = JSON.parse(job.input) as { notes: Array<{ key: string }> }
-        return JSON.stringify({ units: [{ note: input.notes[0]!.key, sourceId, focus: fact }] })
-      }
-      assert.equal(job.stage, 'extract')
-      return extraction === 'empty' ? '{"proposals":[]}' : proposal(fact)
+      assert.equal(job.stage, 'dream')
+      return dreamModelStep(job, tools, { empty: extraction === 'empty', summary: fact, evidenceId: sourceId })
     },
   })
   defer(() => memory.close())
@@ -1888,7 +1884,8 @@ for (const extraction of ['partial', 'empty'] as const) test(`daily files retain
   now = Date.parse('2026-11-14T23:00:00Z')
   await memory.wake()
   assert.equal(store.readSource(sourceId)?.text, text)
-  assert.equal(store.readSource(sourceId)?.outcome, extraction === 'empty' ? 'skipped' : 'accepted')
+  assert.equal(store.readSource(sourceId)?.outcome, 'note-ready')
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents').get()?.n, extraction === 'empty' ? 0 : 1)
   const read = () => JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '调试界面' }, origin)) as { notes: { markdown: string }[] }
   assert.equal(read().notes[0]?.markdown, text)
   const next = randomUUID()
@@ -1998,7 +1995,7 @@ test('recovery finishes a receipted note generation before processing the remain
   assert.notEqual(computed[0], job.generation)
   assert.equal(reopened.db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   assert.equal(reopened.db.prepare("SELECT count(*) AS n FROM effects WHERE kind='memory.note'").get()?.n, 0)
-  assert.equal(reopened.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE id LIKE 'note:%' AND state='done'").get()?.n, 2)
+  assert.equal(reopened.db.prepare("SELECT count(*) AS n FROM memory_file_intents WHERE id LIKE 'notes:note:%' AND state='done'").get()?.n, 2)
 })
 
 for (const stage of ['note', 'dream'] as const) test(`${stage} requests do not send credentials added to an existing daily file`, async t => {

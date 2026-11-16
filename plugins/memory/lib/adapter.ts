@@ -59,10 +59,10 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true,
     canPresentControlReceipt: controlReceipts.available,
     route: () => lastRoute ?? ctx.agents.list().map(agent => agent.model.current()).find(route => route !== undefined) ?? null,
-    compute: (job, signal) => {
+    compute: (job, signal, tools) => {
       const deadline = AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)
       const combined = AbortSignal.any([lifetime.signal, deadline, ...(signal ? [signal] : [])])
-      return caller.run({ jobId: job.id }, () => completeMemoryModel(ctx, job, combined)).catch(error => {
+      return caller.run({ jobId: job.id }, () => completeMemoryModel(ctx, job, combined, tools)).catch(error => {
         if (error instanceof MemoryComputeError) throw error
         if (combined.aborted) throw new MemoryComputeError(combined.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted')
         throw new MemoryComputeError('call-failed')
