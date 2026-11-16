@@ -39,8 +39,10 @@ export async function reconcileNativeReceipts(root: string, owner: Maintenance, 
         const origin = call.session === sessionId
         if (!origin && call.seq >= inheritedEventCount) continue
         const event = events[call.seq]
-        if (origin && event && nativeEventDigest(event) !== call.digest) ambiguous.add(call.id)
-        if (!(call.ptc ? ptcStartMatches(event, call) : event?.type === 'tool/call') || !event || nativeEventDigest(event) !== call.digest) continue
+        const proven = event && (nativeEventDigest(event) === call.digest
+          || owner.nativeTransition({ seq: call.seq, before: call.digest, after: nativeEventDigest(event) }))
+        if (origin && event && !proven) ambiguous.add(call.id)
+        if (!(call.ptc ? ptcStartMatches(event, call) : event?.type === 'tool/call') || !event || !proven) continue
         if (origin) origins.add(call.id)
         if (call.ptc) {
           const window = inspectPtcResultWindow(events, call, origin ? events.length : inheritedEventCount)

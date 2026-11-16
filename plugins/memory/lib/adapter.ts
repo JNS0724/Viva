@@ -32,6 +32,7 @@ import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
 import { trackNativeOutputAttempts } from './native/output-attempts.ts'
 import { trackNativeToolReads, type NativeToolLease } from './native/tool-reads.ts'
 import { trackNativeSpills } from './native/track-spills.ts'
+import { trackNativeSpillReads } from './native/read-spills.ts'
 import { recordCompactionInputs, recordCompactionRequest } from './native/compaction-inputs.ts'
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
@@ -97,6 +98,10 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     evidence: owner.nativeToolEvidence, archive: owner.inheritNativeToolRead,
   }) : null
   if (toolReads) trackNativeSpills(ctx, owner, toolReads)
+  if (toolReads) trackNativeSpillReads(ctx, owner, () => {
+    const execution = caller.getStore()
+    return execution && 'agent' in execution ? execution.toolRead : undefined
+  })
   const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
     const proof = deliveries.get(message.id)
     if (!proof) return undefined

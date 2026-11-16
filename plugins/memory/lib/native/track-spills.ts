@@ -7,6 +7,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { openMemoryOwner } from '../../../../src/memory/node/owner.ts'
 import type { trackNativeToolReads } from './tool-reads.ts'
 import { publishGovernedNativeSpill, reserveNativeSpill } from './governed-spills.ts'
+import { replaceServiceMethod } from './service-method.ts'
 
 export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMemoryOwner>, tools: ReturnType<typeof trackNativeToolReads>) {
   return ctx.inject(['spillStore'], scoped => {
@@ -32,7 +33,7 @@ export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMem
       owner.finishNativeSpill(id, saved.receipt)
       return saved.ref
     }
-    store.saveText = wrapped
-    scoped.effect(() => () => { if (store.saveText === wrapped) store.saveText = save }, 'memory spill receipts')
+    const restore = replaceServiceMethod(store, 'saveText', wrapped)
+    scoped.effect(() => restore, 'memory spill receipts')
   })
 }

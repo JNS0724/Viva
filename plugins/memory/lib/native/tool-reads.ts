@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type {} from '@deepseek-ai/dsh-tool-executor-ptc'
 import { pluginRecordOf, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ResolvedToolSet, ToolExecution, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
-import type { NativeToolCall, NativeToolResult } from '../../../../src/memory/node/native-tool-reads.ts'
+import type { NativeToolCall, NativeToolResult, NativeToolReadScope } from '../../../../src/memory/node/native-tool-reads.ts'
 import { nativeEventDigest } from './event-digest.ts'
 import { NATIVE_OUTPUT_MARKER } from './output-attempts.ts'
 import { objectOf } from '../../../../src/memory/contracts/unknown-value.ts'
@@ -13,7 +13,7 @@ type CallEvent = SessionEvent<'tool/call' | 'tool/ptc-dispatch-start'>
 type PendingCall = { event: CallEvent, token?: ToolExecutionToken, active?: NativeToolCall, parent?: PendingCall, input?: readonly MemoryErasureEvidence[] }
 type Assembly = { signal: AbortSignal, tools: ResolvedToolSet }
 type Step = { turn: number, step: number, assembly: Assembly, calls: Map<string, PendingCall>, outputAttempt?: string }
-export type NativeToolLease = { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }
+export type NativeToolLease = NativeToolReadScope
 
 /** The native tool call event is published before the executor can start the body. */
 export function trackNativeToolReads(finish: (call: NativeToolCall, result: NativeToolResult) => void, inheritance?: {
@@ -101,7 +101,12 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       const calls = chain.flatMap(node => node.active?.generation === generation ? [node.active] : [])
       if (calls.length !== chain.length) return
       const lease = { call, calls, current: () => sessions.get(session)?.calls.get(callId) === current
-        && chain.every(node => Boolean(node.token) && node.active?.generation === generation) }
+        && chain.every(node => Boolean(node.token) && node.active?.generation === generation),
+        readCut() {
+          const event = session.snapshotEvents().at(-1)
+          if (!event) throw new Error('Native read has no current event cut')
+          return { seq: event.seq, digest: nativeEventDigest(event) }
+        } }
       if (current.input?.length) inheritance?.archive(lease, current.input)
       return lease
     },

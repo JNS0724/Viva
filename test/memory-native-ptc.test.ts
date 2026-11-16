@@ -1,22 +1,25 @@
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { createAssistantMessage, createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { ResolvedToolSet, ToolExecution, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
+import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
+import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
 import { eraseColdNativeCopies } from '../plugins/memory/lib/native/maintenance.ts'
 import { trackNativeToolReads } from '../plugins/memory/lib/native/tool-reads.ts'
 import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { inspectPtcResultWindow } from '../plugins/memory/lib/native/project-native-ptc.ts'
 import { scratch } from './fixtures/scratch.js'
 
-for (const scenario of ['settled-fork', 'interrupted', 'spill-pending', 'missing-origin'] as const) {
+for (const scenario of ['settled-fork', 'interrupted', 'output-overlap', 'spill-pending', 'missing-origin'] as const) {
   test(`PTC exact input lineage and full-catalog no-output recovery: ${scenario}`, async t => {
     const { dir } = scratch(t, 'viva-native-ptc-'), memoryRoot = join(dir, 'memory'), root = join(dir, 'sessions')
     const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', fileMode: true,
@@ -31,8 +34,19 @@ for (const scenario of ['settled-fork', 'interrupted', 'spill-pending', 'missing
     tracker.assembly(session, signal, tools); tracker.step(session, 1, 1, signal)
     session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
     const rootId = ToolCallId('program'), leafId = ToolCallId('leaf'), independentId = ToolCallId('independent'), derivedId = ToolCallId('derived')
-    session.append('assistant/message', { turn: 1, step: 1, message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' },
+    const marker = { id: randomUUID(), generation: 0, turn: 1, step: 1 }
+    const floor = scenario === 'output-overlap' ? appendPluginRecord(session, NATIVE_OUTPUT_MARKER, marker) + 1 : 0
+    const announcement = session.append('assistant/message', { turn: 1, step: 1, message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' },
       content: [{ type: 'tool-call', id: rootId, name: 'run_code', arguments: '{}' }] }), stream: [] }, { surfaceOp: 'append' })
+    if (scenario === 'output-overlap') {
+      owner.runtime.handle({ op: 'file_read', session: session.id, id: created.identity.id }, owner.sessionContext(session.id))
+      const archive = new DatabaseSync(join(memoryRoot, 'memory.db'))
+      try {
+        const attempts = createNativeOutputAttempts(archive), attempt = { ...marker, session: String(session.id), floor }
+        attempts.record(attempt, owner.dispatch.snapshot(session.id))
+        attempts.finish(attempt, { seq: announcement.seq, kind: 'reply', digest: nativeEventDigest(announcement) })
+      } finally { archive.close() }
+    }
     const native = session.append('tool/call', { turn: 1, step: 1, callId: rootId, name: 'run_code', arguments: '{}' })
     tracker.observe(session, native)
     const rootExec: ToolExecution = { callId: rootId, rootCallId: rootId, name: 'run_code', arguments: {}, signal, toolSet: tools, token: token() }
@@ -105,7 +119,7 @@ for (const scenario of ['settled-fork', 'interrupted', 'spill-pending', 'missing
         const reader = await verify.sessionPersistence.open(id, 'read')
         try {
           const events = (await reader.read()).events
-          assert.deepEqual(events[independent.event.seq], independent.event)
+          if (scenario !== 'output-overlap') assert.deepEqual(events[independent.event.seq], independent.event)
           const start = events[derived.event.seq]
           assert.equal(start?.type, 'tool/ptc-dispatch-start')
           assert.deepEqual(start.data.arguments, {})

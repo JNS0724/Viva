@@ -14,6 +14,7 @@ import type { NativeOutputTrace } from './publish-native-event-copies.ts'
 import { reconcileNativeReceipts } from './reconcile-native-receipts.ts'
 import { auditNativeErasure } from './audit-native-erasure.ts'
 import { eraseNativeSpill } from './local-spills.ts'
+import { recoverNativePtcInputs } from './recover-ptc-inputs.ts'
 
 export class PendingNativePublication extends Error {}
 
@@ -28,6 +29,7 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
   try {
     if (!owner.hasPlans()) return
     const root = await realpath(sessionsRoot)
+    await recoverNativePtcInputs(root, owner)
     await reconcileNativeReceipts(root, owner)
     const work = owner.operations()
     const outputs = owner.outputOperations(), tools = owner.toolResultOperations()

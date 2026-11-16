@@ -23,7 +23,7 @@ async function syncDirectory(file: string) {
 }
 
 /** The receipt is for the actual local store's exact file, not another same-text artifact. */
-export async function verifyNativeSpill(intent: NativeSpillIntent, locator: string): Promise<NativeSpillFile> {
+export async function verifyNativeSpill(intent: NativeSpillIntent, locator: string, durable = true): Promise<NativeSpillFile> {
   const parent = sessionDir(intent.root, intent.call.session)
   await directory(intent.root)
   await directory(parent)
@@ -31,12 +31,11 @@ export async function verifyNativeSpill(intent: NativeSpillIntent, locator: stri
     throw new Error('Native spill locator escaped its session')
   }
   const file = path.join(parent, path.basename(locator))
-  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW)
+  const handle = await open(file, (durable ? constants.O_RDWR : constants.O_RDONLY) | constants.O_NOFOLLOW)
   try {
     const stat = await handle.stat({ bigint: true }), bytes = await handle.readFile()
     if (!stat.isFile() || stat.nlink !== 1n || bytes.byteLength !== intent.bytes || hash(bytes) !== intent.hash) throw new Error('Native spill bytes differ from its receipt')
-    await handle.sync()
-    await syncDirectory(parent)
+    if (durable) { await handle.sync(); await syncDirectory(parent) }
     return { path: file, dev: stat.dev.toString(), ino: stat.ino.toString() }
   } finally { await handle.close() }
 }

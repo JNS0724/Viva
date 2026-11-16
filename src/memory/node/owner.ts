@@ -29,9 +29,9 @@ import type { TextSpan } from '../contracts/text-spans.ts'
 import { createOwnerNativeOriginals } from './owner-native-originals.ts'
 import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
-import { createNativeToolReads, type NativeToolCall } from './native-tool-reads.ts'
+import { createNativeToolReads, type NativeToolCall, type NativeToolReadScope } from './native-tool-reads.ts'
 import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
-import { createNativeSpills } from './native-spills.ts'
+import { createNativeSpills, nativeSpillProvenance, type NativeSpillIntent } from './native-spills.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
@@ -91,7 +91,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
   const nativeToolReads = createNativeToolReads(db)
   const nativeSpills = createNativeSpills(db)
-  const toolReadScope = new AsyncLocalStorage<{ call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }>()
+  const toolReadScope = new AsyncLocalStorage<NativeToolReadScope>()
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
     dailyNotes: options.dailyNotes ?? true, fileMode: options.fileMode ?? false,
     // P2 captures completed daily turns while retaining the existing fact engine until the planned switch.
@@ -114,7 +114,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       store.tx(() => {
         for (const call of scope.calls) {
           if (call.session !== session || call.generation !== scope.call.generation) throw new Error('Native tool ancestor changed its read origin')
-          nativeToolReads.record(call, files, sources)
+          nativeToolReads.record(call, files, sources, scope.readCut?.())
         }
         dispatch.recordFiles(session, files, sources)
       })
@@ -1095,16 +1095,38 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     finishNativeOutput: nativeOutputs.finish,
     finishNativeToolRead: nativeToolReads.finish,
-    beginNativeSpill: nativeSpills.begin, finishNativeSpill: nativeSpills.finish,
+    beginNativeSpill(intent: NativeSpillIntent) {
+      if (state !== 'ready' || replayingWrites || hasPending() || intent.call.generation !== contextRecovery.contextGeneration(intent.call.session)) throw new Error('Native spill belongs to a retired execution')
+      const evidence = nativeSpills.evidence(intent.call)
+      const provenance = nativeSpillProvenance(dispatch.snapshot(intent.call.session), evidence)
+      const { evidence: _claimed, provenance: _unchecked, ...identity } = intent
+      return nativeSpills.begin({ ...identity, evidence, ...(provenance ? { provenance } : {}) })
+    },
+    finishNativeSpill: nativeSpills.finish, nativeSpillCandidates: nativeSpills.candidates,
+    admitNativeSpillRead(id: string, scope: NativeToolReadScope) {
+      const saved = nativeSpills.read(id)
+      if (!saved || saved.erased || !saved.file || !saved.provenance || !saved.evidence?.length) throw new Error('Native spill proof is unavailable')
+      const generation = contextRecovery.contextGeneration(scope.call.session)
+      const proof = { ...saved.provenance, epoch: store.epoch() }
+      const current = () => state === 'ready' && !replayingWrites && !hasPending() && scope.current() && scope.call.generation === generation
+        && contextRecovery.contextGeneration(scope.call.session) === generation && nativeSpills.read(id)?.erased === false
+        && dispatch.transferable(proof) && coordination.allowsEvidence(proof, sessionContext(scope.call.session).project)
+      if (!current()) throw new Error('Native spill source or scope was retired')
+      store.tx(() => {
+        for (const call of scope.calls) for (const evidence of saved.evidence!) nativeToolReads.recordEvidence(call, evidence, scope.readCut?.())
+        dispatch.attach(scope.call.session, proof)
+      })
+      return { current }
+    },
     nativeSpillGoverned: nativeSpills.governed,
     nativeToolEvidence: nativeToolReads.evidence,
-    inheritNativeToolRead(scope: { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }, evidence: readonly MemoryErasureEvidence[]) {
+    inheritNativeToolRead(scope: NativeToolReadScope, evidence: readonly MemoryErasureEvidence[]) {
       if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(scope.call.session)) throw new Error('Native tool input changed its generation')
       store.tx(() => {
-        for (const call of scope.calls) for (const item of evidence) nativeToolReads.recordEvidence(call, item)
+        for (const call of scope.calls) for (const item of evidence) nativeToolReads.recordEvidence(call, item, scope.readCut?.())
       })
     },
-    withNativeToolRead<T>(scope: { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }, read: () => T): T {
+    withNativeToolRead<T>(scope: NativeToolReadScope, read: () => T): T {
       return toolReadScope.run(scope, read)
     },
     acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string) {

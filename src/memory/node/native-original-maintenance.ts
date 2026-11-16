@@ -220,6 +220,15 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     }).filter(operation => operation.pending())
   }
 
+  function ptcInputCuts() {
+    const cuts = new Map<string, ReturnType<typeof toolReads.readCuts>[number]>()
+    for (const row of outputPlans.all()) {
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
+      for (const cut of toolReads.readCuts(ranges)) if (!outputJournal.erased(cut.call.id)) cuts.set(JSON.stringify(cut), cut)
+    }
+    return [...cuts.values()]
+  }
+
   function derivedMessageOperations() {
     return outputPlans.all().flatMap(row => {
       const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
@@ -297,6 +306,11 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
   return { operations, operation, outputOperations, toolResultOperations, spillOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
     hasPlans: () => outputPlans.all().some(row => !cleanupReceipts.complete(String(row.operation))),
+    ptcInputCuts,
+    recoverPtcInput(call: Parameters<typeof toolReads.recoverInput>[0], evidence: Parameters<typeof toolReads.recoverInput>[1]) {
+      toolReads.recoverInput(call, evidence, outputJournal.forOperation('native-proof').provenTransition)
+    },
+    nativeTransition: outputJournal.forOperation('native-proof').provenTransition,
     finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
     finishAbsentTool(call: Parameters<typeof toolReads.finishAbsent>[0]) {
       toolReads.finishAbsent(call)

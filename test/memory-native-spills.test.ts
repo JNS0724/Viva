@@ -5,14 +5,18 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
+import { LocalFileSystem } from '@deepseek-ai/dsh-fs-local'
 import { saveTextFile, sessionDir } from '@deepseek-ai/dsh-spill-local'
 import { createNativeSpills, type NativeSpillIntent } from '../src/memory/node/native-spills.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeErasureReceipts } from '../src/memory/node/native-erasure-receipts.ts'
 import { memoryFileDetail, memoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
+import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { reserveNativeSpill, publishGovernedNativeSpill } from '../plugins/memory/lib/native/governed-spills.ts'
 import { eraseNativeSpill } from '../plugins/memory/lib/native/local-spills.ts'
+import { trackNativeSpillReads } from '../plugins/memory/lib/native/read-spills.ts'
 import { scratch } from './fixtures/scratch.js'
 
 const body = 'Private memory-derived spill content.'
@@ -127,4 +131,73 @@ test('native catalog acknowledgement waits for affected spill retirement after t
   operation.complete(target.id)
   maintenance.acknowledgeCatalog('e'.repeat(64), new Set())
   assert.equal(receipts.complete(operationId), true)
+})
+
+test('spill read-back archives its exact source proof before use and rejects a late or erased source', async t => {
+  const { dir } = scratch(t, 'viva-native-spill-read-'), directory = join(dir, 'spill')
+  await mkdir(directory, { mode: 0o700 })
+  const owner = openMemoryOwner({ root: join(dir, 'memory'), fileMode: true, hostNamespace: 'viva',
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  try {
+    await owner.recover()
+    const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: body }] }) as HostMemoryApi['createFile']['output']
+    owner.initializeSession({ sessionId: 'origin' }); owner.initializeSession({ sessionId: 'consumer' })
+    const call = { id: randomUUID(), session: 'origin', callId: 'read', generation: 0, turn: 1, step: 1, seq: 3, digest: 'a'.repeat(64) }
+    owner.withNativeToolRead({ call, calls: [call], current: () => true }, () =>
+      owner.runtime.handle({ op: 'file_read', session: call.session, id: created.identity.id }, owner.sessionContext(call.session)))
+    const reserved = await reserveNativeSpill({ call, root: await realpath(directory), hash: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body) }, 'memory_read.txt')
+    const id = owner.beginNativeSpill(reserved.intent)
+    const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, body, () => true)
+    owner.finishNativeSpill(id, saved.receipt)
+    const consumer = { ...call, id: randomUUID(), session: 'consumer', callId: 'read-back', seq: 4 }
+    let live = true
+    const scope = { call: consumer, calls: [consumer], current: () => live }
+    const permit = owner.admitNativeSpillRead(id, scope)
+    assert.equal(permit.current(), true)
+    assert.ok(owner.nativeToolEvidence([consumer]).some(proof => proof.fileRanges.length > 0))
+    assert.ok(owner.dispatch.snapshot('consumer').files?.length)
+    const ctx = new Context(), filesystem = await ctx.plugin(LocalFileSystem, { cwd: dir })
+    let mode: 'valid' | 'changed' | 'held' = 'valid', exhausted = false
+    let entered!: () => void, release!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve }), gate = new Promise<void>(resolve => { release = resolve })
+    ctx.fs.streamText = async () => (async function* () {
+      yield mode === 'changed' ? 'Different' : body.slice(0, 9)
+      if (mode === 'held') { entered(); await gate }
+      yield body.slice(9)
+      exhausted = true
+    })()
+    const unwrappedStream = Object.getOwnPropertyDescriptor(ctx.fs, 'streamText')
+    const guard = await ctx.plugin({ inject: ['fs'], apply(scoped: Context) { trackNativeSpillReads(scoped, owner, () => scope) } })
+    try {
+      const target = await ctx.fs.resolve(saved.ref.locator)
+      const snapshot = await ctx.fs.streamText(target)
+      assert.equal(exhausted, true, 'even an early-stop consumer receives only a completely verified snapshot')
+      let first = ''
+      for await (const chunk of snapshot) { first = chunk; break }
+      assert.equal(first, body.slice(0, 9))
+      mode = 'changed'
+      await assert.rejects(async () => {
+        const unverified = await ctx.fs.streamText(target)
+        for await (const _chunk of unverified) assert.fail('an unverified first chunk must not escape')
+      }, /changed/u)
+      mode = 'held'
+      const delayed = ctx.fs.streamText(target)
+      await started
+      const detail = await owner.handleHost('readFile', { args: [created.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
+      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.identity, version: detail.version }] })
+      release()
+      await assert.rejects(delayed, /source changed/u)
+    } finally {
+      await guard.dispose()
+      assert.deepEqual(Object.getOwnPropertyDescriptor(ctx.fs, 'streamText'), unwrappedStream, 'reloading the memory plugin restores the original public filesystem adapter')
+      await filesystem.dispose()
+    }
+    live = false
+    assert.equal(permit.current(), false, 'a delayed filesystem read cannot outlive its actual execution')
+    assert.throws(() => owner.admitNativeSpillRead(id, scope), /retired/u)
+    live = true
+    assert.equal(permit.current(), false, 'withdrawal invalidates in-flight reads before physical spill cleanup')
+    assert.throws(() => owner.admitNativeSpillRead(id, scope), /retired/u)
+    assert.equal(await readFile(saved.ref.locator, 'utf8'), body, 'the barrier rejects a still-present physical artifact')
+  } finally { await owner.close() }
 })

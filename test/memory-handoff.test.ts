@@ -71,14 +71,14 @@ function contextGeneration(directory: string, session: string): number {
   finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, fileMode = false, ptc = false } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, fileMode = false, ptc = false, ptcFailure = '' } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
   if (ptc) {
     const profile = join(directory, 'dsh', 'profiles', 'viva')
     mkdirSync(profile, { recursive: true })
-    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
+    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n      config: ${JSON.stringify(ptcFailure === 'crash' ? { crashBeforeSearch: join(directory, 'ptc-prepared') } : { rejectSearch: ptcFailure === 'reject' })}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
   }
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
@@ -206,8 +206,12 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
 for (const nextFails of [false, true]) test(`real PTC memory reads archive root/leaf and erase native/spill copies ${nextFails ? 'without a later send' : 'with the normal next send'}`, { timeout: 45_000 }, async t => {
   const prompt = '执行 PTC 记忆读取验收'
   const body = 'The PTC receipt PTC_BODY is independent of the question.' + (nextFails ? '' : ' Long receipt paragraph carrying evidence.'.repeat(85))
-  let fileId: string | undefined, requested = false
+  let fileId: string | undefined, requested = false, spillPath: string | undefined, readbackRequested = false
   const app = await setup(t, request => {
+    if (spillPath && questionOf(request.messages) === '读取保存的工具长结果' && !readbackRequested) {
+      readbackRequested = true
+      return { tool: { name: 'read', input: { file_path: spillPath } } }
+    }
     const routed = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
       : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).findLast(row => row.words.startsWith(prompt))
     if (!fileId) return null
@@ -215,7 +219,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     if (questionOf(request.messages) !== 'PTC task execution') return null
     if (!requested) {
       requested = true
-      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); await tools.memory_node_search({query: note.text.slice(0, 400)}); return note;` } } }
+      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); return note;` } } }
     }
     return { text: 'PTC completed.' }
   }, { dailyNotes: true, fileMode: true, ptc: true })
@@ -232,7 +236,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 3),
       JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
     if (!nextFails) assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
-    const calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
+    let calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
     assert.equal(calls.length, 3, JSON.stringify({ calls, results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
       errors: app.events.filter(event => event.type === 'error') }))
     assert.ok(calls.every(row => row.result !== null))
@@ -245,6 +249,20 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
       assert.equal(spills.length, 2, JSON.stringify(spills))
       assert.ok(spills.every(row => row.file !== null))
       for (const row of spills) assert.ok(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path))
+      const leaf = spills.find(row => JSON.parse(String(row.intent)).call.ptc)
+      assert.ok(leaf)
+      spillPath = (JSON.parse(String(leaf.file)) as {path:string}).path
+      if (process.platform !== 'win32') {
+        const alias = join(app.directory, 'spill-read-alias.txt')
+        fs.symlinkSync(spillPath, alias)
+        spillPath = alias
+      }
+      await app.newTopic()
+      await app.ask('读取保存的工具长结果')
+      assert.equal(readbackRequested, true)
+      assert.ok(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'read')).includes('PTC_BODY')))
+      calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
+      assert.equal(calls.length, 4, 'reading an exact spill locator archives a fresh native call readset')
     }
     await app.stopBackend()
     // The native log can commit before the leaf endpoint receipt reaches the owner.
@@ -283,6 +301,77 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
       }
     } finally { await mounted.dispose() }
   } finally { await app.stopBackend(); db.close() }
+})
+
+for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers secret arguments when the next SDK call ${failure === 'crash' ? 'crashes' : 'is rejected'} during prepare`, { timeout: 45_000 }, async t => {
+  const prompt = '验收工具准备阶段边界', brief = 'Prepare a private follow-up tool query', body = 'The prepare-stage value is PREPARE_SECRET.'
+  let id: string | undefined, requested = false
+  const app = await setup(t, request => {
+    const question = questionOf(request.messages)
+    if (question === prompt && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'start_background_task', input: { title: prompt, brief } } }
+    }
+    if (id && question === brief && !requested) {
+      requested = true
+      return { tool: { name: 'run_code', input: { description: 'Read and pass private data to a follow-up query',
+        code: `const note = await tools.memory_read({id:${JSON.stringify(id)}}); try { await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); } catch {} return note;` } } }
+    }
+    return null
+  }, { fileMode: true, dailyNotes: true, ptc: true, ptcFailure: failure })
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
+  assert.equal(created.status, 'applied'); id = created.receipt.identity.id
+  const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  await app.ask(prompt)
+  if (failure === 'crash') assert.ok(await eventually(() => fs.existsSync(join(app.directory, 'ptc-prepared'))),
+    JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error'), results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')) }))
+  else assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
+  await app.stopBackend()
+  const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    const before = db.prepare('SELECT identity FROM owner_native_tool_calls').all()
+    assert.equal(before.length, 2, 'prepare never entered the follow-up body or acquired read authority')
+    const cuts = db.prepare('SELECT * FROM owner_native_tool_read_cuts').all()
+    assert.ok(cuts.length > 0, 'read evidence and native root cut committed before its private result was delivered')
+    assert.doesNotMatch(JSON.stringify(cuts), /PREPARE_SECRET/u)
+    const catalog = new Context(), catalogMount = await catalog.plugin(jsonl, { root: sessionsRoot })
+    try {
+      const origin = JSON.parse(String(before[0]!.identity)) as {session:string}
+      const reader = await catalog.sessionPersistence.open(SessionId(origin.session), 'read')
+      try {
+        const events = (await reader.read()).events
+        const start = events.find(event => event.type === 'tool/ptc-dispatch-start' && event.data.name === 'memory_node_search')
+        assert.ok(start?.type === 'tool/ptc-dispatch-start')
+        assert.match(JSON.stringify(start.data.arguments), /PREPARE_SECRET/u)
+        const outcome = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.subCallId === start.data.subCallId)
+        if (failure === 'reject') assert.match(JSON.stringify(outcome), /Fixture rejects preparation/u)
+        else assert.equal(outcome, undefined, 'the process died before prepare produced any SDK settlement')
+      } finally { await reader.close() }
+    } finally { await catalogMount.dispose() }
+    const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', fileMode: true,
+      compute: () => null, route: () => null, quiesce: async () => {} })
+    try {
+      await owner.recover()
+      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+    } finally { await owner.close() }
+    for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
+      isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
+    const recovered = db.prepare("SELECT identity,result FROM owner_native_tool_calls WHERE json_extract(identity,'$.inputDerived')=1").all()
+    assert.equal(recovered.length, 1)
+    const call = JSON.parse(String(recovered[0]!.identity)) as { session: string, seq: number }
+    const context = new Context(), mounted = await context.plugin(jsonl, { root: sessionsRoot })
+    try {
+      const reader = await context.sessionPersistence.open(SessionId(call.session), 'read')
+      try {
+        const events = (await reader.read()).events, start = events[call.seq]
+        assert.equal(start?.type, 'tool/ptc-dispatch-start')
+        assert.deepEqual(start.data.arguments, {})
+        assert.doesNotMatch(JSON.stringify(events), /PREPARE_SECRET/u)
+      } finally { await reader.close() }
+    } finally { await mounted.dispose() }
+    const admin = openNativeOriginalMaintenance(memoryRoot, 'viva')!
+    try { assert.deepEqual(admin.unsettledReceipts().tools, []) } finally { admin.close() }
+  } finally { db.close() }
 })
 
 test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {
