@@ -16,6 +16,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
 }) {
   let toastKey = 0
   let traceRequest = 0
+  let searchRequest = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `action` ({ label, kind, payload }) adds a button; the app decides what each kind does. */
@@ -43,11 +44,18 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
 
   /** Searching finds messages anywhere in the one timeline (history-db.js searchMessages). */
   async function runSearch(query: string) {
+    const request = ++searchRequest
     try {
-      dispatch({ type: 'history_results', query, results: await api.searchTimeline(query.trim()) })
+      const results = await api.searchTimeline(query.trim())
+      if (request === searchRequest) dispatch({ type: 'history_results', query, results })
     } catch (err) {
-      report(t("history-actions.search.failed"))(err)
+      if (request === searchRequest) report(t("history-actions.search.failed"))(err)
     }
+  }
+
+  function refreshIfOpen() {
+    const { open, query } = getState().history
+    if (open && query.trim()) return runSearch(query)
   }
 
   /** Reads the restored messages' trace from dsh's logs, in the background. */
@@ -85,9 +93,12 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
       if (conversationId && restoredTrace) return loadTrace(conversationId)
     },
     /** After a save: an open search sees what was just said. */
-    refreshIfOpen() {
-      const { open, query } = getState().history
-      if (open && query.trim()) runSearch(query)
+    refreshIfOpen,
+    invalidateSearch() {
+      searchRequest++
+      clearTimeout(searchTimer)
+      dispatch({ type: 'history_results_invalidated' })
+      return refreshIfOpen()
     },
 
     toggleHistory() {
@@ -115,6 +126,7 @@ export function createHistoryActions({ api, getState, dispatch, searchField, err
     },
 
     searchHistory(query: string) {
+      searchRequest++
       dispatch({ type: 'history_query', query })
       clearTimeout(searchTimer)
       if (query.trim()) searchTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS)

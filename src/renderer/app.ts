@@ -976,6 +976,7 @@ agentEvents = createAgentEvents({
   refreshFiles: filesActions.filesAfterTurn,
   memoryChanged: event => {
     if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)
+    if (event.erasedOutputs?.length) void historyActions.invalidateSearch()
     memoryActions.onMemoryChanged(event)
   },
   filesChanged: filesActions.onFilesChanged,

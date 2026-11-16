@@ -27,6 +27,7 @@ export const HISTORY_ACTIONS: ActionHandlers = {
   history_results: (state, { query, results }) => (query === state.history.query
     ? withHistory(state, { results })
     : state),
+  history_results_invalidated: (state) => withHistory(state, { results: null }),
 
   toast_show: (state, { toast }) => ({ ...state, toast }),
   toast_hide: (state, { key }) => (state.toast?.key === key ? { ...state, toast: null } : state),

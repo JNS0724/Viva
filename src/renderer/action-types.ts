@@ -72,6 +72,7 @@ export interface ActionPayloads extends ConversationPayloads {
   history_toggle: {}
   history_query: { query: string }
   history_results: { query: string, results: State['history']['results'] }
+  history_results_invalidated: {}
   reports_removed: { reportIds: readonly string[] }
   generated_outputs_removed: { copies: readonly { session: string, key: string }[] }
   toast_show: { toast: NonNullable<State['toast']> }

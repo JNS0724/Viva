@@ -66,6 +66,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   let retry: ReturnType<typeof setTimeout> | undefined
   let closed = false
   const notifiedTraces = new Set<string>()
+  const notifiedGeneratedCopies = new Set<string>()
   const discardedTaskCopies = new Map<string, Set<string>>()
   async function recover() {
     if (closed) return
@@ -94,7 +95,11 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
             })
             invalidateScheduled(matches, scheduled)
             if (reports.length) reportsRemoved(reports)
-            if (outputs.length) generatedCopiesRemoved(outputs)
+            const fresh = outputs.filter(copy => !notifiedGeneratedCopies.has(copy.key))
+            if (fresh.length) {
+              generatedCopiesRemoved(fresh)
+              for (const copy of fresh) notifiedGeneratedCopies.add(copy.key)
+            }
             const discarded = discardedTaskCopies.get(effect.effectId) ?? new Set<string>()
             const pendingTasks = tasks.filter(task => !discarded.has(task))
             if (pendingTasks.length) {

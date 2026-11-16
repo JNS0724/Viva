@@ -8,12 +8,12 @@ import { hitTarget } from '../src/renderer/timeline-search.ts'
 
 type Located = { status: string, segmentId: string, seq?: number | null, messageId?: number }
 
-function setup(state: State, locate: (hit: SearchHit) => Promise<Located>, loadTrace?: AgentApi['loadTrace']) {
+function setup(state: State, locate: (hit: SearchHit) => Promise<Located>, { loadTrace, searchTimeline }: Partial<Pick<AgentApi, 'loadTrace' | 'searchTimeline'>> = {}) {
   let current = state
   const revealed: string[] = []
   const reviewed: SearchHit[] = []
   const actions = createHistoryActions({
-    api: { loadTrace } as AgentApi,
+    api: { loadTrace, searchTimeline } as AgentApi,
     getState: () => current,
     dispatch: (action) => { current = reduce(current, action) },
     searchField: { focus() {}, select() {} } as HTMLInputElement,
@@ -63,11 +63,11 @@ test('trace refresh rejects a pre-erasure reply and retries once the agent becom
   const noTrace = { thoughts: [], tools: {}, timeline: [] }
   const oldTrace = { ...noTrace, thoughts: [{ id: 'old', text: 'erased reasoning', open: false, at: 2 }] }
   const { actions, state } = setup({ ...onScreen(), restored: { count: 2, savedAt: 10 }, restoredTrace: 'loading' },
-    async () => ({ status: 'missing', segmentId: 'now' }), async (_id, until) => {
+    async () => ({ status: 'missing', segmentId: 'now' }), { loadTrace: async (_id, until) => {
       seen.push(until)
       if (seen.length === 1) return delayed
       return { trace: noTrace, available: seen.length > 2, missing: 0 }
-    })
+    } })
   const pending = actions.loadTrace('now')
   await actions.invalidateTrace(['earlier-session'])
   resolveDelayed({ trace: oldTrace, available: true, missing: 0 })
@@ -78,4 +78,23 @@ test('trace refresh rejects a pre-erasure reply and retries once the agent becom
   assert.equal(state().restoredTrace, 'loaded')
   await actions.retryTrace()
   assert.deepEqual(seen, [10, 10, 10])
+})
+
+test('clearing history search rejects an older response even when the query is unchanged', async () => {
+  type Response = Awaited<ReturnType<AgentApi['searchTimeline']>>
+  const stale = [{ segmentId: 'now', seq: 1, messageId: 7, text: 'erased hit' }] as Response
+  const current = [] as Response
+  let release!: (response: Response) => void
+  const delayed = new Promise<Response>(resolve => { release = resolve })
+  let requests = 0
+  const { actions, state } = setup({ ...onScreen(), history: { open: true, query: 'same query', results: stale } },
+    async () => ({ status: 'missing', segmentId: 'now' }), { searchTimeline: async () => ++requests === 1 ? delayed : current })
+  const pending = actions.refreshIfOpen()
+  const clean = actions.invalidateSearch()
+  assert.equal(state().history.results, null)
+  await clean
+  release(stale)
+  await pending
+  assert.equal(requests, 2)
+  assert.deepEqual(state().history.results, current)
 })
