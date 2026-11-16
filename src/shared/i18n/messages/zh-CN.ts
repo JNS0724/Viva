@@ -7,6 +7,7 @@ export const zhCN = {
   "main.memory.not.found": "这条记忆已不可用。",
   "main.memory.revision.conflict": "这条记忆已更新，请刷新后重试。",
   "main.memory.clarify.question": "这次要以哪条信息为准？",
+  "main.memory.clarify.file.question": "这次关于「{topic}」该采用哪项信息？",
   "main.memory.clarify.dated.question": "这次查询 {date} 时，要以哪条信息为准？",
   "main.memory.clarify.negative": "不是 {value}",
   "main.memory.clarify.pending.question": "有一项变更还未确认，这次要用哪条信息？",

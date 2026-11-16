@@ -79,6 +79,8 @@ export interface MemoryStore {
         files(session: string, files: readonly MemoryFileDependency[], sources?: readonly string[]): void;
         source: (session: string, source: string) => void;
         turnOnly: (session: string) => void;
+        offerFileClarification: (session: string, work: string) => void;
+        settleFileClarification: (session: string, work: string) => void;
         snapshot(session: string): MemoryProvenance;
     };
     priorSources: (source: MemorySource) => Array<{

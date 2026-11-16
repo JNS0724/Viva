@@ -20,7 +20,7 @@ export type MemoryChangeView = Pick<MemoryChange, 'id' | 'revision' | 'targetId'
   expectedRevisions: Array<{ id: number, revision: number }>,
   evidence: Array<{ start: number, end: number, sourceId: string, conversationId: string | null, text: string | null }>,
 }
-export type HostMemoryQuestion = { id: string, question: string, options: Array<{ label: string, description?: string }> }
+export type HostMemoryQuestion = { id: string, question: string, topic?: string, options: Array<{ label: string, description?: string }> }
 export type HostQuestionCard = HostMemoryQuestion & { header: string, multiSelect: boolean }
 export type MemorySourceAlias = {
   operationId: string, sourceId: string, session: string, conversation: string,
@@ -85,6 +85,7 @@ export interface HostMemoryApi {
   forgetIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], MemoryEntry | false | null>
   correctionIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], { entry: MemoryEntry, text: string } | false | null>
   bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string], { wireText: string }>
+  cancelFileClarification: Args<[session: string, questionId: string], boolean>
   clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check'], HostMemoryQuestion | null>
   authorizeGeneralQuestion: Args<[session: string, turn: string, cards: readonly HostQuestionCard[], conversation: string | null, context: MemoryScope, project?: MemoryProject, phase?: 'show' | 'check'], boolean>
   acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, question: string, requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
@@ -142,6 +143,7 @@ export const hostMemoryInputSchemas = {
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),
   forgetIntent: args(z.tuple([text, scope.optional(), project.optional()])), correctionIntent: args(z.tuple([text, scope.optional(), project.optional()])),
   bindWireAlias: args(z.tuple([key, text, text, key.optional()])),
+  cancelFileClarification: args(z.tuple([key, key])),
   clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check'])])),
   authorizeGeneralQuestion: args(z.tuple([key, key, z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })), key.nullable(), scope, project.optional(), z.enum(['show', 'check']).optional()])),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, question: text, requestId: key, questionId: key, context: scope, project: project.optional() }),

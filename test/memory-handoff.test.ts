@@ -15,7 +15,7 @@ const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
+import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
 import { openMemorySemanticIndex } from '../src/memory/node/memory-semantic.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
@@ -23,7 +23,7 @@ import type { IpcResults, MemorySummaryView } from '../src/shared/ipc-results.ts
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
 import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/eventually.ts'
-import { questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
+import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.js'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
@@ -959,3 +959,91 @@ test('the real DSH send surface removes a stopped original and still delivers a 
   assert.equal(continued.conversationId, first.conversationId)
   assert.notEqual(continued.sessionId, first.sessionId)
 })
+
+for (const outcome of ['answer', 'stop'] as const) {
+  test(`real DSH recall asks through the foreground Viva card and handles ${outcome}`, { timeout: 45_000 }, async t => {
+    const topic = '会场安排', earlier = '会场安排原先是北厅，南厅尚未确认。', query = '这次会场安排是什么？', reply = '这次确定使用图书馆礼堂。'
+    let resolveWork: (() => void) | undefined
+    const app = await setup(t, request => {
+      if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
+        return { text: JSON.stringify({ status: 'write', title: topic, markdown: earlier }) }
+      }
+      if (questionOf(request.messages) !== query && lastWords(request.messages) !== query) return null
+      const recalled = modelToolResults(request, 'memory_recall')
+      if (!recalled.length) return { tool: { name: 'memory_recall', input: { query: topic } } }
+      const result = recalled.at(-1)
+      const ref = typeof result === 'string' ? (JSON.parse(result) as { clarification?: { ref: string } }).clarification?.ref : undefined
+      if (ref && !modelToolResults(request, 'memory_clarify').length) return { tool: { name: 'memory_clarify', input: { ref } } }
+      if (resolveWork && modelToolResults(request, 'memory_clarify').some(answer => JSON.stringify(answer).includes(reply))) {
+        const resolve = resolveWork
+        resolveWork = undefined
+        resolve()
+        return { tool: { name: 'memory_recall', input: { query: '图书馆礼堂' } } }
+      }
+      return null
+    }, { dailyNotes: true, fileMode: true })
+    const sourceId = randomUUID()
+    await app.call('agent:prompt', earlier, [], sourceId)
+    for (const prompt of ['准备下一次见面。', '先检查交通。', '还是要确认人数。', '我再同步日程。']) await app.ask(prompt)
+    const memory = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
+    const workId = `dream:${randomUUID()}`
+    try {
+      const summary = await eventually(async () => (await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'daily' })).items[0])
+      assert.ok(summary)
+      const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', summary.identity)
+      const original = memory.readSource(sourceId)!
+      const documents = openMemoryDocuments({ db: memory.db, root: memory.fileRoot, deferRecovery: true, source(id) {
+        const row = memory.readSource(id)
+        return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+      } })
+      const originalRef = { id: original.id, token: memorySourceToken(original) }
+      const seeded = documents.commit({ operationId: randomUUID(), workspace: file.identity.workspace, path: 'digest/wiki/follow-up-venue.md',
+        action: 'CREATE', expectedRevision: null, markdown: earlier, sources: [originalRef], reads: [] })
+      const digest = documents.read(file.identity.workspace, seeded.path)!
+      documents.defer({ operationId: workId, workspace: file.identity.workspace, unit: { name: topic, bucket: 'personal', summary: '确认本次会场安排', paths: [file.path] },
+        reason: '会场尚有不确定性', sources: [originalRef], reads: [{ id: digest.id, revision: digest.revision, usageVersion: digest.usageVersion }], readPolicies: [],
+        files: [{ path: file.path, revision: file.version.contentRevision, policyToken: file.version.policyToken }],
+      })
+      const offset = app.events.length, asked = app.ask(query)
+      const card = await eventually(() => app.events.slice(offset).find(event => event.type === 'question'))
+      assert.ok(card && 'questionId' in card && typeof card.questionId === 'string' && 'questions' in card && Array.isArray(card.questions),
+        JSON.stringify({ eventTypes: app.events.slice(offset).map(event => event.type), recall: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_recall')) }))
+      const question = card.questions[0] as { id: string; question: string; options: unknown[] }
+      assert.match(question.id, /^memory-clarify:file:/)
+      assert.match(question.question, /这次关于「会场安排」/)
+      assert.deepEqual(question.options, [])
+      const answer = () => app.call('agent:answer', card.questionId, [{ id: question.id, selected: [], custom: reply }], randomUUID())
+      if (outcome === 'stop') {
+        await app.call('agent:cancel')
+        await asked
+        assert.equal(await answer(), false)
+        assert.equal(documents.deferred(file.identity.workspace, workId)?.status, 'pending_clarification')
+        assert.equal(memory.readSource(question.id.slice('memory-clarify:file:'.length)), null)
+        return
+      }
+      resolveWork = () => {
+        // Consume the ready payload at the provider boundary to exercise the fast
+        // resolution race with a real subsequent memory tool and physical send.
+        const evidence = documents.deferred(file.identity.workspace, workId)?.answer?.source
+        assert.ok(evidence)
+        const line = file.markdown.split(/\r?\n/u).findIndex(value => value === earlier) + 1
+        assert.ok(line > 0)
+        documents.commit({ operationId: workId, workspace: file.identity.workspace, path: digest.path,
+          action: 'CORRECT', expectedRevision: digest.revision, markdown: reply, sources: [originalRef, evidence], reads: [digest],
+          corrections: [{ path: file.path, revision: file.version.contentRevision, startLine: line, endLine: line, text: earlier, condition: '本次会场', time: '当前' }] })
+        documents.resolve(file.identity.workspace, workId)
+      }
+      assert.equal(await answer(), true)
+      await asked
+      const receipts = memory.db.prepare('SELECT operation FROM memory_document_answers WHERE deferred=?').all(workId)
+      assert.deepEqual(receipts.map(row => row.operation), [question.id.slice('memory-clarify:file:'.length)])
+      assert.equal(documents.deferred(file.identity.workspace, workId), null)
+      assert.ok(documents.receipt(file.identity.workspace, workId))
+      const recalled = app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_recall'))
+      assert.doesNotMatch(JSON.stringify(recalled), /北厅|南厅/)
+      assert.ok(recalled.some(result => JSON.stringify(result).includes(reply)), 'the real provider receives a subsequent recall after resolution')
+      const answers = app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_clarify'))
+      assert.match(JSON.stringify(answers), /status.*answered.*图书馆礼堂/)
+    } finally { memory.close() }
+  })
+}

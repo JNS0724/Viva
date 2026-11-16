@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { MEMORY_QUESTION_PREFIX } from '../memory/contracts/memory-contract.ts'
+import { MEMORY_FILE_QUESTION_PREFIX, MEMORY_QUESTION_PREFIX } from '../memory/contracts/memory-contract.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 /**
  * Questions the model asks the user, on the app's side of the questions contract (version 1, see
@@ -76,20 +76,22 @@ export function checkAnswers(questions: readonly Question[], answers: unknown): 
 interface Pending {
   question: QuestionSet, sessionId: string, taskId: string | null, context: ConversationContext | null,
   kind: 'general' | 'memory',
+  sourceQuestion?: string,
   check?: () => boolean,
 }
-type MemoryQuestion = Pick<Question, 'id' | 'question' | 'options'>
+type MemoryQuestion = Pick<Question, 'id' | 'question' | 'options'> & { topic?: string }
 export type QuestionAdmission = boolean | (() => boolean)
 
 /**
  * send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
  * task a session is, if any (its questions go to the window as task_question).
  */
-export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, memoryClarificationQuestion, allowGeneralQuestion }: {
+export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, memoryClarificationQuestion, cancelMemoryClarification, allowGeneralQuestion }: {
   send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
   conversationContext?: (sessionId: string) => ConversationContext | null,
   onAnswer?: (entry: Pending, answers: Answer[], operation?: string) => string | { sourceIds: Readonly<Record<string, string>> } | void | Promise<string | { sourceIds: Readonly<Record<string, string>> } | void>,
   memoryClarificationQuestion?: (sessionId: string, id: string, phase: 'show' | 'check') => MemoryQuestion | null | Promise<MemoryQuestion | null>,
+  cancelMemoryClarification?: (sessionId: string, id: string) => Promise<unknown>,
   allowGeneralQuestion?: (sessionId: string, questions: readonly Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') => QuestionAdmission | Promise<QuestionAdmission>,
 }) {
   const pending = new Map<string, Pending>()
@@ -101,11 +103,21 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     ? { type: 'task_question', taskId: entry.taskId, questionId: entry.question.id, questions: entry.question.questions }
     : { type: 'question', questionId: entry.question.id, questions: entry.question.questions, ...(entry.context ? { context: entry.context } : {}) })
 
+  function cancel(entry: Pending | undefined) {
+    const id = entry?.kind === 'memory' ? entry.question.questions[0]?.id : undefined
+    if (entry && id?.startsWith(MEMORY_FILE_QUESTION_PREFIX)) {
+      // Send on the same trusted channel before declining the UI wait. The owner
+      // can cancel the ticket immediately while the earlier write drains a send.
+      void cancelMemoryClarification?.(entry.sessionId, id).catch(() => {})
+    }
+  }
+
   /** A message from the plugin. */
   async function receive(message: any): Promise<void> {
     if (message?.type === 'question_closed') {
-      checking.delete(message.id)
       const entry = pending.get(message.id)
+      cancel(entry ?? checking.get(message.id))
+      checking.delete(message.id)
       if (entry && pending.delete(message.id)) closed(message.id, entry.taskId, entry.context)
       return
     }
@@ -129,7 +141,10 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
       const authorized = await memoryClarificationQuestion?.(message.sessionId, memoryQuestion.id, 'show')
       if (checking.get(question.id) !== entry) return
       if (!authorized) { checking.delete(question.id); return send({ type: 'decline', id: question.id }) }
-      question.questions = [{ ...authorized, header: '', multiSelect: false }]
+      entry.sourceQuestion = authorized.question
+      const wording = authorized.topic && authorized.id.startsWith(MEMORY_FILE_QUESTION_PREFIX)
+        ? t('main.memory.clarify.file.question', { topic: authorized.topic }) : authorized.question
+      question.questions = [{ id: authorized.id, question: wording, options: authorized.options, header: '', multiSelect: false }]
     }
     const admit = async (result: QuestionAdmission) => {
       if (typeof result === 'function') entry.check = result
@@ -159,20 +174,29 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     if (!entry || answering.has(questionId)) return false
     answering.add(questionId)
     try {
-    if (!await validQuestion(entry)) {
-      decline(held => held !== entry)
-      return false
-    }
-    const checked = checkAnswers(entry.question.questions, answers)
-    const sources = await onAnswer?.(entry, checked, operation)
-    const sourceId = typeof sources === 'string' ? sources : undefined
-    const sourceIds = sources && typeof sources === 'object' ? sources.sourceIds : undefined
-    if (pending.get(questionId) !== entry || !await validQuestion(entry)) return false
-    pending.delete(questionId)
-    send({ type: 'answer', id: questionId, answers: checked })
-    if (entry.taskId || !entry.context) closed(questionId, entry.taskId, entry.context)
-    else emit({ type: 'question_answered', questionId, answers: checked, ...(sourceId ? { sourceId } : {}), ...(sourceIds ? { sourceIds } : {}), context: entry.context })
-    return true
+      if (!await validQuestion(entry)) {
+        decline(held => held !== entry)
+        return false
+      }
+      if (pending.get(questionId) !== entry) return false
+      const checked = checkAnswers(entry.question.questions, answers)
+      let sources: Awaited<ReturnType<NonNullable<typeof onAnswer>>>
+      try { sources = await onAnswer?.(entry, checked, operation) }
+      catch (error) {
+        const stillValid = entry.kind !== 'memory' || await validQuestion(entry)
+        if (pending.get(questionId) !== entry) return false
+        if (stillValid) throw error
+        decline(held => held !== entry)
+        return false
+      }
+      const sourceId = typeof sources === 'string' ? sources : undefined
+      const sourceIds = sources && typeof sources === 'object' ? sources.sourceIds : undefined
+      if (!await validQuestion(entry) || pending.get(questionId) !== entry) return false
+      pending.delete(questionId)
+      send({ type: 'answer', id: questionId, answers: checked })
+      if (entry.taskId || !entry.context) closed(questionId, entry.taskId, entry.context)
+      else emit({ type: 'question_answered', questionId, answers: checked, ...(sourceId ? { sourceId } : {}), ...(sourceIds ? { sourceIds } : {}), context: entry.context })
+      return true
     } finally { answering.delete(questionId) }
   }
 
@@ -180,11 +204,13 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     if (!memoryReview) for (const [questionId, entry] of checking) {
       if (keep(entry)) continue
       checking.delete(questionId)
+      cancel(entry)
       send({ type: 'decline', id: questionId })
     }
     for (const [questionId, entry] of [...pending]) {
       if (keep(entry)) continue
       pending.delete(questionId)
+      cancel(entry)
       send({ type: 'decline', id: questionId, ...(memoryReview && entry.kind === 'general' ? { reason: 'memory-clarification' } : {}) })
       closed(questionId, entry.taskId, entry.context)
     }

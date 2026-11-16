@@ -8,6 +8,7 @@ import { openMemoryStore, memoryHash } from './memory-store.ts'
 import { createMemoryRuntime } from './runtime.ts'
 import { createMemoryEmbedder } from './memory-embedder.ts'
 import type { NodeMemoryRuntimeOptions } from './runtime.ts'
+import type { DocumentSourceCut } from '../core/ports/documents.ts'
 import { combineMemoryProvenance } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
@@ -15,6 +16,7 @@ import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { createMemorySendFence } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
+import { MEMORY_FILE_QUESTION_PREFIX } from '../contracts/memory-contract.ts'
 import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed } from '../contracts/host.ts'
 import type { MemoryOperationOutcome, MemoryHostEffect, MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryFileMutationResult, MemoryManagedFileIdentity } from '../contracts/file-management.ts'
@@ -84,7 +86,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     projectionChanged: () => options.onProjectionChanged?.(),
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
-    validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly,
+    validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly, fileClarificationDispatch: dispatch,
     runDocumentMutation: work => fence.mutate(work),
     fileDependencies: dispatch.recordFiles,
     canCommit: source => state === 'ready' && (!source.session || !db.prepare('SELECT 1 FROM owner_active_turns WHERE session=?').get(source.session)),
@@ -396,6 +398,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
     })
   }
+  function acceptFileClarification(input: { session: string; contextGeneration: number; questionId: string; text: string; requireShown: boolean },
+    stillCurrent: () => boolean) {
+    const start = sessionContext(input.session)
+    return runtime.answerFileClarification(input, () => sessionContext(input.session), () => {
+      const current = sessionContext(input.session)
+      return state === 'ready' && !hasPending() && stillCurrent() && contextRecovery.contextGeneration(input.session) === input.contextGeneration
+        && current.foregroundTurn === start.foregroundTurn && current.conversation === start.conversation
+        && !contextRecovery.pending(input.session) && coordination.allowsSession(input.session, current.project)
+    }, (sourceId, context) => {
+      db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,1)')
+        .run(input.session, sourceId, sourceId, context.conversation)
+      // The pinned Dream work owns this answer; normal turn ingestion must not
+      // run extraction or create independent daily evidence from the short reply.
+      dispatch.recordSource(input.session, sourceId)
+    })
+  }
   async function completeTurn(input: CompletedTurn) {
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
@@ -439,12 +457,48 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     await fence.mutate(async () => { await options.quiesce(); db.prepare("UPDATE owner_operations SET state='prepared' WHERE id=?").run(item.id) })
     return { ticket: item.ticket!, operation: outcome(operation(item.id)!) }
   }
+  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[], workspace?: string): boolean {
+    if (!cuts.length) return false
+    const sourceIds = new Set(cuts.map(cut => cut.id))
+    const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) => {
+      const evidence = dispatch.snapshot(session)
+      const relevant = evidence.sources.some(source => sourceIds.has(source))
+        || evidence.files?.some(file => file.workspace === workspace)
+      return relevant && (evidence.sources.some(source => sourceIds.has(source) && !evidence.fileSources?.includes(source))
+        || !runtime.fileDependenciesCurrent(evidence.files ?? [], evidence.fileSources)) ? [session] : []
+    })
+    const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
+    let native = false
+    for (const cut of cuts) {
+      const occurrences = current.all(cut.id)
+      native ||= occurrences.length > 0 || Boolean(store.readSource(cut.id)?.session)
+      for (const row of occurrences) invalidated.push(String(row.session))
+      db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
+      db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
+    }
+    const sessions = [...new Set(invalidated)]
+    const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => {
+      const afterHash = store.readSource(sourceId)?.hash
+      if (!afterHash) throw new Error('Missing committed source erasure proof')
+      return { sourceId, revision, length, hash, afterHash, spans }
+    })
+    if (native) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(id, JSON.stringify({ sessions, ranges }))
+    if (options.hostNamespace) {
+      const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
+        kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
+        sources: cuts.map(cut => ({ namespace: 'canonical', sourceId: cut.id, revision: cut.version })), ranges }
+      db.prepare('INSERT INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
+      return true
+    }
+    return false
+  }
   async function commit(input: { operationId: string, ticket: string }) {
     const item = operation(input.operationId)
     if (!item || item.ticket !== input.ticket || !['prepared', 'host-committed', 'completed'].includes(item.state)) throw new Error('Source change was not prepared')
     if (item.state === 'completed') return outcome(item)
     const change = JSON.parse(item.payload!) as SourceChangeInput
     db.prepare("UPDATE owner_operations SET state='host-committed' WHERE id=?").run(item.id)
+    let notify = false
     await fence.mutate(() => {
       store.tx(() => {
         for (const id of change.ids) db.prepare('UPDATE owner_occurrences SET removed=1 WHERE conversation=? AND source=?').run(change.conversation, id)
@@ -452,7 +506,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           for (const id of change.ids) db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE conversation=? AND source=?').run(change.conversation, id)
         } else db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE conversation=?').run(change.conversation)
         const removed = change.ids.filter(id => !db.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0 LIMIT 1').get(id))
-        runtime.withdraw({ conversation: change.conversation, ids: removed, onlySources: true })
+        const { cuts, memoryIds } = runtime.withdraw({ conversation: change.conversation, ids: removed, onlySources: true })
+        notify = recordRangeErasure(item.id, cuts, memoryIds)
         for (const id of removed) {
           store.excludeSource(id)
           db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(id)
@@ -461,6 +516,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       })
       runtime.releaseWithdrawal(change.conversation, change.onlySources ? change.ids : undefined)
     })
+    if (notify) options.onHostEffects?.()
     if (state === 'ready' && !hasPending()) await replayWrites()
     return outcome(operation(item.id)!)
   }
@@ -475,6 +531,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     state = 'ready'
     if (!hasPending()) await replayWrites()
+    runtime.resumeDocumentClarifications()
     void runtime.wake()
   }
   async function replayWrites() {
@@ -584,37 +641,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         ? await runtime.setFileEnabled(command.input.args[0], committed)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
           : await runtime.forgetFile(command.input.args[0], (result, cuts, memoryIds) => {
-            const sourceIds = new Set(cuts.map(cut => cut.id))
-            const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) => {
-              const evidence = dispatch.snapshot(session)
-              const relevant = evidence.sources.some(source => sourceIds.has(source))
-                || evidence.files?.some(file => file.workspace === result.identity.workspace)
-              return relevant && (evidence.sources.some(source => sourceIds.has(source) && !evidence.fileSources?.includes(source))
-                || !runtime.fileDependenciesCurrent(evidence.files ?? [], evidence.fileSources)) ? [session] : []
-            })
-            const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
-            let native = false
-            for (const cut of cuts) {
-              const occurrences = current.all(cut.id)
-              native ||= occurrences.length > 0 || Boolean(store.readSource(cut.id)?.session)
-              for (const row of occurrences) invalidated.push(String(row.session))
-              db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
-              db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
-            }
-            const sessions = [...new Set(invalidated)]
-            const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => {
-              const afterHash = store.readSource(sourceId)?.hash
-              if (!afterHash) throw new Error('Missing committed source erasure proof')
-              return { sourceId, revision, length, hash, afterHash, spans }
-            })
-            if (native) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(id, JSON.stringify({ sessions, ranges }))
-            if (options.hostNamespace) {
-              const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-                kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
-                sources: cuts.map(cut => ({ namespace: 'canonical', sourceId: cut.id, revision: cut.version })), ranges }
-              db.prepare('INSERT INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
-              notify = true
-            }
+            notify = recordRangeErasure(id, cuts, memoryIds, result.identity.workspace)
             db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
           })
       if (notify) options.onHostEffects?.()
@@ -634,6 +661,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'commitSourceChange': return commit(command.input)
       case 'getOperation': { const item = operation(command.input.operationId); return item ? outcome(item) : null }
       case 'pendingHostEffects': return pendingHostEffects()
+      case 'cancelFileClarification': return runtime.cancelFileClarification(...command.input.args)
       case 'ackHostEffect': {
         const saved = db.prepare('SELECT payload FROM owner_host_effects WHERE id=?').get(command.input.effectId)
         if (!saved) throw new Error('Unknown host effect')
@@ -682,6 +710,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     switch (command.method) {
       case 'acceptQuestionAnswer': {
         const input = command.input, sourceId = input.operationId
+        if (input.questionId.startsWith(MEMORY_FILE_QUESTION_PREFIX)) {
+          const context = sessionContext(input.session), turn = context.foregroundTurn
+          const current = turn && runtime.clarificationQuestion(input.session, turn, input.questionId, 'check')
+          if (!current || current.question !== input.question || context.conversation !== input.conversation
+            || context.project?.id !== input.project?.id) throw new Error('Question is no longer authorized')
+          const accepted = await acceptFileClarification({ ...input, contextGeneration: contextRecovery.contextGeneration(input.session), requireShown: true }, () => true)
+          if (!accepted) throw new Error('Question is no longer authorized')
+          return accepted
+        }
         const existing = store.readSource(sourceId)
         if (existing) {
           if (existing.erasure || existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
@@ -788,7 +825,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     throw new Error('Unsupported host operation')
   }
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
-    recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost,
+    recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost, acceptFileClarification,
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     acquireSend(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string) {

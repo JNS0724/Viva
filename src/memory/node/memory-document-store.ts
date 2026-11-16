@@ -60,6 +60,13 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     CREATE TABLE IF NOT EXISTS memory_document_answers (
       operation TEXT PRIMARY KEY, input TEXT NOT NULL, deferred TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS memory_document_answer_dependencies (
+      source TEXT NOT NULL, answer TEXT NOT NULL, proof TEXT NOT NULL,
+      PRIMARY KEY(source, answer, proof)
+    );
+    CREATE INDEX IF NOT EXISTS memory_document_answers_by_source
+      ON memory_document_answer_dependencies(answer);
+
     CREATE TABLE IF NOT EXISTS memory_document_tag_attempts (
       operation TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL, reason TEXT
     );
@@ -626,9 +633,21 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const result: DeferredDocumentWork = { ...work, status: 'ready', answer: { operationId: input.operationId, source: input.source, text: input.text } }
     transaction(db, () => {
       db.prepare('INSERT INTO memory_document_answers(operation,input,deferred) VALUES(?,?,?)').run(input.operationId, hash(input), input.deferredId)
+      const dependency = db.prepare('INSERT OR IGNORE INTO memory_document_answer_dependencies VALUES(?,?,?)')
+      for (const { id, token, spans } of work.sources) dependency.run(id, input.source.id, encode({ id, token, spans }))
       db.prepare("UPDATE memory_document_deferred SET state='ready',payload=? WHERE operation=?").run(encode(result), input.deferredId)
     })
     return result
+  }
+  function dependentAnswerIds(sourceId: string, cut?: DocumentSourceCut): string[] {
+    const rows = db.prepare('SELECT answer,proof FROM memory_document_answer_dependencies WHERE source=? ORDER BY rowid')
+      .all(sourceId) as Array<{ answer: string, proof: string }>
+    return [...new Set(rows.flatMap(row => !cut || documentSourceRestricted(JSON.parse(row.proof) as DocumentSourceRef, [cut]) ? [row.answer] : []))]
+  }
+  function answerDependencies(answerId: string): DocumentSourceRef[] {
+    const rows = db.prepare('SELECT proof FROM memory_document_answer_dependencies WHERE answer=? ORDER BY rowid')
+      .all(answerId) as Array<{ proof: string }>
+    return rows.map(row => JSON.parse(row.proof) as DocumentSourceRef)
   }
   function expire(scope: string, operation: string) {
     workspace(scope)
@@ -695,6 +714,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
     sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators,
-    read, list, commit, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, resolve, expire,
+    read, list, commit, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
   }
 }

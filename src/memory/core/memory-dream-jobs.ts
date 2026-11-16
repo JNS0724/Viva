@@ -242,17 +242,28 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     const previous = documents.deferred(item.workspace, item.operationId)
     if (previous && !deferredPoliciesCurrent(previous)) throw new MemoryDreamStaleError()
     if (previous?.status === 'pending_clarification') return 'deferred'
+    // A foreground reply is durable before its user turn has completed. Retain
+    // the pinned operation while its owning session still excludes Dream work.
+    if (previous?.answer) {
+      const answer = source(previous.answer.source.id)
+      if (answer?.text && readable(answer.id) && !eligible(answer)) return 'wait'
+    }
+    function sourceQuestionContext(id: string) {
+      if (source(id)?.outcome !== 'document-clarification') return notes.sourceQuestionContext(id)
+      const refs = documents.answerDependencies(id)
+      return { current: refs.length > 0 && readable(id) && refsCurrent(refs), refs }
+    }
     const scope = scopedDocuments(item.workspace)
     const readSources = new Map(allSources([...files.flatMap(file => file.sources), ...previous?.answer ? [previous.answer.source] : []]).map(ref => [ref.id, ref]))
     const tools = createMemoryDreamTools({ unit: item.unit, documents: scope, onRead(snapshot) {
-      for (const ref of allSources([...readSources.values(), ...snapshot.sourceTokens])) readSources.set(ref.id, ref)
+      for (const ref of allSources([...readSources.values(), ...snapshot.sourceTokens, ...snapshot.correctionSources ?? []])) readSources.set(ref.id, ref)
     } })
     const questionContexts = new Map<string, DocumentSourceRef[]>()
     const refs = () => [...readSources.values()]
     const readDocuments = () => tools.reads().flatMap(snapshot => [...snapshot.backing ? [snapshot.backing] : [], ...snapshot.supporting])
     const current = () => effects.holds(job) && files.every(fileCurrent) && extractedReadsCurrent(files) && refsCurrent(refs())
       && refs().every(ref => { const original = source(ref.id); return original && eligible(original) }) && tools.current()
-      && [...questionContexts].every(([id, refs]) => { const current = notes.sourceQuestionContext(id);
+      && [...questionContexts].every(([id, refs]) => { const current = sourceQuestionContext(id);
         return current.current && JSON.stringify(current.refs) === JSON.stringify(refs) })
       && readDocuments().every(snapshot => {
         const latest = documents.read(item.workspace, snapshot.path)
@@ -299,7 +310,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       const original = source(id)
       if (!original?.text) throw new MemoryDreamStaleError()
       const restrictions = documents.sourceRestrictions(item.workspace)
-      const context = notes.sourceQuestionContext(id)
+      const context = sourceQuestionContext(id)
       const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
       const questionAllowed = Boolean(original.question) && wholeSource && context.current
         && !documentSourceRestricted({ id, token: ref.token }, restrictions)

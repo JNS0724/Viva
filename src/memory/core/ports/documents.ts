@@ -124,6 +124,9 @@ export interface MemoryDocuments {
   defer(input: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork
   deferred(workspace: string, operationId: string): DeferredDocumentWork | null
   pending(workspace: string): DeferredDocumentWork[]
+  /** Canonical replies derived from this exact evidence, including resolved work. */
+  dependentAnswerIds(sourceId: string, cut?: DocumentSourceCut): string[]
+  answerDependencies(answerId: string): DocumentSourceRef[]
   answer(input: { operationId: string, workspace: string, deferredId: string, source: DocumentSourceRef, text: string }): DeferredDocumentWork
   resolve(workspace: string, operationId: string): void
   expire(workspace: string, operationId: string): void

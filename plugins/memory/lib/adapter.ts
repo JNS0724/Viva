@@ -255,7 +255,14 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       contextGeneration: owner.contextGeneration(String(agent.session.id)), contentDigest: memoryOriginalContentDigest(message) })
     return { ...decision, messages: [...decision.messages, message] }
   }), { prepend: true })
-  registerMemoryTools(ctx, request)
+  registerMemoryTools(ctx, request, async (questionId, text, agent, signal) => {
+    const execution = caller.getStore()
+    if (!execution || !('agent' in execution) || execution.agent !== agent || signal?.aborted) return false
+    return Boolean(await owner.acceptFileClarification({ session: String(agent.session.id), contextGeneration: execution.contextGeneration,
+      questionId, text, requireShown: false }, () => !closing && !disposed.has(agent.session) && !signal?.aborted))
+  }, (questionId, agent) => {
+    owner.runtime.cancelFileClarification(String(agent.session.id), questionId)
+  })
 
   const receive = (raw: unknown) => {
     const message = objectOf(raw)

@@ -17,6 +17,7 @@ const defaultText = Object.freeze({
   'clarify.pending.alternative': 'Use the alternative: {value}',
   'clarify.dated.question': 'Which statement applied on {date}?',
   'clarify.question': 'Which statement applies?',
+  'clarify.file.question': 'What should I use for {topic} in this request?',
 })
 export type MemoryTextKey = keyof typeof defaultText
 export type MemoryTextValues = Readonly<Record<string, string | number>>

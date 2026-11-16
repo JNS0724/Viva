@@ -6,6 +6,7 @@ export const en = {
   "main.memory.not.found": "This memory is no longer available.",
   "main.memory.revision.conflict": "The memory changed. Refresh it before trying again.",
   "main.memory.clarify.question": "Which should I use for this request?",
+  "main.memory.clarify.file.question": "What should I use for {topic} in this request?",
   "main.memory.clarify.dated.question": "Which should I use for {date} in this request?",
   "main.memory.clarify.negative": "Not {value}",
   "main.memory.clarify.pending.question": "A possible update is still unconfirmed. Which should I use this time?",

@@ -110,7 +110,7 @@ function currentProjection(markdown: string, supersessions: readonly DocumentSup
     : markdown.slice(line.startOffset, line.contentEndOffset)) + markdown.slice(line.contentEndOffset, line.endOffset)).join('')
 }
 
-export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCurrent, materialAllowed, reference }: {
+export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCurrent, materialAllowed, reference, inheritedUseRestricted = () => false }: {
   notes: ReadNotes
   documents: ReadDocuments
   hash(text: string): string
@@ -118,6 +118,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
   refsCurrent(refs: readonly DocumentSourceRef[]): boolean
   materialAllowed(text: string, refs: readonly DocumentSourceRef[]): boolean
   reference(id: string): MemorySourceReference | null
+  inheritedUseRestricted?(ref: DocumentSourceRef): boolean
 }) {
   function read(workspace: string, path: string, ancestors: ReadonlySet<string> = new Set()): MemoryDocumentView | null {
     try { return readAccepted(workspace, path, ancestors) } catch { return null }
@@ -134,7 +135,8 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     const refs = note ? notes.references(note.key) : digest!.sources
     const restrictions = documents.sourceRestrictions(workspace)
     const applicableRestrictions = restrictions.filter(restriction => refs.some(ref => documentSourceRestricted(ref, [restriction])))
-    const useRestricted = applicableRestrictions.length > 0
+    const inheritedRestrictions = refs.filter(inheritedUseRestricted)
+    const useRestricted = applicableRestrictions.length > 0 || inheritedRestrictions.length > 0
     // These are use-disable restrictions, not source authorization or erasure. Trusted
     // management may inspect accepted content in order to re-enable it; model reads may not.
     if (useRestricted && !includeDisabled) return null
@@ -148,7 +150,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     const correctionSources: DocumentSourceRef[] = []
     const supersessions = relations.map(({ anchorSources, ...item }) => {
       if (!anchorSources?.length) return item
-      if (!refsCurrent(anchorSources) || anchorSources.some(ref => documentSourceRestricted(ref, restrictions))) {
+      if (!refsCurrent(anchorSources) || anchorSources.some(ref => documentSourceRestricted(ref, restrictions) || inheritedUseRestricted(ref))) {
         // The private quotation can still verify which current lines to hide. A stopped
         // anchor cannot supply wording to a model reading a separately sourced file.
         return { ...item, text: '', condition: '', time: '' }
@@ -183,7 +185,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       ...(correctionSources.length ? { correctionSources } : {}),
       ...(markdown === rawMarkdown ? {} : { locatorProjection: hash(markdown) }),
       supporting: supporting.map(item => ({ id: item.id, revision: item.revision, usageVersion: item.usageVersion })),
-      replacementPolicies: replacements.map(item => item?.policyToken ?? null), ...(useRestricted ? { useRestrictions: applicableRestrictions } : {}), state }))
+      replacementPolicies: replacements.map(item => item?.policyToken ?? null), ...(useRestricted ? { useRestrictions: applicableRestrictions, inheritedRestrictions } : {}), state }))
     return { id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
       revision, usageVersion, policyToken, ...(note ? { day: note.day } : {}), updatedAt: note?.updatedAt ?? 0,
       markdown, currentMarkdown: useRestricted ? null : projected, sources, sourceTokens: combined,

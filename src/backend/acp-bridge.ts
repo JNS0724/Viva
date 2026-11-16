@@ -83,7 +83,7 @@ export function createAcpBridge({
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
   launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
-  memoryClarificationQuestion, allowGeneralQuestion, taskSourceAlias,
+  memoryClarificationQuestion, cancelMemoryClarification, allowGeneralQuestion, taskSourceAlias,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -106,6 +106,7 @@ export function createAcpBridge({
   conversationContext?: (sessionId: string) => ConversationContext | null,
   memoryClarificationQuestion?: (session: string, turn: string, id: string, phase: 'show' | 'check') =>
     ReturnType<NonNullable<Parameters<typeof createQuestionDesk>[0]['memoryClarificationQuestion']>>,
+  cancelMemoryClarification?: Parameters<typeof createQuestionDesk>[0]['cancelMemoryClarification'],
   allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') =>
     import('./question-channel.ts').QuestionAdmission | Promise<import('./question-channel.ts').QuestionAdmission>,
   allowSession?: (id: string, memoryReady: boolean, task: boolean, cwd?: string) => boolean | Promise<boolean>,
@@ -155,7 +156,7 @@ export function createAcpBridge({
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.context(id) : undefined
-  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
+  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer, cancelMemoryClarification,
     allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
