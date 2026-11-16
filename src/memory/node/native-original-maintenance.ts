@@ -10,6 +10,7 @@ import { lockMemoryRoot } from './owner-lock.ts'
 import { APP_DB_PRAGMAS, transaction } from './sqlite.ts'
 import { createNativeOutputAttempts } from './native-output-attempts.ts'
 import { createNativeOutputJournal } from './native-output-journal.ts'
+import { createNativeToolReads } from './native-tool-reads.ts'
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 const span = z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() }).refine(x => x.end > x.start)
@@ -86,6 +87,7 @@ export function openNativeOriginalMaintenance(root: string, hostNamespace: strin
 function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   const surface = nativeSurfaceInvalidation(db)
   const outputAttempts = createNativeOutputAttempts(db)
+  const toolReads = createNativeToolReads(db)
   const outputJournal = createNativeOutputJournal(db, surface.mark)
   db.exec('CREATE TABLE IF NOT EXISTS owner_native_original_completed (operation TEXT PRIMARY KEY)')
   const hash = (value: string) => createHmac('sha256', secret).update(JSON.stringify(value)).digest('hex')
@@ -185,7 +187,20 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     })
   }
 
-  const unsettled = db.prepare('SELECT 1 FROM owner_native_original_publications WHERE published=0 LIMIT 1')
-  return { operations, operation, outputOperations, carriesUnsettledPublication: () => Boolean(unsettled.get()) || outputJournal.pending(),
+  function toolResultOperations() {
+    return outputPlans.all().flatMap(row => {
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
+      const operationId = z.uuid().parse(row.operation)
+      const journal = outputJournal.forOperation(operationId + ':tool-results')
+      const targets = () => toolReads.affected(ranges).flatMap(call =>
+        call.result && !outputJournal.erased(call.id) ? [{ ...call, result: call.result }] : [])
+      return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets }] : []
+    })
+  }
+
+  const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
+  return { operations, operation, outputOperations, toolResultOperations,
+    pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),
+    carriesUnsettledPublication: () => Boolean(unsettled.get()) || outputJournal.pending(),
     close() { try { db.close() } finally { closeLock() } } }
 }

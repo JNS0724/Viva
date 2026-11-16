@@ -1,14 +1,13 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ResolvedToolSet, ToolExecution, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import type { NativeToolCall, NativeToolResult } from '../../../../src/memory/node/native-tool-reads.ts'
+import { nativeEventDigest } from './event-digest.ts'
 
 type PendingCall = { event: SessionEvent<'tool/call'>, token?: ToolExecutionToken, active?: NativeToolCall }
 type Assembly = { signal: AbortSignal, tools: ResolvedToolSet }
 type Step = { turn: number, step: number, assembly: Assembly, calls: Map<string, PendingCall> }
 export type NativeToolLease = { call: NativeToolCall, current(): boolean }
-
-const digestEvent = (event: SessionEvent) => createHash('sha256').update(JSON.stringify(event)).digest('hex')
 
 /** The native tool call event is published before the executor can start the body. */
 export function trackNativeToolReads(finish: (call: NativeToolCall, result: NativeToolResult) => void) {
@@ -51,7 +50,7 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
         || event.sourceEventSeqs?.length !== 1 || event.sourceEventSeqs[0] !== current.active.seq) {
         throw new Error('Native tool result does not match the call that read memory')
       }
-      finish(current.active, { seq: event.seq, digest: digestEvent(event) })
+      finish(current.active, { seq: event.seq, digest: nativeEventDigest(event) })
     },
     bind(session: Session, exec: ToolExecution) {
       const call = pending(session, exec)
@@ -63,7 +62,7 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       const callId = String(exec.callId)
       const { turn, step } = current.event.data
       const call = { id: randomUUID(), session: String(session.id), callId, generation, turn, step,
-        seq: current.event.seq, digest: digestEvent(current.event) }
+        seq: current.event.seq, digest: nativeEventDigest(current.event) }
       current.active = call
       return { call, current: () => sessions.get(session)?.calls.get(callId)?.active === call }
     },

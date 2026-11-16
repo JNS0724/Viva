@@ -4,9 +4,10 @@ import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-compaction'
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
@@ -14,7 +15,8 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
-import { NATIVE_OUTPUT_MARKER, nativeOutputDigest } from '../plugins/memory/lib/native/output-attempts.ts'
+import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
+import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -192,7 +194,7 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   } finally { db.close() }
 })
 
-test('a real DSH tool read archives exact file evidence even when the next model send fails', { timeout: 45_000 }, async t => {
+test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {
   const text = 'The file-only proof ORDINAL controls the native result.'
   const prompt = '执行单次工具归档测试'
   let fileId: string | undefined, requested = false
@@ -235,9 +237,12 @@ test('a real DSH tool read archives exact file evidence even when the next model
     control.close()
   }
   const saved = affected[0]!, result = saved.result!
-  const provider = new Context(), mounted = await provider.plugin(jsonl, { root: join(app.directory, 'dsh', 'sessions') })
+  const sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const sessionId = SessionId(saved.session), forkId = SessionId(randomUUID())
+  const provider = new Context(), mounted = await provider.plugin(jsonl, { root: sessionsRoot, compression: 'zstd' })
+  let pruned = -1, independent = -1
   try {
-    const reader = await provider.sessionPersistence.open(SessionId(saved.session), 'read')
+    const reader = await provider.sessionPersistence.open(sessionId, 'read')
     try {
       const { events } = await reader.read()
       const call = events[saved.seq], outcome = events[result.seq]
@@ -248,8 +253,75 @@ test('a real DSH tool read archives exact file evidence even when the next model
       assert.equal(digest(outcome), result.digest)
       assert.deepEqual(outcome.sourceEventSeqs, [saved.seq])
       assert.match(JSON.stringify(outcome.data.message.content), /ORDINAL/)
+      const inherited = SessionLogOffset(events.length)
+      const child = Session.create(forkId, events, { ...reader.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
+      const turn = (events.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1, step = 1
+      child.append('turn/start', { turn })
+      child.append('step/start', { turn, step })
+      child.append('compaction/prune', { shadowedRange: { start: outcome.seq, end: outcome.seq }, shadowedSeqs: [outcome.seq], shadowedTokenCount: 1 })
+      pruned = child.append('tool/result', { ...outcome.data,
+        message: { ...outcome.data.message, content: [{ type: 'text', text: 'Pruned ORDINAL' }] },
+      }, { surfaceOp: { op: 'replace', startSeq: outcome.seq, endSeq: outcome.seq }, sourceEventSeqs: [outcome.seq] }).seq
+      const other = ToolCallId('independent-tool-call')
+      const block = { type: 'tool-call' as const, name: 'memory_read', id: other, arguments: '{}' }
+      child.append('assistant/message', { turn, step,
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [block] }), stream: [],
+      }, { surfaceOp: 'append' })
+      const otherCall = child.append('tool/call', { turn, step, callId: other, name: block.name, arguments: block.arguments })
+      independent = child.append('tool/result', { turn, step,
+        message: createToolResultMessage({ callId: other, isError: false, content: [{ type: 'text', text: 'Unrelated ORDINAL' }] }),
+      }, { surfaceOp: 'append', sourceEventSeqs: [otherCall.seq] }).seq
+      child.append('step/end', { turn, step })
+      child.append('turn/end', { turn, reason: { kind: 'completed' } })
+      const writer = await provider.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+      try { await writer.append(child.snapshotEvents()); await writer.flush() } finally { await writer.close() }
     } finally { await reader.close() }
   } finally { await mounted.dispose() }
+
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true, fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  const operationId = randomUUID()
+  try {
+    await owner.recover()
+    await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.receipt.identity, version: file.version }] })
+  } finally { await owner.close() }
+
+  openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    db.exec(`CREATE TRIGGER interrupt_native_tool_receipt BEFORE UPDATE OF published ON owner_native_output_publications
+      WHEN OLD.operation LIKE '%:tool-results' BEGIN SELECT RAISE(ABORT, 'crash before native tool result receipt'); END`)
+    assert.equal(await app.startBackend(), null)
+    assert.equal(db.prepare('SELECT count(*) AS total FROM owner_native_output_publications WHERE operation=? AND published=0')
+      .get(operationId + ':tool-results')?.total, 1)
+    await app.stopBackend()
+    db.exec('DROP TRIGGER interrupt_native_tool_receipt')
+    assert.ok(await app.startBackend(), 'recover the interrupted publication before live DSH begins')
+    assert.ok(db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?').get(saved.id))
+  } finally { db.close() }
+  await app.stopBackend()
+
+  const verify = new Context(), installed = await verify.plugin(jsonl, { root: sessionsRoot })
+  try {
+    for (const id of [sessionId, forkId]) {
+      const reader = await verify.sessionPersistence.open(id, 'read')
+      try {
+        const { events } = await reader.read()
+        assert.equal(nativeEventDigest(events[saved.seq]!), saved.digest, 'the independent caller is retained')
+        const rewritten = events[result.seq]
+        assert.equal(rewritten?.type, 'tool/result')
+        assert.deepEqual(rewritten.data.message.content, [])
+        assert.deepEqual(rewritten.sourceEventSeqs, [saved.seq])
+        if (id === forkId) {
+          const staleExcerpt = events[pruned], unrelated = events[independent]
+          assert.equal(staleExcerpt?.type, 'tool/result')
+          assert.deepEqual(staleExcerpt.data.message.content, [])
+          assert.equal(unrelated?.type, 'tool/result')
+          assert.match(JSON.stringify(unrelated.data.message.content), /Unrelated ORDINAL/)
+        }
+      } finally { await reader.close() }
+    }
+  } finally { await installed.dispose() }
 })
 
 test('trace erasure preserves another projection that reused the same session and sequence', t => {
@@ -337,9 +409,9 @@ test('cold Viva startup erases native originals and settled output in root and u
         const archive = createNativeOutputAttempts(proofDb)
         const evidence = { sources: [sourceId], dependencies: [], epoch: 0, turnOnly: false }
         archive.record(failedProof, evidence)
-        archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeOutputDigest(failed) })
+        archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeEventDigest(failed) })
         archive.record(reasoningProof, evidence)
-        archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeOutputDigest(reasoning) })
+        archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
         const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
         assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
         for (const { result, session, floor, id, generation, turn, step } of affected) {
@@ -351,7 +423,7 @@ test('cold Viva startup erases native originals and settled output in root and u
           assert.equal(result.state, 'settled')
           const event = events[result.terminal.seq]
           assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
-          assert.equal(nativeOutputDigest(event), result.terminal.digest)
+          assert.equal(nativeEventDigest(event), result.terminal.digest)
           if (event.type === 'assistant/attempt' || !event.data.message.content.some(block => block.type === 'tool-call')) {
             affectedOutputs.add(event.seq)
           }

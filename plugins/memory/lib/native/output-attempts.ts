@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import { appendPluginRecord, type Session, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { NativeOutputAttempt, NativeOutputTerminal } from '../../../../src/memory/node/native-output-attempts.ts'
+import { nativeEventDigest } from './event-digest.ts'
 
 export const NATIVE_OUTPUT_MARKER = 'plugin:viva-memory/output-attempt'
 type Marker = { id: string, generation: number, turn: number, step: number }
@@ -11,10 +12,6 @@ declare module '@deepseek-ai/dsh-session' {
 
 type OutputEvent = SessionEvent<'assistant/message' | 'assistant/attempt'>
 type Running = { attemptId: string, marker: Marker, attempt?: NativeOutputAttempt, events: Map<number, OutputEvent> }
-
-export function nativeOutputDigest(event: OutputEvent) {
-  return createHash('sha256').update(JSON.stringify(event)).digest('hex')
-}
 
 /** Connects the live loop's own output attempt to its eventual durable event. */
 export function trackNativeOutputAttempts(
@@ -58,7 +55,7 @@ export function trackNativeOutputAttempts(
         throw new Error('Native model output did not match its settlement')
       }
       finish(current.attempt, { seq: event.seq, kind: event.type === 'assistant/message' ? 'reply' : 'attempt',
-        digest: nativeOutputDigest(event) })
+        digest: nativeEventDigest(event) })
     },
   }
 }
