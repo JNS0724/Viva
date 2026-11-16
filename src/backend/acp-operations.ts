@@ -26,10 +26,11 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
   let closed = false
   const current = (id: string | null, operation: Operation) => running.get(id) === operation && !operation.released
 
-  async function run({ sessionId, prompt, context = null, userTurn = false, prepare, onStart, onEnd, onError }: {
+  async function run({ sessionId, prompt, context = null, userTurn = false, prepare, held, onStart, onEnd, onError }: {
     sessionId: string | null, prompt: Prompt, context?: ConversationContext | null
     userTurn?: boolean
     prepare?: () => Promise<void>
+    held?: () => boolean
     onStart?: () => void
     onEnd: (response: PromptResponse, finalReply?: boolean) => void
     onError: (error: unknown) => void
@@ -45,6 +46,11 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       if (!current(sessionId, operation)) { streams.finish(operation.stream); return }
       if (!await allowSession(sessionId)) throw new Error('session has outdated memory context')
       if (!current(sessionId, operation) || closed) return
+      if (held && !held()) {
+        streams.finish(operation.stream)
+        onEnd({ stopReason: 'cancelled' })
+        return
+      }
       operation.prompting = true
       const sent = connection().prompt({ sessionId, prompt })
       onStart?.()

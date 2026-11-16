@@ -448,8 +448,8 @@ export function createAcpBridge({
    * @param images pictures pasted with it, base64
    * @param request whether these are the user's words, a request of their own; a task's result coming back is not
    */
-  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText }: {
-    request?: boolean, userTurn?: boolean, onStart?: () => void, sourceId?: string, sourceText?: string,
+  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText, held }: {
+    request?: boolean, userTurn?: boolean, onStart?: () => void, sourceId?: string, sourceText?: string, held?: () => boolean,
   } = {}) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
     if (isSwitching()) throw new Error(switchingMessage())
@@ -467,6 +467,7 @@ export function createAcpBridge({
       }
     }
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
+    if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
     let words = request && asked ? asRequest(text, asked, 'prompt').text : text
     if (asked && memory.ready()) words = (await memory.call('bindWireAlias', { args: [asked, sourceText ?? text, words, sourceId] })).wireText
@@ -476,7 +477,7 @@ export function createAcpBridge({
       ...(words ? [{ type: 'text' as const, text: words }] : []),
     ]
     await operations.run({
-      sessionId: asked, prompt: blocks, context, userTurn, onStart,
+      sessionId: asked, prompt: blocks, context, userTurn, held, onStart,
       prepare: asked ? () => routingDesk.bind(asked) : undefined,
       onEnd: (response, finalReply) => {
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
@@ -639,9 +640,10 @@ export function createAcpBridge({
     return result
   }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
-  const deliverReport = async (session: string, reportId: string, token: string, text: string) => {
-    if (!await allowSession(session)) return 'unavailable' as const
+  const deliverReport = async (session: string, reportId: string, token: string, text: string, held: () => boolean = () => true) => {
+    if (!await allowSession(session) || !held()) return 'unavailable' as const
     if (memory.ready()) text = (await memory.call('bindWireAlias', { args: [session, text, text] })).wireText
+    if (!held() || session !== sessionId || isSwitching() || disposed) return 'unavailable' as const
     return steering.report(session, reportId, token, text)
   }
   /** How a background task's result stands in `session`: read, pending, or nowhere. */

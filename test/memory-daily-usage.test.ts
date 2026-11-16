@@ -391,3 +391,34 @@ test('forgetting a selected stopped snapshot uses its evidence while preserving 
   assert.equal(f.owner.runtime.dispatchSourceCurrent(second.messageId), true)
   assert.equal(f.owner.runtime.dispatchSourceCurrent(a.messageId), false)
 })
+
+test('stopped correction evidence supplies neither private applicability text nor dependency to an independent daily rebuild', async t => {
+  const f = await fixture(t), line = 'Identical quotation on the schedule.', secret = 'Confidential approved condition.'
+  const original = await f.add(`${line}\n${secret}`), initial = await f.find()
+  const lineNumber = initial.markdown.split('\n').findIndex(text => text === line) + 1
+  assert(lineNumber > 0)
+  const replacementSession = randomUUID(), replacementId = randomUUID(), replacementText = 'Use the new schedule independently.'
+  await f.owner.receiveSource({ sessionId: replacementSession, messageId: replacementId, text: replacementText,
+    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  const replacement = f.store.readSource(replacementId)!, documents = fixtureDocuments(f)
+  const base = { workspace: initial.identity.workspace, path: 'digest/wiki/replacement.md',
+    sources: [{ id: replacement.id, token: memorySourceToken(replacement) }], reads: [] }
+  const draft = documents.commit({ ...base, operationId: randomUUID(), action: 'CREATE', expectedRevision: null, markdown: replacementText })
+  documents.commit({ ...base, operationId: randomUUID(), action: 'CORRECT', expectedRevision: draft.revision, markdown: replacementText,
+    corrections: [{ path: initial.path, revision: initial.version.contentRevision, startLine: lineNumber, endLine: lineNumber,
+      text: line, condition: secret, time: '' }] })
+  const active = await f.find()
+  await f.set(stopInput(active))
+  await f.owner.runtime.wake()
+  await retireStoppedOriginal(f, original)
+  const independent = await f.add(line), rebuilt = await f.find(), reader = randomUUID()
+  const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: rebuilt.identity.id, evidence: true },
+    { session: reader, conversation: reader })
+  assert.match(packet, /Identical quotation on the schedule/)
+  assert.match(packet, /replacement/)
+  assert.doesNotMatch(packet, /Confidential approved condition/)
+  const evidence = await f.owner.handleHost('provenance', { args: [reader] }) as import('../src/memory/contracts/records.ts').MemoryProvenance
+  const sources = evidence.files?.flatMap(file => file.sourceRanges?.map(ref => ref.sourceId) ?? []) ?? []
+  assert(sources.includes(independent.messageId))
+  assert(!sources.includes(original.messageId))
+})

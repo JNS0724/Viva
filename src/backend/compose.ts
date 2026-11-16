@@ -606,6 +606,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The agent of the conversation on screen changing schedules (viva-tasks); a task's own session may not. */
   async function actOnSchedule(request: ScheduleAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
+    const erasureRevision = historyDb.fileErasureRevision()
+    const caller = sessions.context()
+    const bridge = dsh.current
     if (!await allowMemorySession(sessionId)) throw new Error(t('main.memory.context.stale'))
     const evidence = await memory.provenance(sessionId)
     if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
@@ -631,7 +634,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           && (request.prompt === undefined || request.title === undefined)) throw new Error(t('main.schedule-runs.memory.stale'))
       }
     }
-    return schedules.act(request, sessions.current().id, workDirNow() ?? '', evidence)
+    // The earlier owner replies may predate a host erasure that completed during the checks.
+    if (historyDb.fileErasureRevision() !== erasureRevision || dsh.current !== bridge || !sameContext(caller, sessions.context())) {
+      throw new Error(t('main.memory.context.stale'))
+    }
+    return schedules.act(request, caller.conversationId, workDirNow() ?? '', evidence)
   }
 
   /**
@@ -678,10 +685,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
-    deliver: async (session, reportId, token, text, taskId) => {
+    deliver: async (session, reportId, token, text, taskId, held) => {
       if (!await allowMemorySession(session) || !await eligibleTaskReport(taskId, session)) return Promise.resolve('unavailable')
       if (!await memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), await projectOfSession(session), Boolean(dsh.current?.memory.ready()))) return Promise.resolve('unavailable')
-      return dsh.current?.deliverReport(session, reportId, token, text) ?? Promise.resolve('unavailable')
+      if (!held()) return 'unavailable'
+      return dsh.current?.deliverReport(session, reportId, token, text, held) ?? Promise.resolve('unavailable')
     },
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
     amend: (effect, payload) => effects?.amend(effect, payload) ?? false,
@@ -695,7 +703,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     },
     currentConversation: () => sessions.current().id,
     superseded: async (taskId, runId) => await staleMemorySession(taskId) || (taskRuntime?.reports.superseded(taskId, runId) ?? false),
-    report: async (note, taskIds) => {
+    report: async (note, taskIds, held) => {
       const agent = dsh.current
       if (!agent || memoryBusy()) return false
       const context = sessions.context()
@@ -705,9 +713,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (!await eligibleTaskReport(taskId, session)) return false
         if (!await memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), await projectOfSession(session), agent.memory.ready())) return false
       }
+      if (dsh.current !== agent || !held()) return false
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task', context })
-      agent.prompt(note, [], { request: false }).catch((err: Error) => {
+      agent.prompt(note, [], { request: false, held }).catch((err: Error) => {
         if (dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
         emitToRenderer({ type: 'error', message: err.message, context })
@@ -1274,12 +1283,21 @@ ${question}` : question
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
+      invalidateScheduled: (matches, changed) => {
+        schedules?.discardMemory(matches)
+        const discarded = scheduleRuns?.discardMemory(matches)
+        if (changed || discarded) {
+          scheduleRuns?.wake()
+          feedChanged()
+          emitToRenderer({ type: 'schedules_changed' })
+        }
+      },
       invalidate: async effect => { if (effect.kind === 'erase-copies') await taskRuntime?.revokeMemorySessions(effect.sessions ?? []); sessions.carryNext(sessions.current().id, ''); emitToRenderer({ type: 'memory_changed' }); feedChanged(); emitToRenderer({ type: 'schedules_changed' }) },
     })
     effects.runs(REPORT, taskReports)
     // A new item's notification (schedule-runs.ts): handed to the desktop, done.
     effects.runs(FEED_NOTICE, async (queued) => {
-      for (const { payload } of queued) host.notify(payload as Notice)
+      for (const effect of queued) if (effects?.holds(effect)) host.notify(effect.payload as Notice)
       return new Map(queued.map((effect) => [effect.key, 'done' as const]))
     })
     taskRuntime = createTaskRuntime({

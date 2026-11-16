@@ -557,11 +557,11 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       return true
     })
   }
-  function supersessions(scope: string, path: string): DocumentSupersession[] {
+  function supersessions(scope: string, path: string, { includeEvidence = false }: { includeEvidence?: boolean } = {}): DocumentSupersession[] {
     workspace(scope)
     // Keep tombstones when the correction disappears: losing the replacement never revives old facts.
     return (db.prepare('SELECT * FROM memory_documents WHERE workspace=?').all(scope) as unknown as Row[])
-      .flatMap(correctionsOf).flatMap(({ anchorSources: _proof, erasedAnchorSources, ...item }) => {
+      .flatMap(correctionsOf).flatMap(({ anchorSources, erasedAnchorSources, ...item }) => {
         const actualPath = currentIdentityPath(scope, item.sourceDocumentId) ?? item.path
         if (actualPath !== path) return []
         if (erasedAnchorSources?.length) {
@@ -569,7 +569,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
           if (anchor?.id === item.sourceDocumentId && currentSources(scope, anchor.sources)
             && anchor.sources.every(ref => !documentSourceRestricted(ref, erasedAnchorSources))) return []
         }
-        return [{ ...item, path: actualPath, text: projectErasedLocators(scope, item.text),
+        return [{ ...item, ...(includeEvidence && anchorSources?.length ? { anchorSources } : {}), path: actualPath, text: projectErasedLocators(scope, item.text),
           condition: projectErasedLocators(scope, item.condition), time: projectErasedLocators(scope, item.time) }]
       })
   }

@@ -3,15 +3,18 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { HostMemoryCaller } from '../memory/contracts/host.ts'
 import type { MemoryHostEffect, MemoryHostErasureRange } from '../memory/contracts/service.ts'
 import type { Apply } from './journal.ts'
-import { truncateMemoryJournal } from './app-db.ts'
+import { transaction, truncateMemoryJournal } from './app-db.ts'
+import { usesErasedMemory, type MemoryProvenance } from '../memory/contracts/provenance.ts'
+import { eraseScheduledMemoryCopies } from './memory-scheduled-copies.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
   eraseFileHistory(ranges: readonly MemoryHostErasureRange[]): void,
+  invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
   invalidate(effect: MemoryHostEffect): void | Promise<void>,
 }) {
   db.exec('CREATE TABLE IF NOT EXISTS memory_host_receipts (effect TEXT PRIMARY KEY,cause TEXT NOT NULL,revision INTEGER NOT NULL,fingerprint TEXT NOT NULL)')
@@ -60,13 +63,18 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
         if (effect.kind === 'erase-file-copies') {
           try {
             if (effect.ranges.some(cut => blockedRanges.has(cut.sourceId))) continue
-            eraseFileHistory(effect.ranges)
+            const matches = (memory: MemoryProvenance) => usesErasedMemory(memory, effect.ranges, effect.memoryIds)
+            const changed = transaction(db, () => {
+              eraseFileHistory(effect.ranges)
+              return eraseScheduledMemoryCopies(db, matches)
+            })
+            invalidateScheduled(matches, changed)
             checkpointRanges = true
           } catch (error) {
             rangeError ??= { cause: error }
             for (const cut of effect.ranges) blockedRanges.add(cut.sourceId)
           }
-          // History is only one replica; the effect stays pending until derived copies can be erased.
+          // Keep the effect pending for the remaining task, report and trace copies.
           continue
         }
         const fingerprint = createHash('sha256').update(JSON.stringify(effect)).digest('hex')

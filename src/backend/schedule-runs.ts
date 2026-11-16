@@ -111,6 +111,21 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     return null
   }
   const forget = (key: string) => { outcomes.delete(key); waitingForMemory.delete(key) }
+  const queued = db.prepare('SELECT schedule_revision FROM schedule_runs WHERE key=?')
+  const drop = db.prepare('DELETE FROM schedule_runs WHERE key=? AND schedule_revision=?')
+
+  /** An affected cached result can still be held by an awaiting commit. Retire its queue row as well. */
+  function discardMemory(matches: (memory: MemoryProvenance) => boolean) {
+    let changed = false
+    for (const [key, cached] of outcomes) {
+      if (cached.outcome.memory && matches(cached.outcome.memory)) {
+        changed = Number(drop.run(key, cached.revision).changes) > 0 || changed
+        forget(key)
+      } else if (queued.get(key)?.schedule_revision !== cached.revision) forget(key)
+    }
+    for (const key of waitingForMemory) if (!queued.get(key)) waitingForMemory.delete(key)
+    return changed
+  }
 
   /** A change failed: tried again after a growing wait. */
   function failed(err: unknown): void {
@@ -174,10 +189,11 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   async function outcomeOf(item: Run): Promise<Outcome | 'unavailable' | 'memory-unavailable' | 'superseded'> {
     // The creation snapshot is checked again at commit. A cached model response retains its own sources.
     if (item.memory && !await memoryCurrent(item.memory)) return staleInstructions()
-    if (closed || !scheduleCurrent(item)) return 'superseded'
+    if (closed || !runCurrent(item) || !scheduleCurrent(item)) return 'superseded'
     const pending = outcomes.get(item.key)
     if (pending?.revision === item.scheduleRevision) return pending.outcome
     const result = await run(item.prompt, item.cwd, item.memory)
+    if (closed || !runCurrent(item)) return 'superseded'
     if (!result.ok && result.unavailable) return result.memoryUnavailable ? 'memory-unavailable' : 'unavailable'
     const memory = result.memory ? combineMemoryProvenance(item.memory, result.memory) : item.memory ?? undefined
     const outcome: Outcome = result.ok ? { kind: 'deliver', body: result.text, memory }
@@ -209,10 +225,13 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     return Boolean(schedule && schedule.status !== 'paused' && schedule.revision === item.scheduleRevision)
   }
 
+  const runCurrent = (item: Run) => queued.get(item.key)?.schedule_revision === item.scheduleRevision
+
   function dropIfSuperseded(item: Run) {
-    if (scheduleCurrent(item)) return false
-    change('schedule.dropped', { key: item.key }, () => db.prepare('DELETE FROM schedule_runs WHERE key = ? AND schedule_revision = ?')
-      .run(item.key, item.scheduleRevision))
+    if (runCurrent(item)) {
+      if (scheduleCurrent(item)) return false
+      change('schedule.dropped', { key: item.key }, () => drop.run(item.key, item.scheduleRevision))
+    }
     forget(item.key)
     return true
   }
@@ -281,7 +300,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     arm()
   }
 
-  return { arm, wake, close }
+  return { arm, wake, close, discardMemory }
 }
 
 export type ScheduleRuns = ReturnType<typeof createScheduleRuns>

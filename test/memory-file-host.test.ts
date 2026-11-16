@@ -438,6 +438,9 @@ test('forgetting a digest drains transport, cleans Node replicas and preserves d
     turn: 1, step: 1, admitted: true, inherited: false })
   const read = () => f.owner.runtime.handle({ op: 'file_read', session: reader, id: tea.documentId }, { session: reader, conversation: reader })
   assert.match(read(), /Tea is served on Monday/)
+  const proof = await f.owner.handleHost('provenance', { args: [reader] }) as HostMemoryApi['provenance']['output']
+  assert.deepEqual(proof.files?.find(file => file.id === tea.documentId)?.sourceRanges,
+    [{ sourceId: source.id, spans: [{ start: 26, end: source.length }] }])
   const before = (await f.client.readFile(f.identity))!, operationId = randomUUID()
   const input = { operationId, identity: before.identity, version: before.version }
   const permit = f.owner.acquireSend(randomUUID(), { session: f.session }, source.text!)

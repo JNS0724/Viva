@@ -36,7 +36,7 @@ import { connected, projectTimeline } from './memory-timeline.ts'
 import { createMemoryNoteJobs } from './memory-note-jobs.ts'
 import { createMemoryDreamJobs } from './memory-dream-jobs.ts'
 import type { DreamCalculate } from './memory-dream-jobs.ts'
-import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy } from './memory-document-read-policy.ts'
+import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDependency } from './memory-document-read-policy.ts'
 import { createMemoryDailyUsage } from './memory-daily-usage.ts'
 import { createMemoryFileManagement } from './memory-file-management.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
@@ -825,8 +825,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
   const fileRetrieval = filePolicy && fileIndex ? createMemoryFileRetrieval({ index: fileIndex, policy: filePolicy,
     workspaces: fileWorkspaces, hash: memoryHash, embedder, now, resolveAlias: resolveFileAlias }) : null
-  const fileDependency = (view: MemoryDocumentView): MemoryFileDependency => ({ id: view.id, workspace: view.workspace, path: view.path,
-    revision: view.revision, usageVersion: view.usageVersion, policyToken: view.policyToken })
   function retainFileReads(session: string, result: { files: MemoryFileDependency[], sourceIds: string[] }) {
     fileDependencies?.(session, result.files, result.sourceIds)
   }
@@ -865,6 +863,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     for (const ref of refs) {
       const view = filePolicy?.read(ref.workspace, ref.path)
       if (view?.id !== ref.id || view.revision !== ref.revision || view.usageVersion !== ref.usageVersion || view.policyToken !== ref.policyToken) return false
+      if (ref.sourceRanges && JSON.stringify(ref.sourceRanges) !== JSON.stringify(fileDependency(view).sourceRanges)) return false
       for (const source of view.sourceTokens) unverified.delete(source.id)
     }
     return unverified.size === 0
@@ -2733,7 +2732,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
 
   async function forgetManagedFile(input: MemoryFileForgetRequest,
-    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[]) => void): Promise<MemoryFileMutationResult> {
+    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[]) => void): Promise<MemoryFileMutationResult> {
     if (!documents || !fileManagement || !notes) throw domainError('not.found')
     const storage = documents
     const result = await runDocumentMutation(() => store.tx(() => {
@@ -2772,7 +2771,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
         action: 'FORGET', contentRevision: input.version.contentRevision, usageVersion,
         ...(input.restrictionId ? { restrictionId: input.restrictionId } : {}) }
-      committed(result, cuts)
+      committed(result, cuts, [...legacy])
       return result
     }))
     publish(store.revision(), [])

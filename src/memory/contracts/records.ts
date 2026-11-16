@@ -1,3 +1,5 @@
+import type { TextSpan } from './text-spans.ts'
+
 import type { MemoryKind, MemoryScope } from './memory-contract.ts'
 import type { MemoryFact, MemoryInterval } from './facts.ts'
 export type MemoryDependency = {
@@ -17,6 +19,8 @@ export type MemoryFileDependency = {
     revision: string;
     usageVersion: number;
     policyToken: string;
+    /** Body-free evidence of this accepted projection, retained even after it changes. */
+    sourceRanges?: Array<{ sourceId: string; spans?: TextSpan[] }>;
 };
 export type MemoryProvenance = {
     dependencies: MemoryDependency[];

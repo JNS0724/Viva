@@ -8,6 +8,11 @@ import { scratch } from './fixtures/scratch.js'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createMemoryHostEffects } from '../src/backend/memory-host-effects.ts'
 import { APP_DB_PRAGMAS, transaction } from '../src/backend/app-db.ts'
+import { createEffects } from '../src/backend/effects.ts'
+import { openFeedStore } from '../src/backend/feed-store.ts'
+import { createScheduleRuns, SCHEDULE_SOURCE } from '../src/backend/schedule-runs.ts'
+import { openScheduleStore } from '../src/backend/schedule-store.ts'
+import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import type { HostMemoryApi, HostMemoryCaller } from '../src/memory/contracts/host.ts'
 import type { MemoryHostEffect, MemoryHostErasureRange } from '../src/memory/contracts/service.ts'
 
@@ -256,4 +261,59 @@ test('one unverifiable source does not starve later independent host effects', a
   assert.deepEqual(acknowledged, [invalidation.effectId])
   assert.equal(history.get(badRow.id)?.messages[0]?.text, 'Unverified representation')
   assert.equal(history.get(goodRow.id)?.messages[0]?.text.trim(), 'Retain the rest.')
+})
+
+test('file forgetting physically removes affected schedules, run inputs and feed items without touching a disjoint historical file', async t => {
+  const { dir } = scratch(t, 'memory-derived-erase-')
+  const path = join(dir, 'app.db'), db = new DatabaseSync(path)
+  t.after(() => db.close())
+  db.exec(APP_DB_PRAGMAS)
+  const history = openHistoryDb({ db }), effects = createEffects({ db }), feed = openFeedStore({ db })
+  const now = Date.parse('2026-11-06T10:00:00+08:00'), store = openScheduleStore({ db, now: () => now })
+  const runner = createScheduleRuns({ db, store, feed, now: () => now,
+    async run() { return { ok: true, text: '' } }, keep() {}, delivered() {} })
+  t.after(() => runner.close())
+  const sourceId = randomUUID(), text = 'erase report, keep tea'
+  const a = range(sourceId, 1, text, 'erase report')
+  const base: MemoryProvenance = { dependencies: [], sources: [sourceId], turnOnly: false, epoch: 0 }
+  const file = (id: string, start: number, end: number): MemoryProvenance => ({ ...base, fileSources: [sourceId], files: [{
+    id, workspace: 'a'.repeat(64), path: `digest/wiki/${id}.md`, revision: 'historical-revision', usageVersion: 1, policyToken: 'historical-policy',
+    sourceRanges: [{ sourceId, spans: [{ start, end }] }],
+  }] })
+  const affected = file('report', 0, 12), independent = file('tea', 14, text.length)
+  const rule = { kind: 'at' as const, at: '2026-11-06T11:00:00+08:00' }
+  const scheduleA = store.create({ title: 'Affected', prompt: 'Erase report', cwd: '/w', rule, memory: affected })
+  const scheduleB = store.create({ title: 'Independent', prompt: 'Keep tea', cwd: '/w', rule, memory: independent })
+  const queue = db.prepare(`INSERT INTO schedule_runs(key,schedule_id,at,title,prompt,cwd,due_at,memory,schedule_revision) VALUES (?,?,?,?,?,?,?,?,?)`)
+  queue.run('old-a', scheduleA.id, rule.at, 'Old A', 'Erase report', '/w', now, JSON.stringify(affected), 0)
+  queue.run('historical-a', scheduleB.id, rule.at, 'Historical A', 'Erase report', '/w', now, JSON.stringify(affected), 0)
+  queue.run('current-b', scheduleB.id, rule.at, 'Current B', 'Keep tea', '/w', now, JSON.stringify(independent), 0)
+  const derived = (key: string, memory: MemoryProvenance) => {
+    const { item } = feed.add({ source: SCHEDULE_SOURCE, key, title: key, body: key, memory, origin: { label: 'Test', ref: scheduleB.id } })
+    effects.queue('feed-notice', item.id, { text: key })
+    return item.id
+  }
+  const raw = derived('Raw source result', base), related = derived('File A result', affected), retained = derived('File B result', independent)
+  const effect: MemoryHostEffect = { kind: 'erase-file-copies', effectId: randomUUID(), causeOperationId: randomUUID(), revision: 10,
+    sources: [{ namespace: 'canonical', sourceId, revision: 1 }], ranges: [a], hostNamespace: 'viva' }
+  const call: HostMemoryCaller = async method => {
+    assert.equal(method, 'pendingHostEffects')
+    return [effect] as HostMemoryApi[typeof method]['output']
+  }
+  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+    invalidate() {}, apply: (_kind, _data, write) => ({ value: transaction(db, write) }) })
+  t.after(() => { host.close(); effects.close() })
+  await host.recover()
+  await host.recover()
+  assert.equal(store.get(scheduleA.id), null)
+  assert.equal(store.get(scheduleB.id)?.record.prompt, 'Keep tea')
+  assert.deepEqual(db.prepare('SELECT key FROM schedule_runs').all().map(row => row.key), ['current-b'])
+  assert.deepEqual(feed.list().map(item => item.id), [retained])
+  assert.equal(effects.get('feed-notice', raw), null)
+  assert.equal(effects.get('feed-notice', related), null)
+  assert(effects.get('feed-notice', retained))
+  for (const file of [path, path + '-wal']) {
+    const bytes = readFileSync(file)
+    for (const erased of ['Raw source result', 'File A result', 'Erase report']) assert.equal(bytes.includes(Buffer.from(erased)), false)
+  }
 })

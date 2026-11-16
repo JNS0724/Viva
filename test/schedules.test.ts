@@ -143,3 +143,21 @@ test('an asynchronous proposal check cannot accept a declined card or save it tw
   await assert.rejects(duplicate)
   assert.equal(schedules.list().length, 1)
 })
+
+test('erasure cancels only affected proposals even while acceptance is awaiting authorization', async t => {
+  const db = new DatabaseSync(':memory:'); t.after(() => db.close())
+  let allow!: (current: boolean) => void
+  const checking = new Promise<boolean>(resolve => { allow = resolve })
+  let n = 0
+  const schedules = createSchedules({ db, emit() {}, now: () => Date.parse('2026-11-06T10:00:00+08:00'),
+    newId: () => `p${++n}`, memoryCurrent: () => checking })
+  schedules.act({ op: 'schedule_create', title: 'Selected source', prompt: 'Affected instructions', rule: weekly }, 'c1', '/work',
+    { dependencies: [], sources: ['source-a'], turnOnly: false, epoch: 0 })
+  schedules.act({ op: 'schedule_create', title: 'Independent', prompt: 'Retained instructions', rule: weekly }, 'c1', '/work')
+  const accepted = schedules.accept('p1')
+  schedules.discardMemory(memory => memory.sources.includes('source-a'))
+  allow(true)
+  await assert.rejects(accepted)
+  assert.equal((await schedules.accept('p2')).title, 'Independent')
+  assert.deepEqual(schedules.list().map(row => row.title), ['Independent'])
+})

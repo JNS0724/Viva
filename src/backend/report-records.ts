@@ -2,7 +2,7 @@ import type { Apply } from './journal.ts'
 import type { Effect } from './effects.ts'
 import type { Conversation } from './history-db.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
-import { recordedNote, REPORT, type ReportPayload } from './task-reports.ts'
+import { recordedNote, type ReportPayload } from './task-reports.ts'
 
 /**
  * Where a background task's result the model read is kept (system-design §11.5): as a record of the
@@ -28,7 +28,8 @@ export interface RecordHistory {
 
 /** What of the effects queue is used here. */
 export interface RecordEffects {
-  finish: (kind: string, key: string) => void
+  holds: (effect: Effect) => boolean
+  finishGeneration: (effect: Effect) => boolean
   amend: <P extends object>(effect: Effect<P>, payload: P) => boolean
 }
 
@@ -68,10 +69,12 @@ export function createReportRecords({ history, effects, apply, current, show, no
 
   /** Written in the session it went to: that conversation on screen, its record is drawn now, where it came. */
   function written(effect: Effect<ReportPayload>) {
+    const queue = effects()
+    if (!queue?.holds(effect)) return
     const target = targetOf(effect)
     if (!target || target.id !== current().id) return
     const at = timeOf(effect)
-    if (effect.payload.recordedAt === undefined) effects()?.amend(effect, { ...effect.payload, recordedAt: at })
+    if (effect.payload.recordedAt === undefined && !queue.amend(effect, { ...effect.payload, recordedAt: at })) return
     drawOn(target, effect, at)
   }
 
@@ -85,15 +88,20 @@ export function createReportRecords({ history, effects, apply, current, show, no
     const store = history()
     if (!queue || !store) throw new Error('the history is not open for a report\'s record')
     const target = targetOf(effect)
-    if (!target) return queue.finish(REPORT, effect.key)
+    if (!queue.holds(effect)) return
+    if (!target) {
+      apply('effect.done', { kind: effect.kind, key: effect.key }, () => queue.finishGeneration(effect))
+      return
+    }
     const at = timeOf(effect)
-    apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
+    const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
+      if (!queue.finishGeneration(effect)) return false
       // A blank topic on screen is stored with it, so the record has a conversation to come back with after a restart.
       if (!store.get(target.id)) store.save(target, [], { keepEmpty: true })
       store.addRecord({ conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload) })
-      queue.finish(REPORT, effect.key)
-    })
-    if (target.id === current().id) drawOn(target, effect, at)
+      return true
+    }).value
+    if (kept && target.id === current().id) drawOn(target, effect, at)
   }
 
   return { written, read }

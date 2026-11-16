@@ -551,3 +551,11 @@ Viva 历史库按规范来源裁剪前后的哈希应用每次删除，保留独
 R5b 切换默认实现时整体删除旧记忆引擎、旧库及兼容入口。旧引擎没有现有用户，无需迁移。普通会话历史仍是独立的 Viva 能力。
 
 此批历史库改动通过独立循环评审、类型检查、构建、check:i18n 和 1985 项 Electron 测试（1983 通过、2 项既有跳过）。macOS 记忆冒烟与打包后的独立 DSH Web 文件模式冒烟通过。记录见 `/tmp/r5a-viva-ranges-accepted-full.log`、`/tmp/r5a-viva-ranges-accepted-smoke.log`、`/tmp/r5a-viva-ranges-accepted-plugin.log`。
+
+Viva 按每份副本自身的证据擦除受影响的调度、排队指令、动态结果和待发通知。文件读取保留无正文的来源范围，文件后来变更时仍能判断旧结果是否依赖本次擦除。读过整条原文或与擦除范围相交的文件证据会受影响，不相交的文件证据仍可保留。更正锚点留在内部，停用或不可用锚点的引句、条件和时间不传给模型，内部仍可用精确行核对投影。
+
+依赖本次擦除的调度提案和缓存结果会被丢弃。运行队列行不存在或调度版本已变更时拒绝提交结果；等待 owner 的调度写入在落库前再检查本地擦除代次。后台报告在 DSH 发送前核对队列代次，记录和消费同一代次在一个事务内完成。这些约束阻止已取消工作恢复结果或通知。剩余任务、已保存报告、生成型回复、追踪、定位链接和原生副本仍需擦除，范围效果继续待处理。
+
+此批通过独立循环评审、类型检查、构建及 check:i18n。默认并发的两次 Electron 全量各出现一项不同的 DSH 交接偶发失败，分别发生在重启续聊和任务简述转交。两项一起隔离复测通过。四并发全量运行 1993 项，1991 项通过、2 项既有跳过。失败日志保留为 `/tmp/r5a-viva-derived-accepted-full.log` 和 `/tmp/r5a-viva-derived-serial-full.log`，通过的全量记录见 `/tmp/r5a-viva-derived-bounded-full.log`。
+
+macOS 记忆冒烟与打包后的独立 DSH Web 文件模式冒烟均通过，记录见 `/tmp/r5a-viva-derived-smoke.log` 与 `/tmp/r5a-viva-derived-plugin-smoke.log`。

@@ -1,3 +1,4 @@
+import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemorySource } from './ports/store.ts'
@@ -26,10 +27,19 @@ export interface MemoryDocumentView {
   currentMarkdown: string | null
   sources: MemorySourceReference[]
   sourceTokens: DocumentSourceRef[]
+  /** Provenance of applicability wording consumed by the model, separate from public projections. */
+  correctionSources?: DocumentSourceRef[]
   backing: DocumentSnapshot | null
   supporting: DocumentSnapshot[]
   applicability: { state: 'current' | 'superseded' | 'unavailable', supersessions: DocumentSupersession[] }
 }
+export function fileDependency(view: MemoryDocumentView): MemoryFileDependency {
+  const { workspace, id, path, revision, usageVersion, policyToken } = view
+  const sourceRanges = mergeDocumentSources([...view.sourceTokens, ...view.correctionSources ?? []])
+    .map(({ id: sourceId, spans }) => ({ sourceId, ...(spans ? { spans } : {}) }))
+  return { workspace, id, path, revision, usageVersion, policyToken, sourceRanges }
+}
+
 /** Trusted management projection only; never an input to model retrieval/injection. */
 export interface MemoryDocumentManagementView extends MemoryDocumentView { enabled: boolean }
 
@@ -133,8 +143,19 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     if (!refsCurrent(refs) || !materialAllowed(markdown, refs)) return null
     // A correction of this same logical document describes the previous revision, not
     // a reason to hide its newly corrected body. Other revisions remain anchored.
-    const supersessions = documents.supersessions(workspace, path).filter(item => !(digest?.id === item.documentId
+    const relations = documents.supersessions(workspace, path, { includeEvidence: true }).filter(item => !(digest?.id === item.documentId
       && digest.corrections.some(active => active.operationId === item.operationId)))
+    const correctionSources: DocumentSourceRef[] = []
+    const supersessions = relations.map(({ anchorSources, ...item }) => {
+      if (!anchorSources?.length) return item
+      if (!refsCurrent(anchorSources) || anchorSources.some(ref => documentSourceRestricted(ref, restrictions))) {
+        // The private quotation can still verify which current lines to hide. A stopped
+        // anchor cannot supply wording to a model reading a separately sourced file.
+        return { ...item, text: '', condition: '', time: '' }
+      }
+      correctionSources.push(...anchorSources)
+      return item
+    })
     const candidates = documents.registered(workspace)
     const replacements = supersessions.map(item => {
       const entry = candidates.find(candidate => candidate.id === item.documentId && candidate.state === 'active')
@@ -154,17 +175,19 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       if (!value) return null
       sources.push(value)
     }
-    const projected = currentProjection(markdown, supersessions)
+    const projected = currentProjection(markdown, relations)
     const state = useRestricted || projected === null || replacements.some(item => !item || item.currentMarkdown === null || item.applicability.state === 'unavailable') ? 'unavailable' : supersessions.length ? 'superseded' : 'current'
     const revision = note ? note.fileRevision : digest!.revision
     const usageVersion = note ? note.revision : digest!.usageVersion
     const policyToken = hash(JSON.stringify({ revision, usageVersion, sources: combined, supersessions,
+      ...(correctionSources.length ? { correctionSources } : {}),
       ...(markdown === rawMarkdown ? {} : { locatorProjection: hash(markdown) }),
       supporting: supporting.map(item => ({ id: item.id, revision: item.revision, usageVersion: item.usageVersion })),
       replacementPolicies: replacements.map(item => item?.policyToken ?? null), ...(useRestricted ? { useRestrictions: applicableRestrictions } : {}), state }))
     return { id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
       revision, usageVersion, policyToken, ...(note ? { day: note.day } : {}), updatedAt: note?.updatedAt ?? 0,
-      markdown, currentMarkdown: useRestricted ? null : projected, sources, sourceTokens: combined, backing: digest && { ...digest, markdown }, supporting,
+      markdown, currentMarkdown: useRestricted ? null : projected, sources, sourceTokens: combined,
+      ...(correctionSources.length ? { correctionSources } : {}), backing: digest && { ...digest, markdown }, supporting,
       applicability: { state, supersessions } }
   }
   function list(workspace: string, kind?: 'daily' | 'digest') {

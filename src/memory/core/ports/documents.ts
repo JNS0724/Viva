@@ -120,7 +120,7 @@ export interface MemoryDocuments {
   /** Caller excludes the canonical source before invoking physical cleanup. */
   withdraw(sourceId: string): string[]
   eraseSource(cut: DocumentSourceCut): string[]
-  supersessions(workspace: string, path: string): DocumentSupersession[]
+  supersessions(workspace: string, path: string, options?: { includeEvidence?: boolean }): DocumentSupersession[]
   defer(input: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork
   deferred(workspace: string, operationId: string): DeferredDocumentWork | null
   pending(workspace: string): DeferredDocumentWork[]

@@ -23,7 +23,8 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
   ); CREATE TABLE IF NOT EXISTS memory_erased_history_replicas (
     conversation TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(conversation,source)
   )`)
-  const any = db.prepare('SELECT 1 FROM memory_erased_source_ranges LIMIT 1')
+  const latest = db.prepare('SELECT coalesce(max(rowid),0) revision FROM memory_erased_source_ranges')
+  const revision = () => Number(latest.get()?.revision ?? 0)
   const read = db.prepare('SELECT cut FROM memory_erased_source_ranges WHERE source=? ORDER BY revision')
   const insert = db.prepare('INSERT INTO memory_erased_source_ranges VALUES (?,?,?)')
   const bind = db.prepare('INSERT OR IGNORE INTO memory_erased_history_replicas VALUES (?,?)')
@@ -85,7 +86,8 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
 
   return {
     forSave, erase,
-    any: () => Boolean(any.get()),
+    any: () => revision() > 0,
+    revision,
     replicaSources: (conversation: string) => replicas.all(conversation).map(row => String(row.source)),
     bindSaved: (conversation: string) => bindSaved.run(conversation, conversation),
     recognizes: (source: string, text: string) => project(text, cutsOf(source)) !== null,

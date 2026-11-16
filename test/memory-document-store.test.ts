@@ -131,6 +131,7 @@ test('withdrawing the source of a correction quotation erases it without removin
   const supersession = documents.supersessions(workspace, path)[0]!
   assert.equal(supersession.text, marker)
   assert.equal(supersession.anchorSources, undefined)
+  assert.deepEqual(documents.supersessions(workspace, path, { includeEvidence: true })[0]?.anchorSources, f.input.sources)
   assert.equal(documents.undoCandidate(workspace, replacement.documentId)?.changeId, 'correct-external')
   const snapshot = documents.read(workspace, target)!
   const work = documents.defer({ operationId: 'deferred-after-correction', workspace, reason: 'Confidential condition',

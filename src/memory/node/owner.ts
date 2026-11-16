@@ -583,7 +583,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
-          : await runtime.forgetFile(command.input.args[0], (result, cuts) => {
+          : await runtime.forgetFile(command.input.args[0], (result, cuts, memoryIds) => {
             const sourceIds = new Set(cuts.map(cut => cut.id))
             const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) => {
               const evidence = dispatch.snapshot(session)
@@ -610,7 +610,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
             if (native) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(id, JSON.stringify({ sessions, ranges }))
             if (options.hostNamespace) {
               const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-                kind: 'erase-file-copies', sessions,
+                kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
                 sources: cuts.map(cut => ({ namespace: 'canonical', sourceId: cut.id, revision: cut.version })), ranges }
               db.prepare('INSERT INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
               notify = true

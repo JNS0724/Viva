@@ -356,3 +356,39 @@ test('closing a schedule runner while its remote result check waits prevents del
   assert.equal(app.feed.list().length, 0)
   assert.equal(app.runs(), 1)
 })
+
+test('erasing one queued occurrence while it is in flight prevents its result and notice from returning', async t => {
+  let finish!: (result: RunResult) => void
+  const running = new Promise<RunResult>(resolve => { finish = resolve })
+  const app = setup([running])
+  const runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  const schedule = app.store.create({ title: 'Independent weekly job', prompt: 'Keep this', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  runner.wake()
+  assert.equal(app.asked.length, 1)
+  app.db.prepare('DELETE FROM schedule_runs WHERE schedule_id=?').run(schedule.id)
+  finish({ ok: true, text: 'Late erased result' })
+  await app.settle()
+  assert.deepEqual([app.feed.list(), app.kept, app.delivered()], [[], [], 0])
+  assert(app.store.get(schedule.id), 'the independent schedule itself is retained')
+})
+
+test('erasure retires an in-flight cached result during the commit authorization RPC', async t => {
+  const memory: MemoryProvenance = { dependencies: [], sources: ['selected-source'], turnOnly: false, epoch: 0 }
+  let allow!: (current: boolean) => void
+  const checking = new Promise<boolean>(resolve => { allow = resolve })
+  const app = setup([{ ok: true, text: 'Selected-source result', memory }], () => checking)
+  const runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  const schedule = app.store.create({ title: 'Independent weekly job', prompt: 'Keep this', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  runner.wake()
+  await app.settle()
+  assert.equal(app.runs(), 1)
+  assert(runner.discardMemory(result => result.sources.includes('selected-source')))
+  allow(true)
+  await app.settle()
+  assert.deepEqual([app.runs(), app.feed.list(), app.kept], [0, [], []])
+  assert(app.store.get(schedule.id))
+})

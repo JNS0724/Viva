@@ -677,7 +677,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   return {
-    addRecord, hasRecord, moveRecords, recordsOf, bySession, eraseMemoryCopies, eraseFileRanges,
+    addRecord, hasRecord, moveRecords, recordsOf, bySession, eraseMemoryCopies, eraseFileRanges, fileErasureRevision: memoryRanges.revision,
     create, save, get, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

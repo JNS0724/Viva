@@ -117,7 +117,11 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
     return update(id, { ...rest, ...(rule ? { rule: rule as unknown as ScheduleRule } : {}), ...(updated ? { memory: updated } : {}) })
   }
 
-  return { act, accept, decline, list, update, remove, store }
+  function discardMemory(matches: (memory: MemoryProvenance) => boolean) {
+    for (const [id, proposal] of proposals) if (proposal.memory && matches(proposal.memory)) proposals.delete(id)
+  }
+
+  return { act, accept, decline, list, update, remove, store, discardMemory }
 }
 
 export type Schedules = ReturnType<typeof createSchedules>

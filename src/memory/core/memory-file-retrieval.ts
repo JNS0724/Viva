@@ -2,7 +2,7 @@ import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-def
 import { MEMORY_EMBEDDING_BATCH } from '../contracts/embedding.ts'
 import type { MemoryEmbedder, MemoryEmbeddingInput } from '../contracts/embedding.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
-import type { MemoryDocumentView } from './memory-document-read-policy.ts'
+import { fileDependency, type MemoryDocumentView } from './memory-document-read-policy.ts'
 import type { MemoryFileIndex, MemoryFileIdentity, MemoryFileSnapshot, MemoryFileHit, MemoryFileChunkRef } from './ports/file-index.ts'
 import { dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
 import { memoryFileLexicalQuery } from './search-tokens.ts'
@@ -49,9 +49,6 @@ export interface FileSearchRequest {
 const identityKey = (file: {workspace: string, id: string}) => JSON.stringify([file.workspace, file.id])
 const sameVersion = (a: MemoryFileIdentity, b: MemoryDocumentView) => a.id === b.id && a.path === b.path
   && a.revision === b.revision && a.usageVersion === b.usageVersion && a.policyToken === b.policyToken
-const dependency = ({workspace,id,path,revision,usageVersion,policyToken}: MemoryDocumentView): MemoryFileDependency =>
-  ({workspace,id,path,revision,usageVersion,policyToken})
-
 export { memoryFileLexicalQuery } from './search-tokens.ts'
 
 /** Shared file retrieval. No filesystem, database, transport or host state crosses this layer. */
@@ -110,12 +107,12 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   function readSet(views: readonly MemoryDocumentView[]): FileReadSet {
     const files = new Map<string, MemoryFileDependency>(), sourceIds = new Set<string>()
     for (const view of views) {
-      files.set(identityKey(view), dependency(view))
+      files.set(identityKey(view), fileDependency(view))
       view.sourceTokens.forEach(source => sourceIds.add(source.id))
       // Replacement state is a dynamic dependency even when its body was not expanded.
       for (const support of view.supporting) {
         const replacement = policy.read(view.workspace, support.path)
-        if (replacement) files.set(identityKey(replacement), dependency(replacement))
+        if (replacement) files.set(identityKey(replacement), fileDependency(replacement))
       }
     }
     return { files: [...files.values()], sourceIds: [...sourceIds] }
