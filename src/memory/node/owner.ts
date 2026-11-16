@@ -5,7 +5,7 @@ import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID, createHmac } from 'node:crypto'
 import { lockMemoryRoot } from './owner-lock.ts'
-import { openMemoryStore, memoryHash } from './memory-store.ts'
+import { openMemoryStore, memoryHash, memoryScopeKey } from './memory-store.ts'
 import { createMemoryRuntime } from './runtime.ts'
 import { createMemoryEmbedder } from './memory-embedder.ts'
 import type { NodeMemoryRuntimeOptions } from './runtime.ts'
@@ -165,17 +165,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   function requireReady() { if (state !== 'ready' || hasPending()) throw new Error('Memory owner is recovering') }
   const contextRecovery = createOwnerContextRecovery({ db, store, hash, requireReady, mutate: work => fence.mutate(work),
     sourceAllowed: (session, source) => runtime.canRecoverOriginal(source, sessionContext(session)),
-    resolveInherited(session, nativeParent) {
-      if (!nativeSurface.has(session)) return null
-      const forkParent = nativeSurface.parent(session) ?? nativeParent
-      if (forkParent && forkParent !== session) {
-        const parent = db.prepare('SELECT context,project FROM owner_sessions WHERE session=?').get(forkParent)
-        if (typeof parent?.context === 'string') {
-          db.prepare('UPDATE owner_sessions SET context=? WHERE session=? AND context IS NULL AND project IS ?')
-            .run(parent.context, session, parent.project ?? null)
-        }
-      }
-      return sessionContext(session).conversation
+    resolveInherited(session) {
+      return nativeSurface.has(session) ? sessionContext(session).conversation : null
     },
     replace(session, sources) {
       dispatch.replaceAfterRecovery(session, sources)
@@ -233,25 +224,33 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   /** Native session metadata binds workspace identity before original or derived replay. */
   function initializeSession(input: { sessionId: string, cwd?: string, parentSessionId?: string }) {
     requireReady()
-    if (input.cwd === undefined && input.parentSessionId === undefined) { if (!needsContextRecovery(input.sessionId)) reconcileChildren(input.sessionId); return }
     const project = input.cwd === undefined ? sessionContext(input.sessionId).project : memoryProjectScope(input.cwd)
-    const saved = db.prepare('SELECT project FROM owner_sessions WHERE session=?').get(input.sessionId)
+    const saved = db.prepare('SELECT project,context FROM owner_sessions WHERE session=?').get(input.sessionId) as Pick<Session, 'project' | 'context'> | undefined
     if (saved && saved.project !== (project?.id ?? null)) throw new Error('Session project context changed')
-    const parent = db.prepare('SELECT parent FROM owner_session_parents WHERE session=?').get(input.sessionId)?.parent
+    const parent = db.prepare('SELECT parent FROM owner_session_parents WHERE session=?').get(input.sessionId)?.parent as string | undefined
     const ancestors = new Set([input.sessionId])
     for (let ancestor = input.parentSessionId; ancestor;) {
       if (ancestors.has(ancestor)) throw new Error('Session parent cycle')
       ancestors.add(ancestor)
       ancestor = db.prepare('SELECT parent FROM owner_session_parents WHERE session=?').get(ancestor)?.parent as string | undefined
     }
-    if (parent && parent !== input.parentSessionId) throw new Error('Session parent context changed')
+    const metadata = input.cwd !== undefined || input.parentSessionId !== undefined
+    if (parent && metadata && parent !== input.parentSessionId) throw new Error('Session parent context changed')
     if (input.parentSessionId && !parent && (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(input.parentSessionId)
       || !coordination.canInherit(input.parentSessionId, sessionContext(input.parentSessionId).project, project, true)
       || !dispatch.transferable(dispatch.snapshot(input.parentSessionId)))) throw new Error('Parent memory context is unavailable')
+    const bound = saved?.context ? JSON.parse(saved.context) as MemoryScope : undefined
+    const defaultScope: MemoryScope = input.parentSessionId || parent ? { kind: 'task', id: input.sessionId } : project ?? { kind: 'user' }
+    const newlyBoundChild = Boolean(input.parentSessionId && !parent && bound?.kind !== 'task')
+    if (newlyBoundChild && db.prepare('SELECT 1 FROM memory_sources WHERE session=? LIMIT 1').get(input.sessionId)) {
+      throw new Error('Session role changed after accepting original sources')
+    }
+    const context = newlyBoundChild ? defaultScope : bound ?? defaultScope
     store.tx(() => {
       runtime.recordSession(input.sessionId)
       if (!coordination.bindProject(input.sessionId, project)) throw new Error('Session project changed')
-      db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,NULL,?)').run(input.sessionId, input.sessionId, project?.id ?? null)
+      db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,?,?)').run(input.sessionId, input.sessionId, JSON.stringify(context), project?.id ?? null)
+      if (!bound || newlyBoundChild) db.prepare('UPDATE owner_sessions SET context=? WHERE session=?').run(JSON.stringify(context), input.sessionId)
       if (input.parentSessionId && !parent) {
         dispatch.attach(input.sessionId, dispatch.snapshot(input.parentSessionId))
         db.prepare('INSERT INTO owner_session_parents VALUES (?,?)').run(input.sessionId, input.parentSessionId)
@@ -292,6 +291,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   function alias(input: MemorySourceAlias) {
     requireReady()
+    const previous = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(input.session) as Session | undefined
+    const bound = previous?.context ? JSON.parse(previous.context) as MemoryScope : undefined
+    const project = input.project ?? (previous?.project ? { kind: 'project' as const, id: previous.project } : undefined)
+    const context = input.context ?? bound ?? project ?? { kind: 'user' as const }
+    if (bound?.kind === 'task' && memoryScopeKey(context) !== memoryScopeKey(bound)) throw new Error('Session task context changed')
+    input = { ...input, context, ...(project ? { project } : {}) }
     const saved = storeAlias(input) // Validate before any session/source registration.
     const fingerprint = hash(input)
     const old = db.prepare('SELECT fingerprint,revoked FROM owner_aliases WHERE id=?').get(input.operationId)
@@ -301,13 +306,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       throw new Error('Source alias was withdrawn or is unavailable')
     }
     if (old && old.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict', 'Memory operation ID conflicts')
-    const context = input.context ? JSON.stringify(input.context) : null
-    const previous = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(input.session) as Session | undefined
+    const encodedContext = JSON.stringify(context)
     if (previous && previous.project !== (input.project?.id ?? null)) throw new Error('Session project context changed')
     store.tx(() => {
       db.prepare('INSERT OR IGNORE INTO owner_aliases(id,fingerprint,session,wire_hash,payload,source,conversation) VALUES (?,?,?,?,?,?,?)').run(input.operationId, fingerprint, input.session, hash(input.wireText ?? input.text), JSON.stringify(saved), input.sourceId, input.conversation)
-      db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,?,?)').run(input.session, input.conversation, context, input.project?.id ?? null)
-      db.prepare('UPDATE owner_sessions SET conversation=?,context=?,project=? WHERE session=?').run(input.conversation, context, input.project?.id ?? null, input.session)
+      db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,?,?)').run(input.session, input.conversation, encodedContext, input.project?.id ?? null)
+      db.prepare('UPDATE owner_sessions SET conversation=?,context=?,project=? WHERE session=?').run(input.conversation, encodedContext, input.project?.id ?? null, input.session)
       runtime.recordSession(input.session)
       if (!coordination.bindProject(input.session, input.project)) throw new Error('Session project changed')
       if (input.dependencies && !coordination.transfer(input.session, input.dependencies, input.project, true)) throw new Error('Stale alias dependencies')
@@ -377,9 +381,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (store.sourceExcluded(sourceId)) throw new Error('Source was withdrawn')
     if ((known || store.readSource(sourceId)) && !runtime.dispatchSourceCurrent(sourceId)) throw new Error('Source is withdrawn or unavailable')
     const text = mapped?.text ?? (known ? store.readSource(sourceId)?.text ?? '' : input.text)
-    let context = mapped ? { ...sessionContext(input.sessionId), conversation: mapped.conversation, context: mapped.context, project: mapped.project } : sessionContext(input.sessionId)
+    const boundContext = sessionContext(input.sessionId)
+    if (boundContext.context?.kind === 'task' && mapped?.context
+      && memoryScopeKey(mapped.context) !== memoryScopeKey(boundContext.context)) throw new Error('Source alias task context changed')
+    let context = mapped ? { ...boundContext, conversation: mapped.conversation, context: mapped.context ?? boundContext.context, project: mapped.project } : boundContext
     if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(input.sessionId)) {
-      db.prepare('INSERT INTO owner_sessions VALUES (?,?,NULL,?)').run(input.sessionId, input.sessionId, input.project ?? null)
+      const project = input.project ? { kind: 'project' as const, id: input.project } : undefined
+      db.prepare('INSERT INTO owner_sessions VALUES (?,?,?,?)').run(input.sessionId, input.sessionId, JSON.stringify(project ?? { kind: 'user' }), input.project ?? null)
       context = sessionContext(input.sessionId)
       runtime.recordSession(input.sessionId)
       coordination.bindProject(input.sessionId, context.project)

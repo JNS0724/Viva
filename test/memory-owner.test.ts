@@ -179,7 +179,7 @@ test('forget emits durable versioned host effects and ack never accepts a mismat
   const { effectId, causeOperationId, revision } = effects[0]!
   await owner.handleHost('ackHostEffect', { effectId, causeOperationId, revision })
   await owner.handleHost('ackHostEffect', { effectId, causeOperationId, revision })
-  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
+  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), effects, 'the aggregate effect remains pending until the native replica receipt is durable')
   assert.equal((await owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'pending', 'native replica receipt remains independent from the host acknowledgement')
   await assert.rejects(owner.handleHost('ackHostEffect', { effectId, causeOperationId: randomUUID(), revision }), /conflicts/)
 })
