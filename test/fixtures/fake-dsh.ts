@@ -1,17 +1,20 @@
 /**
  * Test double for `dsh --profile <name>`: a real ACP agent over stdio that plays fixed scripts,
  * so integration tests and the smoke run exercise the same bridge code as a real session.
- * Started as `node fake-dsh.js --profile viva`. FAKE_DSH_DELAY_MS sets the pace (default 450 ms per step).
+ * Started as `node fake-dsh.ts --profile viva`. FAKE_DSH_DELAY_MS sets the pace (default 450 ms per step).
  * Like dsh, it connects to the stdio MCP servers a session declares and refuses the session when one fails.
  * It has no plugins, but answers the app's channels as they would: words sent mid-turn (viva-steer), the main
  * session's role (viva-routing, which it binds without routing anything) and the stream contract, the only way the
  * app shows what a turn says (viva-routing's assistant stream). Memory, steering and routing themselves are tested
- * with the real dsh and a fake model (test/fixtures/fake-llm.js).
+ * with the real dsh and a fake model (test/fixtures/fake-llm.ts).
  */
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
+import type { Agent, McpServer, PermissionOption, SessionConfigOption, SessionUpdate, ToolCall, ToolCallStatus, ToolKind } from '@agentclientprotocol/sdk'
+import type { CommittedOutput } from '../../src/backend/assistant-stream.ts'
+import { objectOf } from '../../src/shared/unknown-value.ts'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { startFakeMemoryOwner } from './fake-memory-owner.ts'
@@ -62,30 +65,28 @@ const MODELS = [
 ]
 const EFFORTS = ['off', 'low', 'high', 'max']
 /** As real dsh offers them (dsh-acp): English names, which the window shows in Chinese. */
-const PERMISSION_OPTIONS = [
+const PERMISSION_OPTIONS: PermissionOption[] = [
   { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
   { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
 ]
 
 const cancelled = new Error('cancelled')
 
-function sleep(ms, signal) {
-  return new Promise((resolve, reject) => {
+function sleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
     if (signal.aborted) return reject(cancelled)
-    const timer = setTimeout(resolve, ms)
-    signal.addEventListener('abort', () => {
-      clearTimeout(timer)
-      reject(cancelled)
-    }, { once: true })
+    const abort = () => { clearTimeout(timer); reject(cancelled) }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, ms)
+    signal.addEventListener('abort', abort, { once: true })
   })
 }
 
-const pieces = (text, size) => {
+const pieces = (text: string, size: number) => {
   const chars = [...text]
   return Array.from({ length: Math.ceil(chars.length / size) }, (_, i) => chars.slice(i * size, (i + 1) * size).join(''))
 }
 
-function configOptions({ model, effort }) {
+function configOptions({ model, effort }: Pick<FakeSession, 'model' | 'effort'>): SessionConfigOption[] {
   return [
     { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: model, options: [{ group: 'fake', name: 'Fake', options: MODELS }] },
     {
@@ -107,10 +108,13 @@ function longAnswer() {
 }
 
 /** Connects to each declared stdio MCP server; any failure rejects the whole session, as in dsh. */
-async function connectMcp(servers = []) {
-  const clients = new Map()
+async function connectMcp(servers: McpServer[] = []) {
+  const clients = new Map<string, Client>()
   for (const [index, server] of servers.entries()) {
-    if (server.type === 'http') continue
+    if ('type' in server) {
+      if (server.type === 'http') continue
+      throw new Error(`Invalid params: mcpServers[${index}] must use the scripted stdio transport`)
+    }
     if (!path.isAbsolute(server.command)) throw new Error(`Invalid params: mcpServers[${index}].command must be an absolute path`)
     const client = new Client({ name: 'fake-dsh', version: '0.0.0' })
     const env = Object.fromEntries((server.env ?? []).map(({ name, value }) => [name, value]))
@@ -126,47 +130,52 @@ async function connectMcp(servers = []) {
   return clients
 }
 
-const closeMcp = (session) => Promise.all([...(session?.mcp?.values() ?? [])].map((client) => client.close().catch(() => {})))
+type FakeSession = { cwd: string, model: string, effort: string, turn: AbortController | null, mcp: Map<string, Client> }
+const closeMcp = (session: FakeSession | undefined) => Promise.all([...(session?.mcp?.values() ?? [])].map((client) => client.close().catch(() => {})))
 
-function createAgent(conn) {
-  const sessions = new Map()
+function createAgent(conn: AgentSideConnection): Agent {
+  const sessions = new Map<string, FakeSession>()
   answerSteering(sessions)
   const shown = answerStream()
 
-  const openSession = (sessionId, cwd, mcp) => {
-    const session = { cwd, model: MODELS[0].value, effort: 'high', turn: null, mcp }
+  const openSession = (sessionId: string, cwd: string, mcp: Map<string, Client>) => {
+    const session: FakeSession = { cwd, model: MODELS[0].value, effort: 'high', turn: null, mcp }
     sessions.set(sessionId, session)
     return session
   }
 
   /** Helpers bound to one turn: every await honours cancellation. */
-  function turnTools(sessionId, signal) {
-    const send = (update) => conn.sessionUpdate({ sessionId, update })
-    const step = async (update, ratio = 1) => {
+  function turnTools(sessionId: string, signal: AbortSignal) {
+    const send = (update: SessionUpdate) => conn.sessionUpdate({ sessionId, update })
+    const step = async (update: SessionUpdate, ratio = 1) => {
       await sleep(STEP_MS * ratio, signal)
       if (update.sessionUpdate === 'tool_call') shown.tool(sessionId)
       await send(update)
     }
-    const stream = async (kind, text, size = PIECE_CHARS, ratio = PIECE_RATIO) => {
+    const stream = async (kind: 'agent_message_chunk' | 'agent_thought_chunk', text: string, size = PIECE_CHARS, ratio = PIECE_RATIO) => {
       await sleep(STEP_MS, signal)
       const attempt = shown.start(sessionId, kind === 'agent_message_chunk' ? 'text' : 'reasoning')
-      for (const piece of pieces(text, size)) {
-        attempt.delta(piece)
-        await send({ sessionUpdate: kind, content: { type: 'text', text: piece } })
-        await sleep(STEP_MS * ratio, signal)
-      }
-      attempt.settle(text)
+      const live = attempt.signal ? AbortSignal.any([signal, attempt.signal]) : signal
+      try {
+        for (const piece of pieces(text, size)) {
+          if (live.aborted) throw cancelled
+          attempt.delta(piece)
+          await send({ sessionUpdate: kind, content: { type: 'text', text: piece } })
+          await sleep(STEP_MS * ratio, live)
+        }
+        attempt.settle(text)
+      } finally { attempt.abandon() }
     }
-    const tool = (toolCallId, title, kind, extra = {}) => ({ sessionUpdate: 'tool_call', toolCallId, title, kind, status: 'in_progress', ...extra })
-    const status = (toolCallId, value) => ({ sessionUpdate: 'tool_call_update', toolCallId, status: value })
+    const tool = (toolCallId: string, title: string, kind: ToolKind, extra: Partial<ToolCall> = {}): SessionUpdate => ({ sessionUpdate: 'tool_call', toolCallId, title, kind, status: 'in_progress', ...extra })
+    const status = (toolCallId: string, value: ToolCallStatus): SessionUpdate => ({ sessionUpdate: 'tool_call_update', toolCallId, status: value })
     return { step, stream, tool, status }
   }
 
-  async function defaultScript(sessionId, session, text, signal) {
+  async function defaultScript(sessionId: string, session: FakeSession, text: string, signal: AbortSignal) {
     const { step, stream, tool, status } = turnTools(sessionId, signal)
-    const id = (name) => `${name}-${randomUUID()}`
+    const id = (name: string) => `${name}-${randomUUID()}`
     const [read, fetch, write] = [id('read'), id('fetch'), id('edit')]
-    const model = MODELS.find((m) => m.value === session.model).name
+    const model = MODELS.find((m) => m.value === session.model)!.name
     await stream('agent_thought_chunk', '先确认你要的结果，再看看工作区里有什么可以用的材料。')
     await step(tool(read, '读取工作区文件列表', 'read', { locations: [{ path: session.cwd }] }))
     await step(status(read, 'completed'))
@@ -187,7 +196,7 @@ function createAgent(conn) {
     await stream('agent_message_chunk', allowed ? '已写入 summary.md（假 dsh，没有真正写入磁盘）。' : '好的，没有写入。')
   }
 
-  async function longScript(sessionId, session, signal) {
+  async function longScript(sessionId: string, session: FakeSession, signal: AbortSignal) {
     const { step, stream, tool, status } = turnTools(sessionId, signal)
     await stream('agent_thought_chunk', '这是一个长任务：逐份读取笔记，最后汇总。')
     for (let day = 1; day <= LONG_STEPS; day += 1) {
@@ -199,7 +208,7 @@ function createAgent(conn) {
     await stream('agent_message_chunk', longAnswer(), LONG_PIECE_CHARS, LONG_PIECE_RATIO)
   }
 
-  const sessionOrThrow = (sessionId) => {
+  const sessionOrThrow = (sessionId: string) => {
     const session = sessions.get(sessionId)
     if (!session) throw new Error(`unknown session: ${sessionId}`)
     return session
@@ -240,10 +249,10 @@ function createAgent(conn) {
     },
     async setSessionConfigOption(params) {
       const session = sessionOrThrow(params.sessionId)
-      const field = { model: 'model', reasoning_effort: 'effort' }[params.configId]
+      const field = params.configId === 'model' ? 'model' : params.configId === 'reasoning_effort' ? 'effort' : null
       if (!field) throw new Error(`unknown session config option: ${params.configId}`)
       const allowed = params.configId === 'model' ? MODELS.map((m) => m.value) : EFFORTS
-      if (!allowed.includes(params.value)) throw new Error(`unknown ${params.configId} option: ${params.value}`)
+      if (typeof params.value !== 'string' || !allowed.includes(params.value)) throw new Error(`unknown ${params.configId} option: ${params.value}`)
       session[field] = params.value
       return { configOptions: configOptions(session) }
     },
@@ -251,12 +260,12 @@ function createAgent(conn) {
       const session = sessionOrThrow(params.sessionId)
       const controller = new AbortController()
       session.turn = controller
-      const wireText = params.prompt.map((block) => block.text ?? '').join('\n')
+      const wireText = params.prompt.map((block) => block.type === 'text' ? block.text : '').join('\n')
       const intake = wireText ? await memoryOwner?.receive(params.sessionId, wireText) : undefined
       const text = withoutHeaders(wireText)
       let completed = false
       // Pictures come as image blocks, base64; the answer says what came, so the smoke run can see they got here.
-      const images = params.prompt.filter((block) => block.type === 'image' && block.data && block.mimeType)
+      const images = params.prompt.filter(block => block.type === 'image').filter(block => block.data && block.mimeType)
       try {
         if (images.length) await turnTools(params.sessionId, controller.signal).stream('agent_message_chunk', `看到了 ${images.length} 张图片（${images.map((i) => i.mimeType).join('、')}）`, PIECE_CHARS, PIECE_RATIO)
         else if (LONG_TASK.test(text)) await longScript(params.sessionId, session, controller.signal)
@@ -282,13 +291,14 @@ function createAgent(conn) {
  * Stands in for the viva-steer plugin (plugins/steer): words sent while a turn runs are taken, else the turn
  * is idle. The script does not change for them; the real plugin is tested with the real dsh.
  */
-function answerSteering(sessions) {
+function answerSteering(sessions: ReadonlyMap<string, FakeSession>) {
   if (typeof process.send !== 'function') return
   process.channel?.unref?.()
-  process.on('message', (message) => {
-    if (message?.type !== 'steer') return
+  process.on('message', raw => {
+    const message = objectOf(raw)
+    if (message?.type !== 'steer' || typeof message.sessionId !== 'string') return
     const running = Boolean(sessions.get(message.sessionId)?.turn)
-    process.send({ type: 'steer_result', id: message.id, ok: running, ...(running ? {} : { reason: 'idle' }) })
+    process.send?.({ type: 'steer_result', id: message.id, ok: running, ...(running ? {} : { reason: 'idle' }) })
   })
 }
 
@@ -297,13 +307,14 @@ function answerSteering(sessions) {
  * an attempt of its own, opened, filled and settled on the channel; a flush returns what was settled.
  */
 function answerStream() {
-  const bindings = new Map()
-  const send = (message) => { if (process.connected) process.send(message) }
+  const bindings = new Map<string, { operation: string, messages: CommittedOutput[], finalReply: boolean }>()
+  const send = (message: object) => { if (process.connected) process.send?.(message) }
   if (typeof process.send === 'function') {
-    process.on('message', (message) => {
+    process.on('message', raw => {
+      const message = objectOf(raw)
       if (message?.version !== 1) return
       if (message.type === 'routing_bind') send({ type: 'routing_bound', version: 1, id: message.id })
-      if (message.type === 'assistant_stream_bind') {
+      if (message.type === 'assistant_stream_bind' && typeof message.sessionId === 'string' && typeof message.operation === 'string') {
         bindings.set(message.sessionId, { operation: message.operation, messages: [], finalReply: false })
         send({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
       }
@@ -316,25 +327,29 @@ function answerStream() {
     send({ type: 'assistant_stream_ready', version: 1 })
   }
   return {
-    tool(sessionId) { const binding = bindings.get(sessionId); if (binding) binding.finalReply = false },
-    start(sessionId, blockType) {
+    tool(sessionId: string) { const binding = bindings.get(sessionId); if (binding) binding.finalReply = false },
+    start(sessionId: string, blockType: 'text' | 'reasoning') {
       const binding = bindings.get(sessionId)
-      if (!binding) return { delta: () => {}, settle: () => {} }
+      if (!binding) return { signal: undefined, delta: (_text: string) => {}, settle: (_text: string) => {}, abandon: () => {} }
+      const proof = memoryOwner?.startOutput(sessionId)
       const key = `${binding.operation}:${binding.messages.length + 1}`
       const base = { type: 'assistant_stream', version: 1, sessionId, operation: binding.operation, key }
       send({ ...base, kind: 'start' })
       return {
-        delta: (text) => send({ ...base, kind: 'delta', index: 0, blockType, text }),
-        settle: (text) => {
+        signal: proof?.signal,
+        abandon: () => proof?.abandon(),
+        delta: (text: string) => send({ ...base, kind: 'delta', index: 0, blockType, text }),
+        settle: (text: string) => {
           const blocks = [{ type: blockType, text }]
-          binding.messages = [...binding.messages, { key, blocks }]
+          const native = proof?.settle(blocks)
+          binding.messages = [...binding.messages, { key, blocks, ...(native ? { native } : {}) }]
           binding.finalReply = blockType === 'text' && Boolean(text.trim())
-          send({ ...base, kind: 'settle', blocks })
+          send({ ...base, kind: 'settle', blocks, ...(native ? { native } : {}) })
         },
       }
     },
   }
 }
 
-const stream = ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))
+const stream = ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>)
 new AgentSideConnection(createAgent, stream)
