@@ -7,8 +7,49 @@ import { completeMemoryModel } from '../plugins/memory/lib/model.ts'
 import { assertMemoryProviderSupported } from '../plugins/memory/lib/providers.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
+import { DREAM_INTEGRATE_SYSTEM, DREAM_VERIFY_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { formatMemoryDocument } from '../src/memory/core/memory-document.ts'
+import { createVenueModelFixture, venue } from './fixtures/memory-plugin-venue.ts'
 
 const job: MemoryCompute = { id: '1', sourceId: '2', generation: 1, stage: 'note', provider: 'test', model: 'model', system: 'system', input: 'source' }
+
+for (const failed of ['frontmatter_read', 'frontmatter_update'] as const) {
+  test(`packed Web acceptance cannot report a rejected ${failed} as exercised successfully`, () => {
+    const fixture = createVenueModelFixture(), path = 'daily/2026-11-17/venue.md'
+    const request = { system: DREAM_INTEGRATE_SYSTEM, messages: [{ role: 'user', content: [
+      { type: 'text', text: JSON.stringify({ unit: { paths: [path] }, clarification: { text: venue.answer } }) },
+    ] }] as Array<{ role: string, content: Array<{ type: string, text?: string, id?: string, name?: string, tool_use_id?: string, content?: string, is_error?: boolean }> }> }
+    let rejected = false
+    for (let index = 0; index < 6; index++) {
+      const response = fixture.decide(request) as { tool: { name: string, input: { path?: string } } }
+      assert.ok(response.tool)
+      const { name, input } = response.tool, id = `venue-call-${index}`
+      request.messages.push({ role: 'assistant', content: [{ type: 'tool_use', id, name }] })
+      const content = name === 'node_search' ? [] : name === 'read' ? { path, markdown: venue.facts.join('\n') }
+        : name === 'frontmatter_read' ? { path, metadata: { name: venue.topic } } : { path: input.path, staged: true }
+      request.messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id,
+        is_error: name === failed, content: name === failed ? 'memory-dream-tool-rejected' : JSON.stringify(content) }] })
+      if (name === failed) {
+        assert.throws(() => fixture.decide(request), new RegExp(`${name} execution failed`, 'u'))
+        assert.ok(!fixture.report().tools.includes(name))
+        rejected = true
+        break
+      }
+    }
+    assert.equal(rejected, true)
+  })
+}
+
+test('packed Web acceptance rejects a verified body whose frontmatter update did not reach the draft', () => {
+  const fixture = createVenueModelFixture()
+  const canonicalSources = [...venue.facts.map((text, index) => ({ sourceId: `fact-${index}`, version: 1,
+    author: 'user', text, question: null as string | null, questionUnavailable: false })),
+  { sourceId: 'answer', version: 1, author: 'answer', text: venue.answer, question: `What should I use for ${venue.topic}?`, questionUnavailable: false }]
+  const request = { system: DREAM_VERIFY_SYSTEM, messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({
+    action: 'CREATE', canonicalSources, proposed: formatMemoryDocument({ metadata: { name: venue.topic, description: 'The stale draft description' }, body: venue.summary }),
+  }) }] }] }
+  assert.throws(() => fixture.decide(request), /the frontmatter update must reach the verified draft/u)
+})
 for (const finish of ['stop', 'max-tokens', 'missing'] as const) test(`memory model requires explicit successful completion: ${finish}`, async () => {
   const ctx = new Context()
   const llm = new LlmRuntime(ctx)

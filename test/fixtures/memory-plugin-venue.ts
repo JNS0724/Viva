@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { formatMemoryDocument } from '../../src/memory/core/memory-document.ts'
+import { formatMemoryDocument, parseMemoryDocument } from '../../src/memory/core/memory-document.ts'
 import { NOTE_SYSTEM } from '../../src/memory/core/memory-notes.ts'
 import { DREAM_EXTRACT_SYSTEM, DREAM_INTEGRATE_SYSTEM, DREAM_TAG_SYSTEM, DREAM_VERIFY_SYSTEM } from '../../src/memory/core/memory-dream-prompts.ts'
 
@@ -18,7 +18,7 @@ export const venue = Object.freeze({
   target: 'digest/wiki/firefly-venue.md',
   completed: '已确认读书会场地，正在按原始依据整理。',
 })
-type Part = { type?: string, name?: string, text?: string, content?: unknown }
+type Part = { type?: string, id?: string, name?: string, text?: string, content?: unknown, tool_use_id?: string, is_error?: boolean }
 type Request = { system?: string | Array<{ text?: string }>, tools?: Array<{ name?: string }>, messages?: Array<{ role?: string, content?: string | Part[] }> }
 type Source = { sourceId: string, version: number, author: string, text: string, question: string | null, questionUnavailable: boolean }
 const parts = (content: string | Part[] | undefined): Part[] => typeof content === 'string' ? [{ type: 'text', text: content }] : content ?? []
@@ -34,7 +34,7 @@ const json = (value: unknown): Record<string, unknown> | null => {
 
 /** A deterministic provider, never a writer: every draft tool executes through the packed plugin. */
 export function createVenueModelFixture() {
-  const stages: string[] = [], tools: string[] = []
+  const stages: string[] = [], tools: string[] = [], succeeded = new Set<string>()
   let canonicalSources: Source[] = []
   const decide = (raw: object): object | null => {
     const input = raw as Request, messages = input.messages ?? []
@@ -68,8 +68,32 @@ export function createVenueModelFixture() {
         { name: 'edit', input: { path: venue.target, old_text: placeholder, new_text: venue.summary } },
         { name: 'frontmatter_update', input: { path: venue.target, patch: { description: venue.summary } } },
       ]
+      const results = messages.flatMap(message => message.role === 'user' ? parts(message.content).filter(part => part.type === 'tool_result') : [])
+      for (const [index, call] of invoked.entries()) {
+        const expected = actions[index]
+        assert.ok(expected && call.id && call.name === expected.name, 'the integrate transcript contains the expected tool identity')
+        const replies = results.filter(result => result.tool_use_id === call.id)
+        assert.equal(replies.length, 1, `${call.name} must have exactly one real execution result`)
+        const result = replies[0]!
+        assert.notEqual(result.is_error, true, `${call.name} execution failed`)
+        const raw: unknown = JSON.parse(typeof result.content === 'string' ? result.content : text(result.content as Part[]))
+        if (call.name === 'node_search') assert.ok(Array.isArray(raw), 'node_search must return its actual node list')
+        else {
+          const value = json(raw)
+          assert.ok(value && 'path' in expected.input && value.path === expected.input.path, `${call.name} returned the wrong document`)
+          if (call.name === 'read') {
+            const markdown = value.markdown
+            assert.ok(typeof markdown === 'string' && venue.facts.every(fact => markdown.includes(fact)), 'read must return the actual source daily body')
+          }
+          else if (call.name === 'frontmatter_read') {
+            const metadata = json(value.metadata)
+            assert.equal(metadata?.name, venue.topic, 'frontmatter_read must return the actual source metadata')
+          } else assert.equal(value.staged, true, `${call.name} must successfully stage its draft`)
+        }
+        if (!succeeded.has(call.id)) { succeeded.add(call.id); tools.push(call.name!) }
+      }
       const action = actions[invoked.length]
-      if (action) { tools.push(action.name); return { tool: action } }
+      if (action) return { tool: action }
       return { text: JSON.stringify({ action: 'CREATE', target_path: venue.target, note: '用户确认了候选场地和无障碍入口；保留原始比较记录作为依据。' }) }
     }
     if (system === DREAM_VERIFY_SYSTEM) {
@@ -80,6 +104,7 @@ export function createVenueModelFixture() {
       assert.ok(answer && answer.author === 'answer' && !answer.questionUnavailable && answer.question?.includes(venue.topic), 'the canonical Web answer retains its genuine question context')
       assert.ok(venue.facts.every(fact => canonicalSources.some(source => source.text === fact)), 'Verify receives the actual original Web turns')
       assert.ok(job.proposed.includes(venue.summary))
+      assert.equal(parseMemoryDocument(job.proposed).metadata.description, venue.summary, 'the frontmatter update must reach the verified draft')
       return { text: JSON.stringify({ verdict: 'verified', action: job.action, classification: 'unrelated',
         checks: { attribution: true, polarity: true, time: true, conditions: true, meaning: true, sources: true, action: true },
         evidence: canonicalSources.filter(source => source.text.includes('萤火读书会')).map(source => ({ sourceId: source.sourceId, sourceVersion: source.version,
