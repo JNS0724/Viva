@@ -20,9 +20,6 @@ export function registerMemoryTools(ctx: Context, request: (input: MemoryRequest
     { op: 'node_search', description: '搜索授权 digest 节点的名称和描述，不展开正文。用于找同一主题的长期记忆；需要依据时用 memory_read 读取返回 id。已失效的旧摘要不会作为当前节点返回。',
       parameters: { query: { type: 'string', required: true }, limit: { type: 'integer' } },
       input: (session: string, args: { query: string, limit?: number }): MemoryRequest => ({ op: 'node_search', session, ...args }) },
-    { op: 'forget', description: '用户明确要求忘掉时使用。请用户说「忘掉 #编号」，也可以在关于你中操作。',
-      parameters: { id: { type: 'integer', required: true } },
-      input: (session: string, args: { id: number }): MemoryRequest => ({ op: 'forget', session, id: args.id }) },
   ] as const
   const output = {
     schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },

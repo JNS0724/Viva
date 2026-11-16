@@ -32,7 +32,8 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
     } })
     assert.ok(owner, 'DSH dependencies activate the real plugin without a model provider')
     assert.equal(owner.ready(), true)
-    for (const name of ['memory_remember', 'memory_recall', 'memory_read', 'memory_node_search', 'memory_forget', 'memory_clarify']) assert.ok(ctx.tools.get(name), name)
+    for (const name of ['memory_remember', 'memory_recall', 'memory_read', 'memory_node_search', 'memory_clarify']) assert.ok(ctx.tools.get(name), name)
+    assert.equal(ctx.tools.get('memory_forget'), undefined)
     return { fiber, owner }
   }
   const first = await mount()
