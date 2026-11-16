@@ -8,8 +8,9 @@ import { packContext, MAX_CONTEXT_CHARS } from '../src/memory/core/memory-contex
 import { recallMatches, termsOf } from '../src/memory/core/memory-match.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
-import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
-import { createVivaMemoryClient } from '../src/backend/memory-client.ts'
+import { createMemoryRuntime } from './fixtures/localized-memory-runtime.ts'
+import { ownerClient } from './fixtures/memory-owner-client.ts'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { copyIntoWorkspace, DOCS_DIR_NAME, registerRuntimeMemoryIpc } from '../src/backend/memory-ipc.ts'
 import { scratch } from './fixtures/scratch.js'
 import { checkedIpc } from '../src/shared/ipc-contract.ts'
@@ -167,13 +168,15 @@ test('picked documents are copied into the workspace under a free name', (t) => 
 })
 
 test('memory IPC adds as the user and reports the page in one call', async t => {
-  const { dir, runtime } = memoryRuntime(t)
+  const { dir, defer } = scratch(t, 'memory-ipc-owner-')
+  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null, quiesce: async () => {} })
+  await owner.recover(); defer(() => owner.close())
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const registry = checkedIpc({ handle: (channel, fn) => handlers.set(channel, fn), on: () => {} }, {
     onRefused: (_channel, problem) => { throw new Error(problem) },
   })
   registerRuntimeMemoryIpc(registry, {
-    client: createVivaMemoryClient(runtime, work => Promise.resolve(work())), habits: () => ({ text: '', samples: 3 }), cwd: () => dir, chooseDocs: async () => null,
+    client: ownerClient(owner), habits: () => ({ text: '', samples: 3 }), cwd: () => dir, chooseDocs: async () => null,
   })
   const call = async (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
 
@@ -190,7 +193,10 @@ test('memory IPC adds as the user and reports the page in one call', async t => 
 })
 
 test('memory IPC rebuilds derived indexes without modifying the canonical records', async t => {
-  const { dir, runtime } = memoryRuntime(t)
+  const { dir, defer } = scratch(t, 'memory-ipc-index-')
+  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null, quiesce: async () => {} })
+  await owner.recover(); defer(() => owner.close())
+  const runtime = owner.runtime
   runtime.addMemory('我的工作电脑使用 Iosevka')
   const before = runtime.listMemories()
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
@@ -198,7 +204,7 @@ test('memory IPC rebuilds derived indexes without modifying the canonical record
     onRefused: (_channel, problem) => { throw new Error(problem) },
   })
   registerRuntimeMemoryIpc(registry, {
-    client: createVivaMemoryClient(runtime, () => assert.fail('derived index reset should not quiesce the model')),
+    client: ownerClient(owner),
     habits: () => ({ text: '', samples: 0 }), cwd: () => dir, chooseDocs: async () => null,
   })
   assert.deepEqual(await handlers.get('memory:rebuild-indexes')!({}), { fullText: true, semantic: true })

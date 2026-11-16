@@ -22,7 +22,7 @@ test('a question from dsh is checked: ids, text, options; anything off is droppe
 })
 
 test('an answer from the window has to fit the questions asked', () => {
-  const questions = parseQuestion({ id: 'q1', questions: [CITY, DAYS] }).questions
+  const questions = parseQuestion({ id: 'q1', questions: [CITY, DAYS] })!.questions
   assert.deepEqual(checkAnswers(questions, [{ id: 'city', selected: ['上海'] }, { id: 'days', selected: ['1 天', '3 天'], custom: ' 周末也看 ' }]), [
     { id: 'city', selected: ['上海'] }, { id: 'days', selected: ['1 天', '3 天'], custom: '周末也看' },
   ])
@@ -31,32 +31,32 @@ test('an answer from the window has to fit the questions asked', () => {
   assert.throws(() => checkAnswers(questions, [{ id: 'city', selected: ['上海', '北京'] }, { id: 'days', selected: [] }]), /只能选一项/)
 })
 
-test('the desk shows questions of the conversation on screen, declines the others, and answers once', () => {
-  const sent = []
-  const shown = []
+test('the desk shows questions of the conversation on screen, declines the others, and answers once', async () => {
+  const sent: object[] = []
+  const shown: Array<{ type: string, questionId?: unknown }> = []
   let session = 's1'
   const desk = createQuestionDesk({ send: (m) => sent.push(m), emit: (e) => shown.push(e), sessionId: () => session })
 
-  desk.receive({ type: 'question', id: 'q1', sessionId: 's1', questions: [CITY] })
-  desk.receive({ type: 'question', id: 'q2', sessionId: 'old', questions: [CITY] })
+  await desk.receive({ type: 'question', id: 'q1', sessionId: 's1', questions: [CITY] })
+  await desk.receive({ type: 'question', id: 'q2', sessionId: 'old', questions: [CITY] })
   assert.deepEqual(shown.map((e) => [e.type, e.questionId]), [['question', 'q1']])
   assert.deepEqual(sent, [{ type: 'decline', id: 'q2' }])
 
-  assert.equal(desk.answer('q1', [{ id: 'city', selected: ['北京'] }]), true)
+  assert.equal(await desk.answer('q1', [{ id: 'city', selected: ['北京'] }]), true)
   assert.deepEqual(sent.at(-1), { type: 'answer', id: 'q1', answers: [{ id: 'city', selected: ['北京'] }] })
-  assert.equal(desk.answer('q1', [{ id: 'city', selected: ['北京'] }]), false, 'answered already')
+  assert.equal(await desk.answer('q1', [{ id: 'city', selected: ['北京'] }]), false, 'answered already')
 
-  desk.receive({ type: 'question', id: 'q3', sessionId: 's1', questions: [CITY] })
-  desk.receive({ type: 'question_closed', id: 'q3' })
+  await desk.receive({ type: 'question', id: 'q3', sessionId: 's1', questions: [CITY] })
+  await desk.receive({ type: 'question_closed', id: 'q3' })
   assert.deepEqual(shown.at(-1), { type: 'question_closed', questionId: 'q3' })
-  desk.receive({ type: 'question', id: 'q4', sessionId: 's1', questions: [CITY] })
+  await desk.receive({ type: 'question', id: 'q4', sessionId: 's1', questions: [CITY] })
   session = 's2'
   desk.declineAll()
   assert.deepEqual(sent.at(-1), { type: 'decline', id: 'q4' })
   assert.deepEqual(shown.at(-1), { type: 'question_closed', questionId: 'q4' })
 })
 
-const asking = (questions = [CITY]) => reduce(reduce(initialState, { type: 'user_prompt', text: '明天天气', at: 1 }), {
+const asking = (questions: Array<{ id: string, question: string, header?: string, options: Array<{ label: string }>, multiSelect?: boolean }> = [CITY]) => reduce(reduce(initialState, { type: 'user_prompt', text: '明天天气', at: 1 }), {
   type: 'question_request', questionId: 'q1', questions: questions.map((q) => ({ multiSelect: false, header: '', ...q })), at: 2,
 })
 
@@ -81,10 +81,12 @@ test('picks toggle (one or several), and typed words answer the first question l
   state = reduce(state, { type: 'question_pick', id: 'days', label: '1 天' })
   state = reduce(state, { type: 'question_pick', id: 'days', label: '3 天' })
   state = reduce(state, { type: 'question_pick', id: 'days', label: '1 天' })
+  assert.ok(state.question)
   assert.deepEqual(state.question.picks, { city: ['北京'], days: ['3 天'] })
   assert.deepEqual(answersFrom(state.question, '  顺便看空气  '), [{ id: 'city', selected: ['北京'] }, { id: 'days', selected: ['3 天'], custom: '顺便看空气' }])
 
   const open = asking([CITY, DAYS]).question
+  assert.ok(open)
   assert.deepEqual(answersFrom(open, '杭州'), [{ id: 'city', selected: [], custom: '杭州' }, { id: 'days', selected: [] }])
   assert.equal(answerText(open.questions, [{ id: 'city', selected: ['上海'] }, { id: 'days', selected: [] }]), '城市：上海\n看几天？：（跳过）')
 })
@@ -93,7 +95,7 @@ test('a question closed before an answer (stopped, switched away) leaves no card
   const closed = reduce(asking(), { type: 'question_closed', questionId: 'q1', at: 3 })
   assert.equal(closed.question, null)
   assert.equal(closed.phase, 'working')
-  assert.equal(traceItems(closed).at(-1).title, '问题未回答')
+  assert.equal(traceItems(closed).at(-1)?.title, '问题未回答')
   assert.equal(reduce(asking(), { type: 'turn_end', stopReason: 'cancelled', at: 3 }).question, null)
   assert.equal(reduce(asking(), { type: 'error', message: 'x' }).question, null)
 })

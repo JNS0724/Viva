@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -84,6 +84,9 @@ const SCHEMA = `
     INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
   END;
+  CREATE TABLE IF NOT EXISTS memory_erased_sources (id TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS memory_erased_sessions (id TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS memory_erased_task_briefs (session TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,digest));
   CREATE TABLE IF NOT EXISTS id_counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
   -- A background task's result the model read, as the record its conversation shows (system-design §11.5).
   -- Only the backend writes these, with the report done (report-records.ts); the window's saves never touch them.
@@ -285,6 +288,13 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
 
+  const redactMessages = (messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined) => messages.map(message => {
+    const erased = message.sourceId && db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?').get(message.sourceId)
+      || message.role !== 'user' && sessionId && db.prepare('SELECT 1 FROM memory_erased_sessions WHERE id=?').get(sessionId)
+      || sessionId && db.prepare('SELECT 1 FROM memory_erased_task_briefs WHERE session=? AND digest=?').get(sessionId, createHash('sha256').update(message.text).digest('hex'))
+    return erased ? { ...message, text: '', images: undefined, receipt: null } : message
+  })
+
   /**
    * Skip the unchanged prefix, including when committed output repairs an earlier message. An insertion preserves
    * retained message identities, stars and report anchors. A message keeps its id while it is finishing: same speaker,
@@ -293,6 +303,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    */
   function syncMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined, at: number,
     copy?: { from: string, count: number }) {
+    messages = redactMessages(messages, sessionId)
     const previous = sql.messages.all(id)
     let start = 0
     while (start < Math.min(previous.length, messages.length)) {
@@ -412,7 +423,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   function save<C extends Partial<Conversation> & { id: string }>(conversation: C, input: unknown,
     { keepEmpty = false, copy }: { keepEmpty?: boolean, copy?: { from: string, count: number } } = {}): C | Conversation {
     const id = assertId(conversation.id)
-    const messages = normalizeMessages(input)
+    const messages = redactMessages(normalizeMessages(input), conversation.sessionId)
     if (messages.length === 0 && !keepEmpty) return conversation
     const at = now()
     return transaction(() => {
@@ -596,8 +607,30 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
+  /** Core-requested cleanup is an internal write, never a new source-withdrawal request. */
+  function eraseMemoryCopies(sources: readonly string[], sessions: readonly string[] = [], briefs: readonly { session: string, text: string }[] = []) {
+    for (const brief of briefs) {
+      db.prepare('INSERT OR IGNORE INTO memory_erased_task_briefs VALUES (?,?)').run(brief.session, createHash('sha256').update(brief.text).digest('hex'))
+      db.prepare("UPDATE messages SET text='',images=NULL,receipt=NULL WHERE session_id=? AND text=?").run(brief.session, brief.text)
+    }
+    for (const source of sources) {
+      db.prepare('INSERT OR IGNORE INTO memory_erased_sources VALUES (?)').run(source)
+      db.prepare("UPDATE messages SET text='',images=NULL,receipt=NULL WHERE source_id=?").run(source)
+    }
+    for (const session of sessions) {
+      db.prepare('INSERT OR IGNORE INTO memory_erased_sessions VALUES (?)').run(session)
+      db.prepare("UPDATE messages SET text='',images=NULL,receipt=NULL WHERE session_id=? AND role!='user'").run(session)
+      db.prepare("UPDATE report_records SET text='' WHERE conversation_id IN (SELECT id FROM conversations WHERE session_id=?)").run(session)
+    }
+    // Automatic titles are projections of user text, and must not retain an erased first message.
+    for (const row of db.prepare('SELECT id FROM conversations WHERE title_custom=0').all()) {
+      const first = db.prepare("SELECT role,text FROM messages WHERE conversation_id=? AND role='user' AND text!='' ORDER BY seq LIMIT 1").get(row.id)
+      db.prepare('UPDATE conversations SET title=? WHERE id=?').run(autoTitle(first ? [{ role: String(first.role), text: String(first.text) }] : []), row.id)
+    }
+  }
+
   return {
-    addRecord, hasRecord, moveRecords, recordsOf, bySession,
+    addRecord, hasRecord, moveRecords, recordsOf, bySession, eraseMemoryCopies,
     create, save, get, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

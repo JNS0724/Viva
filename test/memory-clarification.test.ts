@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, type TestContext } from 'node:test'
-import { createMemoryRuntime, MAX_RECALL_CHARS } from '../src/backend/memory-runtime.ts'
+import { createMemoryRuntime, MAX_RECALL_CHARS } from './fixtures/localized-memory-runtime.ts'
 import { localDay } from '../src/memory/core/memory-facts.ts'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { createQuestionDesk } from '../src/backend/question-channel.ts'
@@ -206,7 +206,7 @@ test('holding the only source of a disputed side does not authorize its peer', t
   assert.equal(read().conflicts.length, 1)
 })
 
-test('the desk admits a current foreground ticket once and discards stale answers', t => {
+test('the desk admits a current foreground ticket once and discards stale answers', async t => {
   const { memory, add, dispute, read, ask } = fixture(t)
   const a = add(amber)
   const b = add(jade)
@@ -230,19 +230,19 @@ test('the desk admits a current foreground ticket once and discards stale answer
     memoryClarificationQuestion: (id, questionId, phase) =>
       memory.clarificationQuestion(id, foreground.foregroundTurn, questionId, phase),
   })
-  const plugin = (id: string, sessionId: string, questionId = prepared.question.id) =>
-    desk.receive({ type: 'question', id, sessionId, questions: [{ id: questionId, question: 'arbitrary model wording' }] })
-  plugin('forged', session, MEMORY_QUESTION_PREFIX + randomUUID())
-  plugin('background', 'task')
-  plugin('valid', session)
-  plugin('duplicate', session)
+  const plugin = async (id: string, sessionId: string, questionId = prepared.question.id) =>
+    await desk.receive({ type: 'question', id, sessionId, questions: [{ id: questionId, question: 'arbitrary model wording' }] })
+  await plugin('forged', session, MEMORY_QUESTION_PREFIX + randomUUID())
+  await plugin('background', 'task')
+  await plugin('valid', session)
+  await plugin('duplicate', session)
   const [pending] = desk.pendingOf(null)
   assert.equal(pending.questionId, 'valid')
   assert.equal(pending.questions[0].question, prepared.question.question)
   assert.equal(pending.questions[0].options.length, 2)
   assert.equal(events.filter(event => event.type === 'question').length, 1)
   memory.holdWithdrawal(b.source.conversation)
-  assert.equal(desk.answer('valid', [{ id: prepared.question.id, selected: [prepared.question.options[0].label] }]), false)
+  assert.equal(await desk.answer('valid', [{ id: prepared.question.id, selected: [prepared.question.options[0].label] }]), false)
   assert.deepEqual(intake, [])
   assert.deepEqual(replies, [
     { type: 'decline', id: 'forged' }, { type: 'decline', id: 'background' },
@@ -311,7 +311,7 @@ test('ordinary card review uses relation descriptions and lets an independent qu
   assert.equal(seen.length, 1, 'exact candidate values are checked locally')
 })
 
-test('an accepted foreground card only attributes a source supplied by backend intake', () => {
+test('an accepted foreground card only attributes a source supplied by backend intake', async () => {
   const events: Array<{ type: string, sourceId?: unknown }> = []
   const context = { conversationId: 'topic', sessionId: session }
   const operation = randomUUID()
@@ -321,8 +321,8 @@ test('an accepted foreground card only attributes a source supplied by backend i
     onAnswer: (_entry, answers) => answers.some(answer => answer.custom) ? sourceId : undefined,
   })
   for (const [id, answer] of [['pick', { selected: ['One'] }], ['typed', { selected: [], custom: 'Second' }]] as const) {
-    desk.receive({ type: 'question', id, sessionId: session, questions: [{ id: 'value', question: 'Which?', options: [{ label: 'One' }] }] })
-    assert.equal(desk.answer(id, [{ id: 'value', ...answer }], operation), true)
+    await desk.receive({ type: 'question', id, sessionId: session, questions: [{ id: 'value', question: 'Which?', options: [{ label: 'One' }] }] })
+    assert.equal(await desk.answer(id, [{ id: 'value', ...answer }], operation), true)
   }
   assert.deepEqual(events.filter(event => event.type === 'question_answered').map(event => event.sourceId), [undefined, sourceId])
 })
@@ -358,7 +358,7 @@ test('semantic question admission is bound to the active card, scoped snapshot a
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(events, [])
   assert.deepEqual(responses.map(response => 'id' in response ? response.id : null), ['credential', 'stale'])
-  general('unrelated')
+  await general('unrelated')
   assert.equal(jobs.length, 0)
   assert.deepEqual(desk.pendingOf(null).map(card => card.questionId), ['unrelated'])
 })

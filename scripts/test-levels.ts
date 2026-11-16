@@ -3,6 +3,13 @@
 // timing retains real long-duration deadlines. Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
+    'memory-owner',
+    'memory-native-schedule',
+    'memory-plugin-ingestion',
+    'memory-plugin-lifecycle',
+    'memory-plugin-receipts',
+    'memory-plugin-model',
+    'memory-send-fence',
     'acp-bridge-resume',
     'acp-bridge',
     'acp-context',
@@ -90,6 +97,10 @@ export const testLevels = {
     'memory-node-runtime',
     'memory-service',
     'memory-client',
+    'remote-memory-channel',
+    'memory-host-effects',
+    'memory-host-boundary',
+    'memory-host-recovery',
     'memory-clarification',
     'memory-daily-search',
     'memory-files',
@@ -202,6 +213,9 @@ export const testLevels = {
   ],
   integration: [
     'memory-boundaries',
+    'memory-package',
+    'memory-transport',
+    'memory-owner-lock',
     'app-plugins',
     'asar-integrity',
     'backend-keeper',

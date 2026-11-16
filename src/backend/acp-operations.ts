@@ -20,7 +20,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
   streams: Streams
   cancelPermissions: (sessionId: string) => void
   streamUpdate: (sessionId: string, update: unknown, context: ConversationContext | null) => void
-  allowSession?: (id: string) => boolean
+  allowSession?: (id: string) => boolean | Promise<boolean>
 }) {
   const running = new Map<string | null, Operation>()
   let closed = false
@@ -43,7 +43,8 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       if (!current(sessionId, operation)) return
       operation.stream = await streams.begin(sessionId)
       if (!current(sessionId, operation)) { streams.finish(operation.stream); return }
-      if (!allowSession(sessionId)) throw new Error('session has outdated memory context')
+      if (!await allowSession(sessionId)) throw new Error('session has outdated memory context')
+      if (!current(sessionId, operation) || closed) return
       operation.prompting = true
       const sent = connection().prompt({ sessionId, prompt })
       onStart?.()

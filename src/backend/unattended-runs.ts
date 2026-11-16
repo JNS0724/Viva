@@ -1,6 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { ended, updated, type Transcript } from './task-transcript.ts'
-import type { MemoryProvenance } from '../memory/core/memory-dispatch.ts'
+import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * One prompt run where nobody watches (a schedule's, system-design §12.2): in a fresh session of its own, at the level
@@ -39,7 +39,7 @@ function resultOf(transcript: Transcript, event: TaskEvent): RunResult {
 export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOUT_MS, later = setTimeout, cancel = clearTimeout }: {
   /** The agent now; null while there is none. */
   agent: () => UnattendedAgent | null
-  provenance?: (taskId: string) => MemoryProvenance | undefined
+  provenance?: (taskId: string) => MemoryProvenance | undefined | Promise<MemoryProvenance | undefined>
   timeoutMs?: number
   later?: (run: () => void, ms: number) => unknown
   cancel?: (timer: never) => void
@@ -61,13 +61,13 @@ export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOU
   }
 
   /** `prompt` run in `cwd`, which the caller has checked is there. */
-  async function run(prompt: string, cwd: string, authorize?: (taskId: string, bridge: UnattendedAgent) => 'stale' | 'memory-unavailable' | void): Promise<RunResult> {
+  async function run(prompt: string, cwd: string, authorize?: (taskId: string, bridge: UnattendedAgent) => 'stale' | 'memory-unavailable' | void | Promise<'stale' | 'memory-unavailable' | void>): Promise<RunResult> {
     const now = agent()
     if (!now) return UNAVAILABLE
     const started = await now.startUnattendedTask({ cwd })
     if (!started.ok || !started.taskId) return UNAVAILABLE
     const taskId = started.taskId
-    const refused = authorize?.(taskId, now)
+    const refused = await authorize?.(taskId, now)
     if (refused) {
       void Promise.resolve(now.closeTask(taskId)).catch(() => {})
       return refused === 'stale' ? { ok: false, staleMemory: true, problem: t('main.schedule-runs.memory.stale') }
@@ -79,7 +79,7 @@ export function createUnattendedRuns({ agent, provenance, timeoutMs = RUN_TIMEOU
         cancel(timer as never)
         runs = new Map([...runs].filter(([id]) => id !== taskId))
         const memory = (value.ok || !value.unavailable) ? provenance?.(taskId) : undefined
-        resolve(memory ? { ...value, memory } : value)
+        Promise.resolve(memory).then(evidence => resolve(agent() === now ? evidence ? { ...value, memory: evidence } : value : UNAVAILABLE), () => resolve(UNAVAILABLE))
       }
       const timer = later(() => finish({ ok: false, problem: t('main.unattended-runs.timed.out') }), timeoutMs)
       runs = new Map([...runs, [taskId, { cwd, transcript: [], finish }]])

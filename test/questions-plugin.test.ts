@@ -2,6 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { answerFor, DECLINED } from '../plugins/questions/lib/channel.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import type { createAcpBridge } from '../src/backend/acp-bridge.ts'
+import { objectOf } from '../src/shared/unknown-value.ts'
 import { CITY_QUESTION } from './fixtures/fake-llm.js'
 
 /**
@@ -9,11 +11,13 @@ import { CITY_QUESTION } from './fixtures/fake-llm.js'
  * (The main conversation asks in text, through commit_route's clarify.)
  */
 
-const questionOf = (events) => events.find((event) => event.type === 'task_question')
-const taskReplies = (events, taskId) => replies(events.filter((event) => event.type === 'task_update' && event.taskId === taskId)).join('')
+type Bridge = ReturnType<typeof createAcpBridge>
+type Event = Parameters<Parameters<typeof createAcpBridge>[0]['emit']>[0]
+const questionOf = (events: readonly Event[]) => events.find((event) => event.type === 'task_question')
+const taskReplies = (events: Event[], taskId: string) => replies(events.filter((event) => event.type === 'task_update' && event.taskId === taskId)).join('')
 
 /** A task of the harness's agent, asked `words`; the turn, still going. */
-async function ask(agent, words) {
+async function ask(agent: Bridge, words: string) {
   const task = await agent.startTask()
   assert.ok(task.ok && task.taskId, JSON.stringify(task))
   return { taskId: task.taskId, turn: agent.promptTask(task.taskId, words) }
@@ -26,15 +30,17 @@ test('a question reaches the app with its options, and the answer reaches the mo
 
   const { taskId, turn } = await ask(agent, '明天天气怎么样')
   const asked = await eventually(() => questionOf(events))
+  assert.ok(asked && typeof asked.questionId === 'string')
   assert.deepEqual(asked.questions, [{ ...CITY_QUESTION, multiSelect: false }])
-  assert.equal(agent.answerQuestion(asked.questionId, [{ id: 'city', selected: [], custom: '杭州' }]), true)
+  assert.equal(await agent.answerQuestion(asked.questionId, [{ id: 'city', selected: [], custom: '杭州' }]), true)
   await turn
 
   assert.ok(taskReplies(events, taskId).includes('好的，按杭州来看：明天多云转晴。'))
   assert.equal(events.some((event) => event.type === 'permission'), false, 'asking needs no approval')
-  const answered = llm.requests.findLast((request) => JSON.stringify(request.messages.at(-1)).includes('tool_result'))
-  assert.match(JSON.stringify(answered.messages.at(-1)), /杭州/, 'the model got the answer as the tool result')
-  assert.equal(agent.answerQuestion(asked.questionId, [{ id: 'city', selected: ['上海'] }]), false, 'an answered question is closed')
+  const answered = llm.requests.findLast((request) => JSON.stringify(objectOf(request)?.messages).includes('tool_result'))
+  assert.ok(answered)
+  assert.match(JSON.stringify(objectOf(answered)?.messages), /杭州/, 'the model got the answer as the tool result')
+  assert.equal(await agent.answerQuestion(asked.questionId, [{ id: 'city', selected: ['上海'] }]), false, 'an answered question is closed')
 })
 
 test('stopping the task\'s turn closes the question in the window', { timeout: DSH_TIMEOUT_MS }, async (t) => {
@@ -44,6 +50,7 @@ test('stopping the task\'s turn closes the question in the window', { timeout: D
 
   const { taskId, turn } = await ask(agent, '明天天气怎么样')
   const asked = await eventually(() => questionOf(events))
+  assert.ok(asked && typeof asked.questionId === 'string')
   await agent.cancelTask(taskId)
   await turn
 

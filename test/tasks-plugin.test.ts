@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -88,7 +89,7 @@ test('real DSH: the main agent routes work to a task, and the app is the one tha
   bridge = createAcpBridge({ routing: requests, dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     emit: event => { events.push(event) },
-    taskRead: () => ({ tasks: [] }),
+    taskRead: () => ({ observedAt: 0, tasks: [], total: 0, nextOffset: null }),
   })
   await bridge.start()
   await bridge.prompt('后台做：核对本月发票，列出金额不符的')
@@ -130,7 +131,7 @@ test('real DSH: the model proposes a schedule with flat time arguments, and the 
   bridge = createAcpBridge({ routing: testRequests(), dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     emit: () => {},
-    taskRead: () => ({ tasks: [] }),
+    taskRead: () => ({ observedAt: 0, tasks: [], total: 0, nextOffset: null }),
     taskAct: async request => { acted.push(request); return { proposed: true, firstAt: '2026-11-13T08:00:00.000Z' } },
   })
   await bridge.start()
@@ -187,7 +188,9 @@ test('real DSH: sub-agents work within the turn, in the foreground, with read-on
   for (const name of ['send_message', 'list_agents', 'interrupt_agent']) assert.ok(!mainTools.includes(name), `${name} is off`)
   const subagent = main.tools?.find(tool => tool.name === 'subagent')
   assert.ok(!Object.keys(subagent?.input_schema?.properties ?? {}).includes('run_in_background'), 'no background mode to ask for')
-  assert.equal(childTools.length, 1, JSON.stringify(llm.requests.at(-1)).match(/tool_result.{0,800}/)?.[0])
+  assert.equal(childTools.length, 1, 'Generated child instructions must not trigger automatic fact extraction')
+  const memory = new DatabaseSync(path.join(dir, 'userData', 'memory', 'memory.db'), { readOnly: true })
+  try { assert.equal(memory.prepare("SELECT COUNT(*) AS n FROM memory_sources WHERE text LIKE '%子代理任务：看看目录%'").get()?.n, 0) } finally { memory.close() }
   const allowed = new Set(SUBAGENT_TOOLS)
   assert.deepEqual(childTools[0].filter(name => !allowed.has(name)), [], 'the child has only the read-only tools')
   assert.ok(!childTools[0].includes('subagent'), 'and cannot delegate')

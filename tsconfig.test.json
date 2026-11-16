@@ -6,5 +6,5 @@
     "types": ["node"],
     "checkJs": false
   },
-  "include": ["test/**/*.ts", "scripts/live.ts", "scripts/live-memory.ts", "scripts/memory-embedding-check.ts", "scripts/showcase.ts", "scripts/test-feature.ts", "scripts/prepare-memory-embedding.ts", "src/renderer/globals.d.ts"]
+  "include": ["test/**/*.ts", "scripts/live.ts", "scripts/build-memory-plugin.ts", "scripts/smoke-memory-plugin.ts", "scripts/live-memory.ts", "scripts/memory-embedding-check.ts", "scripts/showcase.ts", "scripts/test-feature.ts", "scripts/prepare-memory-embedding.ts", "src/renderer/globals.d.ts"]
 }

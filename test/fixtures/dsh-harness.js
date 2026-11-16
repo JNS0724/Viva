@@ -68,7 +68,6 @@ export async function startHarness(t, { mcpServers = [], prewarmSessions = false
   function bridge(options = {}) {
     const created = createAcpBridge({
       routing: requests,
-      memoryRequest: () => '',
       dshBin: DSH_BIN,
       nodeBin: RUNTIME.nodeBin,
       overlay: vivaLayerFile(dshHome),

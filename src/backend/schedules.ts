@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
-import { combineMemoryProvenance, type MemoryProvenance } from '../memory/core/memory-dispatch.ts'
+import { combineMemoryProvenance, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
 
 /**
@@ -41,7 +41,7 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   changed?: () => void
   now?: () => number
   newId?: () => string
-  memoryCurrent?: (memory: MemoryProvenance) => boolean
+  memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
 }) {
   const opened = openScheduleStore({ db, now })
   const store = apply ? journaled(opened, 'schedule', SCHEDULE_WRITES, apply) : opened
@@ -61,7 +61,7 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
    * The user's yes on a card: the schedule kept, as proposed or as the user changed it there (`edits`: its name and
    * what it does, and its rule unless its time was not touched; checked as the model's own are).
    */
-  function accept(proposalId: string, edits?: unknown): ScheduleView {
+  async function accept(proposalId: string, edits?: unknown): Promise<ScheduleView> {
     const proposal = proposals.get(proposalId)
     if (!proposal) throw new Error(t('main.schedules.proposal.gone'))
     // A rule left out: the time was not touched on the card, and the proposal's own stays, to the second.
@@ -69,7 +69,9 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
     const edited = edits === undefined ? null : parseScheduleWords(kept ? { ...edits, rule: proposal.rule } : edits)
     const words = edited ? { ...edited, rule: edited.rule as unknown as ScheduleRule } : proposal
     // Let go only once kept: a save that fails leaves the card to be answered again.
-    if (proposal.memory && !memoryCurrent(proposal.memory)) throw new Error(t('main.schedule-runs.memory.stale'))
+    if (proposal.memory && !await memoryCurrent(proposal.memory)) throw new Error(t('main.schedule-runs.memory.stale'))
+    // A remote memory check yields: another acceptance or a decline may have consumed this card.
+    if (proposals.get(proposalId) !== proposal) throw new Error(t('main.schedules.proposal.gone'))
     let schedule: Schedule
     try {
       schedule = store.create({ title: words.title, prompt: words.prompt, rule: words.rule,

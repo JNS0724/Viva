@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createDailySemanticSearch, markdownSearchChunks, rankDailyMemory } from '../src/memory/core/memory-daily-search.ts'
-import { createMemoryChannel } from '../src/backend/memory-channel.ts'
-import { MEMORY_CONTRACT } from '../src/memory/contracts/memory-contract.ts'
-import { randomUUID, createHash } from 'node:crypto'
+import { createHash } from 'node:crypto'
 
 test('daily Markdown chunks cover the full document and keep the original line boundaries', () => {
   const intro = ['# 前言', ...Array.from({ length: 16 }, () => '汉字'.repeat(100)), ''].join('\n')
@@ -48,21 +46,4 @@ test('semantic search embeds the tail, reuses current vectors and fuses over BM2
   search.clear()
   await search.rank(docs, 'original', signal)
   assert(seen.length > calls + 2)
-})
-
-test('the DSH channel accepts complete daily replies above the legacy response guard', async () => {
-  const channel = createMemoryChannel({ send: () => {}, handle: () => '' })
-  channel.receive({ type: 'memory_ready', version: MEMORY_CONTRACT })
-  const id = randomUUID()
-  const request = { id, sourceId: randomUUID(), stage: 'note' as const, generation: 1,
-    provider: 'test', model: 'test', system: '', input: '' }
-  const text = 'note body '.repeat(2_005)
-  const result = channel.compute(request)
-  assert(result)
-  channel.receive({ type: 'memory_computed', id, generation: 1, text })
-  assert.equal(await result, text)
-  const legacy = channel.compute({ ...request, stage: 'review' })
-  assert(legacy)
-  channel.receive({ type: 'memory_computed', id, generation: 1, text })
-  await assert.rejects(legacy, { reason: 'oversize-reply' })
 })

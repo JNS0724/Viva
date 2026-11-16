@@ -1,6 +1,6 @@
 # Viva 长期记忆实施方案
 
-> 2026-11-16：后续全部记忆开发与实施顺序以 [文件记忆与独立插件方案](memory-reme-plan.zh-CN.md) 为准：R1/R2 已完成实验范围，P1 已完成核心解耦；剩余 P2、R3、R4、R5a、R5b 共 5 阶段。本文的 M1–M4 保留为旧事实库实现及权限、原文校验、遗忘与请求屏障的历史参考；不再作为后续开发排期，也不表示完整文件链条或独立插件已实现。
+> 2026-11-16：后续全部记忆开发与实施顺序以 [文件记忆与独立插件方案](memory-reme-plan.zh-CN.md) 为准：R1/R2 已完成实验范围，P1 已完成核心解耦；P2 已完成独立插件与本轮验收，后续继续 R3、R4、R5a、R5b 四阶段。本文的 M1–M4 保留为旧事实库实现及权限、原文校验、遗忘与请求屏障的历史参考；不再作为后续开发排期，不能代替新版各阶段验收。
 
 [English](memory-design.md) | 简体中文
 
@@ -29,7 +29,7 @@ Viva 的长期记忆需要覆盖提取、准入、写入、更新、冲突消解
 
 | 环节 | 原实现 | 当前实现或后续计划 |
 | --- | --- | --- |
-| DSH 记忆插件和工具 | 直接打开数据库，轮次结束后提取，并将模型调用工具视为保存或遗忘的授权 | [DSH 适配器](../plugins/memory/lib/adapter.ts)转发工具请求、执行模型计算。[后端运行时](../src/backend/memory-runtime.ts)绑定来源和授权，持久化后确认接收，并恢复排队工作。 |
+| DSH 记忆插件和工具 | 直接打开数据库，轮次结束后提取，并将模型调用工具视为保存或遗忘的授权 | [DSH 适配器](../plugins/memory/lib/adapter.ts)转发工具请求、执行模型计算。[插件持有的 Node owner](../src/memory/node/owner.ts)绑定来源和授权，持久化后确认接收，并恢复排队工作；Viva 通过客户端访问。 |
 | 存储和来源 | 全局按文本去重，可能复活已失效的记录。用时间戳事后补绑会话来源 | [记忆存储](../src/memory/node/memory-store.ts)保留来源版本、依据跨度和变更历史，写入时校验 revision。 |
 | 提取和更新 | 模型提议缺少原文跨度、范围和有效时间，可凭提取输入中见过的条目 ID 提议替换 | [共享契约](../src/memory/contracts/memory-contract.ts)携带事实提议和变更依据。[后端校验](../src/memory/core/memory-facts.ts)核对原文、适用条件和原文是否支持该变更。 |
 | 召回和上下文 | 使用固定背景、名称命中和会话内检索历史 | 运行时校验范围、有效时间和保留状态，再进行[关键词召回](../src/memory/core/memory-match.ts)和[上下文格式化](../src/memory/core/memory-context.ts)。第 10 节描述分层召回。 |
@@ -401,7 +401,7 @@ contextForTurn({ sessionId, turn, compactionEpoch, question })
 
 M1 暂停模型生成的画像注入，使用手填画像及经过统一有效性检查的原始记忆。M1 验收用户修改、遗忘与重启后的正确性，并将依据不足的提议保留为候选。M2 按第 7 节区分新事实的准入、对旧事实的变更，以及实际使用时才需要澄清的冲突。M3 扩展检索能力，M4 交付带逐条依据的画像和副本清理验收。
 
-建议模块布局保持小范围：`src/backend/memory-runtime.ts` 负责编排，`src/memory/node/memory-store.ts` 负责事务与查询，提取、准入、召回和画像按职责拆为纯函数模块；`plugins/memory/index.ts` 和工具模块只做适配。共享类型进入 `src/shared` 的无 Node 契约。优先迁移并复用现有实现，不同时保留新旧两套“记忆服务”。
+当前模块按新版方案分层：`src/memory/core` 负责领域编排和规则，`src/memory/node/owner.ts` 负责单 owner 装配，`src/memory/node/memory-store.ts` 负责事务与查询；`plugins/memory` 适配 DSH 摄取、工具和实际传输边界，Viva 后端只保留客户端、历史事务及呈现。共享契约位于无 Node 依赖的 `src/memory/contracts`。优先迁移并复用现有实现，不同时保留新旧两套“记忆服务”。
 
 ### 13.1 初始数据契约
 

@@ -101,19 +101,19 @@ export interface TaskReportsDeps {
   /** The main conversation's session now (acp-bridge.ts currentSession); null while there is none. */
   session: () => string | null
   /** Whether that run's result is moot: the task asked again or taken up since (task-runtime.ts superseded). */
-  superseded: (taskId: string, runId: string) => boolean
+  superseded: (taskId: string, runId: string) => boolean | Promise<boolean>
   /** Whether the effect is still queued at the generation this pass took (effects.ts holds). */
   holds?: (effect: Effect) => boolean
   /** The main conversation now: free for a turn, running one (a report goes into it), or not to be reached. */
-  conversation: () => 'idle' | 'busy' | 'away'
+  conversation: () => 'idle' | 'busy' | 'away' | Promise<'idle' | 'busy' | 'away'>
   /** Whether a report's context can be used in the receiving session. */
-  eligible?: (taskId: string, session: string) => boolean
+  eligible?: (taskId: string, session: string) => boolean | Promise<boolean>
   /** How a report stands in a session (acp-bridge.ts reportStatus). */
   status: (session: string, reportId: string, token: string) => Promise<ReportState>
   /** A report into that session's running turn, unless it is there already (acp-bridge.ts deliverReport). */
   deliver: (session: string, reportId: string, token: string, text: string, taskId: string) => Promise<ReportState>
   /** Opens a turn with the note in the main conversation; false when it could not be opened now. */
-  report: (note: string, taskIds: readonly string[]) => boolean
+  report: (note: string, taskIds: readonly string[]) => boolean | Promise<boolean>
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
   /**
@@ -148,18 +148,21 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     for (const effect of effects as ReadonlyArray<Effect<ReportPayload>>) {
       const { taskId, runId } = effect.payload
       // Superseded (asked again, taken up, closed): let go. Any other goes to the main conversation, on any topic.
-      if (superseded(taskId, runId)) outcomes.set(effect.key, 'done')
+      if (await superseded(taskId, runId)) outcomes.set(effect.key, 'done')
       else mine.push(effect)
     }
     if (!mine.length) return outcomes
-    const state = conversation()
+    const state = await conversation()
     if (state === 'away' || !bound) {
       for (const effect of mine) outcomes.set(effect.key, 'wait')
       return outcomes
     }
     /** Still this pass's moment: the same conversation and session, the run not superseded, its effect still queued. */
-    const still = (effect: Effect<ReportPayload>) => currentConversation() === here && session() === bound
-      && !superseded(effect.payload.taskId, effect.payload.runId) && holds(effect)
+    const still = async (effect: Effect<ReportPayload>) => {
+      if (currentConversation() !== here || session() !== bound || !holds(effect)) return false
+      const obsolete = await superseded(effect.payload.taskId, effect.payload.runId)
+      return !obsolete && currentConversation() === here && session() === bound && holds(effect)
+    }
     /** The effect with what this try learned, kept first; null when it could not be kept (its generation gone). */
     const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null =>
       (amend(effect, payload) ? { ...effect, payload } : null)
@@ -182,8 +185,8 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       if (!effect) { outcomes.set(original.key, 'wait'); continue }
       const token = effect.payload.token as string
       const where = effect.payload.deliveredTo ?? bound
-      const now = still(effect) ? await status(where, effect.key, token) : 'unavailable'
-      if (!still(effect)) outcomes.set(effect.key, 'wait')
+      const now = await still(effect) ? await status(where, effect.key, token) : 'unavailable'
+      if (!await still(effect)) outcomes.set(effect.key, 'wait')
       // Read: done once its record is kept (onRead), not before; kept where it was read, which is where it went (one
       // queued before `deliveredTo` was kept says so now).
       else if (now === 'read') outcomes.set(effect.key, readOutcome(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where } }))
@@ -193,10 +196,10 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     }
     const forTurn: Array<Effect<ReportPayload>> = []
     for (const effect of unsent) {
-      if (!still(effect) || !eligible(effect.payload.taskId, bound)) { outcomes.set(effect.key, 'wait'); continue }
+      if (!await still(effect) || !await eligible(effect.payload.taskId, bound) || !await still(effect)) { outcomes.set(effect.key, 'wait'); continue }
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
-      const sending = still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
+      const sending = await still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
       const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string,
         noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId) : 'unavailable'
       if (sent === 'read') outcomes.set(effect.key, readOutcome(sending ?? effect))
@@ -204,10 +207,13 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
     }
     // A turn of its own, once nothing runs, for those still theirs right now: done when their reading is confirmed.
-    if (conversation() === 'idle') {
-      const opening = forTurn.filter(effect => still(effect) && eligible(effect.payload.taskId, bound))
-        .flatMap(effect => kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' }) ?? [])
-      if (opening.length) report(noteFor(opening.map(endedOf)), opening.map(effect => effect.payload.taskId))
+    if (await conversation() === 'idle') {
+      const opening: Array<Effect<ReportPayload>> = []
+      for (const effect of forTurn) if (await still(effect) && await eligible(effect.payload.taskId, bound) && await still(effect)) {
+        const saved = kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' })
+        if (saved) opening.push(saved)
+      }
+      if (opening.length) await report(noteFor(opening.map(endedOf)), opening.map(effect => effect.payload.taskId))
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     return outcomes

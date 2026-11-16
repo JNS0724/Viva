@@ -3,30 +3,8 @@ import type { MemoryChangeProposal, MemoryProposal, MemorySpan, MemoryTemporal }
 // A delimiter distinguishes an immediate save command from ordinary prose.
 const REMEMBER = /^(?:(?:请\s*)?(?:帮我\s*)?(?:记住|记一下|记下来)\s*[:：]|(?:please\s+)?remember(?:\s*[:：]|\s+that\s+))\s*(.+)$/isu
 
-interface FactTime {
-  from: number | null
-  to: number | null
-  dated: boolean
-  uncertain: boolean
-}
-
-export interface MemoryFact extends FactTime {
-  subject: string
-  predicate: string
-  object: string
-  relation: string
-  polarity: 'positive' | 'negative' | 'uncertain'
-  evidence: {
-    statement: MemorySpan
-    spans: MemorySpan[]
-    subject?: MemorySpan
-    relation: MemorySpan
-    object: MemorySpan
-    qualifiers: MemorySpan[]
-    conditions: MemorySpan[]
-    temporal: MemorySpan[]
-  }
-}
+import type { FactTime, MemoryFact } from '../contracts/facts.ts'
+export type { MemoryFact } from '../contracts/facts.ts'
 
 export const factIdentity = (text: string) => text.normalize('NFC').trim().replace(/\s+/gu, ' ').toLowerCase()
 export const memoryRelationLabel = (value: string) => factIdentity(value.normalize('NFKC'))

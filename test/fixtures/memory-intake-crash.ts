@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { writeSync } from 'node:fs'
 import { setImmediate } from 'node:timers/promises'
-import { createMemoryRuntime } from '../../src/backend/memory-runtime.ts'
+import { createMemoryRuntime } from './localized-memory-runtime.ts'
 import { openMemoryStore } from '../../src/memory/node/memory-store.ts'
 import { crashAt } from './memory-crash-process.ts'
 

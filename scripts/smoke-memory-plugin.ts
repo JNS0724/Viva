@@ -1,0 +1,177 @@
+/** Real DSH Web acceptance of the packed plugin. Every model call stays on the local fixture. */
+import assert from 'node:assert/strict'
+import { DatabaseSync } from 'node:sqlite'
+import { spawn, execFileSync } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
+import { chromium } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { buildMemoryPlugin } from './build-memory-plugin.ts'
+import { startFakeLlm } from '../test/fixtures/fake-llm.js'
+
+const project = path.resolve(import.meta.dirname, '..')
+const require = createRequire(import.meta.url)
+const output = path.join(project, 'smoke/memory-plugin')
+const temporary = mkdtempSync(path.join(os.tmpdir(), 'viva-plugin-web-'))
+const dataRoot = path.join(temporary, 'memory')
+const home = path.join(temporary, 'home')
+const workspace = path.join(temporary, 'workspace')
+const installed = path.join(temporary, 'installed')
+for (const dir of [output, home, workspace, installed]) mkdirSync(dir, { recursive: true })
+const marker = '周报每周五下班前提交，保留项目决定和依据。'
+const redact = (text: string) => text.replace(/https?:\/\/[^\s\x1b]+/gu, value => {
+  try { const url = new URL(value); url.search = ''; url.hash = ''; return url.toString() } catch { return '[URL REDACTED]' }
+})
+function collectMarkdown(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
+    ? collectMarkdown(path.join(dir, entry.name)) : entry.isFile() && entry.name.endsWith('.md') ? [path.join(dir, entry.name)] : [])
+}
+async function until(check: () => boolean, label: string, timeout = 30_000) {
+  const end = Date.now() + timeout
+  while (!check()) { if (Date.now() >= end) throw new Error(`Timed out: ${label}`); await delay(100) }
+}
+async function stop(proc: ChildProcess | undefined) {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return
+  proc.kill('SIGTERM')
+  await Promise.race([new Promise<void>(resolve => proc.once('exit', () => resolve())), delay(5_000)])
+  if (proc.exitCode === null && proc.signalCode === null) {
+    proc.kill('SIGKILL')
+    await new Promise<void>(resolve => proc.once('exit', () => resolve()))
+  }
+}
+function installArtifact() {
+  const artifact = path.join(temporary, 'artifact')
+  buildMemoryPlugin({ destination: artifact, compiledRoot: path.join(temporary, 'compiled') })
+  const npm = process.env.npm_execpath ?? (process.env.PATH ?? '').split(path.delimiter).map(dir => path.join(dir, 'npm')).find(file => existsSync(file))
+  if (!npm) throw new Error('Run through npm run smoke:memory-plugin')
+  const run = (args: string[], cwd = temporary) => execFileSync(process.execPath, [realpathSync(npm), ...args, '--cache', path.join(temporary, 'cache')], {
+    cwd, encoding: 'utf8', timeout: 60_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const pack = (source: string) => {
+    const result: unknown = JSON.parse(run(['pack', source, '--offline', '--ignore-scripts', '--json', '--pack-destination', temporary]))
+    assert.ok(Array.isArray(result) && result.length === 1)
+    const item: unknown = result[0]
+    assert.ok(item && typeof item === 'object' && 'filename' in item && typeof item.filename === 'string')
+    return path.join(temporary, item.filename)
+  }
+  const plugin = pack(artifact)
+  const dependencies = ['yaml', 'zod'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
+  writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
+  run(['install', plugin, ...dependencies, '--offline', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--package-lock=false'], installed)
+  const manifest = JSON.parse(readFileSync(path.join(installed, 'node_modules/viva-memory/package.json'), 'utf8')) as { peerDependencies: Record<string, string> }
+  // Use the same installed DSH runtime as the Web CLI. Only peers are shared; the plugin and own
+  // runtime dependencies come from npm tarballs in this otherwise empty installation.
+  for (const name of Object.keys(manifest.peerDependencies)) {
+    const target = path.join(installed, 'node_modules', name)
+    mkdirSync(path.dirname(target), { recursive: true })
+    symlinkSync(path.dirname(require.resolve(`${name}/package.json`)), target, 'junction')
+  }
+  rmSync(artifact, { recursive: true })
+  rmSync(path.join(temporary, 'compiled'), { recursive: true })
+  return path.join(installed, 'node_modules/viva-memory/index.js')
+}
+const llm = await startFakeLlm({ decideFirst: (request: object) => {
+  const input = request as { system?: unknown, messages?: Array<{ role?: string, content?: string | Array<{ type?: string, name?: string }> }> }
+  if (JSON.stringify(input.system).includes('整理最近完成的会话回合')) return {
+    text: JSON.stringify({ status: 'write', title: '周报约定', markdown: `# 周报约定\n\n${marker}`, filename: 'weekly-summary' }),
+  }
+  const assistant = input.messages?.filter(message => message.role === 'assistant').at(-1)
+  const tool = Array.isArray(assistant?.content) ? assistant.content.find(part => part.type === 'tool_use') : undefined
+  if (tool?.name === 'memory_recall' && JSON.stringify(input.messages?.at(-1)).includes('tool_result')) {
+    return { text: `查到了：${JSON.stringify(input.messages?.at(-1)).includes(marker) ? marker : '没有相关记忆'}` }
+  }
+  return null
+} })
+let proc: ChildProcess | undefined
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined
+let log = ''
+let passed = false
+const errors: string[] = []
+try {
+  const plugin = installArtifact()
+  const patch = path.join(temporary, 'memory.patch.yml')
+  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- insert:\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n`)
+  browser = await chromium.launch({ headless: true })
+  const launch = async () => {
+    let launchLog = ''
+    proc = spawn(process.execPath, [require.resolve('@deepseek-ai/dsh/lib/bin.js'), '--profile', 'web', '--patch', patch, '--no-open', '--port', '0'], {
+      cwd: workspace,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SystemRoot: process.env.SystemRoot,
+        DSH_HOME: home, DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, NO_PROXY: '127.0.0.1,localhost' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    proc.on('error', error => errors.push(error.message))
+    proc.stdout?.on('data', data => { launchLog += String(data); log += String(data) })
+    proc.stderr?.on('data', data => { launchLog += String(data); log += String(data) })
+    await until(() => /https?:\/\/(?:127\.0\.0\.1|localhost)[^\s\x1b]+/u.test(launchLog) || proc?.exitCode !== null || errors.length > 0, 'DSH Web startup')
+    const url = launchLog.match(/https?:\/\/(?:127\.0\.0\.1|localhost)[^\s\x1b]+/u)?.[0]
+    assert.ok(url, 'DSH Web must report its local URL')
+    const page = await browser!.newPage()
+    page.on('pageerror', error => errors.push(error.message))
+    await page.goto(url)
+    const editor = page.locator('textarea,[contenteditable=true]').first()
+    await editor.waitFor({ state: 'visible', timeout: 30_000 })
+    const proceed = page.getByRole('button', { name: 'Continue', exact: true })
+    if (await proceed.isVisible()) await proceed.click()
+    return page
+  }
+  const send = async (page: Page, text: string, expected: string | RegExp) => {
+    const editor = page.locator('textarea,[contenteditable=true]').first()
+    await editor.click()
+    await editor.pressSequentially(text, { delay: 5 })
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await page.getByText(expected, { exact: false }).last().waitFor({ state: 'visible', timeout: 30_000 })
+    await page.getByRole('button', { name: 'Send message', exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+  }
+  let page = await launch()
+  await send(page, `记住：${marker}`, /好的，我记住了|已收到，稍后整理/u)
+  // Completed-turn promotion is asynchronous; the receipt may truthfully say pending.
+  await until(() => {
+    const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
+    try { return Boolean(db.prepare("SELECT 1 FROM memories WHERE text=? AND state='active' AND retention='retained'").get(marker)) }
+    finally { db.close() }
+  }, 'explicit memory promoted after completed turn')
+  await send(page, '查一下 周报', '查到了：')
+  for (let turn = 1; turn <= 3; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
+  await until(() => collectMarkdown(dataRoot).some(file => file.includes(`${path.sep}daily${path.sep}`) && readFileSync(file, 'utf8').includes(marker)), 'completed conversation daily note')
+  const requestText = JSON.stringify(llm.requests)
+  assert.ok(requestText.includes('memory_remember') && requestText.includes('memory_recall'), 'native tools reach the model')
+  assert.ok(llm.requests.some(request => JSON.stringify(request).includes('<about-user>') && JSON.stringify(request).includes(marker)), 'saved memory reaches an injected model request')
+  const beforeRestart = collectMarkdown(dataRoot).map(file => path.relative(dataRoot, file))
+  await page.screenshot({ path: path.join(output, 'web-before-restart.png'), fullPage: true })
+  await page.close()
+  await stop(proc)
+  proc = undefined
+  page = await launch()
+  await send(page, '查一下 周报', '查到了：')
+  assert.ok((await page.locator('body').innerText()).includes(marker), 'memory survives ordinary Node DSH restart')
+  await page.screenshot({ path: path.join(output, 'web-after-restart.png'), fullPage: true })
+  assert.deepEqual(errors, [])
+  const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
+    ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart, restart: true, modelRequests: llm.requests.length, pageErrors: errors }
+  writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
+  console.log(JSON.stringify(report, null, 2))
+  passed = true
+} catch (error) {
+  const page = browser?.contexts().flatMap(context => context.pages()).at(-1)
+  if (page && !page.isClosed()) {
+    await page.screenshot({ path: path.join(output, 'web-failure.png'), fullPage: true }).catch(() => {})
+    writeFileSync(path.join(output, 'web-failure.txt'), await page.locator('body').innerText().catch(() => 'Page unavailable'))
+  }
+  writeFileSync(path.join(output, 'report.json'), JSON.stringify({ passed: false, error: error instanceof Error ? error.message : String(error), modelRequests: llm.requests.length, pageErrors: errors }, null, 2) + '\n')
+  throw error
+} finally {
+  if (browser) await browser.close()
+  await stop(proc)
+  await llm.close()
+  if (!passed && existsSync(dataRoot)) cpSync(dataRoot, path.join(output, 'failed-data'), { recursive: true })
+  writeFileSync(path.join(output, 'model-requests.json'), JSON.stringify(llm.requests, null, 2) + '\n')
+  writeFileSync(path.join(output, 'launch-redacted.log'), redact(log))
+  rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}

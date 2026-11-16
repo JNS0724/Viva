@@ -73,7 +73,7 @@ const titleOf = (words: string) => {
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
 type StartedTask = { ok: boolean, taskId?: string, reason?: string }
 type Maybe<T> = T | Promise<T>
-type AdmitBrief = (taskId: string) => boolean
+type AdmitBrief = (taskId: string) => boolean | Promise<boolean>
 /** What the runtime asks of dsh for its tasks (compose.ts taskAgent, over acp-bridge.ts). */
 export interface TaskAgent {
   startTask: () => Maybe<StartedTask>
@@ -125,6 +125,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   const later = timers.later ?? setTimeout
   const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   /** taskId → the end of its run still to be kept, and its next try. */
+  const revoked = new Set<string>()
   const pendingEnds = new Map<string, { runId: string, timer: unknown }>()
   /** Snapshots of a change still being written, and what is let go of once it commits (`change`), not before. */
   let queued: TaskSnapshot[] = []
@@ -194,7 +195,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   function persist(taskId: string, messages: readonly unknown[]) {
     const task = tasks.get(taskId)
     const found = task ? db.get(task.segmentId) : null
-    if (!task || !found) return
+    if (revoked.has(taskId) || !task || !found) return
     db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
   }
   const taskWords = createTaskWords({
@@ -268,7 +269,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return { ok: false as const, problem: taskProblems()[reason] ?? t("main.task-ipc.could.not.start.in.background", { reason }) }
     }
     const taskId = started.taskId
-    if (admit && !admit(taskId)) {
+    if ((admit && !await admit(taskId)) || revoked.has(taskId)) {
       await agent.closeTask(taskId)
       return { ok: false, problem: t('main.memory.context.stale') }
     }
@@ -391,10 +392,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     if (!attached.has(taskId)) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
-      if (!taken.ok) return { ok: false, problem: taskProblems().gone }
+      if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().gone }
       attached = new Set([...attached, taskId])
     }
-    if (admit && !admit(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
+    if ((admit && !await admit(taskId)) || revoked.has(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
     const { endedAt: _endedAt, status: _status, ...going } = kept
     const runId = newRunId()
     const running = { ...going, runId }
@@ -430,8 +431,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
 
   async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
-    if (!taken.ok) return { ok: false, problem: taskProblems().lost }
-    if (admit && !admit(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
+    if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().lost }
+    if ((admit && !await admit(taskId)) || revoked.has(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
     const runId = newRunId()
     const running = { ...kept, runId }
     change('task.restarted', { taskId, runId }, () => {
@@ -498,7 +499,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       if (!taken.ok) throw new Error(taken.problem)
       return { taskId, delivered: 'taken up again' }
     }
-    if (admit && !admit(taskId)) throw new Error(t('main.memory.context.stale'))
+    if ((admit && !await admit(taskId)) || revoked.has(taskId)) throw new Error(t('main.memory.context.stale'))
     said(taskId, text)
     const steered = await agent.steerTask(taskId, text)
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
@@ -514,7 +515,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const taskId = typeof event.taskId === 'string' ? event.taskId : ''
     const runId = registry.runOf(taskId)
     // No task's: dsh speaks of one unknown, or no longer at work.
-    if (runId === null) return
+    if (revoked.has(taskId) || runId === null) return
     if (event.type === 'task_end') return endRun(taskId, runId, event, 0)
     // Taken in first, its piece then, the snapshot it changed after (queued, not pushed, while it is taken in).
     depth += 1
@@ -583,6 +584,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * needs); one the user closed had its report cancelled with it.
    */
   function superseded(taskId: string, runId: string): boolean {
+    if (revoked.has(taskId)) return true
     let task: { status: string, runId: string }
     try {
       task = (registry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string, runId: string } }).task
@@ -597,7 +599,26 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (entry && typeof entry.runId === 'string' && entry.runId) effects?.cancel(REPORT, reportId(entry.id, entry.runId))
   }
 
+  /** Owner-authored erasure already committed to host storage; discard volatile copies before acknowledging. */
+  async function revokeMemorySessions(sessionIds: readonly string[]) {
+    const ids = sessionIds.filter(id => tasks.has(id) || registry.runOf(id) !== null || beginning.has(id) || revoked.has(id))
+    for (const id of sessionIds) revoked.add(id)
+    for (const id of ids) {
+      letEndGo(id)
+      taskWords.drop(id)
+      tasks.delete(id)
+      registry.remove(id)
+      detach(id)
+      seqs.delete(id)
+      openings.delete(id)
+      queued = queued.filter(snapshot => snapshot.taskId !== id)
+      publish({ type: 'task_closed', taskId: id, runId: '', taskSeq: 0 })
+    }
+    await Promise.all(ids.map(id => agent.closeTask(id)))
+  }
+
   return {
+    revokeMemorySessions,
     /** The window's channels (task-ipc.ts). */
     window: {
       finished,

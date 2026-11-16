@@ -14,7 +14,10 @@ import { Readable, Writable } from 'node:stream'
 import { AgentSideConnection, ndJsonStream } from '@agentclientprotocol/sdk'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
+import { startFakeMemoryOwner } from './fake-memory-owner.ts'
 import { withoutHeaders } from '../../src/shared/request-routing/header.ts'
+
+const memoryOwner = await startFakeMemoryOwner()
 
 const STEP_MS = Number(process.env.FAKE_DSH_DELAY_MS ?? 450)
 const PIECE_CHARS = 3
@@ -248,7 +251,10 @@ function createAgent(conn) {
       const session = sessionOrThrow(params.sessionId)
       const controller = new AbortController()
       session.turn = controller
-      const text = withoutHeaders(params.prompt.map((block) => block.text ?? '').join('\n'))
+      const wireText = params.prompt.map((block) => block.text ?? '').join('\n')
+      const intake = wireText ? await memoryOwner?.receive(params.sessionId, wireText) : undefined
+      const text = withoutHeaders(wireText)
+      let completed = false
       // Pictures come as image blocks, base64; the answer says what came, so the smoke run can see they got here.
       const images = params.prompt.filter((block) => block.type === 'image' && block.data && block.mimeType)
       try {
@@ -256,11 +262,13 @@ function createAgent(conn) {
         else if (LONG_TASK.test(text)) await longScript(params.sessionId, session, controller.signal)
         else if (MARKDOWN_DEMO.test(text)) await turnTools(params.sessionId, controller.signal).stream('agent_message_chunk', MARKDOWN_ANSWER, LONG_PIECE_CHARS, LONG_PIECE_RATIO)
         else await defaultScript(params.sessionId, session, text, controller.signal)
+        completed = true
         return { stopReason: 'end_turn' }
       } catch (err) {
         if (err === cancelled) return { stopReason: 'cancelled' }
         throw err
       } finally {
+        if (intake) await memoryOwner?.complete(params.sessionId, intake.turn, intake.sourceIds, completed)
         session.turn = null
       }
     },

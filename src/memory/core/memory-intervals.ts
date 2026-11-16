@@ -1,7 +1,5 @@
-export interface MemoryInterval {
-  from: number | null
-  to: number | null
-}
+import type { MemoryInterval } from '../contracts/facts.ts'
+export type { MemoryInterval } from '../contracts/facts.ts'
 
 const lower = (value: number | null) => value ?? -Infinity
 const upper = (value: number | null) => value ?? Infinity

@@ -33,7 +33,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-tasks', {}],
     ['viva-history', {}],
     ['viva-routing', { ...ROUTING_PERSONA }],
-    ['viva-memory', { host: true }],
+    ['viva-memory', { host: true, dataRoot: path.join('/data', 'memory') }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-questions', {}],
     ['viva-config', {}],

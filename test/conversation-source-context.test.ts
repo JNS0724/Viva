@@ -12,11 +12,11 @@ const actions: ConfigActions = {
   removeServer: noop, importServers: noop, listSkills: () => [], createSkill: noop, installSkill: noop, removeSkill: noop,
 }
 
-test('question shown and closed keep their request context across a same-session segment selection', () => {
+test('question shown and closed keep their request context across a same-session segment selection', async () => {
   const seen: Array<Record<string, unknown>> = []
   let context: ConversationContext = old
   const desk = createQuestionDesk({ send: () => {}, emit: event => { seen.push(event) }, sessionId: () => old.sessionId, conversationContext: () => context })
-  desk.receive(asked); context = next; desk.declineAll()
+  await desk.receive(asked); context = next; desk.declineAll()
   assert.deepEqual(seen.map(event => event.context), [old, old])
 })
 

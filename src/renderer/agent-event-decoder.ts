@@ -8,6 +8,7 @@ import type { AgentEvent } from './agent-event-types.ts'
 type ObjectValue = Record<string, unknown>
 const string = (value: unknown): value is string => typeof value === 'string'
 const number = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+const sourceMap = (value: unknown): value is Readonly<Record<string, string>> => { const item = objectOf(value); return Boolean(item && Object.values(item).every(string)) }
 const natural = (value: unknown): value is number => number(value) && Number.isSafeInteger(value) && value >= 0
 const nullableText = (value: unknown): value is string | null => value === null || string(value)
 const optional = <T>(value: unknown, test: (value: unknown) => value is T): value is T | undefined => value === undefined || test(value)
@@ -177,6 +178,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null
   if (type === 'feed_changed' || type === 'schedules_changed') return { type }
+  if (type === 'task_closed') return typeof item.taskId === 'string' && item.taskId ? { type, taskId: item.taskId } : null
   if (type === 'task_snapshot') { const parsed = snapshot(item.snapshot); return parsed ? { type, snapshot: parsed } : null }
   const task = string(item.taskId) && string(item.runId) && natural(item.taskSeq) ? { taskId: item.taskId, runId: item.runId, taskSeq: item.taskSeq } : null
   if (type === 'permission') {
@@ -199,8 +201,8 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'question') { const questions = decodeQuestions(item.questions); return string(item.questionId) && questions ? { type, context, questionId: item.questionId, questions } : null }
   if (type === 'question_answered') {
     const answers = decodeAnswers(item.answers)
-    return string(item.questionId) && answers && optional(item.sourceId, string)
-      ? { type, context, questionId: item.questionId, answers, sourceId: item.sourceId } : null
+    return string(item.questionId) && answers && optional(item.sourceId, string) && optional(item.sourceIds, sourceMap)
+      ? { type, context, questionId: item.questionId, answers, sourceId: item.sourceId, ...(item.sourceIds ? { sourceIds: item.sourceIds } : {}) } : null
   }
   if (type === 'question_closed') return string(item.questionId) ? { type, context, questionId: item.questionId } : null
   if (type === 'secret_request') { const parsed = secret(item); return parsed ? { type, context, ...parsed } : null }
@@ -215,7 +217,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

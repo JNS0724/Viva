@@ -3,9 +3,14 @@ import { randomUUID } from 'node:crypto'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { localDay } from '../src/memory/core/memory-facts.ts'
-import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { createMemoryRuntime } from './fixtures/localized-memory-runtime.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { createMemoryWithdrawal } from '../src/backend/memory-withdrawal.ts'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { memoryOwnerCaller } from './fixtures/memory-owner-caller.ts'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { createEffects } from '../src/backend/effects.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
@@ -367,9 +372,11 @@ test('editing a historical message withdraws only its original source while the 
   const app = openAppDb({ file: ':memory:' })
   const db = openHistoryDb({ db: app.db })
   const effects = createEffects({ db: app.db })
-  const store = openMemoryStore(':memory:')
-  const memory = createMemoryRuntime({ store, quiesce: async () => {}, changed: () => {}, route: () => null, compute: () => null })
-  t.after(() => { memory.close(); effects.close(); app.close() })
+  const directory = mkdtempSync(join(tmpdir(), 'viva-edit-owner-'))
+  const owner = openMemoryOwner({ root: directory, quiesce: async () => {}, route: () => null, compute: () => null })
+  await owner.recover()
+  const memory = owner.runtime
+  t.after(async () => { await owner.close(); effects.close(); app.close(); rmSync(directory, { recursive: true, force: true }) })
   let selected = db.create({ sessionId: 'first', cwd: '/work' })
   const first = selected
   const note = { role: 'user' as const, text: '记住：每周五交周报', sourceId: randomUUID(), receipt: null }
@@ -378,12 +385,11 @@ test('editing a historical message withdraws only its original source while the 
   for (const row of [note, old]) memory.accept(row.text, { conversation: first.id, session: first.sessionId }, row.sourceId)
   selected = db.save(selected, [note, old])
   let failWithdrawal = false
-  const coordinator = createMemoryWithdrawal({ history: () => db, effects: () => effects, memory: () => ({ ...memory,
-    withdraw: payload => {
-      if (failWithdrawal) { failWithdrawal = false; throw new Error('simulated stop before withdrawal') }
-      return memory.withdraw(payload)
-    },
-  }), apply: (_kind, _data, work) => ({ value: transaction(app.db, work) }), changing: async work => work() })
+  const call = memoryOwnerCaller(owner, method => {
+    if (failWithdrawal && method === 'commitSourceChange') { failWithdrawal = false; throw new Error('simulated stop before withdrawal') }
+  })
+  const coordinator = createMemoryWithdrawal({ history: () => db, effects: () => effects, memory: () => ({ call }),
+    apply: (_kind, _data, work) => ({ value: transaction(app.db, work) }), changing: async work => work() })
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
   let canEditSource = false
   let switches = 0
@@ -423,14 +429,15 @@ test('editing a historical message withdraws only its original source while the 
   assert.equal(replacement.conversation.sessionId, 'clean')
   assert.equal(memory.sourceCurrent(old.sourceId), false, 'pending withdrawal is already excluded from model access')
   assert.equal(effects.list().length, 1)
-  coordinator.recover()
-  coordinator.recover()
+  await coordinator.recover()
+  await coordinator.recover()
   assert.equal(effects.list().length, 0)
   assert.equal(memory.replaySource(old.sourceId, old.text), false)
   assert.equal(memory.replaySource(note.sourceId, note.text), true)
+  await owner.receiveSource({ sessionId: 'clean', messageId: newSource, text: edited, at: Date.now(), timezone, turn: 1, step: 1, admitted: true, inherited: false })
   assert.equal(memory.replaySource(newSource, edited), true)
   assert.equal(db.get(first.id)?.messages[1].text, old.text)
-  assert.equal(store.readSource(old.sourceId)?.outcome, 'withdrawn')
-  assert.equal(store.readSource(note.sourceId)?.outcome, 'explicit-pending')
-  assert.equal(store.readSource(newSource)?.outcome, 'explicit-pending')
+  assert.equal(memory.sourceCurrent(old.sourceId), false)
+  assert.equal(memory.sourceCurrent(note.sourceId), true)
+  assert.equal(memory.sourceCurrent(newSource), true)
 })

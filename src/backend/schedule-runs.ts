@@ -6,7 +6,7 @@ import type { Apply } from './journal.ts'
 import type { FeedItem, FeedStore } from './feed-store.ts'
 import type { Occurrence, ScheduleStore } from './schedule-store.ts'
 import type { RunResult } from './unattended-runs.ts'
-import { combineMemoryProvenance, type MemoryProvenance } from '../memory/core/memory-dispatch.ts'
+import { combineMemoryProvenance, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Schedules run when due (system-design §12.2). One timer, set for the soonest thing to do; when it fires, what is
@@ -60,7 +60,7 @@ export interface ScheduleRunsDeps {
   feed: FeedStore
   /** Runs one prompt where nobody watches, in `cwd`. */
   run: (prompt: string, cwd: string, memory: MemoryProvenance | null) => Promise<RunResult>
-  memoryCurrent?: (memory: MemoryProvenance) => boolean
+  memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
   /** A new item in 动态, inside the change that made it: its notice queued there, so it is not lost. */
   keep: (item: FeedItem) => void
   /** That change kept: the window, and the notice, may go now. */
@@ -171,9 +171,10 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
 
   const staleInstructions = (): Delivery => ({ kind: 'deliver', needsReview: true, body: t('main.schedule-runs.memory.stale') })
 
-  async function outcomeOf(item: Run): Promise<Outcome | 'unavailable' | 'memory-unavailable'> {
+  async function outcomeOf(item: Run): Promise<Outcome | 'unavailable' | 'memory-unavailable' | 'superseded'> {
     // The creation snapshot is checked again at commit. A cached model response retains its own sources.
-    if (item.memory && !memoryCurrent(item.memory)) return staleInstructions()
+    if (item.memory && !await memoryCurrent(item.memory)) return staleInstructions()
+    if (closed || !scheduleCurrent(item)) return 'superseded'
     const pending = outcomes.get(item.key)
     if (pending?.revision === item.scheduleRevision) return pending.outcome
     const result = await run(item.prompt, item.cwd, item.memory)
@@ -187,12 +188,14 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   }
 
   /** Kept: its item made, or its next try set; then the outcome is let go. */
-  function commit(item: Run, outcome: Outcome): void {
-    if (item.memory && !memoryCurrent(item.memory)) {
+  async function commit(item: Run, outcome: Outcome): Promise<void> {
+    if (item.memory && !await memoryCurrent(item.memory)) {
       outcome = staleInstructions()
-    } else if (outcome.memory && !memoryCurrent(outcome.memory)) {
+    } else if (outcome.memory && !await memoryCurrent(outcome.memory)) {
       outcome = retry(item, t('main.schedule-runs.memory.result.stale'))
     }
+    // Recheck local lifecycle after the remote read, before entering the synchronous transaction.
+    if (closed || dropIfSuperseded(item)) return
     if (outcome.kind === 'deliver') deliver(item, outcome)
     else {
       change('schedule.retry', { key: item.key, attempts: outcome.attempts }, () => db.prepare('UPDATE schedule_runs SET attempts = ?, due_at = ? WHERE key = ?')
@@ -201,9 +204,13 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     forget(item.key)
   }
 
-  function dropIfSuperseded(item: Run) {
+  function scheduleCurrent(item: Run) {
     const schedule = store.get(item.scheduleId)
-    if (schedule && schedule.status !== 'paused' && schedule.revision === item.scheduleRevision) return false
+    return Boolean(schedule && schedule.status !== 'paused' && schedule.revision === item.scheduleRevision)
+  }
+
+  function dropIfSuperseded(item: Run) {
+    if (scheduleCurrent(item)) return false
     change('schedule.dropped', { key: item.key }, () => db.prepare('DELETE FROM schedule_runs WHERE key = ? AND schedule_revision = ?')
       .run(item.key, item.scheduleRevision))
     forget(item.key)
@@ -218,11 +225,12 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     if (closed) return false
     if (dropIfSuperseded(item)) return true
     if (outcome === 'unavailable') return false
+    if (outcome === 'superseded') return true
     if (outcome === 'memory-unavailable') {
       if (wakes === startedAtWake) waitingForMemory.add(item.key)
       return true
     }
-    commit(item, outcome)
+    await commit(item, outcome)
     return true
   }
 

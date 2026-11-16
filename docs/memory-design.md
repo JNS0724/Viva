@@ -1,6 +1,6 @@
 # Viva Long Term Memory Implementation Plan
 
-> 2026-11-16: All further memory development and sequencing follows the [file memory and independent plugin plan](memory-reme-plan.md). R1/R2 completed their experimental scope and P1 core extraction is complete; five phases remain: P2, R3, R4, R5a and R5b. M1–M4 here document the old fact-store implementation and its authorization, evidence, forgetting and request barriers. They are historical reference, not the active delivery schedule or proof of complete file-pipeline/standalone-plugin support.
+> 2026-11-16: All further memory development and sequencing follows the [file memory and independent plugin plan](memory-reme-plan.md). R1/R2 completed their experimental scope and P1 core extraction is complete. P2 standalone-plugin implementation and its acceptance are complete; R3, R4, R5a and R5b remain. M1–M4 here document the old fact-store implementation and its authorization, evidence, forgetting and request barriers. They are historical reference, not the active delivery schedule or a substitute for acceptance of the new phases.
 
 English | [简体中文](memory-design.zh-CN.md)
 
@@ -29,7 +29,7 @@ The first version uses local SQLite and covers one Viva data directory. The same
 
 | Area | Previous behavior | Current implementation or planned work |
 | --- | --- | --- |
-| DSH memory plugin and tools | Opened the database directly, ran extraction after a turn, and accepted model tool calls as permission to save or forget | The [DSH adapter](../plugins/memory/lib/adapter.ts) forwards tool requests and runs model computations. The [backend runtime](../src/backend/memory-runtime.ts) binds provenance and authorization, acknowledges intake after persistence, and recovers queued work. |
+| DSH memory plugin and tools | Opened the database directly, ran extraction after a turn, and accepted model tool calls as permission to save or forget | The [DSH adapter](../plugins/memory/lib/adapter.ts) forwards tool requests and runs model computations. The [plugin-owned Node owner](../src/memory/node/owner.ts) binds provenance and authorization, acknowledges intake after persistence, and recovers queued work; Viva accesses it through a client. |
 | Storage and provenance | Matched duplicate text globally and could revive inactive rows. Attached conversation provenance by timestamp | The [memory store](../src/memory/node/memory-store.ts) keeps source versions, evidence spans, change history, and revision checks. |
 | Extraction and updates | The model proposed facts without original spans, scope, or validity dates. A proposal could replace an entry by referring to an ID shown to the extractor | The [shared contract](../src/memory/contracts/memory-contract.ts) carries proposed facts and change evidence. The [backend verifier](../src/memory/core/memory-facts.ts) checks original text, applicability, and whether it supports the proposed change. |
 | Recall and context | Combined fixed context, name matching, and a session-local retrieval history | The runtime checks scope, validity, and retention before [keyword recall](../src/memory/core/memory-match.ts) and [context formatting](../src/memory/core/memory-context.ts). Section 10 describes the planned retrieval layers. |
@@ -401,7 +401,7 @@ Each phase must provide a complete working write and read path. Remove the repla
 
 M1 pauses injection of model-generated profiles. It uses the user-entered profile and original memories that pass the shared validity checks. M1 verifies that edits and forgetting take effect and survive a restart. M1 keeps insufficiently supported proposals as candidates. M2 follows section 7 to distinguish admitting a new fact, changing an old one, and clarifying a dispute when it matters to a task. M3 extends retrieval. M4 delivers profiles with statement-level evidence and verifies copy cleanup.
 
-Keep the module layout small: `src/backend/memory-runtime.ts` orchestrates, `src/memory/node/memory-store.ts` owns transactions and queries, and extraction, admission, recall, and profile logic are separate pure function modules. `plugins/memory/index.ts` and the tool module are adapters only. Shared types belong in Node-free contracts under `src/shared`. Prefer migrating and reusing existing code rather than retaining two memory services.
+The current layout follows the new plan: `src/memory/core` owns domain orchestration and rules, `src/memory/node/owner.ts` assembles the single owner, and `src/memory/node/memory-store.ts` owns transactions and queries. `plugins/memory` adapts DSH ingestion, tools and actual transport boundaries; the Viva backend retains clients, history transactions and presentation. Shared Node-free contracts live under `src/memory/contracts`. Prefer migrating and reusing existing code rather than retaining two memory services.
 
 ### 13.1 Initial data contract
 

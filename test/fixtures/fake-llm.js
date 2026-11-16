@@ -82,6 +82,8 @@ function trailingUserTexts(messages) {
 }
 
 function currentWords(text) {
+  // Test responder ignores the trusted delivery suffix; production admission uses exact owner aliases.
+  text = text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
   if (!text.startsWith('以下是这个话题以前的记录（最近 ')) return text
   const end = text.lastIndexOf(CARRY_CLOSE)
   return end < 0 ? text : text.slice(end + CARRY_CLOSE.length).trimStart()
@@ -260,7 +262,7 @@ const commit = (requestId, goals, actions) => {
 const toolUses = (messages) => messages.flatMap((message) => partsOf(message).filter((part) => part.type === 'tool_use'))
 /** The requests the app put in the conversation, oldest first, each with its words. */
 const requestsOf = (messages) => messages.filter((message) => message.role === 'user').flatMap(rawTexts).flatMap(requestsIn)
-  .map((request) => ({ id: request.id, words: request.words.trim() }))
+  .map((request) => ({ id: request.id, words: currentWords(request.words).trim() }))
 const lastRouted = (messages) => toolUses(messages).filter((use) => use.name === ROUTE).at(-1)?.input?.requestId ?? null
 const pendingRequest = (messages) => {
   const routed = new Set(toolUses(messages).filter((use) => use.name === ROUTE).map((use) => use.input?.requestId))

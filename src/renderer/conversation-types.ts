@@ -96,7 +96,7 @@ export interface ConversationPayloads {
   permission_closed: { requestId: string, at?: number }
   question_request: { questionId: string, questions: readonly QuestionItem[], at: number }
   question_pick: { id: string, label: string }
-  question_answered: { questionId: string, sourceId?: string, answers: readonly QuestionAnswer[], at: number }
+  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number }
   question_closed: { questionId: string, at: number }
   secret_request: AskedSecret & { at: number }
   secret_resolved: { requestId: string, provided: boolean, at: number }

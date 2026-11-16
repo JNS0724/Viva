@@ -2,7 +2,7 @@
 
 [English](memory-reme-plan.md)
 
-状态：2026-11-15，R1、R2 已实现；独立核心/DSH 插件设计已纳入，尚未实现；Viva 与 dsh-web 统一由插件持有核心，剩余 6 个开发阶段：P1、P2、R3、R4、R5a、R5b，按此顺序实施。本文替代旧方案的记忆组织、加工和检索设计；原文校验、权限、遗忘和请求屏障要求继续有效。旧数据不迁移。仅实现自研版本，不接入 ReMe 服务，不修改 ReMe 对照分支。
+状态：2026-11-16，R1、R2、P1、P2 已完成；P2 独立插件、Viva 客户端和请求屏障已通过本轮验收。剩余 R3、R4、R5a、R5b 四个阶段；六阶段划分和顺序不变。本文替代旧方案的记忆组织、加工和检索设计；原文校验、权限、遗忘和请求屏障要求继续有效。旧数据不迁移。仅实现自研版本，不接入 ReMe 服务，不修改 ReMe 对照分支。
 
 ## 1 基准与范围
 
@@ -149,7 +149,7 @@ CORRECT 是带来源的文档修订，不自动推断“最近写入的永远正
 
 整个记忆系统提供可独立使用的 Node 核心，DSH 插件是完整接入方式之一。Viva、独立 DSH、`dsh web` 使用同一套领域规则；其它 Node 宿主只需实现端口。浏览器消费服务端 API，不运行数据库或核心。独立指不需要 Viva/Electron/父进程 IPC，不承诺无模型、无存储也能完成模型加工。
 
-在 P1 之前的 `4069760` 基线，`plugins/memory/lib/adapter.ts` 在没有 `process.send` 时直接返回，且引用仓库内部 shared 文件；`compose.ts` 仍持有变更互斥、请求准入、任务依赖和遗忘协调。P1 已将领域协调迁到 core，Viva 启动装配暂留；插件当前仍是 Viva 桥接，R1/R2/P1 完成不等于独立插件完成。本节描述目标，不能据此宣称已经支持独立 DSH 或 dsh-web。
+在 P1 之前的 `4069760` 基线，`plugins/memory/lib/adapter.ts` 在没有 `process.send` 时直接返回，且引用仓库内部 shared 文件；`compose.ts` 仍持有变更互斥、请求准入、任务依赖和遗忘协调。P1 已将领域协调迁到 core；本轮 P2 再将存储所有权、摄取与模型请求屏障迁到插件，Viva 通过客户端调用。安装产物已在无父进程的真实 DSH Web 跑通定向链路，覆盖范围和未完成验收见第 13 节；不能据此宣称整个文档记忆系统或 Web 管理已交付。
 
 ### 8.2 包与依赖方向
 
@@ -234,9 +234,9 @@ DSH 不可用时，记忆服务也暂不可用；Viva 不打开备用数据库�
 
 本轮须留下真实验收记录：隔离 DSH_HOME、无 Viva 父进程启动安装后的插件；真实 `dsh web` 浏览器完成会话→daily→dream→检索，并通过现有对话/工具执行显式遗忘、查看返回依据和基础澄清答复；刷新/断线/重启后数据与待办恢复，遗忘内容不再召回或外发；未授权连接、伪造 scope/session 均拒绝。单 owner 实例验证同 owner 多标签共享及项目/会话范围校验，不验收多用户租户功能。修订记录、基础撤销、画像、索引重建等保留能力通过核心 API、Viva 及独立 DSH 契约测试验收，不要求各自有 Web 管理页面。只通过 mock 或只有接口不能标记真实 Web 核心接入完成；完成后也不宣称 Web 管理后台已交付。
 
-### 8.8 当前实现盘点
+### 8.8 实施前盘点（历史基线）
 
-盘点基线为开发分支 `codex/native-memory-r2` 的 `4069760`（2026-11-15）；本次只刷新方案。R1/R2 的完成指其原定实验范围完成，不代表新版默认启用或独立运行验收完成。旧 M1–M4 是事实库版本的历史交付，不能等同文件体系的 R3–R5。
+盘点基线为开发分支 `codex/native-memory-r2` 的 `4069760`（2026-11-15）；此表记录当时的方案盘点，P1/P2 更新以第 12、13 节为准。R1/R2 的完成指其原定实验范围完成，不代表新版默认启用或独立运行验收完成。旧 M1–M4 是事实库版本的历史交付，不能等同文件体系的 R3–R5。
 
 | 能力 | 代码依据 | 当前状态与后续处理 |
 | --- | --- | --- |
@@ -251,14 +251,14 @@ DSH 不可用时，记忆服务也暂不可用；Viva 不打开备用数据库�
 
 本基线盘点的源码文件默认在 `src/backend`，契约在 `src/shared`，测试在 `test`；P1 后的位置与状态见第 12 节。以上盘点来自代码检查；本次未重跑全量行为测试，不把历史测试结果当新架构验收；追加的定向可行性实测见第 11 节。
 
-### 8.9 六阶段实施顺序（P1 已完成，剩余 5 阶段）
+### 8.9 六阶段实施顺序（P1/P2 已完成，剩余 4 阶段）
 
 R1/R2 保留已完成状态。继续保留 R5a（文档能力与 Viva 接入）和 R5b（跨宿主验收与最终切换）的批次边界；R5b 不再开发 Web 管理页面，四项后置工作不占本轮阶段。阶段数表示验收边界，不表示 6 次提交或固定开发天数。第 11 节实测发现的实施约束也属于各阶段完成条件。
 
 | 顺序 / 阶段 | 实施范围与复用 | 阶段完成条件 |
 | --- | --- | --- |
 | 1 / P1 核心解耦（已完成） | 提取 contracts/core/node；复用 R1/R2；迁出 Runtime 与 compose 的领域规则、mutation/依赖/准入；定义通用宿主 API，Viva 改用客户端边界 | 现有能力映射清单完整，未完成文件能力明确归入后续阶段；无 DSH/Electron 的 Node harness；旧行为回归通过；宿主只保留事件/身份/历史事务/界面适配 |
-| 2 / P2 独立插件 | 插件统一持有核心；Viva 客户端接入、包产物、单 owner、生命周期、会话游标/补读及 fork/压缩来源映射、双向撤回 outbox 和真实发送 fence；尽早验证现有 Web 会话接入/鉴权入口 | 干净项目安装产物，无 Viva 父进程可摄取与生成 daily；Viva/独立 DSH 同一插件装配的崩溃/重试/断线/热重载通过，Viva 不再持有记忆库；普通 Node 模型/worker 装配可启动；Web 实际会话接入路径有可运行验证及明确后续清单，不要求管理页面扩展 |
+| 2 / P2 独立插件（已完成） | 插件统一持有核心；Viva 客户端接入、包产物、单 owner、生命周期、会话游标/补读及 fork/压缩来源映射、双向撤回 outbox 和真实发送 fence；尽早验证现有 Web 会话接入/鉴权入口 | 干净项目安装产物，无 Viva 父进程可摄取与生成 daily；Viva/独立 DSH 同一插件装配的崩溃/重试/断线/热重载通过，Viva 不再持有记忆库；普通 Node 模型/worker 装配可启动；Web 实际会话接入路径有可运行验证及明确后续清单，不要求管理页面扩展 |
 | 3 / R3 文档 dream | Extract/Integrate/Finish/Auto Tag、digest node_search、六工具草稿循环、语义证据检查、读集与 checkpoint、文档修订/替代关系、基础 undo、停用限制和 deferred 澄清状态机 | 四动作、单目标、跨文件来源、并发修改、部分失败/恢复及新读集发送屏障通过；更正后重启可撤销、后改/遗忘阻止旧撤销、疑点不循环重试且有效答复可恢复；移除 dream→离散提取；Viva 与独立 DSH 使用同一实现 |
 | 4 / R4 完整文件检索 | 复用本地小模型和排名基础；补 AST、FileNode/Chunk/Link、全文/向量融合、关系展开、扫描及重建 | 全文结构和行号正确、尾部命中、日期/权限/替代与停用状态统一过滤、文件变更/删除同步、向量空间变更与降级、普通 Node worker、同一召回契约在 Viva 与独立 DSH 接入通过 |
 | 5 / R5a 文档能力与 Viva 接入 | 将旧版管理能力接到 daily/digest；复用 R3 修订/撤销/疑点基础，补停用/删除、基础撤销/对话澄清、画像/来源入口；历史浏览和完整澄清工作流后置；Viva UI 接统一 API；清理全部文档/历史/派生副本 | 8.3 本轮保留能力在文件模式可用；后改不被撤销覆盖、遗忘不复活、过期问题不写入；后台/定时/恢复请求均受控；文件模式停止旧事实双读，默认切换留给 R5b |
@@ -311,7 +311,7 @@ R1/R2 保留已完成状态。继续保留 R5a（文档能力与 Viva 接入）�
 
 本轮语义回归（仍归原阶段）：P2 覆盖回合内 remember/forget、登记失败拒绝、取消回合和重启补读；HostEffects 清理事件回流、不重复撤回、本地已清理但 ack 丢失/重复投递；prepare 回执丢失、preparing/prepared 后取消、宿主已提交而 commit 丢失及恢复，验证状态单调且不假完成。R3 覆盖 CORRECT 的正文/替代元数据一起恢复、撤销更新适用状态、停用限制跨 dream 和重命名。R4 覆盖旧 daily 与新 digest 同时命中、混合片段/不同时间条件、更正不可用不回退旧事实、全文/向量/read/画像/索引重建一致过滤。R5a 验证删除映射 forget、启用/撤销不能恢复遗忘、停用可显式恢复且不误伤无关内容。不增加开发阶段或四项后置功能。
 
-## 10 实施记录
+## 10 R1/R2 实施记录（历史交付）
 
 - R1：shared 单元/回执/路径契约、frontmatter 往返、行读取和文件快照已实现。
 - R2：已将已完成会话回合接到 `session/dialog/*.jsonl`，daily 正文以 Markdown 为准。SQLite 仅保存身份、来源版本、任务、待提交计划和回执。沿用 `VIVA_DAILY_MEMORY=1` 实验开关，默认运行时尚不切换；不接入 ReMe 服务。
@@ -319,7 +319,7 @@ R1/R2 保留已完成状态。继续保留 R5a（文档能力与 Viva 接入）�
 - 同请求同输入重放、异文拒绝。skip 有成功回执，模型异常或格式错误保持待办。来源版本、原文和文件 hash 都参与提交检查；助手保留独立角色，仅作为上下文。文件写成后立即进入现有 daily 搜索路径。
 - 提交意图先持久化，文件替换后在同一 SQL 事务中提交回执和回合完成标记。崩溃恢复核对新/旧 hash，第三种 hash 留作冲突且隐藏整个未完成计划；失效来源或被取代的任务不提交。完成后清除计划中的正文副本。单文件层同步文件及目录（Windows 只同步文件）；正式写入仍限定为一个后端所有者，不承诺跨进程 CAS。
 - 遗忘先隐藏卡片，再以持久化清理任务移除 session 副本、卡片和日索引链接；完整 digest 历史/派生索引清理、外部文件扫描和 UI 状态仍在 R4/R5 验收。
-- P1 已完成核心解耦（见第 12 节）；P2、R3/R4、R5a/R5b 待实现，剩余 5 阶段；独立架构及实施顺序保持不变。dream 暂时沿用旧离散提取路径，后续由四阶段文档整合替换；不宣称整个新版记忆已完成。
+- 后续状态：P1 已完成核心解耦（第 12 节）；P2 已完成（第 13 节）；R3/R4、R5a/R5b 尚待实现。独立架构及阶段顺序保持不变。dream 暂时沿用旧离散提取路径，后续由四阶段文档整合替换；不宣称整个新版记忆已完成。
 - 验证覆盖真实进程在意图、文件替换、回执和 checkpoint 边界被终止，会话追加与重命名恢复、外部写入冲突、来源版本变化、重复请求、scope 隔离和模型失败。全量测试通过（具体统计见交付验证日志）；typecheck、build、check:i18n 与本地 memory 冒烟通过；memory 冒烟验证现有默认链路，新 daily 文件链路另有真实 DSH 回合集成测试。
 - 上次定时查询失败：本轮全量及 8 次定向检查未复现原失败。确认并修正了断言只检查最后一条消息的缺陷，改为按调用 ID 查找 `schedule_list` / `schedule_update` 对应结果；回归覆盖工具结果后追加运行时通知、无对应调用和不同工具。旧失败缺少请求快照，不能断言该缺陷是当时唯一原因；保留失败时的定时任务列表、工具结果和末条消息诊断。
 
@@ -390,3 +390,34 @@ Node 装配入口不依赖 Viva、DSH、Electron 或父进程 IPC，模型与 wo
 P1 验收：`npm test` 共 1543 项，1541 通过、2 项既有桌面岛测试跳过；`npm run typecheck`、`npm run build`、`npm run check:i18n` 及 `git diff --check` 通过。macOS 相关真实 Electron/DSH 冒烟 4/4 通过（memory、schedules、resume、lifecycle），约 2.2 分钟；不是完整冒烟或 Windows 验收。迁移后的本地向量 worker 使用实际 q8 模型离线跑通，Top5 仍为 11/13，与既有诊断一致，不宣称 R4 质量通过。
 
 子 agent 循环评审修复了模型工具回灌/来源修订契约、operationId 回执关联、完整管理 facade、服务边界内的冲突等待，以及 dispatcher 替换后迟到释放旧租约的问题；随后由未参与实现的独立 agent 复审通过，并独立重跑 23 项边界/客户端/协议/协调测试。TypeScript 迁移同步更新 live-memory 内部脚本入口与严格类型检查；该脚本未实际调用付费模型。证据为 `/tmp/viva-p1-full-test.log`、`/tmp/viva-p1-typecheck.log`、`/tmp/viva-p1-build.log`、`/tmp/viva-p1-smoke.log`、`/tmp/viva-p1-embedding.log`、`/tmp/viva-p1-final-review.log`；相关回归已进入仓库测试集合和费用分组。
+
+## 13 P2 独立插件实施（2026-11-16，已完成）
+
+P2 已将生产记忆所有权从 Viva 后端移入 DSH 插件。Viva 和独立 DSH 使用同一 `memory/contracts`、`memory/core`、`memory/node`，没有备用 Viva 记忆数据库或新增常驻服务；旧 `src/backend/memory-runtime.ts` 已移除，测试用的本地化装配留在 fixture。插件 session/daily 默认启用；Viva 可显式设置 `VIVA_DAILY_MEMORY=0` 关闭，独立插件可配置 `dailyNotes: false`。每日笔记采集与长期事实准入触发分开配置：核心使用 `automaticFactProcessing: 'source' | 'daily'`，P2 owner 明确选择 `source`，在 completed 后保留既有原文事实提取，同时生成 R2 daily；daily 提交不覆盖已接受事实的状态，也不会通过旧 dream 再次提取同一来源。取消回合不加工，完整原文为 daily 校验保留。这是过渡期既有事实行为与 R2 采集并存，不是 R3 文档 dream 或 R5b 最终引擎切换。旧数据不兼容，不修改 ReMe 对照分支。
+
+| 边界 | 已实现的代码与行为 | 回归证据 |
+| --- | --- | --- |
+| 独立产物 | `scripts/build-memory-plugin.ts` 生成编译后的 JS 插件及所需 contracts/core/node 子树，校验导入不逃出产物；声明 DSH peer 与运行依赖，不依赖源码目录、父进程或 Electron。公开 `./contracts` 导出受信宿主 DTO/schema、稳定错误码和纯来源合并；导出契约不授予调用权限。模型资源由配置的 modelRoot/runtimeRoot 提供，不伪装成已内嵌模型 | `memory-package.test.ts` 在临时项目安装 npm pack 产物，移走构建目录后以普通 Node 完成读写、重启和删除 |
+| 单 owner 与生命周期 | `memory/node/owner.ts`、`owner-lock.ts` 持有数据库、文件、计算和回执；真实进程锁及持久宿主绑定阻止重复 owner 或以无宿主配置绕过清理。独立模式不生成无人消费的 Viva HostEffects | `memory-owner.test.ts`、`memory-owner-lock.test.ts`；插件重启保留数据并更新 epoch |
+| 原文摄取与派生来源 | DSH 适配器在工具和模型请求前持久登记 received/admitted，completed 后才加工；持久消息映射处理恢复与 fork，派生上下文只附依赖。原生子 agent 生成的 user 角色指令不成为用户事实；持久父子关系在恢复和实际发送前合并子会话独有读集，覆盖工具结果已保存但 settlement 回执尚未处理的崩溃窗口。Viva 原文通过不可变、唯一 delivery 映射关联，既拒绝旧投递复活，又允许新的同文输入；不解析用户伪造的标记 | `memory-plugin-ingestion.test.ts`、`memory-owner.test.ts`、`memory-handoff.test.ts`；实际嵌套 fork/项目来源集成已在最终全量验证通过 |
+| Viva 客户端与问题答复 | `memory-host-client.ts` / `remote-memory-channel.ts` 执行受信 DTO、epoch 和断线校验；后端保留翻译、身份映射和历史事务。问题答复登记为 owner 当前回合来源；显式更正/停用的本地成功回执不额外调用模型，也不依赖过期读集。保存通知、使用了哪些记忆及其匹配词的 `memory_context` 说明、画像投影刷新经独立瞬时 DTO 保留；来源正文不进入 owner 状态缓存，使用说明核对当前 session/conversation | `remote-memory-channel.test.ts`、`memory-host-boundary.test.ts`、`memory-plugin-receipts.test.ts` 和实际插件测试 |
+| 双向持久恢复 | 宿主先持久化 intent，再 prepare/fence；历史事务与 commit outbox 同步提交。恢复先推进全部待办的 commit，再恢复 alias；单项失败不阻断其他项。宿主清理按 causeOperationId/effectId/revision 幂等执行，不反向再 prepare | `memory-recovery.test.ts`、`memory-host-effects.test.ts`：丢回执、重启、两条 prepared 编辑及单条失败隔离 |
+| 实际请求屏障 | 每次 SDK 请求/重试单独绑定 payload、来源读集和有效期；发送前及流式结果期间重新校验。请求变更等待传输确认 body 提交或放弃，abort 本身不释放。零预读正文流在已观察到目标请求边界且 permit 有效后才交付字节；未知传输、历史上传扩展、隐式重发均拒绝 | `memory-send-fence.test.ts`、`memory-transport.test.ts`、`memory-plugin-model.test.ts`；后台/定时/恢复路径由 handoff 集成覆盖 |
+
+### 定向验证与当前限制
+
+已执行的定向检查包括：普通 Node 无 DSH 的安装产物 CRUD；独立 owner/fence/真实 localhost HTTP 传输回归；多待办恢复；typecheck。独立评审发现并修复了长有效期定时器溢出、请求构造异常泄漏许可、未投递 alias 撤销后复活、记忆拒收误阻止原始投递、同文新输入误封、未知 fetch 提前取得正文及多条 prepared 编辑互相阻塞等问题。所有定向通过记录只对应执行时的代码，不替代最终全量验证。
+
+`scripts/smoke-memory-plugin.ts` 已在隔离 DSH_HOME、普通 Node、没有 Viva 父进程 IPC 的真实 `dsh web` 浏览器执行安装后的插件：原生 remember/recall、注入、session→daily 和日索引、重启后召回已跑通，最终 20 次请求均来自本地假模型，没有付费调用或页面错误。报告和截图写入 `smoke/memory-plugin/`。插件自身在临时项目安装，DSH peers 复用现有已安装的 0.2.2-rc.2 运行时；这不等于从空缓存重新安装整套 DSH，也不是 Windows 安装包验收。最终冻结代码已重新运行此冒烟；首次沙箱内启动因绑定 127.0.0.1 被拒绝（EPERM）退出，允许本机测试监听后在未改源码的情况下通过。
+
+`memory-plugin-lifecycle.test.ts` 进一步通过真实 DSH app-boot Loader 加载最小原生服务组合，不注册任何模型 provider、也没有父进程 IPC：插件 ready、四个记忆工具可见、非模型读写可用；同进程卸载后工具和 fetch 拦截移除，重新加载产生新 epoch 并保留数据和幂等回执，最后独立打开同一路径证明锁已释放。它验证实际服务和插件生命周期，不等同于完整 CLI/Web profile 的无模型产品流程。
+
+编译产物的 `memory/node/index.js` 已在普通 Node 24.14.0 启动实际 q8 worker，使用只读的已准备模型/运行时目录，离线得到两个 384 维单位向量，冷启动连同推理约 678 ms。模型资源通过显式路径提供，没有复制或修改对照工作树，也没有要求将模型内嵌到 npm 插件。这证明 JS worker 的资源装配可运行，不是 R4 检索质量通过或 Windows 资源验收。
+
+最终验收：冻结代码全量测试发现 1617 项，1615 通过、2 项既有桌面岛测试跳过；typecheck、build、check:i18n 通过，实际嵌套 fork/项目来源回归通过。串行完整 macOS 冒烟 15/15 通过，用时约 4.3 分钟；最终独立 Web 冒烟通过。证据：`/tmp/p2-delivery-full-tests.log`、`/tmp/p2-delivery-smoke.log`、`/tmp/p2-delivery-plugin-smoke.log` 和 `smoke/memory-plugin/report.json`。
+
+早期完整冒烟曾出现一次桌面岛合成拖拽事件的 buttons=0（断言预期 1），已检查 trace、截图和应用日志：没有应用异常，同一未改动的桌面代码此前通过、原构建的隔离用例也通过（`/tmp/p2-drag-isolated.log`）；最终串行完整冒烟再次通过，记录为合成输入的偶发问题。记忆提示、上下文使用说明、异步任务查询和过渡期自动提取的实际回归则经定位、修复及独立复审后才重跑，没有用重跑代替修复。
+
+**独立 DSH 原生定时器限制。** 当前 DSH 的 `source.kind=schedule` 投递没有携带创建时的记忆来源/读集，不能证明旧提示词独立于已遗忘内容。此路径在首次投递、重试和冷恢复时均拒绝摄取及后续模型发送，不以空读集放行。Viva 定时任务继续走已验证的受信 alias/依赖转交链路。独立原生定时器须补可验证来源适配后才能开放；这属于既有来源屏障接入条件，不新增调度器产品或开发阶段，也不宣称当前所有 DSH 调度入口均可用。
+
+R3–R5 的范围不提前计入 P2：四阶段文档 dream、digest node_search、完整 AST/关系/向量文件索引，以及最终文件引擎切换仍未完成。真实 Web 的完整 dream→检索→遗忘/基础澄清、断线/多标签/权限验证、固定中文真实模型质量和双平台验收继续按原阶段完成。现有 Web smoke 没有证明这些能力，也未交付 Web 管理页面。P2 的循环子 agent 评审与上述本地验收通过，后续保持 R3、R4、R5a、R5b 四阶段；本轮没有运行 Windows CI，不把 macOS 结果当作双平台验收。

@@ -112,3 +112,19 @@ test('late routed output can move a message without changing its memory evidence
   ])
   assert.equal(db.sourceLink(sourceId, segment.id), `viva://timeline/${segment.id}/1/${before[0].id}`)
 })
+
+for (const action of ['search', 'read'] as const) test(`history ${action} does not return a result after the session expires during owner admission`, async () => {
+  let current = true, release!: () => void
+  const waiting = new Promise<void>(resolve => { release = resolve })
+  const results: object[] = []
+  const desk = createHistoryDesk({ send: message => { results.push(message) }, authorized: () => current,
+    search: async () => { await waiting; return [] },
+    read: async () => { await waiting; return { status: 'deleted' as const } },
+  })
+  const pending = desk.receive({ type: 'history_query', id: 'late-query', sessionId: 'session', request: action === 'read'
+    ? { action: 'read', link: 'viva://timeline/segment/0' } : { query: '原文' } })
+  current = false
+  release()
+  await pending
+  assert.deepEqual(results, [{ type: 'history_result', id: 'late-query', ok: false, text: '会话已失效，无法查询聊天记录' }])
+})

@@ -95,7 +95,9 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
   // The task's own session begins with its brief: nothing of the conversation comes before it.
   const firstWords = (request: { messages?: Array<{ content?: unknown }> }) => {
     const content = request.messages?.[0]?.content
-    return typeof content === 'string' ? content : Array.isArray(content) ? (content[0] as { text?: string })?.text ?? '' : ''
+    const text = typeof content === 'string' ? content : Array.isArray(content) ? (content[0] as { text?: string })?.text ?? '' : ''
+    // The owner appends a unique delivery identity; it is metadata, not copied conversation history.
+    return text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
   }
   const fresh = (hooks.model?.()?.requests ?? []).some((request: unknown) => firstWords(request as { messages?: Array<{ content?: unknown }> }) === OTHER_ASK)
   expect(fresh, 'the task should start afresh from its brief, not from the conversation')

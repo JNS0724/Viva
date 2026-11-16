@@ -28,6 +28,7 @@ export type AgentEvent =
   | { type: 'memory_changed', failure?: string, memories?: readonly string[], invalidated?: readonly string[] }
   | { type: 'files_changed', path: string }
   | { type: 'feed_changed' | 'schedules_changed' }
+  | { type: 'task_closed', taskId: string }
   | { type: 'task_snapshot', snapshot: WindowSnapshot }
   | ({ type: 'task_update' } & Position & Payload<'acp_update'>)
   | ({ type: 'task_permission_closed' } & Position & Payload<'permission_closed'>)

@@ -101,3 +101,24 @@ test('a reattachment waits for the previous native close and cannot have its per
   assert.equal((await pending).ok, true)
   assert.deepEqual(log, ['decline-old', 'closing', 'closed', 'resume'])
 })
+
+test('task prompts deliver the exact owner-bound wire text and closing during alias binding revokes delivery', async () => {
+  const gate = deferred<string>(), sent: unknown[] = []
+  const h = harness({ preparePrompt: () => gate.promise,
+    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => {}, count: () => 0 } })
+  await h.sessions.startTask()
+  const prompt = h.sessions.promptTask('task', 'generated brief')
+  gate.resolve('delivery-token\ngenerated brief')
+  await prompt
+  assert.deepEqual(sent.slice(), [[{ type: 'text', text: 'delivery-token\ngenerated brief' }]])
+
+  const closingGate = deferred<string>()
+  const other = harness({ preparePrompt: () => closingGate.promise,
+    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => {}, count: () => 0 } })
+  await other.sessions.startTask()
+  const revoked = other.sessions.promptTask('task', 'same brief')
+  await other.sessions.closeTask('task')
+  closingGate.resolve('other-token\nsame brief')
+  await revoked
+  assert.equal(sent.length, 1)
+})

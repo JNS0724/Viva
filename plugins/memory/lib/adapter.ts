@@ -1,24 +1,31 @@
-import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
-import { randomUUID } from 'node:crypto'
+import { memoryHostFailure } from '../../../src/memory/contracts/domain-error.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { channel } from 'node:diagnostics_channel'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-user-questions'
-import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, isDailyMemoryStage, memoryClarificationResult, memoryCompute, memoryComputeFailure, memoryKinds } from '../../../src/memory/contracts/memory-contract.ts'
-import type { MemoryCompute, MemoryComputeFailure, MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
-import { objectOf } from '../../../src/shared/unknown-value.ts'
-import { withoutHeaders } from '../../../src/shared/request-routing/header.ts'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-session-log-deepseek'
+import type {} from '@deepseek-ai/dsh-session-title-llm'
+import type {} from '@deepseek-ai/dsh-subagent'
+import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
+import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
+import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
+import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
+import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
+import { MEMORY_HOST_PROTOCOL, parseHostMemoryCommand } from '../../../src/memory/contracts/host.ts'
+import { openMemoryOwner } from '../../../src/memory/node/owner.ts'
+import type { MemoryPluginConfig } from './config.ts'
+import { createMemoryTransport } from './transport.ts'
+import type { MemoryTransportOrigin } from './transport.ts'
+import { createSessionIngestion, retrievalQuestion } from './ingestion.ts'
+import { completeMemoryModel } from './model.ts'
+import { assertMemoryProviderSupported } from './providers.ts'
+import { registerMemoryTools } from './tools.ts'
+import { createControlReceipts } from './control-receipts.ts'
 
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    'viva-memory': { kind: 'viva-memory' }
-  }
-}
-const memorySource = { kind: 'viva-memory' } as const
+import { memorySource } from './source.ts'
 
 function clearPreviousContext(agent: Agent) {
   const session = agent.session
@@ -31,297 +38,188 @@ function clearPreviousContext(agent: Agent) {
   }
 }
 
-type Computed = { text: string } | { failure: MemoryComputeFailure }
-
-async function complete(ctx: Context, job: MemoryCompute, signal: AbortSignal, assembler: BlockAssembler): Promise<Computed> {
-  for await (const chunk of ctx.llm.stream({
-    provider: job.provider, model: job.model, system: job.system,
-    messages: [createUserMessage({ content: [{ type: 'text', text: job.input }], source: memorySource })],
-    ...(job.stage === 'extract' || job.stage === 'note' || job.stage === 'dream' ? {} : { maxTokens: 2000 }),
-    signal,
-  })) assembler.push(chunk)
-  const finish = assembler.finish?.kind
-  if (finish === 'stop') return { text: assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('') }
-  const failure = memoryComputeFailure.safeParse(finish)
-  return { failure: failure.success ? failure.data : 'missing-finish' }
-}
-
-class MemoryDispatchDenied extends Error {}
-
-export function applyMemoryAdapter(ctx: Context, port = process) {
-  if (!port.send) return
+/** Mount once per DSH process. All correctness paths work with no parent process/channel. */
+export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}, port = process) {
   const caller = new AsyncLocalStorage<{ agent: Agent } | { jobId: string }>()
-  type DispatchOrigin = { session: string, parent?: string } | { jobId: string }
-  const modelTransport = new AsyncLocalStorage<{ origin: DispatchOrigin, signal?: AbortSignal, denied?: Error }>()
-  const activeSend = new AsyncLocalStorage<() => void>()
-  const pending = new Map<string, (text: string | null) => void>()
-  const computations = new Map<string, { generation: number, cancel: AbortController }>()
   const lifetime = new AbortController()
-  const send = (message: object) => { if (port.connected) port.send?.(message, () => {}) }
-  const parentOf = (agent: Agent | undefined) => {
-    if (agent?.session.header.origin !== 'subagent') return undefined
-    const seen = new Set([agent.session.id])
-    let child = agent
-    while (child.session.header.origin === 'subagent') {
-      // DSH 0.2.2 records the direct creator. Fork lineage alone is not delegation.
-      const id = child.session.header.parentSession
-      if (!id || seen.has(id)) return undefined
-      const parent = ctx.agents.get(id)
-      if (!parent) return undefined
-      seen.add(id)
-      child = parent
+  let closing = false
+  let lastRoute: { provider: string, model: string } | null = null
+  const send = (message: object) => { if (config.host && port.connected) port.send?.(message, () => {}) }
+  const root = path.resolve(config.dataRoot ?? path.join(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), 'memory'))
+  const embedding = config.modelRoot ? { modelRoot: config.modelRoot, runtimeRoot: config.runtimeRoot } : undefined
+  let lastState = ''
+  let effectsRevision = 0
+  const state = (force = false) => {
+    const value = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch,
+      state: owner.status(), revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(), effectsRevision }
+    const encoded = JSON.stringify(value)
+    if (force || encoded !== lastState) { lastState = encoded; send(value) }
+  }
+  const controlReceipts = createControlReceipts()
+  const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true,
+    canPresentControlReceipt: controlReceipts.available,
+    route: () => lastRoute ?? ctx.agents.list().map(agent => agent.model.current()).find(route => route !== undefined) ?? null,
+    compute: (job, signal) => {
+      const deadline = AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)
+      const combined = AbortSignal.any([lifetime.signal, deadline, ...(signal ? [signal] : [])])
+      return caller.run({ jobId: job.id }, () => completeMemoryModel(ctx, job, combined)).catch(error => {
+        if (error instanceof MemoryComputeError) throw error
+        if (combined.aborted) throw new MemoryComputeError(combined.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted')
+        throw new MemoryComputeError('call-failed')
+      })
+    },
+    quiesce: async () => {
+      // A user may forget from inside pre-step: waiting for that same turn here deadlocks.
+      const current = caller.getStore()
+      for (const agent of ctx.agents.list()) if (agent.status === 'running' && (!current || !('agent' in current) || current.agent !== agent)) {
+        agent.cancel({ kind: 'user' }, { keepInbox: true })
+      }
+    },
+    onContextUsed: notice => send({ type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...notice }),
+    onProjectionChanged: () => send({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, revision: owner.runtime.revision() }),
+    onChange: change => { state(); send({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...change }) }, onHostEffects: () => { effectsRevision++; state() },
+  })
+  const transport = createMemoryTransport(owner)
+  const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session))
+  const recovery = owner.recover()
+  ctx.inject(['commands'], scoped => {
+    const dispose = controlReceipts.bind(scoped.commands)
+    scoped.effect(() => dispose, 'memory local receipts')
+  })
+  // Suppress raw history upload before its serializer; the final transport also rejects unknown
+  // extension fields. Optional because an independent DSH profile may never install this service.
+  ctx.inject(['sessionLogDeepSeek'], scoped => {
+    const restoreUpload = scoped.sessionLogDeepSeek.registerExclusion(() => true)
+    scoped.effect(() => restoreUpload, 'memory history upload exclusion')
+  })
+  const disposed = new WeakSet<Session>()
+  const report = (error: unknown, session?: Session) => {
+    if (session && disposed.has(session)) return // The persisted log is replayed when a new handle opens.
+    console.error('[memory] session intake failed', error instanceof Error ? error.message : 'unknown error')
+  }
+  ctx.on('session/disposed', session => { disposed.add(session) })
+  const observe = (session: Session) => {
+    if (owner.ready()) void ingestion.synchronize(session).catch(error => report(error, session))
+    // Prepared host source changes resume through the host outbox; the next admitted step replays.
+  }
+  ctx.on('session/event', (session, event) => {
+    if (!closing && (event.type !== 'agent/inbox/spliced' || event.data.inserted.length > 0)
+      && ['agent/inbox/spliced', 'user/message', 'assistant/message', 'turn/end'].includes(event.type)) {
+      observe(session)
     }
-    return String(child.session.id)
-  }
-  function exchange(message: { type: string; [field: string]: unknown }, id: string, signal?: AbortSignal, timeoutMs = 2000) {
-    return new Promise<string | null>(resolve => {
-      const cancel = () => {
-        if (message.type === 'memory_query') send({ type: 'memory_query_cancel', id })
-        done(null)
-      }
-      const done = (text: string | null) => {
-        clearTimeout(timer)
-        pending.delete(id)
-        signal?.removeEventListener('abort', cancel)
-        resolve(text)
-      }
-      const timer = setTimeout(cancel, timeoutMs)
-      timer.unref()
-      pending.set(id, done)
-      signal?.addEventListener('abort', cancel, { once: true })
-      if (signal?.aborted) done(null)
-      else send({ ...message, id })
-    })
-  }
-  const request = (input: MemoryRequest, agent: Agent, signal?: AbortSignal) =>
-    exchange({ type: 'memory_query', request: input, parent: parentOf(agent) }, randomUUID(),
-      signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal,
-      input.op === 'recall' ? Math.max(MEMORY_SEMANTIC_TIMEOUT_MS + 1500, DAILY_MEMORY_DEFAULTS.requestTimeoutMs + 500) : undefined)
+  })
+  ctx.on('session/created', session => { if (!closing) observe(session) })
+  // The native lifecycle fires before foreground result resolution; background notices also carry sender identity.
+  // Serialize it with parent intake: a failed provenance transfer blocks that parent's next request.
+  ctx.on('subagent/end', info => {
+    const parent = ctx.sessions.get(info.parentSessionId)
+    if (!closing && parent) void ingestion.derived(parent, { messageId: `subagent-end:${info.runId}`, sourceIds: [],
+      senderSessionId: String(info.id) }).catch(error => report(error, parent))
+  })
 
-  async function authorize(origin: DispatchOrigin, id: string, signal?: AbortSignal) {
-    const allowed = await exchange({ type: 'memory_dispatch', ...origin }, id, signal)
+  const request = async (input: MemoryRequest, agent: Agent, signal?: AbortSignal) => {
+    await ingestion.synchronize(agent.session)
     signal?.throwIfAborted()
-    if (!allowed) throw new MemoryDispatchDenied('Memory context changed. Retry from the conversation.')
-    const deadline = Number(allowed)
-    if (deadline && deadline <= Date.now()) throw new MemoryDispatchDenied('Memory context expired. Retry from the conversation.')
-    return deadline
+    if (!owner.ready()) throw new Error('Memory owner is not ready')
+    const context = owner.sessionContext(String(agent.session.id))
+    return owner.runtime.handleModelRequest(input, context, () => owner.ready() && !signal?.aborted, signal)
   }
-
-  // The app's DSH adapters use fetch at the wire boundary. Leave the prepared adapter in place and
-  // authorize each model POST, including HTTP retries made inside a provider SDK.
-  const fetchOriginal = globalThis.fetch
-  const requests = new WeakMap<object, () => void>()
-  const created = channel('undici:request:create')
-  const bodySent = channel('undici:request:bodySent')
-  function requestCreated(event: unknown) {
-    const request = objectOf(objectOf(event)?.request)
-    const settle = activeSend.getStore()
-    if (request && settle) requests.set(request, settle)
-  }
-  function requestSent(event: unknown) {
-    const request = objectOf(objectOf(event)?.request)
-    if (request) requests.get(request)?.()
-  }
-  function deniedResponse(reason: Error) {
-    // A thrown transport error can cause an SDK retry. This response stays inside DSH.
-    return new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: reason.message } }), {
-      status: 400, headers: { 'content-type': 'application/json', 'x-should-retry': 'false' },
-    })
-  }
-  function oneShotBody(init?: RequestInit): RequestInit | undefined {
-    if (typeof init?.body !== 'string') return init
-    const bytes = new TextEncoder().encode(init.body)
-    const headers = new Headers(init.headers)
-    headers.set('content-length', String(bytes.byteLength))
-    const streamed: RequestInit & { duplex: 'half' } = { ...init, headers, duplex: 'half', body: new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(bytes); controller.close() },
-    }) }
-    return streamed
-  }
-  const guardedFetch: typeof globalThis.fetch = async (input, init) => {
-    const call = modelTransport.getStore()
-    const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
-    if (!call || method.toUpperCase() !== 'POST') return fetchOriginal(input, init)
-    const url = input instanceof Request ? input.url : String(input)
-    if (!/\/(?:messages|responses|chat\/completions)\/?$/u.test(new URL(url).pathname)) return fetchOriginal(input, init)
-    if (call.denied) return deniedResponse(call.denied)
-    const providerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
-    const signal = AbortSignal.any([lifetime.signal, ...[providerSignal, call.signal].filter((signal): signal is AbortSignal => Boolean(signal))])
-    const id = randomUUID()
-    const cutoff = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let held = true
-    const release = () => {
-      if (!held) return
-      held = false
-      clearTimeout(timer)
-      send({ type: 'memory_dispatched', id })
-    }
-    try {
-      const deadline = await authorize(call.origin, id, signal)
-      if (deadline) {
-        const delay = deadline - Date.now()
-        if (delay <= 0) throw new MemoryDispatchDenied('Memory context expired. Retry from the conversation.')
-        if (delay <= 2_147_483_647) {
-          timer = setTimeout(() => cutoff.abort(), delay)
-          timer.unref()
-        }
-      }
-    } catch (error) {
-      if (signal.aborted) throw error
-      call.denied = error instanceof Error ? error : new Error('Memory context changed.')
-      return deniedResponse(call.denied)
-    } finally {
-      if (call.denied || signal.aborted) release()
-    }
-    try {
-      // Undici can replay a reusable POST internally after HTTP 421. A one-shot body leaves retries to the SDK,
-      // so another send has to acquire its own permit. Keep the same wire length for compatible gateways.
-      return await activeSend.run(release, () => fetchOriginal(input, { ...oneShotBody(init), redirect: 'error', signal: AbortSignal.any([signal, cutoff.signal]) }))
-    } finally { release() }
-  }
-  globalThis.fetch = guardedFetch
-  created.subscribe(requestCreated)
-  bodySent.subscribe(requestSent)
-  function receive(raw: unknown) {
-    const message = objectOf(raw)
-    if (message?.type === 'memory_response' && typeof message.id === 'string') {
-      pending.get(message.id)?.(typeof message.text === 'string' ? message.text : null)
-    }
-    if (message?.type === 'memory_dispatch_result' && typeof message.id === 'string') {
-      const deadline = typeof message.deadline === 'number' && Number.isSafeInteger(message.deadline) ? message.deadline : 0
-      pending.get(message.id)?.(message.allowed === true ? String(deadline) : null)
-    }
-    if (message?.type === 'memory_compute_cancel' && typeof message.id === 'string') {
-      const running = computations.get(message.id)
-      if (running && running.generation === message.generation) running.cancel.abort()
-      return
-    }
-    if (message?.type !== 'memory_compute') return
-    const result = memoryCompute.safeParse(message.job)
-    if (!result.success) return
-    const job = result.data
-    const cancel = new AbortController()
-    const signal = AbortSignal.any([lifetime.signal, cancel.signal, AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)])
-    const running = { generation: job.generation, cancel }
-    computations.set(job.id, running)
-    const assembler = new BlockAssembler()
-    const answer = (result: Computed) => {
-      if (computations.get(job.id) !== running) return
-      computations.delete(job.id)
-      if (!cancel.signal.aborted) {
-        send({ type: 'memory_computed', id: job.id, generation: job.generation, ...result,
-          ...((job.stage === 'extract' || job.stage === 'note' || job.stage === 'dream') && assembler.usage ? { usage: assembler.usage } : {}) })
-      }
-    }
-    void caller.run({ jobId: job.id }, () => complete(ctx, job, signal, assembler)).then(answer, error => {
-      const failure = signal.aborted ? (signal.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted') : 'call-failed'
-      answer({ failure: error instanceof MemoryDispatchDenied ? 'dispatch-denied' : failure })
-    })
-  }
-  port.on('message', receive)
-  ctx.effect(() => () => {
-    port.off('message', receive)
-    created.unsubscribe(requestCreated)
-    bodySent.unsubscribe(requestSent)
-    if (globalThis.fetch === guardedFetch) globalThis.fetch = fetchOriginal
-    lifetime.abort()
-    for (const done of pending.values()) done(null)
-  }, 'memory channel')
-  // Auto review builds a request from the session surface inside this tool hook without a session ID.
-  // Take ownership from the actual tool execution rather than guessing from the request text.
+  // Automatic tool review may omit sessionId. Bind the actual execution, not its text.
   let unbindTools: (() => unknown) | undefined
   const bindTools = () => {
     unbindTools?.()
-    unbindTools = ctx.on('tools/pre-execute', (exec, next) => exec.agent ? caller.run({ agent: exec.agent }, next) : next(), { prepend: true })
+    unbindTools = ctx.on('tools/pre-execute', (exec, next) => exec.agent ? caller.run({ agent: exec.agent }, async () => {
+      await ingestion.synchronize(exec.agent!.session)
+      return next()
+    }) : next(), { prepend: true })
     return undefined
   }
   bindTools()
   ctx.on('agent/created', bindTools)
   ctx.on('llm/stream', async function* (options, next) {
-    const origin = caller.getStore()
-    const agent = options.sessionId ? ctx.agents.get(options.sessionId) : origin && 'agent' in origin ? origin.agent : undefined
-    const sessionId = options.sessionId ?? agent?.session.id
-    const jobId = origin && 'jobId' in origin ? origin.jobId : undefined
-    if (!sessionId && !jobId) throw new Error('Model request has no verified memory context')
-    const dispatch: DispatchOrigin = sessionId ? { session: String(sessionId), parent: parentOf(agent) } : { jobId: jobId! }
-    // Installed DeepSeek and configured Viva providers use the intercepted transport above.
-    if (options.provider === 'deepseek-official' || options.provider === 'deepseek-account' || options.provider.startsWith('custom-')) {
-      const transport = { origin: dispatch, signal: options.signal, denied: undefined as Error | undefined }
-      const stream = modelTransport.run(transport, next)
-      const iterator = stream[Symbol.asyncIterator]()
-      try {
-        for (;;) {
-          const chunk = await modelTransport.run(transport, () => iterator.next())
-          if (transport.denied) throw transport.denied
-          if (chunk.done) return
-          yield chunk.value
-        }
-      } finally { await iterator.return?.() }
+    const current = caller.getStore()
+    const agent = options.sessionId ? ctx.agents.get(options.sessionId) : current && 'agent' in current ? current.agent : undefined
+    const session = options.sessionId ? ctx.sessions.get(options.sessionId) : agent?.session
+    const jobId = current && 'jobId' in current ? current.jobId : undefined
+    if (!session && !jobId) throw new Error('Model request has no verified memory origin')
+    if (!owner.ready()) throw new Error('Memory owner is not ready')
+    if (session) {
+      await ingestion.synchronize(session)
+      if (options.purpose === 'session-title') {
+        const recorded = session.snapshotEvents().findLast(event => event.type === 'session/title-llm-request')
+        if (recorded?.type !== 'session/title-llm-request') throw new Error('Session title has no recorded source dependencies')
+        await ingestion.titleDependencies(session, recorded.data.messageSeqs)
+      }
     }
-
-    // A third-party DSH adapter may use another transport. Hold its lease through any internal
-    // retries. A request with an expiring dependency needs a supported final transport gate.
-    const id = randomUUID()
+    // Only audited fetch-based adapters provide an observable physical send/retry boundary.
+    assertMemoryProviderSupported(ctx.llm, options.provider)
+    const origin: MemoryTransportOrigin = session ? { session: String(session.id) } : { jobId: jobId! }
+    const currentOrigin = () => owner.ready() && ('jobId' in origin
+      ? Boolean(owner.runtime.computeAdmission(origin.jobId)?.current())
+      : owner.coordination.allowsSession(origin.session, owner.sessionContext(origin.session).project))
+    const stream = transport.run(origin, next)
+    const iterator = stream[Symbol.asyncIterator]()
     try {
-      if (await authorize(dispatch, id, options.signal)) throw new Error('The model adapter cannot send time-bound memory safely.')
-      yield* next()
-    } finally {
-      send({ type: 'memory_dispatched', id })
-    }
+      for (;;) {
+        const chunk = await transport.run(origin, () => iterator.next())
+        if (!currentOrigin()) throw new Error('Memory context changed before model output was accepted')
+        if (chunk.done) return
+        yield chunk.value
+      }
+    } finally { await transport.run(origin, () => iterator.return?.()) }
   }, { prepend: true })
-  ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
+  ctx.on('agent/pre-step', ({ agent, messages, turn, step, signal }, next) => caller.run({ agent }, async () => {
+    if (!owner.ready()) throw new Error('Memory owner is not ready')
+    const selected = agent.model.current()
+    if (selected) lastRoute = { provider: selected.provider, model: selected.model }
+    // Receipt precedes downstream hooks; admission is recorded only for the accepted message list.
+    await ingestion.receive(agent.session, messages, turn, step, false)
     const decision = await next()
-    if (decision.kind === 'reject' || signal.aborted || step !== 1) return decision
-    clearPreviousContext(agent)
-    const question = decision.messages.filter(message => message.source.kind === 'user')
-      .flatMap(message => message.content.flatMap(part => part.type === 'text' ? [withoutHeaders(part.text)] : [])).join('\n').slice(0, 20_000)
+    if (decision.kind === 'reject' || signal.aborted) return decision
+    const receipts = await ingestion.receive(agent.session, decision.messages, turn, step, true)
+    const controls = receipts.flatMap(receipt => receipt.controlReceipt ? [receipt.controlReceipt] : [])
+    if (controls.length) {
+      await controlReceipts.publish(agent, controls)
+      await ctx.sessions.flush(agent.session)
+      return { kind: 'reject' as const }
+    }
+    const question = retrievalQuestion(receipts)
     if (!question) return decision
+    clearPreviousContext(agent)
     const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision
-    return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text }], source: memorySource })] }
-  }, { prepend: true })
+    const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
+    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources })
+    return { ...decision, messages: [...decision.messages, message] }
+  }), { prepend: true })
+  registerMemoryTools(ctx, request)
 
-  const tools = [
-    { op: 'remember', description: '保存用户本轮明确要求记住的原文。只传原文，保留时间、条件和例外。',
-      parameters: { text: { type: 'string', required: true }, kind: { type: 'string', enum: memoryKinds }, keywords: { type: 'array', items: { type: 'string' } } },
-      input: (session: string, args: { text: string, kind?: typeof memoryKinds[number], keywords?: string[] }): MemoryRequest => ({ op: 'remember', session, ...args }) },
-    { op: 'recall', description: '查有关的有效记忆，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope 设为 project 可查当前工作区项目；不能指定其他项目。用户明确深查或需要关系链、跨记录归纳时可设 deep。中文句子中的关系起点可用「」标出完整名称。match 为 semantic 表示按语义相似度找到的候选，使用前依据原文核对实际对象、关系和限制。notes 提供临时上下文，核验事实时应查看用户原文。relations 是带原始证据和适用区间的路径。conflicts 包含成对依据，pendingChanges 仍待确认。partial 表示结果不完整，可参考 reasons 缩小范围。只有不确定性会改变答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',
-      parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' }, scope: { type: 'string', enum: ['project'] }, deep: { type: 'boolean' }, limit: { type: 'integer' }, min_score: { type: 'number' }, start_date: { type: 'string' }, end_date: { type: 'string' } },
-      input: (session: string, args: { query: string, asOf?: string, scope?: 'project', deep?: boolean, limit?: number, min_score?: number, start_date?: string, end_date?: string }): MemoryRequest => ({ op: 'recall', session, ...args }) },
-    { op: 'forget', description: '用户明确要求忘掉时使用。请用户说「忘掉 #编号」，也可以在关于你中操作。',
-      parameters: { id: { type: 'integer', required: true } },
-      input: (session: string, args: { id: number }): MemoryRequest => ({ op: 'forget', session, id: args.id }) },
-  ] as const
-  const output = {
-    schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
-    render: (_args: unknown, value: { text: string }) => [{ type: 'text' as const, text: value.text }],
-  } as const
-  function register<P extends ParameterSchemaSpec>(op: string, description: string, parameters: P, make: (session: string, args: unknown) => MemoryRequest) {
-    ctx.tools.register(defineTool({
-      name: 'memory_' + op, description, parameters, output,
-      execute: async (args, exec) => ({ text: exec.agent
-        ? await request(make(String(exec.agent.session.id), args), exec.agent, exec.signal) ?? '{"status":"unavailable"}'
-        : '{"status":"unavailable"}' }),
-    }))
+  const receive = (raw: unknown) => {
+    const message = objectOf(raw)
+    if (!config.host || message?.type !== 'memory_host_request' || typeof message.requestId !== 'string') return
+    const requestId = message.requestId
+    void (async () => {
+      if (message.protocol !== MEMORY_HOST_PROTOCOL || message.epoch !== owner.epoch) throw new Error('Memory host protocol or epoch mismatch')
+      const command = parseHostMemoryCommand(message.method, message.input)
+      const result = await owner.handleHost(command.method, command.input)
+      // The host must see recovery/admission metadata before an acknowledged mutation resumes work.
+      state()
+      send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: true, result })
+    })().catch(error => send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: false,
+      error: memoryHostFailure(error) }))
   }
-  for (const tool of tools) register(tool.op, tool.description, tool.parameters, (session, args) => tool.input(session, args as never))
-  ctx.tools.register(defineTool({
-    name: 'memory_clarify',
-    description: '仅在当前回答或操作确实需要某项争议事实、也无法先给条件式答案或继续其他部分时使用。ref 必须来自本轮 memory_recall。回答只决定本轮用值。',
-    parameters: { ref: { type: 'string', required: true } }, output,
-    async execute({ ref }, exec) {
-      const agent = exec.agent
-      const unavailable = { text: '{"status":"unavailable"}' }
-      if (!agent || !ctx.userQuestions) return unavailable
-      const reply = await request({ op: 'clarify', session: String(agent.session.id), ref }, agent, exec.signal)
-      if (!reply) return unavailable
-      const result = memoryClarificationResult.safeParse(JSON.parse(reply))
-      if (!result.success) return unavailable
-      if (result.data.status !== 'ready') return { text: reply }
-      const answer = await ctx.userQuestions.ask({ agent, signal: exec.signal, questions: [result.data.question] })
-      return { text: JSON.stringify({ status: 'answered', scope: 'turn', answer }) }
-    },
-  }))
-  send({ type: 'memory_ready', version: MEMORY_CONTRACT })
+  if (config.host) port.on('message', receive)
+  ctx.effect(() => async () => {
+    if (config.host) port.off('message', receive)
+    closing = true
+    lifetime.abort()
+    await ingestion.drain()
+    await owner.close()
+    transport.dispose()
+  }, 'memory owner')
+  state()
+  await recovery
+  if (owner.ready()) for (const session of ctx.sessions.list()) await ingestion.synchronize(session)
+  state()
+  return owner
 }

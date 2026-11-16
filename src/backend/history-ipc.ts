@@ -54,10 +54,10 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   workDir?: () => string | null,
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
-  staleSession?: (id: string | null) => boolean,
-  filteredCarry?: (conversationId: string, userOnly?: boolean, targetCwd?: string) => { text: string, turns: number, evidence: HistoryEvidence[] },
-  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void,
-  recordSession?: (id: string | null) => void,
+  staleSession?: (id: string | null) => boolean | Promise<boolean>,
+  filteredCarry?: (conversationId: string, userOnly?: boolean, targetCwd?: string) => { text: string, turns: number, evidence: HistoryEvidence[] } | Promise<{ text: string, turns: number, evidence: HistoryEvidence[] }>,
+  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void | Promise<void>,
+  recordSession?: (id: string | null) => void | Promise<void>,
   deleteHistory?: (id: string) => Promise<void>,
 }) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, chooseExportPath } = deps
@@ -128,16 +128,16 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (!sessionId) return { ok: false as const, reason: 'gone' as const, message: GONE, cwd, info: null }
     try {
       return await selectSession(async ({ switchAgent, select }) => {
-        const stale = deps.staleSession?.(sessionId) ?? false
-        const carried = stale ? deps.filteredCarry?.(found.conversation.id, true) : null
+        const stale = await deps.staleSession?.(sessionId) ?? false
+        const carried = stale ? await deps.filteredCarry?.(found.conversation.id, true) : null
         const started = await switchAgent(stale ? null : sessionId, cwd, { exactly: true })
         const { mode, model } = agentInfo()
         const topicId = found.conversation.topicId ?? found.conversation.id
         const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id, topicId })
         select(next)
-        if (stale) deps.recordSession?.(started.sessionId)
+        if (stale) await deps.recordSession?.(started.sessionId)
         if (carried?.turns) {
-          deps.onCarry?.(started.sessionId, carried.evidence)
+          await deps.onCarry?.(started.sessionId, carried.evidence)
           carryNext(next.id, carried.text)
         }
         return { ok: true as const, info: { ...started, remembersHistory: !stale, conversationId: next.id, topicId }, parentId: found.conversation.id }
@@ -159,16 +159,16 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("workspace.missing.choose"))
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
-    const filtered = deps.filteredCarry?.(found.conversation.id, false, dir)
+    const filtered = await deps.filteredCarry?.(found.conversation.id, false, dir)
     const carried = filtered ?? carriedRecords(part?.messages ?? found.messages)
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(null, dir)
       const { mode, model } = agentInfo()
       const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id, topicId: topicId ?? found.conversation.id })
       select(next)
-      deps.recordSession?.(started.sessionId)
+      await deps.recordSession?.(started.sessionId)
       if (carried.turns) {
-        if (filtered) deps.onCarry?.(started.sessionId, filtered.evidence)
+        if (filtered) await deps.onCarry?.(started.sessionId, filtered.evidence)
         carryNext(next.id, carried.text)
       }
       return { info: { ...started, remembersHistory: false, conversationId: next.id, topicId: next.topicId ?? next.id }, parentId: found.conversation.id, turns: carried.turns }

@@ -23,7 +23,7 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
 }: {
   create: (context: Context, lifetime: DshLifetime) => Instance
   connect: (instance: Instance, context: Context) => Promise<Info>
-  onReady?: (info: Info, context: Context) => void
+  onReady?: (info: Info, context: Context) => void | Promise<void>
   onGone: () => void
   onCrash: (exit: { message: string }, delay: number | null) => void
   restart: () => Promise<unknown>
@@ -112,7 +112,8 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
         const connected = Promise.resolve().then<Info | typeof CANCELLED>(() => isCurrent(run) ? connect(instance, context) : CANCELLED)
         const info = await Promise.race([connected, cancellation])
         if (info === CANCELLED || !isCurrent(run)) return null
-        onReady(info, context)
+        await onReady(info, context)
+        if (!isCurrent(run)) return null
         return info
       } catch (error) {
         if (!isCurrent(run)) return null

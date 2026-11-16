@@ -5,3 +5,7 @@ export { openMemoryStore } from './memory-store.ts'
 export { openMemoryFileStore } from './memory-file-store.ts'
 export { openMemoryFileJournal } from './memory-file-journal.ts'
 export { createMemoryEmbedder } from './memory-embedder.ts'
+
+export { openMemoryOwner } from './owner.ts'
+
+export { memoryProjectScope } from './project-scope.ts'

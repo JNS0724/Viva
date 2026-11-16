@@ -2,7 +2,7 @@ import type { VivaMemoryClient } from './memory-client.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
-import { MAX_MEMORY_CHARS } from '../memory/core/memory-sensitive.ts'
+import { MAX_MEMORY_CHARS } from '../memory/contracts/text-limits.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { IpcResults, MemorySummaryView } from '../shared/ipc-results.ts'
 
@@ -56,28 +56,28 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   const handle = handlerOf(ipcMain)
   const linkFor = (edge: { sourceId: string, conversationId: string | null }) =>
     edge.conversationId ? sourceLink?.(edge.sourceId, edge.conversationId) ?? null : null
-  const withLinks = (item: ReturnType<VivaMemoryClient['listMemories']>['items'][number]) => ({
+  const withLinks = (item: Awaited<ReturnType<VivaMemoryClient['listMemories']>>['items'][number]) => ({
     ...item, evidence: item.evidence.map(edge => ({
       ...edge, link: linkFor(edge),
     })),
   })
-  const list = (query = '') => {
-    const result = client.listMemories(query)
+  const list = async (query = '') => {
+    const result = await client.listMemories(query)
     return { ...result, items: result.items.map(withLinks) }
   }
-  const summary = ({ generated, items }: ReturnType<typeof client.profileView>): MemorySummaryView => ({
+  const summary = ({ generated, items }: Awaited<ReturnType<typeof client.profileView>>): MemorySummaryView => ({
     generated,
     items: items.map(({ text, dependency, evidence }) => ({
       id: dependency.id, text, source: evidence ? { text: evidence.text, link: linkFor(evidence) } : null,
     })),
   })
-  handle('memory:get', () => {
+  handle('memory:get', async () => {
     const project = projectScope?.()
     return {
-      profile: client.profile(), ...list(), onboarding: client.onboarding(),
-      cleanupPending: client.cleanupPending(),
-      revision: client.revision(), habits: habits(),
-      summaries: { user: summary(client.profileView({ kind: 'user' })), project: project ? summary(client.profileView(project)) : null },
+      profile: await client.profile(), ...await list(), onboarding: await client.onboarding(),
+      cleanupPending: await client.cleanupPending(),
+      revision: await client.revision(), habits: habits(),
+      summaries: { user: summary(await client.profileView({ kind: 'user' })), project: project ? summary(await client.profileView(project)) : null },
     }
   })
   handle('memory:list', list)
@@ -89,8 +89,8 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   handle('memory:restore', (id, revision, operation) => client.restoreMemory(id, revision, operation))
   handle('memory:resolve-conflict-pair', (first, second, resolution, operation, conflictId, interval) => client.resolveConflictPair(first, second, resolution.kind === 'replace' ? { ...resolution, text: assertMemoryText(resolution.text) } : resolution,
       operation, conflictId, interval))
-  handle('memory:list-invalid', () => client.listInvalid().map(withLinks))
-  handle('memory:list-changes', (): IpcResults['memory:list-changes'] => client.listChanges().map(change => ({
+  handle('memory:list-invalid', async () => (await client.listInvalid()).map(withLinks))
+  handle('memory:list-changes', async (): Promise<IpcResults['memory:list-changes']> => (await client.listChanges()).map(change => ({
     ...change, evidence: change.evidence.map(edge => ({ text: edge.text, link: linkFor(edge) })),
   })))
   handle('memory:undo-change', (id, revision, operation, expectedRevisions): Promise<IpcResults['memory:undo-change']> =>

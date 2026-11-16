@@ -128,3 +128,19 @@ test('a prompt failure still settles once when gated output recovery fails too',
   assert.deepEqual(errors, [failure])
   assert.equal(operations.has('session'), false)
 })
+
+test('an async owner admission arriving after cancellation cannot send the retired prompt', async () => {
+  const gate = deferred<boolean>(), streams = confirmedStreams()
+  let sends = 0
+  const operations = createAcpOperations({ streams, allowSession: () => gate.promise,
+    connection: () => ({ prompt: async () => { sends++; return { stopReason: 'end_turn' } }, cancel: async () => {} }),
+    cancelPermissions() {}, streamUpdate() {},
+  })
+  const pending = operations.run({ sessionId: 'pending-owner', prompt, onEnd: () => assert.fail('retired request completed'), onError: fail })
+  await flush()
+  assert.equal(operations.cancelPreparing('pending-owner', () => {}), true)
+  gate.resolve(true)
+  await pending
+  assert.equal(sends, 0)
+  operations.dispose()
+})

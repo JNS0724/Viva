@@ -119,7 +119,7 @@ export interface AppPlugin {
   name: string
   dir: string
   contract: string
-  config: (data: { userData: string, permission: string }) => PluginConfig
+  config: (data: { userData: string, permission: string, memory?: { modelRoot: string, runtimeRoot: string, dailyNotes: boolean } }) => PluginConfig
   stock?: StockEntry[]
 }
 
@@ -127,7 +127,7 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-tasks', dir: 'plugins/tasks', contract: 'tasks', config: () => ({}) },
   { name: 'viva-history', dir: 'plugins/history', contract: 'history', config: () => ({}) },
   { name: 'viva-routing', dir: 'plugins/routing', contract: 'stream', config: () => ({ ...ROUTING_PERSONA }) },
-  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: () => ({ host: true }) },
+  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData, memory }) => ({ host: true, dataRoot: path.join(userData, 'memory'), ...memory }) },
   { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
   {
     name: 'viva-questions', dir: 'plugins/questions', contract: 'questions', config: () => ({}),
@@ -183,14 +183,14 @@ export interface UsablePlugin { name: string, dir: string, config: PluginConfig,
  * The plugins to put in the profile, with their config, and the ones left out with the reason.
  * codeRoot: the folder with the app's plugins/ (config.ts CODE_ROOT); dshVersion: the dsh installed in the project.
  */
-export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS }: {
-  codeRoot: string, userData: string, dshVersion: string, permission?: string, plugins?: readonly AppPlugin[],
+export function resolvePlugins({ codeRoot, userData, dshVersion, permission = DEFAULT_PERMISSION, plugins = APP_PLUGINS, memory }: {
+  codeRoot: string, userData: string, dshVersion: string, permission?: string, plugins?: readonly AppPlugin[], memory?: { modelRoot: string, runtimeRoot: string, dailyNotes: boolean },
 }): { plugins: UsablePlugin[], problems: Array<{ name: string, contract: string, problem: string }> } {
   return plugins.reduce(({ plugins: usable, problems }, plugin) => {
     const dir = path.join(codeRoot, plugin.dir)
     const problem = pluginProblem(plugin, { dir, dshVersion })
     return problem
       ? { plugins: usable, problems: [...problems, { name: plugin.name, contract: plugin.contract, problem }] }
-      : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData, permission }), stock: plugin.stock ?? [] }], problems }
+      : { plugins: [...usable, { name: plugin.name, dir, config: plugin.config({ userData, permission, memory }), stock: plugin.stock ?? [] }], problems }
   }, { plugins: [] as UsablePlugin[], problems: [] as Array<{ name: string, contract: string, problem: string }> })
 }

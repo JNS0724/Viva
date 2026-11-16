@@ -17,10 +17,11 @@ export type HistoryHit = {
   messageId?: number, segmentId: string, seq: number, role: string, at: number, cwd: string | null, title?: string,
   snippet: { before: string, hit: string, after: string }, before?: Nearby, after?: Nearby,
 }
-export type HistorySearch = (query: string, range?: { since?: number, until?: number }, session?: string) => readonly HistoryHit[]
+export type HistorySearch = (query: string, range?: { since?: number, until?: number }, session?: string) => readonly HistoryHit[] | Promise<readonly HistoryHit[]>
 type ReadMessage = { messageId: number, segmentId: string, seq: number, role: string, text: string, at: number, target: boolean }
 export type HistoryRead = (ref: { segmentId: string, seq: number, messageId?: number }, around?: number, session?: string) =>
-  { status: 'found' | 'missing', title: string, messages: readonly ReadMessage[] } | { status: 'deleted' }
+  HistoryReadResult | Promise<HistoryReadResult>
+type HistoryReadResult = { status: 'found' | 'missing', title: string, messages: readonly ReadMessage[] } | { status: 'deleted' }
 
 const SPEAKERS: Readonly<Record<string, string>> = { user: '你', assistant: 'Viva', note: '记录' }
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -53,7 +54,7 @@ export function historyAnswer(_query: string, hits: readonly HistoryHit[]): stri
 const cut = (text: string) => (text.length > MAX_READ_CHARS ? `${text.slice(0, MAX_READ_CHARS)}…（后面略）` : text)
 
 /** The messages around one, oldest first, the one asked for marked; or why there are none. */
-export function historyReadAnswer(read: ReturnType<HistoryRead>): string {
+export function historyReadAnswer(read: Awaited<ReturnType<HistoryRead>>): string {
   if (read.status === 'deleted') return '这条记录已经删除了，读不到原文。如实告诉用户。'
   const lead = read.status === 'missing' ? '原文已经不在了（可能被重新生成或撤回），下面是它附近的记录，不能当作原文引用。\n' : ''
   const lines = read.messages.flatMap((message) => [
@@ -90,25 +91,27 @@ function parseRead(request: Record<string, unknown>) {
 export function createHistoryDesk({ send, search, read = null, authorized }: {
   send: (message: object) => void, search: HistorySearch | null, read?: HistoryRead | null, authorized: (session: string) => boolean,
 }) {
-  function answer(request: Record<string, unknown>, session: string) {
+  async function answer(request: Record<string, unknown>, session: string) {
     if (request.action === 'read') {
       if (!read) throw new Error('当前应用读不了聊天记录原文')
       const { ref, around } = parseRead(request)
-      return historyReadAnswer(read(ref, around, session))
+      return historyReadAnswer(await read(ref, around, session))
     }
     if (!search) throw new Error('当前应用没有聊天记录可查')
     const { query, range } = parseSearch(request)
-    return historyAnswer(query, search(query, range, session))
+    return historyAnswer(query, await search(query, range, session))
   }
 
-  return { receive(raw: unknown) {
+  return { async receive(raw: unknown) {
     if (!raw || typeof raw !== 'object') return
     const message = raw as Record<string, unknown>
     if (message.type !== 'history_query' || typeof message.id !== 'string' || !message.id || message.id.length > 100) return
     try {
       if (typeof message.sessionId !== 'string' || !authorized(message.sessionId)) throw new Error('会话已失效，无法查询聊天记录')
       const request = message.request && typeof message.request === 'object' ? message.request as Record<string, unknown> : {}
-      send({ type: 'history_result', id: message.id, ok: true, text: answer(request, message.sessionId) })
+      const text = await answer(request, message.sessionId)
+      if (!authorized(message.sessionId)) throw new Error('会话已失效，无法查询聊天记录')
+      send({ type: 'history_result', id: message.id, ok: true, text })
     } catch (error) {
       send({ type: 'history_result', id: message.id, ok: false, text: error instanceof Error ? error.message : '查询失败' })
     }

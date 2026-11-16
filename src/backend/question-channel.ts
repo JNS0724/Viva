@@ -88,12 +88,13 @@ export type QuestionAdmission = boolean | (() => boolean)
 export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, memoryClarificationQuestion, allowGeneralQuestion }: {
   send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
   conversationContext?: (sessionId: string) => ConversationContext | null,
-  onAnswer?: (entry: Pending, answers: Answer[], operation?: string) => string | void,
-  memoryClarificationQuestion?: (sessionId: string, id: string, phase: 'show' | 'check') => MemoryQuestion | null,
-  allowGeneralQuestion?: (sessionId: string, questions: readonly Question[], stillWaiting: () => boolean) => QuestionAdmission | Promise<QuestionAdmission>,
+  onAnswer?: (entry: Pending, answers: Answer[], operation?: string) => string | { sourceIds: Readonly<Record<string, string>> } | void | Promise<string | { sourceIds: Readonly<Record<string, string>> } | void>,
+  memoryClarificationQuestion?: (sessionId: string, id: string, phase: 'show' | 'check') => MemoryQuestion | null | Promise<MemoryQuestion | null>,
+  allowGeneralQuestion?: (sessionId: string, questions: readonly Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') => QuestionAdmission | Promise<QuestionAdmission>,
 }) {
   const pending = new Map<string, Pending>()
   const checking = new Map<string, Pending>()
+  const answering = new Set<string>()
 
   const closed = (questionId: string, taskId: string | null, context: ConversationContext | null) => emit(taskId ? { type: 'task_question_closed', taskId, questionId } : { type: 'question_closed', questionId, ...(context ? { context } : {}) })
   const shown = (entry: Pending) => emit(entry.taskId
@@ -101,7 +102,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     : { type: 'question', questionId: entry.question.id, questions: entry.question.questions, ...(entry.context ? { context: entry.context } : {}) })
 
   /** A message from the plugin. */
-  function receive(message: any): void {
+  async function receive(message: any): Promise<void> {
     if (message?.type === 'question_closed') {
       checking.delete(message.id)
       const entry = pending.get(message.id)
@@ -121,49 +122,58 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     const context = taskId ? null : conversationContext?.(message.sessionId) ?? null
     if (!taskId && conversationContext && !context) return send({ type: 'decline', id: question.id })
     const memoryQuestion = question.questions.find(item => item.id.startsWith(MEMORY_QUESTION_PREFIX))
+    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, kind: memoryQuestion ? 'memory' : 'general' }
+    checking.set(question.id, entry)
     if (memoryQuestion) {
-      if (taskId || question.questions.length !== 1) return send({ type: 'decline', id: question.id })
-      const authorized = memoryClarificationQuestion?.(message.sessionId, memoryQuestion.id, 'show')
-      if (!authorized) return send({ type: 'decline', id: question.id })
+      if (taskId || question.questions.length !== 1) { checking.delete(question.id); return send({ type: 'decline', id: question.id }) }
+      const authorized = await memoryClarificationQuestion?.(message.sessionId, memoryQuestion.id, 'show')
+      if (checking.get(question.id) !== entry) return
+      if (!authorized) { checking.delete(question.id); return send({ type: 'decline', id: question.id }) }
       question.questions = [{ ...authorized, header: '', multiSelect: false }]
     }
-    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, kind: memoryQuestion ? 'memory' : 'general' }
-    const admit = (result: QuestionAdmission) => {
+    const admit = async (result: QuestionAdmission) => {
       if (typeof result === 'function') entry.check = result
-      if (result === false || !validQuestion(entry)) return send({ type: 'decline', id: question.id, reason: 'memory-clarification' })
+      if (result === false || entry.kind === 'memory' && !await validQuestion(entry) || entry.check?.() === false) return send({ type: 'decline', id: question.id, reason: 'memory-clarification' })
+      if (checking.get(question.id) !== entry) return
       pending.set(question.id, entry)
       shown(entry)
     }
-    if (memoryQuestion) { admit(true); return }
+    if (memoryQuestion) { await admit(true); checking.delete(question.id); return }
     checking.set(question.id, entry)
     const waiting = () => checking.get(question.id) === entry || pending.get(question.id) === entry
-    const admission = allowGeneralQuestion?.(entry.sessionId, question.questions, waiting) ?? true
-    const finish = (result: QuestionAdmission) => {
+    const admission = allowGeneralQuestion?.(entry.sessionId, question.questions, waiting, 'show') ?? true
+    const finish = async (result: QuestionAdmission) => {
       if (!waiting()) return
       if (result === false) checking.delete(question.id)
-      admit(result)
+      await admit(result)
       checking.delete(question.id)
     }
     if (typeof admission === 'object') {
-      void admission.then(finish, () => finish(false))
-    } else finish(admission)
+      await admission.then(finish, () => finish(false))
+    } else await finish(admission)
   }
 
   /** @returns false when the question is no longer waiting */
-  function answer(questionId: string, answers: unknown, operation?: string): boolean {
+  async function answer(questionId: string, answers: unknown, operation?: string): Promise<boolean> {
     const entry = pending.get(questionId)
-    if (!entry) return false
-    if (!validQuestion(entry)) {
+    if (!entry || answering.has(questionId)) return false
+    answering.add(questionId)
+    try {
+    if (!await validQuestion(entry)) {
       decline(held => held !== entry)
       return false
     }
     const checked = checkAnswers(entry.question.questions, answers)
-    const sourceId = onAnswer?.(entry, checked, operation)
+    const sources = await onAnswer?.(entry, checked, operation)
+    const sourceId = typeof sources === 'string' ? sources : undefined
+    const sourceIds = sources && typeof sources === 'object' ? sources.sourceIds : undefined
+    if (pending.get(questionId) !== entry || !await validQuestion(entry)) return false
     pending.delete(questionId)
     send({ type: 'answer', id: questionId, answers: checked })
     if (entry.taskId || !entry.context) closed(questionId, entry.taskId, entry.context)
-    else emit({ type: 'question_answered', questionId, answers: checked, ...(sourceId ? { sourceId } : {}), context: entry.context })
+    else emit({ type: 'question_answered', questionId, answers: checked, ...(sourceId ? { sourceId } : {}), ...(sourceIds ? { sourceIds } : {}), context: entry.context })
     return true
+    } finally { answering.delete(questionId) }
   }
 
   function decline(keep: (entry: Pending) => boolean, memoryReview = false): void {
@@ -180,13 +190,23 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     }
   }
 
-  function validQuestion(entry: Pending) {
-    if (entry.kind === 'general') return entry.check?.() !== false
+  async function validQuestion(entry: Pending) {
+    try {
+    if (entry.kind === 'general') {
+      if (entry.check?.() === false) return false
+      const result = await allowGeneralQuestion?.(entry.sessionId, entry.question.questions, () => pending.get(entry.question.id) === entry || checking.get(entry.question.id) === entry, 'check')
+      return result !== false && (typeof result !== 'function' || result())
+    }
     return entry.sessionId === sessionId()
-      && Boolean(memoryClarificationQuestion?.(entry.sessionId, entry.question.questions[0].id, 'check'))
+      && Boolean(await memoryClarificationQuestion?.(entry.sessionId, entry.question.questions[0].id, 'check'))
+    } catch { return false }
   }
 
-  const refreshMemoryQuestions = () => decline(validQuestion, true)
+  const refreshMemoryQuestions = async () => {
+    for (const entry of [...pending.values()]) {
+      if (!await validQuestion(entry) && pending.get(entry.question.id) === entry) decline(held => held !== entry, true)
+    }
+  }
 
   /** The conversation on screen is left (or dsh is going away): what it still asked goes unanswered; tasks' stay. */
   const declineAll = () => decline((entry) => entry.taskId !== null)
@@ -195,7 +215,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
 
   /** What a background task still asks (null: the conversation on screen), for a window that opens meanwhile (a reload). */
   function pendingOf(taskId: string | null) {
-    refreshMemoryQuestions()
+    void refreshMemoryQuestions()
     return [...pending.values()].filter(entry => entry.taskId === taskId)
       .map(entry => ({ questionId: entry.question.id, questions: entry.question.questions }))
   }

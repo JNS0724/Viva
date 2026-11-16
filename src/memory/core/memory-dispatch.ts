@@ -5,13 +5,7 @@ export function needsMemoryTransport(evidence: MemoryProvenance | null | undefin
   return Boolean(evidence && (evidence.dependencies.length || evidence.sources.length || evidence.turnOnly))
 }
 
-export function combineMemoryProvenance(first: MemoryProvenance | null, second: MemoryProvenance): MemoryProvenance {
-  if (!first) return second
-  const dependencies = new Map([...first.dependencies, ...second.dependencies].map(item => [JSON.stringify(item), item]))
-  const projects = [...new Set([...first.projects ?? [], ...second.projects ?? []])]
-  return { ...(projects.length ? { projects } : {}), dependencies: [...dependencies.values()], sources: [...new Set([...first.sources, ...second.sources])], turnOnly: first.turnOnly || second.turnOnly,
-    epoch: Math.min(first.epoch, second.epoch) }
-}
+export { combineMemoryProvenance } from '../contracts/provenance.ts'
 
 export class MemoryDispatchConflict extends Error {
   readonly requests: readonly string[]

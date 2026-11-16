@@ -1,7 +1,8 @@
 import { createMemoryReadPolicy, contextAllows, sourceCanRead, retained, visible } from './memory-read-policy.ts'
 import { EXTRACT_SYSTEM, REVIEW_SYSTEM, QUESTION_SYSTEM, questionReview } from './memory-extraction.ts'
 import { MemoryDomainError, defaultMemoryText } from './presentation.ts'
-import type { MemoryPresentation, MemoryTextKey } from './presentation.ts'
+import type { MemoryPresentation } from './presentation.ts'
+import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryRuntimeResources } from './ports/runtime.ts'
 import { z } from 'zod'
 import { PROFILE_KEYS, MAX_FIELD_CHARS } from '../contracts/profile.ts'
@@ -92,7 +93,7 @@ const sameScope = (a: MemoryScope, b: MemoryScope) => a.kind === b.kind && (a.ki
 const automaticSource = (source: MemorySource) => source.author === 'user' || source.author === 'answer'
 
 export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, maintainSemanticIndex = false, profilesEnabled = false, profileDelayMs, profileBusy = () => false, projectionChanged, quiesce, changed, injected, dependencies, provisionalRead,
-  dailyNotes = false, noteSourcesUsed,
+  dailyNotes = false, automaticFactProcessing = dailyNotes ? 'daily' : 'source', noteSourcesUsed,
   canCommit = () => true, validateDispatch = () => {}, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
   resources: MemoryRuntimeResources,
@@ -103,6 +104,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   maintainSemanticIndex?: boolean,
   profilesEnabled?: boolean,
   dailyNotes?: boolean | DailyMemorySettings,
+  /** Long-term admission trigger; capturing daily notes does not itself choose the fact engine. */
+  automaticFactProcessing?: 'source' | 'daily',
   noteSourcesUsed?: (session: string, sources: readonly string[]) => void,
   profileDelayMs?: number,
   profileBusy?: () => boolean,
@@ -119,7 +122,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 }) {
   const { effects, projectionStore, lexical, identity: { newId: randomUUID, hash: memoryHash } } = resources
   const presentMessage = presentation.text ?? defaultMemoryText
-  const domainError = (code: MemoryTextKey) => new MemoryDomainError(code, presentMessage(code))
+  const domainError = (code: MemoryDomainErrorCode) => new MemoryDomainError(code, presentMessage(code))
   function clean(input: string, max = MAX_MEMORY_CHARS): string {
     const value = input.trim()
     if (!value || value.length > max) throw domainError('invalid.text')
@@ -235,7 +238,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     try { changed({ revision, ids, learned, invalidated }) } catch { console.error('[memory] could not publish committed revision') }
   }
 
-  function createSource(text: string, origin: Origin, operation: string, author: MemorySource['author'], answer?: AnswerSource, explicit = false, saved?: string) {
+  function createSource(text: string, origin: Origin, operation: string, author: MemorySource['author'], answer?: AnswerSource, explicit = false, saved?: string, captured?: { at: number, timezone: string }) {
     const id = operationId.parse(operation)
     const secret = looksSecret(text) || (answer !== undefined && looksSecret(answer.question))
     const denied = secret || (author === 'answer' && !answer?.custom)
@@ -253,7 +256,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       rememberedHash: saved && !denied ? memoryHash(saved) : null, length: denied ? 0 : text.length,
       question: answer && !denied && !store.excluded(answer.question, origin.context ?? origin.scope) ? answer.question.slice(0, 1000) : null,
       requestId: answer?.requestId ?? null, questionId: answer?.questionId ?? null,
-      at: now(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      at: captured?.at ?? now(), timezone: captured?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       outcome: denied ? 'rejected' : 'pending', withdrawn: false,
     }
     store.insertSource(source)
@@ -268,13 +271,17 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     turnSources.set(session, [...new Set([...(turnSources.get(session) ?? []), id])].slice(-24))
   }
 
-  function accept(text: string, origin: Origin, operation: string = randomUUID(), answer?: AnswerSource): Receipt {
+  function accept(text: string, origin: Origin, operation: string = randomUUID(), answer?: AnswerSource, intake?: { deferAutomatic?: boolean, at: number, timezone: string }): Receipt {
     const source = store.tx(() => {
       const known = store.readSource(operation)
       const content = rememberContent(text)
       const explicit = content && content.length <= MAX_MEMORY_CHARS ? content : undefined
-      const current = createSource(text, origin, operation, answer === undefined ? 'user' : 'answer', answer, Boolean(explicit), explicit)
-      if (known || !current.text) return current
+      const current = createSource(text, origin, operation, answer === undefined ? 'user' : 'answer', answer, Boolean(explicit), explicit, intake)
+      if ((known && known.outcome !== 'received') || !current.text) return current
+      if (intake?.deferAutomatic && !explicit) {
+        store.outcome(current.id, 'received')
+        return { ...current, outcome: 'received' }
+      }
       if (explicit) {
         const start = text.lastIndexOf(explicit)
         const scope = current.scope.kind === 'user' && origin.conversation
@@ -285,12 +292,14 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         store.outcome(current.id, 'explicit-pending')
         return { ...current, outcome: 'explicit-pending' }
       }
-      if (dailyNotes && origin.session && origin.conversation) {
+      if (automaticFactProcessing === 'daily' && dailyNotes && origin.session && origin.conversation) {
         store.outcome(current.id, 'note-pending')
         return { ...current, outcome: 'note-pending' }
       }
+      // Completion promotes a durably received original into the extraction queue exactly once.
+      store.outcome(current.id, 'pending')
       effects.queue(EXTRACT, current.id, null)
-      return current
+      return { ...current, outcome: 'pending' as const }
     })
     if (source.outcome === 'pending' || source.outcome === 'explicit-pending') void effects.wake()
     return { sourceId: source.id, outcome: source.outcome === 'explicit-pending' ? 'pending'

@@ -78,7 +78,7 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = [], memoryCurren
 test('a cached schedule result is rechecked on storage retry and refreshed from the original prompt', async () => {
   let current = true
   const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
-  const app = setup([{ ok: true, text: '旧地址', memory }, { ok: true, text: '新地址' }], () => current)
+  const app = setup([{ ok: true, text: '旧地址', memory }, { ok: true, text: '新地址' }], async () => current)
   app.store.create({ title: '周报', prompt: '核对当前地址', cwd: '/work', rule: ONCE })
   app.go('2026-11-06T11:00:00+08:00')
   app.fail('schedule.ran', 1)
@@ -99,7 +99,7 @@ test('a cached schedule result is rechecked on storage retry and refreshed from 
 test('a parked occurrence cannot replay or pause a rewritten recurring schedule after reconnect', async () => {
   let current = true
   const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
-  const app = setup([{ ...UNAVAILABLE, memoryUnavailable: true }], () => current)
+  const app = setup([{ ...UNAVAILABLE, memoryUnavailable: true }], async () => current)
   const { id } = app.store.create({ title: '原定时', prompt: '旧指令', cwd: '/work', memory,
     rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
   app.go('2026-11-06T18:00:01+08:00')
@@ -274,4 +274,59 @@ test('dsh away: the run waits to be woken, not on the timer (no spinning); woken
   runs.wake()
   await settle()
   assert.equal(asked.length, 2)
+})
+
+test('an asynchronous stale creation check prevents a scheduled model request', async t => {
+  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const app = setup([], async () => false)
+  t.after(() => app.db.close())
+  app.store.create({ title: '周报', prompt: '过期的地址', cwd: '/work', rule: ONCE, memory })
+  app.go('2026-11-06T11:00:00+08:00')
+  const runner = app.make()
+  t.after(() => runner.close())
+  runner.wake()
+  await app.settle()
+  assert.equal(app.asked.length, 0)
+  assert.equal(app.feed.list().length, 1)
+  assert.ok(!app.feed.list()[0]!.body.includes('答：'))
+  assert.equal(app.runs(), 0)
+})
+
+test('a schedule changed while the remote admission check waits does not run its old prompt', async t => {
+  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  let release!: (current: boolean) => void
+  const current = new Promise<boolean>(resolve => { release = resolve })
+  const app = setup([], async () => current)
+  t.after(() => app.db.close())
+  const { id } = app.store.create({ title: '周报', prompt: '旧指令', cwd: '/work', memory,
+    rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
+  app.go('2026-11-06T18:00:01+08:00')
+  const runner = app.make()
+  t.after(() => runner.close())
+  runner.wake()
+  app.store.update(id, { prompt: '新指令' })
+  release(true)
+  await app.settle()
+  assert.equal(app.asked.length, 0)
+  assert.equal(app.feed.list().length, 0)
+  assert.equal(app.runs(), 0)
+})
+
+test('closing a schedule runner while its remote result check waits prevents delivery', async t => {
+  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  let release!: (current: boolean) => void
+  const current = new Promise<boolean>(resolve => { release = resolve })
+  const app = setup([{ ok: true, text: '旧结果', memory }], async () => current)
+  t.after(() => app.db.close())
+  app.store.create({ title: '周报', prompt: '汇总', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  const runner = app.make()
+  runner.wake()
+  await app.settle()
+  assert.equal(app.asked.length, 1)
+  runner.close()
+  release(true)
+  await app.settle()
+  assert.equal(app.feed.list().length, 0)
+  assert.equal(app.runs(), 1)
 })

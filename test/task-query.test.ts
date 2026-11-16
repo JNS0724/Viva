@@ -113,7 +113,7 @@ test('the agent\'s schedule changes travel the same channel: checked, carried ou
   const port = new EventEmitter()
   const acted: unknown[] = []
   const desk = createTasksDesk({
-    send: message => port.emit('message', message), authorized: id => id === 'main', read: () => ({ tasks: [] }),
+    send: message => port.emit('message', message), authorized: id => id === 'main', read: () => ({ observedAt: 0, tasks: [], total: 0, nextOffset: null }),
     act: async (request, sessionId) => {
       acted.push([request, sessionId])
       if (request.op === 'schedule_delete') throw new Error('没有这个定时任务')
@@ -127,7 +127,7 @@ test('the agent\'s schedule changes travel the same channel: checked, carried ou
   await assert.rejects(channel.request({ op: 'schedule_update', title: '无 id' }, 'main'))
   await assert.rejects(channel.request({ op: 'schedule_list' }, 'old'), /会话已失效/)
   assert.equal(acted.length, 2, 'nothing malformed or from a stale session reaches the app')
-  const readOnly = createTasksDesk({ send: message => port.emit('message', message), authorized: () => true, read: () => ({}) })
+  const readOnly = createTasksDesk({ send: message => port.emit('message', message), authorized: () => true, read: () => ({ observedAt: 0, tasks: [], total: 0, nextOffset: null }) })
   const second = createTasksChannel({ send: message => readOnly.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
   await assert.rejects(second.request({ op: 'schedule_list' }, 'main'), /未启用/)
   channel.close(); second.close()
@@ -135,4 +135,54 @@ test('the agent\'s schedule changes travel the same channel: checked, carried ou
 
 test('tasks are not started, stopped or messaged over this channel: only an accepted routing decision does that', () => {
   for (const op of ['start', 'stop', 'message']) assert.throws(() => parseTaskAction({ op, brief: '整理', taskId: 't1', text: '接着做' }))
+})
+
+
+test('task query IPC waits for async owner authorization before serializing data or failures', async () => {
+  const port = new EventEmitter()
+  const registry = createTaskRegistry()
+  registry.put({ id: 'persisted', title: 'resume after restart', cwd: '/work' }, true)
+  let release!: () => void
+  const admitted = new Promise<void>(resolve => { release = resolve })
+  let responses = 0
+  const desk = createTasksDesk({
+    send: message => { responses++; port.emit('message', message) }, authorized: () => true,
+    read: async (request, session) => {
+      await admitted
+      if (session === 'revoked') throw new Error('owner rejected stale dependencies')
+      return registry.query(request, { cwd: '/work' })
+    },
+  })
+  const channel = createTasksChannel({ send: message => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
+  try {
+    const pending = channel.request({ op: 'list' }, 'main')
+    await Promise.resolve()
+    assert.equal(responses, 0, 'an unresolved query must not become a successful empty object')
+    release()
+    const listed = JSON.parse(await pending) as { tasks: { taskId: string, status: string }[] }
+    assert.equal(listed.tasks[0]!.taskId, 'persisted')
+    assert.equal(listed.tasks[0]!.status, 'interrupted')
+    const selected = JSON.parse(await channel.request({ op: 'get', taskId: 'persisted' }, 'main')) as { task: { taskId: string } }
+    assert.equal(selected.task.taskId, 'persisted')
+    await assert.rejects(channel.request({ op: 'list' }, 'revoked'), /owner rejected stale/)
+  } finally { channel.close() }
+})
+
+
+test('a task query never publishes private results after its session expires during owner authorization', async () => {
+  const port = new EventEmitter()
+  let active = true, release!: () => void
+  const paused = new Promise<void>(resolve => { release = resolve })
+  const responses: object[] = []
+  const desk = createTasksDesk({
+    send: message => { responses.push(message); port.emit('message', message) }, authorized: () => active,
+    read: async () => { await paused; return { observedAt: 0, tasks: [], total: 7, nextOffset: null } },
+  })
+  const channel = createTasksChannel({ send: message => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
+  try {
+    const pending = channel.request({ op: 'list' }, 'old-session')
+    active = false; release()
+    await assert.rejects(pending, /会话已失效/)
+    assert.ok(responses.every(message => !JSON.stringify(message).includes('total')))
+  } finally { channel.close() }
 })

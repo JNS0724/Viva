@@ -62,3 +62,11 @@ test('what the history kept comes back as it was, leaving out what is not a mess
   assert.deepEqual(texts(back), ['user:查天气', 'assistant:晴'])
   assert.deepEqual(texts(said(back, '后天呢')), ['user:查天气', 'assistant:晴', 'user:后天呢'])
 })
+
+test('custom task answers preserve independent source identities across persistence and reload', () => {
+  const questions = [{ id: 'city', question: '城市？' }, { id: 'language', question: '语言？' }]
+  const answers = [{ id: 'city', selected: [], custom: '杭州' }, { id: 'language', selected: [], custom: '英语' }]
+  const transcript = answered([], questions, answers, { city: 'source-city', language: 'source-language' })
+  assert.deepEqual(saved(transcript), [{ role: 'user', text: '杭州', sourceId: 'source-city' }, { role: 'user', text: '英语', sourceId: 'source-language' }])
+  assert.deepEqual(saved(fromSaved(saved(transcript))), saved(transcript))
+})

@@ -1,3 +1,4 @@
+import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 /** Optional wording supplied by a host; domain error codes and rules do not depend on its locale. */
 const defaultText = Object.freeze({
   'change.pending': 'A memory change is in progress.',
@@ -27,8 +28,8 @@ export function defaultMemoryText(key: MemoryTextKey, values: MemoryTextValues =
   return defaultText[key].replace(/\{(\w+)\}/g, (slot, name: string) => Object.hasOwn(values, name) ? String(values[name]) : slot)
 }
 export class MemoryDomainError extends Error {
-  readonly code: MemoryTextKey
-  constructor(code: MemoryTextKey, message = defaultMemoryText(code)) {
+  readonly code: MemoryDomainErrorCode
+  constructor(code: MemoryDomainErrorCode, message = defaultMemoryText(code)) {
     super(message)
     this.name = 'MemoryDomainError'
     this.code = code

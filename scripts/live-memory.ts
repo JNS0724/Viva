@@ -17,7 +17,7 @@ import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import type { MemoryEntry } from '../src/memory/core/ports/store.ts'
 import { objectOf } from '../src/memory/contracts/unknown-value.ts'
 import type { SQLOutputValue } from 'node:sqlite'
-import { createMemoryRuntime } from '../src/backend/memory-runtime.ts'
+import { randomUUID } from 'node:crypto'
 import { DEEPSEEK_DEFAULT, parseModelValue } from '../src/backend/model-providers.ts'
 import { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
@@ -86,7 +86,9 @@ type Injection = { session: string, turn: number, pushed: Array<{ text: string, 
 /** One turn: the answer, the tool calls with their arguments, and the permissions refused. */
 async function ask(bridge: Bridge, events: readonly BridgeEvent[], question: string) {
   const from = events.length
-  await withTimeout(bridge.prompt(question), TURN_TIMEOUT_MS, `「${question}」`)
+  const sourceId = randomUUID(), session = bridge.currentSession()!
+  await bridge.memory.call('sourceAlias', { operationId: sourceId, sourceId, session, conversation: session, text: question })
+  await withTimeout(bridge.prompt(question, [], { sourceId, sourceText: question }), TURN_TIMEOUT_MS, `「${question}」`)
   const turn = events.slice(from)
   const tools = new Map<string, ToolSummary>()
   for (const event of turn) {
@@ -118,12 +120,6 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
   questions: readonly string[], key: string, env: NodeJS.ProcessEnv, dshHome: string, workspace: string, memoryFile: string,
 }) {
   const events: BridgeEvent[] = [], injected: Injection[] = []
-  let route: NonNullable<ReturnType<typeof parseModelValue>> = DEEPSEEK_DEFAULT
-  const origin: { conversation: string | null, session: string | null } = { conversation: null, session: null }
-  const memory = createMemoryRuntime({
-    store: openMemoryStore(memoryFile), route: () => route, compute: (job, signal) => bridge.memory.compute(job, signal),
-    quiesce: async () => {}, changed: () => {}, injected: (session, turn, pushed) => injected.push({ session, turn, pushed }),
-  })
   const bridge = createAcpBridge({
     routing: testRequests(),
     dshBin: path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
@@ -131,10 +127,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
     profile: DSH_PROFILE,
     overlay: vivaLayerFile(dshHome),
     cwd: workspace,
-    memoryRequest: request => memory.handle(request, origin),
-    beginMemoryJobDispatch: (_id, jobId) => memory.computeCurrent(jobId),
-    readyMemory: () => { void memory.wake() },
-    onSessionCreated: memory.recordSession,
+    memoryRequired: true,
     env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
       events.push(event)
@@ -146,30 +139,22 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryFile 
   })
   try {
     const { sessionId, model, modelValue } = await withTimeout(bridge.start(), TURN_TIMEOUT_MS, 'dsh 启动')
-    route = parseModelValue(modelValue ?? '') ?? route
-    origin.conversation = sessionId
-    origin.session = sessionId
     const turns = []
     for (const question of questions) {
-      const receipt = memory.accept(question, origin)
-      memory.bindSource(receipt.sourceId, sessionId)
       const turn = await ask(bridge, events, question)
-      memory.finishTurn(sessionId)
       turns.push(turn)
       process.stdout.write(`\n▶ ${question}\n  工具：${turn.tools.map((t) => t.name).join('、') || '无'}\n  回答：${turn.answer.slice(0, 160).replace(/\n/g, ' ')}\n`)
     }
-    await withTimeout(memory.wake(), TURN_TIMEOUT_MS, '记忆提取')
     return { sessionId, model, turns, injected }
   } finally {
     await bridge.dispose()
-    memory.close()
   }
 }
 
 async function main() {
   const key = readKey()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'live-memory-'))
-  const memoryFile = path.join(dir, 'memory.db')
+  const memoryFile = path.join(dir, 'memory', 'memory.db')
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)

@@ -12,8 +12,9 @@ const choices = (options: readonly SessionConfigOption[] | null | undefined): re
 const resultOf = (result: Acquired): Started => result.ok ? { ok: true, taskId: result.taskId } : result
 
 /** Native attachment/request identities only. TaskRuntime owns admission, application runs, status and storage. */
-export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, emit, describeError, goneMessage, stoppedMessage, allowSession = () => true }: {
-  allowSession?: (id: string) => boolean
+export function createAcpTaskSessions({ connection, acquire, foreground, canResume, prepareFresh, operations, permissions, questions, steer, emit, describeError, goneMessage, stoppedMessage, allowSession = () => true, preparePrompt = async (_id, text) => text }: {
+  preparePrompt?: (id: string, text: string) => Promise<string>
+  allowSession?: (id: string) => boolean | Promise<boolean>
   connection: () => Pick<ClientSideConnection, 'setSessionConfigOption' | 'closeSession'>
   acquire: { resume: (id: string, cwd: string) => Promise<ResumeSessionResponse>, fresh: (cwd: string) => Promise<NewSessionResponse> }
   foreground: () => { sessionId: string | null, cwd: string, config: readonly SessionConfigOption[] | null }
@@ -133,6 +134,8 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     if (disposed) return
     const attachment = sessions.get(taskId)
     if (!attachment?.attached) { emit({ type: 'task_end', taskId, stopReason: 'error', message: goneMessage() }); return }
+    try { text = await preparePrompt(taskId, text) } catch (error) { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: 'error', message: describeError(error) }); return }
+    if (!current(taskId, attachment)) return
     await operations.run({
       sessionId: taskId, prompt: [{ type: 'text', text }],
       onEnd: response => { if (current(taskId, attachment)) emit({ type: 'task_end', taskId, stopReason: response.stopReason }) },
@@ -146,7 +149,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     taskOf: (id: string) => has(id) ? id : null,
     isUnattended: (id: string) => sessions.get(id)?.unattended === true,
     async steerTask(id: string, text: string): Promise<SteerResult> {
-      if (!allowSession(id)) return { ok: false, reason: 'unavailable' }
+      if (!await allowSession(id)) return { ok: false, reason: 'unavailable' }
       const attachment = sessions.get(id)
       if (!attachment?.attached) return { ok: false, reason: 'missing' }
       const result = await steer(id, text)

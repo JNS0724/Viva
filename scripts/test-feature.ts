@@ -18,7 +18,7 @@ const FEATURES = {
   skills: /^(?:skills?[.-])/,
   capabilities: /^(?:capabilit|extensions[.-]|plugins?[.-]|app-plugins[.-]|import-flow[.-]|config-actions[.-]|commands[.-])/,
   files: /^(?:file(?:s[.-]|-access)|workspace-files[.-]|attachments[.-]|image-(?:ipc|store)[.-]|paste[.-]|csv[.-]|remove-tree[.-])/,
-  memory: /^memory[.-]/,
+  memory: /^(?:remote-)?memory[.-]/,
   rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:desk-card|dom|view)|done-notice|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-(?:css|hotpaths)|review-(?:actions|state)|scroll-follow|selectors|stars|timeline-search|turn-rail|user-error)\.test\.(?:js|ts)$/,
   storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|feed-store|task-store)\.test\.(?:js|ts)$/,
   i18n: /^i18n[.-]/,

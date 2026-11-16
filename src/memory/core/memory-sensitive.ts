@@ -1,4 +1,5 @@
-export const MAX_MEMORY_CHARS = 500
+import { MAX_MEMORY_CHARS } from '../contracts/text-limits.ts'
+export { MAX_MEMORY_CHARS } from '../contracts/text-limits.ts'
 
 const KNOWN_CREDENTIAL = /(?:^|[^\p{L}\p{N}])(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{12,}|AKIA[A-Z0-9]{16})(?![A-Za-z0-9_])/u
 

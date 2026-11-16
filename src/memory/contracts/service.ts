@@ -78,7 +78,7 @@ const page = z.strictObject({ items: z.array(memoryRecord), cursor: key.optional
 const profile = z.strictObject({ revision, fields: z.record(key, z.string().max(8_000)), sources: sourceReferences })
 export const memoryHostEffect = z.strictObject({
   effectId: key, causeOperationId: z.uuid(), revision, hostNamespace: key,
-  kind: z.enum(['erase-copies', 'invalidate-context']), sources: sourceReferences,
+  kind: z.enum(['erase-copies', 'invalidate-context']), sources: sourceReferences, sessions: z.array(key).optional(), memoryIds: z.array(z.number().int().positive()).optional(),
 })
 export type MemoryHostEffect = z.infer<typeof memoryHostEffect>
 const ack = z.strictObject({ accepted: z.literal(true) })

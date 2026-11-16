@@ -11,6 +11,7 @@ import type { StartedAgent } from './history-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
 import type { StoredMessage } from './history-schema.ts'
+import type { MemoryHistoryEdit } from './memory-withdrawal.ts'
 import { randomUUID } from 'node:crypto'
 
 const MAX_TEXT_CHARS = 20_000
@@ -41,45 +42,46 @@ function checked(request: { words?: unknown, occurrence?: unknown, keep?: unknow
 
 export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   db: ReturnType<typeof openHistoryDb>,
-  current: () => Conversation, isBusy: () => boolean,
+  current: () => Conversation, isBusy: () => boolean | Promise<boolean>,
   agentInfo: () => { mode?: string | null, model?: string | null },
   selectSession: SelectSession,
-  replaySource?: (id: string, text: string) => boolean,
-  derivedSource?: (id: string) => boolean,
-  canEditSource?: (id: string) => boolean,
-  commitEdit?: (edit: { oldSource: string, newSource: string, previous: Conversation }, save: () => Conversation) => Promise<Conversation>,
-  rebuild?: (previous: Conversation, kept: readonly StoredMessage[], force?: boolean) => { text: string, turns: number, evidence: HistoryEvidence[] } | null,
-  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void,
+  replaySource?: (id: string, text: string) => boolean | Promise<boolean>,
+  derivedSource?: (id: string) => boolean | Promise<boolean>,
+  canEditSource?: (id: string) => boolean | Promise<boolean>,
+  commitEdit?: (edit: MemoryHistoryEdit) => Promise<Conversation>,
+  rebuild?: (previous: Conversation, kept: readonly StoredMessage[], force?: boolean) => { text: string, turns: number, evidence: HistoryEvidence[] } | null | Promise<{ text: string, turns: number, evidence: HistoryEvidence[] } | null>,
+  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void | Promise<void>,
   carryNext?: (id: string, text: string) => void,
-  onContinuation?: (conversation: Conversation, started: StartedAgent) => void,
+  onContinuation?: (conversation: Conversation, started: StartedAgent) => void | Promise<void>,
   traceDb?: () => Pick<ReturnType<typeof openTraceDb>, 'stepsOf'> | null,
 }) {
   const { db, current, isBusy, agentInfo, traceDb, selectSession } = deps
   async function rewind(request: Parameters<typeof checked>[0]) {
     const { words, occurrence, keep, text } = checked(request)
-    if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
+    if (await isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
     const previous = current()
     const stored = db.get(previous.id)
     const original = stored?.messages[keep]
     if (!stored || original?.role !== 'user' || original.text !== words) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
-    if (original.sourceId && deps.derivedSource?.(original.sourceId)) return { ok: false, problem: t('main.feed.rewind.derived') }
+    if (original.sourceId && await deps.derivedSource?.(original.sourceId)) return { ok: false, problem: t('main.feed.rewind.derived') }
     const edit = text !== words && original.sourceId && deps.commitEdit
       ? { oldSource: original.sourceId, newSource: randomUUID(), previous } : null
-    if (edit && deps.canEditSource?.(edit.oldSource) === false) return { ok: false, problem: t('main.memory.rewind.edit.unavailable') }
+    if (edit && await deps.canEditSource?.(edit.oldSource) === false) return { ok: false, problem: t('main.memory.rewind.edit.unavailable') }
     const sourceId = edit ? edit.newSource : text === words ? original.sourceId : undefined
-    if (sourceId && !edit && deps.replaySource && !deps.replaySource(sourceId, text)) return { ok: false, problem: t('main.memory.context.stale') }
+    if (sourceId && !edit && deps.replaySource && !await deps.replaySource(sourceId, text)) return { ok: false, problem: t('main.memory.context.stale') }
     return selectSession(async ({ forkAgent, switchAgent, select }) => {
       const kept = stored.messages.slice(0, keep)
       const forked = edit ? { ok: false as const, reason: 'missing' } : await forkAgent({ words, occurrence })
       if (!forked.ok && forked.reason !== 'missing') return { ok: false, problem: REWIND_PROBLEMS[forked.reason] ?? t("main.rewind-ipc.could.not.return.there", { reason: forked.reason }) }
-      const fallback = !edit && !forked.ok ? deps.rebuild?.(previous, kept) : null
+      const fallback = !edit && !forked.ok ? await deps.rebuild?.(previous, kept) : null
       if (!edit && !forked.ok && !fallback) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] }
       const started = forked.ok ? forked.info : await switchAgent(null, previous.cwd)
       const { mode, model } = { ...agentInfo(), ...started }
+      const draft = db.create({ sessionId: started.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) })
       const save = () => {
         const next = db.save(
           // Going back stays in the topic, even from its first segment (which has no parent to take it from).
-          db.create({ sessionId: started.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) }),
+          draft,
           [...kept, { role: 'user', text, receipt: null, ...(sourceId ? { sourceId } : {}) }],
           { copy: { from: previous.id, count: keep } },
         )
@@ -87,11 +89,11 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
         db.moveRecords({ from: previous.id, to: next.id, upTo: keep })
         return next
       }
-      const next = edit ? await deps.commitEdit!(edit, save) : save()
-      const carried = edit ? deps.rebuild?.(previous, kept, true) : fallback
+      const next = edit ? await deps.commitEdit!({ ...edit, next: draft, kept, keep, text }) : save()
+      const carried = edit ? await deps.rebuild?.(previous, kept, true) : fallback
       select(next)
       if (carried?.turns) {
-        deps.onCarry?.(started.sessionId, carried.evidence)
+        await deps.onCarry?.(started.sessionId, carried.evidence)
         deps.carryNext?.(next.id, carried.text)
       }
       return { ok: true, info: { ...started, conversationId: next.id }, conversation: { id: next.id, messages: kept, ...withRecords(next.id) },
@@ -130,7 +132,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
    * on screen folded off it where the two part.
    */
   async function switchPath(id: unknown) {
-    if (isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
+    if (await isBusy()) return { ok: false, problem: REWIND_PROBLEMS.busy }
     const path = foldedOff(id)
     if (!path) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
     const previous = current()
@@ -141,7 +143,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       db.fold(previous.id, { into: id, at: path.fold.at })
       db.moveRecords({ from: previous.id, to: conversation.id, upTo: path.fold.at })
       select({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
-      deps.onContinuation?.(conversation, started)
+      await deps.onContinuation?.(conversation, started)
       return {
         ok: true,
         info: { ...started, remembersHistory: started.resumed, conversationId: conversation.id },

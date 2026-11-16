@@ -3,3 +3,10 @@ export * from './service.ts'
 export * from './memory-file-contract.ts'
 export * from './embedding.ts'
 export type { MemoryScope, MemorySpan, MemoryCompute } from './memory-contract.ts'
+
+// Host schemas are public contracts, not authorization: only a trusted adapter may invoke them.
+export * from './host.ts'
+export * from './domain-error.ts'
+export type * from './records.ts'
+export { combineMemoryProvenance } from './provenance.ts'
+export * from './text-limits.ts'
