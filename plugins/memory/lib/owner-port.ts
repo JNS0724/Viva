@@ -37,6 +37,7 @@ export type DerivedSource = {
   /** Set only by the native adapter after matching a captured causal delivery receipt. */
   verifiedDelivery?: true
   contentDigest?: string
+  nativeUserSource?: string
   contextGeneration?: number
   senderContextGeneration?: number
   sessionId: string

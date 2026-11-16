@@ -8,6 +8,7 @@ import { clearNativeProjections } from './projection-cache.ts'
 import { projectNativeOriginals } from './project-native-originals.ts'
 import { eraseNativeOutputs } from './erase-native-outputs.ts'
 import { eraseNativeToolResults } from './erase-native-tool-results.ts'
+import { eraseNativeDerivedMessages } from './erase-native-derived-messages.ts'
 import type { NativeOutputTrace } from './publish-native-event-copies.ts'
 
 export class PendingNativePublication extends Error {}
@@ -23,7 +24,8 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
   try {
     const work = owner.operations()
     const outputs = owner.outputOperations(), tools = owner.toolResultOperations()
-    if (!work.length && !outputs.length && !tools.length) return
+    const derived = owner.derivedMessageOperations()
+    if (!work.length && !outputs.length && !tools.length && !derived.length) return
     const root = await realpath(sessionsRoot)
     const pendingOriginals = owner.pendingOriginalOperations()
     const tasks = [
@@ -31,6 +33,8 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
         run: () => eraseNativeOriginals({ root, storageRoot, owner, item, isCold }) })),
       ...tools.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
         run: () => eraseNativeToolResults({ root, storageRoot, operation, isCold, trace }) })),
+      ...derived.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
+        run: () => eraseNativeDerivedMessages({ root, storageRoot, operation, isCold, trace }) })),
       ...outputs.map(operation => ({ pending: operation.journal.pendingSessions().length > 0,
         run: () => eraseNativeOutputs({ root, storageRoot, operation, isCold, trace }) })),
     ]

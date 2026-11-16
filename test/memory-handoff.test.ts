@@ -630,6 +630,10 @@ test('cold Viva startup erases native originals and settled output in root and u
         assert.ok(titles.some(event => event.type === 'session/title' && event.data.title === '独立依据生成的会话名'))
         assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'fallback' && event.data.title === '…'))
         assert.doesNotMatch(JSON.stringify(titles), new RegExp([erased, second].join('|'), 'u'))
+        const memoryInjected = events.flatMap(event => event.type === 'user/message' && event.data.source.kind === 'viva-memory' ? [event.data]
+          : event.type === 'agent/inbox/spliced' ? event.data.inserted.filter(message => message.source.kind === 'viva-memory') : [])
+        assert.ok(memoryInjected.some(message => !message.content.length), 'the authenticated memory injection is physically erased')
+        assert.doesNotMatch(JSON.stringify(memoryInjected), new RegExp([erased, second].join('|'), 'u'))
         const generated = events.filter(event => affectedOutputs.has(event.seq))
         assert.equal(generated.length, affectedOutputs.size)
         for (const event of generated) {

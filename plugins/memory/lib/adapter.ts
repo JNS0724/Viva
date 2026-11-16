@@ -286,7 +286,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision
     const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
-    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
+    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, nativeUserSource: memorySource.kind, sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
       contextGeneration: owner.contextGeneration(String(agent.session.id)), contentDigest: memoryOriginalContentDigest(message) })
     return { ...decision, messages: [...decision.messages, message] }
   }), { prepend: true })
