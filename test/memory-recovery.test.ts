@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
@@ -11,7 +10,28 @@ import { memoryProjectScope } from '../src/backend/memory-project.ts'
 import { createMemoryWithdrawal } from '../src/backend/memory-withdrawal.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { memoryOwnerCaller } from './fixtures/memory-owner-caller.ts'
+import { scratch } from './fixtures/scratch.js'
 
+async function openRecoveryState(directory: string, defer: (close: () => unknown) => void) {
+  const app = openAppDb({ file: join(directory, 'app.db') })
+  let effects: ReturnType<typeof createEffects> | undefined
+  let owner: ReturnType<typeof openMemoryOwner> | undefined
+  let closed = false
+  async function close() {
+    if (closed) return
+    closed = true
+    try { await owner?.close() }
+    finally { try { effects?.close() } finally { app.close() } }
+  }
+  // Register before the remaining initialization: a rejected owner recovery
+  // must release every already-opened resource before scratch removes files.
+  defer(close)
+  const history = openHistoryDb({ db: app.db })
+  effects = createEffects({ db: app.db })
+  owner = openMemoryOwner({ root: join(directory, 'memory'), compute: () => null, route: () => null, quiesce: async () => {} })
+  await owner.recover()
+  return { app, history, effects, owner, close }
+}
 
 test('a pending rewind replacement keeps its original project association after Git changes', async t => {
   for (const scoped of [true, false]) await t.test(scoped ? 'Git directory recreated' : 'formerly unscoped directory gains Git', async t => {
@@ -20,8 +40,7 @@ test('a pending rewind replacement keeps its original project association after 
 })
 
 async function recoverEditedSource(t: import('node:test').TestContext, scoped: boolean) {
-  const directory = mkdtempSync(join(tmpdir(), 'viva-memory-rewind-project-'))
-  t.after(() => rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
+  const { dir: directory, defer } = scratch(t, 'viva-memory-rewind-project-')
   const cwd = join(directory, 'work')
   const git = join(cwd, '.git')
   function initGit() {
@@ -35,16 +54,13 @@ async function recoverEditedSource(t: import('node:test').TestContext, scoped: b
   const firstId = randomUUID(), nextId = randomUUID(), oldSource = randomUUID(), newSource = randomUUID()
   const before = '项目构建要求为蓝色版本', revised = '项目构建要求为琥珀色版本'
   async function open(crashBeforeWithdrawal = false) {
-    const app = openAppDb({ file: join(directory, 'app.db') })
-    const history = openHistoryDb({ db: app.db })
-    const effects = createEffects({ db: app.db })
-    const owner = openMemoryOwner({ root: join(directory, 'memory'), compute: () => null, route: () => null, quiesce: async () => {} })
-    await owner.recover()
+    const state = await openRecoveryState(directory, defer)
+    const { app, history, effects, owner } = state
     const call = memoryOwnerCaller(owner, method => { if (crashBeforeWithdrawal && method === 'commitSourceChange') throw new Error('stop after history commit') })
     const withdrawal = createMemoryWithdrawal({ history: () => history, effects: () => effects, memory: () => ({ call }),
       apply: (_kind, _data, work) => ({ value: transaction(app.db, work) }), changing: async work => work(),
     })
-    return { history, effects, owner, memory: owner.runtime, withdrawal, async close() { await owner.close(); effects.close(); app.close() } }
+    return { ...state, memory: owner.runtime, withdrawal }
   }
   const first = await open(true)
   try {
@@ -75,14 +91,8 @@ async function recoverEditedSource(t: import('node:test').TestContext, scoped: b
 
 test('history withdrawal persists intent before prepare and replays a prepared fence after host transaction failure', async t => {
   for (const point of ['prepare', 'history-commit', 'commit-reply'] as const) await t.test(point, async t => {
-    const directory = mkdtempSync(join(tmpdir(), 'viva-host-withdrawal-'))
-    t.after(() => rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
-    const app = openAppDb({ file: join(directory, 'app.db') })
-    const history = openHistoryDb({ db: app.db })
-    const effects = createEffects({ db: app.db })
-    const owner = openMemoryOwner({ root: join(directory, 'memory'), compute: () => null, route: () => null, quiesce: async () => {} })
-    await owner.recover()
-    t.after(async () => { await owner.close(); effects.close(); app.close() })
+    const { dir: directory, defer } = scratch(t, 'viva-host-withdrawal-')
+    const { app, history, effects, owner } = await openRecoveryState(directory, defer)
     const source = randomUUID(), session = randomUUID()
     const words = '撤回前的会话来源'
     const conversation = history.save(history.create({ sessionId: session }), [{ role: 'user', text: words, sourceId: source, receipt: null }])
@@ -121,15 +131,8 @@ test('history withdrawal persists intent before prepare and replays a prepared f
 
 test('recovery commits all prepared edits before restoring aliases and isolates a failed item', async t => {
   for (const failFirst of [false, true]) await t.test(failFirst ? 'one commit temporarily fails' : 'two prepared edits after restart', async t => {
-    const directory = mkdtempSync(join(tmpdir(), 'viva-multiple-edits-'))
-    t.after(() => rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }))
-    async function open() {
-      const app = openAppDb({ file: join(directory, 'app.db') })
-      const history = openHistoryDb({ db: app.db }), effects = createEffects({ db: app.db })
-      const owner = openMemoryOwner({ root: join(directory, 'memory'), compute: () => null, route: () => null, quiesce: async () => {} })
-      await owner.recover()
-      return { app, history, effects, owner, async close() { await owner.close(); effects.close(); app.close() } }
-    }
+    const { dir: directory, defer } = scratch(t, 'viva-multiple-edits-')
+    const open = () => openRecoveryState(directory, defer)
     const first = await open()
     const intents: Array<{ operationId: string, edit: import('../src/backend/memory-withdrawal.ts').MemoryHistoryEdit }> = []
     try {

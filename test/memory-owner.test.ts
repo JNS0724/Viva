@@ -1,19 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { createNativeOutputJournal } from '../src/memory/node/native-output-journal.ts'
+import { scratch } from './fixtures/scratch.js'
 
 function fixture(t: import('node:test').TestContext, hostNamespace?: string, options: Pick<Parameters<typeof openMemoryOwner>[0], 'dailyNotes'> = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'memory-owner-'))
+  const { dir: root, defer } = scratch(t, 'memory-owner-')
   const owner = openMemoryOwner({ root, hostNamespace, ...options, compute: () => null, route: () => null, quiesce: async () => {} })
-  t.after(async () => { await owner.close(); rmSync(root, { recursive: true, force: true }) })
-  return { owner, root }
+  defer(() => owner.close())
+  return { owner, root, defer }
 }
 const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>['receiveSource']>[0]> = {}) => ({
   sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1,
@@ -78,30 +77,31 @@ test('settled native output publication leaves an immutable receipt when another
 })
 
 test('owner refuses a second process-local connection and can reopen after close', async t => {
-  const { owner, root } = fixture(t)
+  const { owner, root, defer } = fixture(t)
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)
   await owner.close()
   const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => next.close())
   await next.recover(); await next.close()
 })
 test('received original is durable before automatic processing, cancellation keeps it unprocessed', async t => {
-  const { owner, root } = fixture(t)
+  const { owner, root, defer } = fixture(t)
   await owner.recover()
   const input = source()
   const receipt = await owner.receiveSource(input)
-  const db = new DatabaseSync(join(root, 'memory.db')); t.after(() => db.close())
+  const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
   assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(receipt.sourceId)?.outcome, 'received')
   await owner.completeTurn({ sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: '', completed: false, at: input.at, timezone: input.timezone })
   assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(receipt.sourceId)?.outcome, 'received')
   assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
 })
 test('completion promotes source once and keeps original capture time', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
+  const { owner, root, defer } = fixture(t); await owner.recover()
   const input = source({ at: 1730000000000 })
   const receipt = await owner.receiveSource(input)
   const complete = { sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: '收到', completed: true, at: input.at, timezone: input.timezone }
   await owner.completeTurn(complete); await owner.completeTurn(complete)
-  const db = new DatabaseSync(join(root, 'memory.db')); t.after(() => db.close())
+  const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
   const row = db.prepare('SELECT outcome,at FROM memory_sources WHERE id=?').get(receipt.sourceId)
   assert.equal(row?.outcome, 'note-pending'); assert.equal(row?.at, input.at)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_turns').get()?.n, 1)
@@ -116,7 +116,7 @@ test('source alias matches only exact trusted wire text and does not strip user 
   await assert.rejects(owner.receiveSource({ ...next, text: 'changed' }), /identity conflicts/)
 })
 test('native source proof keeps trusted wire locations after its delivery payload is consumed', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
+  const { owner, root, defer } = fixture(t); await owner.recover()
   const input = source({ contentDigest: 'f'.repeat(64) }), sourceId = randomUUID()
   const wireText = `${input.text}\n\n${input.text}`
   await owner.handleHost('sourceAlias', { operationId: sourceId, sourceId, text: input.text, session: input.sessionId, conversation: 'host-thread' })
@@ -124,7 +124,7 @@ test('native source proof keeps trusted wire locations after its delivery payloa
   const spans = [{ start: input.text.length + 2, end: wireText.length }]
   const delivery = await owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId, spans] }) as { wireText: string }
   assert.equal((await owner.receiveSource({ ...input, text: delivery.wireText })).sourceId, sourceId)
-  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true }); t.after(() => db.close())
+  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true }); defer(() => db.close())
   const proof = db.prepare('SELECT source_hash,spans FROM owner_message_wires WHERE message=?').get(input.messageId)
   assert.ok(proof?.source_hash)
   assert.deepEqual(JSON.parse(String(proof.spans)), spans)
@@ -137,7 +137,7 @@ test('native source proof keeps trusted wire locations after its delivery payloa
 })
 
 test('prepared source change survives restart, denies send until host commit, and preserves live fork occurrence', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
+  const { owner, root, defer } = fixture(t); await owner.recover()
   const input = source(), receipt = await owner.receiveSource(input)
   const fork = source({ ...input, sessionId: randomUUID(), inherited: true })
   await owner.receiveSource(fork)
@@ -145,7 +145,7 @@ test('prepared source change survives restart, denies send until host commit, an
   const prepared = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [] }) as { ticket: string }
   assert.throws(() => owner.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'))
   await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
+  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); defer(() => next.close())
   await next.recover(); assert.equal(next.ready(), false)
   await next.handleHost('commitSourceChange', { operationId, ticket: prepared.ticket })
   assert.equal(next.ready(), true)
@@ -267,9 +267,10 @@ test('an independent owner queues native cleanup without inventing a host consum
   assert.equal(result.cleanup, 'pending')
 })
 test('a replacement owner cannot drop a persisted host binding to bypass cleanup', async t => {
-  const { owner, root } = fixture(t, 'viva'); await owner.recover(); await owner.close()
+  const { owner, root, defer } = fixture(t, 'viva'); await owner.recover(); await owner.close()
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /host binding/)
   const next = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => next.close())
   await next.recover(); await next.close()
 })
 test('unique delivery identity separates revoked and new identical user text in the same session', async t => {
@@ -346,7 +347,7 @@ test('an alias whose original is absent from wire is rejected before persisting 
 
 
 test('completed daily capture resumes after restart without duplicate notes or cancelled input', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'memory-owner-processing-'))
+  const { dir: root, defer } = scratch(t, 'memory-owner-processing-')
   let online = false
   const stages: string[] = []
   const open = () => openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
@@ -358,7 +359,7 @@ test('completed daily capture resumes after restart without duplicate notes or c
     },
   })
   let owner = open()
-  t.after(async () => { await owner.close(); rmSync(root, { recursive: true, force: true }) })
+  defer(() => owner.close())
   await owner.recover()
   const input = source({ text: '我唯一的周报提交邮箱是 amber@example.com', admitted: false })
   const received = await owner.receiveSource(input)
@@ -392,13 +393,13 @@ test('completed daily capture resumes after restart without duplicate notes or c
 })
 
 test('completed ordinary input stays canonical when daily capture is disabled', async t => {
-  const { owner, root } = fixture(t, undefined, { dailyNotes: false })
+  const { owner, root, defer } = fixture(t, undefined, { dailyNotes: false })
   await owner.recover()
   const input = source({ text: '每周五下班前提交周报' })
   const receipt = await owner.receiveSource(input)
   await owner.completeTurn({ sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: '', completed: true, at: input.at, timezone: 'UTC' })
   await owner.runtime.wake()
-  const db = new DatabaseSync(join(root, 'memory.db')); t.after(() => db.close())
+  const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
   assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(receipt.sourceId)?.outcome, 'recorded')
   assert.equal(owner.runtime.sourceCurrent(receipt.sourceId), true)
   assert.equal(owner.runtime.listFiles({ kind: 'daily' }).items.length, 0)
@@ -406,7 +407,7 @@ test('completed ordinary input stays canonical when daily capture is disabled', 
 })
 
 test('native generated child instructions retain parent evidence without becoming original facts across restart', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
+  const { owner, root, defer } = fixture(t); await owner.recover()
   const parent = source(), original = await owner.receiveSource(parent)
   const child = source({ derived: true, text: '记住：模型编造的私人邮箱是 fabricated@example.com' })
   owner.initializeSession({ sessionId: child.sessionId, parentSessionId: parent.sessionId })
@@ -415,11 +416,11 @@ test('native generated child instructions retain parent evidence without becomin
   assert.equal(receipt.handledIntent, true); assert.equal(receipt.retrievalQuery, child.text)
   assert.ok(owner.dispatch.snapshot(child.sessionId).sources.includes(original.sourceId))
   await owner.completeTurn({ sessionId: child.sessionId, turn: 1, eventSeq: 3, sourceIds: [], assistant: '', completed: true, at: child.at, timezone: child.timezone })
-  const db = new DatabaseSync(join(root, 'memory.db')); t.after(() => db.close())
+  const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources WHERE session=?').get(child.sessionId)?.n, 0)
   assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
   await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
+  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); defer(() => next.close())
   await next.recover()
   next.initializeSession({ sessionId: child.sessionId, parentSessionId: parent.sessionId })
   assert.equal((await next.receiveSource({ ...child, live: false })).sourceId, receipt.sourceId)
@@ -431,14 +432,14 @@ test('native generated child instructions retain parent evidence without becomin
 })
 
 test('a cold parent admission reconciles child-only reads without a completed settlement receipt', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
+  const { owner, root, defer } = fixture(t); await owner.recover()
   const parent = source(); await owner.receiveSource(parent)
   const child = randomUUID(); owner.initializeSession({ sessionId: child, parentSessionId: parent.sessionId })
   const input = source({ sessionId: child, text: '我用蓝色笔记本' })
   const original = await owner.receiveSource(input)
   assert.ok(!owner.dispatch.snapshot(parent.sessionId).sources.includes(original.sourceId))
   await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
+  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); defer(() => next.close())
   await next.recover()
   const permit = next.acquireSend(randomUUID(), { session: parent.sessionId }, 'persisted tool result'); permit.settled()
   assert.ok(next.dispatch.snapshot(parent.sessionId).sources.includes(original.sourceId))
