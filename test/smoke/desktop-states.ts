@@ -1,7 +1,15 @@
 import fs from 'node:fs/promises'
-import { expect, type TestInfo } from '@playwright/test'
+import { expect, type Locator, type TestInfo } from '@playwright/test'
 import type { SmokeApplication } from './application.ts'
 import { islandContents } from './electron-window.ts'
+
+/** Chromium snaps outline widths to whole device pixels at fractional display scales. */
+const hasFocusOutline = (target: Locator) => target.evaluate(node => {
+  const style = getComputedStyle(node)
+  const paintedPixels = Math.round(Number.parseFloat(style.outlineWidth) * devicePixelRatio)
+  const expectedPixels = Math.max(1, Math.floor(2 * devicePixelRatio))
+  return style.outlineStyle === 'solid' && paintedPixels === expectedPixels
+})
 
 /** Drive the real floating window, including both sides of IPC and the shared composer draft. */
 export async function checkDesktopRedesign(session: SmokeApplication, info: TestInfo, file: { path: string, name: string, size: number }) {
@@ -48,8 +56,18 @@ export async function checkDesktopRedesign(session: SmokeApplication, info: Test
       const height = Math.ceil(Math.max(box!.y + box!.height, panel!.y + panel!.height) - y + 8)
       await fs.writeFile(info.outputPath(name + '.png'), (await contents.capturePage({ x: Math.max(0, x), y: Math.max(0, y), width, height })).toPNG())
     }
-    const outerFocus = () => surface.evaluate(node => getComputedStyle(node).outlineStyle === 'solid' && getComputedStyle(node).outlineWidth === '2px')
-    const layout = () => surface.evaluate(node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height }))
+    const outerFocus = () => hasFocusOutline(surface)
+    const layout = () => surface.evaluate(node => {
+      const bounds = node.getBoundingClientRect()
+      const style = getComputedStyle(node)
+      const borders = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth)
+      const expectedBorderPixels = Math.max(1, Math.floor(devicePixelRatio))
+      const hasExpectedBorders = style.borderTopStyle === 'solid' && style.borderBottomStyle === 'solid'
+        && Math.round(Number.parseFloat(style.borderTopWidth) * devicePixelRatio) === expectedBorderPixels
+        && Math.round(Number.parseFloat(style.borderBottomWidth) * devicePixelRatio) === expectedBorderPixels
+      return { width: Math.round(bounds.width), height: Math.round(bounds.height),
+        contentHeight: Math.round(bounds.height - borders), hasExpectedBorders }
+    })
 
     await expect(field).toBeEditable()
     const draft = '把待办事项单独列出来。'
@@ -71,7 +89,7 @@ export async function checkDesktopRedesign(session: SmokeApplication, info: Test
     await desktop.keyboard.press('Tab')
     await expect(surface.locator('.isl-file-x').first()).toBeFocused()
     expect(await outerFocus()).toBe(false)
-    await expect(surface.locator('.isl-file-x').first()).toHaveCSS('outline-width', '2px')
+    await expect.poll(() => hasFocusOutline(surface.locator('.isl-file-x').first())).toBe(true)
     await take('03b-attachment-remove-focus')
     await desktop.evaluate(async file => {
       const draft = await window.desk.getDraft()
@@ -82,7 +100,7 @@ export async function checkDesktopRedesign(session: SmokeApplication, info: Test
     await publish({ ...idle, target: { key: 'desktop-redesign-switching', blocked: true } })
     await expect(surface.getByRole('status')).toHaveText('正在切换会话，等切换完成再发')
     await expect(surface.getByRole('button', { name: '去设置' })).toHaveCount(0)
-    await expect.poll(layout).toEqual({ width: 320, height: 72 })
+    await expect.poll(layout).toMatchObject({ width: 320, height: 72 })
     await take('05-switching')
     await publish({ ...idle, target: { key: initial, label: '周报同步计划' } })
     await expect(field).toHaveValue(draft)
@@ -107,7 +125,8 @@ export async function checkDesktopRedesign(session: SmokeApplication, info: Test
       await expect(field).toHaveValue('你' + draft)
       await expect(field).toBeFocused()
     } finally { await cdp.detach() }
-    await expect.poll(layout).toEqual({ width: 440, height: 152 })
+    // The natural input height includes borders snapped to the display's device-pixel grid.
+    await expect.poll(layout).toMatchObject({ width: 440, contentHeight: 150, hasExpectedBorders: true })
     await take('06-waiting-question-in-input')
 
     // Constrain only the supplied panel width in the native fixture. The production view and CSS do the layout.
