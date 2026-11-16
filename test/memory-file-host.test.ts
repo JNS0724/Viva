@@ -769,7 +769,7 @@ test('manual file writes use the accepted digest, preserve evidence and support 
   assert.equal(f.store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const first = (await f.client.readFile(created.identity))!
   assert.deepEqual(first.editor, { title: create.title, text: create.text })
-  assert.equal(first.actions.forget, false)
+  assert.equal(first.actions.forget, true)
   const same = await f.client.editFile({ operationId: randomUUID(), identity: first.identity, version: first.version, text: first.editor!.text })
   assert.equal(same.usageVersion, first.version.usageVersion)
   const edit = { operationId: randomUUID(), identity: first.identity, version: first.version, text: 'Standup starts at 10:00.' }
@@ -825,7 +825,7 @@ test('manual IPC reports structured failures without accepting caller provenance
 test('permanent file forget IPC binds owner proof, replays one operation, and reports pending copies honestly', async t => {
   const f = await fixture(t), created = await f.client.createFile({ operationId: randomUUID(), text: 'Explicit manual memory' })
   const detail = (await f.client.readFile(created.identity))!
-  assert.equal(detail.actions.forget, false, 'production activation is still gated on end-to-end erasure acceptance')
+  assert.equal(detail.actions.forget, true, 'the accepted file exposes permanent forget through the production capability')
   const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
   registerRuntimeMemoryIpc(ipc, { client: f.client, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null })
@@ -1378,4 +1378,33 @@ test('the host cannot drop exact file ranges while transferring a real file-only
   }
   assert.equal(await f.owner.handleHost('transfer', { args: [recipient, proof, undefined, true] }), true)
   assert.deepEqual(f.owner.dispatch.snapshot(recipient).fileSources, [f.sourceId])
+})
+
+test('a disjoint read after partial erasure cannot strand a later independent completed human turn', async t => {
+  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
+  const offset = source.text!.indexOf('Tea')
+  const kept = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Tea is served on Monday.', sources: [{ id: source.id,
+      token: memorySourceToken(source), spans: [{ start: offset, end: source.text!.length }] }], reads: [] })
+  const detail = (await f.client.readFile(f.identity))!
+  await f.client.forgetFile({ operationId: randomUUID(), identity: f.identity, version: detail.version })
+  assert.ok(f.store.readSource(f.sourceId)?.erasure)
+  const reader = randomUUID(), message = randomUUID(), words = 'The reading group has not decided which venue to use.'
+  await f.owner.receiveSource({ sessionId: reader, messageId: message, text: words, at: Date.now(), timezone: 'UTC',
+    turn: 1, step: 1, admitted: true, inherited: false })
+  const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: kept.documentId }, f.owner.sessionContext(reader))
+  assert.match(packet, /Tea is served on Monday/)
+  assert.ok(f.owner.dispatch.snapshot(reader).fileSources?.includes(f.sourceId), 'the exact remaining fragment is still authorized')
+  await f.owner.completeTurn({ sessionId: reader, turn: 1, eventSeq: 4, sourceIds: [message], assistant: 'The group is still choosing a venue.',
+    completed: true, at: Date.now(), timezone: 'UTC' })
+  assert.equal(f.store.db.prepare('SELECT state FROM owner_turns WHERE session=? AND turn=1').get(reader)?.state, 'completed')
+  const note = f.store.db.prepare('SELECT source_tokens,assistant_sources FROM memory_note_turns WHERE session=?').get(reader)
+  assert.ok(note, 'the independent human turn reaches the real session/daily intake')
+  assert.deepEqual((JSON.parse(String(note.source_tokens)) as Array<{ id: string }>).map(ref => ref.id), [message])
+  assert.deepEqual(JSON.parse(String(note.assistant_sources)), [], 'unmapped generated prose must not expand a partial file proof to a whole source')
+  const notes = openMemoryNotes(f.store, id => Boolean(f.store.readSource(id)?.text))
+  const groups = notes.pendingGroups().filter(group => group.session === reader)
+  assert.equal(groups.length, 1)
+  assert.equal(notes.pending(groups[0]!.note)[0]?.assistant, '')
+  assert.match(f.owner.runtime.handle({ op: 'file_read', session: reader, id: kept.documentId }, f.owner.sessionContext(reader)), /Tea is served on Monday/)
 })

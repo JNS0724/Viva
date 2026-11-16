@@ -57,7 +57,7 @@ export function removeAbandonedMemoryTemps(root: string) {
  */
 export function openMemoryFileStore(root: string, { sessions = false } = {}) {
   const created = mkdirSync(root, { recursive: true })
-  if (created) {
+  if (created && process.platform !== 'win32') {
     let current = resolve(root)
     const first = resolve(created)
     while (current !== first) { syncDirectory(current); current = dirname(current) }

@@ -42,7 +42,7 @@ test('disabled management details retain authorized accepted content without ena
   assert.equal(detail.markdown, f.doc.markdown)
   assert.equal(detail.enabled, false)
   assert.equal(f.service.resolve(f.identity, allow)?.currentMarkdown, null)
-  assert.deepEqual(detail.actions, { setEnabled: true, edit: false, forget: false, undo: { changeId: 'original-change' } })
+  assert.deepEqual(detail.actions, { setEnabled: true, edit: false, forget: true, undo: { changeId: 'original-change' } })
   memoryFileDetail.parse(detail)
 })
 
@@ -128,4 +128,18 @@ test('management filters apply before paging and input rejects asserted authoriz
   assert.throws(() => memoryFileListRequest.parse({ authorized: true }))
   assert.throws(() => memoryFileIdentity.parse({ ...f.identity, path: '/private/file' }))
   assert.throws(() => memoryFileListRequest.parse({ limit: 0 }))
+})
+
+
+test('permanent forget is offered only for accepted source-backed files', () => {
+  const f = fixture()
+  assert.equal(f.service.detail(f.identity, allow)?.actions.forget, true)
+  assert.equal(f.service.list({ kind: 'digest' }, allow).items[0]?.actions.forget, true)
+  f.doc.enabled = false
+  assert.equal(f.service.detail(f.identity, allow)?.actions.forget, true)
+  f.doc.sources = []
+  assert.equal(f.service.detail(f.identity, allow)?.actions.forget, false)
+  const detail = f.service.detail(f.identity, allow)!
+  assert.throws(() => f.service.forgetEvidence({ operationId: randomUUID(), identity: f.identity, version: detail.version }, allow),
+    { code: 'revision.conflict' })
 })
