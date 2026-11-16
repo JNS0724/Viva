@@ -95,6 +95,8 @@ for (const scenario of ['settled-fork', 'interrupted', 'spill-pending', 'missing
       if (scenario === 'spill-pending') assert.ok(pending.some(call => call.id === rootLease.call.id))
       else if (scenario === 'missing-origin') assert.equal(pending.length, 3)
       else assert.deepEqual(pending, [])
+      assert.equal(admin.hasPlans(), scenario === 'spill-pending' || scenario === 'missing-origin',
+        'the catalog receipt must reflect every tool and spill obligation')
     } finally { admin.close() }
     if (scenario === 'missing-origin' || scenario === 'spill-pending') return
     const verify = new Context(), install = await verify.plugin(jsonl, { root })
@@ -165,5 +167,8 @@ test('an interrupted ordinary memory tool has a cold no-output receipt after the
   for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storages'), hostNamespace: 'viva',
     isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
   const admin = openNativeOriginalMaintenance(memoryRoot, 'viva')!
-  try { assert.deepEqual(admin.unsettledReceipts().tools, []) } finally { admin.close() }
+  try {
+    assert.deepEqual(admin.unsettledReceipts().tools, [])
+    assert.equal(admin.hasPlans(), false, 'proven absence allows the native participant to finish')
+  } finally { admin.close() }
 })
