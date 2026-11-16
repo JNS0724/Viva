@@ -54,7 +54,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       return source?.session === session ? [source] : []
     })
     const source = sources[0]
-    if (!source || !sources.every(item => allowsText(assistant, item))) return
+    if (!source) return
     const day = todayAt(sources.at(-1)!.at, timezone)
     const seen = store.dispatch.snapshot(session)
     const dependencies = [...new Set([...notes.contextSources(session, source), ...seen.sources])]
@@ -62,7 +62,9 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     // This capture stores source IDs, not the precise ranges a file read may
     // have proved. Do not widen a surviving fragment into whole-source proof.
     const contextCurrent = assistantContextCurrent(seen) && allowsDerived(dependencies) && dependencies.every(id => readable(id))
-    const safeAssistant = contextCurrent ? assistant : ''
+    // A generated response may contain protected material or opaque tool
+    // metadata. Suppress that copy without discarding independent human input.
+    const safeAssistant = contextCurrent && sources.every(item => allowsText(assistant, item)) ? assistant : ''
     const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant ? dependencies : [], assistant,
       { questionSources: dependencies, questionCurrent: contextCurrent })
     if (!key) return
