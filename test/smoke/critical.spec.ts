@@ -281,7 +281,7 @@ test('desktop island preserves draft and focus while showing requests and compac
   await checkDesktopRedesign(session, info, file)
 })
 
-test('desktop portrait releases without undoing the drag or opening the panel', async ({ scenario }) => {
+test('desktop portrait releases without undoing the drag or opening the panel', async ({ scenario }, info) => {
   test.skip(process.platform !== 'darwin' && process.platform !== 'win32', 'Uses the fixed desktop host')
   const run = await scenario({ phase: 'setup', bridge: 'real' })
   const session = await run.start('desktop-gesture')
@@ -290,7 +290,7 @@ test('desktop portrait releases without undoing the drag or opening the panel', 
   try {
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
-    await checkDesktopDragRelease(session.application, desktop)
+    await checkDesktopDragRelease(session.application, desktop, info)
   } finally { await desk.force(false) }
 })
 
