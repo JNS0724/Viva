@@ -1,4 +1,5 @@
 import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-session-title-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { memoryMessageText, memoryOriginalContentDigest } from '../context-recovery.ts'
@@ -11,6 +12,7 @@ type Plan = (candidate: ReplicaCandidate) => readonly TextSpan[] | undefined
  * Authorize every physical copy before replacing any text blocks. */
 export function projectNativeOriginals(events: readonly SessionEvent[], plan: Plan) {
   const digests = new Map<string, string>()
+  const titleSources = new Set<number>()
   const replace = (message: UserMessage): UserMessage => {
     if (message.source.kind !== 'user') return message
     const messageId = String(message.id)
@@ -38,7 +40,9 @@ export function projectNativeOriginals(events: readonly SessionEvent[], plan: Pl
   const projected = events.map(event => {
     if (event.type === 'user/message') {
       const data = replace(event.data)
-      return data === event.data ? event : { ...event, data }
+      if (data === event.data) return event
+      titleSources.add(event.seq)
+      return { ...event, data }
     }
     if (event.type === 'agent/inbox/spliced') {
       const inserted = event.data.inserted.map(replace)
@@ -47,5 +51,23 @@ export function projectNativeOriginals(events: readonly SessionEvent[], plan: Pl
     }
     return event
   })
-  return { events: projected, digests }
+  return { events: projectTitles(projected, titleSources), digests }
+}
+
+function projectTitles(events: readonly SessionEvent[], erasedSources: ReadonlySet<number>): readonly SessionEvent[] {
+  if (!erasedSources.size) return events
+  return events.map(event => {
+    if (event.type !== 'session/title' && event.type !== 'session/title-llm-request') return event
+    if (!event.data.messageSeqs.some(seq => erasedSources.has(seq))) return event
+    if (event.type === 'session/title') {
+      if (event.data.source.kind === 'user') return event
+      return { ...event, data: { ...event.data, title: '…' } }
+    }
+    // This stock native event owns its prepared prompt. Keep the original
+    // positions and non-content request metadata for native replay.
+    const [message] = event.data.messages
+    if (event.data.messages.length !== 1 || message?.role !== 'user' || message.source.kind !== 'dsh-session-title-llm'
+      || message.content.length !== 1 || message.content[0]?.type !== 'text') throw new Error('Invalid native title request')
+    return { ...event, data: { ...event.data, system: '', messages: [{ ...message, content: [{ type: 'text', text: '' }] }] } }
+  })
 }

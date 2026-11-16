@@ -9,6 +9,7 @@ import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
@@ -231,6 +232,18 @@ test('cold Viva startup erases native originals and settled output in root and u
     try {
       const persisted = (await original.read()).events
       const fixture = Session.fromRestore(parentId, persisted, original.header, original.inheritedEventCount, 'detached')
+      const titleMessage = persisted.find(event => event.type === 'user/message' && event.data.source.kind === 'user'
+        && JSON.stringify(event.data.content).includes(erased))
+      assert.ok(titleMessage, 'an authentic human message supplies title provenance')
+      fixture.append('session/title', { title: erased, messageSeqs: [titleMessage.seq], source: { kind: 'fallback' } })
+      fixture.append('session/title-llm-request', { titleProvider: SessionTitleProviderId('fixture'), messageSeqs: [titleMessage.seq],
+        route: { provider: 'fixture', model: 'fixture' }, system: erased, maxTokens: 16,
+        messages: [createUserMessage({ source: { kind: 'dsh-session-title-llm' }, content: [{ type: 'text', text: second }] })] })
+      const independentTitleMessage = persisted.find(event => event.type === 'user/message'
+        && event.data.source.kind === 'user' && JSON.stringify(event.data.content).includes(survivor))
+      assert.ok(independentTitleMessage)
+      fixture.append('session/title', { title: '独立依据生成的会话名', messageSeqs: [independentTitleMessage.seq], source: { kind: 'fallback' } })
+      fixture.append('session/title', { title: '独立的手动会话名', messageSeqs: [], source: { kind: 'user' } })
       const turn = (persisted.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1
       const step = 1, at = Date.now()
       fixture.append('turn/start', { turn })
@@ -410,6 +423,11 @@ test('cold Viva startup erases native originals and settled output in root and u
         const raw = JSON.stringify(rawInputs)
         assert.ok(raw.includes(survivor) && raw.includes(nearby))
         assert.ok(!raw.includes(erased) && !raw.includes(second))
+        const titles = events.filter(event => event.type === 'session/title' || event.type === 'session/title-llm-request')
+        assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'user' && event.data.title === '独立的手动会话名'))
+        assert.ok(titles.some(event => event.type === 'session/title' && event.data.title === '独立依据生成的会话名'))
+        assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'fallback' && event.data.title === '…'))
+        assert.doesNotMatch(JSON.stringify(titles), new RegExp([erased, second].join('|'), 'u'))
         const generated = events.filter(event => affectedOutputs.has(event.seq))
         assert.equal(generated.length, affectedOutputs.size)
         for (const event of generated) {

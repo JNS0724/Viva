@@ -606,6 +606,8 @@ Viva 在删除 trace 行前核对会话、序号、时间和投影摘要。复�
 
 独立探针验证了替换前后中断、追加批次、继承擦除后的副本、同一分叉的混合副本和两条不相交遗忘。真实 Viva 回归覆盖失败流、思考与回复投影、SQLite 检查点、原始日志回退和启动屏障。全量 Electron 测试 2072 项，2070 通过、2 项既有跳过。完整 macOS 冒烟通过 15/15。最后的召回缓存修复另通过类型检查、新构建和 walkthrough 重启冒烟。独立打包的 DSH Web 冒烟发出 34 次本地请求，页面无报错。记录见 `/tmp/r5a-native-output-complete-full.log`、`/tmp/r5a-native-output-cold-final-smoke.log`、`/tmp/r5a-native-output-trace-relaunch.log`、`/tmp/r5a-native-output-cold-final-plugin.log` 和 `/tmp/r5a-native-output-batch-probe.log`。
 
+原生原文发布也会清理依据被擦除用户消息位置的 stock 自动标题及已记录的标题提示词。标题事件保留来源序号与非空占位符。标题请求保留路由和来源坐标，同时清空正文和附属系统提示。用户手动命名以及只引用独立用户消息的标题保持原样。真实 Viva 在发布中断和未登记分叉中读回相同结果。类型检查、构建和定向原生回归通过，见 `/tmp/r5a-native-title-actual.log`。
+
 ## 17 R5b 默认嵌入模型确认
 
 R5b 将 R4 的 MiniLM 发布配方切换到 IBM Granite Embedding 97M Multilingual R2 Q8。已验证的发布产物为 `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`，固定 revision `536a9f241cb3f02a9c5995a1e708c784bd274859`，Apache-2.0。四个模型文件合计 123.2 MB。已验证配置为 384 维、CLS pooling、L2 归一化、空前缀和 128 tokens 上限。发布配方、worker 握手、归档与许可需与该 manifest 一致。资产内容和编码参数派生独立指纹。默认切换后旧向量退出检索，并重建新索引；两代模型维度相同，须在两个向量空间同时存在时验证隔离。
