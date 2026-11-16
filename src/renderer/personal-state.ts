@@ -1,5 +1,6 @@
 import type { ActionHandlers } from './action-types.ts'
 import type { MemoryChangeRecord, MemorySummaryView } from '../shared/ipc-results.ts'
+import type { MemoryFileProfile } from '../memory/contracts/file-management.ts'
 import { initialMemoryFiles } from './memory-file-state.ts'
 /**
  * The "关于你" page (profile, memories, intro) and the 扩展 section of settings (MCP servers, skills).
@@ -16,7 +17,7 @@ export const initialMemory = Object.freeze({
   profile: {},
   items: [],
   total: 0,
-  /** Pending jobs in owner storage. Host and native receipts are tracked separately. */
+  /** Pending owner-storage and file-replica cleanup. */
   cleanupPending: 0,
   /** How many memories stopped counting (replaced or forgotten), and the list once opened. */
   invalid: 0,
@@ -30,6 +31,7 @@ export const initialMemory = Object.freeze({
   changeBusy: false,
   rebuildingIndexes: false,
   summaries: null as { user: MemorySummaryView, project: MemorySummaryView | null } | null,
+  fileProfile: null as MemoryFileProfile | null,
   onboarding: 'pending',
   habits: { text: '', samples: 0 },
   query: '',
@@ -93,6 +95,7 @@ export const PERSONAL_ACTIONS= {
     cleanupPending: data.cleanupPending ?? 0,
     invalid: data.invalid ?? 0,
     summaries: data.summaries ?? null,
+    fileProfile: data.fileProfile ?? null,
     onboarding: data.onboarding,
     habits: data.habits,
     busy: false,
@@ -100,11 +103,11 @@ export const PERSONAL_ACTIONS= {
   memory_load_failed: (state, { message }) => withMemory(state, { loadError: message }),
   memory_open: (state, { view = 'profile' }) => withMemory(
     { ...state, island: false, picker: false, history: { ...state.history, open: false } },
-    { open: true, view, summaries: null, editing: null, editingMemory: null, error: null, loadError: null, query: '',
+    { open: true, view, summaries: null, fileProfile: null, editing: null, editingMemory: null, error: null, loadError: null, query: '',
       files: { ...initialMemoryFiles, writing: state.memory.files.writing }, docs: view === 'intro' ? [] : state.memory.docs },
   ),
   memory_close: (state) => withMemory(state, {
-    open: false, summaries: null, editing: null, editingMemory: null, invalidOpen: false, invalidLoaded: false, invalidItems: [], conflictEditor: null,
+    open: false, summaries: null, fileProfile: null, editing: null, editingMemory: null, invalidOpen: false, invalidLoaded: false, invalidItems: [], conflictEditor: null,
     changesOpen: false, changesLoaded: false, changes: [], error: null, loadError: null, busy: false,
     files: { ...initialMemoryFiles, writing: state.memory.files.writing },
   }),
@@ -113,7 +116,8 @@ export const PERSONAL_ACTIONS= {
   memory_busy: (state) => withMemory(state, { busy: true, error: null }),
   memory_failed: (state, { message }) => withMemory(state, { busy: false, error: message }),
   memory_profile_saved: (state, { profile }) => withMemory(state, { profile, summaries: null, editing: null, busy: false, error: null }),
-  memory_summaries_stale: (state) => state.memory.summaries ? withMemory(state, { summaries: null }) : state,
+  memory_summaries_stale: (state) => state.memory.summaries || state.memory.fileProfile
+    ? withMemory(state, { summaries: null, fileProfile: null }) : state,
   memory_query: (state, { query }) => withMemory(state, { query }),
   /** Answers to an older search arrive late sometimes; only the one still typed counts. */
   memory_listed: (state, { query, items, total }) => (query === state.memory.query

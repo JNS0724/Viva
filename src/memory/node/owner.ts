@@ -829,7 +829,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (!saved) throw new Error('Unknown host effect')
         const effect = JSON.parse(saved.payload as string) as MemoryHostEffect
         if ( (effect.causeOperationId !== command.input.causeOperationId || effect.revision !== command.input.revision)) throw new Error('Host effect version conflicts')
-        db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=?').run(command.input.effectId)
+        const acknowledged = db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=? AND acked=0').run(command.input.effectId)
+        if (options.fileMode && acknowledged.changes && (effect.kind === 'erase-file-copies' || effect.kind === 'erase-copies')) options.onProjectionChanged?.()
         return { accepted: true }
       }
       case 'sourceAlias': return alias(command.input)
@@ -928,7 +929,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'profileView': return runtime.profileView(...command.input.args)
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
-      case 'cleanupPending': return runtime.cleanupPending(...command.input.args)
+      case 'cleanupPending': {
+        const pending = runtime.cleanupPending()
+        if (!options.fileMode) return pending
+        const replicas = db.prepare(`SELECT count(*) AS count FROM (
+          SELECT operation AS id FROM owner_file_native_erasures
+          UNION SELECT id FROM owner_host_effects WHERE acked=0
+            AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')
+        )`).get()
+        return pending + Number(replicas?.count ?? 0)
+      }
       case 'onboarding': return runtime.onboarding(...command.input.args)
       case 'sessionProject': return runtime.sessionProject(...command.input.args)
       case 'recordSessionProject': return runtime.recordSessionProject(...command.input.args)
@@ -962,6 +972,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'useHistory': return coordination.useHistory(...command.input.args)
       case 'listFiles': return runtime.listFiles(command.input.args[0])
       case 'readFile': return runtime.readFile(...command.input.args)
+      case 'fileProfile': return runtime.fileProfile(...command.input.args)
       case 'createFile':
       case 'editFile': return durableManualFileWrite(command)
       case 'setFileEnabled':

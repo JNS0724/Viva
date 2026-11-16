@@ -17,7 +17,7 @@ import { createVivaMemoryClient } from '../src/backend/memory-client.ts'
 import { registerRuntimeMemoryIpc } from '../src/backend/memory-ipc.ts'
 import { checkedIpc } from '../src/shared/ipc-contract.ts'
 import type { RawIpc } from '../src/shared/ipc-contract.ts'
-import type { HostMemoryCaller, HostMemoryMethod, HostMemoryApi } from '../src/memory/contracts/host.ts'
+import type { HostMemoryCaller, HostMemoryMethod, HostMemoryApi, MemoryProject } from '../src/memory/contracts/host.ts'
 import { memoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import type { MemoryHostEffect } from '../src/memory/contracts/service.ts'
 
@@ -273,6 +273,9 @@ test('undoing a disabled digest does not release evidence added by the revision 
 
 test('Viva IPC forwards a versioned management command and rejects caller-supplied authority', async t => {
   const f = await fixture(t)
+  const source = f.store.readSource(f.sourceId)!
+  const profile = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/personal/report-habits.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Prefers weekly progress on Friday.', sources: [{ id: source.id, token: memorySourceToken(source) }], reads: [] })
   const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
   const localLink = 'viva://timeline/segment/0/1'
@@ -282,10 +285,15 @@ test('Viva IPC forwards a versioned management command and rejects caller-suppli
   }, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null,
   sourceLink: (sourceId) => sourceId === f.sourceId ? localLink : null })
   const call = (channel: string, ...args: unknown[]) => listeners.get(channel)!({}, ...args)
-  const page = await call('memory:get') as { fileMode: boolean, items: unknown[], summaries?: unknown }
+  const page = await call('memory:get') as { fileMode: boolean, items: unknown[], summaries?: unknown,
+    fileProfile: HostMemoryApi['fileProfile']['output'] }
   assert.equal(page.fileMode, true)
   assert.deepEqual(page.items, [])
   assert.equal(page.summaries, undefined)
+  const profileIdentity = { ...f.identity, id: profile.documentId }
+  assert.deepEqual(page.fileProfile, { user: [{ identity: profileIdentity, text: 'Prefers weekly progress on Friday.' }], project: null })
+  assert.deepEqual((await call('memory:read-file', profileIdentity) as { sources: Array<{ sourceId: string, link: string | null }> }).sources
+    .map(({ sourceId, link }) => ({ sourceId, link })), [{ sourceId: f.sourceId, link: localLink }])
   const detail = (await f.client.readFile(f.identity))!
   const command = { operationId: randomUUID(), identity: f.identity, version: detail.version, enabled: false }
   assert.throws(() => call('memory:read-file', { ...f.identity, authorized: true }), /invalid memory:read-file/)
@@ -293,6 +301,72 @@ test('Viva IPC forwards a versioned management command and rejects caller-suppli
   assert.deepEqual(await call('memory:read-file', f.identity), { ...detail, sources: detail.sources.map(source => ({ ...source, link: localLink })) })
   assert.equal(memoryFileMutationResult.parse(await call('memory:set-file-enabled', command)).action, 'DISABLE')
   assert.equal((await f.client.readFile(f.identity))?.enabled, false)
+})
+
+test('file profiles use current scoped, undisputed digest evidence rather than legacy facts', async t => {
+  const f = await fixture(t)
+  const add = (sourceId: string, path: string, text: string) => {
+    const source = f.store.readSource(sourceId)!
+    const workspace = memorySourceWorkspace(source)
+    const refs = [{ id: source.id, token: memorySourceToken(source) }]
+    const result = f.documents.commit({ operationId: randomUUID(), workspace, path, expectedRevision: null, action: 'CREATE', markdown: text, sources: refs, reads: [] })
+    return { kind: 'digest' as const, workspace, id: result.documentId }
+  }
+  const user = add(f.sourceId, 'digest/personal/work-style.md', `Weekly reports on Friday. [[${f.created.path}]]`)
+  const project: MemoryProject = { kind: 'project', id: 'test-project' }
+  const projectText = 'Project releases use the staged build.', projectSource = randomUUID()
+  await f.owner.receiveSource({ sessionId: randomUUID(), messageId: projectSource, text: projectText, project: project.id,
+    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  const projectFile = add(projectSource, 'digest/personal/project-release.md', projectText)
+  assert.deepEqual(await f.client.fileProfile(), { user: [{ identity: user, text: 'Weekly reports on Friday.' }], project: null })
+  assert.deepEqual((await f.client.fileProfile(project)).project, [{ identity: projectFile, text: projectText }])
+  assert.deepEqual((await f.client.fileProfile({ kind: 'project', id: 'other-project' })).project, [])
+
+  const detail = (await f.client.readFile(user))!
+  assert.equal(detail.sources[0]?.sourceId, f.sourceId)
+  await f.client.setFileEnabled({ operationId: randomUUID(), identity: user, version: detail.version, enabled: false })
+  assert.deepEqual((await f.client.fileProfile(project)).user, [])
+  const stopped = (await f.client.readFile(user))!
+  await f.client.setFileEnabled({ operationId: randomUUID(), identity: user, version: stopped.version, enabled: true })
+  assert.equal((await f.client.fileProfile(project)).user.length, 1)
+
+  const source = f.store.readSource(projectSource)!, path = 'digest/personal/project-release.md'
+  f.documents.defer({ operationId: 'test-pending-profile', workspace: projectFile.workspace,
+    unit: { name: 'Project releases', bucket: 'personal', summary: projectText, paths: [path] },
+    reason: 'The rollout environment is disputed.', sources: [{ id: source.id, token: memorySourceToken(source) }],
+    reads: [f.documents.read(projectFile.workspace, path)!], files: [], readPolicies: [] })
+  assert.deepEqual((await f.client.fileProfile(project)).project, [])
+  assert.equal((await f.client.fileProfile(project)).user.length, 1)
+})
+
+test('file-mode cleanup stays pending until both host and native owners complete their copies', async t => {
+  const f = await fixture(t), detail = (await f.client.readFile(f.identity))!
+  const operationId = randomUUID()
+  await f.client.forgetFile({ operationId, identity: f.identity, version: detail.version })
+  await f.reopen()
+  assert.equal(f.owner.runtime.cleanupPending(), 0)
+  assert.equal(await f.client.cleanupPending(), 1)
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  const effect = effects.find(item => item.effectId === operationId)!
+  assert.equal(effect.kind, 'erase-file-copies')
+  await f.owner.handleHost('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
+  assert.equal(await f.client.cleanupPending(), 1, 'host acknowledgement cannot settle a pending native copy')
+  f.store.db.prepare('DELETE FROM owner_file_native_erasures WHERE operation=?').run(operationId)
+  assert.equal(await f.client.cleanupPending(), 0)
+})
+
+test('file profile keeps unrelated lines while withholding a verified superseded fragment', async t => {
+  const f = await fixture(t), original = f.store.readSource(f.sourceId)!
+  const common = { workspace: f.identity.workspace, sources: [{ id: original.id, token: memorySourceToken(original) }], reads: [] }
+  const personal = f.documents.commit({ ...common, operationId: randomUUID(), path: 'digest/personal/drink.md', expectedRevision: null,
+    action: 'CREATE', markdown: 'Schedules drinks for weekends.\nKeeps reports concise.' })
+  const prior = f.documents.commit({ ...common, operationId: randomUUID(), path: 'digest/wiki/new-drink.md', expectedRevision: null,
+    action: 'CREATE', markdown: 'Review the drink schedule' })
+  f.documents.commit({ ...common, operationId: randomUUID(), path: prior.path, expectedRevision: prior.revision, action: 'CORRECT',
+    markdown: 'Schedules drinks for weekdays.', corrections: [{ path: personal.path, revision: personal.revision!, startLine: 1, endLine: 1,
+      text: 'Schedules drinks for weekends.', time: '', condition: '' }] })
+  const profile = await f.client.fileProfile()
+  assert.deepEqual(profile.user, [{ identity: { ...f.identity, id: personal.documentId }, text: 'Keeps reports concise.' }])
 })
 
 

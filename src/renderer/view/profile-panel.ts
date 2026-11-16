@@ -8,6 +8,7 @@ import { h, keepingInput, label } from './dom.ts'
 import { icon } from './icons.ts'
 import { deferMemoryFileEditorRender, memoryFilesSection } from './memory-files-panel.ts'
 import type { MemoryChangeRecord, MemorySummaryView } from '../../shared/ipc-results.ts'
+import type { MemoryFileProfileItem } from '../../memory/contracts/file-management.ts'
 
 /** The 关于你 page's part of the state (personal-state.ts). */
 type MemoryPage = State['memory']
@@ -307,6 +308,19 @@ function summarySection(scope: 'user' | 'project', summary: MemorySummaryView | 
     })))
 }
 
+function fileSummarySection(scope: 'user' | 'project', items: readonly MemoryFileProfileItem[] | null, handlers: Handlers) {
+  if (!items?.length) return null
+  return h('section', { class: 'profile-section', 'aria-labelledby': `profile-summary-${scope}`, 'data-profile-summary': scope },
+    h('h3', { class: 'profile-heading', id: `profile-summary-${scope}`, text: t(`profile-panel.summary.${scope}`) }),
+    h('ul', { class: 'memory-list' }, items.map(({ identity, text }, index) => {
+      const id = `profile-memory-${scope}-${index}`
+      return h('li', { class: 'memory-item' },
+        h('div', { class: 'memory-copy' }, h('span', { class: 'memory-text', id, text })),
+        h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
+          'aria-describedby': id, text: t('memory-files.profile.sources'), onClick: () => handlers.showMemoryFile({ identity }) })))
+    })))
+}
+
 function memoryLoadError(memory: MemoryPage, handlers: Handlers) {
   return memory.loadError ? h('div', { class: 'profile-section' },
     h('p', { class: 'form-error', role: 'alert', text: memory.loadError }),
@@ -315,6 +329,7 @@ function memoryLoadError(memory: MemoryPage, handlers: Handlers) {
 }
 
 function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[] {
+  const fileProfile = memory.fileMode && !memory.loadError && !memory.files.selection && !memory.files.editor ? memory.fileProfile : null
   return [
     h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.about.you") }),
     h('p', { class: 'help', text: t(memory.fileMode ? 'memory-files.intro' : 'profile-panel.everything.the.assistant.knows.about.you.is') }),
@@ -325,6 +340,8 @@ function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[
       habitsRow(memory.habits)),
     memory.summaries ? summarySection('user', memory.summaries.user, handlers) : null,
     memory.summaries ? summarySection('project', memory.summaries.project, handlers) : null,
+    fileProfile ? fileSummarySection('user', fileProfile.user, handlers) : null,
+    fileProfile ? fileSummarySection('project', fileProfile.project, handlers) : null,
     memoryLoadError(memory, handlers),
     memory.fileMode && memory.files.editor ? memoryFilesSection(memory, handlers) : memory.loadError ? null
       : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })

@@ -40,16 +40,16 @@ import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDepen
 import { createMemoryDailyUsage } from './memory-daily-usage.ts'
 import { createMemoryFileManagement } from './memory-file-management.ts'
 import { manualFileCopyRefs } from './memory-manual-sources.ts'
-import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
+import { formatMemoryDocument, parseMemoryDocument, readMemoryLines } from './memory-document.ts'
 import { MAX_MESSAGE_CHARS } from '../contracts/text-limits.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import { memoryFileMutation } from '../contracts/file-management.ts'
 import type { MemoryFileMutation, MemoryFileMutationResult, MemoryFileListRequest, MemoryManagedFileIdentity,
-  MemoryFileForgetRequest, MemoryFileSetEnabledRequest, MemoryFileUndoRequest, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
+  MemoryFileForgetRequest, MemoryFileSetEnabledRequest, MemoryFileUndoRequest, MemoryFileCreateRequest, MemoryFileEditRequest, MemoryFileProfile, MemoryFileProfileItem } from '../contracts/file-management.ts'
 import type { MemoryDocumentView } from './memory-document-read-policy.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey } from './memory-file-retrieval.ts'
 import type { FileApplicability, FileNeighbors, FileSearchResult } from './memory-file-retrieval.ts'
-import { memoryWikiLink } from './memory-markdown.ts'
+import { maskMemoryWikiLinks, memoryWikiLink } from './memory-markdown.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
 import { documentSourceRestricted, documentSourceProofCurrent, availableDocumentSourceSpans, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
@@ -72,6 +72,8 @@ const READ_LIMIT = 200
 // Bound the serialized tool response, including evidence, escaped characters and metadata.
 export const MAX_RECALL_CHARS = 6000
 export const MAX_DEEP_RECALL_CHARS = 12000
+const FILE_PROFILE_ITEMS = 6
+const FILE_PROFILE_ITEM_CHARS = 500
 const INDEX_MATCH_LIMIT = 64
 const KEYWORD_FALLBACK_LIMIT = 128
 const RELATION_NEIGHBOR_LIMIT = 24
@@ -2569,6 +2571,38 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return { generated: projection !== null, items }
   }
 
+  function fileProfile(project?: Origin['project']): MemoryFileProfile {
+    if (!fileMode || !filePolicy || closed || mutation) return { user: [], project: project ? [] : null }
+    const digests = fileWorkspaces().flatMap(workspace => filePolicy.list(workspace, 'digest'))
+      .filter(view => view.applicability.state !== 'unavailable' && view.currentMarkdown !== null)
+    function summarize(scope: MemoryProfileScope): MemoryFileProfileItem[] {
+      const origin: Origin = { conversation: null, session: null, scope, ...(scope.kind === 'project' ? { project: scope } : {}) }
+      const candidates = digests.flatMap(view => {
+        if (!fileAllowsOrigin(view, origin)) return []
+        const sources = view.sourceTokens.map(ref => store.readSource(ref.id)!)
+        // The existing digest bucket selects personal material. A project summary
+        // additionally needs explicit evidence belonging to the current project.
+        if (scope.kind === 'user' ? !view.path.startsWith('digest/personal/') : !sources.some(source =>
+          sameScope(source.scope, scope) || source.context && sameScope(source.context, scope) || source.project && sameScope(source.project, scope))) return []
+        return [{ view, at: Math.max(...sources.map(source => source.at)) }]
+      })
+      const pending = matchingDeferredFiles(candidates.map(item => fileDependency(item.view)), origin, scope)
+      return candidates.sort((a, b) => b.at - a.at || fileLocatorKey(a.view).localeCompare(fileLocatorKey(b.view)))
+        .flatMap(({ view }) => {
+          if (pending.has(fileLocatorKey(view))) return []
+          try {
+            const { metadata, body, bodyStartLine } = parseMemoryDocument(view.markdown)
+            const choices = view.applicability.state === 'current' ? [body, metadata.description]
+              : [readMemoryLines(view.currentMarkdown!, bodyStartLine)]
+            const text = choices.flatMap(value => typeof value === 'string' ? [maskMemoryWikiLinks(value, () => true).trim()] : [])
+              .find(value => value.length > 0 && value.length <= FILE_PROFILE_ITEM_CHARS)
+            return text ? [{ identity: { kind: view.kind, workspace: view.workspace, id: view.id }, text }] : []
+          } catch { return [] }
+        }).slice(0, FILE_PROFILE_ITEMS)
+    }
+    return { user: summarize(USER), project: project ? summarize(project) : null }
+  }
+
   async function semanticRecall(request: RecallRequest, origin: Origin, stillCurrent: () => boolean, interval: MemoryInterval, lexicalHits: readonly IndexHit[], signal?: AbortSignal): Promise<SemanticRecall> {
     const failure = (reason: string) => ({ hits: [], reasons: [reason] })
     const scope = recallScope(request, origin)
@@ -3249,6 +3283,7 @@ ${node.description}`, origin, scope))
   }
 
   return {
+    fileProfile,
     listFiles(input: MemoryFileListRequest) {
       if (!fileManagement || closed) throw new Error('Document memory is not enabled')
       return fileManagement.list(input, managementAllows)

@@ -6,7 +6,7 @@ import type { MemoryInterval } from './facts.ts'
 import type { TextSpan } from './text-spans.ts'
 import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
 import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
-import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
+import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail, MemoryFileProfile,
   MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
@@ -49,9 +49,10 @@ export interface HostMemoryApi {
   listChanges: Args<[], MemoryChangeView[]>
   profile: Args<[], MemoryProfile>
   profileView: Args<[scope: Scope], MemoryProfileView>
+  fileProfile: Args<[project?: MemoryProject], MemoryFileProfile>
   revision: Args<[], number>
   epoch: Args<[], number>
-  cleanupPending: Args<[], boolean>
+  cleanupPending: Args<[], number>
   onboarding: Args<[], string>
   setOnboarding: Args<[status: string], string>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
@@ -130,6 +131,7 @@ export const hostMemoryInputSchemas = {
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
   listMemories: args(z.tuple([text.optional()])), listInvalid: empty, listChanges: empty, profile: empty,
   profileView: args(z.tuple([z.union([project, z.strictObject({ kind: z.literal('user') })])])),
+  fileProfile: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
   setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
   setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),

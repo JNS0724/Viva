@@ -223,6 +223,28 @@ test('file details distinguish linked and unlocated sources without promoting th
   assert.ok(!nodes.some(node => node.tag === 'button' && node.textContent === '查看原文'))
 })
 
+test('file-backed profile opens the matching evidence by identity and clears obsolete project summaries', t => {
+  const { draw, flatten } = profileDom(t)
+  const identity = { kind: 'digest' as const, workspace: 'personal', id: 'file-a' }
+  const project = { kind: 'digest' as const, workspace: 'project', id: 'file-b' }
+  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
+    fileMode: true, profile: {}, habits: { text: '', samples: 0 }, fileProfile: {
+      user: [{ identity, text: '长期工作方式' }], project: [{ identity: project, text: '项目范围内的记忆' }],
+    },
+  } })
+  const selected: unknown[] = []
+  const handlers = { showMemoryFile: (item: unknown) => { selected.push(item) } } as Handlers
+  const sections = draw(state.memory, handlers).filter(node => node.attrs['data-profile-summary'])
+  assert.deepEqual(sections.map(node => node.attrs['data-profile-summary']), ['user', 'project'])
+  const projectNodes = flatten(sections[1])
+  const button = projectNodes.find(node => node.tag === 'button' && node.textContent === '查看依据')!
+  assert.ok(projectNodes.some(node => node.attrs.id === button.attrs['aria-describedby'] && node.textContent === '项目范围内的记忆'))
+  button.listeners.click()
+  assert.deepEqual(selected, [{ identity: project }])
+  state = reduce(state, { type: 'memory_summaries_stale' })
+  assert.ok(!draw(state.memory, handlers).some(node => node.attrs['data-profile-summary']))
+})
+
 test('the file editor keeps multiline submission and Escape separate from IME composition', t => {
   const { draw } = profileDom(t)
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded',

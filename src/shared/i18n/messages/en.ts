@@ -72,6 +72,7 @@ export const en = {
   "memory-files.source.number": "View source {number}",
   "memory-files.sources.partial": "Some sources could not be located on this device.",
   "memory-files.sources.unlocated": "The original source could not be located on this device.",
+  "memory-files.profile.sources": "View evidence",
   "memory-files.storage.cleanup.pending": "Memory storage has {count} items awaiting cleanup.",
   "memory-files.stopped.snapshot": "Stopped content",
   "memory-files.stopped.body.unavailable": "The stopped content is no longer available.",

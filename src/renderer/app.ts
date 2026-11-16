@@ -968,7 +968,11 @@ agentEvents = createAgentEvents({
   getState: () => state, dispatch, holdTask: taskActions.hold,
   afterTurn: sendAfterTurn, clearAfterTurn: conversationActions.clearAfterTurn,
   ready: (info) => { reportMcpProblems(info, { fresh: true }); void historyActions.retryTrace() },
-  mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo), refreshWorkDir: workDirActions.refresh,
+  mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo),
+  refreshWorkDir: () => {
+    void workDirActions.refresh()
+    if (state.memory.open && state.memory.fileMode) memoryActions.onMemoryChanged({})
+  },
   refreshFiles: filesActions.filesAfterTurn,
   memoryChanged: event => {
     if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)

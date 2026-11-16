@@ -85,10 +85,13 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     })),
   })
   handle('memory:get', async () => {
-    if (fileMode) return {
-      fileMode: true,
-      profile: await client.profile(), items: [], total: 0, onboarding: await client.onboarding(),
-      cleanupPending: await client.cleanupPending(), revision: await client.revision(), habits: habits(),
+    if (fileMode) {
+      const profile = await client.profile(), onboarding = await client.onboarding()
+      const cleanupPending = await client.cleanupPending(), revision = await client.revision()
+      const project = projectScope?.()
+      const fileProfile = await client.fileProfile(project)
+      return { fileMode: true, profile, items: [], total: 0, onboarding, cleanupPending, revision, habits: habits(),
+        fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
     }
     const project = projectScope?.()
     return {

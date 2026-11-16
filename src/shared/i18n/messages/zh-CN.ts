@@ -73,6 +73,7 @@ export const zhCN = {
   "memory-files.source.number": "查看原文 {number}",
   "memory-files.sources.partial": "部分原文尚未在本机定位。",
   "memory-files.sources.unlocated": "原文尚未在本机定位。",
+  "memory-files.profile.sources": "查看依据",
   "memory-files.storage.cleanup.pending": "记忆存储还有 {count} 项清理待处理。",
   "memory-files.stopped.snapshot": "已停用内容",
   "memory-files.stopped.body.unavailable": "已停用的正文已不可查看。",
