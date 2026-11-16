@@ -7,7 +7,8 @@ import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
 import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
 import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
-import { continueText, matchesFeedContinuation } from '../shared/feed-continuation.ts'
+import { continueText } from '../shared/feed-continuation.ts'
+import { admitFeedContinuation } from './feed-continuation.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
@@ -1018,7 +1019,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** chat.said's route: the question goes to the conversation on screen. */
   async function sayInChat(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string) {
     const agent = requireBridge()
+    let feedOrigin = sessions.context()
+    const feedSelected = () => dsh.current === agent && !sessions.isChanging() && Boolean(feedOrigin.sessionId)
+      && agent.currentSession() === feedOrigin.sessionId && sameContext(feedOrigin, sessions.context())
+    const assertFeedSelected = () => { if (feedItemId && !feedSelected()) throw new Error(t('main.feed.memory.unavailable')) }
     if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
+    assertFeedSelected()
     const replay = Array.isArray(operation)
     const forget = feedItemId ? null : await memory.forgetIntent(question, conversationMemoryScope(), currentMemoryProject())
     const correction = feedItemId ? null : await memory.correctionIntent(question, conversationMemoryScope(), currentMemoryProject())
@@ -1037,18 +1043,30 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     }
     if (replay && !await memory.replaySources(operation, question, currentMemoryProject())) throw new Error(t('main.memory.context.stale'))
     const id = agent.currentSession()
-    if (await staleMemorySession(id) || id && !await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())) await reopenMemorySession()
+    const stale = await staleMemorySession(id)
+    assertFeedSelected()
+    const projectAllowed = stale || !id || await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())
+    assertFeedSelected()
+    if (stale || !projectAllowed) {
+      await reopenMemorySession()
+      if (feedItemId) {
+        const recovered = sessions.context()
+        if (dsh.current !== agent || sessions.isChanging() || recovered.conversationId !== feedOrigin.conversationId
+          || agent.currentSession() !== recovered.sessionId) throw new Error(t('main.feed.memory.unavailable'))
+        feedOrigin = recovered
+        assertFeedSelected()
+      }
+    }
     let feedCurrent: (() => boolean) | undefined
     if (feedItemId) {
       if (replay) throw new Error(t('main.memory.context.stale'))
-      const { item, memory: evidence, current } = await feedContinuation(feedItemId)
-      feedCurrent = current
-      if (!matchesFeedContinuation(item, question)) throw new Error(t('main.feed.edit.continuation'))
-      const origin = sessions.context()
-      if (!origin.sessionId || !await memoryCoordination.transfer(origin.sessionId, evidence, currentMemoryProject(), agent.memory.ready())
-        || !current()) throw new Error(t('main.feed.memory.unavailable'))
-      await recordDeliveredSource(operation, origin, { derived: true })
-      if (!current()) throw new Error(t('main.feed.memory.unavailable'))
+      const origin = { ...feedOrigin }
+      feedCurrent = await admitFeedContinuation({ text: question, read: () => feedContinuation(feedItemId),
+        current: feedSelected,
+        transfer: evidence => memoryCoordination.transfer(origin.sessionId!, evidence, currentMemoryProject(), agent.memory.ready()),
+        record: () => recordDeliveredSource(operation, origin, { derived: true }),
+      })
+      if (!feedCurrent()) throw new Error(t('main.feed.memory.unavailable'))
     } else if (!replay) {
       await aliasMemory(question, operation)
     } else {
