@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { writeFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
@@ -19,12 +21,12 @@ import type { MemorySource } from '../src/memory/core/ports/store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
 
-function harness(t: TestContext, options: { units?: number, budget?: number } = {}) {
+function harness(t: TestContext, options: { units?: number, budget?: number, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'] } = {}) {
   let now = Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(':memory:', () => now)
   const readable = (id: string) => Boolean(store.readSource(id)?.text && !store.readSource(id)?.withdrawn)
   const notes = openMemoryNotes(store, readable)
-  const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, now: () => now,
+  const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, now: () => now, checkpoint: options.checkpoint,
     source(id) {
       const original = store.readSource(id)
       return original?.text && readable(id) ? { token: memorySourceToken(original), workspace: memorySourceWorkspace(original), text: original.text } : undefined
@@ -202,6 +204,39 @@ test('a repair retains the first draft attempt file policy even when the second 
   assert.equal(h.documents.read(first.note.workspace, 'digest/personal/Report.md'), null)
   assert.equal(h.documents.pending(first.note.workspace).length, 0)
   assert.equal(h.notes.read(first.key)?.processed, 0)
+})
+
+for (const point of ['intent', 'replace'] as const) test(`a repaired draft ${point} recovery retains a first-attempt-only daily physical fence`, async t => {
+  let interrupted = false
+  const h = harness(t, { checkpoint(at, path) {
+    if (!interrupted && at === point && (at === 'intent' || path === 'digest/personal/Report.md')) {
+      interrupted = true
+      throw new Error('prepared repaired-draft publication interrupted')
+    }
+  } })
+  const first = h.add('The report is due Friday.'), extra = h.add('An independent checklist is available.', 'Checklist')
+  h.notes.markProcessed(extra.key, extra.note.revision)
+  let integrates = 0, verifies = 0
+  h.setModel(async request => {
+    if (request.stage === 'integrate' && ++integrates === 1) {
+      const result = await request.tools!.executeTool({ callId: 'extra-daily', name: 'read', input: { path: extra.note.path } })
+      assert.equal(result.state, 'completed')
+    }
+    if (request.stage === 'verify' && ++verifies === 1) return '{"verdict":"rejected","reason":"Remove an unsupported generated instruction."}'
+    return h.defaultModel(request)
+  })
+  await h.run()
+  assert.equal(interrupted, true)
+  const row = h.store.db.prepare("SELECT plan FROM memory_file_intents WHERE namespace='documents' AND plan IS NOT NULL").get()
+  assert.ok(row?.plan)
+  const plan = JSON.parse(String(row.plan)) as { data: { receipt: DocumentReceipt, files: Array<{ path: string, revision: string }> } }
+  writeFileSync(join(h.store.fileRoot, extra.note.workspace, extra.note.path), 'Independent external rewrite after the interrupted publication.\n')
+  h.documents.recover()
+  assert.equal(h.documents.receipt(first.note.workspace, plan.data.receipt.operationId), null,
+    'cold recovery must recheck every daily read that influenced either draft attempt')
+  assert.equal(h.documents.read(first.note.workspace, 'digest/personal/Report.md'), null)
+  assert.equal(existsSync(join(h.store.fileRoot, first.note.workspace, 'digest/personal/Report.md')), false)
+  assert.ok(plan.data.files.some(file => file.path === extra.note.path && file.revision === extra.note.fileRevision))
 })
 
 test('a refused rejection reason never becomes another model request or user question', async t => {

@@ -365,7 +365,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         expectedRevision: draft.before?.revision ?? null, markdown: draft.markdown, action: draft.receipt.action,
         sources: evidence, reads: readDocuments(), corrections: review.corrections,
           files: unique([...files.map(file => JSON.stringify({ path: file.path, revision: file.revision })),
-            ...draft.reads.filter(snapshot => snapshot.path.startsWith('daily/')).map(snapshot => JSON.stringify({ path: snapshot.path, revision: snapshot.revision }))])
+            ...toolReads().filter(snapshot => snapshot.path.startsWith('daily/')).map(snapshot => JSON.stringify({ path: snapshot.path, revision: snapshot.revision }))])
             .map(value => JSON.parse(value) as { path: string, revision: string }) })
       })
       advanceOwnReads(plan, item.workspace, receipt)
