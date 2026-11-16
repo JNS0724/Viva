@@ -5,6 +5,7 @@
  * still opens and settles but carries no text, and a flush returns only what was shown. A notice (`announce`) is a line
  * the plugin shows itself, as the turn's answer: what a handover did, when the turn ends with it.
  */
+import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -12,9 +13,9 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 type Block = { type: string, text?: unknown }
 type StoredEvent = { seq: number, type: string, data: { turn: number, step: number, message: { content: Block[] } } }
 type Active = { operation: string, key: string, attemptId: string, turn: number, step: number, open: boolean, event?: StoredEvent }
-type Notice = { key: string, text: string, after: number }
-type Binding = { operation: string, from: number, keys: Map<number, string>, shown: Set<number>, notices: Notice[] }
-type Message = { type?: string, version?: number, operation?: string, sessionId?: string }
+type Notice = { key: string, text: string, after: number, requestId?: string }
+type Binding = { operation: string, from: number, keys: Map<number, string>, shown: Set<number>, notices: Notice[], proofs: boolean }
+type Message = { type?: string, version?: number, operation?: string, sessionId?: string, proofs?: boolean }
 /** Whether the attempt of this session at this step may show its text, decided once when it starts. */
 export type Gate = (sessionId: string, step: number) => boolean
 
@@ -23,7 +24,7 @@ const shownBlocks = (content: readonly Block[]) => content.filter(visible).map(b
 
 export interface AssistantStream {
   /** Shows `text` in the session's running operation as an answer of its own; false when nothing is bound to show it in. */
-  announce: (sessionId: string, text: string) => boolean
+  announce: (sessionId: string, text: string, requestId?: string) => boolean
 }
 
 export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate: Gate): AssistantStream {
@@ -45,8 +46,9 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
       ...answers.map(event => ({
         key: binding.keys.get(event.seq) ?? `${operation}:committed:${event.seq}`,
         blocks: wasShown(binding, event.seq) ? shownBlocks((event.data as StoredEvent['data']).message.content) : [],
+        ...(binding.proofs ? { native: { seq: event.seq, digest: createHash('sha256').update(JSON.stringify(event)).digest('hex') } } : {}),
       })),
-      ...binding.notices.map(notice => ({ key: notice.key, blocks: [{ type: 'text', text: notice.text }] })),
+      ...binding.notices.map(notice => ({ key: notice.key, blocks: [{ type: 'text', text: notice.text }], ...(binding.proofs && notice.requestId ? { requestId: notice.requestId } : {}) })),
     ]
     const last = answers.at(-1)
     const notice = binding.notices.at(-1)
@@ -65,7 +67,7 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
     }
     if (message?.type !== 'assistant_stream_bind' || message.version !== 1 || typeof message.sessionId !== 'string' || typeof message.operation !== 'string') return
     const agent = ctx.agents?.get(SessionId(message.sessionId))
-    bindings.set(message.sessionId, { operation: message.operation, from: agent?.session.seq ?? 0, keys: new Map(), shown: new Set(), notices: [] })
+    bindings.set(message.sessionId, { operation: message.operation, from: agent?.session.seq ?? 0, keys: new Map(), shown: new Set(), notices: [], proofs: message.proofs === true })
     send({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
   }
   port.on('message', receive)
@@ -122,11 +124,11 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
   })
   send({ type: 'assistant_stream_ready', version: 1 })
 
-  function announce(sessionId: string, text: string): boolean {
+  function announce(sessionId: string, text: string, requestId?: string): boolean {
     const binding = bindings.get(sessionId)
     const agent = ctx.agents?.get(SessionId(sessionId))
     if (!binding || !agent || !text.trim()) return false
-    const notice = { key: `${binding.operation}:notice:${binding.notices.length + 1}`, text: text.trim(), after: agent.session.seq }
+    const notice = { key: `${binding.operation}:notice:${binding.notices.length + 1}`, text: text.trim(), after: agent.session.seq, requestId }
     binding.notices = [...binding.notices, notice]
     const base = { type: 'assistant_stream', version: 1, sessionId, operation: binding.operation, key: notice.key }
     send({ ...base, kind: 'start' })

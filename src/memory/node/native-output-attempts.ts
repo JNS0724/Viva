@@ -40,6 +40,16 @@ export function createNativeOutputAttempts(db: DatabaseSync) {
   const relevant = db.prepare(`SELECT a.identity,a.result,r.evidence FROM owner_native_output_reads r
     JOIN owner_native_output_attempts a ON a.id=r.attempt`)
 
+  const byOutput = db.prepare(`SELECT r.evidence FROM owner_native_output_reads r JOIN owner_native_output_attempts a ON a.id=r.attempt
+    WHERE json_extract(a.identity,'$.session')=? AND json_extract(a.result,'$.state')='settled'
+    AND json_extract(a.result,'$.terminal.kind')='reply' AND json_extract(a.result,'$.terminal.seq')=?
+    AND json_extract(a.result,'$.terminal.digest')=? ORDER BY r.evidence`)
+
+  function outputEvidence(session: string, seq: number, digest: string) {
+    const rows = byOutput.all(session, seq, digest)
+    return rows.length ? rows.map(row => memoryErasureEvidenceSchema.parse(JSON.parse(String(row.evidence)))) : null
+  }
+
   function record(attempt: NativeOutputAttempt, evidence: MemoryProvenance) {
     const identity = JSON.stringify(attemptShape.parse(attempt))
     const bound = JSON.stringify(memoryErasureEvidence(evidence))
@@ -79,5 +89,5 @@ export function createNativeOutputAttempts(db: DatabaseSync) {
     return [...matches.values()]
   }
 
-  return { record, finish, affected }
+  return { record, finish, affected, outputEvidence }
 }

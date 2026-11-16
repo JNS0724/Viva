@@ -88,6 +88,8 @@ export function createRequestStore({ db }: { db: DatabaseSync }) {
   const setStatus = db.prepare('UPDATE routing_requests SET status = ?, failure = ?, updated_at = ? WHERE id = ? AND status = ?')
   const putDecision = db.prepare('INSERT INTO routing_decisions (request_id, plan, decided_at) VALUES (?, ?, ?)')
   const putEvidence = db.prepare('INSERT INTO routing_decision_memory VALUES (?, ?)')
+  const proofOf = db.prepare(`SELECT evidence FROM routing_decision_memory m JOIN routing_requests r ON m.request_id=r.id
+    WHERE r.id=? AND r.session_id=? AND r.status='decided'`)
   const decisionEvidence = db.prepare('SELECT request_id,evidence FROM routing_decision_memory')
   const dropDecision = db.prepare('DELETE FROM routing_decisions WHERE request_id = ?')
   const clearReceipts = db.prepare(`UPDATE routing_actions SET status = CASE WHEN status = 'pending' THEN 'uncertain' ELSE status END,
@@ -104,6 +106,10 @@ export function createRequestStore({ db }: { db: DatabaseSync }) {
     add(request: { id: string, sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string, at: number }) {
       insert.run(request.id, request.sessionId, request.conversationId, request.cwd, request.kind, request.at, request.at)
       if (request.sourceId) putSource.run(request.id, request.sourceId)
+    },
+    outputEvidence(id: string, session: string) {
+      const proof = proofOf.get(id, session)?.evidence
+      return typeof proof === 'string' ? memoryProvenanceSchema.parse(JSON.parse(proof)) : null
     },
     source: (id: string, session: string) => readSource.get(id, session)?.source as string | undefined,
     get(id: string): StoredRequest | null {

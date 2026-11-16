@@ -11,7 +11,7 @@ const ranges = z.strictObject({ sourceId: key, spans: z.array(z.strictObject({ s
 export const memoryErasureEvidenceSchema = z.strictObject({
   sources: z.array(key), fileRanges: z.array(ranges), memoryIds: z.array(integer),
 })
-type MemoryErasureEvidence = z.output<typeof memoryErasureEvidenceSchema>
+export type MemoryErasureEvidence = z.output<typeof memoryErasureEvidenceSchema>
 export const memoryFileDependencySchema = z.strictObject({
   workspace: z.string().regex(/^[a-f0-9]{64}$/u), id: key, path: memoryFilePath,
   revision: key, usageVersion: integer, policyToken: key,

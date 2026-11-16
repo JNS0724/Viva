@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { memoryProvenanceSchema } from './provenance.ts'
+import { memoryProvenanceSchema, type MemoryErasureEvidence } from './provenance.ts'
 import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, MemoryChange } from './records.ts'
 import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryInterval } from './facts.ts'
@@ -80,6 +80,7 @@ export interface HostMemoryApi {
   allowsProjectHistory: Args<[row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject], boolean>
   useHistory: Args<[session: string | undefined, row: MemoryHistoryOccurrence], void>
   provenance: Args<[session: string], MemoryProvenance>
+  nativeOutputEvidence: { input: { session: string, seq: number, digest: string }, output: MemoryErasureEvidence[] | null }
   authorizedProvenance: { input: { session: string, prior?: MemoryProvenance, sourceId?: string }, output: MemoryProvenance | null }
   recordSession: Args<[session: string], void>
   sessionProject: Args<[session: string], string | undefined>
@@ -148,6 +149,7 @@ export const hostMemoryInputSchemas = {
   inheritFork: args(z.tuple([key, ...inheritance])),
   allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional()])),
   useHistory: args(z.tuple([key.optional(), occurrence])), provenance: args(z.tuple([key])), authorizedProvenance: z.strictObject({ session: key, prior: provenance.optional(), sourceId: key.optional() }),
+  nativeOutputEvidence: z.strictObject({ session: key, seq: integer, digest: z.string().regex(/^[a-f0-9]{64}$/u) }),
   recordSession: args(z.tuple([key])), sessionProject: args(z.tuple([key])), recordSessionProject: args(z.tuple([key, z.string()])),
   recordDeliveredSource: args(z.tuple([key, key, z.boolean(), key])), isDerivedDelivery: args(z.tuple([key])),
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
-import { autoTitle } from './history-schema.ts'
+import { autoTitle, type StoredMessage } from './history-schema.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
 import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
@@ -10,7 +10,7 @@ import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type T
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
-import { combineMemoryProvenance, rawMemorySources, type MemoryProvenance } from '../memory/contracts/provenance.ts'
+import { combineMemoryProvenance, memoryErasureEvidence, rawMemorySources, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * TaskRuntime (docs/system-design.md §11.2): the one writer of the background tasks. The agent starts a task
@@ -211,6 +211,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     onError: (err) => console.error('[tasks] could not save what the task said:', err.message),
   })
 
+  function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
+    const message: StoredMessage = { role: 'user', text, receipt: null }
+    if (typeof admission !== 'object') return message
+    const key = `generated-task:${randomUUID()}`
+    if (!db.bindGeneratedCopy(taskId, key, 'user', text, [memoryErasureEvidence(admission)])) throw new Error(t('main.memory.context.stale'))
+    return { ...message, key }
+  }
+
   const admitted = (taskId: string, result: BriefAdmission) => !revoked.has(taskId)
     && (typeof result === 'boolean' ? result : !db.evidenceErased(result))
 
@@ -286,23 +294,24 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return { ok: false, problem: t('main.memory.context.stale') }
     }
     const runId = newRunId()
-    const task = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
+    const { initial, task } = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
+      const initial = briefMessage(taskId, text, evidence)
       // A conversation whose only turns started background tasks may have no messages kept yet. Keep its identity too,
       // otherwise the task points at an absent parent and its history row cannot return after a restart.
       if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
-      const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
+      const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [initial])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(name?.trim() || text), words: text }
       store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent',
         ...(typeof evidence === 'object' ? { requestMemory: evidence } : {}) })
       opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
-      return begun
+      return { initial, task: begun }
     }))
     counted()
     tasks.set(task.id, { ...task, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
-    taskWords.track(task.id, [{ role: 'user', text }])
+    taskWords.track(task.id, [initial])
     agent.promptTask(task.id, text)
     return { ok: true as const, task }
   }
@@ -330,7 +339,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
-    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
+    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview })
     const host = typeof entry.next === 'string' ? db.get(entry.next) : null
     const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
     const end = pendingEnds.get(snapshot.taskId)
@@ -420,7 +429,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().gone }
       attached = new Set([...attached, taskId])
     }
-    if (!admitted(taskId, admit ? await admit(taskId) : true)) return { ok: false, problem: t('main.memory.context.stale') }
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
+    const brief = briefMessage(taskId, text, evidence)
     const { endedAt: _endedAt, status: _status, ...going } = kept
     const runId = newRunId()
     const running = { ...going, runId }
@@ -433,7 +444,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     counted()
     tasks.set(taskId, running)
     if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
-    taskWords.userSaid(taskId, text)
+    taskWords.userSaid(taskId, text, brief.key)
     agent.promptTask(taskId, text)
     return { ok: true }
   }
@@ -457,7 +468,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().lost }
-    if (!admitted(taskId, admit ? await admit(taskId) : true)) return { ok: false, problem: t('main.memory.context.stale') }
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
+    const brief = briefMessage(taskId, words, evidence)
     const runId = newRunId()
     const running = { ...kept, runId }
     change('task.restarted', { taskId, runId }, () => {
@@ -471,7 +484,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
-    const said = [...before, { role: 'user', text: words, receipt: null }]
+    const said = [...before, brief]
     taskWords.track(taskId, said)
     agent.promptTask(taskId, words)
     return { ok: true, task: restoredSummary(kept), messages: said }
@@ -506,8 +519,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * Words into a task's turn: into what it said, and to the window as a piece of its run's stream (`task_steered`),
    * numbered with that write, so a read of the task (`finished`) has them exactly when its mark counts the piece.
    */
-  function said(taskId: string, text: string) {
-    taskWords.userSaid(taskId, text)
+  function said(taskId: string, text: string, key?: string) {
+    taskWords.userSaid(taskId, text, key)
     const runId = registry.runOf(taskId)
     if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text })
   }
@@ -525,8 +538,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       if (!taken.ok) throw new Error(taken.problem)
       return { taskId, delivered: 'taken up again' }
     }
-    if (!admitted(taskId, admit ? await admit(taskId) : true)) throw new Error(t('main.memory.context.stale'))
-    said(taskId, text)
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) throw new Error(t('main.memory.context.stale'))
+    said(taskId, text, briefMessage(taskId, text, evidence).key)
     const steered = await agent.steerTask(taskId, text)
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
     return { taskId, delivered: 'into its turn' }

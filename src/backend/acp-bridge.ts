@@ -26,7 +26,7 @@ import { createQuestionDesk } from './question-channel.ts'
 import { ResumeError, resumeReason } from './resume-failure.ts'
 import { createAcpOperations } from './acp-operations.ts'
 import { createAcpTaskSessions } from './acp-task-sessions.ts'
-import { createAssistantStream } from './assistant-stream.ts'
+import { createAssistantStream, type CommittedOutput } from './assistant-stream.ts'
 import { createFreshSessions } from './fresh-sessions.ts'
 import { sessionTiming, type SessionTiming } from './session-timing.ts'
 import { describeConfig, describeError } from './session-info.ts'
@@ -82,7 +82,7 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
+  launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, recordOutputs, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
   memoryClarificationQuestion, cancelMemoryClarification, allowGeneralQuestion, taskSourceAlias,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
@@ -116,6 +116,7 @@ export function createAcpBridge({
   memoryProjection?: (notice: import('../memory/contracts/host.ts').MemoryOwnerProjection) => void,
   memoryNotice?: (notice: import('../memory/contracts/host.ts').MemoryOwnerChange) => void,
   memoryStateChanged?: (state: import('../memory/contracts/host.ts').MemoryOwnerState) => void,
+  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<void>,
   onSessionCreated?: (id: string, cwd: string, parent?: string) => void | Promise<void>,
   onQuestionAnswer?: Parameters<typeof createQuestionDesk>[0]['onAnswer'],
   /**
@@ -186,7 +187,7 @@ export function createAcpBridge({
   const mcpDesk = createMcpDesk({ send: toPlugins, servers: mcpServers, onStatus: (mcp) => emit({ type: 'mcp_status', mcp }) })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
-  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
+  const streams = createAssistantStream({ send: toPlugins, recordOutputs, emit: (id, update) => operations.forwardStream(id, update) })
   const memory = createRemoteMemoryChannel({ send: toPlugins, onReady: readyMemory, onChanged: state => { memoryStateChanged?.(state) }, onNotice: memoryNotice, onContextUsed: memoryContextUsed, onProjection: memoryProjection })
   // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
   const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })

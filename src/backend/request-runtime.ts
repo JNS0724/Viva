@@ -167,7 +167,7 @@ export function createRequestRuntime({ store, apply, tasks, evidenceErased = () 
     return { failed: undecided.length, uncertain: unsettled }
   }
 
-  return { receive, decide, source: store.source, eraseMemory: store.eraseMemory, fail, endTurn, noteFast, recover }
+  return { receive, decide, outputEvidence: store.outputEvidence, source: store.source, eraseMemory: store.eraseMemory, fail, endTurn, noteFast, recover }
 }
 
 export type RequestRuntime = ReturnType<typeof createRequestRuntime>

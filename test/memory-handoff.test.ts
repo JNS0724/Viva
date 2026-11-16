@@ -349,14 +349,22 @@ test('cold Viva startup erases native originals and settled output in root and u
   const traceSecret = 'stored-private-trace-for-erasure'
   const toolSecret = 'stored-derived-tool-argument-and-result'
   const text = [erased, nearby, second].join('。\n')
-  const app = await setup(t, request => questionOf(request.messages) === text ? { text: derived } : null,
-    { dailyNotes: true, fileMode: true })
+  const app = await setup(t, request => {
+    const routed = request.messages.flatMap(message => typeof message.content === 'string'
+      ? requestsIn(message.content) : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).at(-1)
+    return routed?.words.startsWith(text) && modelToolResults(request, 'commit_route').length ? { text: derived } : null
+  }, { dailyNotes: true, fileMode: true })
   const sourceId = await app.ask(text)
+  const reply = app.events.find(event => event.type === 'update' && event.update.sessionUpdate === 'viva_stream'
+    && event.update.kind === 'settle' && event.update.blocks.some((block: { text?: string }) => block.text === derived))
+  assert.ok(reply, 'real DSH provides a settled reply under a stable stream key')
   const survivorId = await app.ask(survivor)
   const savedHistory = await app.call<{ id: string }>('history:save', [
     { role: 'user', text, receipt: null, sourceId },
+    { role: 'assistant', text: derived, receipt: null, key: reply.update.key },
     { role: 'user', text: survivor, receipt: null, sourceId: survivorId },
   ])
+  assert.match(JSON.stringify(app.call('history:load')), new RegExp(derived, 'u'), 'authenticated reply survives its first history save')
   const info = app.call<AgentInfo>('agent:info')
   assert.ok(info.sessionId)
   await app.stopBackend()
@@ -545,6 +553,9 @@ test('cold Viva startup erases native originals and settled output in root and u
 
   const offset = app.model.requests.length
   assert.ok(await app.startBackend())
+  const cleanHistory = app.call('history:read', `s:${savedHistory.id}`, { from: Number.MAX_SAFE_INTEGER, count: 10 })
+  assert.doesNotMatch(JSON.stringify(cleanHistory), new RegExp(derived, 'u'), 'the generated host history copy is erased during recovery')
+  assert.match(JSON.stringify(cleanHistory), new RegExp(survivor, 'u'))
   const publishedTrace = openTraceDb({ file: traceFile })
   try {
     assert.equal(publishedTrace.stepsOf(parentId).some(step => step.seq === traceStep.seq), false)

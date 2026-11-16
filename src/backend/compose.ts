@@ -23,6 +23,7 @@ import { createMemoryHostRecovery } from './memory-host-recovery.ts'
 import { affectedTraceSessions, createMemoryHostEffects } from './memory-host-effects.ts'
 import { createMemoryWithdrawal } from './memory-withdrawal.ts'
 import type { MemoryProvenance } from '../memory/contracts/records.ts'
+import { memoryErasureEvidence } from '../memory/contracts/provenance.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
 import { carriedRecords } from './history-carry.ts'
 import { activeHours } from './habits.ts'
@@ -546,6 +547,20 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           project: await projectOfSession(session), dependencies: await memory.provenance(session) })
         return source.sourceId
       },
+      recordOutputs: fileMode ? async (session, outputs) => {
+        for (const output of outputs) {
+          const text = output.blocks.filter(block => block.type === 'text').map(block => block.text).join('')
+          if (!text || !lifetime.isCurrent()) continue
+          try {
+            const request = output.requestId ? requests.outputEvidence(output.requestId, session) : null
+            const proof = output.native ? await memory.call('nativeOutputEvidence', { session, ...output.native })
+              : request ? [memoryErasureEvidence(request)] : null
+            if (proof && lifetime.isCurrent()) historyDb.bindGeneratedCopy(session, output.key, 'assistant', text, proof)
+          } catch (error) {
+            console.warn('[memory] Could not authenticate the generated history copy:', error instanceof Error ? error.message : 'unknown error')
+          }
+        }
+      } : undefined,
       readyMemory: () => { scheduleRuns?.wake() },
       memoryStateChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
       memoryNotice: notice => {
@@ -1283,7 +1298,7 @@ ${question}` : question
 
   /** Opens the database and drops conversations whose undo window has passed. */
   function openHistory(config: Config) {
-    historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
+    historyDb = journaled(openHistoryDb({ db: appDb.db, fileMode }), 'history', HISTORY_WRITES, applyChange)
     historyDb.purgeDeleted({ olderThanMs: 0 })
     sessions.open(config.cwd)
     registerHistoryIpc(ipcMain, {
@@ -1347,11 +1362,14 @@ ${question}` : question
     })
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
     // runtime writes them, each change with its event (task.started, task.ended, …).
-    taskStore = createTaskStore({ db: appDb.db, onError: (err) => console.error('[tasks]', err.message) })
+    taskStore = createTaskStore({ db: appDb.db, retainedReply: fileMode ? historyDb.retainedReply : undefined,
+      onError: (err) => console.error('[tasks]', err.message) })
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
+      eraseTaskBodies: taskStore.eraseMemoryBodies,
+      invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
       eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
       traceInvalidated: fileMode ? traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }) : undefined,

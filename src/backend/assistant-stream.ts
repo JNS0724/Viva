@@ -3,10 +3,16 @@ import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
 
 type OutputBlock = { type: 'text' | 'reasoning', text: string }
-type CommittedOutput = { key: string, blocks: OutputBlock[] }
+export type CommittedOutput = { key: string, blocks: OutputBlock[], native?: { seq: number, digest: string }, requestId?: string }
+const nativeOutput = (value: unknown): value is NonNullable<CommittedOutput['native']> => {
+  const item = objectOf(value)
+  return typeof item?.seq === 'number' && Number.isSafeInteger(item.seq) && item.seq >= 0
+    && typeof item.digest === 'string' && /^[a-f0-9]{64}$/u.test(item.digest)
+}
 const committedOutput = (value: unknown): value is CommittedOutput => {
   const entry = objectOf(value)
-  return typeof entry?.key === 'string' && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
+  return typeof entry?.key === 'string' && (entry.native === undefined || nativeOutput(entry.native))
+    && (entry.requestId === undefined || typeof entry.requestId === 'string') && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
     const block = objectOf(value)
     return (block?.type === 'text' || block?.type === 'reasoning') && typeof block.text === 'string'
   })
@@ -17,9 +23,10 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
  * comes only from the plugin, which decides what may be shown (the main agent's routing steps are not). ACP's copy of
  * the text is never replayed; an operation whose output the plugin did not confirm ends in an error.
  */
-export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
+export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1000 }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
+  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<void>,
   timeoutMs?: number,
 }) {
   let ready = false
@@ -41,7 +48,7 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
       operation.live = await new Promise<boolean>(resolve => {
         const timer = setTimeout(() => { operation.resolve = undefined; resolve(false) }, timeoutMs)
         operation.resolve = live => { clearTimeout(timer); operation.resolve = undefined; resolve(live) }
-        send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId })
+        send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId, ...(recordOutputs ? { proofs: true } : {}) })
       })
     }
     return operation
@@ -104,6 +111,8 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
         })
         if (operations.get(operation.sessionId) !== operation) return
         if (operation.committed) {
+          await recordOutputs?.(operation.sessionId, operation.committed)
+          if (operations.get(operation.sessionId) !== operation) return
           const keys = new Set(operation.committed.map(message => message.key))
           for (const key of operation.keys) if (!keys.has(key)) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
           const before: { text?: string, reasoning?: string } = {}

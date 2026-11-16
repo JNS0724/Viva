@@ -7,6 +7,7 @@ import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
 import { assertId, autoTitle, normalizeMessages, normalizeTitle } from './history-schema.ts'
+import { createHistoryGeneratedCopies } from './history-generated-copies.ts'
 import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
 import type { MemoryHostErasureRange } from '../memory/contracts/service.ts'
 import { memoryProvenanceSchema, type MemoryProvenance } from '../memory/contracts/provenance.ts'
@@ -210,7 +211,7 @@ function contextOf(row: Row | undefined) {
  * Stores what the conversation column shows, plus which dsh session each message came from,
  * so the trace can be read back from dsh's own logs later.
  */
-export function openHistoryDb({ file, db: given, now = Date.now, newId = randomUUID }: { file?: string, db?: DatabaseSync, now?: () => number, newId?: () => string }) {
+export function openHistoryDb({ file, db: given, now = Date.now, newId = randomUUID, fileMode = false }: { file?: string, db?: DatabaseSync, now?: () => number, newId?: () => string, fileMode?: boolean }) {
   if (!given && !file) throw new Error('openHistoryDb needs a file or a database')
   if (!given) fs.mkdirSync(path.dirname(file!), { recursive: true })
   const db = given ?? new DatabaseSync(file!)
@@ -224,6 +225,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   db.exec(COUNT_MESSAGE_IDS)
   db.exec('CREATE INDEX IF NOT EXISTS messages_source ON messages(source_id) WHERE source_id IS NOT NULL')
   const memoryRanges = createHistoryMemoryRanges(db)
+  const generated = createHistoryGeneratedCopies(db, memoryRanges.affectsProof)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
 
@@ -298,14 +300,16 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   function redactMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined,
     copy?: { from: string, count: number }) {
     const hasRanges = memoryRanges.any()
-    const known = hasRanges ? sql.messages.all(id) : []
-    const inherited = hasRanges && copy ? sql.messages.all(copy.from).slice(0, copy.count) : []
+    const known = hasRanges || fileMode ? sql.messages.all(id) : []
+    const inherited = (hasRanges || fileMode) && copy ? sql.messages.all(copy.from).slice(0, copy.count) : []
     const keys = new Map([...inherited, ...known].filter(row => row.source_key).map(row => [row.source_key, row]))
     const replicaSources = hasRanges ? memoryRanges.replicaSources(id) : []
     if (hasRanges && copy) replicaSources.push(...memoryRanges.replicaSources(copy.from))
     const heldSources = new Set(replicaSources)
     return messages.map((message, index) => {
       const keyed = message.key ? keys.get(message.key) : undefined
+      const replicaSession = keyed?.session_id ?? sessionId
+      if (fileMode) message = generated.forSave(message, replicaSession, keyed)
       const replicas = [keyed, known[index], inherited[index]]
       let sourceId = message.sourceId
       if (!sourceId && message.role === 'user') {
@@ -655,10 +659,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   /** Clean verified user text and its local projections together. */
   function eraseFileRanges(ranges: readonly MemoryHostErasureRange[], memoryIds: readonly number[] = []) {
-    transaction(() => {
+    return transaction(() => {
       const { changed, conversations } = memoryRanges.erase(ranges, memoryIds)
-      if (!changed) return
-      for (const id of conversations) {
+      const copies = generated.erase(ranges, memoryIds)
+      if (!changed && !copies.conversations.size) return copies.erased
+      for (const id of new Set([...conversations, ...copies.conversations])) {
         const rows = sql.messages.all(id)
         db.prepare('UPDATE conversations SET title=? WHERE id=? AND title_custom=0').run(autoTitle(rows), id)
       }
@@ -668,6 +673,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         db.exec(`INSERT INTO messages_fts(messages_fts,rank) VALUES('secure-delete',1);
           INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`)
       }
+      return copies.erased
     })
   }
 
@@ -694,7 +700,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   return {
-    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges, fileErasureRevision: memoryRanges.revision, evidenceErased: memoryRanges.affects,
+    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges,
+    bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
+    evidenceErased: memoryRanges.affects,
     create, save, get, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

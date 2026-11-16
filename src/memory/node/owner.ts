@@ -823,6 +823,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'commitSourceChange': return commit(command.input)
       case 'getOperation': { const item = operation(command.input.operationId); return item ? outcome(item) : null }
       case 'pendingHostEffects': return pendingHostEffects()
+      case 'nativeOutputEvidence': return nativeOutputs.outputEvidence(command.input.session, command.input.seq, command.input.digest)
       case 'cancelFileClarification': return runtime.cancelFileClarification(...command.input.args)
       case 'ackHostEffect': {
         const saved = db.prepare('SELECT payload FROM owner_host_effects WHERE id=?').get(command.input.effectId)

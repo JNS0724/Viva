@@ -84,14 +84,14 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   }
 
   /** A task this launch holds, from what it had said (none for a new one). */
-  function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown }> = []) {
+  function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown, sourceId?: unknown }> = []) {
     transcripts.set(taskId, fromSaved(before))
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
-  function userSaid(taskId: string, words: string) {
+  function userSaid(taskId: string, words: string, key?: string) {
     const transcript = transcripts.get(taskId)
-    if (transcript) change(taskId, said(transcript, words))
+    if (transcript) change(taskId, said(transcript, words, key))
   }
 
   /**
