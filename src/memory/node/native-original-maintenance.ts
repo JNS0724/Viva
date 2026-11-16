@@ -278,13 +278,14 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     if (outputJournal.pending()) return
     const completedOriginal = db.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?')
     const activeRecoveries = new Set(recoveryMessageOperations().map(item => item.operationId))
+    const activeSpills = new Set(spillOperations().map(item => item.operationId))
     const publishedOriginalSessions = db.prepare('SELECT session FROM owner_native_original_publications WHERE operation=?')
     const publishedDerivedSessions = db.prepare('SELECT session FROM owner_native_output_publications WHERE operation=? OR operation LIKE ?')
     for (const row of outputPlans.all()) {
       const operationId = z.uuid().parse(row.operation), plan = planShape.parse(JSON.parse(String(row.payload)))
       const sessions = [...plan.sessions, ...publishedOriginalSessions.all(operationId).map(row => String(row.session)),
         ...publishedDerivedSessions.all(operationId, operationId + ':%').map(row => String(row.session))]
-      if (sessions.some(session => uncertainSessions.has(session)) || activeRecoveries.has(operationId)
+      if (sessions.some(session => uncertainSessions.has(session)) || activeRecoveries.has(operationId) || activeSpills.has(operationId)
         || plan.originals?.length && !completedOriginal.get(operationId)
         || outputAttempts.affected(plan.ranges, plan.memoryIds ?? []).some(item => !outputJournal.erased(item.id))
         || toolReads.affected(plan.ranges).some(item => !item.result || !outputJournal.erased(item.id))

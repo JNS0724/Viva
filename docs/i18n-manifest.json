@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-10",
+  "reviewedOn": "2026-11-17",
   "pairs": [
     {
       "en": "README.md",
@@ -101,8 +101,8 @@
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "701e578e833f27f9ff9b803d04cf78bca9e6efeb10d93f4b095ec002c576c10b",
-      "zhHash": "0b5448001681915b3fea5e1d4e4b1f2c88a9c246dfe4161d30cb51c21b056405"
+      "enHash": "6bb61fbddf57a4021a571a77cf59ef0c1ad316c9eaa494b412950db981cd73bc",
+      "zhHash": "4d263b6870be4bea7049bef25d7928b66671c5fe54fe1430272a543d69c21254"
     }
   ],
   "bilingual": [

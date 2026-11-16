@@ -7,6 +7,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { saveTextFile, sessionDir } from '@deepseek-ai/dsh-spill-local'
 import { createNativeSpills, type NativeSpillIntent } from '../src/memory/node/native-spills.ts'
+import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
+import { createNativeErasureReceipts } from '../src/memory/node/native-erasure-receipts.ts'
+import { memoryFileDetail, memoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import { reserveNativeSpill, publishGovernedNativeSpill } from '../plugins/memory/lib/native/governed-spills.ts'
 import { eraseNativeSpill } from '../plugins/memory/lib/native/local-spills.ts'
 import { scratch } from './fixtures/scratch.js'
@@ -74,4 +78,53 @@ test('changed spill inode, unknown hardlink, and missing opaque path proof remai
   assert.equal(await eraseNativeSpill(pending, () => true), false)
   assert.throws(() => spills.complete(opaque), /no verified file receipt/u)
   assert.equal(spills.affected([intent.call], []).length, 2)
+})
+
+test('native catalog acknowledgement waits for affected spill retirement after tool result erasure', async t => {
+  const { dir, defer } = scratch(t, 'viva-native-spill-participant-')
+  const memoryRoot = join(dir, 'memory'), directory = join(dir, 'spill'), operationId = randomUUID()
+  await mkdir(directory, { mode: 0o700 })
+  const owner = openMemoryOwner({ root: memoryRoot, fileMode: true, hostNamespace: 'viva',
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  let intent: NativeSpillIntent
+  let spillId: string
+  try {
+    await owner.recover()
+    owner.initializeSession({ sessionId: 'session' })
+    const file = memoryFileMutationResult.parse(await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: body }] }))
+    const call = { id: randomUUID(), session: 'session', callId: 'memory-read', generation: 0,
+      turn: 1, step: 1, seq: 3, digest: 'c'.repeat(64) }
+    const result = owner.withNativeToolRead({ call, calls: [call], current: () => true },
+      () => owner.runtime.handle({ op: 'file_read', session: call.session, id: file.identity.id }, owner.sessionContext(call.session)))
+    assert.match(result ?? '', /Private memory-derived/u)
+    const reserved = await reserveNativeSpill({ call, root: await realpath(directory),
+      bytes: Buffer.byteLength(body), hash: createHash('sha256').update(body).digest('hex') }, 'memory_read.txt')
+    intent = reserved.intent
+    spillId = owner.beginNativeSpill(intent)
+    const saved = await publishGovernedNativeSpill(reserved.handle, intent, body, () => true)
+    owner.finishNativeSpill(spillId, saved.receipt)
+    owner.finishNativeToolRead(call, { seq: 4, digest: 'd'.repeat(64) })
+    const detail = memoryFileDetail.parse(await owner.handleHost('readFile', { args: [file.identity] }))
+    await owner.handleHost('forgetFile', { args: [{ operationId, identity: file.identity, version: detail.version }] })
+  } finally { await owner.close() }
+  const maintenance = openNativeOriginalMaintenance(memoryRoot, 'viva')
+  assert.ok(maintenance)
+  defer(() => maintenance.close())
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  defer(() => db.close())
+  const receipts = createNativeErasureReceipts(db)
+  for (const operation of maintenance.toolResultOperations()) operation.journal.complete(operation.targets().map(target => target.id))
+  maintenance.acknowledgeCatalog('e'.repeat(64), new Set())
+  assert.equal(receipts.complete(operationId), false, 'the event log alone does not retire its spill')
+  const operation = maintenance.spillOperations().find(item => item.operationId === operationId)
+  assert.ok(operation)
+  const target = operation.targets().find(item => item.id === spillId)
+  assert.ok(target)
+  assert.equal(target.publication?.target, intent.publication?.target)
+  assert.equal(await eraseNativeSpill(target, () => true), true)
+  maintenance.acknowledgeCatalog('e'.repeat(64), new Set())
+  assert.equal(receipts.complete(operationId), false, 'durable removal must also settle its own receipt')
+  operation.complete(target.id)
+  maintenance.acknowledgeCatalog('e'.repeat(64), new Set())
+  assert.equal(receipts.complete(operationId), true)
 })
