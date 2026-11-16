@@ -1,14 +1,14 @@
-# Viva Long Term Memory Implementation Plan
+# Viva Long Term Memory Implementation Plan (M1–M4 Historical Record)
 
-> 2026-11-16: All further memory development and sequencing follows the [file memory and independent plugin plan](memory-reme-plan.md). R1/R2 completed their experimental scope and P1 core extraction is complete. P2 standalone-plugin and R3 document-dream implementation and acceptance are complete; R4, R5a and R5b remain. M1–M4 here document the old fact-store implementation and its authorization, evidence, forgetting and request barriers. They are historical reference, not the active delivery schedule or a substitute for acceptance of the new phases.
+> 2026-11-17: This document preserves the old M1–M4 fact-store design, not the current architecture or delivery schedule. Local implementation `3085bad` uses file memory, an independent plugin owner and a Viva client. The old fact engine and numeric fact-ID APIs have been removed, with no old-data compatibility. See the [system design](system-design.md) for the current architecture and the [file memory and independent plugin plan](memory-reme-plan.md) for phase scope and acceptance. This round's PR CI has not run; local implementation alone does not establish acceptance of all later phases. The ReMe comparison branch remains separate, with no ReMe integration.
 
 English | [简体中文](memory-design.zh-CN.md)
 
-Revised on 2026-11-14. M1 and M2 include open-predicate extraction, separate model review of changes, timeline undo, and on-demand clarification. M3 implements layered recall, relation expansion, and index rebuilds. M4 adds evidence-linked user and project summaries, recoverable deletion cleanup, and tests for process death and request replay. The [system design](system-design.md) describes the current implementation.
+The body retains its 2026-11-14 design context. M1 and M2 then implemented open-predicate extraction, separate change review, timeline undo and on-demand clarification; M3 implemented layered recall, relationship expansion and index rebuilds; M4 added evidence-linked profiles, recoverable copy cleanup and crash/replay acceptance. References below to the backend Runtime, fact tables, extraction APIs and module names belong to that historical version, not the current API or code entry points.
 
-Viva's long-term memory must cover the full lifecycle: extraction, admission, writing, updates, conflict resolution, forgetting, and recall. The central decision is to give the backend `MemoryRuntime` ownership of memory while models only propose candidates. Accepted memories retain their sources, scope, valid time, and revision. Facts, relationships, and profiles share one canonical fact store. L0, L1, and L2 describe access paths from fastest to slowest.
+That version gave Viva's backend `MemoryRuntime` ownership of memory while models only proposed candidates. Accepted memories retained their sources, scope, valid time and revision. Facts, relationships and profiles shared one fact store; L0, L1 and L2 described access paths from fastest to slowest. The current file design retains constraints such as source validation and request fences, but not this fact engine or backend owner.
 
-Implementation proceeds through M1 write governance, M2 updates and conflicts, M3 layered recall, and M4 profiles and recovery acceptance. First ensure that memories are written correctly, can be changed and forgotten, and cannot be corrupted by work resumed after a restart. Then improve recall coverage and speed.
+The historical sequence was M1 write governance, M2 updates and conflicts, M3 layered recall and M4 profiles and recovery acceptance. The following sections preserve their original structure, not the phase list for the new plan.
 
 ## 1 Goals and scope
 
@@ -27,9 +27,9 @@ The first version uses local SQLite and covers one Viva data directory. The same
 
 ## 2 Previous implementation and reasons for the redesign
 
-| Area | Previous behavior | Current implementation or planned work |
+| Area | Previous behavior | M1–M4 redesign (historical) |
 | --- | --- | --- |
-| DSH memory plugin and tools | Opened the database directly, ran extraction after a turn, and accepted model tool calls as permission to save or forget | The [DSH adapter](../plugins/memory/lib/adapter.ts) forwards tool requests and runs model computations. The [plugin-owned Node owner](../src/memory/node/owner.ts) binds provenance and authorization, acknowledges intake after persistence, and recovers queued work; Viva accesses it through a client. |
+| DSH memory plugin and tools | Opened the database directly, ran extraction after a turn, and accepted model tool calls as permission to save or forget | The redesign moved tool forwarding and model computation to the plugin, with source and write governance in Viva's backend Runtime. The current independent plugin owner has replaced that process ownership. |
 | Storage and provenance | Matched duplicate text globally and could revive inactive rows. Attached conversation provenance by timestamp | The [memory store](../src/memory/node/memory-store.ts) keeps source versions, evidence spans, change history, and revision checks. |
 | Extraction and updates | The model proposed facts without original spans, scope, or validity dates. A proposal could replace an entry by referring to an ID shown to the extractor | The [shared contract](../src/memory/contracts/memory-contract.ts) carries proposed facts and change evidence. The backend verifier (`memory-facts.ts`) checks original text, applicability, and whether it supports the proposed change. |
 | Recall and context | Combined fixed context, name matching, and a session-local retrieval history | The runtime checks scope, validity, and retention before keyword recall (`memory-match.ts`) and [context formatting](../src/memory/core/memory-context.ts). Section 10 describes the planned retrieval layers. |

@@ -2,7 +2,7 @@
 
 English | [简体中文](system-design.zh-CN.md)
 
-> This describes the architecture on main as of PR #132 (`82a5bf3`, 2026-11-10). The split's plan and phase-by-phase notes are in the git history (`docs/backend-split-design.md`, removed after this document replaced it); the module-by-module cleanup that followed is recorded in the [architecture cleanup](architecture-health.md).
+> The process split is based on PR #132 (`82a5bf3`, 2026-11-10); memory responsibilities, storage and plugin boundaries were checked against local commit `3085bad` on 2026-11-17. This is a local implementation snapshot: this round's PR CI has not run, and the snapshot does not imply a merge or completion of all delivery acceptance. The split's plan and implementation notes remain in git history; the later module-by-module work is recorded in the [architecture cleanup](architecture-health.md).
 
 ## 1. Overview
 
@@ -31,12 +31,12 @@ flowchart TB
   end
   subgraph backend["Backend process · src/backend (Electron as Node, no electron import)"]
     b1["<b>Event core</b><br/>signal → route → apply<br/>change and event in one transaction"]
-    b2["<b>Conversation and tasks</b><br/>conversation-session: the topic on screen<br/>TaskRuntime: the one writer of tasks<br/>history, settings, models, memory"]
+    b2["<b>Conversation and tasks</b><br/>conversation-session: the topic on screen<br/>TaskRuntime: the one writer of tasks<br/>history, settings, models, memory client"]
     b3["<b>Schedules and 动态</b><br/>schedule-runs, unattended runs<br/>动态's items, the effects queue"]
     b4["<b>dsh and ACP</b><br/>dsh-lifecycle starts and restarts dsh<br/>acp-bridge, acp-operations, acp-task-sessions"]
   end
   subgraph dsh["dsh process (child of the backend)"]
-    d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>the backend owns memory.db and trace owns trace.db"]
+    d1["<b>Viva's own plugins</b><br/>12 viva-* plugins, by contract<br/>memory plugin holds the owner; trace writes trace.db"]
     d2["<b>User plugins</b><br/>installed by the plugin manager<br/>switched on and off while running"]
     d3["<b>Tools and sandbox</b><br/>dsh's level and sandbox<br/>the user's approval when needed"]
   end
@@ -48,8 +48,8 @@ flowchart TB
 
 - **Pages** (`src/renderer`): the main window and the desk island, sandboxed, with no Node. They only display and interact; their state is pushed by the backend.
 - **Shell** (`src/shell`, the Electron main process): the app lifecycle, window, tray, desk island, shortcut, notifications, dialogs and the system keychain. It checks the pages' calls and forwards them to the backend, and does what the backend asks of the desktop.
-- **Backend** (`src/backend`, a child process running Electron as Node): everything except the desktop. That is the event core, all features and stores (history, tasks, schedules and 动态, memory, settings, models, plugin management), and the modules that run dsh: `dsh-lifecycle.ts` starts and restarts it, `acp-bridge.ts` holds its process, MCP and the session on screen, `acp-operations.ts` the prompts under way and `acp-task-sessions.ts` the tasks' sessions. `compose.ts` creates, wires and closes these modules; it still coordinates some features itself (settings, MCP changes, schedules and 动态). It does not import `electron` at run time; it reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`).
-- **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 12 own plugins and the plugins the user installed.
+- **Backend** (`src/backend`, a child process running Electron as Node): the event core, history, tasks, schedules and 动态, settings, models, plugin management, plus the memory client and host-owned copy cleanup; it does not hold the live memory owner. `dsh-lifecycle.ts` starts and restarts dsh, `acp-bridge.ts` holds its process, MCP and the session on screen, `acp-operations.ts` the prompts under way and `acp-task-sessions.ts` the tasks' sessions. `compose.ts` creates, wires and closes these modules; it still coordinates some features itself (settings, MCP changes, schedules and 动态). It does not import `electron` at run time; it reaches the desktop only through `HostCapabilities` (`src/backend/host.ts`).
+- **dsh** (a child of the backend): the agent that runs the conversation, loading Viva's 12 own plugins and the plugins the user installed. `viva-memory` holds the live memory owner here. Standalone DSH and DSH Web use the same plugin and memory core without a Viva backend.
 
 The point of this split is that nothing in the backend is tied to the desktop. Moving it to the cloud later means replacing only the transport and authentication between the two ends (§10).
 
@@ -108,23 +108,28 @@ Every input to the backend is a signal, and every state change goes through `app
 
 ## 5. Data storage
 
-The backend keeps its main application data in `app.db` and memory in `memory.db`. Data written by plugins inside dsh's process stays in the plugins' own files. All files live in the app data folder (on macOS, `~/Library/Application Support/Viva`). SQLite is Electron's built-in `node:sqlite`, with WAL and `secure_delete` on.
+The backend keeps its application data in `app.db`; the Node owner in `viva-memory` exclusively holds the live memory root inside dsh. Viva configures that root as `memory/` under its app data directory (`~/Library/Application Support/Viva` on macOS). The standalone plugin accepts `dataRoot`, defaulting to `$DSH_HOME/memory`. SQLite uses `node:sqlite`, with WAL and `secure_delete` on.
 
 | File | Contents | Written by | Events |
 | --- | --- | --- | --- |
 | `app.db` | `app_events`, `meta`; schedules (`schedules`, the runs not finished `schedule_runs`) and 动态's items (`feed_items`); history (`conversations`, `messages` with its full-text index, `stars`); background tasks kept for the next launch (`background_tasks`); what is still to be done outside (`effects`, §11.4); result records in conversations (`report_records`, §11.5); the main conversation's requests, decisions, and actions (`routing_requests`, `routing_decisions`, `routing_actions`, see section 12 of the [routing design](agent-routing-design.md)) | Backend | In the same transaction as the write |
-| `memory.db` | Manual profile, memory entries and evidence, source receipts, change history, exclusions, and extraction jobs | Backend memory runtime | A committed change publishes `memory.changed` with its revision |
+| `memory/memory.db` | Verified originals and versions, document catalog and source mappings, operation and change receipts, stop/forget records, daily/dream jobs, retrieval indexes and copy-cleanup proof | The memory plugin's Node owner | A commit notifies Viva through the host channel, then publishes `memory.changed` with its revision |
+| `memory/memory-files/` | Workspace-isolated session records, `daily/` notes and day indexes, and `digest/` Markdown documents | Node file adapters through the document journal | The journal coordinates file publication and SQLite receipts, recovering after a crash |
 | `trace.db` | Each turn's tool calls and thinking | The trace plugin (dsh's process) | None |
 | `settings.json`, `models.json`, `mcp-servers.json`, `preferences.json` | Key, model providers, MCP servers, preferences | Backend | None |
 | `data-key.bin` | The data key that encrypts keys, itself encrypted by the system keychain | Shell | None |
 
-The backend persists user sources with their extraction jobs, or saves an explicit Remember request at receipt. DSH proposes open-predicate facts and separately reviews proposed changes to old facts. The backend validates source spans, scope, time, and revisions, then commits admitted facts and the exact job generation together. Verified corrections, replacements, and endings retain evidence and change history. Undo recomputes validity from the remaining evidence and changes. A chat deletion queues its withdrawal in `app.db`, and the backend applies pending withdrawals before opening model sessions. [Memory design](memory-design.md)
+**Four memory layers.** [`contracts`](../src/memory/contracts/index.ts) defines plain DTOs and validation; [`core`](../src/memory/core/index.ts) handles writes, forgetting, retrieval, dream, versions and source permissions without Electron, DSH or Node storage dependencies; [`node`](../src/memory/node/index.ts) supplies SQLite, files, indexes, model resources and the owner lock; the [DSH adapter](../plugins/memory/lib/adapter.ts) binds actual sessions, tool executions, model transport, persistence and lifecycle. Viva calls the service through a trusted [owner client](../src/backend/remote-memory-channel.ts), conveys user actions and manages its own copies; it runs no second memory engine. Phase scope follows the [file memory and independent plugin plan](memory-reme-plan.md); [M1–M4](memory-design.md) records the old fact store.
 
-The backend records which source and memory revisions a DSH session received. Task follow-ups and persisted schedules carry those dependencies into their destination sessions. Each model attempt checks them before dispatch, including Auto approval, compaction, and model-generated titles. The supported model transports hold the dispatch grant through request-body submission and apply time bounds during that window. A write waits only for requests whose dependencies it invalidates. A stale conversation can continue from filtered history in a replacement session. Clarification cards require a current foreground recall reference and are scoped to that turn.
+**File writes and reads.** Native session ingestion persists user originals before completed turns contribute to daily notes; unsafe assistant context cannot discard an independent human original. Dream processes documents through Extract → Integrate → Verify → Tag. The model proposes creation or correction in a draft; the core checks original spans, workspace, file revisions and operation receipts before committing. Explicit Remember requests and management-page creation and edits use the same file service. `personal`, `procedure` and `wiki` are document buckets, with no predicate table deciding conflicts. Retrieval combines full text, configured local embeddings and relationship expansion, and indexes can be rebuilt. Unclear corrections remain deferred work; basic clarification is requested only when relevant material is actually retrieved.
+
+**Requests and recovery.** The owner records the sources and exact file versions and ranges a session used. Background tasks, schedules, feed continuations and native PTC tool chains transfer verified dependencies. Every model call rechecks them at physical dispatch; supported transports hold the grant until request-body delivery. Normal tool settlement grants no new read authority. While the owner recovers, dependencies are stale or cleanup proof is insufficient, affected requests cannot fall back to unfiltered history or raw traces. Before dsh starts, Viva uses a separate cold-maintenance entry to clean native copies; the plugin then recovers the live owner. They do not hold the root concurrently.
+
+**Stop, undo and forget.** Stopping use and restoring it bind exact document versions and ranges; explicit document changes retain history and an undo entry. Permanent forgetting has no undo. It revokes read access first, then cleans managed original spans, documents, indexes, revision copies, native sessions and spills, traces, and derived copies in Viva history, tasks and feed items. Each holder durably acknowledges its own work. Overall status remains pending until the app WAL checkpoint, native whole-catalog audit and every receipt complete. Unproven copy identities cannot be inferred from equal text; independent content must survive. External services, user exports and system backups are outside this completion claim. Deleting a chat still starts a trusted source withdrawal through Viva's history flow.
 
 **Key encryption.** The system keychain (Electron `safeStorage`: Keychain on macOS, DPAPI on Windows) is available only in the shell. The shell uses it to protect a random 32-byte data key and hands that key to the backend over the IPC channel at start. The backend encrypts with AES-256-GCM under it (`src/backend/envelope.ts`). If the keychain can no longer open the key file, the file is set aside and a new key made; keys encrypted under the old one must be entered again. Without a keychain, saving a key is refused rather than falling back to plain text.
 
-**No compatibility.** Data from earlier versions is not read (decided): keys saved by an earlier version must be entered again, and `followups.db` and the older JSON history are not brought over.
+**No compatibility.** Memory supports only the current file contract (plugin contract and SQLite schema 8, host protocol 2). The old fact store and numeric fact-ID APIs are removed; old databases are neither migrated nor dual-written. Keys saved by an earlier version must be entered again, and `followups.db` and older JSON history are not brought over. The ReMe comparison branch remains separate; the current implementation does not integrate ReMe.
 
 ## 6. dsh and plugins
 
@@ -136,7 +141,7 @@ Viva does not modify dsh; it customizes it only through plugins and configuratio
 
 | Contract | What the plugin does |
 | --- | --- |
-| `memory` | Memory tools, context injection and model computation for backend extraction jobs |
+| `memory` | Independent owner, session ingestion, file write/forget/retrieval, daily/dream, injection, request fences and native-copy recovery; the host channel serves Viva clients |
 | `trace` | Records each turn's tool calls and thinking in `trace.db` |
 | `tasks` | Query tools for background tasks (`list_background_tasks`, `get_background_task`) and tools for schedules (`schedule_create`, `schedule_list`, `schedule_update`, `schedule_delete`); the backend does what they ask and sets their scope by working folder and session, never the tool's arguments. Starting, stopping and messaging a task are not tools: the main conversation's routing decisions hand them to the backend (§11.1) |
 | `history` | Lets the model search earlier conversations |
@@ -157,9 +162,9 @@ Plugins and the app talk over the IPC channel opened when dsh starts; each contr
 
 **What becomes a plugin.** Viva makes a capability one of its own plugins only when it needs the agent's internals: injection before each step, state bound to a session, native tools without approvals, reusing the model, or interception before execution. The rest stays in ACP or the app. dsh is still a 0.2.x release candidate and plugins use its own APIs, so every plugin raises the cost of switching ACP agents. This rule covers the app's own plugins; the plugins users install tie the app to dsh's ecosystem on purpose.
 
-**Contract checks.** `APP_PLUGINS` lists each plugin's name, folder, contract and configuration; a plugin declares its contract in `package.json`, for example `"viva": { "contract": { "memory": 6 } }`. Before launch, `resolvePlugins` checks that the plugin exists, its `package.json` reads, the name matches, and the contract and dsh versions match exactly. A plugin that fails is left out of the profile, with the reason shown on the Capabilities page. The trace database records `meta.contract_version`. The memory runtime checks its SQLite `user_version` before opening the store.
+**Contract checks.** `APP_PLUGINS` lists each plugin's name, folder, contract and configuration; a plugin declares its contract in `package.json`, for example `"viva": { "contract": { "memory": 8 } }`. Before launch, `resolvePlugins` checks that the plugin exists, its `package.json` reads, the name matches, and the contract and dsh versions match exactly. A plugin that fails is left out of the profile, with the reason shown on the Capabilities page. The trace database records `meta.contract_version`. The Node memory store checks SQLite `user_version` before the owner opens the store and rejects a mismatch.
 
-**The dsh interfaces each plugin uses.** `memory`: agent/pre-step, tools.register, llm/stream, llm.stream; `trace`: agent/turn-stopping, session.eventAt; `stream` (`viva-routing`): agent/created, agent.ctx.tools.restrict, agent.ctx.plugin (dsh-persona), tools/pre-execute (before approval), tools.register, agent/pre-step, agent/turn-stopping, agent/status, agent/assistant-stream, session/event, agent/disposed, llm.stream; `plugins`: ctx.pluginManager; `mcp`: ctx.mcpManager (register, list, restart), mcp-manager/status. Plugin failures degrade: failed injection omits memories, failed recording omits the activity, and the conversation goes on.
+**The dsh interfaces each plugin uses.** `memory`: sessions and projections, agent/pre-step, native tool execution and PTC events, user questions, llm transport, persistence and spill services; `trace`: agent/turn-stopping, session.eventAt; `stream` (`viva-routing`): agent/created, agent.ctx.tools.restrict, agent.ctx.plugin (dsh-persona), tools/pre-execute (before approval), tools.register, agent/pre-step, agent/turn-stopping, agent/status, agent/assistant-stream, session/event, agent/disposed, llm.stream; `plugins`: ctx.pluginManager; `mcp`: ctx.mcpManager (register, list, restart), mcp-manager/status. Optional features may degrade, but an unavailable memory owner or unverified request dependencies require affected model calls to wait for recovery or fail explicitly. Omitting memory cannot bypass the fence.
 
 **Session preparation.** A new topic shows an empty input at once; typing is allowed while it prepares, sending waits. At most one independent empty session is prepared ahead, and it expires after 120 seconds unused. Sessions have no MCP servers of their own: `viva-mcp` gives the user's servers to dsh's MCP manager, which connects them once for the whole dsh and shares them with every session (a singleton server runs one process). Connecting happens in the background, up to 30 seconds per attempt, with automatic reconnects on backoff; a server that hangs or fails only lacks its own tools for a while and never holds up a session, so it no longer slows commit_route handing work to a background task. Timing: set `VIVA_SESSION_TIMING=1` for the backend and `localStorage.setItem('viva:session-timing', '1')` for the page; only stages, durations and outcomes are recorded, never prompts or MCP configuration.
 
@@ -260,7 +265,7 @@ The boundaries are drawn so that the backend could later run elsewhere, but the 
 **Not done yet:**
 
 - The 4 JSON settings files are not in `app.db`, and their writes carry no events. Merging them needs a design for the encrypted fields and file permissions.
-- Memory change events in `app.db` follow the commit in `memory.db`. The renderer also reloads the memory snapshot when it reconnects.
+- The plugin owner notifies Viva after committing `memory.db`, and the backend then records the memory change in `app.db`; this is not a two-database atomic commit. The renderer reloads the owner snapshot when it reconnects.
 - B2 replays pushes after a same-generation disconnect; a changed generation or a real replay gap still reloads the page. Reloading loses the foreground stream tail not yet persisted and unsent drafts, so this is not complete recovery. A notification shown before the restart is only logged when clicked after it.
 - Events serve recording and replay after a drop; nothing else consumes them yet.
 - Interface string keys are still named after the old file paths (such as `main.history-db.*`). It only affects how the names read, so they were left as they are.
