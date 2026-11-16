@@ -37,6 +37,11 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
           if (origin || stored && nativeEventDigest(stored) === terminal.digest) blocked.add(target.id)
           continue
         }
+        if (!window.ambiguous && !window.event) {
+          // A fork can persist an inherited endpoint before its parent flushes it.
+          if (origin) verified.add(target.id)
+          continue
+        }
         const event = window.ambiguous ? undefined : window.event
         if (!event || event.seq !== terminal.seq || (event.type === 'assistant/message' ? 'reply' : 'attempt') !== terminal.kind) {
           blocked.add(target.id)

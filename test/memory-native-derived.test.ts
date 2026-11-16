@@ -109,3 +109,127 @@ test('cold native derived erasure groups inbox replicas and retains independent 
   assert.equal(db.prepare('SELECT erased FROM owner_native_derived_messages WHERE message=?').get(second.id)?.erased, 0,
     'an unverified third payload keeps that evidence pending')
 })
+
+test('cold recovery restores a receipt from a flushed fork when the parent has only its attempt marker', async t => {
+  const { createAssistantMessage } = await import('@deepseek-ai/dsh-llm')
+  const { appendPluginRecord } = await import('@deepseek-ai/dsh-session')
+  const { NATIVE_OUTPUT_MARKER } = await import('../plugins/memory/lib/native/output-attempts.ts')
+  const { createNativeOutputAttempts } = await import('../src/memory/node/native-output-attempts.ts')
+  const { dir } = scratch(t, 'viva-native-forked-endpoint-')
+  const memoryRoot = join(dir, 'memory'), root = join(dir, 'sessions')
+  const parent = Session.create(SessionId(randomUUID())), childId = SessionId(randomUUID())
+  const marker = { id: randomUUID(), generation: 0, turn: 1, step: 1 }
+  parent.append('turn/start', { turn: 1 })
+  parent.append('step/start', { turn: 1, step: 1 })
+  const floor = appendPluginRecord(parent, NATIVE_OUTPUT_MARKER, marker) + 1
+  const secret = 'The inherited model response reached only the child artifact.'
+  const terminal = parent.append('assistant/message', { turn: 1, step: 1,
+    message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: secret }] }), stream: [],
+  }, { surfaceOp: 'append' })
+  const prefix = parent.snapshotEvents(), inherited = SessionLogOffset(prefix.length)
+  const child = Session.create(childId, prefix, { ...parent.header, id: childId, isSeeded: true }, inherited)
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  try {
+    await owner.recover()
+    owner.initializeSession({ sessionId: String(parent.id) })
+    const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Canonical file underlying the response.' }] }) as HostMemoryApi['createFile']['output']
+    assert.match(owner.runtime.handle({ op: 'file_read', session: parent.id, id: file.identity.id }, { session: parent.id, conversation: parent.id }) ?? '', /Canonical/)
+    const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+    try { createNativeOutputAttempts(db).record({ ...marker, session: parent.id, floor }, owner.dispatch.snapshot(parent.id)) }
+    finally { db.close() }
+    const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
+    assert.ok(detail)
+    await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+  } finally { await owner.close() }
+
+  const context = new Context(), mounted = await context.plugin(jsonl, { root, compression: 'zstd' })
+  try {
+    const original = await context.sessionPersistence.create(parent.header)
+    try { await original.append(prefix.slice(0, floor)); await original.flush() } finally { await original.close() }
+    const fork = await context.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+    try { await fork.append(child.snapshotEvents()); await fork.flush() } finally { await fork.close() }
+  } finally { await mounted.dispose() }
+  await eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storages'), hostNamespace: 'viva',
+    isCold: () => true, trace: { key: () => undefined, erase: () => assert.fail('this fixture has no trace') } })
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'), { readOnly: true })
+  try {
+    const row = db.prepare('SELECT result FROM owner_native_output_attempts WHERE id=?').get(marker.id)
+    const result = JSON.parse(String(row?.result)) as { state: string, terminal: { seq: number } }
+    assert.equal(result.state, 'settled')
+    assert.equal(result.terminal.seq, terminal.seq)
+    assert.ok(db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?').get(marker.id))
+  } finally { db.close() }
+  const verify = new Context(), installed = await verify.plugin(jsonl, { root })
+  try {
+    const handle = await verify.sessionPersistence.open(childId, 'read')
+    try { assert.doesNotMatch(JSON.stringify((await handle.read()).events), /inherited model response/) } finally { await handle.close() }
+  } finally { await installed.dispose() }
+})
+
+test('cold recovery restores a tool receipt flushed only in an inherited fork and completes erasure', async t => {
+  const { createAssistantMessage, createToolResultMessage, ToolCallId } = await import('@deepseek-ai/dsh-llm')
+  const { createNativeToolReads } = await import('../src/memory/node/native-tool-reads.ts')
+  const { nativeEventDigest } = await import('../plugins/memory/lib/native/event-digest.ts')
+  const { dir } = scratch(t, 'viva-native-forked-tool-endpoint-')
+  const memoryRoot = join(dir, 'memory'), root = join(dir, 'sessions')
+  const parent = Session.create(SessionId(randomUUID())), childId = SessionId(randomUUID())
+  const block = { type: 'tool-call' as const, id: ToolCallId(randomUUID()), name: 'memory_read', arguments: '{}' }
+  parent.append('turn/start', { turn: 1 })
+  parent.append('step/start', { turn: 1, step: 1 })
+  parent.append('assistant/message', { turn: 1, step: 1,
+    message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [block] }), stream: [],
+  }, { surfaceOp: 'append' })
+  const call = parent.append('tool/call', { turn: 1, step: 1, callId: block.id, name: block.name, arguments: block.arguments })
+  const secret = 'The inherited private tool result exists only in the fork.'
+  const terminal = parent.append('tool/result', { turn: 1, step: 1,
+    message: createToolResultMessage({ callId: block.id, content: [{ type: 'text', text: secret }], isError: false }),
+  }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+  parent.append('step/end', { turn: 1, step: 1 })
+  parent.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const prefix = parent.snapshotEvents(), inherited = SessionLogOffset(prefix.length)
+  const child = Session.create(childId, prefix, { ...parent.header, id: childId, isSeeded: true }, inherited)
+  const identity = { id: randomUUID(), session: String(parent.id), callId: String(block.id), generation: 0,
+    turn: 1, step: 1, seq: call.seq, digest: nativeEventDigest(call) }
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', fileMode: true,
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  try {
+    await owner.recover()
+    const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Canonical file underlying the tool result.' }] }) as HostMemoryApi['createFile']['output']
+    assert.match(owner.runtime.handle({ op: 'file_read', session: parent.id, id: file.identity.id }, { session: parent.id, conversation: parent.id }) ?? '', /Canonical/u)
+    const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+    try {
+      const evidence = owner.dispatch.snapshot(parent.id)
+      createNativeToolReads(db).record(identity, evidence.files ?? [], evidence.sources)
+    } finally { db.close() }
+    const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
+    assert.ok(detail)
+    await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+  } finally { await owner.close() }
+
+  const context = new Context(), mounted = await context.plugin(jsonl, { root, compression: 'zstd' })
+  try {
+    const original = await context.sessionPersistence.create(parent.header)
+    try { await original.append(prefix.slice(0, terminal.seq)); await original.flush() } finally { await original.close() }
+    const fork = await context.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+    try { await fork.append(child.snapshotEvents()); await fork.flush() } finally { await fork.close() }
+  } finally { await mounted.dispose() }
+  const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storages'), hostNamespace: 'viva',
+    isCold: () => true, trace: { key: () => undefined, erase: () => assert.fail('this fixture has no trace') } })
+  await erase()
+  await erase()
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'), { readOnly: true })
+  try {
+    const saved = JSON.parse(String(db.prepare('SELECT result FROM owner_native_tool_calls WHERE id=?').get(identity.id)?.result)) as { seq: number }
+    assert.equal(saved.seq, terminal.seq)
+    assert.ok(db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?').get(identity.id))
+  } finally { db.close() }
+  const verify = new Context(), installed = await verify.plugin(jsonl, { root })
+  try {
+    for (const id of [parent.id, childId]) {
+      const handle = await verify.sessionPersistence.open(id, 'read')
+      try { assert.doesNotMatch(JSON.stringify((await handle.read()).events), /inherited private tool result/u) }
+      finally { await handle.close() }
+    }
+  } finally { await installed.dispose() }
+})

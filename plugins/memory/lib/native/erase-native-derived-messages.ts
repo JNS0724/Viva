@@ -6,6 +6,7 @@ import type { openNativeOriginalMaintenance } from '../../../../src/memory/node/
 import { memoryOriginalContentDigest } from '../context-recovery.ts'
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
+import { addNativeCompactionCopies, asNativeCompactionCopy, projectNativeCompaction } from './project-native-compactions.ts'
 import { publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
 
 type Maintenance = NonNullable<ReturnType<typeof openNativeOriginalMaintenance>>
@@ -66,11 +67,14 @@ export async function eraseNativeDerivedMessages({ root, storageRoot, operation,
           needsRewrite: true, tracePublished: false })
         selections.set(digest, selected)
       }
+      addNativeCompactionCopies(events, replacements, operationId, journal, receipts)
       if (replacements.size) copies.set(sessionId, replacements)
     })
   } finally { await mounted.dispose() }
   await publishNativeEventCopies({ root, storageRoot, operationId, journal, copies, isCold, trace,
     project(event) {
+      const compaction = asNativeCompactionCopy(event)
+      if (compaction) return projectNativeCompaction(compaction)
       const selected = selections.get(nativeEventDigest(event))
       return selected ? redact(event, selected) : undefined
     },

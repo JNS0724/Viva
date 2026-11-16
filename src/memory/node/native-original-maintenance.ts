@@ -212,8 +212,21 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     })
   }
 
+  function unsettledReceipts() {
+    const attempts = new Map<string, ReturnType<typeof outputAttempts.affected>[number]>()
+    const tools = new Map<string, ReturnType<typeof toolReads.affected>[number]>()
+    for (const row of outputPlans.all()) {
+      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
+      for (const item of outputAttempts.affected(ranges, memoryIds ?? [])) if (item.result.state === 'open') attempts.set(item.id, item)
+      for (const item of toolReads.affected(ranges)) if (!item.result) tools.set(item.id, item)
+    }
+    return { attempts: [...attempts.values()], tools: [...tools.values()] }
+  }
+
   const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
-  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations,
+  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations, unsettledReceipts,
+    hasPlans: () => outputPlans.all().length > 0,
+    finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
     pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),
     carriesUnsettledPublication: () => Boolean(unsettled.get()) || outputJournal.pending(),
     close() { try { db.close() } finally { closeLock() } } }

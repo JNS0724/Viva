@@ -19,6 +19,7 @@ import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
 import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
 import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { recordCompactionInputs } from '../plugins/memory/lib/native/compaction-inputs.ts'
+import { memoryOriginalContentDigest } from '../plugins/memory/lib/context-recovery.ts'
 import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -241,6 +242,8 @@ test('a real DSH tool read archives and erases native results even when the next
     control.close()
   }
   const saved = affected[0]!, result = saved.result!
+  const lostReceipt = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try { lostReceipt.prepare('UPDATE owner_native_tool_calls SET result=NULL WHERE id=?').run(saved.id) } finally { lostReceipt.close() }
   const sessionsRoot = join(app.directory, 'dsh', 'sessions')
   const sessionId = SessionId(saved.session), forkId = SessionId(randomUUID())
   const provider = new Context(), mounted = await provider.plugin(jsonl, { root: sessionsRoot, compression: 'zstd' })
@@ -380,6 +383,7 @@ test('cold Viva startup erases native originals and settled output in root and u
   let toolReply = -1, toolResult = -1
   const compactions = new Set<number>()
   let unconnectedSummary = -1
+  let derivedInjection: import('@deepseek-ai/dsh-llm').UserMessage | undefined
   const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
   try {
     const original = await cold.sessionPersistence.open(parentId, 'read')
@@ -451,7 +455,10 @@ test('cold Viva startup erases native originals and settled output in root and u
       const compactedOriginal = compact([titleMessage.seq], compactionSecret)
       const compactedCheckpoint = compact([compactedOriginal.checkpoint], compactionSecret)
       const compactedTool = compact([announcement.seq, result.seq], compactionSecret)
-      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool]) {
+      derivedInjection = createUserMessage({ source: { kind: 'viva-memory' }, content: [{ type: 'text', text: compactionSecret }] })
+      const injection = fixture.append('user/message', derivedInjection, { surfaceOp: 'append' })
+      const compactedInjection = compact([injection.seq], compactionSecret)
+      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool, compactedInjection]) {
         compactions.add(item.summary)
         compactions.add(item.checkpoint)
       }
@@ -469,7 +476,8 @@ test('cold Viva startup erases native originals and settled output in root and u
         const archive = createNativeOutputAttempts(proofDb)
         const evidence = { sources: [sourceId], dependencies: [], epoch: 0, turnOnly: false }
         archive.record(failedProof, evidence)
-        archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeEventDigest(failed) })
+        // The native event committed before a crash could store its settlement receipt.
+        affectedOutputs.add(failed.seq)
         archive.record(reasoningProof, evidence)
         archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
         archive.record(groupProof, evidence)
@@ -482,6 +490,10 @@ test('cold Viva startup erases native originals and settled output in root and u
           const marker = prefix && pluginRecordOf(prefix)
           assert.equal(marker?.type, NATIVE_OUTPUT_MARKER)
           assert.deepEqual(marker.data, { id, generation, turn, step })
+          if (result.state === 'open') {
+            assert.equal(id, failedProof.id)
+            continue
+          }
           assert.equal(result.state, 'settled')
           const event = events[result.terminal.seq]
           assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
@@ -507,6 +519,9 @@ test('cold Viva startup erases native originals and settled output in root and u
   const operationId = randomUUID(), nextOperation = randomUUID()
   try {
     await owner.recover()
+    assert.ok(derivedInjection)
+    await owner.registerDerived({ sessionId: parentId, messageId: derivedInjection.id, sourceIds: [sourceId], nativeUserSource: 'viva-memory',
+      contentDigest: memoryOriginalContentDigest(derivedInjection) })
     const store = openMemoryStore(join(memoryRoot, 'memory.db'))
     try {
       assert.equal(store.db.prepare('SELECT 1 FROM owner_occurrences WHERE session=?').get(forkId), undefined)
@@ -660,7 +675,7 @@ test('cold Viva startup erases native originals and settled output in root and u
         assert.equal(outcome.data.meta, undefined)
         assert.doesNotMatch(JSON.stringify(events), new RegExp(toolSecret, 'u'))
         const rewrittenCompactions = events.filter(event => compactions.has(event.seq))
-        assert.equal(rewrittenCompactions.length, 7)
+        assert.equal(rewrittenCompactions.length, 9)
         assert.doesNotMatch(JSON.stringify(rewrittenCompactions), new RegExp(compactionSecret, 'u'))
         assert.match(JSON.stringify(events[unconnectedSummary]), /independent compaction remains/)
       } finally { await reader.close() }

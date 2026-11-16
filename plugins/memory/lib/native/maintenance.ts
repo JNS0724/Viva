@@ -10,6 +10,7 @@ import { eraseNativeOutputs } from './erase-native-outputs.ts'
 import { eraseNativeToolResults } from './erase-native-tool-results.ts'
 import { eraseNativeDerivedMessages } from './erase-native-derived-messages.ts'
 import type { NativeOutputTrace } from './publish-native-event-copies.ts'
+import { reconcileNativeReceipts } from './reconcile-native-receipts.ts'
 
 export class PendingNativePublication extends Error {}
 
@@ -22,11 +23,12 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
   const owner = openNativeOriginalMaintenance(memoryRoot, hostNamespace)
   if (!owner) return
   try {
+    if (!owner.hasPlans()) return
+    const root = await realpath(sessionsRoot)
+    await reconcileNativeReceipts(root, owner)
     const work = owner.operations()
     const outputs = owner.outputOperations(), tools = owner.toolResultOperations()
     const derived = owner.derivedMessageOperations()
-    if (!work.length && !outputs.length && !tools.length && !derived.length) return
-    const root = await realpath(sessionsRoot)
     const pendingOriginals = owner.pendingOriginalOperations()
     const tasks = [
       ...work.map(item => ({ pending: pendingOriginals.has(item.operationId),

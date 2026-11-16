@@ -33,6 +33,12 @@ export async function eraseNativeToolResults({ root, storageRoot, operation, isC
         const call = events[target.seq], result = toolResult(events[target.result.seq])
         const sameCall = call?.type === 'tool/call' && (nativeEventDigest(call) === target.digest
           || journal.provenTransition({ seq: target.seq, before: target.digest, after: nativeEventDigest(call) }))
+        if (origin && sameCall && target.result.seq >= events.length) {
+          // A child's flushed inherited result can precede the parent's write.
+          const otherResult = events.some(event => event.type === 'tool/result' && event.surfaceOp === 'append'
+            && event.data.turn === target.turn && event.data.step === target.step && event.data.message.toolCallId === target.callId)
+          if (!otherResult) { verified.add(target.id); continue }
+        }
         if (!sameCall || result?.surfaceOp !== 'append' || result.data.message.toolCallId !== target.callId
           || result.data.turn !== target.turn || result.data.step !== target.step
           || result.sourceEventSeqs?.length !== 1 || result.sourceEventSeqs[0] !== target.seq) {
