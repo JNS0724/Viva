@@ -170,9 +170,11 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     if (!owner.ready()) throw new Error('Memory owner is not ready')
     const context = owner.sessionContext(String(agent.session.id))
     const read = () => owner.runtime.handleModelRequest(input, context, () => owner.ready() && !signal?.aborted, signal)
+    if (!toolReads || !['recall', 'file_read', 'node_search', 'clarify'].includes(input.op)) return read()
     const execution = caller.getStore()
-    return execution && 'agent' in execution && execution.agent === agent && execution.toolRead
-      ? owner.withNativeToolRead(execution.toolRead, read) : read()
+    // File tools only return bytes through an authenticated native execution.
+    if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
+    return owner.withNativeToolRead(execution.toolRead, read)
   }
   // Automatic tool review may omit sessionId. Bind the actual execution, not its text.
   let unbindTools: (() => unknown) | undefined

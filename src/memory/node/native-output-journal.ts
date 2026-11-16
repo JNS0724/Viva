@@ -32,7 +32,10 @@ export function createNativeOutputJournal(db: DatabaseSync, invalidateSurface: (
   const pending = db.prepare('SELECT 1 FROM owner_native_output_publications WHERE published=0 LIMIT 1')
   const projected = db.prepare(`SELECT r.value FROM owner_native_output_publications p,json_each(p.payload,'$.replacements') r
     WHERE p.published=1 AND json_extract(r.value,'$.attempt')=? AND json_extract(r.value,'$.seq')=?
-    AND json_extract(r.value,'$.before')=? AND json_extract(r.value,'$.after')=? LIMIT 1`)
+    AND json_extract(r.value,'$.after')=? AND (? IS NULL OR json_extract(r.value,'$.before')=?) LIMIT 1`)
+  const transition = db.prepare(`SELECT 1 FROM owner_native_output_publications p,json_each(p.payload,'$.replacements') r
+    WHERE p.published=1 AND json_extract(r.value,'$.seq')=? AND json_extract(r.value,'$.before')=?
+    AND json_extract(r.value,'$.after')=? LIMIT 1`)
   const erased = db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?')
   const satisfy = db.prepare('INSERT OR IGNORE INTO owner_native_output_erased VALUES (?)')
   function read(operation: string, session: string) {
@@ -46,9 +49,12 @@ export function createNativeOutputJournal(db: DatabaseSync, invalidateSurface: (
       return {
         pendingSessions: () => unresolved.all(operation).map(row => String(row.session)),
         read: (session: string) => read(operation, session),
-        provenProjection({ attempt, seq, before, after }: NativeOutputReplacement) {
-          const found = projected.get(attempt, seq, before, after)
+        provenProjection({ attempt, seq, before, after }: Pick<NativeOutputReplacement, 'attempt' | 'seq' | 'after'> & { before?: string }) {
+          const found = projected.get(attempt, seq, after, before ?? null, before ?? null)
           return found ? replacement.parse(JSON.parse(String(found.value))) : undefined
+        },
+        provenTransition({ seq, before, after }: Pick<NativeOutputReplacement, 'seq' | 'before' | 'after'>) {
+          return Boolean(transition.get(seq, before, after))
         },
         markCopied: invalidateSurface,
         prepare(session: string, output: NativeOutputPublication) {

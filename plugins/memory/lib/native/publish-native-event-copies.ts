@@ -11,6 +11,30 @@ export type NativeOutputTrace = {
   erase(sessionId: string, positions: readonly { seq: number, digest: string }[]): void
 }
 
+export function planNativeEventCopy({ event, attempt, receipts, journal, expected, project, trace, shared }: {
+  event: SessionEvent, attempt: string, receipts: ReturnType<NativeEventJournal['read']>, journal: NativeEventJournal,
+  expected?: string, project(): SessionEvent | undefined, trace?(): string | undefined,
+  shared?: boolean,
+}): NativeEventCopy | undefined {
+  const digest = nativeEventDigest(event)
+  for (const receipt of receipts) {
+    const replacement = receipt.replacements.find(copy => copy.attempt === attempt && copy.seq === event.seq
+      && (!expected || copy.before === expected) && copy.after === digest)
+    if (replacement) return { replacement, needsRewrite: false, tracePublished: receipt.published }
+  }
+  const saved = { attempt, seq: event.seq, before: expected ?? digest, after: digest }
+  const proof = journal.provenProjection({ ...saved, before: expected })
+  if (proof) return { replacement: proof, needsRewrite: false, tracePublished: false }
+  if (expected && digest !== expected) {
+    if (shared && journal.provenTransition(saved)) return { replacement: saved, needsRewrite: false, tracePublished: false }
+    return
+  }
+  const projection = project()
+  if (!projection) return
+  const after = nativeEventDigest(projection)
+  return { replacement: { ...saved, after, trace: trace?.() }, needsRewrite: after !== digest, tracePublished: false }
+}
+
 export async function publishNativeEventCopies({ root, storageRoot, operationId, journal, copies, isCold, trace, project }: {
   root: string, storageRoot: string, operationId: string, journal: NativeEventJournal,
   copies: ReadonlyMap<SessionId, ReadonlyMap<number, NativeEventCopy>>, isCold(): boolean, trace: NativeOutputTrace,

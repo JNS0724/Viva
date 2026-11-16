@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { pluginRecordOf, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { NativeOutputAttempt } from '../../../../src/memory/node/native-output-attempts.ts'
 import { NATIVE_OUTPUT_MARKER } from './output-attempts.ts'
+import { withdrawnToolCall } from './native-output-tool-group.ts'
 
 type OutputEvent = SessionEvent<'assistant/message' | 'assistant/attempt'>
 
@@ -31,12 +32,13 @@ export function inspectNativeOutputWindow(events: readonly SessionEvent[], sessi
 export function projectNativeOutput(event: OutputEvent): OutputEvent | undefined {
   if (event.type === 'assistant/attempt') return { ...event, data: { ...event.data, stream: [] } }
   const { message, usage } = event.data
-  // Tool results and calls form a separate group with their advertising reply.
-  if (message.content.some(block => block.type === 'tool-call')) return undefined
+  const content = message.content.flatMap(block => block.type === 'tool-call' ? [withdrawnToolCall(block)] : [])
   const { replayState: _retired, ...source } = message.source
+  const stream = content.map(({ id, name, arguments: argumentsDelta }, index) => ({ type: 'chunk' as const, time: event.time,
+    chunk: { type: 'tool-call-delta' as const, index, id, name, argumentsDelta } }))
   return { ...event, data: {
     ...event.data,
-    message: { ...message, source, content: [] },
-    stream: usage === undefined ? [] : [{ type: 'chunk', time: event.time, chunk: { type: 'usage', usage } }],
+    message: { ...message, source, content },
+    stream: usage === undefined ? stream : [...stream, { type: 'chunk', time: event.time, chunk: { type: 'usage', usage } }],
   } }
 }

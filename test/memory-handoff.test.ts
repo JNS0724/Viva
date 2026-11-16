@@ -8,7 +8,7 @@ import type {} from '@deepseek-ai/dsh-compaction'
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
-import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -212,6 +212,7 @@ test('a real DSH tool read archives and erases native results even when the next
   const memoryRoot = join(app.directory, 'memory')
   const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
   let affected: ReturnType<ReturnType<typeof createNativeToolReads>['affected']> = []
+  let precedingSendUsedFile = false
   try {
     control.exec(`CREATE TRIGGER fail_body_after_tool_read BEFORE INSERT ON owner_native_output_reads
       WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads)
@@ -232,6 +233,7 @@ test('a real DSH tool read archives and erases native results even when the next
     assert.doesNotMatch(JSON.stringify(control.prepare('SELECT evidence FROM owner_native_tool_reads').all()), /ORDINAL/)
     assert.ok(app.model.requests.every(raw => modelToolResults(raw as Request, 'memory_read').length === 0),
       'the next physical request must not get the tool result')
+    precedingSendUsedFile = app.model.requests.some(raw => JSON.stringify(raw).includes(text))
   } finally {
     await app.stopBackend()
     control.close()
@@ -307,7 +309,10 @@ test('a real DSH tool read archives and erases native results even when the next
       const reader = await verify.sessionPersistence.open(id, 'read')
       try {
         const { events } = await reader.read()
-        assert.equal(nativeEventDigest(events[saved.seq]!), saved.digest, 'the independent caller is retained')
+        const caller = events[saved.seq]
+        assert.equal(caller?.type, 'tool/call')
+        if (precedingSendUsedFile) assert.equal(caller.data.arguments, '{}')
+        else assert.equal(nativeEventDigest(caller), saved.digest, 'the independent caller is retained')
         const rewritten = events[result.seq]
         assert.equal(rewritten?.type, 'tool/result')
         assert.deepEqual(rewritten.data.message.content, [])
@@ -342,6 +347,7 @@ test('cold Viva startup erases native originals and settled output in root and u
   const survivor = '独立消息要在恢复后继续可用'
   const derived = '档案里还有应擦除的助手转述'
   const traceSecret = 'stored-private-trace-for-erasure'
+  const toolSecret = 'stored-derived-tool-argument-and-result'
   const text = [erased, nearby, second].join('。\n')
   const app = await setup(t, request => questionOf(request.messages) === text ? { text: derived } : null,
     { dailyNotes: true, fileMode: true })
@@ -359,6 +365,8 @@ test('cold Viva startup erases native originals and settled output in root and u
   const parentId = SessionId(info.sessionId), forkId = SessionId(randomUUID())
   const affectedOutputs = new Set<number>()
   let traceStep: { kind: 'thought', seq: number, at: number, text: string } | undefined
+  let toolTrace: { kind: 'tool', seq: number, at: number, callId: string, name: string, args: object, status: string } | undefined
+  let toolReply = -1, toolResult = -1
   const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
   try {
     const original = await cold.sessionPersistence.open(parentId, 'read')
@@ -394,6 +402,21 @@ test('cold Viva startup erases native originals and settled output in root and u
         message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'reasoning', text: traceSecret }] }),
         stream: [{ type: 'chunk', time: at, chunk: { type: 'reasoning-delta', index: 0, text: traceSecret } }],
       }, { surfaceOp: 'append' })
+      const groupProof = bindAttempt()
+      const tool = { type: 'tool-call' as const, id: ToolCallId('derived-native-tool'), name: 'bash', arguments: JSON.stringify({ command: toolSecret }) }
+      const announcement = fixture.append('assistant/message', { turn, step,
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: toolSecret }, tool] }),
+        stream: [{ type: 'chunk', time: at, chunk: { type: 'tool-call-delta', index: 1, id: tool.id, name: tool.name, argumentsDelta: tool.arguments } }],
+      }, { surfaceOp: 'append' })
+      const call = fixture.append('tool/call', { turn, step, callId: tool.id, name: tool.name, arguments: tool.arguments })
+      const result = fixture.append('tool/result', { turn, step,
+        message: createToolResultMessage({ callId: tool.id, content: [{ type: 'text', text: toolSecret }], isError: true }),
+        error: { name: 'ToolError', code: 'FAILED', reason: toolSecret }, meta: { body: toolSecret },
+      }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
+      toolReply = announcement.seq
+      toolResult = result.seq
+      toolTrace = { kind: 'tool', seq: call.seq, at: call.time, callId: tool.id, name: tool.name,
+        args: { command: toolSecret }, status: 'failed' }
       fixture.append('step/end', { turn, step })
       fixture.append('turn/end', { turn, reason: { kind: 'completed' } })
       const writer = await cold.sessionPersistence.open(parentId, 'write')
@@ -412,6 +435,8 @@ test('cold Viva startup erases native originals and settled output in root and u
         archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeEventDigest(failed) })
         archive.record(reasoningProof, evidence)
         archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
+        archive.record(groupProof, evidence)
+        archive.finish(groupProof, { seq: announcement.seq, kind: 'reply', digest: nativeEventDigest(announcement) })
         const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
         assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
         for (const { result, session, floor, id, generation, turn, step } of affected) {
@@ -495,12 +520,14 @@ test('cold Viva startup erases native originals and settled output in root and u
   } finally { control.close() }
 
   assert.ok(traceStep && affectedOutputs.has(traceStep.seq), 'the verified native output owns the reasoning trace')
+  assert.ok(toolTrace)
   const traceFile = join(app.directory, 'trace.db')
   const independentTraceSession = randomUUID()
   const awaitingToolCleanup = 'pending-native-tool-replica'
   const trace = openTraceDb({ file: traceFile })
   try {
-    for (const session of [parentId, forkId]) trace.recordSteps(session, [traceStep])
+    trace.recordSteps(parentId, [traceStep, toolTrace])
+    trace.recordSteps(forkId, [traceStep, { ...toolTrace, status: 'in_progress' }])
     trace.recordSteps(independentTraceSession, [{ ...traceStep, text: 'independent trace' }])
     trace.recordSteps(parentId, [{ kind: 'tool', seq: traceStep.seq + 1, at: Date.now(), callId: 'pending-tool', name: 'bash',
       args: { command: awaitingToolCleanup }, status: 'completed' }])
@@ -523,9 +550,11 @@ test('cold Viva startup erases native originals and settled output in root and u
     assert.equal(publishedTrace.stepsOf(parentId).some(step => step.seq === traceStep.seq), false)
     assert.equal(publishedTrace.stepsOf(forkId).some(step => step.seq === traceStep.seq), false)
     assert.equal(publishedTrace.stepsOf(independentTraceSession).length, 1)
+    assert.ok([parentId, forkId].every(session => publishedTrace.stepsOf(session).every(step => step.seq !== toolTrace.seq)))
     assert.match(JSON.stringify(publishedTrace.stepsOf(parentId)), new RegExp(awaitingToolCleanup, 'u'))
     for (const file of [traceFile, traceFile + '-wal']) if (fs.existsSync(file)) {
       assert.equal(fs.readFileSync(file).includes(traceSecret), false)
+      assert.equal(fs.readFileSync(file).includes(toolSecret), false)
     }
   } finally { publishedTrace.close() }
   assert.ok(await eventually(() => app.events.some(event => event.type === 'memory_changed' && event.traceSessions?.includes(parentId))))
@@ -572,6 +601,20 @@ test('cold Viva startup erases native originals and settled output in root and u
           assert.ok(event.data.stream.every(record => record.type === 'chunk' && record.chunk.type === 'usage'))
         }
         assert.doesNotMatch(JSON.stringify(generated), new RegExp([derived, traceSecret].join('|'), 'u'))
+        const announcement = events[toolReply], outcome = events[toolResult]
+        const call: SessionEvent | undefined = events[toolTrace.seq]
+        assert.equal(announcement?.type, 'assistant/message')
+        assert.equal(call?.type, 'tool/call')
+        assert.equal(outcome?.type, 'tool/result')
+        assert.deepEqual(announcement.data.message.content, [{ type: 'tool-call', id: toolTrace.callId, name: toolTrace.name, arguments: '{}' }])
+        assert.deepEqual(announcement.data.stream.map(record => record.type === 'chunk' && record.chunk.type), ['tool-call-delta'])
+        assert.equal(call.data.arguments, '{}')
+        assert.deepEqual(outcome.sourceEventSeqs, [call.seq])
+        assert.equal(outcome.data.message.toolCallId, toolTrace.callId)
+        assert.deepEqual(outcome.data.message.content, [])
+        assert.deepEqual(outcome.data.error, { name: 'ToolError', code: 'FAILED' })
+        assert.equal(outcome.data.meta, undefined)
+        assert.doesNotMatch(JSON.stringify(events), new RegExp(toolSecret, 'u'))
       } finally { await reader.close() }
     }
   } finally { await mounted.dispose() }

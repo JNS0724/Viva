@@ -5,7 +5,8 @@ import type { openNativeOriginalMaintenance } from '../../../../src/memory/node/
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
 import { inspectNativeOutputWindow, projectNativeOutput } from './project-native-outputs.ts'
-import { publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
+import { inspectNativeToolCompanions, projectToolCompanion } from './native-output-tool-group.ts'
+import { planNativeEventCopy, publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
 
 type Maintenance = NonNullable<ReturnType<typeof openNativeOriginalMaintenance>>
 type Operation = ReturnType<Maintenance['outputOperations']>[number]
@@ -40,24 +41,24 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
           blocked.add(target.id)
           continue
         }
-        const digest = nativeEventDigest(event)
-        const previous = receipts.flatMap(receipt => receipt.replacements.flatMap(replacement =>
-          replacement.attempt === target.id && replacement.seq === terminal.seq
-          && replacement.before === terminal.digest && replacement.after === digest
-            ? [{ replacement, needsRewrite: false, tracePublished: receipt.published }] : []))[0]
-        if (previous) {
-          occurrences.set(terminal.seq, previous)
-        } else {
-          const saved = { attempt: target.id, seq: terminal.seq, before: terminal.digest, after: digest }
-          const verifiedCopy = digest !== terminal.digest ? journal.provenProjection(saved) : undefined
-          if (verifiedCopy) {
-            occurrences.set(terminal.seq, { replacement: verifiedCopy, needsRewrite: false, tracePublished: false })
-          } else {
-            const projection = digest === terminal.digest ? projectNativeOutput(event) : undefined
-            if (!projection) { blocked.add(target.id); continue }
-            const after = nativeEventDigest(projection)
-            occurrences.set(terminal.seq, { replacement: { ...saved, after, trace: trace.key(event) }, needsRewrite: after !== digest, tracePublished: false })
+        const primary = planNativeEventCopy({ event, attempt: target.id, receipts, journal,
+          expected: terminal.digest, project: () => projectNativeOutput(event), trace: () => trace.key(event) })
+        if (!primary) { blocked.add(target.id); continue }
+        const matched = new Map<number, NativeEventCopy>([[terminal.seq, primary]])
+        if (event.type === 'assistant/message') {
+          const group = inspectNativeToolCompanions(events, event)
+          if (!group) { blocked.add(target.id); continue }
+          for (const companion of group.values()) {
+            const copy = planNativeEventCopy({ event: companion, attempt: target.id, receipts, journal,
+              project: () => projectToolCompanion(companion), trace: () => trace.key(companion),
+            })
+            if (copy) matched.set(companion.seq, copy)
           }
+          if (matched.size !== 1 + group.size) { blocked.add(target.id); continue }
+        }
+        for (const [seq, copy] of matched) {
+          if (occurrences.has(seq)) throw new Error('Native outputs have competing event identities')
+          occurrences.set(seq, copy)
         }
         if (origin) verified.add(target.id)
       }
@@ -68,7 +69,8 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
   await publishNativeEventCopies({ root, storageRoot, operationId, journal, copies, isCold, trace,
     project: event => {
       const output = outputEvent(event)
-      return output ? projectNativeOutput(output) : undefined
+      if (output) return projectNativeOutput(output)
+      return event.type === 'tool/call' || event.type === 'tool/result' ? projectToolCompanion(event) : undefined
     },
   })
   journal.complete([...verified].filter(id => !blocked.has(id)))
