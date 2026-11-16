@@ -42,10 +42,10 @@ test('the first daily batch after local midnight retains the previous question a
   assert.equal(inputs.length, 2)
   assert.equal(inputs[1]!.previousAssistant, question)
   const recalled = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '深圳', start_date: '2026-11-15' }, origin)) as {
-    notes: Array<{ sourceIds: string[] }>,
+    notes: Array<{ id: string, workspace: string }>,
   }
   assert.equal(recalled.notes.length, 1)
-  assert.deepEqual(new Set(recalled.notes[0]!.sourceIds), new Set([before, answer]))
+  assert.deepEqual(new Set(memory.readFile({ kind: 'daily', workspace: recalled.notes[0]!.workspace, id: recalled.notes[0]!.id })?.sources.map(source => source.sourceId)), new Set([before, answer]))
 })
 
 test('withdrawing a source removes its later assistant paraphrase before rebuilding surviving user turns', async t => {
@@ -194,11 +194,11 @@ for (const removedPosition of [0, 1]) test(`withdrawal of source ${removedPositi
     assert.ok(input.turns.every(turn => turn.user.every(source => source.sourceId !== removed)))
   }
   const result = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: survivingText }, origin)) as {
-    notes: Array<{ sourceIds: string[], markdown: string }>,
+    notes: Array<{ id: string, workspace: string, markdown: string }>,
   }
   assert.equal(result.notes.length, 1)
   assert.equal(result.notes[0]!.markdown, survivingText)
-  assert.deepEqual(result.notes[0]!.sourceIds, [surviving])
+  assert.deepEqual(memory.readFile({ kind: 'daily', workspace: result.notes[0]!.workspace, id: result.notes[0]!.id })?.sources.map(source => source.sourceId), [surviving])
   const messages: Array<{ role: string, sourceId?: string, text: string }> = []
   for (const workspace of readdirSync(store.fileRoot)) {
     for (const filename of readdirSync(join(store.fileRoot, workspace, 'session/dialog'))) {

@@ -3,7 +3,7 @@ import type { Effects, Effect } from './effects.ts'
 import type { openHistoryDb, Conversation } from './history-db.ts'
 import type { StoredMessage } from './history-schema.ts'
 import type { Apply } from './journal.ts'
-import { memoryConversationScope, memoryProjectScope } from './memory-project.ts'
+import { foregroundMemoryScope, memoryProjectScope } from './memory-project.ts'
 import type { HostMemoryCaller, SourceChangeInput } from '../memory/contracts/host.ts'
 
 const HISTORY_WITHDRAWAL = 'memory.withdraw'
@@ -63,7 +63,7 @@ export function createMemoryWithdrawal({ history, effects, memory, apply, changi
         // This only maps host identity. The plugin ingests the original when DSH durably receives it.
         await memory().call('sourceAlias', { operationId: edit.newSource, sourceId: edit.newSource,
           session: edit.next.sessionId, conversation: edit.next.id, text: edit.text,
-          context: memoryConversationScope(edit.next.topicId ?? edit.next.id, project), project })
+          context: foregroundMemoryScope(project), project })
       }
     }
     apply('history.memory.withdrawal.finished', { operationId: payload.change.operationId }, () => effects().finishGeneration(effect!))

@@ -59,36 +59,6 @@ export type KeptTask = ({ mark?: TaskMark }) & (
  */
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
-export interface MemorySourceLink { text: string | null, link: string | null }
-
-export interface MemorySummaryView {
-  generated: boolean
-  items: ReadonlyArray<{ id: number, text: string, source: MemorySourceLink | null }>
-}
-
-export interface MemoryChangeRecord {
-  id: number
-  revision: number
-  kind: 'correct' | 'supersede' | 'end'
-  status: 'applied' | 'undone' | 'withdrawn' | 'pending'
-  before: string | null
-  after: string | null
-  scope: import('../memory/contracts/memory-contract.ts').MemoryScope | null
-  from: number | null
-  to: number | null
-  effectiveAt: number | null
-  createdAt: number
-  expectedRevisions: readonly { id: number, revision: number }[]
-  evidence: readonly MemorySourceLink[]
-}
-
-export type UndoMemoryChangeResult = { status: 'applied' } | {
-  status: 'conflict',
-  current: readonly { id: number, revision: number }[],
-}
-
-export type MemoryDeleteResult = { status: 'stopped' | 'cleared' }
-
 export interface IpcResults {
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void

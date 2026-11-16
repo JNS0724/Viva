@@ -5,7 +5,6 @@
 
 type Args<C extends import('../shared/ipc-contract.ts').Channel> = import('../shared/ipc-contract.ts').ChannelArgs<C>
 type IpcResults = import('../shared/ipc-results.ts').IpcResults
-type MemoryChangeRecord = import('../shared/ipc-results.ts').MemoryChangeRecord
 /** A channel's call: its arguments, and its answer where written out (ipc-results.ts), else `any` for now. */
 type Invoke<C extends import('../shared/ipc-contract.ts').Channel> = (...args: Args<C>) => Promise<C extends keyof IpcResults ? IpcResults[C] : any>
 type Unlisten = () => void
@@ -26,7 +25,6 @@ type Widened<T> = [T] extends [never] ? Untyped
   : T extends readonly (infer U)[] ? ReadonlyArray<Widened<U>>
   : T extends (...args: any[]) => any ? T
   : T extends BackgroundTask ? BackgroundTask
-  : T extends MemoryChangeRecord ? MemoryChangeRecord
   : T extends import('./memory-file-state.ts').MemoryFileState ? import('./memory-file-state.ts').MemoryFileState
   : T extends object ? ([keyof T] extends [never] ? Readonly<Record<string, Untyped>> : { -readonly [K in keyof T]: Widened<T[K]> })
   : T

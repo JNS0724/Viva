@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { createHistoryDesk, historyAnswer } from '../src/backend/history-channel.ts'
 import { createHistoryChannel } from '../plugins/history/lib/channel.ts'
 
@@ -31,7 +31,7 @@ test('nothing found says so plainly, so the model does not make it up', () => {
 
 test('the plugin asks the app over the process channel and gets the answer back', async () => {
   const port = new EventEmitter()
-  const asked = []
+  const asked: string[] = []
   const desk = createHistoryDesk({
     send: (message) => port.emit('message', message),
     search: (query) => { asked.push(query); return [hit()] },
@@ -46,7 +46,7 @@ test('the plugin asks the app over the process channel and gets the answer back'
 test('the keywords the tool suggests, apart, find what a real history has, through the plugin channel', async () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-query-')), 'history.db')
   const db = openHistoryDb({ file })
-  db.save(db.create({}), [{ role: 'user', text: '报销模板放哪里', receipt: null }, { role: 'assistant', text: '报销模板在行政共享盘', receipt: null }])
+  db.save(db.create({ sessionId: 'history-query' }), [{ role: 'user', text: '报销模板放哪里', receipt: null }, { role: 'assistant', text: '报销模板在行政共享盘', receipt: null }])
   const port = new EventEmitter()
   const desk = createHistoryDesk({ send: (message) => port.emit('message', message), search: (query) => db.searchMessages(query), authorized: () => true })
   const channel = createHistoryChannel({ send: (message) => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })

@@ -23,7 +23,7 @@ function aborted(signal:AbortSignal) {
 }
 test('a live physical send permit must settle before an ordinary daily update can change its file version',async t=>{
   const {dir,defer}=scratch(t,'memory-note-live-fence-')
-  const owner=openMemoryOwner({root:dir,dailyNotes:{noteInterval:1,timezone:'UTC'},fileMode:true,
+  const owner=openMemoryOwner({root:dir,dailyNotes:{noteInterval:1,timezone:'UTC'},
     route:()=>({provider:'fake',model:'fake'}),quiesce:async()=>{},compute(job){
       if(job.stage!=='note')return null
       const data=JSON.parse(job.input) as {existing?:{markdown:string},turns:Array<{user:Array<{text:string}>}>}

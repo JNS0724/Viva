@@ -211,7 +211,7 @@ function contextOf(row: Row | undefined) {
  * Stores what the conversation column shows, plus which dsh session each message came from,
  * so the trace can be read back from dsh's own logs later.
  */
-export function openHistoryDb({ file, db: given, now = Date.now, newId = randomUUID, fileMode = false }: { file?: string, db?: DatabaseSync, now?: () => number, newId?: () => string, fileMode?: boolean }) {
+export function openHistoryDb({ file, db: given, now = Date.now, newId = randomUUID }: { file?: string, db?: DatabaseSync, now?: () => number, newId?: () => string }) {
   if (!given && !file) throw new Error('openHistoryDb needs a file or a database')
   if (!given) fs.mkdirSync(path.dirname(file!), { recursive: true })
   const db = given ?? new DatabaseSync(file!)
@@ -300,8 +300,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   function redactMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined,
     copy?: { from: string, count: number }) {
     const hasRanges = memoryRanges.any()
-    const known = hasRanges || fileMode ? sql.messages.all(id) : []
-    const inherited = (hasRanges || fileMode) && copy ? sql.messages.all(copy.from).slice(0, copy.count) : []
+    const known = sql.messages.all(id)
+    const inherited = copy ? sql.messages.all(copy.from).slice(0, copy.count) : []
     const keys = new Map([...inherited, ...known].filter(row => row.source_key).map(row => [row.source_key, row]))
     const replicaSources = hasRanges ? memoryRanges.replicaSources(id) : []
     if (hasRanges && copy) replicaSources.push(...memoryRanges.replicaSources(copy.from))
@@ -309,7 +309,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return messages.map((message, index) => {
       const keyed = message.key ? keys.get(message.key) : undefined
       const replicaSession = keyed?.session_id ?? sessionId
-      if (fileMode) message = generated.forSave(message, replicaSession)
+      message = generated.forSave(message, replicaSession)
       const replicas = [keyed, known[index], inherited[index]]
       let sourceId = message.sourceId
       if (!sourceId && message.role === 'user') {

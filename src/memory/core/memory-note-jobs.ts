@@ -4,7 +4,7 @@ import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-def
 import { NOTE_SYSTEM, WRITE_NOTE, noteReply } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import type { MemoryProvenance, MemorySource, MemoryStore } from './ports/store.ts'
-import { todayAt } from './memory-facts.ts'
+import { todayAt } from './memory-calendar.ts'
 import type { DocumentSourceCut, DocumentSourceRef } from './ports/documents.ts'
 import type { MemorySpan } from '../contracts/memory-contract.ts'
 
@@ -57,8 +57,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!source || !sources.every(item => allowsText(assistant, item))) return
     const day = todayAt(sources.at(-1)!.at, timezone)
     const seen = store.dispatch.snapshot(session)
-    const dependencies = [...new Set([...notes.contextSources(session, source), ...seen.sources,
-      ...seen.dependencies.flatMap(ref => store.get(ref.id)?.evidence.map(edge => edge.sourceId) ?? [])])]
+    const dependencies = [...new Set([...notes.contextSources(session, source), ...seen.sources])]
     // Assistant replies may restate any context the session saw. Keep that provenance, never promote the reply to independent evidence.
     const contextCurrent = assistantContextCurrent(seen) && dependencies.every(id => readable(id))
     const safeAssistant = contextCurrent ? assistant : ''

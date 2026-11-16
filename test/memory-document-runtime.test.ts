@@ -4,6 +4,7 @@ import type { TestContext } from 'node:test'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
+import { offlineMemorySafety } from './fixtures/memory-safety.ts'
 import { scratch } from './fixtures/scratch.js'
 import { createMemoryRuntime } from '../src/memory/core/memory-runtime.ts'
 import { openMemoryRuntimeResources } from '../src/memory/node/runtime.ts'
@@ -13,7 +14,7 @@ import type { MemoryDocuments } from '../src/memory/core/ports/documents.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
 
 const origin = { conversation: 'document-conversation', session: 'document-session' }
-function fixture(t: TestContext, fileMode = false) {
+function fixture(t: TestContext) {
   const { dir, defer } = scratch(t, 'memory-document-runtime-')
   const now = () => Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(join(dir, 'memory.db'), now)
@@ -27,7 +28,7 @@ function fixture(t: TestContext, fileMode = false) {
   }
   const calls: MemoryCompute[] = []
   const fileReads: import('../src/memory/contracts/records.ts').MemoryFileDependency[] = []
-  const memory = createMemoryRuntime({ store, resources, now, fileMode, fileDependencies: (_session, refs) => fileReads.push(...refs), timezone: () => 'UTC', dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+  const memory = createMemoryRuntime({ store, resources, ...offlineMemorySafety, now, fileDependencies: (_session, refs) => fileReads.push(...refs), timezone: () => 'UTC', dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
     compute(job) {
       calls.push(job)
@@ -97,12 +98,12 @@ test('runtime undo advances the request revision, preserves disabled status and 
 
 test('runtime deletion reports stopped until document replicas are physically cleared', async t => {
   const f = fixture(t)
-  const memory = f.memory.addMemory('我的项目代号是青岚')!
-  const { workspace, reference } = f.ref(memory.evidence[0]!.sourceId)
+  const sourceId = randomUUID()
+  f.memory.accept('我的项目代号是青岚', origin, sourceId)
+  const { workspace, reference } = f.ref(sourceId)
   const document = f.documents.commit({ operationId: 'digest', workspace, path: 'digest/wiki/project.md', expectedRevision: null, action: 'CREATE', markdown: '项目代号青岚', sources: [reference], reads: [] })
   f.setCleanupFailure(true)
-  const result = await f.memory.deleteMemory(memory.id, memory.revision, randomUUID())
-  assert.equal(result.status, 'stopped')
+  f.memory.withdraw({ ids: [sourceId], conversation: origin.conversation, onlySources: true })
   assert(f.memory.cleanupPending() > 0)
   assert.equal(f.memory.readDocument!(workspace, document.path), null)
   assert(existsSync(join(f.store.fileRoot, workspace, document.path)))
@@ -132,11 +133,12 @@ test('an answer without assistant text cannot reintroduce stopped context throug
 
 test('a cleared deletion leaves no digest plaintext in the database WAL', async t => {
   const f = fixture(t), marker = '我喜欢在周三下午整理蓝色笔记本里的旅行照片'
-  const entry = f.memory.addMemory(marker)!
-  const { workspace, reference } = f.ref(entry.evidence[0]!.sourceId)
+  const sourceId = randomUUID()
+  f.memory.accept(marker, origin, sourceId)
+  const { workspace, reference } = f.ref(sourceId)
   f.documents.commit({ operationId: 'digest', workspace, path: 'digest/wiki/project.md', expectedRevision: null, action: 'CREATE', markdown: marker, sources: [reference], reads: [] })
-  const result = await f.memory.deleteMemory(entry.id, entry.revision, randomUUID())
-  assert.equal(result.status, 'cleared')
+  f.memory.withdraw({ ids: [sourceId], conversation: origin.conversation, onlySources: true })
+  await f.memory.wake()
   for (const file of [f.file, `${f.file}-wal`]) {
     if (existsSync(file)) assert.equal(readFileSync(file).includes(marker), false, file)
   }
@@ -169,7 +171,8 @@ test('a forgotten question context never promotes its old short answer and does 
 test('a question erased before delayed first intake never turns its short answer into standalone evidence', async t => {
   const f = fixture(t), answerId = randomUUID()
   f.memory.accept('是', origin, answerId, { requestId: 'late-question', questionId: 'late-card', question: '你仍住在紫藤城吗？', custom: true })
-  assert.deepEqual(f.store.clearSourceQuestions(), [answerId])
+  // Simulate the canonical question already being cleared before this delayed note capture.
+  f.store.db.prepare('UPDATE memory_sources SET question=NULL WHERE id=?').run(answerId)
   f.memory.recordNoteTurn!(origin.session, [answerId], '')
   await f.memory.wake()
   assert.equal(f.calls.filter(call => call.stage === 'note').length, 0)
@@ -189,7 +192,7 @@ test('a question erased before delayed first intake never turns its short answer
 
 
 test('file mode shares digest recall, original line reads, node search, injection and dependency invalidation', async t => {
-  const f = fixture(t, true), sourceId = randomUUID()
+  const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('青岚发布需要先完成账单核对。', origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
   const markdown = '---\r\nname: 青岚发布\r\ndescription: 发布要求\r\n---\r\n# 发布\r\n青岚发布需要先完成账单核对。'
@@ -219,7 +222,7 @@ test('file mode shares digest recall, original line reads, node search, injectio
 })
 
 test('external file changes remain quarantined by reindex and unique rename rescans preserve identity', async t => {
-  const f = fixture(t, true), sourceId = randomUUID()
+  const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('海鸥上线前核对发票。', origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
   const receipt = f.documents.commit({ operationId: 'create-invoice', workspace, path: 'digest/wiki/invoice.md',
@@ -245,7 +248,7 @@ test('external file changes remain quarantined by reindex and unique rename resc
 
 
 test('unaccepted daily edits and malformed frontmatter are isolated from all file read paths', async t => {
-  const f = fixture(t, true), sourceId = randomUUID()
+  const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('我喜欢茉莉花茶。', origin, sourceId)
   f.memory.recordNoteTurn!(origin.session, [sourceId], '记下了')
   await f.memory.wake()
@@ -268,7 +271,7 @@ test('unaccepted daily edits and malformed frontmatter are isolated from all fil
 
 
 test('native file recall deduplicates within a trusted turn and resets for the next turn', async t => {
-  const f = fixture(t, true), sourceId = randomUUID()
+  const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('银杏部署需要先核对发票。', origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
   f.documents.commit({ operationId: 'dedup-invoice', workspace, path: 'digest/wiki/dedup.md',
@@ -283,7 +286,7 @@ test('native file recall deduplicates within a trusted turn and resets for the n
 })
 
 test('reusing a renamed path makes new links follow the current identity', async t => {
-  const f = fixture(t, true), sourceId = randomUUID()
+  const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('星河旧项目和星河新项目使用不同流程。', origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
   const first = f.documents.commit({ operationId: 'path-first', workspace, path: 'digest/wiki/old.md',

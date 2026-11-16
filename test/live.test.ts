@@ -115,7 +115,7 @@ test('live file cleanup replays an unconfirmed operation and never labels a pend
   const { memoryOperationOutcome } = await import('../src/memory/contracts/service.ts')
   const { forgetMemories, memoryFilesWith } = await import('./smoke/live-kit.ts')
   const { dir, defer } = scratch(t, 'viva-live-file-cleanup-')
-  const owner = openMemoryOwner({ root: dir, fileMode: true, hostNamespace: 'live-fixture',
+  const owner = openMemoryOwner({ root: dir, hostNamespace: 'live-fixture',
     compute: () => null, route: () => null, quiesce: async () => {} })
   defer(() => owner.close())
   await owner.recover()
@@ -183,7 +183,7 @@ test('the real-model report collects authorized file bodies and source reference
   const { openMemoryOwner } = await import('../src/memory/node/owner.ts')
   const { memoryFileMutationResult } = await import('../src/memory/contracts/file-management.ts')
   const { dir, defer } = scratch(t, 'viva-live-file-report-')
-  const owner = openMemoryOwner({ root: dir, fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null, quiesce: async () => {} })
   defer(() => owner.close())
   await owner.recover()
   const created = memoryFileMutationResult.parse(await owner.handleHost('createFile', {

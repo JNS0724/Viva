@@ -23,7 +23,7 @@ test('host file erasure retires exact generated copies and task bodies through r
   const file = join(dir, 'app.db'), db = new DatabaseSync(file)
   t.after(() => db.close())
   db.exec(APP_DB_PRAGMAS)
-  const history = openHistoryDb({ db, fileMode: true }), tasks = createTaskStore({ db, retainedReply: history.retainedReply })
+  const history = openHistoryDb({ db }), tasks = createTaskStore({ db, retainedReply: history.retainedReply })
   const source = randomUUID(), original = 'private fragment but independent tail'
   const affected = proofOf(source)
   const surviving = { ...affected, fileSources: [source], files: [{ workspace: '0'.repeat(64), id: 'independent', path: 'digest/wiki/kept.md',

@@ -143,7 +143,9 @@ test('consecutive source cuts keep direct and formatted history, stars, and unre
   const a = range(sourceId, 1, original, first), b = range(sourceId, 2, one, second)
   const row = { role: 'user' as const, sourceId, key: 'first-user', text: original }
   const choices = '保留选择、'
-  const direct = history.save(history.create({ sessionId: randomUUID() }), [row, { role: 'assistant', text: 'Independent answer' }])
+  const directSession = randomUUID(), answerKey = 'independent-answer'
+  history.bindGeneratedCopy(directSession, answerKey, 'assistant', 'Independent answer', [{ sources: [], fileRanges: [], memoryIds: [] }])
+  const direct = history.save(history.create({ sessionId: directSession }), [row, { role: 'assistant', key: answerKey, text: 'Independent answer' }])
   const formatted = history.save(history.create({ sessionId: randomUUID() }), [{ ...row, text: choices + original }])
   assert(history.setStar(direct.id, 0, true))
   history.eraseFileRanges([a])
@@ -156,7 +158,7 @@ test('consecutive source cuts keep direct and formatted history, stars, and unre
   history.close()
 
   const reopened = openHistoryDb({ file }); t.after(() => reopened.close())
-  reopened.save(direct, [{ ...row, sourceId: undefined }, { role: 'assistant', text: 'Independent answer' }])
+  reopened.save(direct, [{ ...row, sourceId: undefined }, { role: 'assistant', key: answerKey, text: 'Independent answer' }])
   reopened.save(formatted, [{ ...row, text: choices + one }])
   const fork = reopened.save(reopened.create({ sessionId: randomUUID() }), [{ ...row, sourceId: undefined, key: undefined }],
     { copy: { from: direct.id, count: 1 } })

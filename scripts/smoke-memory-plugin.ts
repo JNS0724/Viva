@@ -25,8 +25,7 @@ import { startFakeLlm } from '../test/fixtures/fake-llm.js'
 
 const project = path.resolve(import.meta.dirname, '..')
 const require = createRequire(import.meta.url)
-const fileMode = process.env.VIVA_SMOKE_FILE_MEMORY === '1'
-const output = path.join(project, fileMode ? 'smoke/memory-plugin-files' : 'smoke/memory-plugin')
+const output = path.join(project, 'smoke/memory-plugin')
 const temporary = mkdtempSync(path.join(os.tmpdir(), 'viva-plugin-web-'))
 const dataRoot = path.join(temporary, 'memory')
 const home = path.join(temporary, 'home')
@@ -78,7 +77,7 @@ async function nativeMessages(session: string) {
 
 /** Exercise the shared trusted owner operation while Web is stopped. Web has no memory management page. */
 async function prepareStandaloneForget() {
-  const owner = openMemoryOwner({ root: dataRoot, dailyNotes: true, fileMode: true,
+  const owner = openMemoryOwner({ root: dataRoot, dailyNotes: true,
     compute: () => null, route: () => null, quiesce: async () => {} })
   try {
     await owner.recover()
@@ -184,7 +183,7 @@ try {
   const plugin = installArtifact()
   const patch = path.join(temporary, 'memory.patch.yml')
   const persistence = pathToFileURL(createRequire(path.join(installed, 'package.json')).resolve('viva-memory/persistence')).href
-  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- id: session-persistence-jsonl\n  disabled: true\n- insert:\n    - id: viva-memory-session-persistence\n      name: ${JSON.stringify(persistence)}\n      config:\n        root: ${JSON.stringify(sessionsRoot)}\n        storageRoot: ${JSON.stringify(storageRoot)}\n        memoryRoot: ${JSON.stringify(dataRoot)}\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      inject: [sessionPersistence]\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n        fileMode: ${fileMode}\n`)
+  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- id: session-persistence-jsonl\n  disabled: true\n- insert:\n    - id: viva-memory-session-persistence\n      name: ${JSON.stringify(persistence)}\n      config:\n        root: ${JSON.stringify(sessionsRoot)}\n        storageRoot: ${JSON.stringify(storageRoot)}\n        memoryRoot: ${JSON.stringify(dataRoot)}\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      inject: [sessionPersistence]\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n`)
   browser = await chromium.launch({ headless: true })
   const launch = async () => {
     let launchLog = ''
@@ -221,13 +220,8 @@ try {
   }
   let page = await launch()
   await send(page, `记住：${marker}`, /好的，我记住了|已收到，稍后整理/u)
-  // Completed-turn promotion is asynchronous; the receipt may truthfully say pending.
-  await until(() => {
-    const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
-    try { return Boolean(db.prepare("SELECT 1 FROM memories WHERE text=? AND state='active' AND retention='retained'").get(marker)) }
-    finally { db.close() }
-  }, 'explicit memory promoted after completed turn')
-  if (fileMode) {
+  await until(() => collectMarkdown(dataRoot).some(file => file.includes(`${path.sep}digest${path.sep}`) && readFileSync(file, 'utf8').includes(marker)), 'explicit memory file committed')
+  {
     const explicit = 'The oriole release checklist has four stages.'
     const saved = /Saved memory ([a-f0-9-]{36})\./u
     await send(page, `/memory-remember ${explicit}`, saved)
@@ -244,7 +238,7 @@ try {
   for (let turn = 1; turn <= 3; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
   await until(() => collectMarkdown(dataRoot).some(file => file.includes(`${path.sep}daily${path.sep}`) && readFileSync(file, 'utf8').includes(marker)), 'completed conversation daily note')
   let recoveredGeneration = 0
-  if (fileMode) {
+  {
     await send(page, '查一下 周报', `查到了：${marker}`)
     const original = noteProgress()
     assert.ok(original)
@@ -263,13 +257,13 @@ try {
   const requestText = JSON.stringify(llm.requests)
   assert.ok(requestText.includes('memory_remember') && requestText.includes('memory_recall'), 'native tools reach the model')
   assert.ok(llm.requests.some(request => JSON.stringify(request).includes('<about-user>') && JSON.stringify(request).includes(marker)), 'saved memory reaches an injected model request')
-  if (fileMode) await send(page, original, `收到：「${erased}`)
+  await send(page, original, `收到：「${erased}`)
   const beforeRestart = collectMarkdown(dataRoot).map(file => path.relative(dataRoot, file))
   await page.screenshot({ path: path.join(output, 'web-before-restart.png'), fullPage: true })
   await page.close()
   await stop(proc)
   proc = undefined
-  const forget = fileMode ? await prepareStandaloneForget() : null
+  const forget = await prepareStandaloneForget()
   page = await launch()
   if (forget) {
     await until(() => {
@@ -292,8 +286,8 @@ try {
   await page.screenshot({ path: path.join(output, 'web-after-restart.png'), fullPage: true })
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
-    ipcParent: false, fileMode, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
-    ...(fileMode ? { standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget) } : {}), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
+    ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
+    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
   passed = true

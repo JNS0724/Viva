@@ -21,9 +21,9 @@ import type { HostMemoryCaller, HostMemoryMethod, HostMemoryApi, MemoryProject }
 import { memoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import type { MemoryHostEffect } from '../src/memory/contracts/service.ts'
 
-async function fixture(t: TestContext, fileMode = true, text = 'The report is due Friday. Tea is served on Monday.') {
+async function fixture(t: TestContext, text = 'The report is due Friday. Tea is served on Monday.') {
   const { dir, defer } = scratch(t, 'memory-file-host-')
-  const options = { root: dir, hostNamespace: 'viva-test', dailyNotes: true, fileMode,
+  const options = { root: dir, hostNamespace: 'viva-test', dailyNotes: true,
     compute: () => null, route: () => null, quiesce: async () => {} }
   let owner = openMemoryOwner(options)
   defer(() => owner.close())
@@ -463,45 +463,10 @@ test('stopping a source span revokes raw sends and transferred contexts, while i
 })
 
 
-test('the transitional fact engine cannot inject or re-dispatch facts derived from a stopped source', async t => {
-  const f = await fixture(t, false), source = f.store.readSource(f.sourceId)!, text = source.text!
-  const interval = { from: null, to: null }
-  const factId = f.store.tx(() => {
-    const id = f.store.insert({ text, kind: 'fact', modality: 'asserted', conditional: false, keywords: [],
-      scope: source.scope, source: 'agent', conversationId: source.conversation }, f.store.nextRevision(), source.at, interval)
-    f.store.evidence(id, source, 0, text.length, null, null, interval, [{ start: 0, end: text.length }])
-    return id
-  })
-  const context = async () => {
-    const session = randomUUID()
-    await f.owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: 'What is the report deadline?',
-      at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
-    const packet = f.owner.runtime.handle({ op: 'context', session, turn: 1, question: 'report deadline' }, f.owner.sessionContext(session))
-    return { session, packet }
-  }
-  const old = await context()
-  assert.ok(old.packet.includes(text))
-  assert.ok(f.owner.dispatch.snapshot(old.session).dependencies.some(ref => ref.id === factId))
-  const before = (await f.client.readFile(f.identity))!
-  await f.client.setFileEnabled({ operationId: randomUUID(), identity: f.identity, version: before.version, enabled: false })
-  assert.throws(() => f.owner.acquireSend(randomUUID(), { session: old.session }, old.packet), /denied/)
-  const next = await context()
-  assert.ok(!next.packet.includes(text))
-  assert.ok(!f.owner.dispatch.snapshot(next.session).dependencies.some(ref => ref.id === factId))
-})
-
 test('erased canonical coordinates reject raw and staged replay while a disjoint file remains usable after restart', async t => {
   const f = await fixture(t), original = f.store.readSource(f.sourceId)!, text = original.text!
   const token = memorySourceToken(original), forbidden = { id: original.id, token, spans: [{ start: 0, end: 25 }] }
   const independent = { id: original.id, token, spans: [{ start: 26, end: text.length }] }
-  // Even when the old fact projection has an edge for this canonical source,
-  // advancing the source revision must leave independent file proof available.
-  const interval = { from: null, to: null }
-  f.store.tx(() => {
-    const id = f.store.insert({ text, kind: 'fact', modality: 'asserted', conditional: false, keywords: [],
-      scope: original.scope, source: 'agent', conversationId: original.conversation }, f.store.nextRevision(), original.at, interval)
-    f.store.evidence(id, original, 0, text.length, null, null, interval, [{ start: 0, end: text.length }])
-  })
   const saved = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
     expectedRevision: null, action: 'CREATE', markdown: 'Tea is served on Monday.', sources: [independent], reads: [] })
   const alias = { operationId: randomUUID(), sourceId: original.id, session: f.session, conversation: f.session, text }
@@ -610,7 +575,7 @@ test('forgetting a digest drains transport, cleans Node replicas and preserves d
 
 test('native erasure plans bind exact originals in a session and its fork across restart', async t => {
   const text = '🧪【请求 ID：r-9】\n用户原话：报告在周五提交。\nTea is served on Monday.'
-  const f = await fixture(t, true, text), source = f.store.readSource(f.sourceId)!, before = (await f.client.readFile(f.identity))!
+  const f = await fixture(t, text), source = f.store.readSource(f.sourceId)!, before = (await f.client.readFile(f.identity))!
   const request = withRequestSource(`${text}\n\n${text}`, 'erase-test', text)
   await f.owner.handleHost('sourceAlias', { operationId: randomUUID(), sourceId: source.id,
     session: f.session, conversation: source.conversation, text })
@@ -765,7 +730,7 @@ test('manual file writes use the accepted digest, preserve evidence and support 
   const created = await f.client.createFile(create)
   assert.equal(created.action, 'CREATE')
   assert.equal(f.store.readSource(create.operationId)?.author, 'manual')
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memories').get()?.n, 0)
+  assert.equal(f.store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const first = (await f.client.readFile(created.identity))!
   assert.deepEqual(first.editor, { title: create.title, text: create.text })
   assert.equal(first.actions.forget, false)

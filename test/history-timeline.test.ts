@@ -3,15 +3,15 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 
 /**
  * One timeline (single-conversation design): every stored conversation is a segment of it, with the dsh
  * session, the working directory and the segment it went on from; earlier segments are read back in pages.
  */
 
-const user = (text) => ({ role: 'user', text, receipt: null })
-const answer = (text) => ({ role: 'assistant', text, receipt: { ms: 10, tools: 0, thoughts: 0, stopReason: 'end_turn' } })
+const user = (text: string) => ({ role: 'user', text, receipt: null })
+const answer = (text: string) => ({ role: 'assistant', text, receipt: { ms: 10, tools: 0, thoughts: 0, stopReason: 'end_turn' } })
 
 function freshDb(file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-timeline-')), 'history.db')) {
   let clock = 1_000_000
@@ -20,7 +20,7 @@ function freshDb(file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history
   return { db, file }
 }
 
-const segment = (db, messages, fields = {}) => db.save(db.create({ sessionId: 's', mode: 'live', model: 'V4', ...fields }), messages)
+const segment = (db: ReturnType<typeof openHistoryDb>, messages: object[], fields: Parameters<ReturnType<typeof openHistoryDb>['create']>[0] = {}) => db.save(db.create({ sessionId: 's', mode: 'live', model: 'V4', ...fields }), messages)
 
 test('a segment keeps the working directory it ran in and the one it went on from', () => {
   const { db, file } = freshDb()
@@ -28,8 +28,8 @@ test('a segment keeps the working directory it ran in and the one it went on fro
   const second = segment(db, [user('改首页')], { cwd: '/w/site', parentId: first.id })
 
   const reopened = openHistoryDb({ file })
-  assert.deepEqual([reopened.get(first.id).conversation.cwd, reopened.get(first.id).conversation.parentId], ['/w/viva', null])
-  assert.deepEqual([reopened.get(second.id).conversation.cwd, reopened.get(second.id).conversation.parentId], ['/w/site', first.id])
+  assert.deepEqual([reopened.get(first.id)!.conversation.cwd, reopened.get(first.id)!.conversation.parentId], ['/w/viva', null])
+  assert.deepEqual([reopened.get(second.id)!.conversation.cwd, reopened.get(second.id)!.conversation.parentId], ['/w/site', first.id])
 })
 
 test('earlier segments come back oldest first, in pages, each message with its time; deleted ones are left out', () => {
@@ -72,7 +72,7 @@ test('going back folds the segment left behind: it leaves the timeline and is fo
   assert.deepEqual(reopened.segmentsBefore(now.id).segments.map((s) => s.id), [before.id], 'the folded path is not in the timeline')
   assert.deepEqual(reopened.foldsOf(now.id), [{ id: old.id, at: 2, count: 2, kind: 'path' }], 'it hangs where the new path went on: two messages folded')
   assert.deepEqual(reopened.searchMessages('太正式').length, 0, 'its messages are not search hits for now')
-  assert.equal(reopened.latest().conversation.id, now.id)
+  assert.equal(reopened.latest()!.conversation.id, now.id)
   assert.deepEqual(reopened.foldsOf(before.id), [])
 })
 
@@ -106,6 +106,7 @@ test('a search hit carries the messages right before and after it in its segment
 
   const [hit] = db.searchMessages('整理')
   assert.deepEqual(hit.before, { role: 'assistant', text: '好的' })
+  assert.ok(hit.after)
   assert.equal(hit.after.role, 'assistant')
   assert.ok(hit.after.text.startsWith('周报写好了') && hit.after.text.endsWith('…') && hit.after.text.length < 100, 'a long neighbour is cut short')
 

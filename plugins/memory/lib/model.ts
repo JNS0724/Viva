@@ -23,7 +23,7 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
     let terminal = false
     for await (const chunk of ctx.llm.stream({ provider: job.provider, model: job.model, system: job.system,
       messages, ...(tools.length ? { tools } : {}),
-      ...(job.stage === 'extract' || job.stage === 'note' || job.stage === 'dream' ? {} : { maxTokens: 2000 }), signal })) {
+      ...(job.stage === 'note' || job.stage === 'dream' ? {} : { maxTokens: 2000 }), signal })) {
       signal.throwIfAborted()
       if (terminal) throw new MemoryComputeError('call-failed')
       assembler.push(chunk)

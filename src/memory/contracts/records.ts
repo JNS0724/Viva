@@ -1,7 +1,6 @@
 import type { TextSpan } from './text-spans.ts'
 
-import type { MemoryKind, MemoryScope } from './memory-contract.ts'
-import type { MemoryFact, MemoryInterval } from './facts.ts'
+import type { MemoryScope } from './memory-contract.ts'
 export type MemoryDependency = {
     id: number;
     revision: number;
@@ -56,96 +55,5 @@ export interface MemorySource {
     timezone: string;
     outcome: string;
     withdrawn: boolean;
-    rememberedHash?: string | null;
     erasure?: MemorySourceErasure;
-}
-export type StoredFact = Pick<MemoryFact, 'subject' | 'predicate' | 'relation' | 'object' | 'polarity' | 'dated'> & {
-    intendedFrom: number | null;
-    intendedTo: number | null;
-};
-export interface MemoryCandidate {
-    sourceId: string;
-    start: number;
-    end: number;
-    proposal: string;
-    expiresAt: number;
-}
-export type MemoryEvidence = {
-    sourceId: string;
-    conversationId: string | null;
-    sourceVersion: number;
-    start: number;
-    end: number;
-    parts: MemoryFact['evidence'] | null;
-    spans: {
-        start: number;
-        end: number;
-    }[];
-    changeId: number | null;
-    assertedFrom: number | null;
-    assertedTo: number | null;
-    inheritsChangeTime: boolean;
-};
-export type MemoryChangeKind = 'correct' | 'supersede' | 'end' | 'possible_conflict';
-export type MemoryChangeStatus = 'applied' | 'undone' | 'withdrawn' | 'resolved';
-export interface MemoryChange {
-    id: number;
-    revision: number;
-    targetId: number;
-    replacementId: number | null;
-    kind: MemoryChangeKind | 'pending_relation';
-    sourceId: string | null;
-    sourceVersion: number | null;
-    spans: {
-        start: number;
-        end: number;
-    }[];
-    from: number | null;
-    to: number | null;
-    effectiveAt: number | null;
-    createdAt: number;
-    automatic: boolean;
-    status: MemoryChangeStatus;
-    intentFrom: number | null;
-    intentTo: number | null;
-    derivedFrom: number | null;
-    intentWindows: MemoryInterval[] | null;
-    oldValueSpans: MemoryEvidence['spans'];
-    needsConfirmation: boolean;
-}
-export interface MemoryEntry {
-    id: number;
-    revision: number;
-    text: string;
-    kind: MemoryKind;
-    scope: MemoryScope;
-    modality: 'asserted' | 'planned' | 'hypothetical' | 'reported';
-    conditional: boolean;
-    keywords: string[];
-    source: 'user' | 'agent';
-    conversationId: string | null;
-    createdAt: number;
-    updatedAt: number;
-    state: 'active' | 'superseded' | 'retracted' | 'disputed';
-    retention: 'retained' | 'forgotten';
-    invalidAt: number | null;
-    invalidatedBy: string | null;
-    validFrom: number | null;
-    validTo: number | null;
-    authorizedRevision: number;
-    assertedFrom: number | null;
-    assertedTo: number | null;
-    windows: MemoryInterval[];
-    fact: StoredFact | null;
-    links: Array<{
-        id: number;
-        kind: 'conflict' | 'supersedes' | 'corrects' | 'pending-relation';
-        incoming: boolean;
-        revision?: number;
-        changeId?: number;
-        from?: number | null;
-        to?: number | null;
-        windows?: MemoryInterval[];
-    }>;
-    evidence: MemoryEvidence[];
 }

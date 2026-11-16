@@ -57,7 +57,7 @@ test('cancelling a partial computation never returns its delivered prefix', asyn
   finally { dispose() }
 })
 
-for (const stage of ['extract', 'note'] as const) test(`large reply bounds follow computation purpose: ${stage}`, async () => {
+for (const stage of ['question', 'note'] as const) test(`large reply bounds follow computation purpose: ${stage}`, async () => {
   const ctx = new Context(), llm = new LlmRuntime(ctx), text = 'a'.repeat(20_001)
   class Adapter extends LlmAdapter {
     async *stream(): AsyncIterable<StreamChunk> {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { registerHistoryIpc, type StartedAgent } from '../src/backend/history-ipc.ts'
 import { ResumeError } from '../src/backend/resume-failure.ts'
 

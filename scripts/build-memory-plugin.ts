@@ -92,11 +92,11 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     '        root: /absolute/private/dsh/sessions', '        storageRoot: /absolute/private/dsh/storages', '        memoryRoot: /absolute/private/memory',
     '    - id: portable-memory', '      name: viva-memory', '      inject: [sessionPersistence]', '      config:',
     '        dataRoot: /absolute/private/memory', '        dailyNotes: true', '```', '',
-    'With `fileMode: true`, use `/memory-remember <text>` to save an entry and `/memory-forget <id>` to forget an entry by its saved or recalled ID.',
+    'Use `/memory-remember <text>` to save an entry and `/memory-forget <id>` to forget an entry by its saved or recalled ID.',
     'DSH Web 0.2.2-rc.2 shows command receipts once a conversation has a normal turn. The receipt reports when copy cleanup is still pending.',
     '',
     'Local embedding assets are optional external resources supplied by modelRoot/runtimeRoot configuration; this package never downloads models on startup.',
-    'Dedicated Web management pages and document dream are separate later phases.', '',
+    'Dedicated Web management pages are a separate later phase.', '',
   ].join('\n'))
   return { destination, modules: output.length }
 }

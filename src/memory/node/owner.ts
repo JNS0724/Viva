@@ -39,7 +39,7 @@ export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number,
   assistant: string, completed: boolean, at: number, timezone: string }
 export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
-  root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], fileMode?: boolean, embedding?: { modelRoot: string, runtimeRoot?: string },
+  root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
   onProjectionChanged?: () => void,
@@ -83,18 +83,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   let closed = false
   let replayingWrites = false
   const generalQuestions = new Map<string, { session: string, cards: readonly { id: string, question: string }[], check(): boolean }>()
-  const dispatch = createMemoryDispatch(store, (items, at) => runtime.dependenciesCurrent(items, at),
+  const dispatch = createMemoryDispatch(store, items => runtime.dependenciesCurrent(items),
     (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
   const nativeToolReads = createNativeToolReads(db)
   const toolReadScope = new AsyncLocalStorage<{ call: NativeToolCall, current(): boolean }>()
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
-    dailyNotes: options.dailyNotes ?? true, fileMode: options.fileMode ?? false,
-    // P2 captures completed daily turns while retaining the existing fact engine until the planned switch.
-    automaticFactProcessing: 'source',
-    ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding), maintainSemanticIndex: true } : {}),
-    profilesEnabled: true, profileBusy: () => state !== 'ready' || Boolean(db.prepare('SELECT 1 FROM owner_active_turns LIMIT 1').get()),
+    dailyNotes: options.dailyNotes ?? true,
+    ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding) } : {}),
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
-    projectionChanged: () => options.onProjectionChanged?.(),
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
     validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly, fileClarificationDispatch: dispatch,
@@ -403,7 +399,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,?) ON CONFLICT(session,message) DO UPDATE SET admitted=MAX(admitted,excluded.admitted)').run(input.sessionId, input.messageId, sourceId, context.conversation, Number(input.admitted))
       if (mapped) db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
       if (input.admitted) {
-        runtime.bindSource(sourceId, input.sessionId)
         dispatch.recordSource(input.sessionId, sourceId)
         if (input.turn > 0) db.prepare('INSERT OR IGNORE INTO owner_turn_sources VALUES (?,?,?)').run(input.sessionId, input.turn, sourceId)
       }
@@ -697,7 +692,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (!scope || !scope.current()) return null
     const { call } = scope, origin = sessionContext(call.session)
     if (call.generation !== contextRecovery.contextGeneration(call.session) || origin.foregroundTurn !== String(call.turn)) return null
-    const sources = db.prepare('SELECT source FROM owner_turn_sources WHERE session=? AND turn=? ORDER BY rowid').all(call.session, call.turn)
+    const sources = db.prepare(`SELECT source FROM owner_turn_sources WHERE session=? AND turn=?
+      UNION ALL SELECT source FROM owner_answer_sources WHERE session=? AND turn=?`).all(call.session, call.turn, call.session, String(call.turn))
       .map(row => String(row.source))
     const proof = runtime.explicitFileSource(text, origin, sources)
     if (!proof) return null
@@ -818,7 +814,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   function standaloneFileOrigin(session: string) {
     requireReady()
-    if (!options.fileMode || options.hostNamespace || !db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) {
+    if (options.hostNamespace || !db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) {
       throw new MemoryDomainError('not.found')
     }
     return sessionContext(session)
@@ -864,7 +860,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const effect = JSON.parse(saved.payload as string) as MemoryHostEffect
         if ( (effect.causeOperationId !== command.input.causeOperationId || effect.revision !== command.input.revision)) throw new Error('Host effect version conflicts')
         const acknowledged = db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=? AND acked=0').run(command.input.effectId)
-        if (options.fileMode && acknowledged.changes && (effect.kind === 'erase-file-copies' || effect.kind === 'erase-copies')) options.onProjectionChanged?.()
+        if (acknowledged.changes && (effect.kind === 'erase-file-copies' || effect.kind === 'erase-copies')) options.onProjectionChanged?.()
         return { accepted: true }
       }
       case 'sourceAlias': return alias(command.input)
@@ -961,7 +957,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': {
         const pending = runtime.cleanupPending()
-        if (!options.fileMode) return pending
         const replicas = db.prepare(`SELECT count(*) AS count FROM (
           SELECT operation AS id FROM owner_file_native_erasures
           UNION SELECT id FROM owner_host_effects WHERE acked=0

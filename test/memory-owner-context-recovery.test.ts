@@ -79,7 +79,7 @@ test('a bound ticket survives owner restart and retired derived context cannot b
   assert.equal(owner.coordination.allowsProjectHistory({ segmentId: 'old-reply', sessionId: session, role: 'assistant', text: 'Old private content' }, undefined, undefined), false)
 })
 
-test('finishing extraction without a fact does not invalidate a bound recovery of the original', async t => {
+test('completing a canonical original without daily capture does not invalidate a bound recovery of the original', async t => {
   const { dir, defer } = scratch(t, 'memory-context-extraction-')
   const owner = openMemoryOwner({ root: dir, ...options, route: () => ({ provider: 'fake', model: 'fake' }),
     compute: async () => '{"proposals":[]}' })
@@ -92,7 +92,7 @@ test('finishing extraction without a fact does not invalidate a bound recovery o
   await owner.completeTurn({ sessionId: session, turn: 1, eventSeq: 2, sourceIds: [human.messageId],
     assistant: '', completed: true, at: Date.now(), timezone: 'UTC' })
   await owner.runtime.wake()
-  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(human.messageId)?.outcome, 'skipped')
+  assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(human.messageId)?.outcome, 'recorded')
   await owner.commitContextRecovery(ack, () => true)
   assert.deepEqual(owner.dispatch.snapshot(session).sources, [human.messageId])
 })
@@ -136,7 +136,7 @@ test('a parent recovery retires old child contributions without erasing the chil
 
 test('consecutive same-session daily updates can recover, recall the new file and send again without retaining old file receipts', async t => {
   const { dir, defer } = scratch(t, 'memory-context-daily-')
-  const owner = openMemoryOwner({ root: dir, dailyNotes: { noteInterval: 1, timezone: 'UTC' }, fileMode: true,
+  const owner = openMemoryOwner({ root: dir, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, compute: async job => {
       if (job.stage !== 'note') return '{"facts":[]}'
       const input = JSON.parse(job.input) as { existing?: { markdown: string }, turns: { user: { text: string }[] }[] }
@@ -236,7 +236,7 @@ test('a stopped source span cannot return through full original recovery or host
   const { openMemoryDocuments } = await import('../src/memory/node/memory-document-store.ts')
   const { memorySourceToken, memorySourceWorkspace } = await import('../src/memory/node/source-identity.ts')
   const { dir, defer } = scratch(t, 'memory-context-restriction-')
-  const owner = openMemoryOwner({ root: dir, ...options, dailyNotes: true, fileMode: true }); defer(() => owner.close()); await owner.recover()
+  const owner = openMemoryOwner({ root: dir, ...options, dailyNotes: true }); defer(() => owner.close()); await owner.recover()
   const sessionId = randomUUID(), human = await original(owner, sessionId, '我住深圳。我喜欢茶。')
   const store = openMemoryStore(join(dir, 'memory.db')); defer(() => store.close())
   const source = store.readSource(human.messageId)!, workspace = memorySourceWorkspace(source)
@@ -293,25 +293,4 @@ test('saved relay receipts authenticate their original content without re-signin
     contextGeneration: 0, senderContextGeneration: 1 }), /Unverified delivery receipt/, 'reading the current sender generation cannot authenticate an old queued output')
   await owner.registerDerived({ sessionId: recipient, senderSessionId: sender, messageId: randomUUID(), sourceIds: [], contentDigest,
     contextGeneration: 0, senderContextGeneration: 1, verifiedDelivery: true })
-})
-
-
-test('historically readable change evidence cannot enter a recovered active dispatch readset', async t => {
-  const { dir, defer } = scratch(t, 'memory-context-historical-change-')
-  const owner = openMemoryOwner({ root: dir, ...options }); defer(() => owner.close()); await owner.recover()
-  const session = randomUUID(), human = await original(owner, session, 'The former arrangement has ended.')
-  const prior = owner.runtime.addMemory('The former arrangement applies.')
-  assert.ok(prior)
-  const db = new DatabaseSync(join(dir, 'memory.db')); defer(() => db.close())
-  // Persist the same change-evidence role that automatic replacement assigns to a
-  // canonical original; the original stays readable for audit, not active dispatch.
-  db.prepare(`INSERT INTO memory_links(revision,target,kind,source,source_version,spans,created_at,automatic)
-    VALUES (1,?,'end',?,1,'[]',?,1)`).run(prior.id, human.messageId, Date.now())
-  assert.equal(owner.runtime.sourceCurrent(human.messageId, Date.now(), true), true)
-  assert.equal(owner.runtime.dispatchSourceCurrent(human.messageId), false)
-  const ticket = await owner.prepareContextRecovery({ sessionId: session, baseSurfaceHash: 'change-evidence', candidates: [human] })
-  assert.deepEqual(ticket.retainedMessageIds, [])
-  await owner.commitContextRecovery(bind(owner, ticket), () => true)
-  assert.deepEqual(owner.dispatch.snapshot(session).sources, [])
-  const permit = owner.acquireSend(randomUUID(), { session, contextGeneration: 1 }, 'clean context'); permit.settled()
 })

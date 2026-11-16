@@ -18,7 +18,7 @@ const topic = 'Conference venue'
 
 async function setup(t: TestContext) {
   const { dir, defer } = scratch(t, 'memory-file-clarification-')
-  const options = { root: dir, hostNamespace: 'viva-test', fileMode: true, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+  const options = { root: dir, hostNamespace: 'viva-test', dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {},
     async compute(job: MemoryCompute) {
       if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Conference and tea', markdown: disputed })

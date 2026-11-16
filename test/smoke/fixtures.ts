@@ -60,7 +60,6 @@ export class Scenario {
     this.current = await smokeStep({ step: (name, action) => base.step(name, action) }, `launch ${label}`, () => launchSmokeApplication({
       profile: this.profile, outputDirectory: output, model: this.model, bridge: this.options.bridge,
       apiKey: this.options.apiKey, fullAccessibility: this.options.phase === 'perf',
-      fileMemory: this.options.phase === 'memory',
       waitForAgent: label !== 'bootstrap' && Boolean(this.model || this.options.apiKey),
     }))
     this.current.hooks.step = (name, action) => base.step(name, action)

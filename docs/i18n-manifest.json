@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-10",
+  "reviewedOn": "2026-11-17",
   "pairs": [
     {
       "en": "README.md",
@@ -95,14 +95,14 @@
     {
       "en": "docs/memory-design.md",
       "zh": "docs/memory-design.zh-CN.md",
-      "enHash": "8df7be97117c1395e37f53eb7bbc1cb448b7ff035d855edd33dc174ce2780e28",
-      "zhHash": "e2fcda84baacbbde719dbed5ff4cd58b294ab5c8a88c684d4a7d2190e454c939"
+      "enHash": "0c1cad5c31b905f45e2ef0c564b79e2b2222152a95265fdf87b1f1d8ba99437d",
+      "zhHash": "76c76e21cb6821bfeb01f73cd052c974fe731ca92d740dbefe82254352397ef8"
     },
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "074da5d1a8920834c988887a1f0be2618ace1b5509bbbaec3593790331e9a071",
-      "zhHash": "188c60b29d3032fec391a1af7d3c4a956b63eda210babd0edc6aab57f82fb9c6"
+      "enHash": "a4451e831560cf7a63c387e8fc31d439fcd1bd9dfed715b26a0adee0e0a29e49",
+      "zhHash": "d4d2a3127251163400ac458b360da4a0ff8558526771dbf690464bcc604d67f0"
     }
   ],
   "bilingual": [

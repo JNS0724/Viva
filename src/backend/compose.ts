@@ -18,7 +18,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createMemoryHostClient } from './memory-host-client.ts'
 import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
-import { memoryConversationScope, memoryProjectScope } from './memory-project.ts'
+import { foregroundMemoryScope, memoryProjectScope } from './memory-project.ts'
 import { createMemoryHostRecovery } from './memory-host-recovery.ts'
 import { affectedTraceSessions, createMemoryHostEffects } from './memory-host-effects.ts'
 import { createMemoryWithdrawal } from './memory-withdrawal.ts'
@@ -121,8 +121,8 @@ function assertText(value: unknown, name: string, maxLength: number): string {
   return value
 }
 
-export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_MEMORY !== '0', fileMode = process.env.VIVA_FILE_MEMORY === '1' }: {
-  host: HostCapabilities, ipc: IpcRegistry, dailyNotes?: boolean, fileMode?: boolean,
+export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_MEMORY !== '0' }: {
+  host: HostCapabilities, ipc: IpcRegistry, dailyNotes?: boolean
 }) {
   const userData = host.paths.userData
   // What the user does in a page is a signal first (commands.ts); every channel below is registered through this.
@@ -336,14 +336,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     turn = { ...turn, active: false }
   }
 
-  const conversationMemoryScope = (): MemoryScope => memoryConversationScope(sessions.topicId(), currentMemoryProject())
   const memoryBusy = memoryCoordination.busy
   const memoryProjectFor = async (id: string | null | undefined, cwd?: string) => cwd === undefined ? await projectOfSession(id ?? undefined) : memoryProjectScope(cwd)
   const staleMemorySession = async (id: string | null | undefined, cwd?: string) => memoryCoordination.stale(id, await memoryProjectFor(id, cwd))
 
   function readNativeTrace<T>(sessions: readonly string[], read: (visible: readonly string[]) => T | Promise<T>) {
     return dsh.readNative(async () => {
-      if (!fileMode || !sessions.length) return read(sessions)
+      if (!sessions.length) return read(sessions)
       const bridge = dsh.current
       async function visible() {
         if (!bridge?.memory.ready() || bridge !== dsh.current || memoryBusy()) return []
@@ -417,11 +416,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     await memory.recordDeliveredSource(sourceId, origin.conversationId, derived, origin.sessionId)
   }
 
-  async function aliasMemory(text: string, operation: string, origin = sessions.context(), scope?: MemoryScope) {
+  async function aliasMemory(text: string, operation: string, origin = sessions.context()) {
     const project = await projectOfSession(origin.sessionId ?? undefined)
     if (!origin.sessionId || !origin.conversationId) throw new Error(t('main.memory.receipt.failed'))
     if (!await bindSessionProject(origin.sessionId, project)) throw new Error(t('main.memory.context.stale'))
-    const context = origin.conversationId === sessions.current().id ? conversationMemoryScope() : scope
+    const context = foregroundMemoryScope(project)
     const result = await memory.call('sourceAlias', { operationId: operation, sourceId: operation,
       session: origin.sessionId, conversation: origin.conversationId, text, context, project })
     return result.sourceId
@@ -446,7 +445,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     try {
       const embeddingRoot = path.extname(APP_ROOT) === '.asar' ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
-        memory: { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime'), dailyNotes, ...(fileMode ? { fileMode } : {}) } })
+        memory: { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime'), dailyNotes } })
       pluginProblems = problems
       problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
@@ -549,7 +548,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           project: await projectOfSession(session), dependencies: await memory.provenance(session) })
         return source.sourceId
       },
-      recordOutputs: fileMode ? async (session, outputs) => {
+      recordOutputs: async (session, outputs) => {
         const candidates: Array<{ output: CommittedOutput, proof: readonly MemoryErasureEvidence[] }> = []
         try {
           for (const output of outputs) {
@@ -572,7 +571,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           console.warn('[memory] Could not authenticate generated output:', error instanceof Error ? error.message : 'unknown error')
           return []
         }
-      } : undefined,
+      },
       readyMemory: () => { scheduleRuns?.wake() },
       memoryStateChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
       memoryNotice: notice => {
@@ -591,12 +590,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       cancelMemoryClarification: (session, id) => memory.call('cancelFileClarification', { args: [session, id] }),
       allowGeneralQuestion: async (session, turn, cards, _waiting, phase) => turn ? memory.call('authorizeGeneralQuestion', { args: [session, turn, cards,
         session === sessions.current().sessionId ? sessions.current().id : historyDb.bySession(session)?.id ?? session,
-        session === sessions.current().sessionId ? conversationMemoryScope() : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
+        session === sessions.current().sessionId ? foregroundMemoryScope(currentMemoryProject()) : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
       onQuestionAnswer: async (entry, answers, operation) => {
         if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
         const conversation = entry.taskId ? historyDb.bySession(entry.sessionId)?.id : entry.context?.conversationId
         if (!conversation) return
-        const answerContext: MemoryScope = entry.taskId ? { kind: 'task', id: entry.sessionId } : conversationMemoryScope()
+        const project = await projectOfSession(entry.sessionId)
+        const answerContext: MemoryScope = entry.taskId ? { kind: 'task', id: entry.sessionId } : foregroundMemoryScope(project)
         const answerSources = Object.create(null) as Record<string, string>
         const requestOperation = operation ?? randomUUID()
         for (const answer of answers) {
@@ -606,7 +606,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
           const accepted = await memory.call('acceptQuestionAnswer', { operationId, text, session: entry.sessionId,
             conversation, question: entry.sourceQuestion ?? question.question, requestId: entry.question.id, questionId: answer.id,
-            context: answerContext, project: await projectOfSession(entry.sessionId) })
+            context: answerContext, project })
           answerSources[answer.id] = accepted.sourceId
         }
         if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
@@ -1295,7 +1295,7 @@ ${question}` : question
 
   /** Opens the database and drops conversations whose undo window has passed. */
   function openHistory(config: Config) {
-    historyDb = journaled(openHistoryDb({ db: appDb.db, fileMode }), 'history', HISTORY_WRITES, applyChange)
+    historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
     historyDb.purgeDeleted({ olderThanMs: 0 })
     sessions.open(config.cwd)
     registerHistoryIpc(ipcMain, {
@@ -1356,7 +1356,7 @@ ${question}` : question
     })
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
     // runtime writes them, each change with its event (task.started, task.ended, …).
-    taskStore = createTaskStore({ db: appDb.db, retainedReply: fileMode ? historyDb.retainedReply : undefined,
+    taskStore = createTaskStore({ db: appDb.db, retainedReply: historyDb.retainedReply,
       onError: (err) => console.error('[tasks]', err.message) })
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
     memoryWithdrawal.register()
@@ -1368,7 +1368,7 @@ ${question}` : question
       generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
       eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
-      traceInvalidated: fileMode ? traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }) : undefined,
+      traceInvalidated: traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }),
       invalidateScheduled: (matches, changed) => {
         schedules?.discardMemory(matches)
         const discarded = scheduleRuns?.discardMemory(matches)

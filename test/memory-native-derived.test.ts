@@ -19,7 +19,7 @@ import { scratch } from './fixtures/scratch.js'
 test('cold native derived erasure groups inbox replicas and retains independent and unauthenticated messages', async t => {
   const { dir, defer } = scratch(t, 'viva-native-derived-')
   const memoryRoot = join(dir, 'memory'), root = join(dir, 'sessions')
-  const options = { root: memoryRoot, hostNamespace: 'viva', fileMode: true,
+  const options = { root: memoryRoot, hostNamespace: 'viva',
     compute: () => null, route: () => null, quiesce: async () => {} }
   const owner = openMemoryOwner(options)
   const call = <K extends 'createFile' | 'readFile' | 'forgetFile'>(method: K, input: HostMemoryApi[K]['input']) =>

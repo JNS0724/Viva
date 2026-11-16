@@ -25,7 +25,9 @@ Deferral does not require deleting existing interfaces or fully porting them as 
 
 ## Files and ownership
 
-Each authorized scope has a backend-selected root. Models use relative paths only:
+Each authorized scope has a backend-selected root. Models use relative paths only.
+
+Within one owner, the trusted host authorizes foreground original user input in the personal user scope or the authenticated current project scope. Long-term memories, personal profiles and project memories can be reused across topics within that scope. The original conversation, session and occurrence identities continue to identify source links, history edits and precise withdrawal. Background task instructions and custom task answers retain task scope. Derived messages recursively inherit their evidence permissions. A history correction registers its replacement source under the durably recorded project authorization. Models and browsers use the scope bound by the host.
 
 ```text
 session/dialog/<session-id>.jsonl

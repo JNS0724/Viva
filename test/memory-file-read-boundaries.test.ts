@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { offlineMemorySafety } from './fixtures/memory-safety.ts'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -14,7 +15,7 @@ test('unverified daily edits never enter later note requests or become accepted,
   const calls:MemoryCompute[]=[]
   function open() {
     const store=openMemoryStore(path,now),resources=openMemoryRuntimeResources({store,now})
-    const runtime=createMemoryRuntime({store,resources,now,dailyNotes:{noteInterval:1,timezone:'UTC'},fileMode:true,
+    const runtime=createMemoryRuntime({ ...offlineMemorySafety,store,resources,now,dailyNotes:{noteInterval:1,timezone:'UTC'},
       route:()=>({provider:'fake',model:'fake'}),quiesce:async()=>{},changed:()=>{},compute(job){
         if(job.stage!=='note')return null
         calls.push(job)

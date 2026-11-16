@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { localBoundary, todayAt, nextDay } from './memory-facts.ts'
+import { localBoundary, todayAt, nextDay } from './memory-calendar.ts'
 
 export const WRITE_NOTE = 'memory.note'
 export const DREAM = 'memory.dream'

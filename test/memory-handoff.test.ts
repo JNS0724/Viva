@@ -23,7 +23,6 @@ import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
-import { MEMORY_PROFILE_SYSTEM } from '../src/memory/core/memory-profile.ts'
 import { createBackend } from '../src/backend/compose.ts'
 import type { FeedItem } from '../src/backend/feed-store.ts'
 import type { HostCapabilities, HostEvent } from '../src/backend/host.ts'
@@ -32,11 +31,11 @@ const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
-import { openMemorySemanticIndex } from '../src/memory/node/memory-semantic.ts'
+import type { MemoryFileDetail, MemoryFileListResult, MemoryFileProfile } from '../src/memory/contracts/file-management.ts'
+import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
-import type { IpcResults, MemorySummaryView } from '../src/shared/ipc-results.ts'
+import type { IpcResults } from '../src/shared/ipc-results.ts'
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
 import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/eventually.ts'
@@ -48,12 +47,10 @@ import { modelToolResults } from './fixtures/model-tool-results.ts'
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
 const oldFact = `记住：我的周报提交邮箱是 ${oldValue}`
-const replacement = `记住：从现在起，我的周报提交邮箱从 ${oldValue} 改为 ${newValue}`
 const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', import.meta.url)
 type ModelMessage = { role?: string, content?: string | { text?: string, type?: string }[] }
 type Request = { system?: unknown, messages: ModelMessage[] }
 type Task = IpcResults['task:finished'][number]
-type Change = import('../src/shared/ipc-results.ts').MemoryChangeRecord
 
 function makeScheduleDue(directory: string) {
   const db = new DatabaseSync(join(directory, 'app.db'))
@@ -69,7 +66,7 @@ function contextGeneration(directory: string, session: string): number {
   finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, fileMode = false } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
@@ -110,7 +107,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   function openBackend() {
     assert.equal(backend, null)
-    backend = createBackend({ host, ipc: { handle: register, on: register }, dailyNotes, fileMode })
+    backend = createBackend({ host, ipc: { handle: register, on: register }, dailyNotes })
     backend.open()
     return backend
   }
@@ -141,7 +138,21 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   const newTopic = () => call<Promise<AgentInfo>>('agent:new-session')
   const tasks = () => call<Task[]>('task:finished')
   const feed = () => call<FeedItem[]>('feed:list')
-  const memories = async () => (await call<Promise<{ items: { text: string }[] }>>('memory:list', '周报提交邮箱')).items
+  const files = async () => {
+    const result: MemoryFileDetail[] = []
+    let cursor: MemoryFileListResult['nextCursor'] = null
+    do {
+      const page: MemoryFileListResult = await call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'digest', ...(cursor ? { cursor } : {}) })
+      assert.equal(page.status, 'ok')
+      for (const item of page.items) {
+        if (!item.enabled || item.applicability !== 'current' || item.hasProjection === false) continue
+        const detail = await call<Promise<MemoryFileDetail | null>>('memory:read-file', item.identity)
+        if (detail) result.push(detail)
+      }
+      cursor = page.nextCursor
+    } while (cursor)
+    return result
+  }
   const restart = () => call<Promise<unknown>>('settings:set-permission', 'workspace-write')
   async function schedule(text: string) {
     await ask(text)
@@ -151,16 +162,21 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   async function recallOld() {
     await ask(oldFact)
-    assert.ok(await eventually(async () => (await memories()).some(item => item.text.includes(oldValue))))
+    assert.ok(await eventually(async () => (await files()).some(item => item.markdown.includes(oldValue))))
     await ask('查一下 周报提交邮箱')
   }
   async function replace() {
     await newTopic()
-    await ask(replacement)
-    assert.ok(await eventually(async () => (await call<Promise<Change[]>>('memory:list-changes')).find(change => change.kind === 'supersede')))
-    assert.ok((await memories()).some(item => item.text.includes(newValue)))
+    const file = (await files()).find(item => item.markdown.includes(oldValue))
+    assert.ok(file)
+    const edited = await call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
+      operationId: randomUUID(), identity: file.identity, version: file.version,
+      text: `我的周报提交邮箱是 ${newValue}`,
+    })
+    assert.equal(edited.status, 'applied')
+    assert.ok((await files()).some(item => item.markdown.includes(newValue)))
   }
-  return { ask, call, defer, directory, events, feed, memories, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
+  return { ask, call, defer, directory, events, feed, files, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
     startBackend: () => openBackend().startBridge(),
     wake: () => backend?.signal({ kind: 'system.woke' }) }
 }
@@ -180,7 +196,7 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   assert.ok(await eventually(() => incoming.length === 5))
   assert.deepEqual(incoming.map(turn => turn.user.map(source => source.text)), turns.map(text => [text]))
   assert.ok(incoming[0]?.assistant.includes(turns[0]!))
-  assert.equal((await app.memories()).length, 0)
+  assert.equal((await app.files()).length, 0)
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
     const card = await eventually(() => db.prepare('SELECT workspace,path,day FROM memory_daily_notes').get()) as
@@ -204,7 +220,7 @@ test('a real DSH tool read archives and erases native results even when the next
     if (requested || !fileId || questionOf(request.messages) !== prompt) return null
     requested = true
     return { tool: { name: 'memory_read', input: { id: fileId } } }
-  }, { dailyNotes: true, fileMode: true })
+  }, { dailyNotes: true })
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text })
   assert.equal(created.status, 'applied')
   fileId = created.receipt.identity.id
@@ -282,7 +298,7 @@ test('a real DSH tool read archives and erases native results even when the next
     } finally { await reader.close() }
   } finally { await mounted.dispose() }
 
-  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true, fileMode: true,
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true,
     compute: () => null, route: () => null, quiesce: async () => {} })
   const operationId = randomUUID()
   try {
@@ -356,7 +372,7 @@ test('cold Viva startup erases native originals and settled output in root and u
     const routed = request.messages.flatMap(message => typeof message.content === 'string'
       ? requestsIn(message.content) : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).at(-1)
     return routed?.words.startsWith(text) && modelToolResults(request, 'commit_route').length ? { text: derived } : null
-  }, { dailyNotes: true, fileMode: true })
+  }, { dailyNotes: true })
   const sourceId = await app.ask(text)
   const reply = app.events.find(event => event.type === 'update' && event.update.sessionUpdate === 'viva_stream'
     && event.update.kind === 'settle' && event.update.blocks.some((block: { text?: string }) => block.text === derived))
@@ -502,7 +518,7 @@ test('cold Viva startup erases native originals and settled output in root and u
     } finally { await original.close() }
   } finally { await persistence.dispose() }
 
-  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true, fileMode: true,
+  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true,
     compute: () => null, route: () => null, quiesce: async () => {} })
   const operationId = randomUUID(), nextOperation = randomUUID()
   try {
@@ -698,26 +714,26 @@ test('startup completes a history withdrawal interrupted by process death before
   const conversationId = initial.conversationId
   assert.ok(conversationId)
   await app.call('agent:prompt', oldFact, [], sourceId)
-  const entry = await eventually(async () => (await app.call<Promise<{ items: { id: number, revision: number, text: string }[] }>>('memory:list', '周报提交邮箱'))
-    .items.find(item => item.text.includes(oldValue)))
+  const entry = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
   assert.ok(entry)
   const memoryFile = join(app.directory, 'memory', 'memory.db')
-  const hasProfileRef = (db: DatabaseSync) => Boolean(db.prepare(`SELECT 1 FROM memory_projections p, json_each(p.refs) refs
-    WHERE json_extract(refs.value,'$.kind')='memory' AND json_extract(refs.value,'$.id')=?`).get(entry.id))
-  const profileDb = new DatabaseSync(memoryFile, { readOnly: true })
-  try { assert.ok(await eventually(() => hasProfileRef(profileDb))) } finally { profileDb.close() }
+  const hasFileCopy = (db: DatabaseSync) => Boolean(db.prepare(
+    'SELECT 1 FROM memory_file_index_nodes WHERE workspace=? AND id=?',
+  ).get(entry.identity.workspace, entry.identity.id))
+  const detail = await app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', entry.identity)
+  assert.ok(detail?.sources.some(source => source.sourceId === sourceId))
   await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
-  const profileProbe = '随手核对背景资料'
+  const profileProbe = '随手核对周报提交邮箱背景资料'
   const unsavedSource = await app.ask(profileProbe)
   assert.ok(app.model.requests.some(raw => {
     const request = raw as Request
     const content = request.messages.at(-1)?.content
     const context = Array.isArray(content) ? content.find(part => part.text?.startsWith('<about-user>'))?.text : null
-    return questionOf(request.messages) === profileProbe && context?.includes('助手整理的画像') && context.includes(oldValue)
+    return questionOf(request.messages) === profileProbe && context?.includes('File memory evidence') && context.includes(oldValue)
   }))
   await app.ask('查一下 周报提交邮箱')
   const injected = app.events.filter(event => event.type === 'memory_context')
-  assert.ok(injected.some(event => JSON.stringify(event).includes(oldValue) && JSON.stringify(event).includes('周报')), 'native owner contextUsed must preserve the selected facts and match reasons for the foreground trace')
+  assert.ok(injected.some(event => JSON.stringify(event).includes(oldValue) && JSON.stringify(event).includes('周报')), 'native owner contextUsed must preserve selected file evidence for the foreground trace')
   assert.ok(app.model.requests.some(raw => {
     const last = JSON.stringify((raw as Request).messages.at(-1))
     return last.includes('tool_result') && last.includes(oldValue)
@@ -731,26 +747,26 @@ test('startup completes a history withdrawal interrupted by process death before
   await app.call('history:save', [{ role: 'user', text: independent, receipt: null, sourceId: survivorId }])
   const survivorStore = new DatabaseSync(memoryFile, { readOnly: true })
   try {
-    // Finish the no-fact extraction before recovery so its cleanup cannot race this test.
+    // The independent original must be durably recorded before recovery.
     assert.ok(await eventually(() => survivorStore.prepare(
-      "SELECT 1 FROM memory_sources WHERE id=? AND outcome='skipped'",
-    ).get(survivorId)), 'the independent prompt finished extraction without a memory fact')
+      "SELECT 1 FROM memory_sources WHERE id=? AND outcome='recorded'",
+    ).get(survivorId)), 'the independent prompt retains its canonical source without a file write')
   } finally { survivorStore.close() }
   const generationBeforeRestart = contextGeneration(app.directory, initial.sessionId!)
   await app.stopBackend()
   const copies = new DatabaseSync(memoryFile)
   try {
-    assert.ok(hasProfileRef(copies))
-    assert.ok(copies.prepare('SELECT rowid FROM memory_lexical_fts WHERE rowid=?').get(entry.id))
-    // Seed one normalized passage vector even when the optional local E5 model is unavailable in CI.
-    const index = openMemorySemanticIndex(copies)
-    assert.ok(index)
-    index.configure(MEMORY_EMBEDDING_FINGERPRINT)
-    const version = index.version(MEMORY_EMBEDDING_FINGERPRINT)
-    assert.ok(version !== null)
+    assert.ok(hasFileCopy(copies))
+    assert.ok(copies.prepare('SELECT 1 FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').get(entry.identity.workspace, entry.identity.id))
+    // Seed an authenticated file passage vector even when the optional local model is absent in CI.
+    const index = openMemoryFileIndex({ db: copies })
+    const generation = index.beginVectors({ fingerprint: MEMORY_EMBEDDING_FINGERPRINT, dimensions: MEMORY_EMBEDDING_DIMENSIONS })
+    const chunks = index.missingVectors(generation)
+    assert.ok(chunks.some(chunk => chunk.ref.fileId === entry.identity.id))
     const vector = new Float32Array(MEMORY_EMBEDDING_DIMENSIONS)
     vector[0] = 1
-    assert.equal(index.put(MEMORY_EMBEDDING_FINGERPRINT, [{ id: entry.id, revision: entry.revision, vector }], version), 1)
+    assert.equal(index.stageVectors(generation, chunks.map(chunk => ({ ref: chunk.ref, vectors: [vector] }))), chunks.length)
+    assert.ok(index.finishVectors(generation, chunks.map(chunk => chunk.ref)))
   } finally { copies.close() }
 
   await runToCrash(withdrawalCrashFixture, 'before-withdrawal', app.directory, conversationId)
@@ -761,9 +777,9 @@ test('startup completes a history withdrawal interrupted by process death before
     assert.equal(appDb.prepare('SELECT deleted_at IS NOT NULL AS removed FROM conversations WHERE id=?')
       .get(conversationId)?.removed, 1)
     assert.ok(appDb.prepare("SELECT generation FROM effects WHERE kind='memory.withdraw' AND key=?").get(conversationId))
-    assert.equal(String(memoryDb.prepare('SELECT text FROM memory_sources WHERE id=?').get(sourceId)?.text).trim(), oldFact.replace(/^记住：/, ''))
-    assert.ok(hasProfileRef(memoryDb))
-    assert.ok(memoryDb.prepare('SELECT memory FROM memory_semantic_vectors WHERE memory=?').get(entry.id))
+    assert.equal(String(memoryDb.prepare('SELECT text FROM memory_sources WHERE id=?').get(sourceId)?.text).trim(), oldFact)
+    assert.ok(hasFileCopy(memoryDb))
+    assert.ok(memoryDb.prepare('SELECT 1 FROM memory_file_index_vectors WHERE ref LIKE ?').get('%' + entry.identity.id + '%'))
   } finally {
     memoryDb.close()
     appDb.close()
@@ -771,7 +787,7 @@ test('startup completes a history withdrawal interrupted by process death before
 
   const offset = app.model.requests.length
   assert.ok(await app.startBackend())
-  assert.equal((await app.memories()).length, 0)
+  assert.equal((await app.files()).length, 0)
   assert.equal(app.call<AgentInfo>('agent:info').sessionId, initial.sessionId)
   assert.ok(contextGeneration(app.directory, initial.sessionId!) > generationBeforeRestart, 'native history must be durably replaced before the same session can continue')
   const probe = '用保留的记录继续核对'
@@ -802,16 +818,16 @@ test('startup completes a history withdrawal interrupted by process death before
     assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=1').get(unsavedSource))
     assert.equal(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(unsavedSource), undefined)
     assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(survivorId))
-    assert.equal(hasProfileRef(recoveredMemory), false)
-    assert.equal(recoveredMemory.prepare('SELECT rowid FROM memory_lexical_fts WHERE rowid=?').get(entry.id), undefined)
-    assert.equal(recoveredMemory.prepare('SELECT memory FROM memory_semantic_vectors WHERE memory=?').get(entry.id), undefined)
+    assert.equal(hasFileCopy(recoveredMemory), false)
+    assert.equal(recoveredMemory.prepare('SELECT 1 FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').get(entry.identity.workspace, entry.identity.id), undefined)
+    assert.equal(recoveredMemory.prepare('SELECT 1 FROM memory_file_index_vectors WHERE ref LIKE ?').get('%' + entry.identity.id + '%'), undefined)
   } finally {
     recoveredMemory.close()
     recoveredApp.close()
   }
 })
 
-test('generated project summaries, exact recall and chat history remain in their Git workspace', { timeout: 45_000 }, async t => {
+test('source-backed project files, exact recall and chat history remain in their Git workspace', { timeout: 45_000 }, async t => {
   const firstFact = '记住：当前项目的构建标记是 alpha-orchid-71'
   const secondFact = '记住：当前项目的构建标记是 beta-copper-23'
   const firstMarker = 'alpha-orchid-71'
@@ -827,18 +843,7 @@ test('generated project summaries, exact recall and chat history remain in their
   const changedTitle = '不应写入的修改标题'
   let scheduleId: string | undefined
   const app = await setup(t, request => {
-    const system = JSON.stringify(request.system ?? '')
     const last = request.messages.at(-1)
-    if (system.includes('你是记忆整理员')) {
-      const content = last?.content
-      const text = typeof content === 'string' ? content : content?.[0]?.text
-      assert.ok(text)
-      const { user, spans } = JSON.parse(text) as { user: string, spans: { start: number, end: number }[] }
-      return { text: JSON.stringify({ proposals: [firstFact, secondFact].includes(user) ? [{
-        spans, kind: 'project', scope: 'project',
-        modality: 'asserted', attribution: 'context', keywords: ['构建标记'],
-      }] : [] }) }
-    }
     if (JSON.stringify(last).includes('tool_result')) return null
     if (Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === 'image')) return { text: rawHistoryText }
     const question = questionOf(request.messages)
@@ -869,23 +874,23 @@ test('generated project summaries, exact recall and chat history remain in their
     await app.call('agent:prompt', text, [], sourceId)
     await app.call('history:save', [{ role: 'user', text, receipt: null, sourceId }])
     const summary = await eventually(async () => {
-      const { summaries } = await app.call<Promise<{ summaries: { project: MemorySummaryView | null } }>>('memory:get')
-      return summaries.project?.generated && summaries.project.items.find(item => item.text === text.replace(/^记住：/u, ''))
+      const { fileProfile } = await app.call<Promise<{ fileProfile: { project: { identity: MemoryFileDetail['identity'], text: string }[] | null } }>>('memory:get')
+      return fileProfile.project?.find(item => item.text.includes(text.slice('记住：'.length)))
     })
-    assert.ok(summary && summary.source?.link)
+    assert.ok(summary)
+    const detail = await app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', summary.identity)
+    assert.ok(detail?.sources.some(source => source.link))
     return switched.info
   }
   const check = async (present: string, excluded: string) => {
     const count = app.model.requests.length
-    await app.ask('查看本项目的基本资料')
+    await app.ask('查看本项目构建标记的基本资料')
     await app.ask(recall)
     await app.ask(history)
-    // Independent background profile refreshes may run after a workspace switch. Check delivery
-    // isolation here; the profile builder's own scoped input is tested in memory-profile.test.ts.
-    const messages = app.model.requests.slice(count).filter(raw => !JSON.stringify((raw as Request).system).includes(MEMORY_PROFILE_SYSTEM.split('\n')[0]!)).map(raw => (raw as Request).messages)
+    const messages = app.model.requests.slice(count).map(raw => (raw as Request).messages)
     assert.ok(messages.some(rows => {
       const last = JSON.stringify(rows.at(-1))
-      return last.includes('<about-user>') && last.includes('项目摘要') && last.includes(present)
+      return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(present)
     }))
     for (const name of ['memory_recall', 'search_conversations']) assert.ok(messages.some(rows =>
       modelToolResults({ messages: rows }, name).some(result => JSON.stringify(result).includes(present))),
@@ -975,24 +980,26 @@ test('generated project summaries, exact recall and chat history remain in their
   assert.deepEqual(leaked.map(request => JSON.stringify(request.messages.at(-1))), [])
 })
 
-test('an explicit save completes in a foreground session that already received a generated profile', { timeout: 30_000 }, async t => {
+test('an explicit save completes in a foreground session that already received file evidence', { timeout: 30_000 }, async t => {
   const app = await setup(t, () => null)
-  await app.ask(oldFact)
-  const page = async () => (await app.call<Promise<{ summaries: { user: MemorySummaryView } }>>('memory:get')).summaries.user
-  assert.ok(await eventually(async () => { const summary = await page(); return summary.generated && summary.items.some(item => item.text.includes(oldValue)) }))
+  await app.recallOld()
+  const profile = await app.call<Promise<{ fileProfile: MemoryFileProfile }>>('memory:get')
+  assert.ok(profile.fileProfile.user.some(item => item.text.includes(oldValue)), 'a natural remembered original belongs to the file-backed user profile')
   await app.newTopic()
   const offset = app.model.requests.length
-  await app.ask('核对下背景资料')
+  await app.ask('核对下周报提交邮箱背景资料')
   assert.ok((app.model.requests.slice(offset) as Request[]).some(request =>
-    JSON.stringify(request.messages.at(-1)).includes('助手整理的画像')))
+    JSON.stringify(request.messages).includes('File memory evidence')
+      && JSON.stringify(request.messages).includes(oldValue)), JSON.stringify(app.model.requests.slice(offset)))
   const preference = '我以后使用紫罗兰色图标'
   const count = app.model.requests.length
+  const seen = app.events.length
   await app.ask(`记住：${preference}`)
-  assert.ok(await eventually(async () => (await app.call<Promise<{ items: { text: string }[] }>>('memory:list', preference)).items.some(item => item.text === preference)))
-  assert.ok(app.events.some(event => event.type === 'memory_changed' && 'memories' in event && Array.isArray(event.memories) && event.memories.includes(preference)), 'verified save receipt must reach the renderer notification')
+  assert.ok(await eventually(async () => (await app.files()).some(item => item.markdown.includes(preference))))
+  assert.ok(app.events.slice(seen).some(event => event.type === 'memory_changed'), 'verified file save must notify the renderer')
   const foreground = () => app.model.requests.slice(count) as Request[]
-  assert.ok(await eventually(() => foreground().some(request => questionOf(request.messages) === `记住：${preference}`)), JSON.stringify({ requests: foreground().map(request => ({ question: questionOf(request.messages), system: JSON.stringify(request.system).slice(0, 80) })), errors: app.events.filter(event => event.type === 'error') }))
-  assert.ok(await eventually(() => foreground().some(request => JSON.stringify(request.messages.at(-1)).includes('tool_result'))))
+  assert.ok(foreground().some(request => questionOf(request.messages) === `记住：${preference}`))
+  assert.ok(foreground().some(request => modelToolResults(request, 'memory_remember').length))
 })
 
 async function rewriteRejectedSource(app: Awaited<ReturnType<typeof setup>>, sourceId: string, original: string) {
@@ -1159,7 +1166,7 @@ test('an ordinary city clarification stays scoped to the routed background task'
       errors: app.events.filter(event => event.type === 'error').map(event => event.message),
     }))
   assert.ok(app.model.requests.some(request => questionOf((request as Request).messages) === answer))
-  assert.equal((await app.memories()).length, 0)
+  assert.equal((await app.files()).length, 0)
 })
 
 test('an old brief forwarded to an existing task cannot reach DSH after memory replacement', { timeout: 45_000 }, async t => {
@@ -1194,10 +1201,10 @@ test('an old brief forwarded to an existing task cannot reach DSH after memory r
   assert.ok(prompts.some(text => text.includes(unrelated)))
 })
 
-test('task resume and scheduled execution reject a persisted generated-profile dependency after its collection changes', { timeout: 45_000 }, async t => {
-  const title = '替我准备定时汇总'
+test('task resume and scheduled execution reject a persisted file policy dependency after restart', { timeout: 45_000 }, async t => {
+  const title = '替我准备周报定时汇总'
   const scheduled = '运行旧的定时汇总指令'
-  const brief = '在后台生成先前约定的汇总'
+  const brief = '在后台生成周报提交邮箱汇总'
   const forward = '请继续运行之前的后台检查'
   const followup = '运行旧任务最后一步'
   let taskId: string | undefined
@@ -1210,32 +1217,42 @@ test('task resume and scheduled execution reject a persisted generated-profile d
     if (question === forward && taskId) return { tool: { name: 'message_background_task', input: { taskId, text: followup } } }
     return null
   })
-  await app.ask(oldFact)
-  assert.ok(await eventually(async () => (await app.memories()).some(item => item.text.includes(oldValue))))
+  await app.recallOld()
+  const file = (await app.files()).find(item => item.markdown.includes(oldValue))
+  assert.ok(file)
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    assert.ok(await eventually(() => db.prepare("SELECT 1 FROM memory_projections WHERE json_array_length(refs)>0").get()))
     await app.newTopic()
     await app.ask(`后台做：${brief}`)
     taskId = (await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === brief)))?.task.id
     assert.ok(taskId)
     await app.schedule(title)
-    const stored = db.prepare(`SELECT fact AS id, revision, collection_revision AS collectionRevision
-      FROM memory_session_profile_dependencies WHERE session=?`).get(taskId)
-    assert.ok(stored && typeof stored.id === 'number' && typeof stored.collectionRevision === 'number')
-    const epoch = db.prepare("SELECT value FROM memory_meta WHERE key='epoch'").get()?.value
-    assert.equal(db.prepare('SELECT revision FROM memories WHERE id=?').get(stored.id)?.revision, stored.revision)
+    const stored = db.prepare(`SELECT reference FROM memory_session_file_dependencies
+      WHERE session=? AND json_extract(reference,'$.id')=?`).get(taskId, file.identity.id)
+    assert.ok(stored)
+    const proof = JSON.parse(String(stored.reference)) as { revision: string, usageVersion: number, policyToken: string }
+    assert.equal(proof.revision, file.version.contentRevision)
+    assert.equal(proof.policyToken, file.version.policyToken)
     const scheduleDb = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
     try {
-      const saved = scheduleDb.prepare(`SELECT 1 FROM schedules s, json_each(s.memory,'$.dependencies') dep
-        WHERE json_extract(s.record,'$.title')=? AND json_extract(dep.value,'$.collectionRevision')=?`).get(title, stored.collectionRevision)
-      assert.ok(saved)
+      assert.ok(scheduleDb.prepare(`SELECT 1 FROM schedules s, json_each(s.memory,'$.files') dep
+        WHERE json_extract(s.record,'$.title')=? AND json_extract(dep.value,'$.id')=?
+          AND json_extract(dep.value,'$.revision')=? AND json_extract(dep.value,'$.policyToken')=?`)
+        .get(title, file.identity.id, proof.revision, proof.policyToken))
     } finally { scheduleDb.close() }
     await app.newTopic()
-    await app.call('memory:add', '我的可访问性偏好是高对比度', 'preference', randomUUID())
-    assert.equal(db.prepare('SELECT revision FROM memories WHERE id=?').get(stored.id)?.revision, stored.revision)
-    assert.equal(db.prepare("SELECT value FROM memory_meta WHERE key='epoch'").get()?.value, epoch)
-    assert.ok(Number(db.prepare("SELECT value FROM memory_meta WHERE key='revision'").get()?.value) > stored.collectionRevision)
+    const unrelated = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', {
+      operationId: randomUUID(), text: '我的可访问性偏好是高对比度',
+    })
+    assert.equal(unrelated.status, 'applied')
+    const unchanged = await app.call<Promise<MemoryFileDetail>>('memory:read-file', file.identity)
+    assert.deepEqual(unchanged.version, file.version, 'an unrelated file write does not change the consumed file proof')
+    await app.call('memory:set-file-enabled', { operationId: randomUUID(), identity: file.identity, version: unchanged.version, enabled: false })
+    const stopped = await app.call<Promise<MemoryFileDetail>>('memory:read-file', file.identity)
+    assert.equal(stopped.version.contentRevision, proof.revision)
+    assert.notEqual(stopped.version.usageVersion, proof.usageVersion)
+    assert.notEqual(stopped.version.policyToken, proof.policyToken)
+    assert.equal(db.prepare('SELECT revision FROM memory_documents WHERE id=?').get(file.identity.id)?.revision, proof.revision)
   } finally { db.close() }
 
   await app.stopBackend()
@@ -1281,44 +1298,31 @@ test('a scheduled prompt cannot replay old memory after replacement, and an unre
   assert.ok(actual.some(text => text.includes(freshPrompt)))
 })
 
-test('a scheduled prompt cannot use a fact past its validity window even without a memory write', { timeout: 45_000 }, async t => {
-  // The independent owner has its own clock; exercise real expiry instead of mocking only the host.
-  const validUntil = new Date(Date.now() + 12_000)
-  const localTime = validUntil.toLocaleTimeString('en-GB', { hourCycle: 'h23' })
-  const localDate = validUntil.toLocaleDateString('sv-SE')
-  const timePhrase = `在 ${localDate} ${localTime} 前`
-  const fact = `记住：${timePhrase}，${oldFact.replace(/^记住：/u, '')}`
+test('a scheduled prompt rechecks file usage policy even when no file content was rewritten', { timeout: 45_000 }, async t => {
   const title = '为这次周报设一个归档任务'
   const prompt = `定时归档这次周报到 ${oldValue}`
-  const scheduledAt = new Date(validUntil.valueOf() + 5000).toISOString()
   const app = await setup(t, request => {
-    if (JSON.stringify(request.system).includes('记忆整理员') && JSON.stringify(request.messages).includes(fact)) {
-      const span = (part: string) => ({ start: fact.indexOf(part), end: fact.indexOf(part) + part.length })
-      return { text: JSON.stringify({ proposals: [{
-        spans: [span(fact.slice(3))], kind: 'fact', scope: 'user', modality: 'asserted', attribution: 'self', keywords: ['周报提交邮箱'],
-        fact: { predicate: 'report_email', polarity: 'positive', subject: { kind: 'user', span: span('我') },
-          relation: span('周报提交邮箱'), object: span(oldValue) },
-        temporal: { kind: 'interval', from: null, to: { date: localDate, time: localTime }, evidence: [span(timePhrase)] },
-      }] }) }
-    }
     if (questionOf(request.messages) !== title || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    return { tool: { name: 'schedule_create', input: { title, prompt, kind: 'at', at: scheduledAt } } }
+    return { tool: { name: 'schedule_create', input: { title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString() } } }
   })
-  await app.ask(fact)
-  assert.ok(await eventually(async () => (await app.memories()).some(item => item.text.includes(oldValue))))
-  await app.ask('查一下 周报提交邮箱')
+  await app.recallOld()
+  const file = (await app.files()).find(item => item.markdown.includes(oldValue))
+  assert.ok(file)
   await app.schedule(title)
-  await delay(Math.max(0, new Date(scheduledAt).valueOf() + 100 - Date.now()))
-  {
-    const offset = app.model.requests.length
-    app.wake()
-    assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
-    assert.ok(!(await app.memories()).some(item => item.text.includes(oldValue)))
-    assert.ok(!app.model.requests.slice(offset).some(request => JSON.stringify(request).includes(prompt)))
-  }
+  await app.newTopic()
+  await app.call('memory:set-file-enabled', { operationId: randomUUID(), identity: file.identity, version: file.version, enabled: false })
+  const stopped = await app.call<Promise<MemoryFileDetail>>('memory:read-file', file.identity)
+  assert.equal(stopped.version.contentRevision, file.version.contentRevision)
+  assert.notEqual(stopped.version.policyToken, file.version.policyToken)
+  makeScheduleDue(app.directory)
+  const offset = app.model.requests.length
+  app.wake()
+  assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
+  assert.ok(!(await app.files()).some(item => item.markdown.includes(oldValue)))
+  assert.ok(!app.model.requests.slice(offset).some(request => JSON.stringify(request).includes(prompt)))
 })
 
-test('schedule results recheck the facts read during execution before publication', { timeout: 30_000 }, async t => {
+test('schedule results recheck the file evidence read during execution before publication', { timeout: 30_000 }, async t => {
   const title = '设置一次定时整理'
   const prompt = '整理本次材料'
   const draft = `定时结果沿用 ${oldValue}`
@@ -1449,7 +1453,7 @@ test('the real DSH send surface removes a stopped original and still delivers a 
       return { tool: { name: 'memory_recall', input: { query: '红茶' } } }
     }
     return null
-  }, { dailyNotes: true, fileMode: true })
+  }, { dailyNotes: true })
   const sourceId = randomUUID()
   await app.call('agent:prompt', old + safe, [], sourceId)
   const first = app.call<AgentInfo>('agent:info')
@@ -1507,7 +1511,7 @@ for (const outcome of ['answer', 'stop'] as const) {
         return { tool: { name: 'memory_recall', input: { query: '图书馆礼堂' } } }
       }
       return null
-    }, { dailyNotes: true, fileMode: true })
+    }, { dailyNotes: true })
     const sourceId = randomUUID()
     await app.call('agent:prompt', earlier, [], sourceId)
     for (const prompt of ['准备下一次见面。', '先检查交通。', '还是要确认人数。', '我再同步日程。']) await app.ask(prompt)

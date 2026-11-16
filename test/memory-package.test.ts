@@ -84,7 +84,7 @@ test('npm-packed JS artifact installs offline and its Node API works without the
     assert.throws(() => require.resolve('@deepseek-ai/dsh'));
     assert.throws(() => require.resolve('electron'));
     assert.equal(process.send, undefined);
-    const options = { root: 'memory', fileMode: true, compute:()=>null, route:()=>null, quiesce:async()=>{} };
+    const options = { root: 'memory', compute:()=>null, route:()=>null, quiesce:async()=>{} };
     let owner = openMemoryOwner(options);
     await owner.recover();
     const input = { operationId: randomUUID(), text: 'Keep weekly summaries short.' };

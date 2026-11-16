@@ -27,7 +27,7 @@ test('background document cleanup drains transport acknowledgments before recove
     checkpoint(point) { if (crash && point === 'intent') { crash = false; throw new Error('simulated interruption') } },
   })
   const memory = createMemoryRuntime({ store, resources, dailyNotes: true, compute: () => null, route: () => null,
-    quiesce: async () => {}, changed: () => {}, runDocumentMutation: work => fence.mutate(work) })
+    quiesce: async () => {}, changed: () => {}, canCommit: () => true, validateDispatch: () => {}, runDocumentMutation: work => fence.mutate(work) })
   defer(async () => { await fence.close(); memory.close() })
   const id = randomUUID()
   memory.accept('The report is submitted on Friday.', { session: 'session', conversation: 'conversation' }, id)

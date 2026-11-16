@@ -3,7 +3,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
+import type { StoredMessage } from '../src/backend/history-schema.ts'
+import type { Channel, ChannelArgs, IpcRegistry } from '../src/shared/ipc-contract.ts'
+import type { Step } from '../plugins/trace/lib/steps.ts'
 import { registerRewindIpc } from '../src/backend/rewind-ipc.ts'
 
 /**
@@ -11,17 +14,34 @@ import { registerRewindIpc } from '../src/backend/rewind-ipc.ts'
  * timeline goes on in a new segment with what came before it and the new words, and the path left behind folds.
  */
 
-const user = (text) => ({ role: 'user', text, receipt: null })
-const answer = (text) => ({ role: 'assistant', text, receipt: null })
+const user = (text: string) => ({ role: 'user', text, receipt: null })
+const answer = (text: string) => ({ role: 'assistant', text, receipt: null })
 
-function setup({ busy = false, forkResult, traceSteps } = {}) {
+type Dependencies = Parameters<typeof registerRewindIpc>[1]
+type Selection = Parameters<Parameters<Dependencies['selectSession']>[0]>[0]
+type History = ReturnType<typeof openHistoryDb>
+type RewindReply = { ok: false, problem: string } | {
+  ok: true,
+  conversation: NonNullable<ReturnType<History['get']>>['conversation'] & { messages: StoredMessage[] },
+  folds: ReturnType<History['foldsOf']>,
+}
+
+function setup({ busy = false, forkResult, traceSteps }: { busy?: boolean, forkResult?: Awaited<ReturnType<Selection['forkAgent']>>, traceSteps?: (session: string) => Step[] } = {}) {
   let n = 0
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rewind-')), 'history.db'), newId: () => `c${++n}` })
   let current = db.save(db.create({ sessionId: 's1', cwd: '/w', parentId: null }), [user('做周报'), answer('写好了'), user('太正式了'), answer('改了')])
-  const forks = []
-  const switches = []
-  const handlers = {}
-  registerRewindIpc({ handle: (channel, fn) => { handlers[channel] = fn } }, {
+  const forks: Array<Parameters<Selection['forkAgent']>[0]> = []
+  const switches: Array<[string | null, string | null | undefined]> = []
+  const listeners = new Map<Channel, (...args: unknown[]) => unknown>()
+  const ipc: Pick<IpcRegistry, 'handle'> = { handle(channel, listener) {
+    listeners.set(channel, (...args) => listener({}, ...(args as ChannelArgs<typeof channel>)))
+  } }
+  const call = async <T>(channel: Channel, ...args: unknown[]): Promise<T> => {
+    const listener = listeners.get(channel)
+    assert.ok(listener)
+    return await listener(...args) as T
+  }
+  registerRewindIpc(ipc, {
     db,
     current: () => current,
     isBusy: () => busy,
@@ -36,7 +56,12 @@ function setup({ busy = false, forkResult, traceSteps } = {}) {
     } }),
     traceDb: () => (traceSteps ? { stepsOf: traceSteps } : null),
   })
-  const rewind = (request) => handlers['timeline:rewind']({}, request)
+  const handlers = {
+    'timeline:folded': (_event: unknown, id: string) => call<{ messages: StoredMessage[] }>('timeline:folded', id),
+    'timeline:switch-path': (_event: unknown, id: string) => call<RewindReply>('timeline:switch-path', id),
+    'timeline:rewind-effects': (_event: unknown, request: unknown) => call<unknown>('timeline:rewind-effects', request),
+  }
+  const rewind = (request: unknown) => call<RewindReply>('timeline:rewind', request)
   return { db, rewind, forks, switches, handlers, current: () => current }
 }
 
@@ -47,12 +72,12 @@ test('going back to a question forks before it and goes on in a new segment; the
   const result = await rewind({ words: '太正式了', occurrence: 0, keep: 2, text: '口语一点' })
 
   assert.deepEqual(forks, [{ words: '太正式了', occurrence: 0 }])
-  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.ok(result.ok, JSON.stringify(result))
   assert.deepEqual(result.conversation.messages.map((m) => m.text), ['做周报', '写好了'], 'what came before it, for the window')
   assert.deepEqual(result.folds, [{ id: before.id, at: 2, count: 2, kind: 'path' }])
   assert.equal(current().id, result.conversation.id)
   assert.equal(current().sessionId, 's2')
-  assert.deepEqual(db.get(current().id).messages.map((m) => m.text), ['做周报', '写好了', '口语一点'], 'stored at once, the new words with it')
+  assert.deepEqual(db.get(current().id)!.messages.map((m) => m.text), ['做周报', '写好了', '口语一点'], 'stored at once, the new words with it')
   assert.deepEqual(db.segmentsBefore(current().id).segments, [], 'the old path is folded, not before it in the timeline')
 })
 
@@ -68,7 +93,7 @@ test('nothing moves while the agent works, for words not stored there, or when t
   const refused = setup({ forkResult: { ok: false, reason: 'invalid' } })
   const kept = refused.current()
   const result = await refused.rewind({ words: '太正式了', keep: 2, text: 'x' })
-  assert.equal(result.ok, false)
+  assert.ok(!result.ok)
   assert.match(result.problem, /找不到/)
   assert.equal(refused.current(), kept, 'the conversation on screen stays')
   assert.deepEqual(refused.db.foldsOf(kept.id), [])
@@ -80,28 +105,29 @@ test('a folded path can be read, and switched back to: the one on screen folds i
   await rewind({ words: '太正式了', keep: 2, text: '口语一点' })
   const second = current()
 
-  assert.deepEqual(await handlers['timeline:folded']({}, first.id), { messages: [user('太正式了'), answer('改了')] }, 'what folded, after the shared part')
+  const folded = await handlers['timeline:folded']({}, first.id)
+  assert.deepEqual(folded.messages.map(({ key, ...message }) => message), [user('太正式了'), answer('改了')], 'what folded, after the shared part')
 
   const back = await handlers['timeline:switch-path']({}, first.id)
-  assert.equal(back.ok, true, JSON.stringify(back))
+  assert.ok(back.ok, JSON.stringify(back))
   assert.deepEqual(switches, [['s1', '/w']], 'the agent goes back to that path’s own session')
   assert.equal(current().id, first.id)
   assert.deepEqual(back.conversation.messages.map((m) => m.text), ['做周报', '写好了', '太正式了', '改了'])
   assert.deepEqual(back.folds, [{ id: second.id, at: 2, count: 1, kind: 'path' }], 'the path just left hangs where they part')
   assert.deepEqual(db.foldsOf(second.id), [])
-  assert.equal(db.latest().conversation.id, first.id)
+  assert.equal(db.latest()!.conversation.id, first.id)
 
   assert.equal((await handlers['timeline:switch-path']({}, 'nope')).ok, false, 'only a path folded off this one')
 })
 
 test('before going back, what the part that would fold did to the computer: its session’s steps from that message on', async () => {
-  const steps = []
+  const steps: Step[] = []
   const { db, handlers, current } = setup({ traceSteps: (sessionId) => (sessionId === 's1' ? steps : []) })
   const at = db.timelineOf(current().id)[2].at
   steps.push(
-    { seq: 1, at: at - 1, kind: 'tool', name: 'write', args: { file_path: '/w/before.md' }, status: 'completed' },
-    { seq: 2, at: at + 1, kind: 'tool', name: 'write', args: { file_path: '/w/summary.md' }, status: 'completed' },
-    { seq: 3, at: at + 2, kind: 'tool', name: 'bash', args: { command: 'git add summary.md' }, status: 'completed' },
+    { seq: 1, at: at - 1, kind: 'tool', callId: 'fixture-call', name: 'write', args: { file_path: '/w/before.md' }, status: 'completed' },
+    { seq: 2, at: at + 1, kind: 'tool', callId: 'fixture-call', name: 'write', args: { file_path: '/w/summary.md' }, status: 'completed' },
+    { seq: 3, at: at + 2, kind: 'tool', callId: 'fixture-call', name: 'bash', args: { command: 'git add summary.md' }, status: 'completed' },
   )
 
   assert.deepEqual(await handlers['timeline:rewind-effects']({}, { keep: 2 }), {

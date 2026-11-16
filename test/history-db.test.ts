@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 
 const receipt = { ms: 4200, tools: 2, thoughts: 1, stopReason: 'end_turn' }
-const user = (text) => ({ role: 'user', text, receipt: null })
-const answer = (text, withReceipt = receipt) => ({ role: 'assistant', text, receipt: withReceipt })
+const user = (text: string) => ({ role: 'user', text, receipt: null })
+const answer = (text: string, withReceipt: typeof receipt | null = receipt) => ({ role: 'assistant', text, receipt: withReceipt })
 const DAY = 86_400_000
 
 function freshDb() {
@@ -15,11 +15,11 @@ function freshDb() {
   let clock = 1_000_000
   let seq = 0
   const db = openHistoryDb({ file, now: () => (clock += 1000), newId: () => `c${++seq}` })
-  return { db, file, advance: (ms) => { clock += ms } }
+  return { db, file, advance: (ms: number) => { clock += ms } }
 }
 
 /** Creates and saves a conversation in one go. */
-function saved(db, messages, fields = {}) {
+function saved(db: ReturnType<typeof openHistoryDb>, messages: object[], fields: Parameters<ReturnType<typeof openHistoryDb>['create']>[0] = {}) {
   return db.save({ ...db.create({ sessionId: 's-1', mode: 'live', model: 'V4', ...fields }), }, messages)
 }
 
@@ -39,11 +39,11 @@ test('saving keeps messages in order, titles from the first question, and reload
 
   // Act
   const conversation = saved(db, [user('帮我把工作区里的资料整理成一份摘要，越短越好'), answer('好的')])
-  const reopened = openHistoryDb({ file }).get(conversation.id)
+  const reopened = openHistoryDb({ file }).get(conversation.id)!
 
   // Assert
   assert.equal(conversation.title, '帮我把工作区里的资料整理成一份摘要，越短…')
-  assert.deepEqual(reopened.messages, [user('帮我把工作区里的资料整理成一份摘要，越短越好'), answer('好的')])
+  assert.deepEqual(reopened.messages.map(({ key, ...message }) => message), [user('帮我把工作区里的资料整理成一份摘要，越短越好'), answer('好的')])
   assert.deepEqual([reopened.conversation.sessionId, reopened.conversation.model], ['s-1', 'V4'])
 })
 
@@ -54,9 +54,9 @@ test('saving again only appends new messages and updates the last one, keeping e
   const resumedElsewhere = { ...first, sessionId: 's-2' }
   db.save(resumedElsewhere, [user('一'), answer('回答一'), user('二'), answer('回答二')])
 
-  assert.deepEqual(db.get(first.id).messages.map((m) => m.receipt?.tools ?? null), [null, 2, null, 2])
+  assert.deepEqual(db.get(first.id)!.messages.map((m) => m.receipt?.tools ?? null), [null, 2, null, 2])
   assert.deepEqual(db.sessionIds(first.id), ['s-1', 's-2'])
-  assert.equal(db.get(first.id).conversation.sessionId, 's-2')
+  assert.equal(db.get(first.id)!.conversation.sessionId, 's-2')
 })
 
 test('list puts pinned first, then most recent, and pages through the rest', () => {
@@ -73,7 +73,7 @@ test('list puts pinned first, then most recent, and pages through the rest', () 
   assert.equal(firstPage.hasMore, true)
   assert.deepEqual(secondPage, { items: [{ ...secondPage.items[0], title: '中间' }], hasMore: false })
   assert.equal(secondPage.items[0].id, middle.id)
-  assert.equal(db.latest().conversation.id, recent.id)
+  assert.equal(db.latest()!.conversation.id, recent.id)
 })
 
 test('rename sticks even after more messages are saved', () => {
@@ -81,9 +81,9 @@ test('rename sticks even after more messages are saved', () => {
   const conversation = saved(db, [user('原来的问题')])
 
   db.rename(conversation.id, '  周报整理  ')
-  db.save(db.get(conversation.id).conversation, [user('原来的问题'), answer('好')])
+  db.save(db.get(conversation.id)!.conversation, [user('原来的问题'), answer('好')])
 
-  assert.equal(db.get(conversation.id).conversation.title, '周报整理')
+  assert.equal(db.get(conversation.id)!.conversation.title, '周报整理')
   assert.throws(() => db.rename(conversation.id, '   '), /标题/)
 })
 
@@ -121,7 +121,7 @@ test('deleted conversations disappear at once, can be restored, and are purged f
   assert.deepEqual(back, [gone.id, keep.id])
   assert.equal(db.get(gone.id), null)
   assert.deepEqual(db.search('删掉的内容'), [])
-  assert.equal(db.latest().conversation.id, keep.id)
+  assert.equal(db.latest()!.conversation.id, keep.id)
 })
 
 test('history db rejects bad input before touching the database', () => {

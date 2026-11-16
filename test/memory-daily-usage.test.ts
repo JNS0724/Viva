@@ -19,7 +19,7 @@ async function fixture(t: TestContext) {
   const { dir, defer } = scratch(t, 'memory-daily-usage-')
   const at = Date.now(), day = new Date(at).toISOString().slice(0, 10)
   const session = randomUUID()
-  const options = { root: dir, hostNamespace: 'viva-test', dailyNotes: { noteInterval: 1, timezone: 'UTC' }, fileMode: true,
+  const options = { root: dir, hostNamespace: 'viva-test', dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {},
     async compute(job: import('../src/memory/contracts/memory-contract.ts').MemoryCompute) {
       if (job.stage !== 'note') return '{"proposals":[]}'
