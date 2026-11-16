@@ -3,6 +3,7 @@ import { memoryProvenanceSchema } from './provenance.ts'
 import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, MemoryChange } from './records.ts'
 import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryInterval } from './facts.ts'
+import type { TextSpan } from './text-spans.ts'
 import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
 import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
 import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
@@ -24,7 +25,7 @@ export type HostMemoryQuestion = { id: string, question: string, topic?: string,
 export type HostQuestionCard = HostMemoryQuestion & { header: string, multiSelect: boolean }
 export type MemorySourceAlias = {
   operationId: string, sourceId: string, session: string, conversation: string,
-  text: string, wireText?: string, context?: MemoryScope, project?: MemoryProject,
+  text: string, wireText?: string, wireSpans?: TextSpan[], context?: MemoryScope, project?: MemoryProject,
   origin?: 'original' | 'derived', dependencies?: MemoryProvenance,
 }
 export type SourceChangeInput = { operationId: string, conversation: string, ids: string[], onlySources?: true,
@@ -86,7 +87,7 @@ export interface HostMemoryApi {
   replaySources: Args<[sources: readonly string[], text: string, project?: MemoryProject], boolean>
   forgetIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], MemoryEntry | false | null>
   correctionIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], { entry: MemoryEntry, text: string } | false | null>
-  bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string], { wireText: string }>
+  bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string, wireSpans?: TextSpan[]], { wireText: string }>
   cancelFileClarification: Args<[session: string, questionId: string], boolean>
   clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check'], HostMemoryQuestion | null>
   authorizeGeneralQuestion: Args<[session: string, turn: string, cards: readonly HostQuestionCard[], conversation: string | null, context: MemoryScope, project?: MemoryProject, phase?: 'show' | 'check'], boolean>
@@ -102,7 +103,9 @@ export type HostMemoryMethod = keyof HostMemoryApi
 export type HostMemoryCommand = { [M in HostMemoryMethod]: { method: M, input: HostMemoryApi[M]['input'] } }[HostMemoryMethod]
 export type HostMemoryCaller = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => Promise<HostMemoryApi[M]['output']>
 const key = z.string().min(1).max(256)
-const text = z.string().max(512_000)
+const MAX_HOST_TEXT = 512_000
+const text = z.string().max(MAX_HOST_TEXT)
+const wireSpans = z.array(z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() })).max(MAX_HOST_TEXT).optional()
 const integer = z.number().int().nonnegative()
 const project = z.strictObject({ kind: z.literal('project'), id: key })
 const scope = z.union([z.strictObject({ kind: z.literal('user') }), z.strictObject({ kind: z.enum(['project', 'conversation', 'task']), id: key })])
@@ -145,12 +148,12 @@ export const hostMemoryInputSchemas = {
   recordDeliveredSource: args(z.tuple([key, key, z.boolean(), key])), isDerivedDelivery: args(z.tuple([key])),
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),
   forgetIntent: args(z.tuple([text, scope.optional(), project.optional()])), correctionIntent: args(z.tuple([text, scope.optional(), project.optional()])),
-  bindWireAlias: args(z.tuple([key, text, text, key.optional()])),
+  bindWireAlias: args(z.tuple([key, text, text, key.optional(), wireSpans])),
   cancelFileClarification: args(z.tuple([key, key])),
   clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check'])])),
   authorizeGeneralQuestion: args(z.tuple([key, key, z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })), key.nullable(), scope, project.optional(), z.enum(['show', 'check']).optional()])),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, question: text, requestId: key, questionId: key, context: scope, project: project.optional() }),
-  sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),
+  sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), wireSpans, context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),
   prepareSourceChange: z.strictObject({ operationId: z.uuid(), conversation: key, ids: z.array(key), onlySources: z.literal(true).optional(), replacement: z.strictObject({ sourceId: key, segmentId: key, projectId: key.nullish() }).optional() }),
   commitSourceChange: z.strictObject({ operationId: z.uuid(), ticket: key }), getOperation: z.strictObject({ operationId: z.uuid() }),
   pendingHostEffects: z.strictObject({}), ackHostEffect: z.strictObject({ effectId: key, causeOperationId: z.uuid(), revision: integer }),

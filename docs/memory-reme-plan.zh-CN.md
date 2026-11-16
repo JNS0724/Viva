@@ -578,6 +578,12 @@ Viva 已接入手动新增和编辑文件记忆。owner 在请求屏障内校验
 
 公开 DSH 写句柄已在 macOS arm64 的冷态探针验证。普通与 fork 会话均可在原生写锁下原子替换当前格式日志，关闭维护句柄后可再追加，并保留继承位置和无关事件。写句柄仍可能读取替换前的内容，正式接入必须先退役会话读取者和缓存。Windows 的持久替换和完整物理擦除仍待交付。探针见 `/private/tmp/viva-dsh-public-lease-review.wWkaHh/probe.mjs`。
 
+文件遗忘现在为已登记的原生消息生成具体裁剪计划。宿主包装请求时标记真实原话在发送文本中的位置，核对原话逐段一致后保存坐标。携带的旧记录、引用请求头插入的转义字符、以及相同正文但来源不同的消息均有各自的边界。独立插件以同一规则拼接摄取和恢复时的文本块。owner 分别记录规范来源、发送文本和完整原生内容的摘要，计划只持久化来源标识、摘要和裁剪坐标。普通会话和同身份分叉、未准入或已退役的已知日志副本均纳入计划。同源连续遗忘保留各次擦除前后的规范来源摘要，使后续执行可以逐次核对。
+
+原文定位和裁剪计划通过独立复评。全量 Electron 测试 2063 项，2061 通过、2 项既有跳过。类型检查、构建、文档检查及打包的独立 DSH Web 冒烟通过。完整 macOS 冒烟首次 14/15，桌面岛在已重新捕获后一次移动结束了拖拽。带输入记录的八次定向和三轮基础冒烟均通过，随后独立运行完整 macOS 冒烟 15/15 通过。失败现场保留在 `smoke/r5a-native-wire-plans/`，独立完整复跑见 `/tmp/r5a-native-wire-standalone-smoke.log`。记录见 `/tmp/r5a-native-wire-final-full.log`、`/tmp/r5a-native-wire-final-smoke.log`、`/tmp/r5a-desk-core-input-audit.log` 和 `/tmp/r5a-native-wire-final-plugin.log`。
+
+冷写原型已在隔离的真实 DSH 日志验证替换前后的中断恢复和连续裁剪，并拒绝未验证的 Zstd 断尾及仍有旧代文件的目录。隔离测试通过实物目录对账发现未摄取的分叉副本，也拒绝了被官方目录漏列的坏头日志。正式接入仍需由生命周期关闭读取者和缓存，并完成派生文本、追踪和 Windows 实机验收。现有清理状态仍会等待这些副本。原型及真进程退出探针见 `/private/tmp/viva-native-cold-erasure.b5xXmH/`。
+
 ## 17 R5b 默认嵌入模型确认
 
 R5b 将 R4 的 MiniLM 发布配方切换到 IBM Granite Embedding 97M Multilingual R2 Q8。已验证的发布产物为 `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`，固定 revision `536a9f241cb3f02a9c5995a1e708c784bd274859`，Apache-2.0。四个模型文件合计 123.2 MB。已验证配置为 384 维、CLS pooling、L2 归一化、空前缀和 128 tokens 上限。发布配方、worker 握手、归档与许可需与该 manifest 一致。资产内容和编码参数派生独立指纹。默认切换后旧向量退出检索，并重建新索引；两代模型维度相同，须在两个向量空间同时存在时验证隔离。

@@ -16,7 +16,7 @@ import { createSteerDesk, interjection } from './steer-channel.ts'
 import { memoryProjectScope } from './memory-project.ts'
 import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
-import { withRequestHeader } from '../shared/request-routing/header.ts'
+import { withRequestSource } from '../shared/request-routing/header.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
@@ -191,10 +191,10 @@ export function createAcpBridge({
   // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
   const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
   /** The user's words as the main agent reads them: under the header of the request they are taken as. */
-  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string) => {
+  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string, sourceText = words) => {
     const context = contextFor(session)
     const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, ...(sourceId ? { sourceId } : {}) })
-    return { requestId, text: withRequestHeader(words, requestId) }
+    return { requestId, ...withRequestSource(words, requestId, sourceText) }
   }
   const operations = createAcpOperations({
     connection: live, streams,
@@ -470,8 +470,9 @@ export function createAcpBridge({
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
-    let words = request && asked ? asRequest(text, asked, 'prompt', sourceId).text : text
-    if (asked && memory.ready()) words = (await memory.call('bindWireAlias', { args: [asked, sourceText ?? text, words, sourceId] })).wireText
+    const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, sourceText) : null
+    let words = routed?.text ?? text
+    if (asked && memory.ready()) words = (await memory.call('bindWireAlias', { args: [asked, sourceText ?? text, words, sourceId, routed?.spans] })).wireText
     if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
@@ -634,7 +635,10 @@ export function createAcpBridge({
     if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
     const request = asRequest(text, asked, 'interjection', sourceId)
-    const wire = memory.ready() ? (await memory.call('bindWireAlias', { args: [asked, text, interjection(request.text), sourceId] })).wireText : interjection(request.text)
+    const wrapped = interjection(request.text)
+    const prefixLength = wrapped.length - request.text.length
+    const spans = request.spans.map(({ start, end }) => ({ start: start + prefixLength, end: end + prefixLength }))
+    const wire = memory.ready() ? (await memory.call('bindWireAlias', { args: [asked, text, wrapped, sourceId, spans] })).wireText : wrapped
     if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
     const result = await steering.steer(wire, asked, { fast: memory.ready() })
     if (!result.ok) routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { randomUUID } from 'node:crypto'
+import { maskTextSpans } from '../src/memory/contracts/text-spans.ts'
+import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
@@ -19,14 +21,14 @@ import type { HostMemoryCaller, HostMemoryMethod, HostMemoryApi } from '../src/m
 import { memoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import type { MemoryHostEffect } from '../src/memory/contracts/service.ts'
 
-async function fixture(t: TestContext, fileMode = true) {
+async function fixture(t: TestContext, fileMode = true, text = 'The report is due Friday. Tea is served on Monday.') {
   const { dir, defer } = scratch(t, 'memory-file-host-')
   const options = { root: dir, hostNamespace: 'viva-test', dailyNotes: true, fileMode,
     compute: () => null, route: () => null, quiesce: async () => {} }
   let owner = openMemoryOwner(options)
   defer(() => owner.close())
   await owner.recover()
-  const session = randomUUID(), sourceId = randomUUID(), text = 'The report is due Friday. Tea is served on Monday.'
+  const session = randomUUID(), sourceId = randomUUID()
   await owner.receiveSource({ sessionId: session, messageId: sourceId, text, at: Date.now(), timezone: 'UTC',
     turn: 1, step: 1, admitted: true, inherited: false })
   const store = openMemoryStore(join(dir, 'memory.db'))
@@ -535,6 +537,68 @@ test('forgetting a digest drains transport, cleans Node replicas and preserves d
   await f.owner.handleHost('ackHostEffect', { effectId: effect!.effectId, causeOperationId: operationId, revision: effect!.revision })
   assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'pending',
     'native transcript cleanup has an independent completion condition')
+})
+
+test('native erasure plans bind exact originals in a session and its fork across restart', async t => {
+  const text = '🧪【请求 ID：r-9】\n用户原话：报告在周五提交。\nTea is served on Monday.'
+  const f = await fixture(t, true, text), source = f.store.readSource(f.sourceId)!, before = (await f.client.readFile(f.identity))!
+  const request = withRequestSource(`${text}\n\n${text}`, 'erase-test', text)
+  await f.owner.handleHost('sourceAlias', { operationId: randomUUID(), sourceId: source.id,
+    session: f.session, conversation: source.conversation, text })
+  const delivery = await f.owner.handleHost('bindWireAlias', { args: [f.session, text, request.text, source.id, request.spans] }) as { wireText: string }
+  const messageId = randomUUID()
+  const message = { sessionId: f.session, messageId, text: delivery.wireText, contentDigest: 'a'.repeat(64),
+    at: Date.now(), timezone: 'UTC', turn: 2, step: 1, admitted: false, inherited: false }
+  assert.equal((await f.owner.receiveSource(message)).sourceId, source.id)
+  const fork = randomUUID()
+  assert.equal((await f.owner.receiveSource({ ...message, sessionId: fork, admitted: true, inherited: true })).sourceId, source.id)
+  const separate = randomUUID()
+  await f.owner.receiveSource({ ...message, sessionId: separate, messageId: randomUUID(), text, admitted: true })
+  const start = text.indexOf('Tea')
+  const tea = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md', expectedRevision: null,
+    action: 'CREATE', markdown: 'Tea on Monday', sources: [{ id: source.id, token: memorySourceToken(source), spans: [{ start, end: text.length }] }], reads: [] })
+  const teaIdentity = { kind: 'digest' as const, workspace: f.identity.workspace, id: tea.documentId }
+  const operationId = randomUUID()
+  await f.client.forgetFile({ operationId, identity: f.identity, version: before.version })
+  const firstProjection = f.store.readSource(source.id)!
+  const teaBefore = (await f.client.readFile(teaIdentity))!, nextOperation = randomUUID()
+  await f.client.forgetFile({ operationId: nextOperation, identity: teaIdentity, version: teaBefore.version })
+  await f.reopen()
+
+  const row = f.store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId)
+  const payload = String(row?.payload)
+  assert.ok(row)
+  assert.doesNotMatch(payload, /报告在周五|Tea is served|memory-delivery/)
+  const plan = JSON.parse(payload) as {
+    sessions: string[], ranges: { hash: string, afterHash: string }[], originals: { sessionId: string, messageId: string, sourceId: string,
+      sourceHash: string, wireHash: string, contentHash: string, sourceSpans: typeof request.spans, wireCuts: typeof request.spans }[]
+  }
+  assert.deepEqual(plan.sessions.sort(), [f.session, fork].sort())
+  assert.deepEqual(plan.originals.map(copy => copy.sessionId).sort(), [f.session, fork].sort())
+  for (const copy of plan.originals) {
+    assert.equal(copy.messageId, messageId)
+    assert.equal(copy.sourceId, source.id)
+    assert.equal(copy.sourceHash, source.hash)
+    assert.match(copy.wireHash, /^[0-9a-f]{64}$/)
+    assert.match(copy.contentHash, /^[0-9a-f]{64}$/)
+    assert.deepEqual(copy.sourceSpans, request.spans)
+    const [first, second] = request.spans
+    assert.equal(first!.end - first!.start, 3)
+    assert.deepEqual(copy.wireCuts, [first, { start: second!.start, end: second!.start + 22 }])
+    const masked = maskTextSpans(delivery.wireText, copy.wireCuts)
+    assert.equal(masked.slice(0, first!.start), delivery.wireText.slice(0, first!.start))
+    assert.equal(masked[second!.start - 1], '\u200B')
+    assert.equal(copy.sourceSpans.map(span => masked.slice(span.start, span.end)).join(''), firstProjection.text)
+    assert.equal(masked.slice(second!.end), delivery.wireText.slice(second!.end))
+  }
+  const next = JSON.parse(String(f.store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(nextOperation)?.payload)) as typeof plan
+  assert.equal(next.ranges[0]?.hash, plan.ranges[0]?.afterHash)
+  assert.equal(next.ranges[0]?.afterHash, f.store.readSource(source.id)?.hash)
+  for (const copy of next.originals) {
+    assert.equal(copy.sourceHash, source.hash)
+    const end = request.spans.at(-1)!.end
+    assert.deepEqual(copy.wireCuts, [{ start: end - (text.length - start), end }])
+  }
 })
 
 test('a lost file-forget completion rolls back the cut and recovers one operation after restart', async t => {

@@ -5,6 +5,9 @@ import type { Session, SessionEventInput } from '@deepseek-ai/dsh-session'
 import type {} from './source.ts'
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+export function memoryMessageText(message: { content: readonly { type: string, text?: string }[] }) {
+  return message.content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []).join('\n')
+}
 const originalMessages = (session: Session) => session.snapshotEvents().flatMap(event =>
   event.type === 'user/message' && event.surfaceOp === 'append' && event.data.source.kind === 'user' ? [event.data] : [])
 
@@ -12,7 +15,7 @@ const originalMessages = (session: Session) => session.snapshotEvents().flatMap(
 export function memoryRecoveryCandidates(session: Session) {
   return originalMessages(session).map(message => ({
     messageId: String(message.id),
-    text: message.content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n'),
+    text: memoryMessageText(message),
     contentDigest: memoryOriginalContentDigest(message),
   }))
 }

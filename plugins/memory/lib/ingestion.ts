@@ -3,7 +3,7 @@ import type {} from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PluginMemoryOwner, SourceReceipt, DerivedSource } from './owner-port.ts'
 import type { MemoryContextRecoveryOwner, MemoryContextRecoveryTicket } from '../../../src/memory/contracts/context-recovery.ts'
-import { memoryOriginalContentDigest, memoryRecoveryCandidates, memoryRecoveryMessageHash, memorySessionSurfaceHash, planMemoryContextRecovery } from './context-recovery.ts'
+import { memoryMessageText, memoryOriginalContentDigest, memoryRecoveryCandidates, memoryRecoveryMessageHash, memorySessionSurfaceHash, planMemoryContextRecovery } from './context-recovery.ts'
 import type { MemoryDeliveryProof } from './delivery-provenance.ts'
 
 import { assertMemorySourceSupported } from './source.ts'
@@ -14,7 +14,6 @@ const senderOf = (message: UserMessage): string | undefined => {
   return message.source.senderSessionId
 }
 const timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
-const textOf = (message: { content: readonly { type: string, text?: string }[] }) => message.content.flatMap(part => part.type === 'text' && part.text ? [part.text] : []).join('\n')
 type Replay = {
   session: Session, cursor: number, turn: number, step: number, sources: Set<string>, assistant: string[],
   events: Map<number, readonly string[]>, messages: Map<string, string>, queue: Promise<void>,
@@ -54,7 +53,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
       }
       return undefined
     }
-    const text = textOf(message)
+    const text = memoryMessageText(message)
     if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) return undefined
     const receipt = await owner.receiveSource({ sessionId: String(session.id), messageId: message.id, text, contentDigest: memoryOriginalContentDigest(message),
       contextGeneration: current.generation, ...options, timezone: timezone(), inherited: options.inherited ?? false,
@@ -158,7 +157,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.message.id,
           sourceIds: dependencies, eventSeq: event.seq, inherited, contextGeneration: current.generation, contentDigest: memoryOriginalContentDigest(event.data.message) })
         current.events.set(event.seq, dependencies)
-        if (!event.data.interrupted) current.assistant.push(textOf(event.data.message))
+        if (!event.data.interrupted) current.assistant.push(memoryMessageText(event.data.message))
       }
       if (event.type === 'turn/end' && !inherited) {
         await owner.completeTurn({ sessionId: String(session.id), turn: event.data.turn, eventSeq: event.seq,

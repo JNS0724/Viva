@@ -23,6 +23,8 @@ import type { MemoryFileMutationResult, MemoryManagedFileIdentity, MemoryFileCre
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
+import type { TextSpan } from '../contracts/text-spans.ts'
+import { createOwnerNativeOriginals } from './owner-native-originals.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
@@ -37,7 +39,7 @@ type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> &
   onProjectionChanged?: () => void,
   onHostEffects?: () => void, canPresentControlReceipt?: () => boolean,
 }
-type StoredAlias = Omit<MemorySourceAlias, 'text' | 'wireText'> & { textHash: string, textLength: number, textStart: number }
+type StoredAlias = Omit<MemorySourceAlias, 'text' | 'wireText' | 'wireSpans'> & { textHash: string, spans: TextSpan[] }
 type Session = { conversation: string, context: string | null, project: string | null }
 type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcome['state'], payload: string | null, ticket: string | null }
 
@@ -147,6 +149,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       for (const [key, question] of generalQuestions) if (question.session === session) generalQuestions.delete(key)
     },
   })
+  const nativeOriginals = createOwnerNativeOriginals(db)
   function needsContextRecovery(session: string, visited = new Set<string>()): boolean {
     if (visited.has(session)) return true
     visited.add(session)
@@ -218,17 +221,36 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     })
     if (!needsContextRecovery(input.sessionId)) reconcileChildren(input.sessionId)
   }
-  function storeAlias(input: MemorySourceAlias): StoredAlias {
-    const { text, wireText, ...metadata } = input
-    const textStart = (wireText ?? text).indexOf(text)
-    if (textStart < 0) throw new Error('Source alias does not identify a verbatim wire span')
-    return { ...metadata, textHash: hash(text), textLength: text.length, textStart }
+  function originalFromWire(wire: string, spans: readonly TextSpan[]) {
+    let position = 0
+    return spans.map(({ start, end }) => {
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < position || start >= end || end > wire.length) {
+        throw new Error('Source alias does not identify a verbatim wire span')
+      }
+      position = end
+      return wire.slice(start, end)
+    }).join('')
   }
-  function restoreAlias(saved: StoredAlias, wireText: string): MemorySourceAlias {
-    const { textHash, textLength, textStart, ...metadata } = saved
-    const text = wireText.slice(textStart, textStart + textLength)
-    if (hash(text) !== textHash) throw new Error('Source alias wire span changed')
-    return { ...metadata, text, wireText }
+  function inferUniqueWireSpan(wire: string, text: string): TextSpan[] {
+    if (!text) return []
+    const start = wire.indexOf(text)
+    if (start < 0 || wire.indexOf(text, start + 1) !== -1) throw new Error('Source alias does not identify a unique verbatim wire span')
+    return [{ start, end: start + text.length }]
+  }
+  function verifiedWireSpans(wire: string, text: string, supplied?: TextSpan[]) {
+    const spans = supplied ?? inferUniqueWireSpan(wire, text)
+    if (originalFromWire(wire, spans) !== text) throw new Error('Source alias wire spans do not prove the canonical original')
+    return spans
+  }
+  function storeAlias(input: MemorySourceAlias): StoredAlias {
+    const { text, wireText, wireSpans, ...metadata } = input
+    return { ...metadata, textHash: hash(text), spans: verifiedWireSpans(wireText ?? text, text, wireSpans) }
+  }
+  function restoreAlias(saved: StoredAlias, wireText: string): MemorySourceAlias & { wireSpans: TextSpan[] } {
+    const { textHash, spans, ...metadata } = saved
+    const text = originalFromWire(wireText, spans)
+    if (hash(text) !== textHash) throw new Error('Source alias wire spans changed')
+    return { ...metadata, text, wireText, wireSpans: spans }
   }
   function alias(input: MemorySourceAlias) {
     requireReady()
@@ -265,12 +287,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
     if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Original content identity conflicts')
 
-    const known = db.prepare('SELECT * FROM owner_messages WHERE id=?').get(input.messageId) as { source: string, hash: string, kind: string, query_start: number | null, query_end: number | null } | undefined
+    const known = db.prepare(`SELECT m.*, r.spans AS query_spans FROM owner_messages m
+      LEFT JOIN owner_message_wires r ON r.message=m.id AND r.source_hash IS NULL WHERE m.id=?`).get(input.messageId) as
+      { source: string, hash: string, kind: string, query_start: number | null, query_end: number | null, query_spans: string | null } | undefined
     if (known?.kind === 'host-derived' && known.hash === hash(input.text)) {
       await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, sourceIds: [], inherited: input.inherited })
       markLiveTurn(input)
       return { sourceId: known.source, text: '', handledIntent: true,
-        retrievalQuery: known.query_start === null || known.query_end === null ? '' : input.text.slice(known.query_start, known.query_end) }
+        retrievalQuery: known.query_spans ? originalFromWire(input.text, JSON.parse(known.query_spans) as TextSpan[])
+          : known.query_start === null || known.query_end === null ? '' : input.text.slice(known.query_start, known.query_end) }
     }
     if (!known && input.derived) {
       if (input.inherited) throw new Error('Unregistered inherited source')
@@ -287,13 +312,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (!known && candidates.length > 1) throw new Error('Ambiguous source alias')
     const mapped = !known && candidates[0] ? restoreAlias(JSON.parse(candidates[0].payload) as StoredAlias, input.text) : undefined
     if (mapped?.origin === 'derived') {
-      const start = input.text.indexOf(mapped.text)
-      if (start < 0) throw new Error('Derived source alias does not identify its wire text')
       const sources = mapped.dependencies?.sources ?? []
       await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, sourceIds: sources })
-      db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
-      db.prepare("UPDATE owner_messages SET kind='host-derived',hash=?,query_start=?,query_end=? WHERE id=?").run(hash(input.text), start, start + mapped.text.length, input.messageId)
-      const canonical = db.prepare('SELECT source FROM owner_messages WHERE id=?').get(input.messageId)!.source as string
+      const canonical = store.tx(() => {
+        db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
+        db.prepare("UPDATE owner_messages SET kind='host-derived',hash=? WHERE id=?").run(hash(input.text), input.messageId)
+        nativeOriginals.record(input.messageId, null, mapped.wireSpans)
+        return db.prepare('SELECT source FROM owner_messages WHERE id=?').get(input.messageId)!.source as string
+      })
       markLiveTurn(input)
       return { sourceId: canonical, text: '', handledIntent: true, retrievalQuery: mapped.text }
     }
@@ -321,7 +347,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
       }
       db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'original')").run(input.messageId, sourceId, hash(input.text))
-      if (input.contentDigest && !known) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
+      if (input.contentDigest && !known) {
+        db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
+        const source = store.readSource(sourceId)
+        if (source?.hash && source.hash === memoryHash(text)) {
+          const spans = mapped?.wireSpans ?? inferUniqueWireSpan(input.text, text)
+          nativeOriginals.record(input.messageId, source.hash, spans)
+        }
+      }
       db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,?) ON CONFLICT(session,message) DO UPDATE SET admitted=MAX(admitted,excluded.admitted)').run(input.sessionId, input.messageId, sourceId, context.conversation, Number(input.admitted))
       if (mapped) db.prepare('UPDATE owner_aliases SET payload=NULL WHERE id=?').run(mapped.operationId)
       if (input.admitted) { runtime.bindSource(sourceId, input.sessionId); dispatch.recordSource(input.sessionId, sourceId) }
@@ -494,8 +527,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     const sessions = [...new Set(invalidated)]
     for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges, memoryIds))) nativeSessions.add(session)
-    if (nativeSessions.size) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)')
-      .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges }))
+    if (nativeSessions.size) {
+      const originals = nativeOriginals.replicas(ranges)
+      db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)')
+        .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges, ...(originals.length ? { originals } : {}) }))
+    }
     if (options.hostNamespace) {
       const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
         kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
@@ -753,27 +789,28 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'sourceAlias': return alias(command.input)
       case 'bindWireAlias': {
         requireReady()
-        const [session, text, wireText, sourceId] = command.input.args
+        const [session, text, wireText, sourceId, suppliedSpans] = command.input.args
+        const wireSpans = verifiedWireSpans(wireText, text, suppliedSpans)
         const delivery = randomUUID()
         // The entire wire is matched against this trusted receipt. Never parse/strip a marker from user text.
         const prepared = `${wireText}\n\n<memory-delivery id="${delivery}" />`
         let input: MemorySourceAlias
         if (!sourceId) {
           const context = sessionContext(session)
-          input = { operationId: delivery, sourceId: delivery, session, conversation: context.conversation, text, wireText: prepared,
+          input = { operationId: delivery, sourceId: delivery, session, conversation: context.conversation, text, wireText: prepared, wireSpans,
             context: context.context, project: context.project, origin: 'derived', dependencies: dispatch.snapshot(session) }
         } else {
           const rows = db.prepare('SELECT id,payload,delivery FROM owner_aliases WHERE session=? AND source=? AND payload IS NOT NULL AND revoked=0').all(session, sourceId) as Array<{id: string,payload: string,delivery: number}>
           const matched = rows.filter(row => (JSON.parse(row.payload) as StoredAlias).textHash === hash(text))
           const staged = matched.find(row => !row.delivery) ?? matched[0]
           if (staged) {
-            const { textHash: _hash, textLength: _length, textStart: _start, ...metadata } = JSON.parse(staged.payload) as StoredAlias
-            input = { ...metadata, text, operationId: delivery, wireText: prepared }
+            const { textHash: _hash, spans: _spans, ...metadata } = JSON.parse(staged.payload) as StoredAlias
+            input = { ...metadata, text, operationId: delivery, wireText: prepared, wireSpans }
           }
           else {
             if (!runtime.replaySource(sourceId, text)) throw new Error('Original source alias is unavailable')
             const context = sessionContext(session)
-            input = { operationId: delivery, sourceId, session, conversation: context.conversation, text, wireText: prepared,
+            input = { operationId: delivery, sourceId, session, conversation: context.conversation, text, wireText: prepared, wireSpans,
               context: context.context, project: context.project }
           }
         }

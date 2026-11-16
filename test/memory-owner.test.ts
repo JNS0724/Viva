@@ -55,6 +55,27 @@ test('source alias matches only exact trusted wire text and does not strip user 
   assert.equal((await owner.receiveSource(next)).text, '真实原文')
   await assert.rejects(owner.receiveSource({ ...next, text: 'changed' }), /identity conflicts/)
 })
+test('native source proof keeps trusted wire locations after its delivery payload is consumed', async t => {
+  const { owner, root } = fixture(t); await owner.recover()
+  const input = source({ contentDigest: 'f'.repeat(64) }), sourceId = randomUUID()
+  const wireText = `${input.text}\n\n${input.text}`
+  await owner.handleHost('sourceAlias', { operationId: sourceId, sourceId, text: input.text, session: input.sessionId, conversation: 'host-thread' })
+  await assert.rejects(owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId] }), /unique verbatim/)
+  const spans = [{ start: input.text.length + 2, end: wireText.length }]
+  const delivery = await owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId, spans] }) as { wireText: string }
+  assert.equal((await owner.receiveSource({ ...input, text: delivery.wireText })).sourceId, sourceId)
+  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true }); t.after(() => db.close())
+  const proof = db.prepare('SELECT source_hash,spans FROM owner_message_wires WHERE message=?').get(input.messageId)
+  assert.ok(proof?.source_hash)
+  assert.deepEqual(JSON.parse(String(proof.spans)), spans)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM owner_aliases WHERE payload IS NOT NULL').get()?.n, 0)
+  const generated = await owner.handleHost('bindWireAlias', { args: [input.sessionId, 'id=', 'id='] }) as { wireText: string }
+  const message = source({ ...input, messageId: randomUUID(), text: generated.wireText })
+  assert.equal((await owner.receiveSource(message)).retrievalQuery, 'id=')
+  assert.equal((await owner.receiveSource(message)).retrievalQuery, 'id=')
+  assert.equal(db.prepare('SELECT source_hash FROM owner_message_wires WHERE message=?').get(message.messageId)?.source_hash, null)
+})
+
 test('prepared source change survives restart, denies send until host commit, and preserves live fork occurrence', async t => {
   const { owner, root } = fixture(t); await owner.recover()
   const input = source(), receipt = await owner.receiveSource(input)
