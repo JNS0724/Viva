@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { cpSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { open, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { test } from 'node:test'
-import { createMemoryEmbedder } from '../src/memory/node/memory-embedder.ts'
 import { MEMORY_EMBEDDING_MANIFEST, parseMemoryEmbeddingManifest, readMemoryEmbeddingDescriptor,
   verifyMemoryEmbeddingAssets, writeMemoryEmbeddingManifest } from '../src/memory/node/memory-embedding-assets.ts'
 import { embeddingFixture } from './fixtures/memory-embedding-assets.ts'
@@ -15,8 +15,7 @@ test('asset identity follows weights and tokenizer contents, not installation pa
   cpSync(fixture.modelRoot, copy, { recursive: true })
   assert.equal(readMemoryEmbeddingDescriptor(copy).fingerprint, fixture.descriptor.fingerprint)
   await verifyMemoryEmbeddingAssets(copy, fixture.descriptor)
-  const packaged = createMemoryEmbedder({ modelRoot: copy, runtimeRoot: fixture.runtimeRoot })
-  t.after(() => packaged.close())
+  const packaged = fixture.open(copy)
   assert.ok(await packaged.embedBatch(query))
   writeFileSync(path.join(fixture.modelRoot, 'onnx/model_quantized.onnx'), 'new weights!')
   const weights = await writeMemoryEmbeddingManifest(fixture.modelRoot, fixture.encoding)
@@ -28,6 +27,42 @@ test('asset identity follows weights and tokenizer contents, not installation pa
   assert.equal(fixture.embedder.fingerprint, fixture.descriptor.fingerprint)
   assert.equal(await fixture.embedder.embedBatch(query), null)
   assert.ok(await fixture.open().embedBatch(query))
+})
+
+test('the embedding fixture releases independently held files before removing every owned model root', async t => {
+  let root = '', held: FileHandle | undefined, closing = () => {}, release = () => {}, closed = false
+  const started = new Promise<void>(resolve => { closing = resolve })
+  const released = new Promise<void>(resolve => { release = resolve })
+  const scope = t.test('the owned fixture scope', async child => {
+    const fixture = await embeddingFixture(child)
+    root = fixture.root
+    assert.ok(await fixture.embedder.embedBatch(query))
+    held = await open(path.join(root, 'held-model-resource'), 'w+')
+    await held.writeFile('independent resource stays open until explicit release')
+    fixture.defer(async () => {
+      closing()
+      await released
+      assert.equal(existsSync(root), true, 'the fixture directory must outlive asynchronous resource release')
+      await held!.close()
+      closed = true
+    })
+    const copy = path.join(root, 'packaged-model')
+    cpSync(fixture.modelRoot, copy, { recursive: true })
+    assert.ok(await fixture.open(copy).embedBatch(query))
+  })
+  try {
+    await Promise.race([started, scope.then(() => { throw new Error('the fixture exited without releasing its owned resources') })])
+    assert.equal(closed, false)
+    assert.equal(existsSync(root), true, 'cleanup must await the real held file before deleting the tree')
+    release()
+    await scope
+    assert.equal(closed, true)
+    assert.equal(existsSync(root), false)
+  } finally {
+    release()
+    await scope
+    await held?.close()
+  }
 })
 
 test('manifest encoding parameters are part of the immutable vector identity', async t => {

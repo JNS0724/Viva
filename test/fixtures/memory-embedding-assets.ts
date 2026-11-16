@@ -1,14 +1,14 @@
-import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type { TestContext } from 'node:test'
+import { scratch } from './scratch.js'
 import { createMemoryEmbedder } from '../../src/memory/node/memory-embedder.ts'
 import { writeMemoryEmbeddingManifest, type MemoryEmbeddingEncoding, type MemoryEmbeddingPooling } from '../../src/memory/node/memory-embedding-assets.ts'
 
 export async function embeddingFixture(t: TestContext, options: {
   dimensions?: number, maxTokens?: number, prefixes?: 'e5' | 'none', runtimeLimit?: number, behavior?: string, pooling?: MemoryEmbeddingPooling,
 } = {}) {
-  const root = mkdtempSync(path.join(tmpdir(), 'viva-memory-embedding-'))
+  const { dir: root, defer } = scratch(t, 'viva-memory-embedding-')
   const modelRoot = path.join(root, 'model'), runtimeRoot = path.join(root, 'runtime')
   mkdirSync(path.join(modelRoot, 'onnx'), { recursive: true })
   writeFileSync(path.join(modelRoot, 'onnx/model_quantized.onnx'), 'test weights')
@@ -26,8 +26,10 @@ export async function embeddingFixture(t: TestContext, options: {
     queryPrefix: options.prefixes === 'none' ? '' : 'query: ',
     passagePrefix: options.prefixes === 'none' ? '' : 'passage: ' }
   const descriptor = await writeMemoryEmbeddingManifest(modelRoot, encoding)
-  const embedders: ReturnType<typeof createMemoryEmbedder>[] = []
-  const open = () => { const embedder = createMemoryEmbedder({ modelRoot, runtimeRoot }); embedders.push(embedder); return embedder }
-  t.after(() => { for (const embedder of embedders) embedder.close(); rmSync(root, { recursive: true, force: true }) })
-  return { root, modelRoot, runtimeRoot, encoding, descriptor, open, embedder: open() }
+  const open = (selectedModelRoot = modelRoot) => {
+    const embedder = createMemoryEmbedder({ modelRoot: selectedModelRoot, runtimeRoot })
+    defer(() => embedder.close())
+    return embedder
+  }
+  return { root, modelRoot, runtimeRoot, encoding, descriptor, defer, open, embedder: open() }
 }
