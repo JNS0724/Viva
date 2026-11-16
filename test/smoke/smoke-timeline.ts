@@ -63,7 +63,7 @@ export function seedTimeline(userData: string, now = Date.now()) {
     clock = timelineSeedTime(now, seed.daysAgo, seed.hour)
     // A task is started from the conversation (task-ipc.ts start); a topic gone on goes on from its segment.
     const parentId: string | null = seed.task ? previous : seed.continues === undefined ? null : ids[seed.continues]
-    const saved: { id: string } = db.save(db.create({ sessionId: `fake-session-${randomUUID()}`, cwd: seedDir(userData, seed.cwd), parentId }), messagesOf(seed))
+    const saved: { id: string } = db.save(db.create({ sessionId: `seeded-session-${randomUUID()}`, cwd: seedDir(userData, seed.cwd), parentId }), messagesOf(seed))
     if (seed.task && previous) db.fold(saved.id, { into: previous, at: 0, kind: 'side' })
     if (seed.star !== undefined) db.setStar(saved.id, seed.star, true)
     if (!seed.task) previous = saved.id
@@ -282,7 +282,7 @@ async function continueFromReview(win: SmokeAppWindow, words: string) {
 
 /**
  * 继续这个话题 in the window: another folder said before switching (and nothing switched on 取消); a folder gone asks
- * for another; a session gone (the seeds have none) goes on from the topic's records in a new conversation.
+ * for another; a session gone (the seeded native identities have no live session) goes on from the topic's records in a new conversation.
  */
 async function checkResume(win: SmokeAppWindow, outDir: string, expect: Expect) {
   const agent = await run(win, AGENT)

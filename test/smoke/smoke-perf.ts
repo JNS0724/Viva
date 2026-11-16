@@ -87,7 +87,7 @@ export function seedPerf(userData: string, now = Date.now()) {
   const cwd = path.join(userData, 'workspace')
   const save = (at: number, messages: object[]) => {
     clock = at
-    return db.save(db.create({ sessionId: `fake-session-${randomUUID()}`, cwd }), messages)
+    return db.save(db.create({ sessionId: `seeded-session-${randomUUID()}`, cwd }), messages)
   }
   save(clock, [user(`${FAR_WORDS}怎么定`), answer(`${FAR_WORDS}定在明年三月启动。`)])
   for (let i = 0; i < FAR_TOPICS; i += 1) save(now - (FAR_TOPICS + 50 - i) * HOUR_MS, [user(`第 ${i} 个话题：问点小事`), answer('好的，记下了。')])

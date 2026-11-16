@@ -44,7 +44,7 @@ for (const kind of ['timeline', 'performance'] as const) {
     for (const row of rows) {
       assert.ok(typeof row.text === 'string' && row.text.length > 0)
       assert.ok(typeof row.source_key === 'string' && row.source_key.length > 0)
-      assert.match(String(row.session_id), /^fake-session-/u)
+      assert.match(String(row.session_id), /^seeded-session-/u, 'synthetic history retains its source identity while the original native session stays unavailable')
       assert.deepEqual(JSON.parse(String(row.proof)), [{ sources: [], fileRanges: [] }])
     }
     if (kind === 'timeline') assert.ok(Number(db.prepare('SELECT count(*) AS n FROM stars').get()?.n) > 0)
