@@ -570,6 +570,14 @@ Viva 路由账本将决策及后续动作绑定到同一份经 owner 验证的�
 
 macOS arm64 的冷态重写探针通过。使用固定 DSH 版本的 V4 Zstd 格式和原生写锁，对普通会话和 fork 会话裁剪了精确文字范围。重开后头部、继承长度和事件位置保持一致，可继续追加，逐帧解压未发现被擦除的文本。写锁仍允许并发读者。正式确认物理擦除之前，还需接入读者与缓存退役、持久化的来源定位和恢复日志。探针见 `/private/tmp/viva-dsh-rewrite-review.DedTRn/probe.mjs`。
 
+Viva 已接入手动新增和编辑文件记忆。owner 在请求屏障内校验内容、路径、使用和策略版本；同一操作可以安全重试。冲突时界面保留草稿，用户可以载入最新版本再编辑。撤销继续核对来源，已遗忘的范围不会随撤销恢复。编辑继承使用过的来源，独立新增生成独立来源。已送入原生会话的文件读取证据跨恢复代次保留，擦除需要的原生清理仍保持待处理。
+
+真实 DSH 回归先等待抽取确认没有事实，再模拟历史撤回时进程崩溃。自动抽取和候选到期保留已验证、可回放的用户原文凭证。整段撤回同时清理 owner 已收到、界面尚未保存的原文，保留仍在其他会话使用的独立来源。回归覆盖重启续聊、从记录继续、撤回前后的恢复凭据以及分叉会话。原始失败和修复后证据分别见 `/tmp/r5a-restart-red.log`、`/tmp/r5a-restart-green.log` 和 `/tmp/r5a-restart-end-to-end.log`。
+
+本批通过独立循环评审、类型检查、构建和 2060 项全量 Electron 测试（2058 通过、2 项既有跳过）。真实 macOS Viva 单独验证手动新增、编辑、版本冲突、保留草稿和撤销；独立 Chromium 验证后台刷新期间输入法组字。完整 macOS 冒烟首次在桌面岛捕获用例失败，原 trace 保留。测试固定捕获丢失事件的按键状态，继续通过真实鼠标移动和释放核对实际窗口位置、持久化和面板关闭。修复后完整 macOS 冒烟与打包后的独立 DSH Web 文件模式冒烟通过。记录见 `/tmp/r5a-manual-restart-final-full.log`、`/tmp/r5a-manual-restart-final-smoke.log` 和 `/tmp/r5a-manual-restart-final-plugin.log`。
+
+公开 DSH 写句柄已在 macOS arm64 的冷态探针验证。普通与 fork 会话均可在原生写锁下原子替换当前格式日志，关闭维护句柄后可再追加，并保留继承位置和无关事件。写句柄仍可能读取替换前的内容，正式接入必须先退役会话读取者和缓存。Windows 的持久替换和完整物理擦除仍待交付。探针见 `/private/tmp/viva-dsh-public-lease-review.wWkaHh/probe.mjs`。
+
 ## 17 R5b 默认嵌入模型确认
 
 R5b 将 R4 的 MiniLM 发布配方切换到 IBM Granite Embedding 97M Multilingual R2 Q8。已验证的发布产物为 `onnx-community/granite-embedding-97m-multilingual-r2-ONNX`，固定 revision `536a9f241cb3f02a9c5995a1e708c784bd274859`，Apache-2.0。四个模型文件合计 123.2 MB。已验证配置为 384 维、CLS pooling、L2 归一化、空前缀和 128 tokens 上限。发布配方、worker 握手、归档与许可需与该 manifest 一致。资产内容和编码参数派生独立指纹。默认切换后旧向量退出检索，并重建新索引；两代模型维度相同，须在两个向量空间同时存在时验证隔离。

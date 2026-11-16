@@ -117,7 +117,9 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     assert.ok(await eventually(() => events.findLast(event =>
       event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error')?.type !== 'turn_started'),
     'the foreground is ready for the next prompt')
-    await call<Promise<void>>('agent:prompt', text, [], randomUUID())
+    const sourceId = randomUUID()
+    await call<Promise<void>>('agent:prompt', text, [], sourceId)
+    return sourceId
   }
   const newTopic = () => call<Promise<AgentInfo>>('agent:new-session')
   const tasks = () => call<Task[]>('task:finished')
@@ -194,7 +196,7 @@ test('startup completes a history withdrawal interrupted by process death before
   try { assert.ok(await eventually(() => hasProfileRef(profileDb))) } finally { profileDb.close() }
   await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
   const profileProbe = '随手核对背景资料'
-  await app.ask(profileProbe)
+  const unsavedSource = await app.ask(profileProbe)
   assert.ok(app.model.requests.some(raw => {
     const request = raw as Request
     const content = request.messages.at(-1)?.content
@@ -215,6 +217,13 @@ test('startup completes a history withdrawal interrupted by process death before
   const survivorId = randomUUID()
   await app.call('agent:prompt', independent, [], survivorId)
   await app.call('history:save', [{ role: 'user', text: independent, receipt: null, sourceId: survivorId }])
+  const survivorStore = new DatabaseSync(memoryFile, { readOnly: true })
+  try {
+    // Finish the no-fact extraction before recovery so its cleanup cannot race this test.
+    assert.ok(await eventually(() => survivorStore.prepare(
+      "SELECT 1 FROM memory_sources WHERE id=? AND outcome='skipped'",
+    ).get(survivorId)), 'the independent prompt finished extraction without a memory fact')
+  } finally { survivorStore.close() }
   const generationBeforeRestart = contextGeneration(app.directory, initial.sessionId!)
   await app.stopBackend()
   const copies = new DatabaseSync(memoryFile)
@@ -276,6 +285,11 @@ test('startup completes a history withdrawal interrupted by process death before
     assert.equal(withdrawn?.text, null)
     assert.equal(withdrawn.withdrawn, 1)
     assert.ok(recoveredMemory.prepare('SELECT id FROM memory_excluded_sources WHERE id=?').get(sourceId))
+    assert.deepEqual({ ...recoveredMemory.prepare('SELECT text,withdrawn FROM memory_sources WHERE id=?').get(unsavedSource) },
+      { text: null, withdrawn: 1 }, 'whole history withdrawal includes originals absent from the renderer snapshot')
+    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=1').get(unsavedSource))
+    assert.equal(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(unsavedSource), undefined)
+    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(survivorId))
     assert.equal(hasProfileRef(recoveredMemory), false)
     assert.equal(recoveredMemory.prepare('SELECT rowid FROM memory_lexical_fts WHERE rowid=?').get(entry.id), undefined)
     assert.equal(recoveredMemory.prepare('SELECT memory FROM memory_semantic_vectors WHERE memory=?').get(entry.id), undefined)

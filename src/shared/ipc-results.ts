@@ -1,4 +1,4 @@
-import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult } from '../memory/contracts/file-management.ts'
+import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
 
 export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
 export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources' | 'stoppedSnapshot'> & {
@@ -116,6 +116,8 @@ export interface IpcResults {
   'memory:read-file': MemoryFileDetailView | null
   'memory:set-file-enabled': MemoryFileMutationResult
   'memory:undo-file': MemoryFileMutationResult
+  'memory:create-file': MemoryFileWriteResult
+  'memory:edit-file': MemoryFileWriteResult
   'memory:list-changes': readonly MemoryChangeRecord[]
   'memory:delete': MemoryDeleteResult
   'memory:undo-change': UndoMemoryChangeResult

@@ -1,6 +1,6 @@
 import type { ConversationPayloads } from './conversation-types.ts'
 import type { KeptTask, MemoryFileDetailView } from '../shared/ipc-results.ts'
-import type { MemoryFileListResult, MemoryManagedFileIdentity } from '../memory/contracts/file-management.ts'
+import type { MemoryFileCreateRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryManagedFileVersion } from '../memory/contracts/file-management.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
@@ -12,6 +12,19 @@ type ReadConversation = { id: string, messages: readonly SavedMessage[], records
 type Settings = Partial<State['settings']>
 type Review = State['review']
 export type MemoryFileSelection = { identity: MemoryManagedFileIdentity, restrictionId?: string }
+export type MemoryFileDraft = { title: string, text: string }
+export type MemoryFileEditor = {
+  id: number
+  draft: MemoryFileDraft
+  retry?: MemoryFileCreateRequest
+  error?: string
+  conflict?: boolean
+} & ({ kind: 'create' } | {
+  kind: 'edit'
+  identity: MemoryManagedFileIdentity
+  version: MemoryManagedFileVersion
+  originalTitle: string
+})
 /** Closed payload table: adding a UI operation requires naming its payload, never an open action dictionary. */
 export interface ActionPayloads extends ConversationPayloads {
   ready: { info: Info }
@@ -127,6 +140,7 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_file_loading: {}
   memory_file_read: { selection: MemoryFileSelection, detail: MemoryFileDetailView }
   memory_file_read_failed: { selection: MemoryFileSelection, message: string }
+  memory_file_editor: { editor: MemoryFileEditor | null }
   memory_file_write_busy: { busy: boolean }
   memory_file_write_failed: { message: string }
   extensions_loaded: { view: Partial<State['extensions']> }

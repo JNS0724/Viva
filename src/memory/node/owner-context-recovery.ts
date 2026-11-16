@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import type { MemoryStore } from '../core/ports/store.ts'
+import { memoryProvenanceSchema, type MemoryProvenance } from '../contracts/provenance.ts'
 import type { MemoryContextRecoveryTicket, PrepareMemoryContextRecovery, BindMemoryContextRecovery, CommitMemoryContextRecovery } from '../contracts/context-recovery.ts'
 
 type Retained = { messageId: string, sourceId: string, token: string }
@@ -21,6 +22,9 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
     CREATE TABLE IF NOT EXISTS owner_message_content(message TEXT PRIMARY KEY,digest TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_context_generations(session TEXT PRIMARY KEY,generation INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_context_recoveries(id TEXT PRIMARY KEY,session TEXT NOT NULL,generation INTEGER NOT NULL,payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS owner_context_retired_reads(
+      session TEXT NOT NULL,generation INTEGER NOT NULL,evidence TEXT NOT NULL,PRIMARY KEY(session,generation)
+    );
     CREATE TABLE IF NOT EXISTS owner_context_retired(session TEXT NOT NULL,message TEXT NOT NULL,PRIMARY KEY(session,message));
     CREATE TABLE IF NOT EXISTS owner_derived_occurrences(session TEXT NOT NULL,message TEXT NOT NULL,PRIMARY KEY(session,message));
     CREATE TABLE IF NOT EXISTS owner_context_retired_children(parent TEXT NOT NULL,child TEXT NOT NULL,PRIMARY KEY(parent,child));
@@ -43,7 +47,8 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
   function original(session: string, message: string) {
     const row = db.prepare(`SELECT m.source,m.hash,o.conversation,c.digest FROM owner_messages m JOIN owner_occurrences o ON o.message=m.id
       LEFT JOIN owner_message_content c ON c.message=m.id
-      WHERE o.session=? AND m.id=? AND m.kind='original' AND o.admitted=1 AND o.removed=0`).get(session, message)
+      WHERE o.session=? AND m.id=? AND m.kind='original' AND o.admitted=1 AND o.removed=0
+      AND NOT EXISTS (SELECT 1 FROM owner_aliases a WHERE a.session=o.session AND a.wire_hash=m.hash AND a.revoked=1)`).get(session, message)
     if (!row || !sourceAllowed(session, String(row.source))) return null
     const source = store.readSource(String(row.source))
     // Short clarification answers depend on their question and are not independent originals.
@@ -52,8 +57,11 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
     // Attachment-only human messages have a delivery identity but no textual memory source.
     // They are recoverable only when their complete host content identity was captured at intake.
     if (!source && (!row.digest || !delivery || delivery.derived || delivery.conversation !== row.conversation)) return null
+    // Extraction can finish while a replacement is being persisted. The
+    // outcome of that job does not change the identity of a human original.
+    const { outcome: _outcome, ...evidence } = source ?? {}
     return { sourceId: String(row.source), hash: String(row.hash), digest: typeof row.digest === 'string' ? row.digest : undefined,
-      token: hash({ source, delivery, digest: row.digest ?? null }) }
+      token: hash({ source: source ? evidence : source, delivery, digest: row.digest ?? null }) }
   }
   function current(item: Saved) {
     return contextGeneration(item.sessionId) === item.generation - 1 && store.epoch() === item.epoch
@@ -71,6 +79,21 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
   function retiredDerived(message: string) {
     return Boolean(db.prepare(`SELECT 1 FROM owner_context_retired r JOIN owner_derived d ON d.message=r.message
       WHERE r.message=? AND r.session=d.origin_session`).get(message))
+  }
+  /** Context recovery retires the surface, leaving native messages and tool results on disk. */
+  function nativeReplicaSessions(matches: (evidence: MemoryProvenance) => boolean) {
+    const sessions = new Set<string>()
+    const affected = (proof: unknown) => matches(memoryProvenanceSchema.parse(JSON.parse(String(proof))))
+    for (const row of db.prepare('SELECT session,evidence FROM owner_context_retired_reads').all()) {
+      if (affected(row.evidence)) sessions.add(String(row.session))
+    }
+    const occurrences = db.prepare('SELECT session FROM owner_derived_occurrences WHERE message=?')
+    for (const row of db.prepare('SELECT message,origin_session,evidence FROM owner_derived').all()) {
+      if (!affected(row.evidence)) continue
+      sessions.add(String(row.origin_session))
+      for (const replica of occurrences.all(row.message)) sessions.add(String(replica.session))
+    }
+    return [...sessions]
   }
   async function prepareContextRecovery(input: PrepareMemoryContextRecovery): Promise<MemoryContextRecoveryTicket> {
     requireReady()
@@ -125,6 +148,11 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
         // Existing child output is part of the replaced surface, not fresh input to the new generation.
         db.prepare(`INSERT OR IGNORE INTO owner_context_retired_children SELECT parent,session FROM owner_session_parents WHERE parent=?`).run(item.sessionId)
         db.prepare('DELETE FROM owner_answer_sources WHERE session=?').run(item.sessionId)
+        const prior = store.dispatch.snapshot(item.sessionId)
+        if (prior.sources.length || prior.files?.length || prior.dependencies.length) {
+          db.prepare('INSERT INTO owner_context_retired_reads VALUES (?,?,?)')
+            .run(item.sessionId, item.generation - 1, JSON.stringify(prior))
+        }
         replace(item.sessionId, item.retained.map(r => r.sourceId))
         db.prepare('INSERT INTO owner_context_generations VALUES (?,?) ON CONFLICT(session) DO UPDATE SET generation=excluded.generation').run(item.sessionId, item.generation)
         item.state = 'committed'; persist(item)
@@ -133,5 +161,5 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
       return ticket(item)
     })
   }
-  return { contextGeneration, contextRecovery, pending, retired, retiredDerived, prepareContextRecovery, bindContextRecovery, commitContextRecovery }
+  return { contextGeneration, contextRecovery, pending, retired, retiredDerived, nativeReplicaSessions, prepareContextRecovery, bindContextRecovery, commitContextRecovery }
 }

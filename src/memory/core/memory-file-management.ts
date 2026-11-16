@@ -1,6 +1,6 @@
 import { memoryFileIdentity, memoryFileListRequest, memoryFileMutation } from '../contracts/file-management.ts'
 import type { MemoryManagedFileIdentity, MemoryFileListRequest, MemoryFileListResult, MemoryFileSummary, MemoryFileDetail,
-  MemoryFileForgetRequest, MemoryFileMutation, MemoryManagedFileVersion } from '../contracts/file-management.ts'
+  MemoryFileForgetRequest, MemoryFileMutation, MemoryManagedFileVersion, MemoryFileEditRequest } from '../contracts/file-management.ts'
 import type { createMemoryDocumentReadPolicy, MemoryDocumentManagementView } from './memory-document-read-policy.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { FileUseRestriction, MemoryFileRestrictions } from './ports/file-restrictions.ts'
@@ -30,8 +30,8 @@ const failure = (code: 'not.found' | 'revision.conflict' | 'invalid.text') => ne
 
 /** Trusted host management only. Model tools must use the read policy's ordinary read/list paths.
  * This service owns no mutation or request fence; validate must run inside the runtime's sole fence. */
-export function createMemoryFileManagement({ policy, documents, workspaces, hash, daily }: {
-  policy: Policy, documents: Pick<MemoryDocuments, 'undoCandidate' | 'registered'>, workspaces(): readonly string[], hash(text: string): string, daily?: DailyReads,
+export function createMemoryFileManagement({ policy, documents, workspaces, hash, daily, editing = false }: {
+  policy: Policy, documents: Pick<MemoryDocuments, 'undoCandidate' | 'registered'>, workspaces(): readonly string[], hash(text: string): string, daily?: DailyReads, editing?: boolean,
 }) {
   function undoCandidate(view: MemoryDocumentManagementView) {
     if (view.kind !== 'digest') return null
@@ -85,6 +85,8 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     }
     return result
   }
+  const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null
+    && view.enabled && view.currentMarkdown !== null && view.applicability.state === 'current'
   function summary(view: ManagedView): MemoryFileSummary {
     const metadata = parseMemoryDocument(view.markdown).metadata
     const candidate = undoCandidate(view)
@@ -94,7 +96,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
       ...(view.daily || view.detachedRestrictions ? { hasProjection: view.daily?.hasProjection ?? false,
         restrictions: (view.daily?.restrictions ?? view.detachedRestrictions ?? []).map(({ record, version }) => ({ id: record.id, version })) } : {}),
       actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.canStop || view.daily.restrictions.length)),
-        ...(view.daily ? { stop: view.daily.canStop } : {}), edit: false, forget: false, undo: candidate ? { changeId: candidate.changeId } : null } }
+        ...(view.daily ? { stop: view.daily.canStop } : {}), edit: editSupported(view), forget: false, undo: candidate ? { changeId: candidate.changeId } : null } }
   }
   function resolve(input: MemoryManagedFileIdentity, allows: Allows): ManagedView | null {
     const identity = memoryFileIdentity.parse(input)
@@ -108,6 +110,10 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     const view = resolve(input, allows)
     if (!view) return null
     const item: MemoryFileDetail = { ...summary(view), markdown: view.markdown, sources: view.sources }
+    if (item.actions.edit && restrictionId === undefined) {
+      const { metadata, body } = parseMemoryDocument(view.markdown)
+      item.editor = { title: typeof metadata.name === 'string' ? metadata.name : '', text: body }
+    }
     if (restrictionId === undefined) return item
     const record = (view.daily?.restrictions ?? view.detachedRestrictions)?.find(item => item.record.id === restrictionId)?.record
     if (!record || !daily) return null
@@ -169,5 +175,13 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     if (!refs?.length) throw failure('revision.conflict')
     return { refs, dailyKey: view.daily?.allocation.key }
   }
-  return { list, detail, resolve, validate, forgetEvidence }
+  function editTarget(command: MemoryFileEditRequest, allows: Allows) {
+    const view = resolve(command.identity, allows)
+    if (!view || !view.backing || !editSupported(view)) throw failure('revision.conflict')
+    const current = versionOf(view), expected = command.version
+    if (current.contentRevision !== expected.contentRevision || current.usageVersion !== expected.usageVersion
+      || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
+    return view.backing
+  }
+  return { list, detail, resolve, validate, forgetEvidence, editTarget }
 }

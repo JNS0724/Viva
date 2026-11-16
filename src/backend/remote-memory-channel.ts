@@ -82,7 +82,8 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
       const failure = objectOf(msg.error) ?? {}
       const domain = memoryDomainErrorCode.safeParse(failure.domainCode)
       const error = new Error(domain.success ? t(`main.memory.${domain.data}`) : typeof failure.reason === 'string' ? failure.reason : 'Memory owner request failed')
-      Object.assign(error, { code: typeof failure.code === 'string' ? failure.code : 'unavailable' })
+      Object.assign(error, { code: typeof failure.code === 'string' ? failure.code : 'unavailable',
+        ...(domain.success ? { domainCode: domain.data } : {}) })
       item.reject(error)
     }
     return true

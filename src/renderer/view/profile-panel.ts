@@ -6,7 +6,7 @@ import { formatDate } from '../../shared/i18n/format.ts'
 import { timelinePlace } from '../timeline-search.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { icon } from './icons.ts'
-import { memoryFilesSection } from './memory-files-panel.ts'
+import { deferMemoryFileEditorRender, memoryFilesSection } from './memory-files-panel.ts'
 import type { MemoryChangeRecord, MemorySummaryView } from '../../shared/ipc-results.ts'
 
 /** The 关于你 page's part of the state (personal-state.ts). */
@@ -325,7 +325,8 @@ function profileView(memory: MemoryPage, handlers: Handlers, now: number): View[
       habitsRow(memory.habits)),
     memory.summaries ? summarySection('user', memory.summaries.user, handlers) : null,
     memory.summaries ? summarySection('project', memory.summaries.project, handlers) : null,
-    memory.loadError ? memoryLoadError(memory, handlers)
+    memoryLoadError(memory, handlers),
+    memory.fileMode && memory.files.editor ? memoryFilesSection(memory, handlers) : memory.loadError ? null
       : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
       : memory.fileMode ? memoryFilesSection(memory, handlers) : memoriesSection(memory, handlers, now),
   ]
@@ -381,6 +382,8 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
     container.replaceChildren()
     return
   }
+  const editor = memory.view === 'profile' && memory.fileMode ? memory.files.editor : null
+  if (editor && deferMemoryFileEditorRender(container, editor, () => renderProfilePanel(container, memory, handlers, now))) return
   const shownView = container.querySelector<HTMLElement>('.profile')?.dataset.view ?? null
   const shownFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
   keepingInput(container, () => container.replaceChildren(
@@ -389,7 +392,13 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
   if (shownView !== 'intro' && memory.view === 'intro') container.querySelector<HTMLElement>('[name="intro-role"]')?.focus()
   const nextFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
   if (shownFiles && nextFiles && shownFiles !== nextFiles) {
-    container.querySelector<HTMLElement>(nextFiles === 'detail' ? '[name="memory-file-back"]' : '[name="memory-files-search"]')?.focus()
+    const target = nextFiles === 'create' || nextFiles === 'edit' ? '[name="memory-file-draft-title"]'
+      : nextFiles === 'list' ? shownFiles === 'create' ? '[name="memory-file-create"]' : '[name="memory-files-search"]'
+        : '[name="memory-file-back"]'
+    const edit = nextFiles === 'detail' && shownFiles === 'edit'
+      ? container.querySelector<HTMLElement>('[name="memory-file-edit"]:enabled') : null
+    const focus = edit ?? container.querySelector<HTMLElement>(target)
+    focus?.focus()
   }
   container.querySelector<HTMLElement>('.profile-input')?.focus()
 }

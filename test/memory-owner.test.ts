@@ -61,7 +61,7 @@ test('prepared source change survives restart, denies send until host commit, an
   const fork = source({ ...input, sessionId: randomUUID(), inherited: true })
   await owner.receiveSource(fork)
   const operationId = randomUUID()
-  const prepared = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [receipt.sourceId] }) as { ticket: string }
+  const prepared = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [] }) as { ticket: string }
   assert.throws(() => owner.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'))
   await owner.close()
   const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
@@ -69,6 +69,8 @@ test('prepared source change survives restart, denies send until host commit, an
   await next.handleHost('commitSourceChange', { operationId, ticket: prepared.ticket })
   assert.equal(next.ready(), true)
   assert.equal(next.runtime.sourceCurrent(receipt.sourceId), true)
+  assert.equal(next.needsContextRecovery(input.sessionId), true)
+  assert.equal(next.needsContextRecovery(fork.sessionId), false)
   const permit = next.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'); permit.settled()
 })
 test('failed revision validation is terminal and cannot poison owner recovery', async t => {
@@ -141,7 +143,7 @@ test('withdrawal tombstones an alias not yet delivered, including after process 
   const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: 'host-thread', text: input.text }
   await owner.handleHost('sourceAlias', alias)
   const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: 'host-thread', ids: [id] }) as { ticket: string }
+  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: 'host-thread', ids: [] }) as { ticket: string }
   await owner.handleHost('commitSourceChange', { operationId, ticket })
   await assert.rejects(owner.receiveSource(input), /withdrawn/)
   await assert.rejects(owner.handleHost('sourceAlias', alias), /withdrawn/)

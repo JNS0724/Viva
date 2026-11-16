@@ -1,5 +1,6 @@
 import { Lexer, Marked, Tokenizer } from 'marked'
 import type { Token, Tokens } from 'marked'
+import { isScalar, parseDocument, visit } from 'yaml'
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
 import { memoryDocumentLines, parseMemoryDocument } from './memory-document.ts'
 
@@ -27,6 +28,49 @@ export function memoryWikiLink(content: string): Omit<MemoryMarkdownLink, 'line'
   const path = (hash < 0 ? reference : reference.slice(0, hash)).trim()
   return { path, ...(hash < 0 ? {} : { anchor: reference.slice(hash + 1) }),
     ...(pipe < 0 ? {} : { label: content.slice(pipe + 1) }) }
+}
+
+function maskWikiLinks(text: string, erased: (path: string) => boolean, decode = (value: string): string | undefined => value) {
+  return text.replace(/\[\[([^\]\r\n]+)\]\]/gu, (link, content: string) => {
+    const decoded = decode(content)
+    if (decoded === undefined) return link
+    const { path } = memoryWikiLink(decoded)
+    // The Markdown table tokenizer unescapes a pipe before lexing inline links.
+    const tablePath = memoryWikiLink(decoded.replace(/\\\|/gu, '|')).path
+    return erased(path) || erased(tablePath) ? ' '.repeat(link.length) : link
+  })
+}
+
+function quotedScalar(text: string): string | undefined {
+  const parsed = parseDocument(text)
+  return !parsed.errors.length && isScalar(parsed.contents) && typeof parsed.contents.value === 'string' ? parsed.contents.value : undefined
+}
+
+/** Mask retired links while preserving the original source offsets and line endings. */
+export function maskMemoryWikiLinks(markdown: string, erased: (path: string) => boolean): string {
+  const projected = maskWikiLinks(markdown, erased)
+  if (!/^---(?:\r\n|\r|\n)/u.test(projected)) return projected
+  const lines = memoryDocumentLines(projected), start = lines[0]!.endOffset
+  const end = lines.slice(1).find(line => projected.slice(line.startOffset, line.contentEndOffset) === '---')?.startOffset
+  if (end === undefined) return projected
+  // Match the reader's treatment of bare CR without shifting the original offsets.
+  const frontmatter = parseDocument(projected.slice(start, end).replace(/\r(?!\n)/gu, '\n'))
+  if (frontmatter.errors.length) return projected
+  const replacements: Array<{ start: number, end: number, text: string }> = []
+  visit(frontmatter, { Scalar(_, scalar) {
+    const { range, type, value } = scalar
+    if (!range || typeof value !== 'string' || (type !== 'QUOTE_DOUBLE' && type !== 'QUOTE_SINGLE') || maskWikiLinks(value, erased) === value) return
+    const from = start + range[0], to = start + range[1]
+    const raw = projected.slice(from, to), quote = raw[0]!
+    const masked = maskWikiLinks(raw, erased, content => quotedScalar(`${quote}${content}${quote}`))
+    const decoded = quotedScalar(masked)
+    // Encoded brackets or folded escapes can hide the physical boundaries of a link.
+    // If the narrower masking cannot be verified, hide this scalar's value as a whole.
+    const text = decoded !== undefined && maskWikiLinks(decoded, erased) === decoded
+      ? masked : quote + raw.slice(1, -1).replace(/[^\r\n]/g, ' ') + quote
+    replacements.push({ start: from, end: to, text })
+  } })
+  return replacements.sort((a, b) => b.start - a.start).reduce((text, item) => text.slice(0, item.start) + item.text + text.slice(item.end), projected)
 }
 
 // The default lexer drops duplicate reference definitions. Keep their AST blocks

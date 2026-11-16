@@ -9,7 +9,7 @@ import { createMemoryRuntime } from './runtime.ts'
 import { createMemoryEmbedder } from './memory-embedder.ts'
 import type { NodeMemoryRuntimeOptions } from './runtime.ts'
 import type { DocumentSourceCut } from '../core/ports/documents.ts'
-import { combineMemoryProvenance } from '../contracts/provenance.ts'
+import { combineMemoryProvenance, usesErasedMemory } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
 import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
@@ -19,9 +19,10 @@ import { parseHostMemoryCommand } from '../contracts/host.ts'
 import { MEMORY_FILE_QUESTION_PREFIX } from '../contracts/memory-contract.ts'
 import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed } from '../contracts/host.ts'
 import type { MemoryOperationOutcome, MemoryHostEffect, MemorySourceReference } from '../contracts/service.ts'
-import type { MemoryFileMutationResult, MemoryManagedFileIdentity } from '../contracts/file-management.ts'
+import type { MemoryFileMutationResult, MemoryManagedFileIdentity, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
+import type { MemoryFileDependency } from '../contracts/records.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
@@ -457,32 +458,44 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     await fence.mutate(async () => { await options.quiesce(); db.prepare("UPDATE owner_operations SET state='prepared' WHERE id=?").run(item.id) })
     return { ticket: item.ticket!, operation: outcome(operation(item.id)!) }
   }
-  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[], workspace?: string): boolean {
-    if (!cuts.length) return false
-    const sourceIds = new Set(cuts.map(cut => cut.id))
-    const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) => {
-      const evidence = dispatch.snapshot(session)
-      const relevant = evidence.sources.some(source => sourceIds.has(source))
-        || evidence.files?.some(file => file.workspace === workspace)
-      return relevant && (evidence.sources.some(source => sourceIds.has(source) && !evidence.fileSources?.includes(source))
-        || !runtime.fileDependenciesCurrent(evidence.files ?? [], evidence.fileSources)) ? [session] : []
-    })
-    const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
-    let native = false
-    for (const cut of cuts) {
-      const occurrences = current.all(cut.id)
-      native ||= occurrences.length > 0 || Boolean(store.readSource(cut.id)?.session)
-      for (const row of occurrences) invalidated.push(String(row.session))
-      db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
-      db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
+  type FileReaders = ReadonlyMap<string, readonly MemoryFileDependency[]>
+  function currentFileReaders(workspace: string): FileReaders {
+    const readers = new Map<string, MemoryFileDependency[]>()
+    for (const { id: session } of db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>) {
+      const files = dispatch.snapshot(session).files?.filter(ref => ref.workspace === workspace && runtime.fileDependenciesCurrent([ref]))
+      if (files?.length) readers.set(session, files)
     }
-    const sessions = [...new Set(invalidated)]
+    return readers
+  }
+  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[], readers?: FileReaders): boolean {
+    if (!cuts.length) return false
     const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => {
       const afterHash = store.readSource(sourceId)?.hash
       if (!afterHash) throw new Error('Missing committed source erasure proof')
       return { sourceId, revision, length, hash, afterHash, spans }
     })
-    if (native) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(id, JSON.stringify({ sessions, ranges }))
+    const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) =>
+      usesErasedMemory(dispatch.snapshot(session), ranges, memoryIds)
+        || readers?.get(session)?.some(ref => !runtime.fileDependenciesCurrent([ref])) ? [session] : [])
+    const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
+    // File reads can reach native transcripts without creating a source occurrence.
+    const nativeSession = db.prepare('SELECT 1 FROM owner_sessions WHERE session=?')
+    const nativeSessions = new Set(invalidated.filter(session => nativeSession.get(session)))
+    for (const cut of cuts) {
+      const origin = store.readSource(cut.id)?.session
+      if (origin) nativeSessions.add(origin)
+      for (const row of current.all(cut.id)) {
+        const session = String(row.session)
+        nativeSessions.add(session)
+        invalidated.push(session)
+      }
+      db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
+      db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
+    }
+    const sessions = [...new Set(invalidated)]
+    for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges, memoryIds))) nativeSessions.add(session)
+    if (nativeSessions.size) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)')
+      .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges }))
     if (options.hostNamespace) {
       const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
         kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
@@ -501,11 +514,27 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     let notify = false
     await fence.mutate(() => {
       store.tx(() => {
-        for (const id of change.ids) db.prepare('UPDATE owner_occurrences SET removed=1 WHERE conversation=? AND source=?').run(change.conversation, id)
+        let ids = new Set(change.ids)
         if (change.onlySources) {
-          for (const id of change.ids) db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE conversation=? AND source=?').run(change.conversation, id)
-        } else db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE conversation=?').run(change.conversation)
-        const removed = change.ids.filter(id => !db.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0 LIMIT 1').get(id))
+          for (const id of ids) {
+            db.prepare('UPDATE owner_occurrences SET removed=1 WHERE conversation=? AND source=?').run(change.conversation, id)
+            db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE conversation=? AND source=?').run(change.conversation, id)
+          }
+        } else {
+          // Native intake can be ahead of the renderer's last saved history.
+          // Withdraw the owner's occurrences in this segment as well as host-known deliveries.
+          const occurrences = db.prepare('SELECT DISTINCT source FROM owner_occurrences WHERE conversation=?').all(change.conversation) as { source: string }[]
+          const aliases = db.prepare('SELECT DISTINCT source FROM owner_aliases WHERE conversation=?').all(change.conversation) as { source: string }[]
+          const owned = new Set([...store.sourceIds(change.conversation), ...store.deliveredSourceIds(change.conversation), ...occurrences.map(row => row.source)])
+          for (const id of [...ids, ...aliases.map(row => row.source)]) {
+            if (!owned.has(id) && !store.deliveredSource(id) && !store.readSource(id)) owned.add(id)
+          }
+          ids = owned
+          db.prepare('UPDATE owner_occurrences SET removed=1 WHERE conversation=?').run(change.conversation)
+          db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE conversation=?').run(change.conversation)
+        }
+        const surviving = db.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0 LIMIT 1')
+        const removed = [...ids].filter(id => !surviving.get(id))
         const { cuts, memoryIds } = runtime.withdraw({ conversation: change.conversation, ids: removed, onlySources: true })
         notify = recordRangeErasure(item.id, cuts, memoryIds)
         for (const id of removed) {
@@ -539,9 +568,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     replayingWrites = true
     try {
       for (const item of db.prepare("SELECT * FROM owner_operations WHERE state='running'").all() as Operation[]) {
-        const { command } = JSON.parse(item.payload!) as Pick<WritePayload | FileWritePayload, 'command'>
-        try { await handleHost(command.method, command.input) }
-        catch (error) { if (operation(item.id)?.state !== 'failed') throw error }
+        const payload = JSON.parse(item.payload!) as WritePayload | FileWritePayload | ManualFilePending
+        try {
+          if ('manual' in payload) await completeManualFile(item.id, payload.manual)
+          else await handleHost(payload.command.method, payload.command.input)
+        } catch (error) { if (operation(item.id)?.state !== 'failed') throw error }
       }
     } finally { replayingWrites = false }
   }
@@ -604,6 +635,54 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         || evidence.files?.some(file => file.workspace === identity.workspace && file.id === identity.id) ? [id] : []
     })
   }
+  type ManualFileCommand = Extract<HostMemoryCommand, { method: 'createFile' | 'editFile' }>
+  type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[] }
+  type ManualFilePending = { manual: ManualFilePlan }
+
+  async function completeManualFile(id: string, plan: ManualFilePlan, request?: MemoryFileCreateRequest | MemoryFileEditRequest) {
+    let notify = false
+    try {
+      const receipt = await runtime.writeManagedFile(id, plan.workspace, request, result => store.tx(() => {
+        if (operation(id)?.state === 'completed') return
+        const sessions = plan.usageVersion !== null && plan.usageVersion !== result.usageVersion
+          ? [...new Set([...plan.sessions, ...fileSessions(result.identity, [])])] : []
+        if (options.hostNamespace && sessions.length) {
+          const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
+            kind: 'invalidate-context', sources: [], sessions }
+          db.prepare('INSERT OR IGNORE INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
+          notify = true
+        }
+        db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
+      }))
+      if (notify) options.onHostEffects?.()
+      return receipt
+    } catch (error) {
+      if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
+        db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(JSON.stringify({ code: error.code }), id)
+      }
+      throw error
+    }
+  }
+
+  async function durableManualFileWrite(command: ManualFileCommand) {
+    requireReady()
+    const request = command.input.args[0], id = request.operationId, fingerprint = hash(command)
+    const previous = operation(id)
+    if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
+    if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
+    const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
+      ? { workspace: request.identity.workspace, usageVersion: request.version.usageVersion, sessions: fileSessions(request.identity, []) }
+      : { workspace: runtime.manualFileWorkspace(), usageVersion: null, sessions: [] }
+    // Only the file journal may retain a draft, with both its old and new backing proofs.
+    // Waiting for the send fence must not persist a detached copy of the submitted words.
+    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)")
+      .run(id, fingerprint, JSON.stringify({ manual: plan } satisfies ManualFilePending))
+    const receipt = await completeManualFile(id, plan, request)
+    if (!receipt) throw new Error('Manual memory write missing its receipt')
+    return receipt
+  }
+
   /** The runtime owns the only send fence. The durable intent bridges its document receipt and
    * this completion/outbox transaction if the process exits between the two commits. */
   async function durableFileWrite(command: FileWriteCommand): Promise<MemoryFileMutationResult> {
@@ -636,14 +715,15 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
       })
     }
+    let readers: FileReaders | undefined
     try {
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
           : await runtime.forgetFile(command.input.args[0], (result, cuts, memoryIds) => {
-            notify = recordRangeErasure(id, cuts, memoryIds, result.identity.workspace)
+            notify = recordRangeErasure(id, cuts, memoryIds, readers)
             db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
-          })
+          }, () => { readers = currentFileReaders(request.identity.workspace) })
       if (notify) options.onHostEffects?.()
       return result
     } catch (error) {
@@ -789,6 +869,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'useHistory': return coordination.useHistory(...command.input.args)
       case 'listFiles': return runtime.listFiles(command.input.args[0])
       case 'readFile': return runtime.readFile(...command.input.args)
+      case 'createFile':
+      case 'editFile': return durableManualFileWrite(command)
       case 'setFileEnabled':
       case 'forgetFile':
       case 'undoFile': return durableFileWrite(command)

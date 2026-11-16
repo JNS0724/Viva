@@ -218,6 +218,8 @@ interface AgentApi extends DraftApi {
   readMemoryFile: Invoke<'memory:read-file'>
   setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>
   undoMemoryFile: Invoke<'memory:undo-file'>
+  createMemoryFile: Invoke<'memory:create-file'>
+  editMemoryFile: Invoke<'memory:edit-file'>
   saveProfile: Invoke<'memory:set-profile'>
   addMemory: Invoke<'memory:add'>
   updateMemory: Invoke<'memory:update'>

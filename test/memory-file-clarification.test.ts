@@ -10,7 +10,7 @@ import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/sou
 import { createQuestionDesk } from '../src/backend/question-channel.ts'
 import { registerMemoryTools } from '../plugins/memory/lib/tools.ts'
 import { MEMORY_FILE_QUESTION_PREFIX, memoryClarificationResult, type MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
-import type { MemoryFileDetail, MemoryFileListResult } from '../src/memory/contracts/file-management.ts'
+import type { MemoryFileDetail, MemoryFileListResult, MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 
 const disputed = 'Conference venue: old hall; possible new venue: auditorium. Unrelated tea serves Monday.'
@@ -436,4 +436,36 @@ test('the executable tool signal cancels an in-flight Viva answer while the send
   assert.equal(await replying, false)
   assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'pending_clarification')
   assert.equal(f.store.readSource(question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length)), null)
+})
+
+
+test('manual revisions copied from a clarified answer remain tied to its original evidence', async t => {
+  const f = await setup(t), reader = await f.newReader()
+  const { answerId, reply } = await resolveVenue(f, reader)
+  const before = await f.owner.handleHost('listFiles', { args: [{ kind: 'digest' }] }) as MemoryFileListResult
+  const digest = before.items.find(item => item.path === 'digest/wiki/resolved-venue.md')
+  assert.ok(digest)
+  const written = randomUUID()
+  const edit = await f.owner.handleHost('editFile', { args: [{
+    operationId: written, identity: digest.identity, version: digest.version, text: `${reply}
+Use the accessible entrance.`,
+  }] }) as MemoryFileMutationResult
+  assert.equal(edit.action, 'EDIT')
+  const independent = randomUUID()
+  const created = await f.owner.handleHost('createFile', { args: [{
+    operationId: independent, text: reply,
+  }] }) as MemoryFileMutationResult
+  assert.deepEqual(f.store.manualFileParents(written).map(parent => parent.id), [answerId])
+  assert.match(f.store.readSource(written)?.text ?? '', /library/)
+  await f.reopen()
+  const current = await f.owner.handleHost('readFile', { args: [f.file.identity] }) as MemoryFileDetail
+  const operationId = randomUUID()
+  await f.owner.handleHost('forgetFile', { args: [{ operationId, identity: f.file.identity, version: current.version }] })
+  const erased = f.store.readSource(written)
+  assert.ok(erased?.erasure)
+  assert.doesNotMatch(erased.text ?? '', /library|accessible entrance/)
+  assert.equal(await f.owner.handleHost('readFile', { args: [digest.identity] }), null)
+  const kept = await f.owner.handleHost('readFile', { args: [created.identity] }) as MemoryFileDetail
+  assert.match(kept.markdown, /library/)
+  assert.equal(f.store.readSource(independent)?.text, reply)
 })

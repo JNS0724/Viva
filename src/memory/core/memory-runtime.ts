@@ -39,17 +39,20 @@ import type { DreamCalculate } from './memory-dream-jobs.ts'
 import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDependency } from './memory-document-read-policy.ts'
 import { createMemoryDailyUsage } from './memory-daily-usage.ts'
 import { createMemoryFileManagement } from './memory-file-management.ts'
+import { manualFileCopyRefs } from './memory-manual-sources.ts'
+import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
+import { MAX_MESSAGE_CHARS } from '../contracts/text-limits.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import { memoryFileMutation } from '../contracts/file-management.ts'
 import type { MemoryFileMutation, MemoryFileMutationResult, MemoryFileListRequest, MemoryManagedFileIdentity,
-  MemoryFileForgetRequest, MemoryFileSetEnabledRequest, MemoryFileUndoRequest } from '../contracts/file-management.ts'
+  MemoryFileForgetRequest, MemoryFileSetEnabledRequest, MemoryFileUndoRequest, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
 import type { MemoryDocumentView } from './memory-document-read-policy.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey } from './memory-file-retrieval.ts'
 import type { FileApplicability, FileNeighbors, FileSearchResult } from './memory-file-retrieval.ts'
 import { memoryWikiLink } from './memory-markdown.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
-import { documentSourceRestricted, availableDocumentSourceSpans, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
+import { documentSourceRestricted, documentSourceProofCurrent, availableDocumentSourceSpans, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
 import type { DeferredDocumentWork, DocumentReceipt, DocumentSourceCut, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
 import { createDailySemanticSearch, dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
 import type { DailySearchDocument, SearchChunk } from './memory-daily-search.ts'
@@ -170,7 +173,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const sourceBlocked = (source: Pick<MemorySource, 'id' | 'conversation'>) => blockedSources.has(source.id)
     || (source.conversation !== null && blocked.has(source.conversation))
   const useRestrictions = resources.openFileRestrictions()
-  const hasFileStorage = Boolean(dailyNotes) || resources.hasFileStorage()
+  const hasFileStorage = fileMode || Boolean(dailyNotes) || resources.hasFileStorage()
   let documents: MemoryDocuments | null = null
   function legacySourceBlocked(source: Pick<MemorySource, 'id' | 'conversation'>) {
     // Legacy fact records have no accepted file proof. Treat their canonical
@@ -253,7 +256,18 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const source = store.readSource(id)
     return Boolean(source?.session && source.conversation && !source.withdrawn)
   }
-  store.expire(retainSessionSource)
+  function retainAutomaticallyProcessedSource(id: string) {
+    if (retainSessionSource(id)) return true
+    const source = store.readSource(id)
+    if (!source?.session || !source.conversation || source.author !== 'user' || !source.text || !source.hash
+      || source.withdrawn || source.erasure || store.sourceExcluded(id)
+      || (source.outcome !== 'skipped' && source.outcome !== 'candidate')) return false
+    const delivery = store.deliveredSource(id)
+    // A delivered human original can be replayed by the host after the fact
+    // extractor skips it. Keep the evidence used to authorize that replay.
+    return Boolean(delivery && !delivery.derived && delivery.conversation === source.conversation)
+  }
+  store.expire(retainAutomaticallyProcessedSource)
   function scheduleExpiry() {
     const next = store.nextCandidateExpiry()
     if (next === null) effects.cancel(EXPIRE, 'candidates')
@@ -261,7 +275,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
   effects.runs(EXPIRE, async jobs => {
     if (jobs.some(effects.holds)) store.tx(() => {
-      store.expire(retainSessionSource)
+      store.expire(retainAutomaticallyProcessedSource)
       scheduleExpiry()
     })
     return new Map(jobs.map(job => [job.key, 'done' as const]))
@@ -757,7 +771,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (receipt.action === 'DISABLE') queueRestrictedRebuilds?.()
     if (documentsReady) validateDispatch()
   }, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()),
-    managementCurrent: (before, guard, after) => filePolicy?.managementCurrent(before, guard.policyToken, after) === true,
+    managementCurrent: (before, guard, after, staged) => filePolicy?.managementCurrent(before, guard.policyToken, after, staged) === true,
+    expandRestrictions: refs => manualFileCopyRefs(refs, store, resources.sourceToken),
+    manualCurrent: source => !closed && source.author === 'manual' && source.id === source.operation
+      && !store.readSource(source.id) && !store.deliveredSource(source.id) && !store.sourceExcluded(source.id) && !sourceBlocked(source)
+      && source.text !== null && source.length === source.text.length && source.hash === memoryHash(source.text) && !looksSecret(source.text)
+      && !excludedSourceText(source.text) && !excludedSourceText(source.text, source.context ?? source.scope)
+      && (!source.project || !excludedSourceText(source.text, source.project)),
     deferRecovery: true }) : null
   const notes = hasFileStorage ? createMemoryNoteJobs({
     store, effects, now, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
@@ -768,7 +788,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     projectText: (workspace, text) => documents?.projectErasedLocators(workspace, text) ?? text,
     projectSource(source, ref) {
       const workspace = memoryHash(JSON.stringify([source.scope, source.context, source.project ?? null]))
-      const restrictions = useRestrictions.sources(workspace)
+      const restrictions = documents?.sourceRestrictions(workspace) ?? useRestrictions.sources(workspace)
       const erasure = erasedDocumentSource(source)
       if (erasure) restrictions.push(erasure)
       return { text: projectDocumentSource(source.text ?? '', ref, restrictions),
@@ -815,7 +835,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return items.every(item => item !== null) ? items : null
   }
   const fileManagement = filePolicy && documents ? createMemoryFileManagement({ policy: filePolicy, documents,
-    workspaces: fileWorkspaces, hash: memoryHash,
+    workspaces: fileWorkspaces, hash: memoryHash, editing: fileMode,
     daily: notes && documentEvidence ? {
       allocations: notes.storage.allocations, references: notes.storage.references, ledger: useRestrictions, sources: dailySources,
     } : undefined,
@@ -1050,14 +1070,15 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!source) return true
       const erasure = erasedDocumentSource(source)
       if (erasure && documentSourceRestricted(ref, [erasure])
-        || documentSourceRestricted(ref, useRestrictions.sources(resources.sourceWorkspace(source)))) return true
+        || documentSourceRestricted(ref, documents?.sourceRestrictions(resources.sourceWorkspace(source))
+          ?? useRestrictions.sources(resources.sourceWorkspace(source)))) return true
       if (expanded.has(source.id)) continue
       expanded.add(source.id)
-      const parents = clarificationAnswerParents(source)
-      if (parents) {
-        if (!parents.length || parents.some(parent => !canonicalSource(parent.id))) return true
-        pending.push(...parents)
-      }
+      const clarification = clarificationAnswerParents(source)
+      if (clarification && !clarification.length) return true
+      const parents = [...clarification ?? [], ...store.manualFileParents(source.id)]
+      if (parents.some(parent => !canonicalSource(parent.id))) return true
+      pending.push(...parents)
     }
     return false
   }
@@ -1283,7 +1304,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           if (existing && explicit && !changedIds.has(existing.id)) store.remove(existing.id)
           if (!structure || explicit || accepted) store.outcome(source.id, accepted ? (explicit ? 'explicit-accepted' : 'accepted')
             : proposals.includes('candidate') ? 'candidate' : 'skipped')
-          if (!retainSessionSource(source.id)) store.compactSource(source.id)
+          if (!retainAutomaticallyProcessedSource(source.id)) store.compactSource(source.id)
           scheduleExpiry()
           validateDispatch()
           effects.finishGeneration(job)
@@ -1771,22 +1792,29 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     void effects.wake()
   }
 
-  /** Expand dependent clarification replies using immutable source ranges, never the mutable deferred payload. */
-  function clarificationErasureCuts(roots: readonly { id: string, cut?: DocumentSourceCut }[], direct: readonly DocumentSourceCut[] = []) {
+  /** Expand derived replies and full-body edits from their immutable source proofs. */
+  function dependentErasureCuts(roots: readonly { id: string, cut?: DocumentSourceCut }[], direct: readonly DocumentSourceCut[] = []) {
     const cuts = new Map(direct.map(cut => [cut.id, cut]))
     const expanded = new Set(roots.filter(root => !root.cut).map(root => root.id))
     const queue = [...roots]
-    for (const { id, cut } of queue) for (const answerId of documents?.dependentAnswerIds(id, cut) ?? []) {
-      if (expanded.has(answerId)) continue
-      expanded.add(answerId)
-      const source = store.readSource(answerId)
-      if (!source?.text || !source.hash || source.withdrawn || store.sourceExcluded(answerId)) continue
-      const ref = { id: answerId, token: resources.sourceToken(source) }, erased = erasedDocumentSource(source)
-      const spans = availableDocumentSourceSpans(source.text, ref, erased ? [erased] : [])
-      if (!spans.length) continue
-      const answerCut = { ...ref, spans, version: source.version, length: source.length, hash: source.hash }
-      cuts.set(answerId, answerCut)
-      queue.push({ id: answerId, cut: answerCut })
+    for (const { id, cut } of queue) {
+      const parent = store.readSource(id)
+      if (!parent) continue
+      const root = cut ?? { id, token: resources.sourceToken(parent) }
+      const copies = store.manualFileCopies(id).filter(copy => documentSourceRestricted(copy.reference, [root]))
+      const children = [...documents?.dependentAnswerIds(id, cut) ?? [], ...copies.map(copy => copy.source)]
+      for (const child of children) {
+        if (expanded.has(child)) continue
+        expanded.add(child)
+        const source = store.readSource(child)
+        if (!source?.text || !source.hash || source.withdrawn || store.sourceExcluded(child)) continue
+        const ref = { id: child, token: resources.sourceToken(source) }, erased = erasedDocumentSource(source)
+        const spans = availableDocumentSourceSpans(source.text, ref, erased ? [erased] : [])
+        if (!spans.length) continue
+        const dependent = { ...ref, spans, version: source.version, length: source.length, hash: source.hash }
+        cuts.set(child, dependent)
+        queue.push({ id: child, cut: dependent })
+      }
     }
     return [...cuts.values()]
   }
@@ -1828,7 +1856,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       })
       if (!sources.length && !delivered.length && (payload.onlySources || store.meta(`withdrawn:${payload.conversation}`))) return
       const rev = store.nextRevision()
-      cuts.push(...clarificationErasureCuts(sources))
+      cuts.push(...dependentErasureCuts(sources))
       // Capture the proof chain before withdrawing the canonical parents.
       for (const cut of cuts) eraseCanonicalRange(cut, legacy)
       const removedChanges = sources.flatMap(source => store.changesFrom(source.id).map(captureRemovedChange))
@@ -1856,9 +1884,17 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return { cuts, memoryIds: [...legacy] }
   }
 
-  function canonicalSource(id: string) {
+  function canonicalSource(id: string, inspected = new Map<string, MemorySource | null>()): MemorySource | null {
+    if (inspected.has(id)) return inspected.get(id)!
+    inspected.set(id, null)
     const source = store.readSource(id)
-    return source?.hash && !source.withdrawn && !store.sourceExcluded(id) && !sourceBlocked(source) ? source : null
+    if (!source?.hash || source.withdrawn || store.sourceExcluded(id) || sourceBlocked(source)) return null
+    if (source.author === 'manual' && store.manualFileParents(id).some(ref => {
+      const parent = canonicalSource(ref.id, inspected)
+      return !parent?.text || !documentSourceProofCurrent(ref, parent.text, resources.sourceToken(parent), erasedDocumentSource(parent))
+    })) return null
+    inspected.set(id, source)
+    return source
   }
   // File proof validation already tracks disjoint source ranges and versions.
   // Rows and supersession rules in the legacy fact projection cannot qualify them.
@@ -1868,11 +1904,16 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function fileSourceAllowsUse(id: string) {
     const source = canonicalSource(id)
     if (!source?.text) return false
-    const parents = clarificationAnswerParents(source)
-    return !parents || parents.length > 0 && !documentReferencesRestricted(parents)
+    const clarification = clarificationAnswerParents(source)
+    return (!clarification || clarification.length > 0)
+      && !documentReferencesRestricted([...clarification ?? [], ...store.manualFileParents(source.id)])
   }
   function sourceCurrent(id: string, at = now(), historical = false) {
-    if (!canonicalSource(id)) return false
+    const source = canonicalSource(id)
+    if (!source) return false
+    // A whole-source replay cannot substitute the sanitized file projection.
+    if (source.author === 'manual' && source.text && documents
+      && documents.projectErasedLocators(resources.sourceWorkspace(source), source.text) !== source.text) return false
     if (!historical && store.hasChangeSource(id)) return false
     return store.memoriesFrom(id).every(memoryId => {
       const entry = store.get(memoryId)
@@ -3034,8 +3075,70 @@ ${node.description}`, origin, scope))
     return offset === text.length
   }
 
+  const manualFileWorkspace = () => memoryHash(JSON.stringify([USER, null, null]))
+  function freshFileEvidence(id: string, text: string, parent?: MemorySource): MemorySource {
+    return { id, operation: id, version: 1, conversation: null, session: null, scope: parent?.scope ?? USER,
+      context: parent?.context ?? null, project: parent?.project ?? null, author: 'manual', text, hash: memoryHash(text), length: text.length,
+      question: null, requestId: null, questionId: null, at: now(), timezone: timezone(), outcome: 'written', withdrawn: false }
+  }
+
+  async function writeManagedFile(operationId: string, workspace: string, input: MemoryFileCreateRequest | MemoryFileEditRequest | undefined,
+    committed: FileMutationCommitted): Promise<MemoryFileMutationResult | null> {
+    if (!fileMode || !documents || !fileManagement) throw domainError('not.found')
+    if (!/^[a-f0-9]{64}$/u.test(workspace)) throw domainError('revision.conflict')
+    const storage = documents, management = fileManagement
+    const result = await runDocumentMutation(() => {
+      if (closed) throw domainError('not.found')
+      const already = storage.receipt(workspace, operationId)
+      if (!already && storage.recoverManagement(operationId) === 'cancelled') throw domainError('revision.conflict')
+      let receipt = already ?? storage.receipt(workspace, operationId)
+      if (!receipt) {
+        // A crash before the file intent is durable has no retained draft to write.
+        // The same operation can be retried with its original payload.
+        if (!input) return null
+        const body = input.text
+        const title = input.title === undefined ? undefined : input.title.trim()
+        const target = 'identity' in input ? management.editTarget(input, managementAllows) : null
+        const existing = target ? parseMemoryDocument(target.markdown) : null
+        const shownTitle = typeof existing?.metadata.name === 'string' ? existing.metadata.name : ''
+        const unchanged = existing?.body === body && (input.title === undefined || input.title === shownTitle || title === shownTitle)
+        const sourceText = title ? `${title}\n${body}` : body
+        if (!unchanged) {
+          if (!body.trim() || body.length > MAX_MESSAGE_CHARS) throw domainError('invalid.text')
+          if (looksSecret(sourceText)) throw domainError('credentials')
+          if (/[\u0000\uD800-\uDFFF]/u.test(body) || title && /[\u0000\r\n\uD800-\uDFFF]/u.test(title)) throw domainError('invalid.text')
+        }
+        const parent = target ? canonicalSource(target.sources[0]!.id) : null
+        if (target && !parent) throw domainError('revision.conflict')
+        const metadata: Record<string, unknown> = existing ? { ...existing.metadata, ...(title === undefined ? {} : { name: title }) }
+          : { name: title ?? [...body.trimStart().split(/\r?\n/u, 1)[0]!].slice(0, 100).join('') }
+        if (existing && existing.body !== body) delete metadata.description
+        const markdown = unchanged ? target!.markdown : formatMemoryDocument({ metadata, body })
+        // User edits are explicit input. A full-editor draft stays tied to the
+        // accepted proof it may have quoted, so it cannot launder forgotten text.
+        const source = unchanged ? null : freshFileEvidence(operationId, sourceText, parent ?? undefined)
+        if (source && (resources.sourceWorkspace(source) !== workspace || store.readSource(operationId) || store.deliveredSource(operationId)
+          || store.sourceExcluded(operationId) || sourceBlocked(source))) throw domainError('operation.conflict')
+        receipt = storage.writeManual({ operationId, workspace, path: target?.path ?? `digest/wiki/manual-${memoryHash(operationId)}.md`,
+          markdown, source,
+          expected: target && 'identity' in input ? { id: target.id, revision: target.revision, usageVersion: target.usageVersion,
+            policyToken: input.version.policyToken } : undefined })
+      }
+      if (!receipt.revision || (receipt.action !== 'CREATE' && receipt.action !== 'REFINE')) throw domainError('operation.conflict')
+      const response: MemoryFileMutationResult = { operationId, identity: { kind: 'digest', workspace, id: receipt.documentId },
+        contentRevision: receipt.revision, usageVersion: receipt.usageVersion, action: receipt.action === 'CREATE' ? 'CREATE' : 'EDIT' }
+      syncFileIndex()
+      if (!already) documentChanged(receipt)
+      committed(response)
+      return response
+    })
+    if (result) { dream?.run(); void effects.wake() }
+    return result
+  }
+
   async function forgetManagedFile(input: MemoryFileForgetRequest,
-    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[]) => void): Promise<MemoryFileMutationResult> {
+    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[]) => void,
+    beforeErasure?: () => void): Promise<MemoryFileMutationResult> {
     if (!documents || !fileManagement || !notes) throw domainError('not.found')
     const storage = documents
     const result = await runDocumentMutation(() => store.tx(() => {
@@ -3047,7 +3150,8 @@ ${node.description}`, origin, scope))
         return { ...ref, spans: ref.spans ?? [{ start: 0, end: current.length }], version: current.version,
           length: current.length, hash: current.hash } satisfies DocumentSourceCut
       })
-      const cuts = clarificationErasureCuts(direct.map(cut => ({ id: cut.id, cut })), direct)
+      const cuts = dependentErasureCuts(direct.map(cut => ({ id: cut.id, cut })), direct)
+      beforeErasure?.()
       const revision = store.nextRevision(), legacy = new Set<number>()
       for (const cut of cuts) eraseCanonicalRange(cut, legacy)
       if (legacy.size) cleanup.queue(input.operationId, [...legacy][0]!, [...legacy], revision)
@@ -3147,6 +3251,7 @@ ${node.description}`, origin, scope))
     setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'setEnabled' }, committed),
     forgetFile: forgetManagedFile,
+    manualFileWorkspace, writeManagedFile,
     undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'undo' }, committed),
     runDocumentDream: () => { dream?.run(); return effects.wake() },

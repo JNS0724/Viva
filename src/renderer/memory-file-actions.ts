@@ -1,16 +1,25 @@
 import type { MemoryManagedFileVersion, MemoryFileListResult } from '../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView } from '../shared/ipc-results.ts'
+import { MAX_MESSAGE_CHARS } from '../shared/text-limits.ts'
 import { t } from '../shared/i18n/translate.ts'
-import { memoryFilePageOpen, sameMemoryFile, sameMemoryFileSelection } from './memory-file-state.ts'
-import type { MemoryFileSelection } from './action-types.ts'
+import { canEditMemoryFile, memoryFilePageOpen, sameMemoryFile, sameMemoryFileSelection } from './memory-file-state.ts'
+import type { MemoryFileDraft, MemoryFileEditor, MemoryFileSelection } from './action-types.ts'
 
 const SEARCH_DEBOUNCE_MS = 200
 
 export function createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'showToast' | 'errorMessage'>) {
-  let listRequest = 0, detailRequest = 0
+  let listRequest = 0, detailRequest = 0, editorId = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   const state = () => getState().memory.files
   const active = () => memoryFilePageOpen(getState().memory)
+
+  const setEditor = (editor: MemoryFileEditor | null) => dispatch({ type: 'memory_file_editor', editor })
+  const editorCurrent = (id: number) => active() && state().editor?.id === id
+
+  function openEdit(target: MemoryFileDetailView & { editor: MemoryFileDraft }) {
+    setEditor({ id: ++editorId, kind: 'edit', identity: target.identity, version: target.version,
+      originalTitle: target.editor.title, draft: target.editor })
+  }
 
   function cancelReads() {
     listRequest++
@@ -82,8 +91,81 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     }
   }
 
+  async function saveMemoryFileEditor(id: number, draft: MemoryFileDraft) {
+    const { editor, writing } = state()
+    if (!active() || !editor || editor.id !== id || writing || editor.conflict) return false
+    const { text } = draft
+    // An untouched title may contain the owner's masking spaces. Preserve it by omitting the field.
+    const title = editor.kind === 'edit' ? draft.title === editor.originalTitle ? undefined : draft.title.trim()
+      : draft.title.trim() || undefined
+    if (!text.trim() || text.length > MAX_MESSAGE_CHARS || (title?.length ?? 0) > 200) {
+      setEditor({ ...editor, draft, error: t('main.memory.invalid.text') })
+      return false
+    }
+    const input = { text, ...(title === undefined ? {} : { title }) }
+    const retry = editor.retry
+    const operationId = retry && retry.title === input.title && retry.text === input.text ? retry.operationId : globalThis.crypto.randomUUID()
+    const command = { operationId, ...input }
+    const pending = { ...editor, draft, retry: command, error: undefined }
+    setEditor(pending)
+    dispatch({ type: 'memory_file_write_busy', busy: true })
+    let refresh = false
+    try {
+      const result = editor.kind === 'edit'
+        ? await api.editMemoryFile({ ...command, identity: editor.identity, version: editor.version })
+        : await api.createMemoryFile(command)
+      if (result.status === 'rejected') {
+        const conflict = result.code === 'revision.conflict' && editor.kind === 'edit'
+        if (editorCurrent(id)) setEditor({ ...pending, retry: result.code === 'change.pending' ? command : undefined, conflict,
+          error: t(conflict ? 'memory-files.editor.conflict' : `main.memory.${result.code}`) })
+        refresh = conflict
+        return false
+      }
+      const { receipt } = result
+      if (receipt.operationId !== operationId || receipt.action !== (editor.kind === 'create' ? 'CREATE' : 'EDIT')
+        || receipt.identity.kind !== 'digest' || editor.kind === 'edit' && !sameMemoryFile(receipt.identity, editor.identity)) {
+        throw new Error('Unexpected memory write receipt')
+      }
+      if (editorCurrent(id)) {
+        dispatch({ type: 'memory_file_select', selection: { identity: receipt.identity } })
+        showToast(t(editor.kind === 'create' ? 'memory-files.editor.created' : 'memory-files.editor.saved'))
+      }
+      refresh = true
+      return true
+    } catch {
+      // The owner may have committed before the reply was lost. Keep the key for identical retry payloads.
+      if (editorCurrent(id)) setEditor({ ...pending, error: t('memory-files.editor.unconfirmed') })
+      return false
+    } finally {
+      const refreshed = refresh ? refreshFiles() : undefined
+      dispatch({ type: 'memory_file_write_busy', busy: false })
+      await refreshed
+    }
+  }
+
   return {
     cancelReads,
+    saveMemoryFileEditor,
+    startMemoryFileEditor(target?: MemoryFileDetailView) {
+      const { selection, detail, editor, writing } = state()
+      if (!active() || writing || editor) return
+      if (target) {
+        if (detail !== target || !canEditMemoryFile(target)) return
+        openEdit(target)
+      } else if (!selection) {
+        setEditor({ id: ++editorId, kind: 'create', draft: { title: '', text: '' } })
+      }
+    },
+    cancelMemoryFileEditor(id: number) {
+      if (editorCurrent(id)) setEditor(null)
+    },
+    acceptMemoryFileEditVersion(id: number, target: MemoryFileDetailView) {
+      const { editor, detail, writing } = state()
+      if (!editorCurrent(id) || editor?.kind !== 'edit' || !editor.conflict || writing || detail !== target
+        || !canEditMemoryFile(target) || !sameMemoryFile(target.identity, editor.identity)) return
+      // The old draft may quote evidence the owner has since withdrawn.
+      openEdit(target)
+    },
     invalidateFiles() {
       cancelReads()
       if (active()) dispatch({ type: 'memory_files_invalidated' })

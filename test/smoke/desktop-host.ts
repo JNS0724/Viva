@@ -235,19 +235,23 @@ export async function checkDesktopDragRelease(application: ElectronApplication, 
               node.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, pointerId, buttons: 0 }))
             }, mousePointer)
           } else if (outcome === 'held-capture') {
-            const captured = await avatar.evaluateHandle((node, pointerId) => {
-              const events: number[] = []
-              node.addEventListener('lostpointercapture', event => {
-                if (event instanceof PointerEvent) events.push(event.buttons)
-              }, { once: true })
+            // Exercise the held-capture branch with a known pressed state. Electron's
+            // offscreen automation can report a native capture loss with zero buttons
+            // even before the driver sends mouseup.
+            const capture = await avatar.evaluate((node, pointerId) => {
+              const before = node.hasPointerCapture(pointerId)
               node.releasePointerCapture(pointerId)
-              return events
+              const released = node.hasPointerCapture(pointerId)
+              node.dispatchEvent(new PointerEvent('lostpointercapture', {
+                bubbles: true, pointerId, buttons: 1, pointerType: 'mouse', isPrimary: true,
+              }))
+              return { before, released, recovered: node.hasPointerCapture(pointerId) }
             }, mousePointer)
-            try {
-              await desktop.mouse.move(mouse.x + 15, mouse.y + 8)
-              await expect.poll(() => captured.evaluate(events => [...events])).toEqual([1])
-              expect(await avatar.evaluate((node, id) => node.hasPointerCapture(id), mousePointer)).toBe(true)
-            } finally { await captured.dispose() }
+            expect(capture).toEqual({ before: true, released: false, recovered: true })
+            await desktop.mouse.move(mouse.x + 15, mouse.y + 8)
+            await expect(stage).toHaveAttribute('data-dragging', 'true')
+            const held = await audit.evaluate(audit => audit.read())
+            expect(held.actions).toEqual(['start'])
           } else {
             await desktop.keyboard.press('Escape')
           }

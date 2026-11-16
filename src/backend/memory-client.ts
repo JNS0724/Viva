@@ -7,6 +7,7 @@ export function createVivaMemoryClient(call: HostMemoryCaller) {
     call(name, { args } as unknown as HostMemoryApi[M]['input'])
   return {
     listFiles: method('listFiles'), readFile: method('readFile'),
+    createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     recoverContext: method('recoverContext'),
     listMemories: method('listMemories'), listInvalid: method('listInvalid'), listChanges: method('listChanges'),

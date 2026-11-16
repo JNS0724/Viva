@@ -37,6 +37,9 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
     openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
     openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed, erasures: store.fileErasures,
       externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
+      expandRestrictions: policy?.expandRestrictions,
+      manual: policy?.manualCurrent && { current: policy.manualCurrent, token: memorySourceToken, workspace: memorySourceWorkspace,
+        commit: store.insertManualFileSource, retainsText: store.manualFileRetainsText },
       source(id) {
         const source = store.readSource(id)
         return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source),

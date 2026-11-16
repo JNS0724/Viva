@@ -4,9 +4,9 @@ import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, M
 import type { MemoryScope } from './memory-contract.ts'
 import type { MemoryInterval } from './facts.ts'
 import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
-import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest } from './file-management.ts'
+import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
 import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail,
-  MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult } from './file-management.ts'
+  MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
 export const MEMORY_HOST_PROTOCOL = 1
@@ -39,6 +39,8 @@ export interface HostMemoryApi {
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
   readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
   setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
+  createFile: Args<[request: MemoryFileCreateRequest], MemoryFileMutationResult>
+  editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
   forgetFile: Args<[request: MemoryFileForgetRequest], MemoryFileMutationResult>
   undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
   listMemories: Args<[query?: string], EntryPage>
@@ -119,6 +121,7 @@ const target = args(z.tuple([integer, integer, key.optional()]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
+  createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
   listMemories: args(z.tuple([text.optional()])), listInvalid: empty, listChanges: empty, profile: empty,

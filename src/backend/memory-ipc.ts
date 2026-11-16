@@ -2,6 +2,8 @@ import type { VivaMemoryClient } from './memory-client.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
+import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
+import type { MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
 import { MAX_MEMORY_CHARS } from '../memory/contracts/text-limits.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { IpcResults, MemoryFileSourceView, MemorySummaryView } from '../shared/ipc-results.ts'
@@ -43,6 +45,16 @@ export function copyIntoWorkspace(files: readonly string[], cwd: string): Array<
 function assertMemoryText(value: unknown) {
   if (typeof value !== 'string' || value.length > MAX_MEMORY_CHARS * 2) throw new Error('invalid memory text')
   return value
+}
+
+async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<MemoryFileWriteResult> {
+  try { return { status: 'applied', receipt: await write } }
+  catch (error) {
+    const code = memoryDomainErrorCode.safeParse(error && typeof error === 'object'
+      ? ('domainCode' in error ? error.domainCode : 'code' in error ? error.code : undefined) : undefined)
+    if (code.success) return { status: 'rejected', code: code.data }
+    throw error
+  }
 }
 
 export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope, fileMode = false }: {
@@ -100,6 +112,8 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   })
   handle('memory:set-file-enabled', client.setFileEnabled)
   handle('memory:undo-file', client.undoFile)
+  handle('memory:create-file', request => fileWrite(client.createFile(request)))
+  handle('memory:edit-file', request => fileWrite(client.editFile(request)))
   handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
   handle('memory:add', (text, kind = 'fact', operation) => client.addMemory(assertMemoryText(text), kind, operation))
   handle('memory:update', (id, text, revision, operation) => client.editMemory(id, assertMemoryText(text), revision, operation))

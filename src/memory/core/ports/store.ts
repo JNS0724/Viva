@@ -34,6 +34,10 @@ export interface MemoryStore {
     reviseDispute: (id: number, interval: MemoryInterval, revision: number) => void;
     readSource: (id: string) => MemorySource | null;
     insertSource: (source: MemorySource) => void;
+    /** Body-free ties from a manually edited draft to the exact proof it reused. */
+    insertManualFileSource: (source: MemorySource, parents: readonly DocumentSourceRef[]) => void;
+    manualFileParents: (source: string) => DocumentSourceRef[];
+    manualFileCopies: (parent: string) => Array<{ source: string, reference: DocumentSourceRef }>;
     outcome: (id: string, state: string) => void;
     withdrawSource: (id: string) => void;
     eraseFileSource: (target: DocumentSourceRef, version: number) => MemorySourceErasure | null;

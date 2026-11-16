@@ -1,3 +1,4 @@
+import type { MemorySource } from '../../contracts/records.ts'
 import type { DigestAction, DreamUnit } from '../../contracts/memory-file-contract.ts'
 
 /** Opaque canonical source versions, issued by the Node adapter, never by a model. */
@@ -54,6 +55,15 @@ export interface DocumentCommit {
 export interface DocumentUndoCandidate { changeId: string, revision: string, usageVersion: number }
 /** Policy validation for a prepared management operation, including journal recovery. */
 export type DocumentManagementGuard = { policyToken: string, changeId?: string }
+/** The trusted runtime supplies the user-authored source. The journal publishes it with the revision. */
+export interface DocumentManualWrite {
+  operationId: string
+  workspace: string
+  path: string
+  markdown: string
+  source: MemorySource | null
+  expected?: DocumentReadRef & { policyToken: string }
+}
 export interface DocumentReceipt {
   operationId: string
   documentId: string
@@ -114,6 +124,7 @@ export interface MemoryDocuments {
   read(workspace: string, path: string, options?: { includeDisabled?: boolean }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt
+  writeManual(input: DocumentManualWrite): DocumentReceipt
   undoCandidate(workspace: string, documentId: string): DocumentUndoCandidate | null
   undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number, expectedChangeId?: string, expectedPolicyToken?: string }): DocumentReceipt
   setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean, expectedPolicyToken?: string }): DocumentReceipt

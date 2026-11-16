@@ -212,12 +212,14 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       ...documents.registered(workspace).filter(item => item.state !== 'forgotten').map(item => item.path)]
     return [...new Set(paths)].flatMap(path => managementRead(workspace, path) ?? [])
   }
-  function managementCurrent(before: DocumentSnapshot, policyToken: string, after: DocumentSnapshot): boolean {
+  function managementCurrent(before: DocumentSnapshot, policyToken: string, after: DocumentSnapshot, staged?: MemorySource): boolean {
     try {
       // The journal has verified the accepted row and physical hashes. Its own pending
       // replacement is hidden from ordinary reads until the receipt has been committed.
       const view = readAccepted(before.workspace, before.path, new Set(), true, before)
-      return view?.policyToken === policyToken && refsCurrent(after.sources) && materialAllowed(after.markdown, after.sources)
+      const existing = staged ? after.sources.filter(ref => ref.id !== staged.id) : after.sources
+      const markdown = documents.projectErasedLocators?.(after.workspace, after.markdown) ?? after.markdown
+      return view?.policyToken === policyToken && refsCurrent(existing) && materialAllowed(markdown, existing)
     } catch { return false }
   }
   return { read, list, managementRead, managementList, managementCurrent }
