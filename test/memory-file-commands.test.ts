@@ -112,7 +112,6 @@ test('native remember rejects derived input and an execution retired while waiti
   assert.equal(owner.runtime.listFiles({}).items.length, 0)
 })
 
-
 test('native remember recovers the same file after publication precedes the owner receipt', async t => {
   const { dir, defer } = scratch(t, 'viva-native-remember-receipt-')
   const options = { root: dir, fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} }
@@ -143,7 +142,6 @@ test('native remember recovers the same file after publication precedes the owne
   assert.ok(owner.runtime.readFile(before[0]!.identity)?.markdown.includes(text))
 })
 
-
 test('native remember cannot use an older explicit request replayed before a new turn', async t => {
   const { dir, defer } = scratch(t, 'viva-native-remember-turn-')
   const options = { root: dir, fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} }
@@ -169,4 +167,30 @@ test('native remember cannot use an older explicit request replayed before a new
   const saved = await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(text))
   assert.ok(saved)
   assert.deepEqual(owner.runtime.readFile(saved.identity)?.sources.map(source => source.sourceId), [current.sourceId])
+})
+
+test('native remember accepts arbitrary current-turn original fragments without a command prefix', async t => {
+  const { dir, defer } = scratch(t, 'viva-native-remember-fragments-')
+  const owner = openMemoryOwner({ root: dir, fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => owner.close())
+  await owner.recover()
+  const session = randomUUID()
+  const examples = [
+    { original: '记住我在深圳', text: '我在深圳' },
+    { original: '补充一下，我周五交周报，客户故障时另行确认。请以后保留这个安排。', text: '我周五交周报，客户故障时另行确认。' },
+    { original: 'For future chats, keep this preference in mind. I write in Spanish.', text: 'I write in Spanish.' },
+  ]
+  for (const [index, example] of examples.entries()) {
+    const sourceId = randomUUID()
+    await owner.receiveSource({ sessionId: session, messageId: sourceId, text: example.original, turn: index + 1, step: 1,
+      at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
+    const call = { id: randomUUID(), session, generation: 0, callId: `fragment-${index}`, turn: index + 1, step: 1,
+      seq: index * 4 + 3, digest: String(index + 6).repeat(64) }
+    const saved = await owner.withNativeToolRead({ call, current: () => true }, () => owner.rememberNativeFile(example.text))
+    assert.ok(saved)
+    assert.ok(owner.runtime.readFile(saved.identity)?.markdown.includes(example.text))
+    const proof = owner.dispatch.snapshot(session).files?.find(file => file.id === saved.identity.id)
+    const start = example.original.indexOf(example.text)
+    assert.deepEqual(proof?.sourceRanges, [{ sourceId, spans: [{ start, end: start + example.text.length }] }])
+  }
 })

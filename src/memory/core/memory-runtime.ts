@@ -331,7 +331,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function accept(text: string, origin: Origin, operation: string = randomUUID(), answer?: AnswerSource, intake?: { deferAutomatic?: boolean, at: number, timezone: string }): Receipt {
     const source = store.tx(() => {
       const known = store.readSource(operation)
-      const content = rememberContent(text)
+      const content = fileMode ? undefined : rememberContent(text)
       const explicit = content && content.length <= (fileMode ? MAX_MESSAGE_CHARS : MAX_MEMORY_CHARS) ? content : undefined
       const current = createSource(text, origin, operation, answer === undefined ? 'user' : 'answer', answer, Boolean(explicit), explicit, intake)
       if (fileMode) {
@@ -3167,10 +3167,9 @@ ${node.description}`, origin, scope))
       || /[\u0000\uD800-\uDFFF]/u.test(text) || looksSecret(text)) return null
     for (const id of [...sourceIds].reverse()) {
       const source = store.readSource(id)
-      if (!source?.text || source.rememberedHash !== memoryHash(text) || !sourceAllowsOrigin(source, origin)
-        || rememberContent(source.text) !== text) continue
-      const start = source.text.lastIndexOf(text)
-      if (start < 0) continue
+      if (!source?.text || (source.author !== 'user' && source.author !== 'answer') || !sourceAllowsOrigin(source, origin)) continue
+      const start = source.text.indexOf(text)
+      if (start < 0 || source.text.lastIndexOf(text) !== start) continue
       const proof = { id, token: resources.sourceToken(source), spans: [{ start, end: start + text.length }] }
       if (!documentReferencesRestricted([proof])) return proof
     }
@@ -3194,8 +3193,9 @@ ${node.description}`, origin, scope))
           || resources.sourceToken(latest) !== proof.token || proof.spans?.length !== 1 || documentReferencesRestricted([proof])) throw domainError('revision.conflict')
         const span = proof.spans[0]!
         const text = latest.text.slice(span.start, span.end)
-        if (span.start < 0 || span.end > latest.text.length || !text.trim() || rememberContent(latest.text) !== text
-          || latest.rememberedHash !== memoryHash(text) || looksSecret(text)) throw domainError('invalid.text')
+        if (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end > latest.text.length
+          || span.start >= span.end || !text.trim() || text.length > MAX_MESSAGE_CHARS || /[\u0000\uD800-\uDFFF]/u.test(text)
+          || (latest.author !== 'user' && latest.author !== 'answer') || looksSecret(text)) throw domainError('invalid.text')
         receipt = storage.commit({ operationId, workspace, path: `digest/wiki/remember-${memoryHash(operationId)}.md`,
           expectedRevision: null, action: 'CREATE',
           markdown: formatMemoryDocument({ metadata: { name: [...text.split(/\r?\n/u, 1)[0]!].slice(0, 100).join('') }, body: text }),

@@ -10,7 +10,7 @@ export function registerMemoryTools(ctx: Context, request: (input: MemoryRequest
   answerFileClarification: (questionId: string, text: string, agent: Agent, signal?: AbortSignal) => Promise<boolean>,
   cancelFileClarification: (questionId: string, agent: Agent) => void) {
   const tools = [
-    { op: 'remember', description: '保存用户本轮明确要求记住的原文。只传原文，保留时间、条件和例外。',
+    { op: 'remember', description: '保存用户本轮要求保留的原文片段。text 必须在当前真实用户原文中精确出现，并完整保留时间、条件、归属和例外。不能把改写、模型建议或外部材料当作用户原话。',
       parameters: { text: { type: 'string', required: true }, kind: { type: 'string', enum: memoryKinds }, keywords: { type: 'array', items: { type: 'string' } } },
       input: (session: string, args: { text: string, kind?: typeof memoryKinds[number], keywords?: string[] }): MemoryRequest => ({ op: 'remember', session, ...args }) },
     { op: 'recall', description: '查有关的有效记忆，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope 设为 project 可查当前工作区项目；不能指定其他项目。用户明确深查或需要关系链、跨记录归纳时可设 deep。中文句子中的关系起点可用「」标出完整名称。match 为 semantic 表示按语义相似度找到的候选，使用前依据原文核对实际对象、关系和限制。notes 包含 daily/digest 的命中片段、完整文件行号及可见关联节点；文件检索的 notes.score 是固定加权倒数排名融合的排序分数，不是语义相似度、事实置信度或答案概率，单路降级也使用同一排名单位；结果顺序兼顾检索通道覆盖和文档多样性，不保证 score 降序，请保留返回顺序；可用 memory_read 读取返回 id 的指定行。核验事实时查看用户原文，并遵循 applicability 的替代状态。relations 是带原始证据和适用区间的路径。conflicts 包含成对依据，pendingChanges 仍待确认。partial 表示结果不完整，可参考 reasons 缩小范围。pendingClarification 表示原文件有待澄清的整理内容，不能作为确定事实；相关待确认结果可能附有本轮的 clarification.ref，可用于 memory_clarify。只有不确定性会改变答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',

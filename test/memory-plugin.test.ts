@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
+import { questionOf, routeFixtureTools } from './fixtures/fake-llm.js'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
 /** Actual DSH child owns storage, ingestion, computation, tools and dispatch. The host only calls RPC. */
@@ -47,7 +48,6 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
   assert.ok(replies(events).join('').includes('你好'))
 })
 
-
 test('the plugin injects manual profile and recalls file memory with exact evidence after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, call, ask, agent, bridge } = await setupMemory(t)
   await call('setProfile', { args: [{ role: '后端负责人' }, randomUUID()] })
@@ -81,7 +81,6 @@ test('trusted source aliases retain exact user evidence and refuse reused operat
   } finally { db.close() }
 })
 
-
 test('memory_remember saves exact current user evidence directly into a file', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { call, ask, events } = await setupMemory(t)
   const text = '周报每周五提交，客户故障时另行确认。'
@@ -94,4 +93,19 @@ test('memory_remember saves exact current user evidence directly into a file', {
   assert.ok(detail.markdown.includes(text))
   assert.equal(detail.sources.length, 1)
   assert.equal(detail.sources[0]?.namespace, 'canonical')
+})
+
+test('the actual remember tool accepts a precise fragment from a natural request without a fixed prefix', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const original = '记住我在深圳', text = '我在深圳'
+  const { call, ask } = await setupMemory(t, { decideFirst: routeFixtureTools((request: ModelRequest) => {
+    if (questionOf(request.messages) === original && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'memory_remember', input: { text } } }
+    }
+    return null
+  }) })
+  await ask(original)
+  const saved = (await call('listFiles', { args: [{ kind: 'digest' }] })).items.find(item => item.title.includes(text))
+  assert.ok(saved)
+  const detail = await call('readFile', { args: [saved.identity] })
+  assert.ok(detail?.markdown.includes(text))
 })
