@@ -19,7 +19,7 @@ function fixture(t: { after(fn: () => void): void }) {
   const db = new DatabaseSync(join(root, 'memory.db'))
   const sources = new Map([['s1', { workspace, token: 'v1', text: '我住深圳。我喜欢茶。' }], ['s2', { workspace, token: 'v2', text: '更正：我搬到上海了。' }]])
   const source = (id: string) => sources.get(id)
-  const create = (checkpoint?: (point: FileCheckpoint) => void) => openMemoryDocuments({ db, root, source, checkpoint,
+  const create = (checkpoint?: (point: FileCheckpoint, path?: string) => void) => openMemoryDocuments({ db, root, source, checkpoint,
     managementCurrent: (_, guard) => guard.policyToken === 'policy-v1' })
   t.after(() => { db.close(); rmSync(root, { recursive: true, force: true }) })
   const input: DocumentCommit = { operationId: 'create', workspace, path, expectedRevision: null, markdown: '# 居住地\n深圳', action: 'CREATE', sources: [{ id: 's1', token: 'v1', spans: [{ start: 0, end: 5 }] }], reads: [] }
@@ -52,6 +52,64 @@ for (const point of ['intent', 'replace', 'receipt', 'checkpoint'] as const) {
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM memory_document_revisions').get()?.n, 1)
   })
 }
+
+test('locator cleanup replays a body-free intent and keeps exact historical undo available', t => {
+  const f = fixture(t), documents = f.create()
+  documents.commit(f.input)
+  const independent = { ...f.input, path: 'digest/wiki/tea.md', sources: [{ id: 's1', token: 'v1', spans: [{ start: 5, end: 10 }] }] }
+  const title = `Tea links to [[${path}]] once.`
+  const first = documents.commit({ ...independent, operationId: 'tea', markdown: title })
+  const edited = documents.commit({ ...independent, operationId: 'tea-update', expectedRevision: first.revision,
+    markdown: `Tea links to [[${path}]] twice.`, action: 'REFINE' })
+  documents.eraseSource({ ...f.input.sources[0]!, spans: [{ start: 0, end: 5 }], version: 1, length: 11, hash: 'first' })
+  const disk = join(f.root, workspace, independent.path)
+  let interrupted = false
+  assert.throws(() => f.create((point, changed) => {
+    if (point === 'replace' && changed === independent.path) { interrupted = true; throw new Error('locator crash') }
+  }), /locator crash/)
+  assert.ok(interrupted)
+  assert.ok(!readFileSync(disk, 'utf8').includes(path))
+  const pending = f.db.prepare("SELECT plan FROM memory_file_intents WHERE id LIKE 'documents:locators:%' AND plan IS NOT NULL").get()
+  assert.ok(pending)
+  assert.ok(!String(pending.plan).includes(path))
+
+  const resumed = f.create(), current = resumed.read(workspace, independent.path)!
+  assert.equal(current.revision, memoryFileRevision(readFileSync(disk, 'utf8')))
+  assert.equal(current.usageVersion, edited.usageVersion)
+  assert.equal(resumed.pendingCleanup(), 0)
+  assert.ok(!JSON.stringify(f.db.prepare("SELECT before,after FROM memory_document_revisions WHERE document=?").all(current.id)).includes(path))
+  const undo = resumed.undo({ operationId: 'tea-undo', workspace, documentId: current.id, revision: current.revision, usageVersion: current.usageVersion })
+  const projected = resumed.projectErasedLocators(workspace, title)
+  assert.equal(readFileSync(disk, 'utf8'), projected)
+  assert.equal(undo.revision, memoryFileRevision(projected))
+})
+
+test('a third physical revision keeps locator cleanup pending and does not clobber external content', t => {
+  const f = fixture(t), documents = f.create()
+  documents.commit(f.input)
+  const independent = { ...f.input, path: 'digest/wiki/tea.md', sources: [{ id: 's1', token: 'v1', spans: [{ start: 5, end: 10 }] }] }
+  const markdown = `Tea [[${path}]]`
+  documents.commit({ ...independent, operationId: 'tea', markdown })
+  documents.eraseSource({ ...f.input.sources[0]!, spans: [{ start: 0, end: 5 }], version: 1, length: 10, hash: 'first' })
+  const disk = join(f.root, workspace, independent.path)
+  let started = false
+  assert.throws(() => f.create(point => {
+    if (point === 'intent' && f.db.prepare("SELECT 1 FROM memory_file_intents WHERE id LIKE 'documents:locators:%' AND plan IS NOT NULL").get()) {
+      started = true; throw new Error('locator crash')
+    }
+  }), /locator crash/)
+  assert.ok(started)
+  const external = `${markdown}\nVisible only on disk.`
+  writeFileSync(disk, external)
+  const resumed = f.create()
+  assert.equal(readFileSync(disk, 'utf8'), external)
+  assert.equal(resumed.read(workspace, independent.path), null)
+  assert.ok(resumed.pendingCleanup() > 0)
+  writeFileSync(disk, markdown)
+  resumed.recover()
+  assert.ok(!readFileSync(disk, 'utf8').includes(path))
+  assert.equal(resumed.pendingCleanup(), 0)
+})
 
 test('CORRECT persists exact old fragment; undo creates a revision and does not cover later edits', t => {
   const f = fixture(t), documents = f.create()

@@ -642,7 +642,7 @@ test('an independent stopped range remains addressable after its former digest i
   assert.equal(await f.client.readFile(f.identity), null)
 })
 
-test('an erased locator is suppressed in independent evidence reads and its disk copy keeps cleanup pending', async t => {
+test('an erased locator is removed from independent Markdown and history across restart', async t => {
   const f = await fixture(t), source = f.store.readSource(f.sourceId)!
   const linked = f.documents.commit({ workspace: f.identity.workspace, operationId: randomUUID(), path: 'digest/wiki/linked.md',
     markdown: `Monday tea. [[${f.created.path}]] [[  ${f.created.path}#original  |retained citation]]\n\n| Source |\n| --- |\n| [[${f.created.path}\\|citation]] |`, action: 'CREATE', expectedRevision: null, reads: [],
@@ -661,11 +661,13 @@ test('an erased locator is suppressed in independent evidence reads and its disk
   const read = f.owner.runtime.handle({ op: 'file_read', session, id: linked.documentId, evidence: true }, { session, conversation: session })
   assert.match(read, /Monday tea/)
   assert.ok(!read.includes(f.created.path))
-  assert.ok(readFileSync(join(f.store.fileRoot, f.identity.workspace, linked.path), 'utf8').includes(f.created.path))
-  assert.ok(f.owner.runtime.cleanupPending() > 0)
+  assert.ok(!readFileSync(join(f.store.fileRoot, f.identity.workspace, linked.path), 'utf8').includes(f.created.path))
+  const copies = f.store.db.prepare('SELECT before,after FROM memory_document_revisions').all()
+  assert.ok(!JSON.stringify(copies).includes(f.created.path))
+  assert.equal(f.owner.runtime.cleanupPending(), 0)
 })
 
-test('an escaped locator retained only in correction metadata still counts as a pending physical copy', async t => {
+test('an escaped locator retained only in correction metadata is physically removed', async t => {
   const f = await fixture(t), source = f.store.readSource(f.sourceId)!
   const shared = { workspace: f.identity.workspace, reads: [], sources: [{ id: source.id, token: memorySourceToken(source),
     spans: [{ start: 26, end: source.length }] }] }
@@ -679,7 +681,9 @@ test('an escaped locator retained only in correction metadata still counts as a 
   const original = (await f.client.readFile(f.identity))!
   await f.client.forgetFile({ operationId: randomUUID(), identity: original.identity, version: original.version })
   await f.reopen()
-  assert.ok(f.owner.runtime.cleanupPending() > 0)
+  assert.equal(f.owner.runtime.cleanupPending(), 0)
+  const metadata = f.store.db.prepare('SELECT corrections FROM memory_documents WHERE id=?').get(after.documentId)?.corrections
+  assert.ok(!String(metadata).includes(f.created.path))
   const reader = randomUUID()
   const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: before.documentId, evidence: true }, { session: reader, conversation: reader })
   assert.match(packet, /Tea Monday/)
@@ -935,13 +939,14 @@ test('saving the displayed projection unchanged preserves the accepted revision 
   const created = await f.client.createFile({ operationId: randomUUID(), title: `Note: before [[\t${forgotten.path}]]`, text })
   const original = (await f.client.readFile(created.identity))!, disk = join(f.store.fileRoot, created.identity.workspace, original.path)
   await f.client.forgetFile({ operationId: randomUUID(), identity: forgotten.identity, version: forgotten.version })
+  await f.owner.runtime.wake()
   const displayed = (await f.client.readFile(created.identity))!
   assert.match(displayed.editor?.title ?? '', /^Note: before +$/u)
   const input = { operationId: randomUUID(), identity: created.identity, version: displayed.version, ...displayed.editor! }
   const receipt = await f.client.editFile(input)
   assert.equal(receipt.contentRevision, displayed.version.contentRevision)
   assert.equal(receipt.usageVersion, displayed.version.usageVersion)
-  assert.equal(readFileSync(disk, 'utf8'), original.markdown)
+  assert.equal(readFileSync(disk, 'utf8'), displayed.markdown)
   assert.equal(f.store.readSource(input.operationId), null)
   assert.equal(f.store.db.prepare('SELECT count(*) n FROM memory_document_revisions WHERE document=?').get(created.identity.id)?.n, 1)
   await f.reopen()
@@ -962,7 +967,6 @@ test('undo restores the projected historical body and its actual physical hash',
   const receipt = await f.client.undoFile(undo)
   assert.equal(readFileSync(disk, 'utf8'), projected.markdown)
   assert.equal(receipt.contentRevision, memoryFileRevision(projected.markdown))
-  assert.notEqual(receipt.contentRevision, projected.version.contentRevision)
   await f.reopen()
   assert.deepEqual(await f.client.undoFile(undo), receipt)
   const restored = (await f.client.readFile(created.identity))!

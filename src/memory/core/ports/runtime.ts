@@ -31,7 +31,7 @@ export interface MemoryRuntimeResources {
   semanticCopiesCleared(ids: readonly number[], revision: number): boolean
   openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean, onRenamed?: (input: DocumentRename) => void, external?: { current(input: DocumentExternalEdit): boolean, committed(input: DocumentExternalEdit): void, noteCommitted(): void }): MemoryNotes
   openDocuments(readable: (id: string) => boolean, onCommitted: (receipt: DocumentReceipt) => void, onRenamed?: (input: DocumentRename) => void, policy?: { current(input: DocumentExternalEdit): boolean, managementCurrent(before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot, staged?: MemorySource): boolean,
-    manualCurrent?(source: MemorySource): boolean,
+    manualCurrent?(source: MemorySource): boolean, locatorCleaned?(): void,
     expandRestrictions?(refs: readonly DocumentSourceRef[]): DocumentSourceRef[], deferRecovery?: boolean }): MemoryDocuments
   createCleanup(callbacks: {
     clearSemantic(ids: readonly number[], revision: number): boolean

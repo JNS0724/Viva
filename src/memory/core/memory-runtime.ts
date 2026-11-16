@@ -773,6 +773,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()),
     managementCurrent: (before, guard, after, staged) => filePolicy?.managementCurrent(before, guard.policyToken, after, staged) === true,
     expandRestrictions: refs => manualFileCopyRefs(refs, store, resources.sourceToken),
+    locatorCleaned: renamedDocument,
     manualCurrent: source => !closed && source.author === 'manual' && source.id === source.operation
       && !store.readSource(source.id) && !store.deliveredSource(source.id) && !store.sourceExcluded(source.id) && !sourceBlocked(source)
       && source.text !== null && source.length === source.text.length && source.hash === memoryHash(source.text) && !looksSecret(source.text)
@@ -1133,7 +1134,14 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const DOCUMENT_CLEANUP = 'memory.document-cleanup'
   effects.runs(DOCUMENT_CLEANUP, async jobs => {
     // Recovery may also finish a prepared revision, so it shares the physical send fence.
-    await runDocumentMutation(() => { notes?.storage.recover(); documents?.recover(); fileIndex?.recover() })
+    const revision = store.revision(), pending = documents?.pendingCleanup()
+    await runDocumentMutation(() => {
+      notes?.storage.recover()
+      documents?.recover()
+      if (store.revision() !== revision) syncFileIndex()
+      fileIndex?.recover()
+    })
+    if (store.revision() !== revision || documents?.pendingCleanup() !== pending) publish(store.revision(), [])
     return new Map(jobs.map(job => [job.key, notes?.storage.pendingCleanup() || documents?.hasPendingCleanup(job.key) || fileIndex?.pendingCleanup() ? 'retry' as const : 'done' as const]))
   })
   function withdrawNotes(id: string) {

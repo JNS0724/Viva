@@ -31,7 +31,7 @@ const failure = (code: 'not.found' | 'revision.conflict' | 'invalid.text') => ne
 /** Trusted host management only. Model tools must use the read policy's ordinary read/list paths.
  * This service owns no mutation or request fence; validate must run inside the runtime's sole fence. */
 export function createMemoryFileManagement({ policy, documents, workspaces, hash, daily, editing = false }: {
-  policy: Policy, documents: Pick<MemoryDocuments, 'undoCandidate' | 'registered'>, workspaces(): readonly string[], hash(text: string): string, daily?: DailyReads, editing?: boolean,
+  policy: Policy, documents: Pick<MemoryDocuments, 'undoCandidate' | 'registered'> & Partial<Pick<MemoryDocuments, 'projectErasedLocators'>>, workspaces(): readonly string[], hash(text: string): string, daily?: DailyReads, editing?: boolean,
 }) {
   function undoCandidate(view: MemoryDocumentManagementView) {
     if (view.kind !== 'digest') return null
@@ -120,7 +120,8 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     const sources = daily.sources(record.sources)
     if (!sources) return null
     const snapshot = daily.ledger.snapshot(record, restrictionId)
-    const markdown = snapshot && daily.sources(record.sources, snapshot) ? snapshot : null
+    const projected = snapshot ? documents.projectErasedLocators?.(record.workspace, snapshot) ?? snapshot : null
+    const markdown = projected && daily.sources(record.sources, projected) ? projected : null
     return { ...item, stoppedSnapshot: { restrictionId, markdown, sources } }
   }
   function list(input: MemoryFileListRequest, allows: Allows): MemoryFileListResult {

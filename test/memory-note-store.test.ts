@@ -5,8 +5,10 @@ import { join } from 'node:path'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
+import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { openMemoryFileJournal } from '../src/memory/node/memory-file-journal.ts'
-import { memorySourceToken } from '../src/memory/node/source-identity.ts'
+import { openMemoryFileRestrictions } from '../src/memory/node/memory-file-restrictions.ts'
+import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { scratch } from './fixtures/scratch.js'
@@ -46,6 +48,38 @@ test('session JSONL owns role-separated source versions; request replay is idemp
 })
 const dbColumns = (store: ReturnType<typeof openMemoryStore>, table: string) =>
   (store.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name)
+
+test('locator cleanup scrubs the accepted daily note and stopped snapshot with independent evidence', t => {
+  const { store, notes, key, commit } = setup(t)
+  const origin = noteSource(store), path = 'digest/wiki/retire.md', workspace = memorySourceWorkspace(origin)
+  const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source: id => {
+    const source = store.readSource(id)
+    if (source?.text) return { workspace: memorySourceWorkspace(source), token: memorySourceToken(source), text: source.text }
+  } })
+  const retire = { id: origin.id, token: memorySourceToken(origin) }
+  documents.commit({ operationId: 'independent-generated', workspace, path, expectedRevision: null,
+    markdown: 'Retired source', action: 'CREATE', sources: [retire], reads: [] })
+  assert.ok(commit(`Title [[${path}]]`, `Independent content with [[${path}]]`))
+  const note = notes.read(key)!, target = { kind: 'daily' as const, workspace, key }
+  const restrictions = openMemoryFileRestrictions(store.db)
+  restrictions.add({ ...target, id: 'daily-stopped', contentRevision: note.fileRevision, usageVersion: note.revision, sources: notes.references(key) }, note.document)
+
+  assert.ok(origin.hash)
+  documents.eraseSource({ ...retire, version: origin.version, length: origin.length, hash: origin.hash,
+    spans: [{ start: 0, end: origin.length }] })
+  documents.recover()
+
+  const cleaned = notes.read(key)!
+  const disk = readFileSync(join(store.fileRoot, workspace, note.path), 'utf8')
+  assert.equal(cleaned.revision, note.revision)
+  assert.equal(cleaned.fileRevision, memoryFileRevision(disk))
+  assert.ok(disk.includes('Independent content'))
+  assert.ok(!disk.includes(path))
+  assert.deepEqual(restrictions.forTarget(target)[0]?.sources, notes.references(key))
+  assert.equal(restrictions.forTarget(target)[0]?.contentRevision, cleaned.fileRevision)
+  assert.equal(restrictions.snapshot(target, 'daily-stopped'), disk)
+  assert.equal(documents.pendingCleanup(), 0)
+})
 
 test('independent user evidence survives a third-party replacement of generated transcript text', t => {
   const { store, notes, source, key } = setup(t)
