@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
+import { autoTitle } from './history-schema.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
 import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
@@ -331,12 +332,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
     store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
     const host = typeof entry.next === 'string' ? db.get(entry.next) : null
-    const titleSource = host?.conversation.title && !host.conversation.titleCustom ? host.messages.find(row => row.role === 'user')?.sourceId : undefined
+    const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
     const end = pendingEnds.get(snapshot.taskId)
     const captured = end?.runId === snapshot.runId ? end.memory : undefined
     const memory = captured ? combineMemoryProvenance(entry.requestMemory ?? null, captured) : undefined
     // A title can change independently of the task, including after a derived feed continuation.
-    const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(titleSource && memory && rawMemorySources(memory).includes(titleSource))
+    const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
+      titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
+    )
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
       host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview, token: randomUUID().replaceAll('-', ''),
       // Its background, for a note given while the conversation is on another topic.

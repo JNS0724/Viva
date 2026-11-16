@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -24,8 +24,9 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
 type Started = { ok: true, task: { id: string, segmentId: string } }
 
 /** `uncancelled`: a try once asked for runs even if let go, to see that the run alone guards it. */
-function setup(t: TestContext, { uncancelled = false, captureReportMemory }: {
+function setup(t: TestContext, { uncancelled = false, captureReportMemory, mainMessages = [{ role: 'user', text: '做周报', receipt: null }] }: {
   uncancelled?: boolean, captureReportMemory?: Parameters<typeof createTaskRuntime>[0]['captureReportMemory'],
+  mainMessages?: Parameters<ReturnType<typeof openHistoryDb>['save']>[1],
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-runtime-tx-'))
   const app = openAppDb({ file: path.join(dir, 'app.db') })
@@ -35,7 +36,7 @@ function setup(t: TestContext, { uncancelled = false, captureReportMemory }: {
   const core = createEventCore({ app, publish: (push) => { window.push(push) } })
   const effects = createEffects({ db: app.db, apply: (kind, data, write) => core.apply(kind, data, write) })
   const history = openHistoryDb({ db: app.db })
-  const main = history.save(history.create({ sessionId: 'main', cwd: '/w' }), [{ role: 'user', text: '做周报', receipt: null }])
+  const main = history.save(history.create({ sessionId: 'main', cwd: '/w' }), mainMessages)
   /** Writes that fail, as a full disk would: the task store's ending, or what the task said. */
   const failing = { ending: false, words: false }
   const realStore = createTaskStore({ db: app.db })
@@ -92,7 +93,7 @@ function setup(t: TestContext, { uncancelled = false, captureReportMemory }: {
     assert.ok(entry, `task ${taskId} kept`)
     return { ok: true, task: { id: taskId, segmentId: entry.segmentId } }
   }
-  return { start, window, closed, tasks, make, failing, snapshots, reported, runDue, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
+  return { start, window, closed, tasks, make, failing, snapshots, reported, runDue, main, due: () => due.length, status, kept, ended, history, reports, store: realStore, effects: () => effects.list() }
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
@@ -330,4 +331,31 @@ test('a report retains the original brief proof after the owner snapshot changes
   const payload = report.payload as { topic: string | null, memory: MemoryProvenance }
   assert.equal(payload.topic, null)
   assert.deepEqual(payload.memory.sources, ['old-brief-source', 'new-result-source'])
+})
+
+test('an automatically recomputed report topic uses the evidence of the row that supplies its title', async t => {
+  const blankSource = randomUUID()
+  const titleSource = randomUUID()
+  for (const [caseName, sourceId, expectedTopic] of [
+    ['unproved title', blankSource, null],
+    ['proved title', titleSource, 'Independent text'],
+  ] as const) {
+    await t.test(caseName, async subtest => {
+      const memory: MemoryProvenance = { dependencies: [], sources: [sourceId], epoch: 0, turnOnly: false }
+      const { tasks, history, main, effects } = setup(subtest, {
+        captureReportMemory: async () => memory,
+        mainMessages: [
+          { role: 'user', text: '', receipt: null, sourceId: blankSource },
+          { role: 'user', text: 'Independent text', receipt: null, sourceId: titleSource },
+        ],
+      })
+      const { taskId } = await tasks.agent.start('Generic task instructions', undefined, async () => memory)
+      history.eraseMemoryCopies([randomUUID()])
+      assert.equal(history.get(main.id)?.conversation.title, 'Independent text')
+      tasks.dsh.receive({ type: 'task_end', taskId, stopReason: 'end_turn' })
+      await new Promise(resolve => setImmediate(resolve))
+      const [report] = effects()
+      assert.equal((report?.payload as { topic: string | null }).topic, expectedTopic)
+    })
+  }
 })
