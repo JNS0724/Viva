@@ -84,7 +84,8 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
       const output = outputEvent(event)
       if (output) return projectNativeOutput(output)
       if (event.type === 'llm/retry') return projectNativeRetry(event)
-      if (event.type === 'tool/call' || event.type === 'tool/result') return projectToolCompanion(event)
+      if (event.type === 'tool/call' || event.type === 'tool/result' || event.type === 'tool/ptc-dispatch-start'
+        || event.type === 'tool/ptc-dispatch') return projectToolCompanion(event)
       const compaction = asNativeCompactionCopy(event)
       return compaction ? projectNativeCompaction(compaction) : undefined
     },

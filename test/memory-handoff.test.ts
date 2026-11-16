@@ -16,6 +16,7 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
+import { eraseColdNativeCopies } from '../plugins/memory/lib/native/maintenance.ts'
 import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
 import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { recordCompactionInputs } from '../plugins/memory/lib/native/compaction-inputs.ts'
@@ -70,10 +71,15 @@ function contextGeneration(directory: string, session: string): number {
   finally { db.close() }
 }
 
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, fileMode = false } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, fileMode = false, ptc = false } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
+  if (ptc) {
+    const profile = join(directory, 'dsh', 'profiles', 'viva')
+    mkdirSync(profile, { recursive: true })
+    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
+  }
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
   delete process.env.DEEPSEEK_API_KEY
@@ -195,6 +201,80 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
     assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   } finally { db.close() }
+})
+
+for (const nextFails of [false, true]) test(`real PTC memory reads archive root/leaf and erase native/spill copies ${nextFails ? 'without a later send' : 'with the normal next send'}`, { timeout: 45_000 }, async t => {
+  const prompt = '执行 PTC 记忆读取验收'
+  const body = 'The PTC receipt PTC_BODY is independent of the question.' + (nextFails ? '' : ' Long receipt paragraph carrying evidence.'.repeat(85))
+  let fileId: string | undefined, requested = false
+  const app = await setup(t, request => {
+    const routed = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
+      : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).findLast(row => row.words.startsWith(prompt))
+    if (!fileId) return null
+    if (routed && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) return { tool: { name: 'start_background_task', input: { title: prompt, brief: 'PTC task execution' } } }
+    if (questionOf(request.messages) !== 'PTC task execution') return null
+    if (!requested) {
+      requested = true
+      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); return note;` } } }
+    }
+    return { text: 'PTC completed.' }
+  }, { dailyNotes: true, fileMode: true, ptc: true })
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
+  assert.equal(created.status, 'applied')
+  fileId = created.receipt.identity.id
+  const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
+  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  try {
+    if (nextFails) db.exec(`CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
+      WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`)
+    await app.ask(prompt)
+    assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 2),
+      JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
+    if (!nextFails) assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
+    const calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
+    assert.equal(calls.length, 2, JSON.stringify({ calls, results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
+      errors: app.events.filter(event => event.type === 'error') }))
+    assert.ok(calls.every(row => row.result !== null))
+    const identities = calls.map(row => JSON.parse(String(row.identity)) as { ptc?: unknown })
+    assert.equal(identities.filter(row => row.ptc).length, 1)
+    assert.equal(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'run_code')).includes('PTC_BODY')), !nextFails)
+    const spills = db.prepare('SELECT intent,file FROM owner_native_spills').all()
+    if (!nextFails) {
+      assert.equal(spills.length, 2, JSON.stringify(spills))
+      assert.ok(spills.every(row => row.file !== null))
+      for (const row of spills) assert.ok(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path))
+    }
+    await app.stopBackend()
+    // The native log can commit before the leaf endpoint receipt reaches the owner.
+    db.prepare("UPDATE owner_native_tool_calls SET result=NULL WHERE json_extract(identity,'$.ptc') IS NOT NULL").run()
+    if (nextFails) db.exec('DROP TRIGGER stop_after_ptc_read')
+    const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', fileMode: true,
+      compute: () => null, route: () => null, quiesce: async () => {} })
+    try {
+      await owner.recover()
+      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+    } finally { await owner.close() }
+    const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
+      isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
+    await erase()
+    await erase()
+    assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NULL').get()?.n, 0)
+    assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_spills WHERE erased=0').get()?.n, 0)
+    for (const row of spills) assert.equal(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path), false)
+    const catalog = new Context(), mounted = await catalog.plugin(jsonl, { root: sessionsRoot })
+    try {
+      for (const row of calls) {
+        const call = JSON.parse(String(row.identity)) as {session:string}, result = JSON.parse(String(row.result)) as {seq:number}
+        const reader = await catalog.sessionPersistence.open(SessionId(call.session), 'read')
+        try {
+          const event = (await reader.read()).events[result.seq]
+          assert.ok(event?.type === 'tool/result' || event?.type === 'tool/ptc-dispatch')
+          assert.deepEqual(event.type === 'tool/result' ? event.data.message.content : event.data.content, [])
+        } finally { await reader.close() }
+      }
+    } finally { await mounted.dispose() }
+  } finally { await app.stopBackend(); db.close() }
 })
 
 test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {

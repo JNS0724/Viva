@@ -11,6 +11,7 @@ import { APP_DB_PRAGMAS, transaction } from './sqlite.ts'
 import { createNativeOutputAttempts } from './native-output-attempts.ts'
 import { createNativeOutputJournal } from './native-output-journal.ts'
 import { createNativeToolReads } from './native-tool-reads.ts'
+import { createNativeSpills } from './native-spills.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
 import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
 
@@ -90,6 +91,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   const surface = nativeSurfaceInvalidation(db)
   const outputAttempts = createNativeOutputAttempts(db)
   const toolReads = createNativeToolReads(db)
+  const spills = createNativeSpills(db)
   const derived = createNativeDerivedMessages(db)
   const outputJournal = createNativeOutputJournal(db, surface.mark)
   const cleanupReceipts = createNativeErasureReceipts(db)
@@ -209,6 +211,15 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     })
   }
 
+  function spillOperations() {
+    return outputPlans.all().map(row => {
+      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
+      const targets = () => spills.affected(toolReads.affected(ranges), outputAttempts.affected(ranges, memoryIds ?? []))
+      return { operationId: z.uuid().parse(row.operation), targets, complete: spills.complete,
+        pending: () => targets().length > 0 }
+    }).filter(operation => operation.pending())
+  }
+
   function derivedMessageOperations() {
     return outputPlans.all().flatMap(row => {
       const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
@@ -283,7 +294,7 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   }
 
   const unsettled = db.prepare('SELECT DISTINCT operation FROM owner_native_original_publications WHERE published=0')
-  return { operations, operation, outputOperations, toolResultOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
+  return { operations, operation, outputOperations, toolResultOperations, spillOperations, derivedMessageOperations, recoveryMessageOperations, unsettledReceipts, acknowledgeCatalog,
     hasPlans: () => outputPlans.all().some(row => !cleanupReceipts.complete(String(row.operation))),
     finishRecoveredOutput: outputAttempts.finish, finishRecoveredTool: toolReads.finish,
     pendingOriginalOperations: () => new Set(unsettled.all().map(row => String(row.operation))),

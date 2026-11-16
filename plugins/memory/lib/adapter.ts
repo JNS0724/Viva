@@ -31,6 +31,7 @@ import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from './contex
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
 import { trackNativeOutputAttempts } from './native/output-attempts.ts'
 import { trackNativeToolReads, type NativeToolLease } from './native/tool-reads.ts'
+import { trackNativeSpills } from './native/track-spills.ts'
 import { recordCompactionInputs, recordCompactionRequest } from './native/compaction-inputs.ts'
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
@@ -93,6 +94,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const transport = createMemoryTransport(owner)
   const outputAttempts = config.fileMode ? trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput) : null
   const toolReads = config.fileMode ? trackNativeToolReads(owner.finishNativeToolRead) : null
+  if (toolReads) trackNativeSpills(ctx, owner, toolReads)
   const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
     const proof = deliveries.get(message.id)
     if (!proof) return undefined

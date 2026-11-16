@@ -68,3 +68,42 @@ test('compaction input proof precedes a cancelled summary and preserves an indep
   assert.doesNotMatch(JSON.stringify(projectNativeCompaction(failure)), /erased original/)
   assert.equal(copies.has(nextFailure.seq), false)
 })
+
+test('PTC read authority follows actual ancestor tokens, rejects lookalike dispatch and retires at settlement', () => {
+  const session = Session.create(SessionId('ptc-chain')), signal = new AbortController().signal, tools = toolSet()
+  const finished: NativeToolCall[] = [], reads = trackNativeToolReads(call => { finished.push(call) })
+  reads.assembly(session, signal, tools)
+  reads.step(session, 1, 1, signal)
+  const rootId = ToolCallId('program'), childId = ToolCallId('program:ptc:1'), nestedId = ToolCallId('program:ptc:2')
+  const root: ToolExecution = { callId: rootId, rootCallId: rootId, name: 'run_code', arguments: {}, signal, toolSet: tools, token: token() }
+  reads.observe(session, session.append('tool/call', { turn: 1, step: 1, callId: rootId, name: root.name, arguments: '{}' }))
+  reads.bind(session, root)
+  const rootLease = reads.acquire(session, root, 0)
+  assert.ok(rootLease)
+  const child: ToolExecution = { ...root, callId: childId, name: 'delegate', parent: root.token, signal: new AbortController().signal, token: token() }
+  const start = session.append('tool/ptc-dispatch-start', { rootCallId: rootId, parentCallId: rootId, subCallId: childId, name: child.name, arguments: {} })
+  reads.observe(session, start)
+  for (const forged of [{ ...child, parent: token() }, { ...child, arguments: { different: true } }, { ...child, rootCallId: ToolCallId('other') }]) {
+    reads.bind(session, forged)
+    assert.equal(reads.acquire(session, forged, 0), undefined)
+  }
+  reads.bind(session, child)
+  const childLease = reads.acquire(session, child, 0)
+  assert.ok(childLease)
+  const nested: ToolExecution = { ...child, callId: nestedId, name: 'memory_read', parent: child.token, token: token() }
+  const inner = session.append('tool/ptc-dispatch-start', { rootCallId: rootId, parentCallId: childId, subCallId: nestedId, name: nested.name, arguments: {} })
+  reads.observe(session, inner)
+  reads.bind(session, nested)
+  const lease = reads.acquire(session, nested, 0)
+  assert.ok(lease)
+  assert.deepEqual(lease.calls.map(call => call.callId), [nestedId, childId, rootId])
+  assert.equal(lease.current(), true)
+  reads.observe(session, session.append('tool/ptc-dispatch', { ...inner.data, isError: false, content: [] }))
+  assert.equal(lease.current(), false)
+  assert.equal(childLease.current(), true)
+  assert.deepEqual(finished.map(call => call.callId), [nestedId])
+  reads.assembly(session, signal, tools)
+  reads.step(session, 1, 2, signal)
+  assert.equal(rootLease.current(), false)
+  assert.equal(childLease.current(), false)
+})

@@ -6,6 +6,7 @@ import type { NativeToolResult } from '../../../../src/memory/node/native-tool-r
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
 import { inspectNativeOutputWindow } from './project-native-outputs.ts'
+import { ptcResultMatches, ptcStartMatches } from './project-native-ptc.ts'
 
 type Maintenance = NonNullable<ReturnType<typeof openNativeOriginalMaintenance>>
 
@@ -37,9 +38,15 @@ export async function reconcileNativeReceipts(root: string, owner: Maintenance) 
         const origin = call.session === sessionId
         if (!origin && call.seq >= inheritedEventCount) continue
         const event = events[call.seq]
-        if (event?.type !== 'tool/call' || nativeEventDigest(event) !== call.digest) continue
+        if (!(call.ptc ? ptcStartMatches(event, call) : event?.type === 'tool/call') || !event || nativeEventDigest(event) !== call.digest) continue
         for (const result of events) {
           if (!origin && result.seq >= inheritedEventCount) break
+          if (call.ptc && event.type === 'tool/ptc-dispatch-start') {
+            if (!ptcResultMatches(event, result)) continue
+            const terminal = { seq: result.seq, digest: nativeEventDigest(result) }
+            results.get(call.id)!.set(JSON.stringify(terminal), terminal)
+            continue
+          }
           if (result.type !== 'tool/result' || result.surfaceOp !== 'append' || result.data.turn !== call.turn
             || result.data.step !== call.step || result.data.message.toolCallId !== call.callId
             || result.sourceEventSeqs?.length !== 1 || result.sourceEventSeqs[0] !== call.seq) continue

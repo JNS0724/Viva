@@ -13,6 +13,7 @@ import { eraseNativeRecoveryMessages } from './erase-native-recovery-messages.ts
 import type { NativeOutputTrace } from './publish-native-event-copies.ts'
 import { reconcileNativeReceipts } from './reconcile-native-receipts.ts'
 import { auditNativeErasure } from './audit-native-erasure.ts'
+import { eraseNativeSpill } from './local-spills.ts'
 
 export class PendingNativePublication extends Error {}
 
@@ -48,6 +49,9 @@ export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageR
     // before another kind of erasure can alter the same session artifact.
     tasks.sort((a, b) => Number(b.pending) - Number(a.pending))
     for (const task of tasks) await task.run()
+    for (const operation of owner.spillOperations()) {
+      for (const target of operation.targets()) if (await eraseNativeSpill(target, isCold)) operation.complete(target.id)
+    }
     await auditNativeErasure(root, owner)
   } catch (error) {
     if (owner.carriesUnsettledPublication()) throw new PendingNativePublication('Native session publication must recover before startup', { cause: error })

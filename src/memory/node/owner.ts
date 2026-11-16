@@ -31,6 +31,7 @@ import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
 import { createNativeToolReads, type NativeToolCall } from './native-tool-reads.ts'
 import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
+import { createNativeSpills } from './native-spills.ts'
 import { createNativeDerivedMessages } from './native-derived-messages.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
@@ -89,7 +90,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const dispatch = createMemoryDispatch(store, (items, at) => runtime.dependenciesCurrent(items, at),
     (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
   const nativeToolReads = createNativeToolReads(db)
-  const toolReadScope = new AsyncLocalStorage<{ call: NativeToolCall, current(): boolean }>()
+  const nativeSpills = createNativeSpills(db)
+  const toolReadScope = new AsyncLocalStorage<{ call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }>()
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
     dailyNotes: options.dailyNotes ?? true, fileMode: options.fileMode ?? false,
     // P2 captures completed daily turns while retaining the existing fact engine until the planned switch.
@@ -110,7 +112,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!files.length || scope?.call.session !== session) return dispatch.recordFiles(session, files, sources)
       if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(session)) throw new Error('Native tool changed before its read was committed')
       store.tx(() => {
-        nativeToolReads.record(scope.call, files, sources)
+        for (const call of scope.calls) {
+          if (call.session !== session || call.generation !== scope.call.generation) throw new Error('Native tool ancestor changed its read origin')
+          nativeToolReads.record(call, files, sources)
+        }
         dispatch.recordFiles(session, files, sources)
       })
     },
@@ -1090,7 +1095,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     finishNativeOutput: nativeOutputs.finish,
     finishNativeToolRead: nativeToolReads.finish,
-    withNativeToolRead<T>(scope: { call: NativeToolCall, current(): boolean }, read: () => T): T {
+    beginNativeSpill: nativeSpills.begin, finishNativeSpill: nativeSpills.finish,
+    withNativeToolRead<T>(scope: { call: NativeToolCall, calls: readonly NativeToolCall[], current(): boolean }, read: () => T): T {
       return toolReadScope.run(scope, read)
     },
     acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string) {
