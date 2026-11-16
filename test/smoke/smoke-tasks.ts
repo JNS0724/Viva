@@ -1,6 +1,7 @@
 import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeHooks, type SmokeWindow } from './smoke-kit.ts'
 import { columnSteps } from './smoke-column.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
+import { providerReceivedTaskBrief, readTaskFirstRequest } from '../fixtures/task-first-request.ts'
 
 /**
  * Background tasks on the real dsh: 后台做 starts a task of its own at any time, also while a turn waits on an
@@ -92,15 +93,12 @@ async function agentStartSteps(win: SmokeWindow, outDir: string, expect: Expect,
   expect(front.answers.some((text: string) => text.includes('已经交给后台')) && !front.answers.some((text: string) => text.includes(`收到：「${OTHER_ASK}」`))
     && !front.answers.some((text: string) => /请求 ID|commit_route/.test(text)),
     'the agent should say it handed the work over, the task answering on its own card, no routing step showing', front)
-  // The task's own session begins with its brief: nothing of the conversation comes before it.
-  const firstWords = (request: { messages?: Array<{ content?: unknown }> }) => {
-    const content = request.messages?.[0]?.content
-    const text = typeof content === 'string' ? content : Array.isArray(content) ? (content[0] as { text?: string })?.text ?? '' : ''
-    // The owner appends a unique delivery identity; it is metadata, not copied conversation history.
-    return text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
-  }
-  const fresh = (hooks.model?.()?.requests ?? []).some((request: unknown) => firstWords(request as { messages?: Array<{ content?: unknown }> }) === OTHER_ASK)
-  expect(fresh, 'the task should start afresh from its brief, not from the conversation')
+  expect(providerReceivedTaskBrief(hooks.model?.()?.requests ?? [], OTHER_ASK), 'the task model should receive its exact brief')
+  // Provider messages can begin with an empty recovery frame and a converted
+  // system persona. Audit native originals instead of discarding any history.
+  const taskId: unknown = await run(win, `(${cardOf(OTHER_ASK)})?.dataset.task`)
+  const fresh = await readTaskFirstRequest(hooks.userData, typeof taskId === 'string' ? taskId : '', OTHER_ASK)
+  expect(fresh.ok, 'the task should start afresh from its brief, not from the conversation', fresh)
   await run(win, `(${cardOf(OTHER_ASK)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-agent-start')
