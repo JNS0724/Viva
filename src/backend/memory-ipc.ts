@@ -4,9 +4,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
 import type { MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
-import { MAX_MEMORY_CHARS } from '../memory/contracts/text-limits.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
-import type { IpcResults, MemoryFileSourceView, MemorySummaryView } from '../shared/ipc-results.ts'
+import type { IpcResults, MemoryFileSourceView } from '../shared/ipc-results.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -42,11 +41,6 @@ export function copyIntoWorkspace(files: readonly string[], cwd: string): Array<
   })
 }
 
-function assertMemoryText(value: unknown) {
-  if (typeof value !== 'string' || value.length > MAX_MEMORY_CHARS * 2) throw new Error('invalid memory text')
-  return value
-}
-
 async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<MemoryFileWriteResult> {
   try { return { status: 'applied', receipt: await write } }
   catch (error) {
@@ -57,51 +51,23 @@ async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<Memo
   }
 }
 
-export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope, fileMode = false }: {
+export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope }: {
   client: VivaMemoryClient,
   habits: () => { text: string, samples: number },
   cwd: () => string,
   chooseDocs: () => Promise<string[] | null>,
   projectScope?: () => ReturnType<typeof import('./memory-project.ts').memoryProjectScope>,
   sourceLink?: (sourceId: string, segmentId?: string) => string | null,
-  fileMode?: boolean,
 }) {
   const handle = handlerOf(ipcMain)
-  const linkFor = (edge: { sourceId: string, conversationId: string | null }) =>
-    edge.conversationId ? sourceLink?.(edge.sourceId, edge.conversationId) ?? null : null
-  const withLinks = (item: Awaited<ReturnType<VivaMemoryClient['listMemories']>>['items'][number]) => ({
-    ...item, evidence: item.evidence.map(edge => ({
-      ...edge, link: linkFor(edge),
-    })),
-  })
-  const list = async (query = '') => {
-    const result = await client.listMemories(query)
-    return { ...result, items: result.items.map(withLinks) }
-  }
-  const summary = ({ generated, items }: Awaited<ReturnType<typeof client.profileView>>): MemorySummaryView => ({
-    generated,
-    items: items.map(({ text, dependency, evidence }) => ({
-      id: dependency.id, text, source: evidence ? { text: evidence.text, link: linkFor(evidence) } : null,
-    })),
-  })
   handle('memory:get', async () => {
-    if (fileMode) {
-      const profile = await client.profile(), onboarding = await client.onboarding()
-      const cleanupPending = await client.cleanupPending(), revision = await client.revision()
-      const project = projectScope?.()
-      const fileProfile = await client.fileProfile(project)
-      return { fileMode: true, profile, items: [], total: 0, onboarding, cleanupPending, revision, habits: habits(),
-        fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
-    }
+    const profile = await client.profile(), onboarding = await client.onboarding()
+    const cleanupPending = await client.cleanupPending(), revision = await client.revision()
     const project = projectScope?.()
-    return {
-      profile: await client.profile(), ...await list(), onboarding: await client.onboarding(),
-      cleanupPending: await client.cleanupPending(),
-      revision: await client.revision(), habits: habits(),
-      summaries: { user: summary(await client.profileView({ kind: 'user' })), project: project ? summary(await client.profileView(project)) : null },
-    }
+    const fileProfile = await client.fileProfile(project)
+    return { profile, onboarding, cleanupPending, revision, habits: habits(),
+      fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
   })
-  handle('memory:list', list)
   handle('memory:list-files', client.listFiles)
   handle('memory:read-file', async (identity, restrictionId): Promise<IpcResults['memory:read-file']> => {
     const item = await client.readFile(identity, restrictionId)
@@ -118,19 +84,6 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   handle('memory:create-file', request => fileWrite(client.createFile(request)))
   handle('memory:edit-file', request => fileWrite(client.editFile(request)))
   handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
-  handle('memory:add', (text, kind = 'fact', operation) => client.addMemory(assertMemoryText(text), kind, operation))
-  handle('memory:update', (id, text, revision, operation) => client.editMemory(id, assertMemoryText(text), revision, operation))
-  handle('memory:delete', (id, revision, operation) => client.deleteMemory(id, revision, operation))
-  handle('memory:forget', (id, revision, operation) => client.stopMemory(id, revision, operation))
-  handle('memory:restore', (id, revision, operation) => client.restoreMemory(id, revision, operation))
-  handle('memory:resolve-conflict-pair', (first, second, resolution, operation, conflictId, interval) => client.resolveConflictPair(first, second, resolution.kind === 'replace' ? { ...resolution, text: assertMemoryText(resolution.text) } : resolution,
-      operation, conflictId, interval))
-  handle('memory:list-invalid', async () => (await client.listInvalid()).map(withLinks))
-  handle('memory:list-changes', async (): Promise<IpcResults['memory:list-changes']> => (await client.listChanges()).map(change => ({
-    ...change, evidence: change.evidence.map(edge => ({ text: edge.text, link: linkFor(edge) })),
-  })))
-  handle('memory:undo-change', (id, revision, operation, expectedRevisions): Promise<IpcResults['memory:undo-change']> =>
-    client.undoChange(id, revision, operation, expectedRevisions))
   handle('memory:rebuild-indexes', () => client.rebuildIndexes())
   handle('memory:onboarding', client.setOnboarding)
   handle('memory:add-docs', async () => {

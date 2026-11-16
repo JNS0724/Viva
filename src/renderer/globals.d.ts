@@ -214,7 +214,6 @@ interface AgentApi extends DraftApi {
   pathForFile: (file: File) => string
   revealWorkDir: Invoke<'workdir:reveal'>
   getMemory: Invoke<'memory:get'>
-  listMemories: Invoke<'memory:list'>
   listMemoryFiles: Invoke<'memory:list-files'>
   readMemoryFile: Invoke<'memory:read-file'>
   setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>
@@ -222,15 +221,6 @@ interface AgentApi extends DraftApi {
   createMemoryFile: Invoke<'memory:create-file'>
   editMemoryFile: Invoke<'memory:edit-file'>
   saveProfile: Invoke<'memory:set-profile'>
-  addMemory: Invoke<'memory:add'>
-  updateMemory: Invoke<'memory:update'>
-  deleteMemory: Invoke<'memory:delete'>
-  forgetMemory: Invoke<'memory:forget'>
-  restoreMemory: Invoke<'memory:restore'>
-  resolveMemoryConflictPair: Invoke<'memory:resolve-conflict-pair'>
-  listInvalidMemories: Invoke<'memory:list-invalid'>
-  listMemoryChanges: Invoke<'memory:list-changes'>
-  undoMemoryChange: Invoke<'memory:undo-change'>
   rebuildMemoryIndexes: Invoke<'memory:rebuild-indexes'>
   setOnboarding: Invoke<'memory:onboarding'>
   addDocs: Invoke<'memory:add-docs'>

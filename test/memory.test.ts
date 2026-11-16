@@ -167,9 +167,9 @@ test('picked documents are copied into the workspace under a free name', (t) => 
   assert.throws(() => copyIntoWorkspace([dir], cwd), /不是文件/)
 })
 
-test('memory IPC adds as the user and reports the page in one call', async t => {
+test('memory IPC creates file memory and reports the profile page in one call', async t => {
   const { dir, defer } = scratch(t, 'memory-ipc-owner-')
-  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} })
   await owner.recover(); defer(() => owner.close())
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const registry = checkedIpc({ handle: (channel, fn) => handlers.set(channel, fn), on: () => {} }, {
@@ -180,25 +180,26 @@ test('memory IPC adds as the user and reports the page in one call', async t => 
   })
   const call = async (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
 
-  const memory = await call('memory:add', '回答先给结论', 'preference') as { source: string }
+  const result = await call('memory:create-file', { operationId: crypto.randomUUID(), text: '回答先给结论。' }) as { status: string }
   await call('memory:set-profile', { role: '后端负责人' })
   const page = await call('memory:get') as {
-    total: number, items: { text: string }[], profile: { role: { value: string } }, onboarding: string, habits: { samples: number },
+    profile: { role: { value: string } }, onboarding: string, habits: { samples: number },
   }
-  assert.equal(memory.source, 'user')
-  assert.deepEqual([page.total, page.items[0].text, page.profile.role.value, page.onboarding, page.habits.samples], [1, '回答先给结论', '后端负责人', 'pending', 3])
+  assert.equal(result.status, 'applied')
+  assert.deepEqual([page.profile.role.value, page.onboarding, page.habits.samples], ['后端负责人', 'pending', 3])
+  assert.equal(handlers.has('memory:add'), false)
   assert.deepEqual(await call('memory:add-docs'), [], 'cancelling the file picker adds nothing')
   assert.equal(await call('memory:onboarding', 'done'), 'done')
-  await assert.rejects(call('memory:add', 42), /invalid memory:add arguments/)
+  await assert.rejects(call('memory:create-file', { operationId: crypto.randomUUID(), text: 42 }), /invalid memory:create-file arguments/)
 })
 
 test('memory IPC rebuilds derived indexes without modifying the canonical records', async t => {
   const { dir, defer } = scratch(t, 'memory-ipc-index-')
-  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} })
   await owner.recover(); defer(() => owner.close())
   const runtime = owner.runtime
-  runtime.addMemory('我的工作电脑使用 Iosevka')
-  const before = runtime.listMemories()
+  const created = await ownerClient(owner).createFile({ operationId: crypto.randomUUID(), text: '我的工作电脑使用 Iosevka。' })
+  const before = runtime.readFile(created.identity)
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const registry = checkedIpc({ handle: (channel, fn) => handlers.set(channel, fn), on: () => {} }, {
     onRefused: (_channel, problem) => { throw new Error(problem) },
@@ -209,5 +210,5 @@ test('memory IPC rebuilds derived indexes without modifying the canonical record
   })
   assert.deepEqual(await handlers.get('memory:rebuild-indexes')!({}), { fullText: true, semantic: true, files: { lexical: true, vectorGeneration: 1 } })
   assert.throws(() => handlers.get('memory:rebuild-indexes')!({}, 'invalid'), /invalid memory:rebuild-indexes arguments/)
-  assert.deepEqual(runtime.listMemories(), before)
+  assert.deepEqual(runtime.readFile(created.identity), before)
 })

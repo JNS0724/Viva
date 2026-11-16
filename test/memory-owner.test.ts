@@ -11,7 +11,7 @@ import { createNativeOutputJournal } from '../src/memory/node/native-output-jour
 
 function fixture(t: import('node:test').TestContext, hostNamespace?: string) {
   const root = mkdtempSync(join(tmpdir(), 'memory-owner-'))
-  const owner = openMemoryOwner({ root, hostNamespace, compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root, hostNamespace, fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} })
   t.after(async () => { await owner.close(); rmSync(root, { recursive: true, force: true }) })
   return { owner, root }
 }
@@ -156,9 +156,11 @@ test('prepared source change survives restart, denies send until host commit, an
 })
 test('failed revision validation is terminal and cannot poison owner recovery', async t => {
   const { owner, root } = fixture(t); await owner.recover()
-  const entry = await owner.handleHost('addMemory', { args: ['每周五提交周报', 'fact', randomUUID()] }) as { id: number, revision: number }
+  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
+  const detail = owner.runtime.readFile(created.identity)!
   const operationId = randomUUID()
-  await assert.rejects(owner.handleHost('editMemory', { args: [entry.id, '改成周一', entry.revision + 1, operationId] }))
+  await assert.rejects(owner.handleHost('editFile', { args: [{ operationId, identity: created.identity,
+    version: { ...detail.version, contentRevision: 'stale' }, text: '改成周一。' }] }))
   assert.equal((await owner.handleHost('getOperation', { operationId }) as { state: string }).state, 'failed')
   await owner.close()
   const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
@@ -166,9 +168,9 @@ test('failed revision validation is terminal and cannot poison owner recovery', 
 })
 test('forget emits durable versioned host effects and ack never accepts a mismatched cause', async t => {
   const { owner } = fixture(t, 'viva'); await owner.recover()
-  const entry = await owner.handleHost('addMemory', { args: ['每周五提交周报', 'fact', randomUUID()] }) as { id: number, revision: number }
-  const operationId = randomUUID()
-  await owner.handleHost('deleteMemory', { args: [entry.id, entry.revision, operationId] })
+  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
+  const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
+  await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
   const effects = await owner.handleHost('pendingHostEffects', {}) as Array<{ effectId: string, causeOperationId: string, revision: number }>
   assert.equal(effects.length, 1)
   assert.equal(effects[0]!.causeOperationId, operationId)
@@ -177,7 +179,8 @@ test('forget emits durable versioned host effects and ack never accepts a mismat
   const { effectId, causeOperationId, revision } = effects[0]!
   await owner.handleHost('ackHostEffect', { effectId, causeOperationId, revision })
   await owner.handleHost('ackHostEffect', { effectId, causeOperationId, revision })
-  assert.equal((await owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')
+  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
+  assert.equal((await owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'pending', 'native replica receipt remains independent from the host acknowledgement')
   await assert.rejects(owner.handleHost('ackHostEffect', { effectId, causeOperationId: randomUUID(), revision }), /conflicts/)
 })
 test('project binding reaches the physical fence before any host source alias exists', async t => {
@@ -253,13 +256,15 @@ test('memory rejection does not erase original-delivery admission and remains wi
   await owner.handleHost('commitSourceChange', { operationId, ticket })
   assert.throws(() => owner.acquireSend(randomUUID(), { session: input.sessionId }, 'body'))
 })
-test('an independent owner never waits for a nonexistent host cleanup consumer', async t => {
+test('an independent owner queues native cleanup without inventing a host consumer', async t => {
   const { owner } = fixture(t); await owner.recover()
-  const entry = await owner.handleHost('addMemory', { args: ['每周五提交周报', 'fact', randomUUID()] }) as { id: number, revision: number }
-  const operationId = randomUUID()
-  await owner.handleHost('deleteMemory', { args: [entry.id, entry.revision, operationId] })
+  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
+  const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
+  await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
   assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
-  assert.equal((await owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')
+  const result = await owner.handleHost('getOperation', { operationId }) as { sendFence: string, cleanup: string }
+  assert.equal(result.sendFence, 'complete')
+  assert.equal(result.cleanup, 'pending')
 })
 test('a replacement owner cannot drop a persisted host binding to bypass cleanup', async t => {
   const { owner, root } = fixture(t, 'viva'); await owner.recover(); await owner.close()
@@ -283,19 +288,6 @@ test('unique delivery identity separates revoked and new identical user text in 
   const receipt = await owner.receiveSource(source({ sessionId: session, text: newWire.wireText }))
   assert.equal(receipt.sourceId, second); assert.equal(receipt.text, text)
 })
-test('admitting a previously received host wire uses canonical user text for explicit intent', async t => {
-  const { owner } = fixture(t); await owner.recover()
-  const entry = await owner.handleHost('addMemory', { args: ['每周五提交周报', 'fact', randomUUID()] }) as { id: number, revision: number }
-  const session = randomUUID(), id = randomUUID(), text = `forget #${entry.id}`
-  await owner.handleHost('sourceAlias', { operationId: id, sourceId: id, session, conversation: session, text })
-  const wire = await owner.handleHost('bindWireAlias', { args: [session, text, text, id] }) as { wireText: string }
-  const input = source({ sessionId: session, text: wire.wireText, admitted: false })
-  await owner.receiveSource(input)
-  const result = await owner.receiveSource({ ...input, admitted: true })
-  assert.equal(result.handledIntent, true)
-  assert.equal('controlReceipt' in result && result.controlReceipt?.kind, 'stop')
-  assert.equal(owner.runtime.listMemories().total, 0)
-})
 test('derived task requests retrieve with canonical query without becoming original evidence', async t => {
   const { owner, root } = fixture(t); await owner.recover()
   const session = randomUUID(), text = '请结合现有项目流程检查这份报告'
@@ -314,21 +306,18 @@ test('derived task requests retrieve with canonical query without becoming origi
 })
 
 
-test('credential-bearing correction and undelivered aliases never persist plaintext in owner receipts', async t => {
+test('credential-bearing originals and undelivered aliases never persist plaintext in owner receipts', async t => {
   const { owner, root } = fixture(t); await owner.recover()
-  const entry = await owner.handleHost('addMemory', { args: ['周报周五提交', 'fact', randomUUID()] }) as { id: number }
   const secret = 'password: dummy-review-secret'
-  const input = source({ text: `correct #${entry.id} to ${secret}` })
+  const input = source({ text: `请保存 ${secret}` })
   const rejected = await owner.receiveSource(input)
   assert.equal(rejected.text, '')
-  assert.equal(owner.runtime.listMemories().items.find(item => item.id === entry.id)?.text, '周报周五提交')
   const id = randomUUID(), text = `原始凭据 ${secret}`
   const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: input.sessionId, text }
   await owner.handleHost('sourceAlias', alias)
   const wire = await owner.handleHost('bindWireAlias', { args: [input.sessionId, text, `[host]${text}[/host]`, id] }) as { wireText: string }
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_intents').get()?.n, 0)
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM owner_aliases').all()).includes(secret))
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM owner_operations').all()).includes(secret))
   } finally { db.close() }
@@ -353,22 +342,6 @@ test('an alias whose original is absent from wire is rejected before persisting 
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get()?.n, 0)
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_sessions').get()?.n, 0)
   } finally { db.close() }
-})
-
-
-test('withdrawing an unpresentable correction scrubs the unfinished local intent copy', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'memory-unpresentable-'))
-  const owner = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {}, canPresentControlReceipt: () => false })
-  t.after(async () => { await owner.close(); rmSync(root, { recursive: true, force: true }) })
-  await owner.recover()
-  const entry = await owner.handleHost('addMemory', { args: ['周报周五提交', 'fact', randomUUID()] }) as { id: number }
-  const input = source({ text: `correct #${entry.id} to 私有更正正文` })
-  await assert.rejects(owner.receiveSource(input), /cannot present/)
-  const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [input.messageId] }) as { ticket: string }
-  await owner.handleHost('commitSourceChange', { operationId, ticket })
-  const db = new DatabaseSync(join(root, 'memory.db'))
-  try { assert.equal(db.prepare('SELECT text FROM owner_intents WHERE source=?').get(input.messageId)?.text, null) } finally { db.close() }
 })
 
 
@@ -476,16 +449,19 @@ test('a cold parent admission reconciles child-only reads without a completed se
   const { owner, root } = fixture(t); await owner.recover()
   const parent = source(); await owner.receiveSource(parent)
   const child = randomUUID(); owner.initializeSession({ sessionId: child, parentSessionId: parent.sessionId })
-  const entry = await owner.handleHost('addMemory', { args: ['我用蓝色笔记本', 'fact', randomUUID()] }) as { id: number, revision: number }
-  owner.dispatch.record(child, [{ id: entry.id, revision: entry.revision }])
-  assert.deepEqual(owner.dispatch.snapshot(parent.sessionId).dependencies, [])
-  await owner.close() // Crash boundary: native tool-result can be durable before subagent/end receipt.
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
+  const input = source({ sessionId: child, text: '我用蓝色笔记本' })
+  const original = await owner.receiveSource(input)
+  assert.ok(!owner.dispatch.snapshot(parent.sessionId).sources.includes(original.sourceId))
+  await owner.close()
+  const next = openMemoryOwner({ root, fileMode: true, compute: () => null, route: () => null, quiesce: async () => {} }); t.after(() => next.close())
   await next.recover()
   const permit = next.acquireSend(randomUUID(), { session: parent.sessionId }, 'persisted tool result'); permit.settled()
-  assert.deepEqual(next.dispatch.snapshot(parent.sessionId).dependencies.map(({ id, revision }) => ({ id, revision })), [{ id: entry.id, revision: entry.revision }])
-  await next.handleHost('stopMemory', { args: [entry.id, entry.revision, randomUUID()] })
+  assert.ok(next.dispatch.snapshot(parent.sessionId).sources.includes(original.sourceId))
+  const operationId = randomUUID()
+  const { ticket } = await next.handleHost('prepareSourceChange', { operationId, conversation: child, ids: [original.sourceId] }) as { ticket: string }
+  await next.handleHost('commitSourceChange', { operationId, ticket })
   assert.throws(() => next.acquireSend(randomUUID(), { session: parent.sessionId }, 'retry stale tool result'), /Child memory context/)
+
 })
 
 test('agent relay receipts preserve the sender readset and reject missing native provenance', async t => {

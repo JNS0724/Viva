@@ -279,17 +279,12 @@ test('Viva IPC forwards a versioned management command and rejects caller-suppli
   const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
   const localLink = 'viva://timeline/segment/0/1'
-  registerRuntimeMemoryIpc(ipc, { fileMode: true, client: { ...f.client,
-    listMemories: () => { throw new Error('File mode must not list fact rows') },
-    profileView: () => { throw new Error('File mode must not read a fact summary') },
-  }, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null,
+  registerRuntimeMemoryIpc(ipc, { client: f.client, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null,
   sourceLink: (sourceId) => sourceId === f.sourceId ? localLink : null })
   const call = (channel: string, ...args: unknown[]) => listeners.get(channel)!({}, ...args)
-  const page = await call('memory:get') as { fileMode: boolean, items: unknown[], summaries?: unknown,
-    fileProfile: HostMemoryApi['fileProfile']['output'] }
-  assert.equal(page.fileMode, true)
-  assert.deepEqual(page.items, [])
-  assert.equal(page.summaries, undefined)
+  const page = await call('memory:get') as { fileProfile: HostMemoryApi['fileProfile']['output'] }
+  assert.equal(Object.hasOwn(page, 'items'), false)
+  assert.equal(Object.hasOwn(page, 'summaries'), false)
   const profileIdentity = { ...f.identity, id: profile.documentId }
   assert.deepEqual(page.fileProfile, { user: [{ identity: profileIdentity, text: 'Prefers weekly progress on Friday.' }], project: null })
   assert.deepEqual((await call('memory:read-file', profileIdentity) as { sources: Array<{ sourceId: string, link: string | null }> }).sources

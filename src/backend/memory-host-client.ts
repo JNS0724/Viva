@@ -15,7 +15,6 @@ export function createMemoryHostClient(call: HostMemoryCaller, state: () => Memo
     useHistory: (session: string | undefined, row: MemoryHistoryOccurrence) => call('useHistory', { args: [session, occurrence(row)] }), provenance: method('provenance'),
     recordSession: method('recordSession'), sessionProject: method('sessionProject'), recordSessionProject: method('recordSessionProject'),
     recordDeliveredSource: method('recordDeliveredSource'), isDerivedDelivery: method('isDerivedDelivery'), replaySources: method('replaySources'),
-    forgetIntent: method('forgetIntent'), correctionIntent: method('correctionIntent'),
   }
 }
 export type MemoryHostClient = ReturnType<typeof createMemoryHostClient>

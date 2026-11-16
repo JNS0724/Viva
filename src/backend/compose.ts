@@ -965,7 +965,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:steer', async (_event, text, operation) => {
       const words = assertText(text, 'steer', MAX_PROMPT_CHARS)
       if (memoryBusy()) return { ok: false, reason: 'unavailable' }
-      if (await memory.forgetIntent(words, conversationMemoryScope(), currentMemoryProject()) !== null || await memory.correctionIntent(words, conversationMemoryScope(), currentMemoryProject()) !== null) return { ok: false, reason: 'idle' }
       const sourceId = await aliasMemory(words, operation ?? randomUUID())
       if (!turn.active) return { ok: false, reason: 'idle' }
       return requireBridge().steer(words, sourceId)
@@ -1020,21 +1019,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const agent = requireBridge()
     if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
     const replay = Array.isArray(operation)
-    const forget = feedItemId ? null : await memory.forgetIntent(question, conversationMemoryScope(), currentMemoryProject())
-    const correction = feedItemId ? null : await memory.correctionIntent(question, conversationMemoryScope(), currentMemoryProject())
-    if (forget !== null || correction !== null) {
-      const key = typeof operation === 'string' ? operation : operation[0] ?? randomUUID()
-      const context = sessions.context()
-      if (forget) {
-        await changingMemory(() => memory.stopMemory(forget.id, forget.revision, key))
-        if (await staleMemorySession(dsh.current?.currentSession())) await reopenMemorySession()
-      }
-      if (correction) await changingMemory(() => memory.editMemory(correction.entry.id, correction.text, correction.entry.revision, key))
-      const text = t(forget ? 'main.memory.forgot' : correction ? 'main.memory.corrected' : 'main.memory.ambiguous')
-      emitToRenderer({ type: 'update', context: sessions.context(), update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } })
-      emitToRenderer({ type: 'turn_end', stopReason: 'end_turn', context: sessions.context() })
-      return
-    }
     if (replay && !await memory.replaySources(operation, question, currentMemoryProject())) throw new Error(t('main.memory.context.stale'))
     const id = agent.currentSession()
     if (await staleMemorySession(id) || id && !await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())) await reopenMemorySession()
@@ -1197,7 +1181,7 @@ ${question}` : question
 
   function registerPersonalIpc(config: Config) {
     registerRuntimeMemoryIpc(ipcMain, {
-      client: memory, projectScope: currentMemoryProject, fileMode,
+      client: memory, projectScope: currentMemoryProject,
       sourceLink: historyDb.sourceLink,
       habits: () => activeHours(historyDb.questionTimes()),
       cwd: () => config.cwd,

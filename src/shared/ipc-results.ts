@@ -118,11 +118,7 @@ export interface IpcResults {
   'memory:undo-file': MemoryFileMutationResult
   'memory:create-file': MemoryFileWriteResult
   'memory:edit-file': MemoryFileWriteResult
-  'memory:list-changes': readonly MemoryChangeRecord[]
-  'memory:delete': MemoryDeleteResult
-  'memory:undo-change': UndoMemoryChangeResult
   'memory:rebuild-indexes': { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }
-  'memory:resolve-conflict-pair': boolean
 }
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'

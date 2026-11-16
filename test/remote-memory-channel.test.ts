@@ -24,7 +24,7 @@ test('remote owner client rejects disconnected calls and a late old-epoch respon
 test('recovering owner permits only durable recovery methods and fails pending work on disconnect', async () => {
   const client = createRemoteMemoryChannel({ send() {} })
   client.receive(state('recover', 'recovering'))
-  await assert.rejects(client.call('addMemory', { args: ['text'] }), /unavailable/)
+  await assert.rejects(client.call('createFile', { args: [{ operationId: '810754af-d984-4716-a31d-82bb7673109b', text: 'text' }] }), /unavailable/)
   const pending = client.call('pendingHostEffects', {})
   const rejected = assert.rejects(pending, /disconnected/)
   client.processExited(); await rejected
@@ -40,7 +40,7 @@ test('owner domain errors retain conflict identity and localized wording across 
   let sent: Record<string, unknown> = {}
   const client = createRemoteMemoryChannel({ send: message => { sent = message as Record<string, unknown> } })
   client.receive(state('owner'))
-  const pending = client.call('editMemory', { args: [1, 'replacement', 3, 'operation'] })
+  const pending = client.call('editFile', { args: [{ operationId: '810754af-d984-4716-a31d-82bb7673109b', text: 'replacement', identity: { kind: 'digest', workspace: 'personal', id: 'file' }, version: { contentRevision: 'before', usageVersion: 1, policyToken: 'policy' } }] })
   const rejected = assert.rejects(pending, (error: Error & { code?: string }) => {
     assert.equal(error.code, 'revision-conflict')
     assert.equal(error.message, t('main.memory.revision.conflict'))

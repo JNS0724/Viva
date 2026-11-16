@@ -10,17 +10,10 @@ export function createVivaMemoryClient(call: HostMemoryCaller) {
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     recoverContext: method('recoverContext'),
-    listMemories: method('listMemories'), listInvalid: method('listInvalid'), listChanges: method('listChanges'),
-    profile: method('profile'), profileView: method('profileView'), fileProfile: method('fileProfile'),
+    profile: method('profile'), fileProfile: method('fileProfile'),
     revision: method('revision'), cleanupPending: method('cleanupPending'),
     onboarding: method('onboarding'), setOnboarding: method('setOnboarding'), rebuildIndexes: method('rebuildIndexes'),
     setProfile: (fields: Record<string, unknown>, operation: string = randomUUID()) => call('setProfile', { args: [fields, operation] }),
-    resolveConflictPair: method('resolveConflictPair'), undoChange: method('undoChange'),
-    addMemory: (text: string, category = 'fact', operation: string = randomUUID()) => call('addMemory', { args: [text, category, operation] }),
-    editMemory: (id: number, text: string, revision: number, operation: string = randomUUID()) => call('editMemory', { args: [id, text, revision, operation] }),
-    stopMemory: (id: number, revision: number, operation: string = randomUUID()) => call('stopMemory', { args: [id, revision, operation] }),
-    restoreMemory: (id: number, revision: number, operation: string = randomUUID()) => call('restoreMemory', { args: [id, revision, operation] }),
-    deleteMemory: (id: number, revision: number, operation: string = randomUUID()) => call('deleteMemory', { args: [id, revision, operation] }),
   }
 }
 export type VivaMemoryClient = ReturnType<typeof createVivaMemoryClient>

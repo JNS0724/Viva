@@ -161,8 +161,6 @@ test('trusted derived input queries memory but remains excluded from daily origi
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
   await ingestion.synchronize(session)
   assert.deepEqual(completed[0]!.sourceIds, ['human-source'])
-  assert.equal(retrievalQuestion([{ sourceId: 'control', text: '忘记 #1', handledIntent: true,
-    retrievalQuery: 'must not query', controlReceipt: { operationId: 'done', kind: 'stop', targetId: 1 } }]), '')
 })
 
 test('native session workspace is bound before original or derived replay, independent of parent IPC', async t => {

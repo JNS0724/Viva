@@ -23,8 +23,7 @@ type Replay = {
 
 /** Derived host input can query memory, while never becoming new evidence or daily-note input. */
 export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
-  return receipts.filter(receipt => !receipt.controlReceipt)
-    .map(receipt => receipt.retrievalQuery ?? (!receipt.handledIntent ? receipt.text : '')).filter(Boolean).join('\n').slice(0, 20_000)
+  return receipts.map(receipt => receipt.retrievalQuery ?? (!receipt.handledIntent ? receipt.text : '')).filter(Boolean).join('\n').slice(0, 20_000)
 }
 
 /** DSH's feed announces in-memory commits; flush is the explicit durability boundary. */

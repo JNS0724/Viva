@@ -12,7 +12,7 @@ export const Config = z.object({
   modelRoot: z.string(),
   runtimeRoot: z.string(),
   dailyNotes: z.boolean().default(true),
-  fileMode: z.boolean().default(false),
+  fileMode: z.boolean().default(true),
 })
 export function apply(ctx: Context, config: MemoryPluginConfig = {}) {
   return applyMemoryAdapter(ctx, config)

@@ -53,7 +53,7 @@ const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', 
 type ModelMessage = { role?: string, content?: string | { text?: string, type?: string }[] }
 type Request = { system?: unknown, messages: ModelMessage[] }
 type Task = IpcResults['task:finished'][number]
-type Change = IpcResults['memory:list-changes'][number]
+type Change = import('../src/shared/ipc-results.ts').MemoryChangeRecord
 
 function makeScheduleDue(directory: string) {
   const db = new DatabaseSync(join(directory, 'app.db'))

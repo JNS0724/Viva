@@ -1,9 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { readdirSync, readFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
-import { zstdDecompressSync } from 'node:zlib'
 import type { TestContext } from 'node:test'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
 
@@ -21,15 +20,7 @@ async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]
     return agent.prompt(text, [], { userTurn: true, sourceId })
   }
   async function freshSession() { session = (await agent.newSession()).sessionId! }
-  async function saved(text: string) {
-    const deadline = Date.now() + 15_000
-    for (;;) {
-      const found = (await call('listMemories', { args: [] })).items.find(item => item.text === text && !item.conditional)
-      if (found || Date.now() > deadline) return found
-      await new Promise(resolve => setTimeout(resolve, 80))
-    }
-  }
-  return { ...harness, agent, call, ask, freshSession, saved, session: () => session }
+  return { ...harness, agent, call, ask, freshSession, session: () => session }
 }
 interface ModelRequest { system?: unknown, messages: { content: string | { type: string, text?: string }[] }[] }
 function lastContext(llm: { requests: object[] }) {
@@ -37,99 +28,6 @@ function lastContext(llm: { requests: object[] }) {
     && JSON.stringify(request.messages.at(-1)).includes('<about-user>'))
   return JSON.stringify(foreground?.messages.at(-1) ?? '')
 }
-
-test('the sole plugin owner injects manual profile and saves evidence from a native memory tool', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { llm, events, ask, call, freshSession, saved } = await setupMemory(t)
-  await call('setProfile', { args: [{ role: '后端负责人' }] })
-  await ask('你好')
-  assert.match(lastContext(llm), /后端负责人/, JSON.stringify({ events, requests: llm.requests }))
-  const text = '周报每周五下班前交给张三'
-  await ask(`记住：${text}`)
-  assert.equal(events.some(event => event.type === 'permission'), false)
-  const entry = await saved(text)
-  assert.ok(entry, JSON.stringify(events))
-  assert.equal(entry.evidence.length, 1)
-  assert.ok(entry.evidence[0]!.sourceId)
-  await freshSession()
-  await ask('帮我写周报')
-  assert.match(lastContext(llm), /周报每周五下班前交给张三/)
-  assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')), 'raw session-log upload must stay disabled')
-})
-
-test('host forgetting rebuilds a main session from authorized originals while rejecting dependent task input', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { llm, ask, call, agent, freshSession } = await setupMemory(t)
-  const text = '周报发到 old-address@example.com'
-  const entry = await call('addMemory', { args: [text] })
-  assert.ok(entry)
-  await ask('周报怎么提交？')
-  assert.match(lastContext(llm), /old-address@example.com/)
-  const task = await agent.startTask()
-  assert.ok(task.ok)
-  const provenance = await call('provenance', { args: [agent.currentSession()!] })
-  if (task.ok) await call('transfer', { args: [task.taskId, provenance, undefined, true] })
-  const current = (await call('listMemories', { args: [] })).items.find(item => item.id === entry.id)!
-  await call('deleteMemory', { args: [current.id, current.revision, randomUUID()] })
-  const before = llm.requests.length
-  const sameSession = agent.currentSession()
-  await ask('安全恢复后回答 fresh-memory-marker')
-  assert.equal(agent.currentSession(), sameSession, 'recovery preserves the native and UI session identity')
-  assert.ok(llm.requests.slice(before).some(request => JSON.stringify(request).includes('fresh-memory-marker')), 'new original input can continue in the recovered main session')
-  if (task.ok) await agent.promptTask(task.taskId, '禁止发送 stale-task-marker').catch(() => {})
-  assert.ok(llm.requests.slice(before).every(request => !JSON.stringify(request).includes('stale-task-marker')), 'a task with no independent original evidence remains blocked')
-  await freshSession()
-  await ask('新会话可以继续')
-  assert.ok(llm.requests.slice(before).some(request => JSON.stringify(request).includes('新会话可以继续')))
-  assert.ok(llm.requests.slice(before).every(request => !JSON.stringify(request).includes('old-address@example.com')))
-})
-
-test('a stale main conversation resumes the same native session after a real DSH process restart', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { llm, ask, call, agent, bridge } = await setupMemory(t)
-  const old = await call('addMemory', { args: ['周报发送到 restart-private@example.com'] })
-  assert.ok(old)
-  await ask('周报应该发到哪里？')
-  assert.match(lastContext(llm), /restart-private@example.com/)
-  const session = agent.currentSession()!
-  const current = (await call('listMemories', { args: [] })).items.find(item => item.id === old.id)!
-  await call('deleteMemory', { args: [current.id, current.revision, randomUUID()] })
-  await agent.dispose()
-  const before = llm.requests.length
-  const restarted = bridge({ memoryRequired: true })
-  const resumed = await restarted.start({ resumeSessionId: session })
-  assert.equal(resumed.resumed, true)
-  assert.equal(restarted.currentSession(), session)
-  const text = '重启后继续 fresh-restart-marker', sourceId = randomUUID()
-  await restarted.memory.call('sourceAlias', { operationId: randomUUID(), sourceId, session, conversation: 'memory-integration', text })
-  await restarted.prompt(text, [], { userTurn: true, sourceId })
-  assert.ok(llm.requests.slice(before).some(request => JSON.stringify(request).includes('fresh-restart-marker')))
-  assert.ok(llm.requests.slice(before).every(request => !JSON.stringify(request).includes('restart-private@example.com')))
-})
-
-test('trusted source aliases are idempotent and preserve exact original evidence without interpreting headers', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { agent, call, session, saved } = await setupMemory(t)
-  const text = '记住：周报每周五交给李四'
-  const alias = { operationId: randomUUID(), sourceId: randomUUID(), session: session(), conversation: 'aliases', text }
-  assert.deepEqual(await call('sourceAlias', alias), await call('sourceAlias', alias))
-  await assert.rejects(call('sourceAlias', { ...alias, text: 'different text' }))
-  await agent.prompt(text, [], { sourceId: alias.sourceId })
-  const entry = await saved('周报每周五交给李四')
-  assert.ok(entry)
-  assert.equal(entry.evidence.length, 1)
-  assert.equal(entry.evidence[0]!.sourceId, alias.sourceId)
-})
-
-test('owner survives a DSH process restart with the same durable records and a new instance epoch', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { agent, bridge, call } = await setupMemory(t)
-  const entry = await call('addMemory', { args: ['周报在周五提交'] })
-  assert.ok(entry)
-  const epoch = agent.memory.state()!.epoch
-  await agent.dispose()
-  const restarted = bridge()
-  await restarted.start()
-  assert.ok(await eventually(() => restarted.memory.ready()))
-  assert.notEqual(restarted.memory.state()!.epoch, epoch)
-  const records = await restarted.memory.call('listMemories', { args: [] })
-  assert.ok(records.items.some(item => item.id === entry.id && item.text === entry.text))
-})
 
 test('an idle interjection starts neither a fast request nor a routing decision', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, agent, ask, requests } = await setupMemory(t)
@@ -150,36 +48,35 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
 })
 
 
-test('native explicit correction and forgetting publish local receipts without a model request', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { llm, ask, call, freshSession, dshHome } = await setupMemory(t)
-  const original = await call('addMemory', { args: ['周报周五提交'] })
-  assert.ok(original)
-  let offset = llm.requests.length
-  await ask(`更正 #${original.id} 为 周报周一提交`)
-  assert.ok(llm.requests.slice(offset).every(request => !JSON.stringify(request).includes(`更正 #${original.id}`)))
-  const corrected = (await call('listMemories', { args: [] })).items.find(item => item.text === '周报周一提交')
-  assert.ok(corrected)
-  await freshSession()
-  offset = llm.requests.length
-  await ask(`忘记 #${corrected.id}`)
-  assert.ok(llm.requests.slice(offset).every(request => !JSON.stringify(request).includes(`忘记 #${corrected.id}`)))
-  assert.equal((await call('listMemories', { args: [] })).items.some(item => item.id === corrected.id), false)
-  const logs = readdirSync(dshHome, { recursive: true, withFileTypes: true })
-    .filter(entry => entry.isFile() && /\.jsonl(?:\.zstd)?$/u.test(entry.name))
-    .map(entry => {
-      const bytes = readFileSync(join(entry.parentPath, entry.name))
-      if (!entry.name.endsWith('.zstd')) return bytes.toString('utf8')
-      let offset = 0, text = ''
-      while (offset < bytes.length) {
-        // Node's info:true result is not reflected in @types/node's zstd overload.
-        const decoded = zstdDecompressSync(bytes.subarray(offset), { info: true }) as unknown as { buffer: Buffer, engine: { bytesWritten: number } }
-        assert.ok(decoded.engine.bytesWritten > 0)
-        offset += decoded.engine.bytesWritten
-        text += decoded.buffer.toString('utf8')
-      }
-      return text
-    }).join('\n')
-  assert.match(logs, /command\/done/u)
-  assert.match(logs, /has been corrected/u)
-  assert.match(logs, /is no longer used/u)
+test('the plugin injects manual profile and recalls file memory with exact evidence after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { llm, call, ask, agent, bridge } = await setupMemory(t)
+  await call('setProfile', { args: [{ role: '后端负责人' }, randomUUID()] })
+  const input = { operationId: randomUUID(), text: '周报每周五下班前交给张三。' }
+  const created = await call('createFile', { args: [input] })
+  await ask('帮我写周报')
+  assert.match(lastContext(llm), /后端负责人/)
+  assert.match(lastContext(llm), /周报每周五下班前交给张三/)
+  assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')))
+  const epoch = agent.memory.state()!.epoch
+  await agent.dispose()
+  const restarted = bridge({ memoryRequired: true })
+  await restarted.start()
+  assert.ok(await eventually(() => restarted.memory.ready()))
+  assert.notEqual(restarted.memory.state()!.epoch, epoch)
+  assert.deepEqual(await restarted.memory.call('createFile', { args: [input] }), created)
+  assert.ok((await restarted.memory.call('readFile', { args: [created.identity] }))?.markdown.includes(input.text))
+})
+
+test('trusted source aliases retain exact user evidence and refuse reused operation text', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { agent, call, session, userData } = await setupMemory(t)
+  const text = '周报每周五交给李四，客户故障时另行确认。'
+  const alias = { operationId: randomUUID(), sourceId: randomUUID(), session: session(), conversation: 'aliases', text }
+  assert.deepEqual(await call('sourceAlias', alias), await call('sourceAlias', alias))
+  await assert.rejects(call('sourceAlias', { ...alias, text: 'different text' }))
+  await agent.prompt(text, [], { sourceId: alias.sourceId })
+  const db = new DatabaseSync(join(userData, 'memory', 'memory.db'), { readOnly: true })
+  try {
+    const source = db.prepare('SELECT text,author FROM memory_sources WHERE id=?').get(alias.sourceId)
+    assert.deepEqual(source, Object.assign(Object.create(null), { text, author: 'user' }))
+  } finally { db.close() }
 })

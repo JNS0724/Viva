@@ -26,7 +26,6 @@ import { completeMemoryModel } from './model.ts'
 import { assertMemoryProviderSupported } from './providers.ts'
 import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
-import { createControlReceipts } from './control-receipts.ts'
 import { memoryOriginalContentDigest } from './context-recovery.ts'
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
 import { trackNativeOutputAttempts } from './native/output-attempts.ts'
@@ -66,9 +65,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const encoded = JSON.stringify(value)
     if (force || encoded !== lastState) { lastState = encoded; send(value) }
   }
-  const controlReceipts = createControlReceipts()
-  const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true, fileMode: config.fileMode ?? false,
-    canPresentControlReceipt: controlReceipts.available,
+  const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true, fileMode: config.fileMode ?? true,
     route: () => lastRoute ?? ctx.agents.list().map(agent => agent.model.current()).find(route => route !== undefined) ?? null,
     compute: (job, signal, tools) => {
       const deadline = AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)
@@ -91,8 +88,8 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     onChange: change => { state(); send({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...change }) }, onHostEffects: () => { effectsRevision++; state() },
   })
   const transport = createMemoryTransport(owner)
-  const outputAttempts = config.fileMode ? trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput) : null
-  const toolReads = config.fileMode ? trackNativeToolReads(owner.finishNativeToolRead) : null
+  const outputAttempts = (config.fileMode ?? true) ? trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput) : null
+  const toolReads = (config.fileMode ?? true) ? trackNativeToolReads(owner.finishNativeToolRead) : null
   const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
     const proof = deliveries.get(message.id)
     if (!proof) return undefined
@@ -100,9 +97,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   })
   const recovery = owner.recover()
   ctx.inject(['commands'], scoped => {
-    const dispose = controlReceipts.bind(scoped.commands)
-    scoped.effect(() => dispose, 'memory local receipts')
-    if (!config.host && config.fileMode) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
+    if (!config.host && (config.fileMode ?? true)) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
       const session = agent.session
       const active = () => !closing && !signal.aborted && ctx.sessions.get(session.id) === session
         && ctx.agents.get(session.id) === agent && agent.status !== 'running'
@@ -136,7 +131,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     if (!closing) outputAttempts?.frame(agent.session, frame)
   })
   ctx.on('compaction/summary-error', ({ session, sourceEventSeqs }, next) => {
-    if (config.fileMode && !closing) recordCompactionInputs(session, sourceEventSeqs)
+    if ((config.fileMode ?? true) && !closing) recordCompactionInputs(session, sourceEventSeqs)
     return next()
   })
   ctx.on('session/event', (session, event) => {
@@ -230,7 +225,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const jobId = current && 'jobId' in current ? current.jobId : undefined
     if (!session && !jobId) throw new Error('Model request has no verified memory origin')
     if (!owner.ready()) throw new Error('Memory owner is not ready')
-    if (config.fileMode && session && options.purpose === 'compaction') recordCompactionRequest(session, options.messages)
+    if ((config.fileMode ?? true) && session && options.purpose === 'compaction') recordCompactionRequest(session, options.messages)
     // Only the pinned loop's own request object may inherit the active attempt.
     const loopRequest = outputAttempts && isAgentLoopRequest(options)
     const output = loopRequest && session ? outputAttempts.prepare(session) : undefined
@@ -284,12 +279,6 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const decision = await next()
     if (decision.kind === 'reject' || signal.aborted) return decision
     const receipts = await ingestion.receive(agent.session, decision.messages, turn, step, true)
-    const controls = receipts.flatMap(receipt => receipt.controlReceipt ? [receipt.controlReceipt] : [])
-    if (controls.length) {
-      await controlReceipts.publish(agent, controls)
-      if (await ctx.sessions.flush(agent.session) !== true) throw new Error('Session has no durable persistence acknowledgment')
-      return { kind: 'reject' as const }
-    }
     const question = retrievalQuestion(receipts)
     if (!question) return decision
     clearPreviousContext(agent)

@@ -20,8 +20,7 @@ export type ReceivedSource = {
   project?: string
   derived?: boolean
 }
-export type MemoryControlReceipt = { operationId: string, kind: 'stop' | 'correct', targetId: number }
-export type SourceReceipt = { sourceId: string, text: string, handledIntent?: boolean, retrievalQuery?: string, controlReceipt?: MemoryControlReceipt }
+export type SourceReceipt = { sourceId: string, text: string, handledIntent?: boolean, retrievalQuery?: string }
 export type CompletedTurn = {
   contextGeneration?: number
   sessionId: string

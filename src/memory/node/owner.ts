@@ -43,7 +43,7 @@ type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> &
   onChange?: NodeMemoryRuntimeOptions['changed'],
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
   onProjectionChanged?: () => void,
-  onHostEffects?: () => void, canPresentControlReceipt?: () => boolean,
+  onHostEffects?: () => void,
 }
 type StoredAlias = Omit<MemorySourceAlias, 'text' | 'wireText' | 'wireSpans'> & { textHash: string, spans: TextSpan[] }
 type Session = { conversation: string, context: string | null, project: string | null }
@@ -74,7 +74,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_derived(message TEXT PRIMARY KEY,evidence TEXT NOT NULL,origin_session TEXT NOT NULL,origin_turn TEXT,owner_epoch TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_turns(session TEXT NOT NULL,turn INTEGER NOT NULL,seq INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(session,turn));
     CREATE TABLE IF NOT EXISTS owner_operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,payload TEXT,ticket TEXT);
-    CREATE TABLE IF NOT EXISTS owner_intents(source TEXT PRIMARY KEY,operation TEXT NOT NULL,method TEXT NOT NULL,target INTEGER NOT NULL,revision INTEGER NOT NULL,text TEXT);
     CREATE TABLE IF NOT EXISTS owner_file_native_erasures (operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_host_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0);
   `)
@@ -407,29 +406,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (!runtime.dispatchSourceCurrent(sourceId)) throw new Error('Source is withdrawn or unavailable')
     // A rejected original remains withdrawable as a delivery, but cannot authorize a memory write.
     if (store.readSource(sourceId)?.outcome === 'rejected') return { sourceId, text: '' }
-    if (input.admitted) {
-      let intent = db.prepare('SELECT * FROM owner_intents WHERE source=?').get(sourceId) as { operation: string, method: string, target: number, revision: number, text: string | null } | undefined
-      if (!intent) {
-        const forgotten = runtime.forgetIntent(text, context.context, context.project)
-        const corrected = runtime.correctionIntent(text, context.context, context.project)
-        if (forgotten || corrected) {
-          const target = forgotten || corrected && corrected.entry
-          if (target) {
-            db.prepare('INSERT INTO owner_intents VALUES (?,?,?,?,?,?)').run(sourceId, randomUUID(), forgotten ? 'stopMemory' : 'editMemory', target.id, target.revision, corrected ? corrected.text : null)
-            intent = db.prepare('SELECT * FROM owner_intents WHERE source=?').get(sourceId) as typeof intent
-          }
-        }
-      }
-      if (intent) {
-        const done = operation(intent.operation)?.state === 'completed'
-        if (!done && options.canPresentControlReceipt?.() === false) throw new Error('This adapter cannot present a local memory operation receipt')
-        if (!done) await handleHost(intent.method, { args: intent.method === 'stopMemory'
-          ? [intent.target, intent.revision, intent.operation] : [intent.target, intent.text, intent.revision, intent.operation] })
-        db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(sourceId)
-        store.outcome(sourceId, 'intent-handled')
-        return { sourceId, text, handledIntent: true, controlReceipt: { operationId: intent.operation, kind: intent.method === 'stopMemory' ? 'stop' as const : 'correct' as const, targetId: intent.target } }
-      }
-    }
     return { sourceId, text: store.readSource(sourceId)?.text ?? text }
   }
   async function registerDerived(input: DerivedSource) {
@@ -569,7 +545,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         invalidated.push(session)
       }
       db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
-      db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
     }
     const sessions = [...new Set(invalidated)]
     for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges, memoryIds))) nativeSessions.add(session)
@@ -625,7 +600,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         notify = recordRangeErasure(item.id, cuts, memoryIds)
         for (const id of removed) {
           store.excludeSource(id)
-          db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(id)
         }
         db.prepare("UPDATE owner_operations SET state='completed',payload=NULL WHERE id=?").run(item.id)
       })
@@ -665,51 +639,26 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   const pendingHostEffects = () => (db.prepare(`SELECT payload FROM owner_host_effects WHERE acked=0
     ORDER BY json_extract(payload,'$.revision'),rowid`).all() as Array<{ payload: string }>).map(row => JSON.parse(row.payload) as MemoryHostEffect)
-  type WritePayload = { command: HostMemoryCommand, sources: string[], sessions: string[] }
-  async function durableWrite(command: HostMemoryCommand, id: string, operationIndex: number, targets: number[], work: () => unknown | Promise<unknown>) {
-    if (!('args' in command.input)) throw new Error('Invalid write command')
-    const args = [...command.input.args]; args[operationIndex] = id
-    command = parseHostMemoryCommand(command.method, { args })
-    const previous = operation(id)
-    const fingerprint = hash(command)
-    if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict', 'Memory operation ID conflicts')
+  type ProfileWriteCommand = Extract<HostMemoryCommand, { method: 'setProfile' }>
+  type WritePayload = { command: ProfileWriteCommand }
+  async function durableProfileWrite(input: ProfileWriteCommand) {
+    const [fields, requestedId] = input.input.args, id = requestedId ?? randomUUID()
+    const command: ProfileWriteCommand = { method: 'setProfile', input: { args: [fields, id] } }
+    const previous = operation(id), fingerprint = hash(command)
+    if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'failed') throw new Error('Memory operation previously failed')
-    const sources = previous?.payload ? (JSON.parse(previous.payload) as WritePayload).sources
-      : [...new Set(targets.flatMap(target => store.get(target)?.evidence.map(edge => edge.sourceId) ?? []))]
-    const sessions = previous?.payload ? (JSON.parse(previous.payload) as WritePayload).sessions :
-      (db.prepare('SELECT id FROM memory_sessions').all() as Array<{id: string}>).flatMap(({id: session}) => {
-        const evidence = dispatch.snapshot(session)
-        return evidence.sources.some(source => sources.includes(source)) || evidence.dependencies.some(ref => targets.includes(ref.id)) ? [session] : []
-      })
-    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command, sources, sessions }))
+    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command }))
     return fence.mutate(async () => {
-      let result: unknown
-      try { result = await work() }
-      catch (error) {
+      try {
+        const result = await runtime.setProfile(fields, id)
+        db.prepare("UPDATE owner_operations SET state='completed',payload=NULL WHERE id=?").run(id)
+        return result
+      } catch (error) {
         if (error instanceof MemoryDomainError && error.code !== 'change.pending') {
           db.prepare("UPDATE owner_operations SET state='failed',payload=NULL WHERE id=?").run(id)
         }
         throw error
       }
-      store.tx(() => {
-        // The core's command receipt makes retry after a crash safe. Keep the host effect in the same
-        // transaction as this completion receipt, including copies captured before core erasure.
-        if (options.hostNamespace && sources.length) {
-          const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-            kind: command.method === 'deleteMemory' ? 'erase-copies' : 'invalidate-context', sessions, memoryIds: targets,
-            sources: sources.map(sourceId => ({ namespace: 'memory', sourceId, revision: store.revision() })) }
-          db.prepare('INSERT OR IGNORE INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
-        }
-        if (command.method === 'deleteMemory') {
-          for (const source of sources) {
-            db.prepare("UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?").run(source)
-            db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(source)
-          }
-        }
-        db.prepare("UPDATE owner_operations SET state='completed',payload=NULL WHERE id=?").run(id)
-      })
-      options.onHostEffects?.()
-      return result
     })
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
@@ -962,11 +911,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         generalQuestions.set(key, { session, cards, check })
         return true
       }
-      case 'listMemories': return runtime.listMemories(...command.input.args)
-      case 'listInvalid': return runtime.listInvalid(...command.input.args)
-      case 'listChanges': return runtime.listChanges(...command.input.args)
       case 'profile': return runtime.profile(...command.input.args)
-      case 'profileView': return runtime.profileView(...command.input.args)
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': {
@@ -985,8 +930,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'recordSession': return runtime.recordSession(...command.input.args)
       case 'recordDeliveredSource': runtime.recordDeliveredSource(command.input.args[0], command.input.args[1], command.input.args[2]); dispatch.recordSource(command.input.args[3], command.input.args[0]); return
       case 'isDerivedDelivery': return runtime.isDerivedDelivery(...command.input.args)
-      case 'forgetIntent': return runtime.forgetIntent(...command.input.args)
-      case 'correctionIntent': return runtime.correctionIntent(...command.input.args)
       case 'bindProject': return coordination.bindProject(...command.input.args)
       case 'projectChanged': return coordination.projectChanged(...command.input.args)
       case 'allowsEvidence': return coordination.allowsEvidence(...command.input.args)
@@ -1020,14 +963,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'undoFile': return durableFileWrite(command)
       case 'setOnboarding': return fence.mutate(() => runtime.setOnboarding(...command.input.args))
       case 'rebuildIndexes': return fence.mutate(() => runtime.rebuildIndexes(...command.input.args))
-      case 'setProfile': { const a = command.input.args, id = a[1] ?? randomUUID(); return durableWrite(command, id, 1, [], () => runtime.setProfile(a[0], id)) }
-      case 'resolveConflictPair': { const a = command.input.args, id = a[3] ?? randomUUID(); return durableWrite(command, id, 3, [a[0].id,a[1].id], () => runtime.resolveConflictPair(a[0], a[1], a[2], id, a[4], a[5])) }
-      case 'undoChange': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, a[3].map(side => side.id), () => runtime.undoChange(a[0], a[1], id, a[3])) }
-      case 'addMemory': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, [], () => runtime.addMemory(a[0], a[1], id)) }
-      case 'editMemory': { const a = command.input.args, id = a[3] ?? randomUUID(); return durableWrite(command, id, 3, [a[0]], () => runtime.editMemory(a[0], a[1], a[2], id)) }
-      case 'restoreMemory': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, [a[0]], () => runtime.restore(a[0], a[1], id)) }
-      case 'deleteMemory': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, [a[0]], () => runtime.deleteMemory(a[0], a[1], id)) }
-      case 'stopMemory': { const a = command.input.args, id = a[2] ?? randomUUID(); return durableWrite(command, id, 2, [a[0]], () => runtime.forget(a[0], a[1], 'forget', id)) }
+      case 'setProfile': return durableProfileWrite(command)
       case 'provenance': return dispatch.snapshot(...command.input.args)
       case 'authorizedProvenance': {
         const { session, prior, sourceId } = command.input

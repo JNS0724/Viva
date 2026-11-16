@@ -1,8 +1,7 @@
 import { z } from 'zod'
 import { memoryProvenanceSchema, type MemoryErasureEvidence } from './provenance.ts'
-import type { MemoryEntry, MemoryEvidence, MemoryDependency, MemoryProvenance, MemoryChange } from './records.ts'
+import type { MemoryProvenance } from './records.ts'
 import type { MemoryScope } from './memory-contract.ts'
-import type { MemoryInterval } from './facts.ts'
 import type { TextSpan } from './text-spans.ts'
 import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
 import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
@@ -14,13 +13,6 @@ export const MEMORY_HOST_PROTOCOL = 1
 export type MemoryProject = { kind: 'project', id: string }
 export type MemoryHistoryOccurrence = { segmentId: string, role: string, text: string, sourceId?: string | null, sessionId?: string | null }
 export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
-export type MemoryProfileView = { generated: boolean, items: Array<{ text: string, dependency: MemoryDependency, evidence?: MemoryEvidence & { text: string } }> }
-export type MemoryChangeView = Pick<MemoryChange, 'id' | 'revision' | 'targetId' | 'replacementId' | 'from' | 'to' | 'effectiveAt' | 'createdAt'> & {
-  kind: 'correct' | 'supersede' | 'end', status: 'applied' | 'undone' | 'withdrawn' | 'pending',
-  before: string | null, after: string | null, scope: MemoryScope | null,
-  expectedRevisions: Array<{ id: number, revision: number }>,
-  evidence: Array<{ start: number, end: number, sourceId: string, conversationId: string | null, text: string | null }>,
-}
 export type HostMemoryQuestion = { id: string, question: string, topic?: string, options: Array<{ label: string, description?: string }> }
 export type HostQuestionCard = HostMemoryQuestion & { header: string, multiSelect: boolean }
 export type MemorySourceAlias = {
@@ -30,10 +22,6 @@ export type MemorySourceAlias = {
 }
 export type SourceChangeInput = { operationId: string, conversation: string, ids: string[], onlySources?: true,
   replacement?: { sourceId: string, segmentId: string, projectId?: string | null } }
-type Side = { id: number, revision: number }
-type Resolution = { kind: 'keep-first' | 'keep-both' | 'discard-both' } | { kind: 'replace', text: string }
-type Scope = MemoryProject | { kind: 'user' }
-type EntryPage = { items: MemoryEntry[], total: number, invalid: number }
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
@@ -44,11 +32,7 @@ export interface HostMemoryApi {
   editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
   forgetFile: Args<[request: MemoryFileForgetRequest], MemoryFileMutationResult>
   undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
-  listMemories: Args<[query?: string], EntryPage>
-  listInvalid: Args<[], Array<MemoryEntry & { pendingRelation?: boolean }>>
-  listChanges: Args<[], MemoryChangeView[]>
   profile: Args<[], MemoryProfile>
-  profileView: Args<[scope: Scope], MemoryProfileView>
   fileProfile: Args<[project?: MemoryProject], MemoryFileProfile>
   revision: Args<[], number>
   epoch: Args<[], number>
@@ -57,13 +41,6 @@ export interface HostMemoryApi {
   setOnboarding: Args<[status: string], string>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
   setProfile: Args<[fields: Record<string, unknown>, operation?: string], MemoryProfile>
-  addMemory: Args<[text: string, category?: string, operation?: string], MemoryEntry | null>
-  editMemory: Args<[id: number, text: string, revision: number, operation?: string], MemoryEntry | null>
-  stopMemory: Args<[id: number, revision: number, operation?: string], boolean>
-  restoreMemory: Args<[id: number, revision: number, operation?: string], MemoryEntry | null>
-  deleteMemory: Args<[id: number, revision: number, operation?: string], { status: 'cleared' | 'stopped' }>
-  resolveConflictPair: Args<[first: Side, second: Side, resolution: Resolution, operation?: string, changeId?: number, interval?: MemoryInterval], boolean>
-  undoChange: Args<[id: number, revision: number, operation: string | undefined, expected: readonly Side[]], { status: 'applied' } | { status: 'conflict', current: readonly Side[] }>
   bindProject: Args<[session: string, project?: MemoryProject], boolean>
   projectChanged: Args<[session: string | null | undefined, project?: MemoryProject], boolean>
   allowsEvidence: Args<[evidence: MemoryProvenance | null | undefined, project?: MemoryProject], boolean>
@@ -88,8 +65,6 @@ export interface HostMemoryApi {
   recordDeliveredSource: Args<[source: string, conversation: string, derived: boolean, session: string], void>
   isDerivedDelivery: Args<[source: string], boolean>
   replaySources: Args<[sources: readonly string[], text: string, project?: MemoryProject], boolean>
-  forgetIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], MemoryEntry | false | null>
-  correctionIntent: Args<[text: string, scope?: MemoryScope, project?: MemoryProject], { entry: MemoryEntry, text: string } | false | null>
   bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string, wireSpans?: TextSpan[]], { wireText: string }>
   cancelFileClarification: Args<[session: string, questionId: string], boolean>
   clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check'], HostMemoryQuestion | null>
@@ -112,8 +87,6 @@ const wireSpans = z.array(z.strictObject({ start: z.int().nonnegative(), end: z.
 const integer = z.number().int().nonnegative()
 const project = z.strictObject({ kind: z.literal('project'), id: key })
 const scope = z.union([z.strictObject({ kind: z.literal('user') }), z.strictObject({ kind: z.enum(['project', 'conversation', 'task']), id: key })])
-const side = z.strictObject({ id: integer, revision: integer })
-const interval = z.strictObject({ from: z.number().nullable(), to: z.number().nullable() })
 const provenance = memoryProvenanceSchema
 const maybeProvenance = provenance.nullish()
 const occurrence = z.strictObject({ segmentId: key, role: key, text, sourceId: key.nullish(), sessionId: key.nullish() })
@@ -123,24 +96,17 @@ const args = <T extends z.ZodTuple>(schema: T) => z.strictObject({ args: z.prepr
   ? value.map((item, index) => item === null && schema.def.items[index] && z.safeParse(schema.def.items[index], undefined).success ? undefined : item)
   : value, schema) })
 const empty = args(z.tuple([]))
-const target = args(z.tuple([integer, integer, key.optional()]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
+  profile: empty,
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
-  listMemories: args(z.tuple([text.optional()])), listInvalid: empty, listChanges: empty, profile: empty,
-  profileView: args(z.tuple([z.union([project, z.strictObject({ kind: z.literal('user') })])])),
   fileProfile: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
   setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
   setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),
-  addMemory: args(z.tuple([text, key.optional(), key.optional()])),
-  editMemory: args(z.tuple([integer, text, integer, key.optional()])),
-  stopMemory: target, restoreMemory: target, deleteMemory: target,
-  resolveConflictPair: args(z.tuple([side, side, z.discriminatedUnion('kind', [z.strictObject({ kind: z.enum(['keep-first', 'keep-both', 'discard-both']) }), z.strictObject({ kind: z.literal('replace'), text })]), key.optional(), integer.optional(), interval.optional()])),
-  undoChange: args(z.tuple([integer, integer, key.optional(), z.array(side)])),
   bindProject: args(z.tuple([key, project.optional()])), projectChanged: args(z.tuple([key.nullish(), project.optional()])),
   allowsEvidence: args(z.tuple([maybeProvenance, project.optional()])), stale: args(z.tuple([key.nullish(), project.optional()])),
   allowsSession: args(z.tuple([key, project.optional()])), recoverContext: args(z.tuple([key])), transferable: args(z.tuple([maybeProvenance])),
@@ -153,7 +119,6 @@ export const hostMemoryInputSchemas = {
   recordSession: args(z.tuple([key])), sessionProject: args(z.tuple([key])), recordSessionProject: args(z.tuple([key, z.string()])),
   recordDeliveredSource: args(z.tuple([key, key, z.boolean(), key])), isDerivedDelivery: args(z.tuple([key])),
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),
-  forgetIntent: args(z.tuple([text, scope.optional(), project.optional()])), correctionIntent: args(z.tuple([text, scope.optional(), project.optional()])),
   bindWireAlias: args(z.tuple([key, text, text, key.optional(), wireSpans])),
   cancelFileClarification: args(z.tuple([key, key])),
   clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check'])])),
