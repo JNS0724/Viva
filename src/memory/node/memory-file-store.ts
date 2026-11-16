@@ -24,6 +24,31 @@ export class MemoryFileError extends Error {
 
 export const memoryFileRevision = (text: string) => createHash('sha256').update(text).digest('hex')
 
+/** Call only while holding the exclusive memory owner lock. Temporary writes may
+ * survive process death between syncing the file and replacing the destination. */
+export function removeAbandonedMemoryTemps(root: string) {
+  if (!existsSync(root) || lstatSync(root).isSymbolicLink()) return
+  function clean(directory: string) {
+    let changed = false
+    for (const item of readdirSync(directory, { withFileTypes: true })) {
+      const target = join(directory, item.name)
+      if (item.isDirectory() && !item.name.startsWith('.')) clean(target)
+      else if (item.isFile() && /^\.viva-memory-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/u.test(item.name)) {
+        unlinkSync(target)
+        changed = true
+      }
+    }
+    if (changed) syncDirectory(directory)
+  }
+  for (const workspace of readdirSync(root, { withFileTypes: true })) {
+    if (!workspace.isDirectory() || !/^[0-9a-f]{64}$/u.test(workspace.name)) continue
+    for (const area of ['daily', 'digest', 'session']) {
+      const directory = join(root, workspace.name, area)
+      if (existsSync(directory) && lstatSync(directory).isDirectory()) clean(directory)
+    }
+  }
+}
+
 /**
  * File primitive for a single backend owner. Synchronous IO makes version-check + rename
  * indivisible to other callbacks in that owner. External editors are reconciled by R2's

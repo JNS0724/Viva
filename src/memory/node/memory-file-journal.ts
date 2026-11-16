@@ -7,16 +7,22 @@ import { memoryFileRevision, openMemoryFileStore } from './memory-file-store.ts'
 export type FileReplacement = { path: string, before: string | null, after: string | null }
 /** A journaled append retains the new line and hashes, never the earlier transcript. */
 type FileAppend = { path: string, beforeRevision: string | null, afterRevision: string, append: string }
-export type FileChange = FileReplacement | FileAppend
+export type FileErasure = { path: string, beforeRevision: string, afterRevision: string | null, erase: true }
+export type FileChange = FileReplacement | FileAppend | FileErasure
+export function fileErasure(change: FileReplacement): FileChange {
+  return change.before === null ? change : { path: change.path, beforeRevision: memoryFileRevision(change.before),
+    afterRevision: change.after === null ? null : memoryFileRevision(change.after), erase: true }
+}
 export type FilePlan<T> = { workspace: string, changes: FileChange[], data: T }
 type Intent<T> = { id: string, input: string, state: string, plan: FilePlan<T> }
 export type FileCheckpoint = 'intent' | 'replace' | 'receipt' | 'checkpoint'
 
 /** One backend owner. Intent commits precede IO; receipt and application checkpoint share one SQL transaction. */
-export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes', cancelOnConflict = () => false }: {
+export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes', cancelOnConflict = () => false, projectErasure }: {
   db: DatabaseSync, root: string, valid: (data: T) => boolean, finish: (data: T) => void,
   checkpoint?: (point: FileCheckpoint, path?: string) => void, namespace?: string,
   cancelOnConflict?: (data: T) => boolean,
+  projectErasure?: (data: T, path: string, before: string) => string | null | undefined,
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS memory_file_intents (
     id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL, workspace TEXT NOT NULL, plan TEXT, namespace TEXT NOT NULL
@@ -40,9 +46,10 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
       Array<{ id: string, input: string, state: string, plan: string }>).map(row => ({ ...row, plan: JSON.parse(row.plan) as FilePlan<T> }))
   }
   const hash = (text: string | null) => text === null ? null : memoryFileRevision(text)
-  const beforeRevision = (change: FileChange) => 'append' in change ? change.beforeRevision : hash(change.before)
-  const afterRevision = (change: FileChange) => 'append' in change ? change.afterRevision : hash(change.after)
-  function targetText(change: FileChange, before: string | null, accepted: boolean): string | null | undefined {
+  const beforeRevision = (change: FileChange) => 'beforeRevision' in change ? change.beforeRevision : hash(change.before)
+  const afterRevision = (change: FileChange) => 'afterRevision' in change ? change.afterRevision : hash(change.after)
+  function targetText(data: T, change: FileChange, before: string | null, accepted: boolean): string | null | undefined {
+    if ('erase' in change) return change.afterRevision === null ? null : before === null ? undefined : projectErasure?.(data, change.path, before)
     if (!('append' in change)) return accepted ? change.after : change.before
     if (accepted) return (before ?? '') + change.append
     if (!before?.endsWith(change.append)) return undefined
@@ -66,13 +73,15 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     })
     if (conflicts) return conflict()
     const accepted = valid(intent.plan.data)
+    // Once erasure begins there is no authorized reversible before-image.
+    if (!accepted && intent.plan.changes.some(change => 'erase' in change)) return conflict()
     for (const change of intent.plan.changes) {
       const file = store.read(change.path), actual = file?.revision ?? null
       const previous = beforeRevision(change), next = afterRevision(change)
       if (actual !== previous && actual !== next) return conflict()
       const expected = accepted ? next : previous
       if (actual !== expected) {
-        const target = targetText(change, file?.markdown ?? null, accepted)
+        const target = targetText(intent.plan.data, change, file?.markdown ?? null, accepted)
         if (target === undefined || hash(target) !== expected) return conflict()
         if (target === null) store.remove(change.path, actual!)
         else store.write(change.path, target, actual)

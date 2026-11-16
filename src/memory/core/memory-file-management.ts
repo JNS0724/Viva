@@ -1,6 +1,6 @@
 import { memoryFileIdentity, memoryFileListRequest, memoryFileMutation } from '../contracts/file-management.ts'
 import type { MemoryManagedFileIdentity, MemoryFileListRequest, MemoryFileListResult, MemoryFileSummary, MemoryFileDetail,
-  MemoryFileMutation, MemoryManagedFileVersion } from '../contracts/file-management.ts'
+  MemoryFileForgetRequest, MemoryFileMutation, MemoryManagedFileVersion } from '../contracts/file-management.ts'
 import type { createMemoryDocumentReadPolicy, MemoryDocumentManagementView } from './memory-document-read-policy.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { FileUseRestriction, MemoryFileRestrictions } from './ports/file-restrictions.ts'
@@ -18,6 +18,7 @@ type DailyReads = {
 }
 type DailyRestriction = { record: FileUseRestriction, version: MemoryManagedFileVersion }
 type ManagedView = MemoryDocumentManagementView & {
+  detachedRestrictions?: DailyRestriction[]
   daily?: { allocation: DailyAllocation, hasProjection: boolean, canStop: boolean, restrictions: DailyRestriction[] }
 }
 type Policy = Pick<ReturnType<typeof createMemoryDocumentReadPolicy>, 'managementList' | 'managementRead'>
@@ -30,7 +31,7 @@ const failure = (code: 'not.found' | 'revision.conflict' | 'invalid.text') => ne
 /** Trusted host management only. Model tools must use the read policy's ordinary read/list paths.
  * This service owns no mutation or request fence; validate must run inside the runtime's sole fence. */
 export function createMemoryFileManagement({ policy, documents, workspaces, hash, daily }: {
-  policy: Policy, documents: Pick<MemoryDocuments, 'undoCandidate'>, workspaces(): readonly string[], hash(text: string): string, daily?: DailyReads,
+  policy: Policy, documents: Pick<MemoryDocuments, 'undoCandidate' | 'registered'>, workspaces(): readonly string[], hash(text: string): string, daily?: DailyReads,
 }) {
   function undoCandidate(view: MemoryDocumentManagementView) {
     if (view.kind !== 'digest') return null
@@ -68,6 +69,20 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
         enabled: false, markdown: '', currentMarkdown: null, sources, sourceTokens: [], backing: null, supporting: [],
         applicability: { state: 'unavailable', supersessions: [] }, daily: dailyState })
     }
+    for (const entry of documents.registered(workspace)) {
+      if (entry.state !== 'forgotten') continue
+      const restrictions = daily.ledger.forTarget({ kind: 'digest', workspace, key: entry.id }).flatMap(record => {
+        const sources = daily.sources(record.sources)
+        return sources?.length ? [{ record, sources, version: { contentRevision: record.contentRevision, usageVersion: record.usageVersion,
+          policyToken: hash(JSON.stringify(record)) } }] : []
+      })
+      if (!restrictions.length) continue
+      result.push({ id: entry.id, kind: 'digest', workspace, path: `digest/wiki/erased-${hash(entry.id)}.md`, updatedAt: 0,
+        revision: entry.revision, usageVersion: entry.usageVersion, policyToken: hash(JSON.stringify(restrictions.map(item => item.version))),
+        enabled: false, markdown: '', currentMarkdown: null, sources: restrictions.flatMap(item => item.sources),
+        sourceTokens: [], backing: null, supporting: [], applicability: { state: 'unavailable', supersessions: [] },
+        detachedRestrictions: restrictions.map(({ record, version }) => ({ record, version })) })
+    }
     return result
   }
   function summary(view: ManagedView): MemoryFileSummary {
@@ -76,7 +91,8 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     return { identity: identityOf(view), version: versionOf(view), path: view.path,
       title: typeof metadata.name === 'string' ? metadata.name.slice(0, 200) : '', enabled: view.enabled,
       ...(view.day ? { day: view.day } : {}), applicability: view.applicability.state,
-      ...(view.daily ? { hasProjection: view.daily.hasProjection, restrictions: view.daily.restrictions.map(({ record, version }) => ({ id: record.id, version })) } : {}),
+      ...(view.daily || view.detachedRestrictions ? { hasProjection: view.daily?.hasProjection ?? false,
+        restrictions: (view.daily?.restrictions ?? view.detachedRestrictions ?? []).map(({ record, version }) => ({ id: record.id, version })) } : {}),
       actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.canStop || view.daily.restrictions.length)),
         ...(view.daily ? { stop: view.daily.canStop } : {}), edit: false, forget: false, undo: candidate ? { changeId: candidate.changeId } : null } }
   }
@@ -93,7 +109,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     if (!view) return null
     const item: MemoryFileDetail = { ...summary(view), markdown: view.markdown, sources: view.sources }
     if (restrictionId === undefined) return item
-    const record = view.daily?.restrictions.find(item => item.record.id === restrictionId)?.record
+    const record = (view.daily?.restrictions ?? view.detachedRestrictions)?.find(item => item.record.id === restrictionId)?.record
     if (!record || !daily) return null
     const sources = daily.sources(record.sources)
     if (!sources) return null
@@ -120,10 +136,12 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     const command = memoryFileMutation.parse(input), view = resolve(command.identity, allows)
     if (!view) throw failure('not.found')
     const selected = command.action === 'setEnabled' && command.enabled
-      ? view.daily?.restrictions.find(item => item.record.id === command.restrictionId) : undefined
+      ? (view.daily?.restrictions ?? view.detachedRestrictions)?.find(item => item.record.id === command.restrictionId) : undefined
     if (view.kind === 'daily') {
       if (!view.daily || command.action !== 'setEnabled') throw failure('invalid.text')
       if (command.enabled ? !selected : command.restrictionId !== undefined || !view.daily.canStop) throw failure('revision.conflict')
+    } else if (view.detachedRestrictions) {
+      if (!selected) throw failure('revision.conflict')
     } else if (command.action === 'setEnabled' && command.restrictionId !== undefined) throw failure('invalid.text')
     const version = selected?.version ?? versionOf(view)
     if (version.contentRevision !== command.version.contentRevision || version.usageVersion !== command.version.usageVersion
@@ -132,5 +150,24 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     if (command.action === 'undo' && (!undo || undo.changeId !== command.changeId)) throw failure('revision.conflict')
     return { view, undo, restriction: selected?.record }
   }
-  return { list, detail, resolve, validate }
+  function forgetEvidence(command: MemoryFileForgetRequest, allows: Allows): { refs: DocumentSourceRef[], dailyKey?: string } {
+    const view = resolve(command.identity, allows)
+    if (!view) throw failure('not.found')
+    const selected = command.restrictionId === undefined ? undefined
+      : view.daily?.restrictions.find(item => item.record.id === command.restrictionId)
+    const version = selected?.version ?? versionOf(view)
+    if (version.contentRevision !== command.version.contentRevision || version.usageVersion !== command.version.usageVersion
+      || version.policyToken !== command.version.policyToken) throw failure('revision.conflict')
+    if (command.restrictionId !== undefined) {
+      if (!selected || !daily) throw failure('revision.conflict')
+      const snapshot = daily.ledger.snapshot(selected.record, selected.record.id)
+      if (!snapshot || hash(snapshot) !== version.contentRevision || !daily.sources(selected.record.sources, snapshot)) throw failure('revision.conflict')
+      return { refs: selected.record.sources, dailyKey: view.daily!.allocation.key }
+    }
+    const refs = view.kind === 'digest' ? view.backing?.sources
+      : view.daily?.hasProjection && daily ? daily.references(view.daily.allocation.key) : undefined
+    if (!refs?.length) throw failure('revision.conflict')
+    return { refs, dailyKey: view.daily?.allocation.key }
+  }
+  return { list, detail, resolve, validate, forgetEvidence }
 }

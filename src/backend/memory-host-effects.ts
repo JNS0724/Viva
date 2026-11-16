@@ -53,6 +53,9 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, invalid
     running = (async () => {
       const effects = await call('pendingHostEffects', {})
       for (const effect of effects) {
+        // Range erasure stays pending until the host can prove selective cleanup.
+        // Applying the older whole-source path would erase unrelated user text.
+        if (effect.kind === 'erase-file-copies') continue
         const fingerprint = createHash('sha256').update(JSON.stringify(effect)).digest('hex')
         const old = db.prepare('SELECT cause,revision,fingerprint FROM memory_host_receipts WHERE effect=?').get(effect.effectId)
         if (old && (old.cause !== effect.causeOperationId || old.revision !== effect.revision || old.fingerprint !== fingerprint)) throw new Error('Memory host effect identity conflicts')

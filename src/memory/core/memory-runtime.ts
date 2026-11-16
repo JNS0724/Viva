@@ -42,14 +42,14 @@ import { createMemoryFileManagement } from './memory-file-management.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import { memoryFileMutation } from '../contracts/file-management.ts'
 import type { MemoryFileMutation, MemoryFileMutationResult, MemoryFileListRequest, MemoryManagedFileIdentity,
-  MemoryFileSetEnabledRequest, MemoryFileUndoRequest } from '../contracts/file-management.ts'
+  MemoryFileForgetRequest, MemoryFileSetEnabledRequest, MemoryFileUndoRequest } from '../contracts/file-management.ts'
 import type { MemoryDocumentView } from './memory-document-read-policy.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey } from './memory-file-retrieval.ts'
 import type { FileApplicability, FileNeighbors, FileSearchResult } from './memory-file-retrieval.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
 import { documentSourceRestricted, availableDocumentSourceSpans, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
-import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
+import type { DocumentReceipt, DocumentSourceCut, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
 import { createDailySemanticSearch, dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
 import type { DailySearchDocument, SearchChunk } from './memory-daily-search.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
@@ -754,6 +754,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
     allowsDerived: ids => !documentSourcesRestricted(ids),
     allowsReferences: refs => !documentReferencesRestricted(refs),
+    projectText: (workspace, text) => documents?.projectErasedLocators(workspace, text) ?? text,
     projectSource(source, ref) {
       const workspace = memoryHash(JSON.stringify([source.scope, source.context, source.project ?? null]))
       const restrictions = useRestrictions.sources(workspace)
@@ -2731,6 +2732,54 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return offset === text.length
   }
 
+  async function forgetManagedFile(input: MemoryFileForgetRequest,
+    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[]) => void): Promise<MemoryFileMutationResult> {
+    if (!documents || !fileManagement || !notes) throw domainError('not.found')
+    const storage = documents
+    const result = await runDocumentMutation(() => store.tx(() => {
+      if (closed) throw domainError('not.found')
+      const { refs, dailyKey } = fileManagement.forgetEvidence(input, managementAllows)
+      const cuts = refs.map(ref => {
+        const current = canonicalSource(ref.id)
+        if (!current?.text || !current.hash || resources.sourceToken(current) !== ref.token) throw domainError('revision.conflict')
+        return { ...ref, spans: ref.spans ?? [{ start: 0, end: current.length }], version: current.version,
+          length: current.length, hash: current.hash } satisfies DocumentSourceCut
+      })
+      const revision = store.nextRevision(), legacy = new Set<number>()
+      for (const cut of cuts) {
+        if (!store.eraseFileSource(cut, cut.version)) throw domainError('revision.conflict')
+        notes.eraseSource(cut)
+        storage.eraseSource(cut)
+        dream?.withdraw(cut.id)
+        store.clearCandidates(cut.id)
+        effects.cancel(EXTRACT, cut.id)
+        for (const id of store.memoriesFrom(cut.id)) {
+          if (store.storedEvidence(id).some(edge => edge.sourceId === cut.id
+            && documentSourceRestricted({ id: cut.id, token: cut.token, spans: edge.spans }, [cut]))) {
+            store.remove(id)
+            legacy.add(id)
+          }
+        }
+        effects.queue(DOCUMENT_CLEANUP, cut.id, null)
+      }
+      if (legacy.size) cleanup.queue(input.operationId, [...legacy][0]!, [...legacy], revision)
+      syncFileIndex()
+      validateDispatch()
+      const usageVersion = dailyKey
+        ? notes.storage.allocations().find(item => item.key === dailyKey)?.revision
+        : storage.registered(input.identity.workspace).find(item => item.id === input.identity.id)?.usageVersion
+      if (usageVersion === undefined) throw new Error('Missing erased file identity')
+      const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
+        action: 'FORGET', contentRevision: input.version.contentRevision, usageVersion,
+        ...(input.restrictionId ? { restrictionId: input.restrictionId } : {}) }
+      committed(result, cuts)
+      return result
+    }))
+    publish(store.revision(), [])
+    void effects.wake()
+    return result
+  }
+
   async function mutateManagedFile(input: MemoryFileMutation, committed?: FileMutationCommitted): Promise<MemoryFileMutationResult> {
     const command = memoryFileMutation.parse(input)
     if (!documents || !fileManagement) throw domainError('not.found')
@@ -2746,7 +2795,31 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         return applied.result
       }
       if (!fileWorkspaces().includes(command.identity.workspace)) throw domainError('not.found')
-      if (command.action === 'setEnabled' && command.restrictionId !== undefined) throw domainError('invalid.text')
+      if (command.action === 'setEnabled' && command.restrictionId !== undefined) {
+        const applied = store.tx(() => {
+          const fingerprint = memoryHash(JSON.stringify(command))
+          const prior = useRestrictions.receipt(command.operationId)
+          if (prior) {
+            if (prior.fingerprint !== fingerprint) throw domainError('operation.conflict')
+            return prior
+          }
+          const { view, restriction } = fileManagement.validate(command, managementAllows)
+          if (!restriction || !view.detachedRestrictions) throw domainError('revision.conflict')
+          const sources = dailySources(restriction.sources)
+          if (!sources || !useRestrictions.release(restriction, restriction.id)) throw domainError('revision.conflict')
+          store.nextRevision()
+          validateDispatch()
+          changed = true
+          const result: MemoryFileMutationResult = { operationId: command.operationId, identity: command.identity, action: 'ENABLE',
+            contentRevision: view.revision, usageVersion: view.usageVersion, restrictionId: restriction.id }
+          const receipt = { fingerprint, result, sources }
+          useRestrictions.complete(command.operationId, receipt)
+          return receipt
+        })
+        if (changed) publish(store.revision(), [])
+        committed?.(applied.result, applied.sources)
+        return applied.result
+      }
       const { identity, version, operationId } = command
       const alreadyCommitted = documents.receipt(identity.workspace, operationId)
       if (!alreadyCommitted && documents.recoverManagement(operationId) === 'cancelled') throw domainError('revision.conflict')
@@ -2785,6 +2858,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
     setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'setEnabled' }, committed),
+    forgetFile: forgetManagedFile,
     undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'undo' }, committed),
     runDocumentDream: () => { dream?.run(); return effects.wake() },

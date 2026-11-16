@@ -20,6 +20,15 @@ export interface ParsedMemoryMarkdown {
   links: MemoryMarkdownLink[]
 }
 
+export function memoryWikiLink(content: string): Omit<MemoryMarkdownLink, 'line'> {
+  const pipe = content.indexOf('|')
+  const reference = (pipe < 0 ? content : content.slice(0, pipe)).trim()
+  const hash = reference.indexOf('#')
+  const path = (hash < 0 ? reference : reference.slice(0, hash)).trim()
+  return { path, ...(hash < 0 ? {} : { anchor: reference.slice(hash + 1) }),
+    ...(pipe < 0 ? {} : { label: content.slice(pipe + 1) }) }
+}
+
 // The default lexer drops duplicate reference definitions. Keep their AST blocks
 // so raw tokens remain a complete source partition; reference resolution stays first-wins.
 const definitionTokenizer = new Tokenizer()
@@ -117,13 +126,8 @@ export function parseMemoryMarkdown(markdown: string, { maxBytes = DAILY_MEMORY_
       cursor = located.end
       const mapped = located.mapped
       if (token.type === 'memory_wikilink') {
-        const content = token.raw.slice(2, -2)
-        const pipe = content.indexOf('|')
-        const reference = (pipe < 0 ? content : content.slice(0, pipe)).trim()
-        const hash = reference.indexOf('#')
-        const path = (hash < 0 ? reference : reference.slice(0, hash)).trim()
-        if (path) links.push({ path, ...(hash < 0 ? {} : { anchor: reference.slice(hash + 1) }),
-          ...(pipe < 0 ? {} : { label: content.slice(pipe + 1) }), line: lineAt(mapped.offsets[0]!) })
+        const link = memoryWikiLink(token.raw.slice(2, -2))
+        if (link.path) links.push({ ...link, line: lineAt(mapped.offsets[0]!) })
       } else if (token.type === 'list') collect((token as Tokens.List).items, mapped)
       else if (token.type === 'table') {
         const table = token as Tokens.Table

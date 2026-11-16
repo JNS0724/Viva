@@ -23,6 +23,7 @@ export const memoryFileListResult = z.strictObject({ status: z.enum(['ok', 'stal
   items: z.array(memoryFileSummary).max(100), nextCursor: memoryFileCursor.nullable() })
 const mutation = { operationId: z.uuid(), identity: memoryFileIdentity, version: memoryFileVersion }
 export const memoryFileSetEnabledRequest = z.strictObject({ ...mutation, enabled: z.boolean(), restrictionId: memoryFileRestrictionId.optional() })
+export const memoryFileForgetRequest = z.strictObject({ ...mutation, restrictionId: memoryFileRestrictionId.optional() })
 export const memoryFileUndoRequest = z.strictObject({ ...mutation, changeId: opaque })
 export const memoryFileMutation = z.discriminatedUnion('action', [
   memoryFileSetEnabledRequest.extend({ action: z.literal('setEnabled') }),
@@ -30,7 +31,7 @@ export const memoryFileMutation = z.discriminatedUnion('action', [
 ])
 /** Durable receipt only. Read the file again for its current policy-bound version. */
 export const memoryFileMutationResult = z.strictObject({ operationId: z.uuid(), identity: memoryFileIdentity,
-  contentRevision: opaque, usageVersion: z.number().int().nonnegative(), action: z.enum(['ENABLE', 'DISABLE', 'UNDO']), restrictionId: memoryFileRestrictionId.optional() })
+  contentRevision: opaque, usageVersion: z.number().int().nonnegative(), action: z.enum(['ENABLE', 'DISABLE', 'UNDO', 'FORGET']), restrictionId: memoryFileRestrictionId.optional() })
 export type MemoryManagedFileIdentity = z.infer<typeof memoryFileIdentity>
 export type MemoryManagedFileVersion = z.infer<typeof memoryFileVersion>
 export type MemoryFileListRequest = z.infer<typeof memoryFileListRequest>
@@ -39,5 +40,6 @@ export type MemoryFileSummary = z.infer<typeof memoryFileSummary>
 export type MemoryFileDetail = z.infer<typeof memoryFileDetail>
 export type MemoryFileMutation = z.infer<typeof memoryFileMutation>
 export type MemoryFileSetEnabledRequest = z.infer<typeof memoryFileSetEnabledRequest>
+export type MemoryFileForgetRequest = z.infer<typeof memoryFileForgetRequest>
 export type MemoryFileUndoRequest = z.infer<typeof memoryFileUndoRequest>
 export type MemoryFileMutationResult = z.infer<typeof memoryFileMutationResult>

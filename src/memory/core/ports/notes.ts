@@ -1,5 +1,5 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
-import type { DocumentSourceRef } from './documents.ts'
+import type { DocumentSourceCut, DocumentSourceRef } from './documents.ts'
 import type { MemorySource } from './store.ts'
 type SourceRef = DocumentSourceRef
 export interface NoteRow {
@@ -108,4 +108,5 @@ export interface MemoryNotes {
     }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options?: { rebuild?: boolean }): boolean;
     markProcessed(key: string, revision: number): void;
     withdraw(sourceId: string): string[];
+    eraseSource(cut: DocumentSourceCut): string[];
 }

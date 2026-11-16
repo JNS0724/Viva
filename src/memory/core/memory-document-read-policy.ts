@@ -7,7 +7,7 @@ import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSou
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
 
 type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
-type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'aliases'>>
+type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'aliases' | 'projectErasedLocators'>>
 
 /** A single authorized view used by dream and all file retrieval paths. The original is
  * retained for evidence validation; currentMarkdown masks replaced spans without changing
@@ -128,7 +128,8 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     // These are use-disable restrictions, not source authorization or erasure. Trusted
     // management may inspect accepted content in order to re-enable it; model reads may not.
     if (useRestricted && !includeDisabled) return null
-    const markdown = note ? note.document : digest!.markdown
+    const rawMarkdown = note ? note.document : digest!.markdown
+    const markdown = documents.projectErasedLocators?.(workspace, rawMarkdown) ?? rawMarkdown
     if (!refsCurrent(refs) || !materialAllowed(markdown, refs)) return null
     // A correction of this same logical document describes the previous revision, not
     // a reason to hide its newly corrected body. Other revisions remain anchored.
@@ -158,11 +159,12 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     const revision = note ? note.fileRevision : digest!.revision
     const usageVersion = note ? note.revision : digest!.usageVersion
     const policyToken = hash(JSON.stringify({ revision, usageVersion, sources: combined, supersessions,
+      ...(markdown === rawMarkdown ? {} : { locatorProjection: hash(markdown) }),
       supporting: supporting.map(item => ({ id: item.id, revision: item.revision, usageVersion: item.usageVersion })),
       replacementPolicies: replacements.map(item => item?.policyToken ?? null), ...(useRestricted ? { useRestrictions: applicableRestrictions } : {}), state }))
     return { id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
       revision, usageVersion, policyToken, ...(note ? { day: note.day } : {}), updatedAt: note?.updatedAt ?? 0,
-      markdown, currentMarkdown: useRestricted ? null : projected, sources, sourceTokens: combined, backing: digest, supporting,
+      markdown, currentMarkdown: useRestricted ? null : projected, sources, sourceTokens: combined, backing: digest && { ...digest, markdown }, supporting,
       applicability: { state, supersessions } }
   }
   function list(workspace: string, kind?: 'daily' | 'digest') {

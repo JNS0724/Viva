@@ -2,6 +2,13 @@ import type { DigestAction, DreamUnit } from '../../contracts/memory-file-contra
 
 /** Opaque canonical source versions, issued by the Node adapter, never by a model. */
 export interface DocumentSourceRef { id: string, token: string, spans?: Array<{ start: number, end: number }> }
+export interface DocumentSourceCut extends DocumentSourceRef {
+  spans: NonNullable<DocumentSourceRef['spans']>
+  /** Canonical UTF-16 length and version before the erasure. */
+  length: number
+  version: number
+  hash: string
+}
 export interface DocumentReadRef { id: string, revision: string, usageVersion: number }
 /** Exact old fragment and applicability supplied by semantic verification, then checked against the read snapshot. */
 export interface DocumentCorrection {
@@ -18,7 +25,7 @@ export interface DocumentSupersession extends DocumentCorrection {
   /** Storage-issued provenance of the old quotation, separate from the replacement's sources. */
   anchorSources?: DocumentSourceRef[]
   /** Body-free exclusion after erasing a quotation; applies only where its source still contributes. */
-  erasedAnchorSources?: string[]
+  erasedAnchorSources?: DocumentSourceRef[]
   documentId: string
   replacementRevision: string
   operationId: string
@@ -103,6 +110,7 @@ export interface MemoryDocuments {
   receipt(workspace: string, operationId: string): DocumentReceipt | null
   hasPendingCleanup(sourceId: string): boolean
   pendingCleanup(): number
+  projectErasedLocators(workspace: string, markdown: string): string
   read(workspace: string, path: string, options?: { includeDisabled?: boolean }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt
@@ -111,6 +119,7 @@ export interface MemoryDocuments {
   setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean, expectedPolicyToken?: string }): DocumentReceipt
   /** Caller excludes the canonical source before invoking physical cleanup. */
   withdraw(sourceId: string): string[]
+  eraseSource(cut: DocumentSourceCut): string[]
   supersessions(workspace: string, path: string): DocumentSupersession[]
   defer(input: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork
   deferred(workspace: string, operationId: string): DeferredDocumentWork | null

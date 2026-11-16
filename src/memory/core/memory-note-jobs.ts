@@ -5,7 +5,7 @@ import { NOTE_SYSTEM, WRITE_NOTE, noteReply } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import type { MemoryProvenance, MemorySource, MemoryStore } from './ports/store.ts'
 import { todayAt } from './memory-facts.ts'
-import type { DocumentSourceRef } from './ports/documents.ts'
+import type { DocumentSourceCut, DocumentSourceRef } from './ports/documents.ts'
 import type { MemorySpan } from '../contracts/memory-contract.ts'
 
 const DAILY = 'daily'
@@ -13,7 +13,7 @@ type Calculate = (job: Effect, source: MemorySource, stage: 'note' | 'dream', sy
   sources: string[], current: () => boolean) => Promise<unknown>
 
 /** Completed-turn daily capture. Document dream is independently orchestrated by memory-dream. */
-export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, capture = true, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), assistantContextCurrent, calculate, mutate = async work => work() }:  {
+export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, capture = true, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), projectText = (_workspace, text) => text, assistantContextCurrent, calculate, mutate = async work => work() }:  {
   store: MemoryStore, effects: Effects, now: () => number, settings?: DailyMemorySettings, capture?: boolean,
   openNotes: MemoryRuntimeResources['openNotes'],
   readable: (id: string) => boolean,
@@ -23,6 +23,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   allowsDerived?: (ids: readonly string[]) => boolean,
   allowsReferences?: (refs: readonly DocumentSourceRef[]) => boolean,
   projectSource?: (source: MemorySource, ref: DocumentSourceRef) => { text: string, spans?: MemorySpan[] },
+  projectText?: (workspace: string, text: string) => string,
   assistantContextCurrent: (context: MemoryProvenance) => boolean,
   calculate: Calculate,
   mutate?: <T>(write: () => T) => Promise<T>,
@@ -166,12 +167,14 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     }
     for (const ref of [...priorRefs, ...turns.flatMap(turn => turn.user.map(item => item.ref)), ...notes.snapshot(assistantIds)]) add(ref)
     const refs = versions.map(ref => used.get(ref.id)!)
+    const project = (text: string) => projectText(workspace, text)
     const input = {
-      existing: existing && !rebuilding ? { title: existing.title, markdown: existing.markdown } : undefined,
-      previousAssistant,
+      existing: existing && !rebuilding ? { title: project(existing.title), markdown: project(existing.markdown) } : undefined,
+      previousAssistant: previousAssistant === null ? null : project(previousAssistant),
       turns: turns.map(({ row, user, assistant }) => ({
-        user: user.map(({ source, text, question }) => ({ sourceId: source.id, text, author: source.author, version: source.version, question, at: source.at })),
-        assistant,
+        user: user.map(({ source, text, question }) => ({ sourceId: source.id, text: project(text), author: source.author, version: source.version,
+          question: question === null ? null : project(question), at: source.at })),
+        assistant: project(assistant),
       })),
     }
     // Validate all text actually sent, including stored documents and question context, not only new sources.
@@ -190,7 +193,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (result === undefined) return 'wait'
     const reply = noteReply.parse(result)
     if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return 'retry'
-    if (reply.status === 'write' && sources.some(source => !allowsText(`${reply.title}\n${reply.markdown}\n${reply.filename ?? ''}`, source))) return 'retry'
+    if (reply.status === 'write' && (project(reply.markdown) !== reply.markdown || sources.some(source => !allowsText(`${reply.title}\n${reply.markdown}\n${reply.filename ?? ''}`, source)))) return 'retry'
     if (!await mutate(() => {
       if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return false
       return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })
@@ -261,6 +264,10 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
         for (const group of notes.pendingGroups()) if (!session || group.session === session) schedule(group.note, true)
       })
       wake()
+    },
+    eraseSource(cut: DocumentSourceCut) {
+      effects.queue(CLEAN, DAILY, null)
+      for (const key of notes.eraseSource(cut)) queueRebuild(key)
     },
     withdraw(id: string) {
       effects.queue(CLEAN, DAILY, null)

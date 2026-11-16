@@ -3,10 +3,12 @@ import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
+import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { createVivaMemoryClient } from '../src/backend/memory-client.ts'
@@ -413,4 +415,155 @@ test('erased canonical coordinates reject raw and staged replay while a disjoint
   await f.owner.receiveSource({ sessionId: randomUUID(), messageId: fresh, text, at: Date.now(), timezone: 'UTC',
     turn: 1, step: 1, admitted: true, inherited: false })
   assert.equal(f.owner.runtime.dispatchSourceCurrent(fresh), true, 'an independent original is admitted normally')
+})
+
+test('forgetting a digest drains transport, cleans Node replicas and preserves disjoint file proof', async t => {
+  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
+  const root = join(f.store.fileRoot, f.identity.workspace)
+  const notes = openMemoryNotes(f.store, id => Boolean(f.store.readSource(id)?.text))
+  const note = notes.add(f.session, '2026-11-16', [source], 'Assistant echo of the Friday report')!
+  notes.commit(note, notes.pending(note), { status: 'write', title: 'Friday report', markdown: 'Friday report and Monday tea' },
+    81, Date.now(), notes.snapshot([source.id]), undefined)
+  const dailyPath = notes.read(note)!.path
+  const transcript = join(root, 'session/dialog', memoryFileRevision(f.session) + '.jsonl')
+  const orphan = join(root, 'session/dialog', `.viva-memory-${randomUUID()}.tmp`)
+  writeFileSync(orphan, 'Abandoned Friday report replica')
+  const foreign = join(root, 'session/dialog', 'independent.tmp')
+  writeFileSync(foreign, 'Unmanaged temporary file')
+  const tea = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Tea is served on Monday.',
+    sources: [{ id: source.id, token: memorySourceToken(source), spans: [{ start: 26, end: source.length }] }], reads: [] })
+  const reader = randomUUID()
+  await f.owner.receiveSource({ sessionId: reader, messageId: randomUUID(), text: 'Tea?', at: Date.now(), timezone: 'UTC',
+    turn: 1, step: 1, admitted: true, inherited: false })
+  const read = () => f.owner.runtime.handle({ op: 'file_read', session: reader, id: tea.documentId }, { session: reader, conversation: reader })
+  assert.match(read(), /Tea is served on Monday/)
+  const before = (await f.client.readFile(f.identity))!, operationId = randomUUID()
+  const input = { operationId, identity: before.identity, version: before.version }
+  const permit = f.owner.acquireSend(randomUUID(), { session: f.session }, source.text!)
+  const pending = f.client.forgetFile(input)
+  try {
+    await aborted(permit.signal)
+    assert.equal(f.store.readSource(source.id)?.text, source.text)
+    assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { sendFence: string }).sendFence, 'pending')
+  } finally { permit.settled() }
+  const receipt = await pending
+  assert.equal(receipt.action, 'FORGET')
+  await f.reopen()
+  await f.owner.runtime.wake()
+  assert.deepEqual(await f.client.forgetFile(input), receipt)
+  assert.equal(await f.client.readFile(f.identity), null)
+  assert.equal(existsSync(join(root, f.created.path)), false)
+  assert.match(f.documents.receipt(f.identity.workspace, f.created.operationId)!.path, /digest\/wiki\/erased-/)
+  assert.equal(existsSync(join(root, dailyPath)), false)
+  assert.equal(existsSync(orphan), false)
+  assert.equal(readFileSync(foreign, 'utf8'), 'Unmanaged temporary file')
+  const serialized = readFileSync(transcript, 'utf8')
+  assert.match(serialized, /Tea is served on Monday/)
+  assert.doesNotMatch(serialized, /The report is due Friday|Assistant echo/)
+  const relevantCopies = JSON.stringify([
+    f.store.db.prepare('SELECT payload FROM memory_file_index_chunks').all(),
+    f.store.db.prepare('SELECT before,after FROM memory_document_revisions').all(),
+    f.store.db.prepare('SELECT plan FROM memory_file_intents').all(),
+  ])
+  assert.doesNotMatch(relevantCopies, /Friday report|The report is due Friday/)
+  await assert.rejects(f.client.undoFile({ ...input, operationId: randomUUID(), changeId: before.actions.undo?.changeId ?? 'prior' }))
+  assert.match(read(), /Tea is served on Monday/)
+  f.owner.acquireSend(randomUUID(), { session: reader }, 'Independent tea file').settled()
+  assert.throws(() => f.owner.acquireSend(randomUUID(), { session: f.session }, 'Old original'), /denied/)
+  const [effect] = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.equal(effect?.kind, 'erase-file-copies')
+  assert.deepEqual(effect?.ranges?.map(({ sourceId, spans }) => ({ sourceId, spans })), [{ sourceId: source.id, spans: [{ start: 0, end: 25 }] }])
+  assert.deepEqual(effect?.sessions, [f.session])
+  const native = f.store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId)
+  assert.deepEqual(JSON.parse(String(native?.payload)), { sessions: effect.sessions, ranges: effect.ranges })
+  assert.equal(f.owner.runtime.cleanupPending(), 0)
+  await f.owner.handleHost('ackHostEffect', { effectId: effect!.effectId, causeOperationId: operationId, revision: effect!.revision })
+  assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'pending',
+    'native transcript cleanup has an independent completion condition')
+})
+
+test('a lost file-forget completion rolls back the cut and recovers one operation after restart', async t => {
+  const f = await fixture(t), file = (await f.client.readFile(f.identity))!, source = f.store.readSource(f.sourceId)!
+  const input = { operationId: randomUUID(), identity: file.identity, version: file.version }
+  f.store.db.exec(`CREATE TRIGGER interrupt_forget BEFORE UPDATE ON owner_operations WHEN NEW.state='completed'
+    BEGIN SELECT RAISE(ABORT, 'interrupted completion'); END`)
+  await assert.rejects(f.client.forgetFile(input), /interrupted completion/)
+  assert.equal(f.store.readSource(source.id)?.text, source.text)
+  assert.ok(await f.client.readFile(f.identity))
+  f.store.db.exec('DROP TRIGGER interrupt_forget')
+  await f.reopen()
+  const result = await f.client.forgetFile(input)
+  assert.equal(result.action, 'FORGET')
+  assert.equal(f.store.readSource(source.id)?.version, source.version + 1)
+  assert.equal((await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]).length, 1)
+  await assert.rejects(f.client.forgetFile({ ...input, version: { ...input.version, policyToken: 'different' } }), { code: 'operation.conflict' })
+})
+
+test('an independent stopped range remains addressable after its former digest is erased', async t => {
+  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
+  const write = (path: string, markdown: string, spans?: Array<{ start: number, end: number }>) => f.documents.commit({
+    workspace: f.identity.workspace, operationId: randomUUID(), path, markdown, action: 'CREATE', reads: [],
+    expectedRevision: null, sources: [{ id: source.id, token: memorySourceToken(source), spans }] })
+  const owner = write('digest/wiki/mixed.md', 'Mixed original evidence'), tea = write('digest/wiki/b-only.md', 'Monday tea',
+    [{ start: 26, end: source.length }])
+  const identity = { ...f.identity, id: owner.documentId }, prior = (await f.client.readFile(identity))!
+  await f.client.setFileEnabled({ operationId: randomUUID(), identity, version: prior.version, enabled: false })
+  const removed = (await f.client.readFile(f.identity))!
+  await f.client.forgetFile({ operationId: randomUUID(), identity: removed.identity, version: removed.version })
+  await f.reopen()
+  const parked = (await f.client.readFile(identity))!, restriction = parked.restrictions![0]!
+  assert.equal(parked.hasProjection, false)
+  assert.equal(parked.markdown, '')
+  assert.equal(f.owner.runtime.readDocument!(identity.workspace, tea.path), null)
+  const input = { operationId: randomUUID(), identity, version: restriction.version, restrictionId: restriction.id, enabled: true }
+  const receipt = await f.client.setFileEnabled(input)
+  assert.deepEqual(await f.client.setFileEnabled(input), receipt)
+  assert.equal(await f.client.readFile(identity), null)
+  assert.equal(f.owner.runtime.readDocument!(identity.workspace, tea.path)?.markdown, 'Monday tea')
+  assert.equal(await f.client.readFile(f.identity), null)
+})
+
+test('an erased locator is suppressed in independent evidence reads and its disk copy keeps cleanup pending', async t => {
+  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
+  const linked = f.documents.commit({ workspace: f.identity.workspace, operationId: randomUUID(), path: 'digest/wiki/linked.md',
+    markdown: `Monday tea. [[${f.created.path}]] [[  ${f.created.path}#original  |retained citation]]\n\n| Source |\n| --- |\n| [[${f.created.path}\\|citation]] |`, action: 'CREATE', expectedRevision: null, reads: [],
+    sources: [{ id: source.id, token: memorySourceToken(source), spans: [{ start: 26, end: source.length }] }] })
+  const proof = [{ id: source.id, token: memorySourceToken(source), spans: [{ start: 26, end: source.length }] }]
+  const replacement = { workspace: f.identity.workspace, path: 'digest/wiki/replacement.md', sources: proof, reads: [] }
+  const draft = f.documents.commit({ ...replacement, operationId: randomUUID(), markdown: 'Draft', action: 'CREATE', expectedRevision: null })
+  f.documents.commit({ ...replacement, operationId: randomUUID(), markdown: 'Updated tea', action: 'CORRECT', expectedRevision: draft.revision,
+    corrections: [{ path: linked.path, revision: linked.revision!, startLine: 1, endLine: 1,
+      text: `Monday tea. [[${f.created.path}]] [[  ${f.created.path}#original  |retained citation]]`,
+      condition: `See [[${f.created.path}]]`, time: `After [[${f.created.path}]]` }] })
+  const current = (await f.client.readFile(f.identity))!
+  await f.client.forgetFile({ operationId: randomUUID(), identity: f.identity, version: current.version })
+  await f.reopen()
+  const session = randomUUID()
+  const read = f.owner.runtime.handle({ op: 'file_read', session, id: linked.documentId, evidence: true }, { session, conversation: session })
+  assert.match(read, /Monday tea/)
+  assert.ok(!read.includes(f.created.path))
+  assert.ok(readFileSync(join(f.store.fileRoot, f.identity.workspace, linked.path), 'utf8').includes(f.created.path))
+  assert.ok(f.owner.runtime.cleanupPending() > 0)
+})
+
+test('an escaped locator retained only in correction metadata still counts as a pending physical copy', async t => {
+  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
+  const shared = { workspace: f.identity.workspace, reads: [], sources: [{ id: source.id, token: memorySourceToken(source),
+    spans: [{ start: 26, end: source.length }] }] }
+  const before = f.documents.commit({ ...shared, operationId: randomUUID(), path: 'digest/wiki/tea-before.md', markdown: 'Tea Monday',
+    action: 'CREATE', expectedRevision: null })
+  const after = f.documents.commit({ ...shared, operationId: randomUUID(), path: 'digest/wiki/tea-after.md', markdown: 'Draft',
+    action: 'CREATE', expectedRevision: null })
+  f.documents.commit({ ...shared, operationId: randomUUID(), path: after.path, markdown: 'Tea Tuesday',
+    action: 'CORRECT', expectedRevision: after.revision, corrections: [{ path: before.path, revision: before.revision!, startLine: 1, endLine: 1,
+      text: 'Tea Monday', time: '', condition: `[[${f.created.path}\\|citation]]` }] })
+  const original = (await f.client.readFile(f.identity))!
+  await f.client.forgetFile({ operationId: randomUUID(), identity: original.identity, version: original.version })
+  await f.reopen()
+  assert.ok(f.owner.runtime.cleanupPending() > 0)
+  const reader = randomUUID()
+  const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: before.documentId, evidence: true }, { session: reader, conversation: reader })
+  assert.match(packet, /Tea Monday/)
+  assert.ok(!packet.includes(f.created.path))
 })

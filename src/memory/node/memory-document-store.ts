@@ -1,25 +1,27 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DeferredDocumentWork, DocumentTagAttempt, DocumentRename, DocumentExternalEdit, DocumentUndoCandidate, DocumentManagementGuard } from '../core/ports/documents.ts'
+import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceCut, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DeferredDocumentWork, DocumentTagAttempt, DocumentRename, DocumentExternalEdit, DocumentUndoCandidate, DocumentManagementGuard } from '../core/ports/documents.ts'
 import { digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument, readMemoryLines, memoryDocumentLines } from '../core/memory-document.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
-import { openMemoryFileJournal } from './memory-file-journal.ts'
+import { fileErasure, openMemoryFileJournal } from './memory-file-journal.ts'
 import type { FileCheckpoint, FilePlan } from './memory-file-journal.ts'
 import { documentSourceProofCurrent, documentSourceRestricted } from '../core/memory-document-restrictions.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { transaction, truncateMemoryJournal } from './sqlite.ts'
+import { memoryWikiLink } from '../core/memory-markdown.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 
 type Row = { id: string, workspace: string, path: string, revision: string, usage_version: number, enabled: number, forgotten: number, sources: string, corrections: string }
 type Revision = { operation: string, document: string, before: string | null, after: string | null }
 type Mutation = { kind: 'revision', input: string, receipt: DocumentReceipt, before: DocumentSnapshot | null, after: DocumentSnapshot | null, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }>, workspace: string, externalEdit?: DocumentExternalEdit, management?: DocumentManagementGuard }
-type Purge = { kind: 'purge', document: string, workspace: string, path: string, expected_revision: string | null }
+type Purge = { kind: 'purge', document: string, workspace: string, path: string, expected_revision: string | null, retire_path: number }
 type Data = Mutation | Purge
 type Restore = { operation: string, document: string, workspace: string, path: string, revision: string, written: string, usage: number, markdown: string, sources: string, removed: string }
 const encode = (value: unknown) => JSON.stringify(value)
 const hash = (value: unknown) => memoryFileRevision(encode(value))
+const erasedPath = (id: string) => `digest/wiki/erased-${memoryFileRevision(id)}.md`
 const refsOf = (row: Row): DocumentSourceRef[] => JSON.parse(row.sources) as DocumentSourceRef[]
 const readVersions = (reads: readonly DocumentReadRef[]): DocumentReadRef[] =>
   reads.map(({ id, revision, usageVersion }) => ({ id, revision, usageVersion }))
@@ -66,8 +68,11 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       revision TEXT NOT NULL, written TEXT NOT NULL, usage INTEGER NOT NULL, markdown TEXT NOT NULL, sources TEXT NOT NULL, removed TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS memory_document_erasures (source TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS memory_document_erased_locators (
+      workspace TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(workspace,fingerprint)
+    );
     CREATE TABLE IF NOT EXISTS memory_document_purges (
-      document TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, sources TEXT NOT NULL, expected_revision TEXT
+      document TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, sources TEXT NOT NULL, expected_revision TEXT, retire_path INTEGER NOT NULL DEFAULT 0
     );
   `)
   const useRestrictions = openMemoryFileRestrictions(db)
@@ -128,6 +133,17 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     },
     finish(data) {
       if (data.kind === 'purge') {
+        if (data.retire_path) {
+          const base = erasedPath(data.document).slice(0, -3)
+          let path = `${base}.md`, suffix = 1
+          while (rowByPath(data.workspace, path) && rowByPath(data.workspace, path)?.id !== data.document) path = `${base}-${suffix++}.md`
+          db.prepare('UPDATE memory_documents SET path=? WHERE id=?').run(path, data.document)
+          db.prepare('DELETE FROM memory_document_aliases WHERE document=?').run(data.document)
+          for (const row of db.prepare("SELECT operation,receipt FROM memory_document_receipts WHERE json_extract(receipt,'$.documentId')=?").all(data.document)) {
+            const receipt = JSON.parse(String(row.receipt)) as DocumentReceipt
+            db.prepare('UPDATE memory_document_receipts SET receipt=? WHERE operation=?').run(encode({ ...receipt, path }), row.operation)
+          }
+        }
         db.prepare('DELETE FROM memory_document_purges WHERE document=?').run(data.document)
         return
       }
@@ -221,6 +237,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (prior) return prior
     digestPath.parse(input.path)
     parseMemoryDocument(input.markdown)
+    if (projectErasedLocators(input.workspace, input.markdown) !== input.markdown) throw new Error('memory-document-erased-locator')
     const before = read(input.workspace, input.path)
     if (rowByPath(input.workspace, input.path) && !before) throw new Error('memory-document-unavailable')
     if ((before?.revision ?? null) !== input.expectedRevision) throw new Error('memory-document-version')
@@ -321,7 +338,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     // Owner management intents must wait for the persisted host withdrawal watermarks.
     // Only an authenticated command replay may apply them under its send fence.
     journal.recover(undefined, data => !managed(data))
-    const purges = db.prepare('SELECT document,workspace,path,sources,expected_revision FROM memory_document_purges').all() as Array<Omit<Purge, 'kind'> & {sources:string}>
+    const purges = db.prepare('SELECT document,workspace,path,sources,expected_revision,retire_path FROM memory_document_purges').all() as Array<Omit<Purge, 'kind'> & {sources:string}>
     for (const purge of purges) {
       try {
         for (const ref of JSON.parse(purge.sources) as DocumentSourceRef[]) db.prepare('INSERT OR IGNORE INTO memory_document_erasures(source) VALUES(?)').run(ref.id)
@@ -329,7 +346,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         // A prepared CREATE has no accepted ownership of unrelated on-disk bytes.
         // Keep cleanup pending if its physical state cannot be verified.
         if (before && purge.expected_revision !== null && before.revision !== purge.expected_revision) continue
-        journal.commit(`purge:${purge.document}`, hash(purge), () => ({ workspace: purge.workspace, changes: before ? [{ path: purge.path, before: before.markdown, after: null }] : [], data: { ...purge, kind: 'purge' } }))
+        journal.commit(`purge:${purge.document}`, hash(purge), () => ({ workspace: purge.workspace, changes: before ? [fileErasure({ path: purge.path, before: before.markdown, after: null })] : [], data: { ...purge, kind: 'purge' } }))
       } catch (error) {
         if (!(error instanceof Error && ['memory-file-plan-conflict', 'memory-file-plan-busy'].includes(error.message))) throw error
       }
@@ -338,14 +355,50 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       db.prepare('DELETE FROM memory_document_erasures').run()
     }
   }
-  function withdraw(sourceId: string): string[] {
+  function projectErasedLocators(scope: string, markdown: string) {
+    const fingerprints = new Set(db.prepare('SELECT fingerprint FROM memory_document_erased_locators WHERE workspace=?').all(scope)
+      .map(row => String(row.fingerprint)))
+    if (!fingerprints.size) return markdown
+    return markdown.replace(/\[\[([^\]\r\n]+)\]\]/gu, (link, content: string) => {
+      const { path } = memoryWikiLink(content)
+      // The Markdown table tokenizer unescapes a pipe before lexing its inline links.
+      const tablePath = memoryWikiLink(content.replace(/\\\|/gu, '|')).path
+      return fingerprints.has(memoryFileRevision(path)) || fingerprints.has(memoryFileRevision(tablePath)) ? ' '.repeat(link.length) : link
+    })
+  }
+  function locatorCopiesPending() {
+    const affected = new Set(db.prepare('SELECT DISTINCT workspace FROM memory_document_erased_locators').all().map(row => String(row.workspace)))
+    if (!affected.size) return false
+    const contains = (workspace: string, markdown: string) => projectErasedLocators(workspace, markdown) !== markdown
+    const containsCorrection = (workspace: string, corrections: DocumentSupersession[]) =>
+      corrections.some(item => [item.text, item.condition, item.time].some(text => contains(workspace, text)))
+    const docs = db.prepare('SELECT workspace,path,corrections FROM memory_documents WHERE forgotten=0').all()
+    const notes = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_daily_notes'").get()
+      ? db.prepare('SELECT workspace,path FROM memory_daily_notes WHERE file_revision IS NOT NULL').all() : []
+    for (const row of [...docs, ...notes]) {
+      if (!affected.has(String(row.workspace))) continue
+      try {
+        const workspace = String(row.workspace), file = journal.files(workspace).read(String(row.path))
+        if (typeof row.corrections === 'string' && containsCorrection(workspace, JSON.parse(row.corrections) as DocumentSupersession[])) return true
+        if (file && contains(workspace, file.markdown)) return true
+      } catch { return true }
+    }
+    return (db.prepare('SELECT before,after FROM memory_document_revisions').all() as unknown as Revision[]).some(row => [row.before, row.after].some(value => {
+      if (!value) return false
+      const item = JSON.parse(value) as DocumentSnapshot
+      return contains(item.workspace, item.markdown) || containsCorrection(item.workspace, item.corrections)
+    }))
+  }
+  function removeEvidence(sourceId: string, cut?: DocumentSourceCut): string[] {
     const affected: string[] = []
-    const contains = (refs: readonly DocumentSourceRef[]) => refs.some(ref => ref.id === sourceId)
+    const matches = (ref: DocumentSourceRef) => ref.id === sourceId && (!cut || documentSourceRestricted(ref, [cut]))
+    const contains = (refs: readonly DocumentSourceRef[]) => refs.some(matches)
     const anchorRefs = (snapshot: DocumentSnapshot | null) => snapshot?.corrections.flatMap(item => item.anchorSources ?? []) ?? []
     const eraseOldQuotation = (item: DocumentSupersession): DocumentSupersession => {
-      if (!contains(item.anchorSources ?? [])) return item
-      return { ...item, text: '', condition: '', time: '', anchorSources: item.anchorSources?.filter(ref => ref.id !== sourceId),
-        erasedAnchorSources: [...(item.erasedAnchorSources ?? []), sourceId] }
+      const erased = item.anchorSources?.filter(matches) ?? []
+      if (!erased.length) return item
+      return { ...item, ...(cut ? { path: erasedPath(item.sourceDocumentId) } : {}), text: '', condition: '', time: '', anchorSources: item.anchorSources?.filter(ref => !matches(ref)),
+        erasedAnchorSources: [...(item.erasedAnchorSources ?? []), ...(cut ? [{ id: cut.id, token: cut.token, spans: cut.spans }] : erased)] }
     }
     const scrub = (snapshot: DocumentSnapshot | null) => snapshot && { ...snapshot, corrections: snapshot.corrections.map(eraseOldQuotation) }
     transaction(db, () => {
@@ -365,9 +418,9 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
           const row = rowById(ref.id)
           return row ? [...refsOf(row), ...correctionsOf(row).flatMap(item => item.anchorSources ?? [])] : []
         })]
-        if (!refs.some(ref => ref.id === sourceId)) continue
+        if (!contains(refs)) continue
         const before = data.before, committed = before ? rowById(before.id) : undefined
-        const independent = before && committed && !committed.forgotten && committed.revision === before.revision && committed.usage_version === before.usageVersion && !before.sources.some(ref => ref.id === sourceId) && currentSources(data.workspace, before.sources)
+        const independent = before && committed && !committed.forgotten && committed.revision === before.revision && committed.usage_version === before.usageVersion && !contains(before.sources) && currentSources(data.workspace, before.sources)
         if (independent && data.after) {
           db.prepare('INSERT OR IGNORE INTO memory_document_restores(operation,document,workspace,path,revision,written,usage,markdown,sources,removed) VALUES(?,?,?,?,?,?,?,?,?,?)')
             .run(intent.id, before.id, before.workspace, before.path, before.revision, data.after.revision, before.usageVersion, before.markdown, encode(before.sources), encode([sourceId]))
@@ -380,13 +433,13 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
           }
           if (snapshot) {
             const row = rowById(snapshot.id)!
-            if (!refsOf(row).some(ref => ref.id === sourceId)) db.prepare('UPDATE memory_documents SET sources=? WHERE id=?').run(encode(refs), row.id)
+            if (!contains(refsOf(row))) db.prepare('UPDATE memory_documents SET sources=? WHERE id=?').run(encode(refs), row.id)
           }
         }
         db.prepare("UPDATE memory_file_intents SET state='cancelled',plan=NULL WHERE id=?").run(intent.id)
       }
       for (const item of db.prepare('SELECT * FROM memory_document_restores').all() as unknown as Restore[]) {
-        if ((JSON.parse(item.sources) as DocumentSourceRef[]).some(ref => ref.id === sourceId)) {
+        if (contains(JSON.parse(item.sources) as DocumentSourceRef[])) {
           db.prepare('DELETE FROM memory_document_restores WHERE operation=?').run(item.operation)
           db.prepare('DELETE FROM memory_file_reservations WHERE owner=?').run(item.operation)
         }
@@ -398,13 +451,21 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         }
         if (row.forgotten || !contains(refsOf(row))) continue
         affected.push(row.id)
-        useRestrictions.removeTarget({ kind: 'digest', workspace: row.workspace, key: row.id })
+        if (!cut) useRestrictions.removeTarget({ kind: 'digest', workspace: row.workspace, key: row.id })
+        else {
+          const record = db.prepare('INSERT OR IGNORE INTO memory_document_erased_locators VALUES (?,?)')
+          record.run(row.workspace, memoryFileRevision(row.path))
+          for (const alias of db.prepare('SELECT path FROM memory_document_aliases WHERE document=?').all(row.id)) {
+            record.run(row.workspace, memoryFileRevision(String(alias.path)))
+          }
+        }
         db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(row.workspace, row.path)
         db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', encode(sanitized.map(item => ({ ...item, text: '', condition: '', time: '' }))), row.id)
-        db.prepare('INSERT OR IGNORE INTO memory_document_purges(document,workspace,path,sources,expected_revision) VALUES(?,?,?,?,?)')
-          .run(row.id, row.workspace, row.path, row.sources, unpublished.get(row.id) ?? null)
+        db.prepare('INSERT OR IGNORE INTO memory_document_purges(document,workspace,path,sources,expected_revision,retire_path) VALUES(?,?,?,?,?,?)')
+          .run(row.id, row.workspace, row.path, row.sources, unpublished.get(row.id) ?? null, cut ? 1 : 0)
       }
-      useRestrictions.withdrawSource(sourceId)
+      if (cut) useRestrictions.eraseSource(cut)
+      else useRestrictions.withdrawSource(sourceId)
       for (const rev of db.prepare('SELECT * FROM memory_document_revisions').all() as unknown as Revision[]) {
         const before = rev.before ? JSON.parse(rev.before) as DocumentSnapshot : null
         const after = rev.after ? JSON.parse(rev.after) as DocumentSnapshot : null
@@ -506,9 +567,10 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         if (erasedAnchorSources?.length) {
           const anchor = correctionAnchor(scope, actualPath)
           if (anchor?.id === item.sourceDocumentId && currentSources(scope, anchor.sources)
-            && anchor.sources.every(ref => !erasedAnchorSources.includes(ref.id))) return []
+            && anchor.sources.every(ref => !documentSourceRestricted(ref, erasedAnchorSources))) return []
         }
-        return [{ ...item, path: actualPath }]
+        return [{ ...item, path: actualPath, text: projectErasedLocators(scope, item.text),
+          condition: projectErasedLocators(scope, item.condition), time: projectErasedLocators(scope, item.time) }]
       })
   }
   function workCurrent(work: DeferredDocumentWork): boolean {
@@ -616,7 +678,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     workspace(scope)
     return [...erasures(scope), ...useRestrictions.sources(scope, except ? { kind: 'digest', workspace: scope, key: except } : undefined)]
   }
-  const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count)
+  const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count) + Number(locatorCopiesPending())
   if (!deferRecovery) recover()
   return {
     reconcileRename, reconcileEdit, acceptedSnapshot,
@@ -632,7 +694,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
-    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup,
-    read, list, commit, undoCandidate, undo, setEnabled, withdraw, supersessions, defer, deferred, pending, answer, resolve, expire,
+    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators,
+    read, list, commit, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, resolve, expire,
   }
 }

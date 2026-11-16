@@ -28,7 +28,7 @@ function fixture() {
     }, refsCurrent: () => sourceAllowed, materialAllowed: () => sourceAllowed,
     reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
   })
-  const service = createMemoryFileManagement({ policy, documents: { undoCandidate: () => candidate }, workspaces: () => [workspace], hash })
+  const service = createMemoryFileManagement({ policy, documents: { registered: () => [], undoCandidate: () => candidate }, workspaces: () => [workspace], hash })
   const identity = { kind: 'digest' as const, workspace, id: doc.id }
   return { service, policy, doc, docs, refs, note, identity, unavailable, forgotten, supersessions,
     denySource() { sourceAllowed = false }, setUndo(value: DocumentUndoCandidate | null) { candidate = value } }

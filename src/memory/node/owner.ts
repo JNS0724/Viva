@@ -1,4 +1,5 @@
 import { createOwnerContextRecovery } from './owner-context-recovery.ts'
+import { removeAbandonedMemoryTemps } from './memory-file-store.ts'
 import { memoryProjectScope } from './project-scope.ts'
 import path from 'node:path'
 import { randomUUID, createHmac } from 'node:crypto'
@@ -41,7 +42,7 @@ type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcom
 export function openMemoryOwner(options: Options) {
   const lock = lockMemoryRoot(options.root)
   const store = (() => { try { return openMemoryStore(path.join(lock.root, 'memory.db')) } catch (error) { lock.close(); throw error } })()
-  try { return assembleOwner(options, lock, store) }
+  try { removeAbandonedMemoryTemps(store.fileRoot); return assembleOwner(options, lock, store) }
   catch (error) { try { store.close() } finally { lock.close() }; throw error }
 }
 
@@ -63,6 +64,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_turns(session TEXT NOT NULL,turn INTEGER NOT NULL,seq INTEGER NOT NULL,state TEXT NOT NULL,PRIMARY KEY(session,turn));
     CREATE TABLE IF NOT EXISTS owner_operations(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,state TEXT NOT NULL,payload TEXT,ticket TEXT);
     CREATE TABLE IF NOT EXISTS owner_intents(source TEXT PRIMARY KEY,operation TEXT NOT NULL,method TEXT NOT NULL,target INTEGER NOT NULL,revision INTEGER NOT NULL,text TEXT);
+    CREATE TABLE IF NOT EXISTS owner_file_native_erasures (operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_host_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0);
   `)
   const epoch = randomUUID()
@@ -166,7 +168,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const outcome = (item: Operation): MemoryOperationOutcome => ({ operationId: item.id, state: item.state,
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
     cleanup: item.state === 'completed' && runtime.cleanupPending() === 0
-      && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id) ? 'complete' : 'pending' })
+      && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
+      && !db.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(item.id) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
   function reconcileChildren(session: string, visited = new Set<string>()) {
@@ -485,7 +488,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
     } finally { replayingWrites = false }
   }
-  const pendingHostEffects = () => (db.prepare('SELECT payload FROM owner_host_effects WHERE acked=0').all() as Array<{ payload: string }>).map(row => JSON.parse(row.payload) as MemoryHostEffect)
+  const pendingHostEffects = () => (db.prepare(`SELECT payload FROM owner_host_effects WHERE acked=0
+    ORDER BY json_extract(payload,'$.revision'),rowid`).all() as Array<{ payload: string }>).map(row => JSON.parse(row.payload) as MemoryHostEffect)
   type WritePayload = { command: HostMemoryCommand, sources: string[], sessions: string[] }
   async function durableWrite(command: HostMemoryCommand, id: string, operationIndex: number, targets: number[], work: () => unknown | Promise<unknown>) {
     if (!('args' in command.input)) throw new Error('Invalid write command')
@@ -533,7 +537,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       return result
     })
   }
-  type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' }>
+  type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
   type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[] }
   function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
     const sourceIds = new Set(sources.map(ref => ref.sourceId))
@@ -556,8 +560,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       throw new MemoryDomainError(failure.code)
     }
     const pending = previous?.payload ? JSON.parse(previous.payload) as FileWritePayload : null
-    const sources = pending?.sources ?? (request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
-    const sessions = pending?.sessions ?? fileSessions(request.identity, sources)
+    const sources = pending?.sources ?? (command.method === 'forgetFile' || request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
+    const sessions = pending?.sessions ?? (command.method === 'forgetFile' ? [] : fileSessions(request.identity, sources))
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command, sources, sessions } satisfies FileWritePayload))
     let notify = false
     const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
@@ -578,7 +582,37 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     try {
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed)
-        : await runtime.undoFile(command.input.args[0], committed)
+        : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
+          : await runtime.forgetFile(command.input.args[0], (result, cuts) => {
+            const sourceIds = new Set(cuts.map(cut => cut.id))
+            const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) => {
+              const evidence = dispatch.snapshot(session)
+              const relevant = evidence.sources.some(source => sourceIds.has(source))
+                || evidence.files?.some(file => file.workspace === result.identity.workspace)
+              return relevant && (evidence.sources.some(source => sourceIds.has(source) && !evidence.fileSources?.includes(source))
+                || !runtime.fileDependenciesCurrent(evidence.files ?? [], evidence.fileSources)) ? [session] : []
+            })
+            const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
+            let native = false
+            for (const cut of cuts) {
+              const occurrences = current.all(cut.id)
+              native ||= occurrences.length > 0 || Boolean(store.readSource(cut.id)?.session)
+              for (const row of occurrences) invalidated.push(String(row.session))
+              db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
+              db.prepare('UPDATE owner_intents SET text=NULL WHERE source=?').run(cut.id)
+            }
+            const sessions = [...new Set(invalidated)]
+            const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => ({ sourceId, revision, length, hash, spans }))
+            if (native) db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)').run(id, JSON.stringify({ sessions, ranges }))
+            if (options.hostNamespace) {
+              const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
+                kind: 'erase-file-copies', sessions,
+                sources: cuts.map(cut => ({ namespace: 'canonical', sourceId: cut.id, revision: cut.version })), ranges }
+              db.prepare('INSERT INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
+              notify = true
+            }
+            db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
+          })
       if (notify) options.onHostEffects?.()
       return result
     } catch (error) {
@@ -715,6 +749,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'listFiles': return runtime.listFiles(command.input.args[0])
       case 'readFile': return runtime.readFile(...command.input.args)
       case 'setFileEnabled':
+      case 'forgetFile':
       case 'undoFile': return durableFileWrite(command)
       case 'setOnboarding': return fence.mutate(() => runtime.setOnboarding(...command.input.args))
       case 'rebuildIndexes': return fence.mutate(() => runtime.rebuildIndexes(...command.input.args))

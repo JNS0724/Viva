@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rename
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryFileJournal } from '../src/memory/node/memory-file-journal.ts'
+import { memorySourceToken } from '../src/memory/node/source-identity.ts'
 import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { scratch } from './fixtures/scratch.js'
@@ -417,3 +418,110 @@ test('note replica erasure remains pending while a WAL reader retains its before
     assert.equal(readFileSync(join(dir, 'memory.db')).includes(Buffer.from(marker)), false)
   } finally { reader.close() }
 })
+
+test('successive range purges recover in source-version order without persisting either cleartext image', t => {
+  const { store, notes } = setup(t)
+  const first = 'PRIVATE-ALPHA', second = 'PRIVATE-BETA', text = `${first} ${second} independent tea`
+  const source = noteSource(store, { session: 'sequential', text, length: text.length, hash: memoryFileRevision(text) })
+  notes.add('sequential', '2026-11-16', [source], 'Old unrelated generated answer')
+  const key = notes.pendingGroups().find(group => group.session === 'sequential')!.note
+  const erasing = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), point => {
+    if (point === 'intent') throw new Error('interrupted purge')
+  }, undefined, undefined, undefined, undefined, { deferRecovery: true })
+  function erase(start: number, end: number) {
+    const current = store.readSource(source.id)!
+    const cut = { id: source.id, token: memorySourceToken(current), length: text.length, version: current.version,
+      hash: current.hash!, spans: [{ start, end }] }
+    store.tx(() => {
+      assert.ok(store.eraseFileSource(cut, cut.version))
+      erasing.eraseSource(cut)
+    })
+  }
+  erase(0, first.length)
+  assert.throws(() => erasing.recover(), /interrupted purge/)
+  erase(first.length + 1, first.length + 1 + second.length)
+  const plans = JSON.stringify(store.db.prepare('SELECT plan FROM memory_file_intents WHERE plan IS NOT NULL').all())
+  assert.doesNotMatch(plans, /PRIVATE-ALPHA|PRIVATE-BETA|Old unrelated generated answer/)
+  const recovered = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text))
+  assert.equal(recovered.pendingCleanup(), 0)
+  assert.deepEqual(recovered.rebuildRows(key).map(row => row.sourceIds), [[source.id]])
+  const [workspace] = readdirSync(store.fileRoot)
+  const transcript = readFileSync(join(store.fileRoot, workspace!, 'session/dialog', memoryFileRevision('sequential') + '.jsonl'), 'utf8')
+  assert.doesNotMatch(transcript, /PRIVATE-ALPHA|PRIVATE-BETA|Old unrelated generated answer/)
+  assert.match(transcript, /independent tea/)
+  assert.equal(JSON.parse(transcript).messages[0].version, 3)
+})
+
+test('range erasure leaves an external file occupying an unpublished daily path untouched', t => {
+  const { store, key, source, notes } = setup(t)
+  const old = source.text!, interrupted = openMemoryNotes(store, () => true, point => {
+    if (point === 'intent') throw new Error('draft not yet published')
+  })
+  assert.throws(() => interrupted.commit(key, notes.pending(key), { status: 'write', title: 'Draft', markdown: 'Old draft' },
+    42, Date.now(), notes.snapshot([source.id]), undefined), /draft not yet published/)
+  const row = store.db.prepare("SELECT workspace,plan FROM memory_file_intents WHERE state='pending'").get()!
+  const relative = (JSON.parse(String(row.plan)) as { data: { path: string } }).data.path
+  const path = join(store.fileRoot, String(row.workspace), relative)
+  mkdirSync(join(path, '..'), { recursive: true })
+  writeFileSync(path, 'Independent external bytes.')
+  const cut = { id: source.id, token: memorySourceToken(source), length: old.length, version: source.version,
+    hash: source.hash!, spans: [{ start: 0, end: 2 }] }
+  store.tx(() => {
+    assert.ok(store.eraseFileSource(cut, cut.version))
+    notes.eraseSource(cut)
+  })
+  notes.recover()
+  assert.equal(readFileSync(path, 'utf8'), 'Independent external bytes.')
+  assert.ok(notes.pendingCleanup() > 0)
+})
+
+test('a rekeyed JSONL occurrence with the erased source cannot make range cleanup report completion', t => {
+  const { store, source, notes } = setup(t)
+  const workspace = readdirSync(store.fileRoot)[0]!
+  const transcript = join(store.fileRoot, workspace, 'session/dialog', memoryFileRevision('session') + '.jsonl')
+  const original = readFileSync(transcript, 'utf8')
+  const record = JSON.parse(original) as { id: string }
+  record.id = 'unregistered-turn'
+  writeFileSync(transcript, JSON.stringify(record) + '\n')
+  const text = source.text!, cut = { id: source.id, token: memorySourceToken(source), length: text.length,
+    hash: source.hash!, version: source.version, spans: [{ start: 0, end: 2 }] }
+  store.tx(() => {
+    assert.ok(store.eraseFileSource(cut, cut.version))
+    notes.eraseSource(cut)
+  })
+  notes.recover()
+  assert.ok(notes.pendingCleanup() > 0)
+  assert.match(readFileSync(transcript, 'utf8'), /unregistered-turn/)
+  writeFileSync(transcript, original)
+  notes.recover()
+  assert.equal(notes.pendingCleanup(), 0)
+  assert.ok(!readFileSync(transcript, 'utf8').includes(text))
+})
+
+for (const point of ['intent', 'replace'] as const) {
+  test(`range erasure preserves the independent accepted daily revision after a ${point} interruption`, t => {
+    const { store, key, source: independent, notes, commit } = setup(t)
+    commit('Independent title', 'Tea on Monday')
+    const before = notes.read(key)!
+    const text = 'Sensitive draft source.'
+    const source = noteSource(store, { text, length: text.length, hash: memoryFileRevision(text) })
+    notes.add('session', '2026-11-14', [source], '')
+    const interrupted = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), at => {
+      if (at === point) throw new Error('updated draft interrupted')
+    })
+    assert.throws(() => interrupted.commit(key, notes.pending(key), { status: 'write', title: 'Draft', markdown: 'Tea and sensitive draft' },
+      42, Date.now(), notes.snapshot([independent.id, source.id]), before), /updated draft interrupted/)
+    const cut = { id: source.id, token: memorySourceToken(source), length: text.length, version: source.version,
+      hash: source.hash!, spans: [{ start: 0, end: text.length }] }
+    store.tx(() => {
+      assert.ok(store.eraseFileSource(cut, cut.version))
+      notes.eraseSource(cut)
+    })
+    const pending = JSON.stringify(store.db.prepare('SELECT plan FROM memory_file_intents WHERE plan IS NOT NULL').all())
+    assert.doesNotMatch(pending, /Tea and sensitive draft/)
+    notes.recover()
+    assert.equal(notes.read(key)?.fileRevision, before.fileRevision)
+    assert.equal(notes.read(key)?.markdown, 'Tea on Monday')
+    assert.equal(notes.pendingCleanup(), 0)
+  })
+}

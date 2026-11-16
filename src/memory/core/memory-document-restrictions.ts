@@ -18,14 +18,18 @@ function orderedSpans(spans: readonly Span[]): Span[] {
 /** Exact available evidence after subtracting disabled fragments. Used to rebuild a mixed
  * daily from still-authorized originals without granting the full original source anew. */
 export function availableDocumentSourceSpans(text: string, source: DocumentSourceRef, restrictions: readonly DocumentSourceRef[]): Span[] {
-  if (source.spans && (!source.spans.length || source.spans.some(span => !valid(span) || span.end > text.length))) {
+  return subtractDocumentSourceSpans(text.length, source, restrictions)
+}
+
+export function subtractDocumentSourceSpans(length: number, source: DocumentSourceRef, restrictions: readonly DocumentSourceRef[]): Span[] {
+  if (source.spans && (!source.spans.length || source.spans.some(span => !valid(span) || span.end > length))) {
     throw new Error('invalid-document-source-spans')
   }
-  let result = orderedSpans(source.spans ?? (text.length ? [{ start: 0, end: text.length }] : []))
+  let result = orderedSpans(source.spans ?? (length ? [{ start: 0, end: length }] : []))
   for (const restriction of restrictions) {
     if (restriction.id !== source.id || restriction.token !== source.token) continue
     if (!restriction.spans) return []
-    if (!restriction.spans.length || restriction.spans.some(span => !valid(span) || span.end > text.length)) {
+    if (!restriction.spans.length || restriction.spans.some(span => !valid(span) || span.end > length)) {
       throw new Error('invalid-document-restriction-spans')
     }
     for (const blocked of restriction.spans) result = result.flatMap(span => {

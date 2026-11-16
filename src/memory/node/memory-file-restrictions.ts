@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
-import type { DocumentSourceRef } from '../core/ports/documents.ts'
+import { documentSourceRestricted, subtractDocumentSourceSpans } from '../core/memory-document-restrictions.ts'
+import type { DocumentSourceCut, DocumentSourceRef } from '../core/ports/documents.ts'
 import type { FileUseRestriction, FileUseTarget, MemoryFileRestrictions } from '../core/ports/file-restrictions.ts'
 import { memoryFileMutationResult } from '../contracts/file-management.ts'
 import { memorySourceReference } from '../contracts/service.ts'
@@ -22,7 +23,7 @@ export function openMemoryFileRestrictions(db: DatabaseSync): MemoryFileRestrict
   const incompleteTurns = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_note_turns'
     AND NOT EXISTS (SELECT 1 FROM pragma_table_info('memory_note_turns') WHERE name='assistant_digest')`).get()
   const incompletePurges = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_document_purges'
-    AND NOT EXISTS (SELECT 1 FROM pragma_table_info('memory_document_purges') WHERE name='expected_revision')`).get()
+    AND (SELECT count(*) FROM pragma_table_info('memory_document_purges') WHERE name IN ('expected_revision','retire_path'))<>2`).get()
   if (oldRestrictions || oldDaily || incompleteTurns || incompletePurges) throw new Error('Memory file layout is incompatible; use a fresh memory data directory')
   db.exec(`CREATE TABLE IF NOT EXISTS memory_file_use_restrictions (
     id TEXT PRIMARY KEY, kind TEXT NOT NULL, workspace TEXT NOT NULL, target TEXT NOT NULL,
@@ -38,6 +39,23 @@ export function openMemoryFileRestrictions(db: DatabaseSync): MemoryFileRestrict
   const insert = db.prepare('INSERT INTO memory_file_use_restrictions VALUES (?,?,?,?,?,?,?,?)')
   const release = db.prepare('DELETE FROM memory_file_use_restrictions WHERE workspace=? AND kind=? AND target=? AND id=?')
   const clearTarget = db.prepare('DELETE FROM memory_file_use_restrictions WHERE workspace=? AND kind=? AND target=?')
+  function removeSource(sourceId: string, cut?: DocumentSourceCut) {
+    const rows = db.prepare('SELECT id,sources FROM memory_file_use_restrictions').all() as Array<{ id: string, sources: string }>
+    for (const row of rows) {
+      let changed = false
+      const remaining = refs(row).flatMap(ref => {
+        if (ref.id !== sourceId || cut && !documentSourceRestricted(ref, [cut])) return [ref]
+        changed = true
+        if (!cut) return []
+        const spans = subtractDocumentSourceSpans(cut.length, ref, [cut])
+        return spans.length ? [{ ...ref, spans }] : []
+      })
+      if (!changed) continue
+      if (remaining.length) db.prepare('UPDATE memory_file_use_restrictions SET sources=?,snapshot=NULL WHERE id=?')
+        .run(JSON.stringify(remaining), row.id)
+      else db.prepare('DELETE FROM memory_file_use_restrictions WHERE id=?').run(row.id)
+    }
+  }
   return {
     forTarget(target) {
       return (targetRows.all(target.workspace, target.kind, target.key) as unknown as Row[]).map(row => ({
@@ -60,15 +78,8 @@ export function openMemoryFileRestrictions(db: DatabaseSync): MemoryFileRestrict
     },
     release(target, id) { return release.run(target.workspace, target.kind, target.key, id).changes === 1 },
     removeTarget(target) { clearTarget.run(target.workspace, target.kind, target.key) },
-    withdrawSource(sourceId) {
-      const rows = db.prepare('SELECT id,sources FROM memory_file_use_restrictions').all() as Array<{ id: string, sources: string }>
-      for (const row of rows) {
-        const current = refs(row), remaining = current.filter(ref => ref.id !== sourceId)
-        if (remaining.length === current.length) continue
-        if (remaining.length) db.prepare('UPDATE memory_file_use_restrictions SET sources=?,snapshot=NULL WHERE id=?').run(JSON.stringify(remaining), row.id)
-        else db.prepare('DELETE FROM memory_file_use_restrictions WHERE id=?').run(row.id)
-      }
-    },
+    withdrawSource: sourceId => removeSource(sourceId),
+    eraseSource: cut => removeSource(cut.id, cut),
     receipt(operationId) {
       const row = db.prepare('SELECT fingerprint,result,sources FROM memory_file_use_commands WHERE operation=?').get(operationId)
       return row ? { fingerprint: String(row.fingerprint), result: memoryFileMutationResult.parse(JSON.parse(String(row.result))),

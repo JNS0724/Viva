@@ -1,6 +1,6 @@
 import type { MemoryFileMutationResult } from '../../contracts/file-management.ts'
 import type { MemorySourceReference } from '../../contracts/service.ts'
-import type { DocumentSourceRef } from './documents.ts'
+import type { DocumentSourceCut, DocumentSourceRef } from './documents.ts'
 
 export interface FileUseTarget {
   kind: 'daily' | 'digest'
@@ -31,6 +31,7 @@ export interface MemoryFileRestrictions {
   release(target: FileUseTarget, id: string): boolean
   removeTarget(target: FileUseTarget): void
   withdrawSource(sourceId: string): void
+  eraseSource(cut: DocumentSourceCut): void
   receipt(operationId: string): FileUseReceipt | null
   complete(operationId: string, receipt: FileUseReceipt): void
 }

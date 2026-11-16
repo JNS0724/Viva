@@ -13,7 +13,7 @@ import type { DeferredDocumentWork, DocumentReceipt, DocumentSourceRef, MemoryDo
 import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import { todayAt } from './memory-facts.ts'
-import { updateMemoryFrontmatter } from './memory-document.ts'
+import { parseMemoryDocument, updateMemoryFrontmatter } from './memory-document.ts'
 import { createMemoryDreamTools, MemoryDreamStaleError } from './memory-dream-tools.ts'
 import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
 import type { MemoryDocumentView } from './memory-document-read-policy.ts'
@@ -193,8 +193,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
           try {
             const result = await calculate({ job, stage: 'extract', system: DREAM_EXTRACT_SYSTEM,
               input: { maxUnits: dreamUnits - count, notes: batch.map((note, index) => {
-                const chars = [...note.document]
-                return { path: note.path, title: note.title, markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
+                const snapshot = seen[index]!
+                const name = parseMemoryDocument(snapshot.markdown).metadata.name
+                const chars = [...snapshot.markdown]
+                return { path: note.path, title: typeof name === 'string' ? name : '', markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
                   applicability: seen[index]!.applicability, replacements: seen[index]!.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })) }
               }), ...(invalid ? { retry: 'The prior JSON had an invalid shape, budget or source path. Correct it using only the supplied inputs.' } : {}) },
               sourceIds: () => sources.map(ref => ref.id), current })
@@ -277,8 +279,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       return 'deferred' as const
     }
     if (!current()) throw new MemoryDreamStaleError()
+    const project = (text: string) => documents.projectErasedLocators?.(item.workspace, text) ?? text
     const raw = await calculate({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
-      input: { unit: item.unit, ...(previous?.answer ? { clarification: { text: projectDocumentSource(previous.answer.text, previous.answer.source, documents.sourceRestrictions(item.workspace)), sourceId: previous.answer.source.id } } : {}) },
+      input: { unit: item.unit, ...(previous?.answer ? { clarification: { text: project(projectDocumentSource(previous.answer.text, previous.answer.source, documents.sourceRestrictions(item.workspace))), sourceId: previous.answer.source.id } } : {}) },
       sourceIds: () => [...readSources.keys()], current, tools: { tools: tools.tools, executeTool: tools.executeTool } })
     if (raw === undefined) return 'wait'
     if (!current()) throw new MemoryDreamStaleError()
@@ -309,7 +312,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         for (const dependency of allSources([...readSources.values(), ...context.refs])) readSources.set(dependency.id, dependency)
       }
       canonicalSources.push({ sourceId: original.id, version: original.version, author: original.author,
-        text: projectDocumentSource(original.text, ref, restrictions), question: questionAllowed ? original.question : null,
+        text: project(projectDocumentSource(original.text, ref, restrictions)), question: questionAllowed ? project(original.question!) : null,
         questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed, at: original.at, timezone: original.timezone })
     }
     if (!materialAllowed(draft.markdown, refs()) || !current()) throw new MemoryDreamStaleError()
@@ -369,7 +372,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         && documents.read(item.workspace, item.path)?.usageVersion === target.usageVersion
       try {
         const result = await calculate({ job, stage: 'tag', system: DREAM_TAG_SYSTEM,
-          input: { path: target.path, markdown: target.markdown }, sourceIds: () => target.sources.map(ref => ref.id), current })
+          input: { path: target.path, markdown: targetView.markdown }, sourceIds: () => target.sources.map(ref => ref.id), current })
         if (result === undefined || !current()) { fail('unavailable'); continue }
         const reply = tagReply.parse(parse(result))
         const markdown = updateMemoryFrontmatter(target.markdown, { memory_tags: unique(reply.memory_tags) })

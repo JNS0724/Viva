@@ -12,7 +12,7 @@ import { readMemoryLines, parseMemoryDocument } from './memory-document.ts'
 const SCAN = 'memory.file-scan', RESCAN = 'memory.file-rescan'
 type ExternalPolicyInput = Pick<DocumentExternalEdit, 'workspace' | 'id' | 'path' | 'sources'>
 export interface ExternalEditPolicy {
-  documents: Pick<MemoryDocuments, 'registered' | 'read' | 'sourceRestrictions' | 'supersessions'>
+  documents: Pick<MemoryDocuments, 'registered' | 'read' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'projectErasedLocators'>>
   source(id: string): MemorySource | undefined
   sourceToken(source: MemorySource): string
   sourceWorkspace(source: MemorySource): string
@@ -196,6 +196,8 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
       } else {
         const beforeDocument = work.identity.kind === 'digest' ? documents.acceptedSnapshot(work.identity.workspace, work.identity.id) : null
         const before = beforeDocument?.markdown
+        const project = (text: string) => documents.projectErasedLocators?.(work.identity.workspace, text) ?? text
+        if (project(observed.markdown) !== observed.markdown) return settle('quarantined')
         if ((work.identity.kind === 'daily' || before && identity.hash(before) === work.identity.revision && materialAllowed(before, work.identity.sources))
           && materialAllowed(observed.markdown, work.identity.sources)) {
           const restrictions = documents.sourceRestrictions(work.identity.workspace)
@@ -206,16 +208,16 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
             try { parseMemoryDocument(observed.markdown) } catch { return settle('quarantined') }
             const requestSources = externalEditState(work.identity, policy)?.sourceIds ?? work.identity.sources.map(ref => ref.id)
             const raw = await calculate({ job, system: `${DREAM_VERIFY_SYSTEM}\nThis is an externally edited existing file, not new user evidence. Only REFINE or CORRECT is allowed. Daily files allow REFINE only: no old accepted body is supplied, so independently verify the complete replacement summary against the same canonical sources; do not claim comparison against a previous daily body. Preserve every existing supersession anchor.`,
-              input: { ...(before === undefined ? {} : { before: { path: work.identity.path, revision: work.identity.revision, markdown: before } }), proposed: observed.markdown,
+              input: { ...(before === undefined ? {} : { before: { path: work.identity.path, revision: work.identity.revision, markdown: project(before) } }), proposed: observed.markdown,
                 kind: work.identity.kind, applicability: anchors, canonicalSources: work.identity.sources.map(ref => {
                   const original = source(ref.id)!
                   return { sourceId: ref.id, version: original.version, author: original.author,
-                    text: (() => {
+                    text: project((() => {
                       const text = original.text ?? '', spans = availableDocumentSourceSpans(text, ref, restrictions)
                       let cursor = 0, output = ''
                       for (const span of spans) { output += text.slice(cursor, span.start).replace(/[^\r\n]/g, ' ') + text.slice(span.start, span.end); cursor = span.end }
                       return output + text.slice(cursor).replace(/[^\r\n]/g, ' ')
-                    })(), question: null,
+                    })()), question: null,
                     questionUnavailable: original.author === 'answer' || Boolean(original.question), at: original.at, timezone: original.timezone }
                 }) }, sourceIds: () => requestSources, current })
             if (raw === undefined) return current() ? 'retry' : settle('quarantined')

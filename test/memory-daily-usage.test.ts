@@ -369,3 +369,25 @@ test('a daily correction quotation is erased from the independent digest and its
   assert.match(packet, /independent lavender routine/)
   assert.doesNotMatch(packet, /Confidential original detail/)
 })
+
+test('forgetting a selected stopped snapshot uses its evidence while preserving the active projection', async t => {
+  const f = await fixture(t), a = await f.add('Private earlier evidence for Tuesday.'), first = await f.find()
+  const stopped = await f.set(stopInput(first))
+  await f.owner.runtime.wake()
+  await retireStoppedOriginal(f, a)
+  const second = await f.add('Independent lavender note.'), current = await f.find()
+  const scope = current.restrictions!.find(restriction => restriction.id === stopped.restrictionId)!
+  const forget = (request: object) => f.owner.handleHost('forgetFile', { args: [request] })
+  const input = { operationId: randomUUID(), identity: current.identity, restrictionId: scope.id, version: scope.version }
+  await assert.rejects(forget({ ...input, operationId: randomUUID(), version: current.version }), { code: 'revision.conflict' })
+  const action = await forget(input) as { action: string }
+  assert.equal(action.action, 'FORGET')
+  await f.reopen()
+  const remaining = await f.find()
+  assert.deepEqual(remaining.restrictions, [])
+  assert.equal(remaining.path, current.path)
+  assert.match(remaining.markdown, /Independent lavender note/)
+  assert.doesNotMatch(remaining.markdown, /Private earlier evidence/)
+  assert.equal(f.owner.runtime.dispatchSourceCurrent(second.messageId), true)
+  assert.equal(f.owner.runtime.dispatchSourceCurrent(a.messageId), false)
+})
