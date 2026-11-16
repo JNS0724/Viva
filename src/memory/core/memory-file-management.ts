@@ -87,6 +87,10 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
   }
   const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null
     && view.enabled && view.currentMarkdown !== null && view.applicability.state === 'current'
+  function forgetSupported(view: ManagedView): boolean {
+    if (view.kind === 'digest') return Boolean(view.backing?.sources.length)
+    return Boolean(view.daily?.hasProjection && daily?.references(view.daily.allocation.key).length)
+  }
   function summary(view: ManagedView): MemoryFileSummary {
     const metadata = parseMemoryDocument(view.markdown).metadata
     const candidate = undoCandidate(view)
@@ -96,7 +100,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
       ...(view.daily || view.detachedRestrictions ? { hasProjection: view.daily?.hasProjection ?? false,
         restrictions: (view.daily?.restrictions ?? view.detachedRestrictions ?? []).map(({ record, version }) => ({ id: record.id, version })) } : {}),
       actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.canStop || view.daily.restrictions.length)),
-        ...(view.daily ? { stop: view.daily.canStop } : {}), edit: editSupported(view), forget: false, undo: candidate ? { changeId: candidate.changeId } : null } }
+        ...(view.daily ? { stop: view.daily.canStop } : {}), edit: editSupported(view), forget: forgetSupported(view), undo: candidate ? { changeId: candidate.changeId } : null } }
   }
   function resolve(input: MemoryManagedFileIdentity, allows: Allows): ManagedView | null {
     const identity = memoryFileIdentity.parse(input)
@@ -120,9 +124,12 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     const sources = daily.sources(record.sources)
     if (!sources) return null
     const snapshot = daily.ledger.snapshot(record, restrictionId)
-    const projected = snapshot ? documents.projectErasedLocators?.(record.workspace, snapshot) ?? snapshot : null
-    const markdown = projected && daily.sources(record.sources, projected) ? projected : null
-    return { ...item, stoppedSnapshot: { restrictionId, markdown, sources } }
+    const verified = snapshot !== null && record.sources.length > 0 && hash(snapshot) === record.contentRevision
+      && daily.sources(record.sources, snapshot) !== null
+    const projected = verified ? documents.projectErasedLocators?.(record.workspace, snapshot) ?? snapshot : null
+    const markdown = projected !== null && daily.sources(record.sources, projected) ? projected : null
+    const forget = Boolean(view.daily && markdown !== null)
+    return { ...item, actions: { ...item.actions, forget }, stoppedSnapshot: { restrictionId, markdown, sources } }
   }
   function list(input: MemoryFileListRequest, allows: Allows): MemoryFileListResult {
     const request = memoryFileListRequest.parse(input), query = (request.query ?? '').trim().normalize('NFKC').toLowerCase()
@@ -166,7 +173,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     if (version.contentRevision !== command.version.contentRevision || version.usageVersion !== command.version.usageVersion
       || version.policyToken !== command.version.policyToken) throw failure('revision.conflict')
     if (command.restrictionId !== undefined) {
-      if (!selected || !daily) throw failure('revision.conflict')
+      if (!selected || !daily || !selected.record.sources.length) throw failure('revision.conflict')
       const snapshot = daily.ledger.snapshot(selected.record, selected.record.id)
       if (!snapshot || hash(snapshot) !== version.contentRevision || !daily.sources(selected.record.sources, snapshot)) throw failure('revision.conflict')
       return { refs: selected.record.sources, dailyKey: view.daily!.allocation.key }

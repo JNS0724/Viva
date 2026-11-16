@@ -75,6 +75,7 @@ test('daily restrictions survive empty projection and restart and can be lifted 
   const f = await fixture(t), first = await f.add('The first launch item is due Friday.'), initial = await f.find()
   assert.equal(initial.enabled, true)
   assert.equal(initial.hasProjection, true)
+  assert.equal(initial.actions.forget, true)
   assert.deepEqual(initial.restrictions, [])
   const stopFirst = stopInput(initial), stopped = await f.set(stopFirst)
   assert.equal(stopped.restrictionId, stopFirst.operationId)
@@ -82,6 +83,7 @@ test('daily restrictions survive empty projection and restart and can be lifted 
   const empty = await f.detail(initial.identity)
   assert.equal(empty.hasProjection, false)
   assert.equal(empty.markdown, '')
+  assert.equal(empty.actions.forget, false)
   assert.equal(empty.path, initial.path)
   assert.equal(f.owner.runtime.dispatchSourceCurrent(first.messageId), false)
   const dayIndex = join(f.store.fileRoot, initial.identity.workspace, `daily/${f.day}.md`)
@@ -92,6 +94,7 @@ test('daily restrictions survive empty projection and restart and can be lifted 
   assert.deepEqual((await f.detail(initial.identity)).restrictions, [earlier])
   const retained = await f.owner.handleHost('readFile', { args: [initial.identity, earlier.id] }) as MemoryFileDetail
   assert.equal(retained.stoppedSnapshot?.markdown, initial.markdown)
+  assert.equal(retained.actions.forget, true)
   assert.equal(await f.owner.handleHost('readFile', { args: [initial.identity, randomUUID()] }), null)
 
   await retireStoppedOriginal(f, first)
@@ -235,6 +238,7 @@ test('withdrawing part of a stopped snapshot removes its body while retaining th
   await f.owner.runtime.wake()
   const reduced = await f.owner.handleHost('readFile', { args: [card.identity, prior.id] }) as MemoryFileDetail
   assert.equal(reduced.stoppedSnapshot?.markdown, null)
+  assert.equal(reduced.actions.forget, false)
   assert.equal(reduced.stoppedSnapshot?.sources.length, 1)
   assert.equal(reduced.restrictions?.[0]?.id, prior.id)
   assert.notEqual(reduced.restrictions?.[0]?.version.policyToken, prior.version.policyToken)
@@ -421,4 +425,21 @@ test('stopped correction evidence supplies neither private applicability text no
   const sources = evidence.files?.flatMap(file => file.sourceRanges?.map(ref => ref.sourceId) ?? []) ?? []
   assert(sources.includes(independent.messageId))
   assert(!sources.includes(original.messageId))
+})
+
+
+test('a changed stopped daily snapshot cannot advertise permanent forget or authorize its old proof', async t => {
+  const f = await fixture(t)
+  await f.add('A private stopped daily record.')
+  const before = await f.find(), stopped = await f.set(stopInput(before))
+  await f.owner.runtime.wake()
+  const restriction = (await f.find()).restrictions!.find(item => item.id === stopped.restrictionId)!
+  const read = () => f.owner.handleHost('readFile', { args: [before.identity, restriction.id] }) as Promise<MemoryFileDetail>
+  assert.equal((await read()).actions.forget, true)
+  f.store.db.prepare('UPDATE memory_file_use_restrictions SET snapshot=snapshot || ? WHERE id=?').run('\nchanged externally', restriction.id)
+  const changed = await read()
+  assert.equal(changed.actions.forget, false)
+  assert.equal(changed.stoppedSnapshot?.markdown, null)
+  await assert.rejects(f.owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: before.identity,
+    restrictionId: restriction.id, version: restriction.version }] }), { code: 'revision.conflict' })
 })

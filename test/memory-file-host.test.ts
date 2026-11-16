@@ -769,7 +769,7 @@ test('manual file writes use the accepted digest, preserve evidence and support 
   assert.equal(f.store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const first = (await f.client.readFile(created.identity))!
   assert.deepEqual(first.editor, { title: create.title, text: create.text })
-  assert.equal(first.actions.forget, false)
+  assert.equal(first.actions.forget, true)
   const same = await f.client.editFile({ operationId: randomUUID(), identity: first.identity, version: first.version, text: first.editor!.text })
   assert.equal(same.usageVersion, first.version.usageVersion)
   const edit = { operationId: randomUUID(), identity: first.identity, version: first.version, text: 'Standup starts at 10:00.' }
@@ -825,7 +825,7 @@ test('manual IPC reports structured failures without accepting caller provenance
 test('permanent file forget IPC binds owner proof, replays one operation, and reports pending copies honestly', async t => {
   const f = await fixture(t), created = await f.client.createFile({ operationId: randomUUID(), text: 'Explicit manual memory' })
   const detail = (await f.client.readFile(created.identity))!
-  assert.equal(detail.actions.forget, false, 'production activation is still gated on end-to-end erasure acceptance')
+  assert.equal(detail.actions.forget, true, 'the accepted file exposes permanent forget through the production capability')
   const listeners = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const ipc = checkedIpc({ handle: (name, listener) => { listeners.set(name, listener) }, on: () => {} })
   registerRuntimeMemoryIpc(ipc, { client: f.client, cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null })
