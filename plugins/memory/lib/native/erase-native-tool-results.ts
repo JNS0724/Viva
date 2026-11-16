@@ -4,6 +4,7 @@ import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { openNativeOriginalMaintenance } from '../../../../src/memory/node/native-original-maintenance.ts'
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
+import { addNativeCompactionCopies, asNativeCompactionCopy, projectNativeCompaction } from './project-native-compactions.ts'
 import { nativeToolResultCopies, projectNativeToolResult } from './project-native-tools.ts'
 import { planNativeEventCopy, publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
 
@@ -53,11 +54,16 @@ export async function eraseNativeToolResults({ root, storageRoot, operation, isC
         }
         if (origin) verified.add(target.id)
       }
+      addNativeCompactionCopies(events, occurrences, operationId, journal, receipts)
       if (occurrences.size) copies.set(sessionId, occurrences)
     })
   } finally { await mounted.dispose() }
   await publishNativeEventCopies({ root, storageRoot, operationId, journal, copies, isCold, trace,
-    project: event => event.type === 'tool/result' ? projectNativeToolResult(event) : undefined,
+    project: event => {
+      if (event.type === 'tool/result') return projectNativeToolResult(event)
+      const compaction = asNativeCompactionCopy(event)
+      return compaction ? projectNativeCompaction(compaction) : undefined
+    },
   })
   journal.complete([...verified].filter(id => !blocked.has(id)))
 }

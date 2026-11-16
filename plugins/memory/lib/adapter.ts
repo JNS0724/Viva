@@ -9,6 +9,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session-log-deepseek'
 import type {} from '@deepseek-ai/dsh-session-title-llm'
+import type {} from '@deepseek-ai/dsh-compaction-basic'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
@@ -29,6 +30,7 @@ import { memoryOriginalContentDigest } from './context-recovery.ts'
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
 import { trackNativeOutputAttempts } from './native/output-attempts.ts'
 import { trackNativeToolReads, type NativeToolLease } from './native/tool-reads.ts'
+import { recordCompactionInputs, recordCompactionRequest } from './native/compaction-inputs.ts'
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
 import { memorySource } from './source.ts'
@@ -123,6 +125,10 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     if (!closing) outputAttempts?.frame(agent.session, frame)
   })
+  ctx.on('compaction/summary-error', ({ session, sourceEventSeqs }, next) => {
+    if (config.fileMode && !closing) recordCompactionInputs(session, sourceEventSeqs)
+    return next()
+  })
   ctx.on('session/event', (session, event) => {
     if (!closing) {
       outputAttempts?.observe(session, event)
@@ -214,6 +220,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const jobId = current && 'jobId' in current ? current.jobId : undefined
     if (!session && !jobId) throw new Error('Model request has no verified memory origin')
     if (!owner.ready()) throw new Error('Memory owner is not ready')
+    if (config.fileMode && session && options.purpose === 'compaction') recordCompactionRequest(session, options.messages)
     // Only the pinned loop's own request object may inherit the active attempt.
     const loopRequest = outputAttempts && isAgentLoopRequest(options)
     const output = loopRequest && session ? outputAttempts.prepare(session) : undefined

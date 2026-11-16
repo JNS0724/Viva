@@ -4,6 +4,7 @@ import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { openNativeOriginalMaintenance } from '../../../../src/memory/node/native-original-maintenance.ts'
 import { visitNativeSessionCatalog } from './discover-native-replicas.ts'
 import { nativeEventDigest } from './event-digest.ts'
+import { addNativeCompactionCopies, asNativeCompactionCopy, projectNativeCompaction } from './project-native-compactions.ts'
 import { inspectNativeOutputWindow, projectNativeOutput } from './project-native-outputs.ts'
 import { inspectNativeToolCompanions, projectToolCompanion } from './native-output-tool-group.ts'
 import { planNativeEventCopy, publishNativeEventCopies, type NativeEventCopy, type NativeOutputTrace } from './publish-native-event-copies.ts'
@@ -62,6 +63,7 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
         }
         if (origin) verified.add(target.id)
       }
+      addNativeCompactionCopies(events, occurrences, operationId, journal, receipts)
       if (occurrences.size) copies.set(sessionId, occurrences)
     })
   } finally { await mounted.dispose() }
@@ -70,7 +72,9 @@ export async function eraseNativeOutputs({ root, storageRoot, operation, isCold,
     project: event => {
       const output = outputEvent(event)
       if (output) return projectNativeOutput(output)
-      return event.type === 'tool/call' || event.type === 'tool/result' ? projectToolCompanion(event) : undefined
+      if (event.type === 'tool/call' || event.type === 'tool/result') return projectToolCompanion(event)
+      const compaction = asNativeCompactionCopy(event)
+      return compaction ? projectNativeCompaction(compaction) : undefined
     },
   })
   journal.complete([...verified].filter(id => !blocked.has(id)))

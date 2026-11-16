@@ -4,11 +4,12 @@ import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-compaction'
+import type { CompactionId } from '@deepseek-ai/dsh-compaction'
+import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction/checkpoint'
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
-import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -17,6 +18,7 @@ import { createNativeOutputAttempts } from '../src/memory/node/native-output-att
 import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
 import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
 import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
+import { recordCompactionInputs } from '../plugins/memory/lib/native/compaction-inputs.ts'
 import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -348,6 +350,7 @@ test('cold Viva startup erases native originals and settled output in root and u
   const derived = '档案里还有应擦除的助手转述'
   const traceSecret = 'stored-private-trace-for-erasure'
   const toolSecret = 'stored-derived-tool-argument-and-result'
+  const compactionSecret = 'stored-private-compaction-body'
   const text = [erased, nearby, second].join('。\n')
   const app = await setup(t, request => {
     const routed = request.messages.flatMap(message => typeof message.content === 'string'
@@ -375,6 +378,8 @@ test('cold Viva startup erases native originals and settled output in root and u
   let traceStep: { kind: 'thought', seq: number, at: number, text: string } | undefined
   let toolTrace: { kind: 'tool', seq: number, at: number, callId: string, name: string, args: object, status: string } | undefined
   let toolReply = -1, toolResult = -1
+  const compactions = new Set<number>()
+  let unconnectedSummary = -1
   const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
   try {
     const original = await cold.sessionPersistence.open(parentId, 'read')
@@ -427,6 +432,30 @@ test('cold Viva startup erases native originals and settled output in root and u
         args: { command: toolSecret }, status: 'failed' }
       fixture.append('step/end', { turn, step })
       fixture.append('turn/end', { turn, reason: { kind: 'completed' } })
+      function compact(shadowedSeqs: SessionSeq[], text: string) {
+        const compactionId = randomUUID() as CompactionId
+        const start = fixture.append('compaction/start', { compactionId, turn: null })
+        const region = { start: shadowedSeqs[0]!, end: shadowedSeqs.at(-1)! }
+        const content = [{ type: 'text' as const, text }]
+        const summary = fixture.append('compaction/summary', { compactionId, summary: content, rawOutput: content, llmStreamCall: true,
+          shadowedRange: region, shadowedSeqs, shadowedTokenCount: 99, provider: 'fixture', model: 'fixture' })
+        const checkpoint = fixture.append('user/message', createUserMessage({ source: compactCheckpointSource(compactionId), content }),
+          { surfaceOp: { op: 'replace', startSeq: region.start, endSeq: region.end }, sourceEventSeqs: [start.seq, summary.seq, ...shadowedSeqs] })
+        fixture.append('compaction/end', { compactionId, turn: null })
+        return { summary: summary.seq, checkpoint: checkpoint.seq }
+      }
+      const failedCompactionId = randomUUID() as CompactionId
+      fixture.append('compaction/start', { compactionId: failedCompactionId, turn: null })
+      recordCompactionInputs(fixture, [titleMessage.seq])
+      compactions.add(fixture.append('compaction/end', { compactionId: failedCompactionId, turn: null, error: compactionSecret }).seq)
+      const compactedOriginal = compact([titleMessage.seq], compactionSecret)
+      const compactedCheckpoint = compact([compactedOriginal.checkpoint], compactionSecret)
+      const compactedTool = compact([announcement.seq, result.seq], compactionSecret)
+      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool]) {
+        compactions.add(item.summary)
+        compactions.add(item.checkpoint)
+      }
+      unconnectedSummary = compact([independentTitleMessage.seq], 'independent compaction remains').summary
       const writer = await cold.sessionPersistence.open(parentId, 'write')
       try { await writer.append(fixture.snapshotEvents(SessionLogOffset(persisted.length))); await writer.flush() }
       finally { await writer.close() }
@@ -626,6 +655,10 @@ test('cold Viva startup erases native originals and settled output in root and u
         assert.deepEqual(outcome.data.error, { name: 'ToolError', code: 'FAILED' })
         assert.equal(outcome.data.meta, undefined)
         assert.doesNotMatch(JSON.stringify(events), new RegExp(toolSecret, 'u'))
+        const rewrittenCompactions = events.filter(event => compactions.has(event.seq))
+        assert.equal(rewrittenCompactions.length, 7)
+        assert.doesNotMatch(JSON.stringify(rewrittenCompactions), new RegExp(compactionSecret, 'u'))
+        assert.match(JSON.stringify(events[unconnectedSummary]), /independent compaction remains/)
       } finally { await reader.close() }
     }
   } finally { await mounted.dispose() }
