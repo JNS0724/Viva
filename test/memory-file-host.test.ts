@@ -80,6 +80,39 @@ test('admitted routing evidence is withheld during a drained mutation and stays 
   assert.equal(await snapshot(stranger, evidence), null, 'a later readset cannot reauthorize the erased decision')
 })
 
+test('history use rejects a stale authorized original or generated reply before the host acknowledges erasure', async t => {
+  const f = await fixture(t), file = (await f.client.readFile(f.identity))!, original = f.store.readSource(f.sourceId)!
+  const rows = [
+    { segmentId: f.session, sessionId: f.session, role: 'user', text: original.text!, sourceId: original.id },
+    { segmentId: f.session, sessionId: f.session, role: 'assistant', text: 'Generated report guidance.', sourceId: null },
+  ]
+  for (const row of rows) assert.equal(await f.owner.handleHost('allowsProjectHistory', { args: [row, undefined, undefined] }), true)
+  const target = randomUUID()
+  f.owner.initializeSession({ sessionId: target, cwd: f.store.fileRoot })
+  const operationId = randomUUID()
+  await f.client.forgetFile({ operationId, identity: file.identity, version: file.version })
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.ok(effects.some(effect => effect.effectId === operationId), 'the host has not acknowledged the erasure')
+  for (const row of rows) {
+    await assert.rejects(f.owner.handleHost('useHistory', { args: [undefined, row] }), { code: 'revision.conflict' })
+    await assert.rejects(f.owner.handleHost('useHistory', { args: [target, row] }), { code: 'revision.conflict' })
+  }
+  assert.deepEqual(f.owner.dispatch.snapshot(target).sources, [])
+  assert.deepEqual(f.owner.dispatch.snapshot(target).files ?? [], [])
+  assert.equal(await f.owner.handleHost('transfer', { args: [target, f.owner.dispatch.snapshot(f.session), undefined, true] }), false)
+
+  const independentSession = randomUUID(), independentId = randomUUID(), independentText = 'A separately received original stays available.'
+  await f.owner.receiveSource({ sessionId: independentSession, messageId: independentId, text: independentText, at: Date.now(),
+    timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  const independent = { segmentId: independentSession, sessionId: independentSession, role: 'user', text: independentText, sourceId: independentId }
+  await f.owner.handleHost('useHistory', { args: [target, independent] })
+  assert.deepEqual(f.owner.dispatch.snapshot(target).sources, [independentId])
+  await f.reopen()
+  await assert.rejects(f.owner.handleHost('useHistory', { args: [undefined, rows[0]!] }), { code: 'revision.conflict' })
+  await f.owner.handleHost('useHistory', { args: [target, independent] })
+  assert.deepEqual(f.owner.dispatch.snapshot(target).sources, [independentId])
+})
+
 test('fast routing binds the exact host delivery even before native inbox intake', async t => {
   const f = await fixture(t), sourceId = randomUUID(), words = 'Add the Friday item to my task.'
   const session = f.session, conversation = f.session
