@@ -1,4 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { createHash } from 'node:crypto'
+import { t } from '../shared/i18n/translate.ts'
 import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
@@ -23,6 +25,7 @@ export interface FeedItem {
 }
 
 export type NewFeedItem = Omit<FeedItem, 'id' | 'createdAt' | 'seenAt'> & { memory?: MemoryProvenance }
+export const feedSourceIdentity = (source: string, key: string) => createHash('sha256').update(JSON.stringify([source, key])).digest('hex')
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS feed_items (
@@ -61,6 +64,8 @@ export function openFeedStore({ db, now = Date.now, newId = () => crypto.randomU
 
   /** The item for `source` and `key`: made now, or the one made before (`made` false). */
   function add(input: NewFeedItem): { item: FeedItem, made: boolean } {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_erased_feed_copies'").get()
+      && db.prepare('SELECT 1 FROM memory_erased_feed_copies WHERE identity=?').get(feedSourceIdentity(input.source, input.key))) throw new Error(t('main.feed.memory.stale'))
     const found = db.prepare('SELECT * FROM feed_items WHERE source = ? AND key = ?').get(input.source, input.key) as Row | undefined
     if (found) return { item: itemOf(found), made: false }
     const id = newId()
@@ -84,7 +89,16 @@ export function openFeedStore({ db, now = Date.now, newId = () => crypto.randomU
     return row ? { item: itemOf(row), memory: typeof row.memory === 'string' ? JSON.parse(row.memory) as MemoryProvenance : null } : null
   }
 
-  return { add, list, continuation, markSeen, remove }
+  /** Seen status changes independently from the body and its original provenance. */
+  function continuationCurrent(before: NonNullable<ReturnType<typeof continuation>>) {
+    const current = continuation(before.item.id)
+    if (!current) return false
+    const { seenAt: _oldSeen, ...old } = before.item
+    const { seenAt: _seen, ...next } = current.item
+    return JSON.stringify(old) === JSON.stringify(next) && JSON.stringify(before.memory) === JSON.stringify(current.memory)
+  }
+
+  return { add, list, continuation, continuationCurrent, markSeen, remove }
 }
 
 /** Its writes, each an event when it changed something (journal.ts). */

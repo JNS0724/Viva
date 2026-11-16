@@ -83,6 +83,7 @@ export interface ActionPayloads extends ConversationPayloads {
   feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[] }
   feed_busy: {}
   feed_failed: { message: string | null }
+  feed_erased: { ids: readonly string[] }
   files_listed: { path: string, entries: State['files']['folders'][string] }
   files_toggled: { path: string }
   files_selected: { path: string }

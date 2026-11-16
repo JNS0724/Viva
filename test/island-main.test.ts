@@ -52,6 +52,16 @@ test('desktop sends require main-window acceptance, keep rejected drafts, and pr
   emit(main, 'island:ask-result', accepted.receiptId, { ok: true })
   assert.equal(closed, 1, 'a receipt is consumed once')
   assert.equal((await emit(desktop, 'island:ask', request) as { ok: boolean }).ok, false, 'stale sends do not reach another draft')
+  emit(desktop, 'draft:update', { ...snapshot(), sequence: snapshot().sequence + 1, text: 'derived body', feedItemId: 'erased-result' })
+  const awaiting = snapshot()
+  const erasedSend = emit(desktop, 'island:ask', { text: awaiting.text, files: [], images: [], draft: { key: awaiting.key, version: awaiting.version } })
+  const oldReceipt = messages.findLast(message => message.channel === 'island:action')!.payload as { receiptId: string }
+  bridge.eraseFeedDrafts(['erased-result'])
+  assert.equal((await erasedSend as { ok: boolean }).ok, false)
+  assert.equal(snapshot().text, '')
+  assert.ok(snapshot().epoch > awaiting.epoch)
+  emit(main, 'island:ask-result', oldReceipt.receiptId, { ok: true })
+  assert.equal(closed, 1, 'an invalidated island send cannot acknowledge after the draft was erased')
 })
 
 function imageDraftHarness(keepImage: Parameters<typeof registerIslandIpc>[1]['keepImage']) {

@@ -106,10 +106,11 @@ function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): Th
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
 export const CONVERSATION_ACTIONS = {
-  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending }) => {
+  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending, feedItemId }) => {
     const closed = closeStreams(view)
     const message = {
       id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(pending ? { pending } : {}),
+      ...(feedItemId ? { feedItemId } : {}),
       open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
     }
     return { ...closed, phase: 'working', error: null, messages: [...closed.messages, message], turn: { startedAt: at, tools: 0, thoughts: 0 } }

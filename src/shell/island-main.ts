@@ -34,7 +34,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (main && !main.isDestroyed()) main.webContents.send('draft:changed', snapshot)
     desk()?.sendDraft(snapshot)
   })
-  const receipts = new Map<string, { finish: (result: { ok: boolean, error?: string }) => void, timer: ReturnType<typeof setTimeout> }>()
+  const receipts = new Map<string, { finish: (result: { ok: boolean, error?: string }) => void, timer: ReturnType<typeof setTimeout>, feedItemId?: string }>()
   const fromDesk = (event: IpcMainEvent | IpcMainInvokeEvent) => {
     const island = desk()
     return island?.owns(event.sender) ? island : null
@@ -189,7 +189,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     const receiptId = randomUUID()
     return new Promise<{ ok: boolean, error?: string }>(resolve => {
       const timer = setTimeout(() => { receipts.delete(receiptId); resolve({ ok: false, error: NOT_SENT }) }, 10_000)
-      receipts.set(receiptId, { timer, finish: result => {
+      receipts.set(receiptId, { timer, feedItemId: snapshot.feedItemId, finish: result => {
         if (result.ok) { drafts.clear(snapshot); island.closeInput({ sent: true }) }
         resolve(result)
       } })
@@ -197,7 +197,16 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
         expiresAt: Date.now() + 10_000, feedItemId: snapshot.feedItemId })
     })
   })
-  return { ownDraft: drafts.own }
+  return { ownDraft: drafts.own,
+    eraseFeedDrafts(ids: readonly string[]) {
+      drafts.eraseFeed(ids)
+      for (const [id, receipt] of receipts) {
+        if (!receipt.feedItemId || !ids.includes(receipt.feedItemId)) continue
+        clearTimeout(receipt.timer); receipts.delete(id)
+        receipt.finish({ ok: false, error: NOT_SENT })
+      }
+    },
+  }
 }
 
 /**

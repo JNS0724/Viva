@@ -1038,13 +1038,17 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     if (replay && !await memory.replaySources(operation, question, currentMemoryProject())) throw new Error(t('main.memory.context.stale'))
     const id = agent.currentSession()
     if (await staleMemorySession(id) || id && !await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())) await reopenMemorySession()
+    let feedCurrent: (() => boolean) | undefined
     if (feedItemId) {
       if (replay) throw new Error(t('main.memory.context.stale'))
-      const { item, memory: evidence } = await feedContinuation(feedItemId)
+      const { item, memory: evidence, current } = await feedContinuation(feedItemId)
+      feedCurrent = current
       if (!matchesFeedContinuation(item, question)) throw new Error(t('main.feed.edit.continuation'))
       const origin = sessions.context()
-      if (!origin.sessionId || !await memoryCoordination.transfer(origin.sessionId, evidence, currentMemoryProject(), agent.memory.ready())) throw new Error(t('main.feed.memory.unavailable'))
+      if (!origin.sessionId || !await memoryCoordination.transfer(origin.sessionId, evidence, currentMemoryProject(), agent.memory.ready())
+        || !current()) throw new Error(t('main.feed.memory.unavailable'))
       await recordDeliveredSource(operation, origin, { derived: true })
+      if (!current()) throw new Error(t('main.feed.memory.unavailable'))
     } else if (!replay) {
       await aliasMemory(question, operation)
     } else {
@@ -1053,7 +1057,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     turn = { active: true, startedAt: Date.now() }
     const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()
-    const held = carried ? () => historyDb.fileErasureRevision() === carryRevision : undefined
+    const held = carried || feedCurrent ? () => (!carried || historyDb.fileErasureRevision() === carryRevision) && (feedCurrent?.() ?? true) : undefined
     const words = carried ? `${carried}
 
 ${question}` : question
@@ -1164,11 +1168,16 @@ ${question}` : question
   }
 
   async function feedContinuation(id: string) {
-    const continuation = requireFeed().continuation(id)
-    if (!continuation || await memoryCoordination.transferStatus(continuation.memory, currentMemoryProject(), true) !== 'ready') {
+    const store = requireFeed(), project = currentMemoryProject()
+    const revision = historyDb.fileErasureRevision()
+    const continuation = store.continuation(id)
+    const current = () => revision === historyDb.fileErasureRevision() && project?.id === currentMemoryProject()?.id
+      && Boolean(continuation && store.continuationCurrent(continuation))
+    if (!continuation || await memoryCoordination.transferStatus(continuation.memory, project, true) !== 'ready'
+      || !current()) {
       throw new Error(t('main.feed.memory.stale'))
     }
-    return continuation
+    return { ...continuation, current }
   }
 
   /** A new item in 动态: its notification queued in the change that made it, so a quit before it goes loses nothing. */
@@ -1385,6 +1394,7 @@ ${question}` : question
       eraseTaskBodies: taskStore.eraseMemoryBodies,
       invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
       generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
+      feedCopiesRemoved: erasedFeedIds => emitToRenderer({ type: 'memory_changed', erasedFeedIds }),
       eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
       traceInvalidated: fileMode ? traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }) : undefined,

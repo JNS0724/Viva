@@ -977,6 +977,7 @@ agentEvents = createAgentEvents({
   memoryChanged: event => {
     if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)
     if (event.erasedOutputs?.length) void historyActions.invalidateSearch()
+    if (event.erasedFeedIds?.length) void feedActions.erased(event.erasedFeedIds)
     memoryActions.onMemoryChanged(event)
   },
   filesChanged: filesActions.onFilesChanged,

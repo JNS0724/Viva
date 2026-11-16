@@ -8,6 +8,7 @@ export interface ConversationMessage extends StreamText {
   role: string
   sourceId?: string
   pending?: boolean
+  feedItemId?: string
   shown?: number
   receipt?: TurnReceipt | null
   restored?: boolean
@@ -84,7 +85,7 @@ export interface ForegroundWaits {
 
 /** Only conversation payloads. Task identity and stream order belong to separate task actions. */
 export interface ConversationPayloads {
-  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean }
+  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean, feedItemId?: string }
   prompt_admitted: { sourceId: string, accepted: boolean }
   user_steer: { text: string, sourceId?: string, via?: string | null }
   steer_failed: { id: string | undefined }

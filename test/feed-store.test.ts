@@ -31,3 +31,17 @@ test('seen once, it stays seen; removed, it is gone; only the latest few hundred
   const kept = store.list(MAX_FEED_ITEMS + 10)
   assert.deepEqual([kept.length, kept[0].key, kept.at(-1)?.key], [MAX_FEED_ITEMS, `k${MAX_FEED_ITEMS + 2}`, 'k3'])
 })
+
+test('a continuation remains current across seen updates and loses authority when its exact result is removed', t => {
+  const db = new DatabaseSync(':memory:')
+  t.after(() => db.close())
+  const feed = openFeedStore({ db })
+  const original = feed.add(item('private result')).item
+  const snapshot = feed.continuation(original.id)!
+  feed.markSeen(original.id)
+  assert.equal(feed.continuationCurrent(snapshot), true)
+  feed.remove(original.id)
+  assert.equal(feed.continuationCurrent(snapshot), false)
+  const independent = feed.add(item('next result', { body: snapshot.item.body })).item
+  assert.equal(feed.continuationCurrent(feed.continuation(independent.id)!), true)
+})

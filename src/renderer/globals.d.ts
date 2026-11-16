@@ -46,6 +46,7 @@ interface SegmentMessage {
   role: string
   text: string
   key?: string
+  feedItemId?: string
   receipt?: Receipt | null
   at?: number
   images?: ReadonlyArray<{ id: string }>
