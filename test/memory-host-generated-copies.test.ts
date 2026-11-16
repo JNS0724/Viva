@@ -16,7 +16,7 @@ import { createNativeOutputAttempts } from '../src/memory/node/native-output-att
 import { scratch } from './fixtures/scratch.js'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
-const proofOf = (sourceId: string): MemoryProvenance => ({ sources: [sourceId], dependencies: [], turnOnly: false, epoch: 1 })
+const proofOf = (sourceId: string): MemoryProvenance => ({ sources: [sourceId], turnOnly: false, epoch: 1 })
 
 test('host file erasure retires exact generated copies and task bodies through retry and WAL checkpoint', async t => {
   const { dir } = scratch(t, 'viva-generated-replicas-')

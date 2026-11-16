@@ -112,7 +112,7 @@ for (const scenario of ['settled-fork', 'interrupted', 'output-overlap', 'child-
             const archive = new DatabaseSync(join(memoryRoot, 'memory.db'))
             try {
               const attempts = createNativeOutputAttempts(archive), attempt = { ...marker, session: String(session.id), floor }
-              attempts.record(attempt, { dependencies: [], sources: [], epoch: 0, turnOnly: false })
+              attempts.record(attempt, { sources: [], epoch: 0, turnOnly: false })
               attempts.finish(attempt, { seq: output.seq, kind: 'reply', digest: nativeEventDigest(output) })
             } finally { archive.close() }
             restored.append('step/end', { turn: 2, step: 1 }); restored.append('turn/end', { turn: 2, reason: { kind: 'completed' } })

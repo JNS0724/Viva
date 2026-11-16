@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { assembleMemoryPlugin, buildMemoryPlugin } from '../scripts/build-memory-plugin.ts'
+import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -73,13 +74,13 @@ test('npm-packed JS artifact installs offline and its Node API works without the
     import { openMemoryOwner } from 'viva-memory/node';
     import { randomUUID } from 'node:crypto';
     import { parseHostMemoryCommand, memoryDomainErrorCode, combineMemoryProvenance, MEMORY_HOST_PROTOCOL } from 'viva-memory/contracts';
-    assert.equal(MEMORY_HOST_PROTOCOL, 1);
+    assert.equal(MEMORY_HOST_PROTOCOL, ${MEMORY_HOST_PROTOCOL});
     assert.deepEqual(parseHostMemoryCommand('listFiles', { args: [{}] }), { method: 'listFiles', input: { args: [{}] } });
     assert.throws(() => parseHostMemoryCommand('addMemory', { args: ['obsolete'] }));
     assert.throws(() => parseHostMemoryCommand('internalRuntimeProperty', { args: [] }));
     assert.equal(memoryDomainErrorCode.parse('revision.conflict'), 'revision.conflict');
     assert.equal(memoryDomainErrorCode.safeParse('unrecognized').success, false);
-    assert.deepEqual(combineMemoryProvenance(null, { sources: ['original'], dependencies: [], epoch: 1, turnOnly: false }).sources, ['original']);
+    assert.deepEqual(combineMemoryProvenance(null, { sources: ['original'], epoch: 1, turnOnly: false }).sources, ['original']);
     const require = createRequire(import.meta.url);
     assert.throws(() => require.resolve('@deepseek-ai/dsh'));
     assert.throws(() => require.resolve('electron'));

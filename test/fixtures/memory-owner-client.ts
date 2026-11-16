@@ -1,3 +1,4 @@
+import { MEMORY_HOST_PROTOCOL } from '../../src/memory/contracts/host.ts'
 import { createVivaMemoryClient } from '../../src/backend/memory-client.ts'
 import { createRemoteMemoryChannel } from '../../src/backend/remote-memory-channel.ts'
 import type { openMemoryOwner } from '../../src/memory/node/owner.ts'
@@ -8,6 +9,6 @@ export function ownerClient(owner: ReturnType<typeof openMemoryOwner>) {
     void owner.handleHost(message.method, message.input).then(result => channel.receive({ type: 'memory_host_result', requestId: message.requestId, epoch: owner.epoch, ok: true, result }),
       error => channel.receive({ type: 'memory_host_result', requestId: message.requestId, epoch: owner.epoch, ok: false, error: { code: 'invalid-input', reason: error instanceof Error ? error.message : String(error) } }))
   } })
-  channel.receive({ type: 'memory_owner_state', protocol: 1, epoch: owner.epoch, state: 'ready', revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch() })
+  channel.receive({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, state: 'ready', revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch() })
   return createVivaMemoryClient(channel.call)
 }

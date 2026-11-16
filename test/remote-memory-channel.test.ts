@@ -4,8 +4,8 @@ import { createRemoteMemoryChannel } from '../src/backend/remote-memory-channel.
 import { memoryHostFailure } from '../src/memory/contracts/domain-error.ts'
 import { MemoryDomainError } from '../src/memory/core/presentation.ts'
 import { t } from '../src/shared/i18n/translate.ts'
-import { parseHostMemoryCommand } from '../src/memory/contracts/host.ts'
-const state = (epoch: string, status = 'ready') => ({ type: 'memory_owner_state', protocol: 1, epoch, state: status, revision: 0, coreEpoch: 0 })
+import { MEMORY_HOST_PROTOCOL, parseHostMemoryCommand } from '../src/memory/contracts/host.ts'
+const state = (epoch: string, status = 'ready') => ({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch, state: status, revision: 0, coreEpoch: 0 })
 test('remote owner client rejects disconnected calls and a late old-epoch response', async () => {
   const sent: Array<Record<string, unknown>> = []
   const client = createRemoteMemoryChannel({ send: message => sent.push(message as Record<string, unknown>), timeoutMs: 50 })
@@ -52,21 +52,24 @@ test('owner domain errors retain conflict identity and localized wording across 
   client.close()
 })
 
-test('verified save notices remain transient, epoch-bound and separate from owner metadata', () => {
-  const learned: string[][] = []
-  const client = createRemoteMemoryChannel({ send() {}, onNotice: notice => { learned.push([...(notice.learned ?? [])]) } })
-  const change = { type: 'memory_owner_change', protocol: 1, epoch: 'current', revision: 4, ids: [1], learned: ['已验证的新事实'] }
+test('revision-only notices remain transient, epoch-bound and separate from owner readiness', () => {
+  const revisions: number[] = []
+  const client = createRemoteMemoryChannel({ send() {}, onNotice: notice => { revisions.push(notice.revision) } })
+  const change = { type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'current', revision: 4 }
   client.receive(change)
-  assert.equal(learned.length, 0, 'an unknown owner cannot publish a notice')
+  assert.equal(revisions.length, 0, 'an unknown owner cannot publish a notice')
   client.receive({ ...state('current'), revision: 4 })
+  client.receive({ ...change, protocol: MEMORY_HOST_PROTOCOL - 1 })
+  client.receive({ ...change, ids: [1] })
+  assert.equal(revisions.length, 0, 'old protocols and removed notice fields are rejected')
   client.receive({ ...change, epoch: 'replaced' })
   client.receive({ ...change, revision: 3 })
   client.receive(change)
-  assert.deepEqual(learned, [['已验证的新事实']])
-  assert.equal('learned' in client.state()!, false, 'source-sensitive notice text is not cached with owner readiness')
+  assert.deepEqual(revisions, [4])
+  assert.deepEqual(client.state(), { ...state('current'), revision: 4 })
   client.close()
   client.receive(change)
-  assert.equal(learned.length, 1)
+  assert.equal(revisions.length, 1)
 })
 
 test('context usage and projection notifications remain explicit and reject stale owner generations', () => {
@@ -74,13 +77,13 @@ test('context usage and projection notifications remain explicit and reject stal
   let projections = 0
   const client = createRemoteMemoryChannel({ send() {}, onContextUsed: notice => contexts.push(notice), onProjection: () => { projections++ } })
   client.receive({ ...state('current'), revision: 3 })
-  const context = { type: 'memory_owner_context_used', protocol: 1, epoch: 'current', revision: 3,
+  const context = { type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: 'current', revision: 3,
     session: 'native-session', conversation: 'host-conversation', turn: 2, at: 1234,
     pushed: [{ text: '周报每周五提交', names: ['周报'] }] }
   client.receive({ ...context, epoch: 'old' })
   client.receive(context)
-  client.receive({ type: 'memory_owner_projection', protocol: 1, epoch: 'old', revision: 3 })
-  client.receive({ type: 'memory_owner_projection', protocol: 1, epoch: 'current', revision: 3 })
+  client.receive({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: 'old', revision: 3 })
+  client.receive({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: 'current', revision: 3 })
   assert.equal(contexts.length, 1)
   assert.equal(contexts[0]?.conversation, 'host-conversation')
   assert.deepEqual(contexts[0]?.pushed, [{ text: '周报每周五提交', names: ['周报'] }])

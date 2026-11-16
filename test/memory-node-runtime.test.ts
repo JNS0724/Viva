@@ -10,6 +10,7 @@ import { createMemoryRuntime as createCoreMemoryRuntime } from '../src/memory/co
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { MemoryDomainError } from '../src/memory/core/presentation.ts'
 import { offlineMemorySafety } from './fixtures/memory-safety.ts'
+import { memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 
 function fixture(t: test.TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-node-runtime-'))
@@ -30,6 +31,12 @@ test('ordinary Node assembly preserves file identities and erasure receipts acro
   const { runtime, store } = f.start()
   const input = { operationId: randomUUID(), text: 'I prefer concise weekly summaries.' }
   const workspace = runtime.manualFileWorkspace()
+  const canonical = randomUUID()
+  runtime.accept('A foreground original in the same personal authorization.', { conversation: 'topic', session: 'session' }, canonical)
+  assert.equal(memorySourceWorkspace(store.readSource(canonical)!), workspace)
+  const project = { kind: 'project' as const, id: 'git-project' }, projectSource = randomUUID()
+  runtime.accept('Project-specific original.', { conversation: 'project-topic', session: 'project-session', project }, projectSource)
+  assert.equal(memorySourceWorkspace(store.readSource(projectSource)!), runtime.manualFileWorkspace(project))
   const written = await runtime.writeManagedFile(input.operationId, workspace, input, () => {})
   assert.ok(written)
   assert.deepEqual(await runtime.writeManagedFile(input.operationId, workspace, input, () => {}), written)

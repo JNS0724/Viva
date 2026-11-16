@@ -67,7 +67,7 @@ async function recoverEditedSource(t: import('node:test').TestContext, scoped: b
     assert.equal(restarted.memory.sourceCurrent(oldSource), false)
     await restarted.owner.receiveSource({ sessionId: nextId, messageId: newSource, text: revised, at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1, admitted: true, inherited: false })
     assert.equal(restarted.memory.sessionProject(nextId), project?.id ?? '')
-    const source = { dependencies: [], sources: [newSource] }
+    const source = { sources: [newSource] }
     if (project) assert.equal(restarted.memory.projectAllows(source, replacement), false)
     assert.equal(restarted.memory.projectAllows(source, project), true)
   } finally { await restarted.close() }

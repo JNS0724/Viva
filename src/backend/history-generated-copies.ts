@@ -45,12 +45,12 @@ export function createHistoryGeneratedCopies(db: DatabaseSync, affected: (proof:
   }
 
   /** Called in the history erasure transaction, so later saves see the same retirement as readers. */
-  function erase(ranges: Parameters<typeof intersectsMemoryErasure>[1], memoryIds: readonly number[]) {
+  function erase(ranges: Parameters<typeof intersectsMemoryErasure>[1]) {
     const conversations = new Set<string>()
     const erased: GeneratedHistoryScope[] = []
     for (const replica of replicas.all() as unknown as Array<Replica & { key: string }>) {
       const evidence = (JSON.parse(replica.proof) as unknown[]).map(item => memoryErasureEvidenceSchema.parse(item))
-      if (!evidence.some(item => intersectsMemoryErasure(item, ranges, memoryIds))) continue
+      if (!evidence.some(item => intersectsMemoryErasure(item, ranges))) continue
       erased.push({ key: replica.key, session: replica.session, role: replica.role })
       if (replica.erased) continue
       for (const row of copies.all(replica.key, replica.session, replica.role)) {

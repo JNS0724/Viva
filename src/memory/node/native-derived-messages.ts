@@ -27,10 +27,10 @@ export function createNativeDerivedMessages(db: DatabaseSync) {
       if (before && before.digest !== digest) throw new Error('Native derived message envelope conflicts')
       if (!before && digest) addEnvelope.run(message, digest)
     },
-    affected(ranges: Parameters<typeof usesErasedMemory>[1], memoryIds: readonly number[]) {
+    affected(ranges: Parameters<typeof usesErasedMemory>[1]) {
       return rows.all().flatMap(row => {
         const evidence = memoryProvenanceSchema.parse(JSON.parse(String(row.evidence)))
-        return usesErasedMemory(evidence, ranges, memoryIds) ? [{ message: String(row.message), source: String(row.source), digest: String(row.digest), ...(typeof row.envelope === 'string' ? { envelope: row.envelope } : {}) }] : []
+        return usesErasedMemory(evidence, ranges) ? [{ message: String(row.message), source: String(row.source), digest: String(row.digest), ...(typeof row.envelope === 'string' ? { envelope: row.envelope } : {}) }] : []
       })
     },
     erased(messages: readonly string[]) {

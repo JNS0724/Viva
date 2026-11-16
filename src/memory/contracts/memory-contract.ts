@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 
-export const MEMORY_CONTRACT = 7
+export const MEMORY_CONTRACT = 8
 export const MEMORY_QUESTION_PREFIX = 'memory-clarify:'
 export const MEMORY_FILE_QUESTION_PREFIX = `${MEMORY_QUESTION_PREFIX}file:`
 export const operationId = z.uuid()

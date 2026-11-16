@@ -15,14 +15,12 @@ export type NativeSpillFile = z.output<typeof file>
 /** Retain full CAS/scope proof only for the exact minimal readset that produced this spill. */
 export function nativeSpillProvenance(snapshot: MemoryProvenance, evidence: readonly MemoryErasureEvidence[]): z.output<typeof memoryProvenanceSchema> | undefined {
   const ranges = evidence.flatMap(item => item.fileRanges), sources = new Set(evidence.flatMap(item => item.sources))
-  const ids = new Set(evidence.flatMap(item => item.memoryIds))
-  if ([...ids].some(id => !snapshot.dependencies.some(ref => ref.id === id))) return
   const files = snapshot.files?.filter(ref => ref.sourceRanges?.some(range => sources.has(range.sourceId)
     || ranges.some(proof => proof.sourceId === range.sourceId))) ?? []
   if (ranges.some(range => !files.some(file => file.sourceRanges?.some(part => part.sourceId === range.sourceId)))) return
   const selected = new Set(files.flatMap(file => file.sourceRanges?.map(range => range.sourceId) ?? []))
   const fileSources = snapshot.fileSources?.filter(id => selected.has(id)) ?? []
-  return { dependencies: snapshot.dependencies.filter(ref => ids.has(ref.id)), files, fileSources,
+  return { files, fileSources,
     sources: [...new Set([...sources, ...fileSources])], turnOnly: snapshot.turnOnly, epoch: snapshot.epoch,
     ...(snapshot.projects ? { projects: [...snapshot.projects] } : {}) }
 }
@@ -52,8 +50,7 @@ export function createNativeSpills(db: DatabaseSync) {
       if (db.prepare('SELECT 1 FROM owner_native_tool_reads WHERE call=? LIMIT 1').get(call.id)) return true
       if (!call.outputAttempt) return false
       return Boolean(db.prepare(`SELECT 1 FROM owner_native_output_reads WHERE attempt=?
-        AND (json_array_length(evidence,'$.sources')>0 OR json_array_length(evidence,'$.fileRanges')>0
-          OR json_array_length(evidence,'$.memoryIds')>0) LIMIT 1`).get(call.outputAttempt))
+        AND (json_array_length(evidence,'$.sources')>0 OR json_array_length(evidence,'$.fileRanges')>0) LIMIT 1`).get(call.outputAttempt))
     },
     begin(value: NativeSpillIntent) {
       const id = randomUUID()

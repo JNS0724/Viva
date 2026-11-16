@@ -4,14 +4,14 @@ import { createMemoryDispatch, MemoryDispatchConflict } from '../src/memory/core
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 
 const fileReference = (revision: number) => ({ workspace: '0'.repeat(64), id: 'file', path: 'digest/wiki/report.md',
-  revision: String(revision), usageVersion: 0, policyToken: 'policy' })
+  revision: String(revision), usageVersion: 0, policyToken: 'policy', sourceRanges: [{ sourceId: 'file-source' }] })
 
 test('file versions and raw sources invalidate just the sessions that used them, including forks', () => {
   const store = openMemoryStore(':memory:')
   try {
     let revision = 1
     let sourceAllowed = true
-    const open = () => createMemoryDispatch(store, () => true, () => sourceAllowed, undefined, files => files.every(file => file.id === 'independent' || file.revision === String(revision)))
+    const open = () => createMemoryDispatch(store, () => sourceAllowed, files => files.every(file => file.id === 'independent' || file.revision === String(revision)))
     const dispatch = open()
     dispatch.recordFiles('main', [fileReference(1)])
     dispatch.recordFiles('independent', [{ ...fileReference(2), id: 'independent' }])
@@ -38,7 +38,7 @@ test('file versions and raw sources invalidate just the sessions that used them,
 test('a clarification choice is scoped to its live turn even across forks and process restart', () => {
   const store = openMemoryStore(':memory:')
   try {
-    const open = () => createMemoryDispatch(store, () => true, () => true)
+    const open = () => createMemoryDispatch(store, () => true)
     const dispatch = open()
     dispatch.recordTurnOnly('current')
     dispatch.inherit('current', 'fork')
@@ -62,7 +62,7 @@ test('a prospective commit waits only for requests that would carry affected fil
   const store = openMemoryStore(':memory:')
   try {
     let revision = 1
-    const dispatch = createMemoryDispatch(store, () => true, () => true, undefined, files => files.every(file => file.revision === String(revision)))
+    const dispatch = createMemoryDispatch(store, () => true, files => files.every(file => file.revision === String(revision)))
     dispatch.recordFiles('affected', [fileReference(revision)])
     const affected = dispatch.admission('affected')
     const unrelated = dispatch.admission('unrelated')

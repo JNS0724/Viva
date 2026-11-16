@@ -32,7 +32,7 @@ test('host erasure preserves unrelated original messages, rejects stale-save res
   db.exec('CREATE TABLE background_tasks (id TEXT PRIMARY KEY, task TEXT NOT NULL)')
   db.prepare('INSERT INTO background_tasks VALUES (?,?)').run(session, JSON.stringify({ id: session, words: '模型生成的任务简述' }))
   const effect: MemoryHostEffect = { effectId: randomUUID(), causeOperationId: randomUUID(), revision: 8, hostNamespace: 'viva',
-    kind: 'erase-copies', sources: [{ namespace: 'viva', sourceId, revision: 1 }], sessions: [session], memoryIds: [3] }
+    kind: 'erase-copies', sources: [{ namespace: 'viva', sourceId, revision: 1 }], sessions: [session] }
   const methods: string[] = [], mutations: string[] = []
   let pending = true, failAck = true
   const call: HostMemoryCaller = async (method, input) => {
@@ -145,7 +145,7 @@ test('consecutive source cuts keep direct and formatted history, stars, and unre
   const row = { role: 'user' as const, sourceId, key: 'first-user', text: original }
   const choices = '保留选择、'
   const directSession = randomUUID(), answerKey = 'independent-answer'
-  history.bindGeneratedCopy(directSession, answerKey, 'assistant', 'Independent answer', [{ sources: [], fileRanges: [], memoryIds: [] }])
+  history.bindGeneratedCopy(directSession, answerKey, 'assistant', 'Independent answer', [{ sources: [], fileRanges: [] }])
   const direct = history.save(history.create({ sessionId: directSession }), [row, { role: 'assistant', key: answerKey, text: 'Independent answer' }])
   const formatted = history.save(history.create({ sessionId: randomUUID() }), [{ ...row, text: choices + original }])
   assert(history.setStar(direct.id, 0, true))
@@ -280,7 +280,7 @@ test('file forgetting physically removes affected schedules, run inputs and feed
   t.after(() => runner.close())
   const sourceId = randomUUID(), text = 'erase report, keep tea'
   const a = range(sourceId, 1, text, 'erase report')
-  const base: MemoryProvenance = { dependencies: [], sources: [sourceId], turnOnly: false, epoch: 0 }
+  const base: MemoryProvenance = { sources: [sourceId], turnOnly: false, epoch: 0 }
   const file = (id: string, start: number, end: number): MemoryProvenance => ({ ...base, fileSources: [sourceId], files: [{
     id, workspace: 'a'.repeat(64), path: `digest/wiki/${id}.md`, revision: 'historical-revision', usageVersion: 1, policyToken: 'historical-policy',
     sourceRanges: [{ sourceId, spans: [{ start, end }] }],
@@ -335,7 +335,7 @@ test('feed erasure replays exact durable identities after a failed volatile noti
   db.exec(APP_DB_PRAGMAS)
   const history = openHistoryDb({ db }), feed = openFeedStore({ db })
   const sourceId = randomUUID(), text = 'private source'
-  const proof: MemoryProvenance = { sources: [sourceId], dependencies: [], turnOnly: false, epoch: 0 }
+  const proof: MemoryProvenance = { sources: [sourceId], turnOnly: false, epoch: 0 }
   const secret = feed.add({ source: 'schedule', key: 'same body', title: 'title', body: 'same body', memory: proof, origin: { label: 'run' } }).item
   const independent = feed.add({ source: 'mail', key: 'same body', title: 'title', body: 'same body', origin: { label: 'mail' } }).item
   const effect: MemoryHostEffect = { kind: 'erase-file-copies', effectId: randomUUID(), causeOperationId: randomUUID(), revision: 1,
@@ -369,7 +369,7 @@ test('saved reports retain proof across conversations and erase only the exact a
   const records = createReportRecords({ history: () => history, effects: () => effects, current: () => here, apply,
     show: item => { shown.push(item.reportId) } })
   const secret = 'The private report body', retained = 'The retained independent report', original = `${secret} then ${retained}`
-  const provenance = (start: number, end: number): MemoryProvenance => ({ dependencies: [], epoch: 0, turnOnly: false,
+  const provenance = (start: number, end: number): MemoryProvenance => ({ epoch: 0, turnOnly: false,
     sources: [sourceId], fileSources: [sourceId], files: [{ workspace: 'f'.repeat(64), id: `doc-${start}`, path: 'digest/wiki/notes.md',
       revision: 'read-before-rebuild', usageVersion: 2, policyToken: `proof-${start}`,
       sourceRanges: [{ sourceId, spans: [{ start, end }] }] }] })

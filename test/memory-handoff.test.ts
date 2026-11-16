@@ -668,7 +668,7 @@ test('cold Viva startup erases native originals and settled output in root and u
       const proofDb = new DatabaseSync(join(memoryRoot, 'memory.db'))
       try {
         const archive = createNativeOutputAttempts(proofDb)
-        const evidence = { sources: [sourceId], dependencies: [], epoch: 0, turnOnly: false }
+        const evidence = { sources: [sourceId], epoch: 0, turnOnly: false }
         archive.record(failedProof, evidence)
         // The native event committed before a crash could store its settlement receipt.
         affectedOutputs.add(failed.seq)
@@ -676,7 +676,7 @@ test('cold Viva startup erases native originals and settled output in root and u
         archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
         archive.record(groupProof, evidence)
         archive.finish(groupProof, { seq: announcement.seq, kind: 'reply', digest: nativeEventDigest(announcement) })
-        const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
+        const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }])
         assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
         for (const { result, session, floor, id, generation, turn, step } of affected) {
           assert.equal(session, parentId)

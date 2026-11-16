@@ -658,10 +658,10 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
   /** Clean verified user text and its local projections together. */
-  function eraseFileRanges(ranges: readonly MemoryHostErasureRange[], memoryIds: readonly number[] = []) {
+  function eraseFileRanges(ranges: readonly MemoryHostErasureRange[]) {
     return transaction(() => {
-      const { changed, conversations } = memoryRanges.erase(ranges, memoryIds)
-      const copies = generated.erase(ranges, memoryIds)
+      const { changed, conversations } = memoryRanges.erase(ranges)
+      const copies = generated.erase(ranges)
       if (!changed && !copies.conversations.size) return copies.erased
       for (const id of new Set([...conversations, ...copies.conversations])) {
         const rows = sql.messages.all(id)

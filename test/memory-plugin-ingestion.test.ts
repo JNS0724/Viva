@@ -14,7 +14,7 @@ function fixture() {
     async receiveSource(input) { assert.ok(durable); received.push(input); return { sourceId: `source:${input.messageId}`, text: input.text } },
     async completeTurn(input) { assert.ok(durable); completed.push(input) },
     registerDerived(input) { derived.push(input) },
-    dispatch: { snapshot: () => ({ dependencies: [], sources: received.map(item => `source:${item.messageId}`), turnOnly: false, epoch: 0 }) },
+    dispatch: { snapshot: () => ({ sources: received.map(item => `source:${item.messageId}`), turnOnly: false, epoch: 0 }) },
   }, async () => { durable = true; return true })
   return { ingestion, received, completed, derived }
 }
@@ -59,7 +59,7 @@ test('intake persistence failure blocks subsequent admission instead of skipping
   const ingestion = createSessionIngestion({
     initializeSession() {},
     receiveSource: async () => { calls++; throw new Error('storage unavailable') }, completeTurn: async () => {}, registerDerived: () => {},
-    dispatch: { snapshot: () => ({ dependencies: [], sources: [], turnOnly: false, epoch: 0 }) },
+    dispatch: { snapshot: () => ({ sources: [], turnOnly: false, epoch: 0 }) },
   }, async () => true)
   const session = Session.create(SessionId('failed'))
   const message = createUserMessage({ content: [{ type: 'text', text: 'must persist' }], source: { kind: 'user' } })
@@ -74,7 +74,7 @@ test('resolved flush without a participating persistence listener is not a durab
     initializeSession() {},
     receiveSource: async () => { received++; return { sourceId: 'source', text: 'must persist' } },
     completeTurn: async () => {}, registerDerived() {},
-    dispatch: { snapshot: () => ({ dependencies: [], sources: [], turnOnly: false, epoch: 0 }) },
+    dispatch: { snapshot: () => ({ sources: [], turnOnly: false, epoch: 0 }) },
   }, async () => false)
   const session = Session.create(SessionId('no-persistence-listener'))
   const message = createUserMessage({ content: [{ type: 'text', text: 'must persist' }], source: { kind: 'user' } })
@@ -151,7 +151,7 @@ test('trusted derived input queries memory but remains excluded from daily origi
       ? { sourceId: 'derived-task-source', text: '', handledIntent: true, retrievalQuery: '项目任务' }
       : { sourceId: 'human-source', text: input.text } },
     async completeTurn(input) { completed.push(input) }, registerDerived() {},
-    dispatch: { snapshot: () => ({ dependencies: [], sources: ['human-source'], turnOnly: false, epoch: 0 }) },
+    dispatch: { snapshot: () => ({ sources: ['human-source'], turnOnly: false, epoch: 0 }) },
   }, async () => true)
   session.append('turn/start', { turn: 1 })
   const receipts = await ingestion.receive(session, [original, derived], 1, 1, true)

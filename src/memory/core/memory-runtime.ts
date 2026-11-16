@@ -21,7 +21,6 @@ import { localDay, nextDay } from './memory-calendar.ts'
 import { createMemoryClarifications } from './memory-clarification.ts'
 import { dateLine, packContext } from './memory-context.ts'
 import { createMemoryDailyUsage } from './memory-daily-usage.ts'
-import { type MemoryDependency } from './memory-dispatch.ts'
 import type { MemoryDocumentView } from './memory-document-read-policy.ts'
 import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDependency } from './memory-document-read-policy.ts'
 import { availableDocumentSourceSpans, documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
@@ -76,7 +75,7 @@ const textOf = (result: object) => JSON.stringify(result)
 const sameScope = (a: MemoryScope, b: MemoryScope) => a.kind === b.kind && (a.kind === 'user' || 'id' in b && a.id === b.id)
 const automaticSource = (source: MemorySource) => source.author === 'user' || source.author === 'answer'
 
-export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, quiesce, changed, injected, dependencies, provisionalRead, fileClarificationDispatch,
+export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, quiesce, changed, injected, fileClarificationDispatch,
   dailyNotes = false, fileDependencies,
   canCommit, validateDispatch, runDocumentMutation, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
@@ -88,12 +87,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   dailyNotes?: boolean | DailyMemorySettings,
   fileDependencies?: (session: string, files: readonly MemoryFileDependency[], sources: readonly string[]) => void,
   quiesce: () => Promise<void>,
-  changed: (change: { revision: number, ids: number[], learned?: string[], invalidated?: number[] }) => void,
+  changed: (change: { revision: number }) => void,
   now?: () => number,
   timezone?: () => string,
   injected?: (session: string, turn: number, pushed: Array<{ text: string, names: string[] }>) => void,
-  dependencies?: (session: string, items: MemoryDependency[]) => void,
-  provisionalRead?: (session: string) => void,
   fileClarificationDispatch?: Pick<MemoryStore['dispatch'], 'offerFileClarification' | 'settleFileClarification'>,
   canCommit: (source: MemorySource) => boolean,
   validateDispatch: () => void,
@@ -121,15 +118,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const sourceBlocked = (source: Pick<MemorySource, 'id' | 'conversation'>) => blockedSources.has(source.id)
     || (source.conversation !== null && blocked.has(source.conversation))
   const useRestrictions = resources.openFileRestrictions()
-  const dependenciesCurrent = (refs: readonly MemoryDependency[]) => refs.length === 0
-  const dispatchDeadline = (_refs: readonly MemoryDependency[], _sources: readonly string[], _at: number): number | null => null
   let documents: MemoryDocuments | null = null
   let mutation: Promise<unknown> | null = null
   let closed = false
   const runningComputations = new Map<string, { ready: () => boolean, current: () => boolean, deadline: number | null }>()
 
-  function publish(revision: number, ids: number[], learned?: string[], invalidated?: number[]) {
-    try { changed({ revision, ids, learned, invalidated }) } catch { console.error('[memory] could not publish committed revision') }
+  function publish(revision: number) {
+    try { changed({ revision }) } catch { console.error('[memory] could not publish committed revision') }
   }
 
   function createSource(text: string, origin: Origin, operation: string, author: MemorySource['author'], answer?: AnswerSource, captured?: { at: number, timezone: string }) {
@@ -144,7 +139,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     }
     const source: MemorySource = {
       id, operation: id, version: 1, conversation: origin.conversation, session: origin.session,
-      scope: origin.scope ?? USER, context: origin.context ?? null, project: origin.project ?? null, author, text: denied ? null : text, hash,
+      scope: origin.scope ?? USER, context: origin.context ?? origin.project ?? origin.scope ?? USER, project: origin.project ?? null, author, text: denied ? null : text, hash,
       length: denied ? 0 : text.length,
       question: answer && !denied ? answer.question.slice(0, 1000) : null,
       requestId: answer?.requestId ?? null, questionId: answer?.questionId ?? null,
@@ -232,7 +227,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         spans: availableDocumentSourceSpans(source.text ?? '', ref, restrictions) }
     },
     assistantContextCurrent: context => !context.turnOnly && context.epoch === store.epoch()
-      && dependenciesCurrent(context.dependencies) && fileDependenciesCurrent(context.files ?? [], context.fileSources ?? [])
+      && fileDependenciesCurrent(context.files ?? [], context.fileSources ?? [])
       && context.sources.every(id => context.fileSources?.includes(id) || dispatchSourceCurrent(id)),
     allowsText: (text) => !looksSecret(text),
     async calculate(job, source, stage, system, input, sources, current) {
@@ -457,6 +452,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function fileDependenciesCurrent(refs: readonly MemoryFileDependency[], sourceIds: readonly string[] = []): boolean {
     const unverified = new Set(sourceIds)
     for (const ref of refs) {
+      if (!ref.sourceRanges?.length) return false
       const view = filePolicy?.read(ref.workspace, ref.path)
       if (view?.id !== ref.id || view.revision !== ref.revision || view.usageVersion !== ref.usageVersion || view.policyToken !== ref.policyToken) return false
       if (ref.sourceRanges && JSON.stringify(ref.sourceRanges) !== JSON.stringify(fileDependency(view).sourceRanges)) return false
@@ -521,7 +517,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return false
   }
   function documentChanged(_receipt: DocumentReceipt) {
-    publish(store.revision(), [])
+    publish(store.revision())
     notes?.refreshRestrictions()
   }
   notes?.refreshRestrictions()
@@ -532,7 +528,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const current = () => !closed && request.current() && request.sourceIds().every(fileSourceAllowsUse)
       runningComputations.set(id, {
         ready: () => !mutation && store.revision() === snapshotRevision && current(),
-        current, get deadline() { return dispatchDeadline([], request.sourceIds(), now()) },
+        current, deadline: null,
       })
       try {
         const result = compute({ id, sourceId: sources[0]!, stage: 'dream', generation: request.job.generation,
@@ -562,7 +558,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     source: id => store.readSource(id) ?? undefined, sourceToken: resources.sourceToken, sourceWorkspace: resources.sourceWorkspace,
     readable: id => !closed && fileSourceAllowsUse(id), materialAllowed: documentEvidence.materialAllowed,
     calculate: request => calculateDocument({ ...request, stage: 'verify' }), mutate: runDocumentMutation,
-    changed() { syncFileIndex(); publish(store.revision(), []); notes.refreshRestrictions() },
+    changed() { syncFileIndex(); publish(store.revision()); notes.refreshRestrictions() },
   }) : null
   fileMaintenance?.start()
   const DOCUMENT_CLEANUP = 'memory.document-cleanup'
@@ -575,7 +571,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (store.revision() !== revision) syncFileIndex()
       fileIndex?.recover()
     })
-    if (store.revision() !== revision || documents?.pendingCleanup() !== pending) publish(store.revision(), [])
+    if (store.revision() !== revision || documents?.pendingCleanup() !== pending) publish(store.revision())
     return new Map(jobs.map(job => [job.key, notes?.storage.pendingCleanup() || documents?.hasPendingCleanup(job.key) || fileIndex?.pendingCleanup() ? 'retry' as const : 'done' as const]))
   })
   function withdrawNotes(id: string) {
@@ -632,7 +628,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         }
         return { result: null, value: previous }
       }, () => store.profile())
-      if (before !== store.revision()) publish(store.revision(), [])
+      if (before !== store.revision()) publish(store.revision())
       return result
     }
     if (invalidates) return mutate(write, true)
@@ -761,8 +757,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (cuts.length) syncFileIndex()
       validateDispatch()
     })
-    if (before !== store.revision()) publish(store.revision(), [])
-    return { cuts, memoryIds: [] as number[] }
+    if (before !== store.revision()) publish(store.revision())
+    return { cuts }
   }
 
   function canonicalSource(id: string, inspected = new Map<string, MemorySource | null>()): MemorySource | null {
@@ -865,8 +861,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function provisionalReadsCurrent(session: string) {
     return [...fileClarifications.pending(session)].every(reference => currentDocumentWork(reference) !== null)
   }
-
-  function provisionalDeadline(_session: string, _at: number): number | undefined { return undefined }
 
   function clarify(session: string, ref: string, origin: Origin) {
     if (!origin.foregroundTurn || origin.session !== session || (origin.context ?? origin.scope)?.kind === 'task') {
@@ -1085,7 +1079,8 @@ ${node.description}`, origin, scope))
     return offset === text.length
   }
 
-  const manualFileWorkspace = (project?: Origin['project']) => memoryHash(JSON.stringify([USER, null, project ?? null]))
+  const manualFileWorkspace = (project?: Origin['project'], context: MemoryScope = project ?? USER) =>
+    memoryHash(JSON.stringify([USER, context, project ?? null]))
   function explicitFileSource(text: string, origin: Origin, sourceIds: readonly string[]): DocumentSourceRef | null {
     if (!origin.session || !origin.foregroundTurn || closed || mutation || !text.trim() || text.length > MAX_MESSAGE_CHARS
       || /[\u0000\uD800-\uDFFF]/u.test(text) || looksSecret(text)) return null
@@ -1140,14 +1135,14 @@ ${node.description}`, origin, scope))
     return response
   }
 
-  function freshFileEvidence(id: string, text: string, parent?: MemorySource, project?: Origin['project']): MemorySource {
+  function freshFileEvidence(id: string, text: string, parent?: MemorySource, project?: Origin['project'], context: MemoryScope = project ?? USER): MemorySource {
     return { id, operation: id, version: 1, conversation: null, session: null, scope: parent?.scope ?? USER,
-      context: parent?.context ?? null, project: parent ? parent.project ?? null : project ?? null, author: 'manual', text, hash: memoryHash(text), length: text.length,
+      context: parent ? parent.context : context, project: parent ? parent.project ?? null : project ?? null, author: 'manual', text, hash: memoryHash(text), length: text.length,
       question: null, requestId: null, questionId: null, at: now(), timezone: timezone(), outcome: 'written', withdrawn: false }
   }
 
   async function writeManagedFile(operationId: string, workspace: string, input: MemoryFileCreateRequest | MemoryFileEditRequest | undefined,
-    committed: FileMutationCommitted, project?: Origin['project']): Promise<MemoryFileMutationResult | null> {
+    committed: FileMutationCommitted, project?: Origin['project'], context?: MemoryScope): Promise<MemoryFileMutationResult | null> {
     if (!documents || !fileManagement) throw domainError('not.found')
     if (!/^[a-f0-9]{64}$/u.test(workspace)) throw domainError('revision.conflict')
     const storage = documents, management = fileManagement
@@ -1180,7 +1175,7 @@ ${node.description}`, origin, scope))
         const markdown = unchanged ? target!.markdown : formatMemoryDocument({ metadata, body })
         // User edits are explicit input. A full-editor draft stays tied to the
         // accepted proof it may have quoted, so it cannot launder forgotten text.
-        const source = unchanged ? null : freshFileEvidence(operationId, sourceText, parent ?? undefined, project)
+        const source = unchanged ? null : freshFileEvidence(operationId, sourceText, parent ?? undefined, project, context)
         if (source && (resources.sourceWorkspace(source) !== workspace || store.readSource(operationId) || store.deliveredSource(operationId)
           || store.sourceExcluded(operationId) || sourceBlocked(source))) throw domainError('operation.conflict')
         receipt = storage.writeManual({ operationId, workspace, path: target?.path ?? `digest/wiki/manual-${memoryHash(operationId)}.md`,
@@ -1201,7 +1196,7 @@ ${node.description}`, origin, scope))
   }
 
   async function forgetManagedFile(input: MemoryFileForgetRequest,
-    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[]) => void,
+    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[]) => void,
     beforeErasure?: () => void): Promise<MemoryFileMutationResult> {
     if (!documents || !fileManagement || !notes) throw domainError('not.found')
     const storage = documents
@@ -1228,10 +1223,10 @@ ${node.description}`, origin, scope))
       const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
         action: 'FORGET', contentRevision: input.version.contentRevision, usageVersion,
         ...(input.restrictionId ? { restrictionId: input.restrictionId } : {}) }
-      committed(result, mergedErasureCuts(cuts), [])
+      committed(result, mergedErasureCuts(cuts))
       return result
     }))
-    publish(store.revision(), [])
+    publish(store.revision())
     void effects.wake()
     return result
   }
@@ -1246,7 +1241,7 @@ ${node.description}`, origin, scope))
         if (!dailyUsage) throw domainError('not.found')
         const applied = dailyUsage.command(command, () => fileManagement.validate(command, managementAllows))
         changed = applied.changed
-        if (changed) publish(store.revision(), [])
+        if (changed) publish(store.revision())
         committed?.(applied.result, applied.sources)
         return applied.result
       }
@@ -1272,7 +1267,7 @@ ${node.description}`, origin, scope))
           useRestrictions.complete(command.operationId, receipt)
           return receipt
         })
-        if (changed) publish(store.revision(), [])
+        if (changed) publish(store.revision())
         committed?.(applied.result, applied.sources)
         return applied.result
       }
@@ -1371,22 +1366,19 @@ ${node.description}`, origin, scope))
     computeCurrent,
     computeAdmission,
     provisionalReadsCurrent,
-    provisionalDeadline,
     authorizeGeneralQuestion,
     setProfile,
-    dependenciesCurrent,
     sourceCurrent,
     canRecoverOriginal,
     recordDeliveredSource,
     isDerivedDelivery: (id: string) => Boolean(store.deliveredSource(id)?.derived),
     dispatchSourceCurrent,
-    dispatchDeadline,
     replaySource: (id: string, text: string) => replaySources([id], text),
     replaySources,
     cleanupPending: () => (notes?.storage.pendingCleanup() ?? 0) + (documents?.pendingCleanup() ?? 0) + (fileIndex?.pendingCleanup() ?? 0),
-    projectAllows(evidence: Pick<MemoryProvenance, 'dependencies' | 'files' | 'sources' | 'projects'>, project?: Origin['project']) {
+    projectAllows(evidence: Pick<MemoryProvenance, 'files' | 'sources' | 'projects'>, project?: Origin['project']) {
       const allowed = (scope?: MemoryScope | null) => scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
-      return evidence.dependencies.length === 0 && (evidence.projects ?? []).every(id => id === project?.id)
+      return (evidence.projects ?? []).every(id => id === project?.id)
         && evidence.sources.every(id => allowed(store.readSource(id)?.project))
         && (evidence.files ?? []).every(ref => {
           const view = filePolicy?.read(ref.workspace, ref.path)

@@ -22,7 +22,7 @@ import { scratch } from './fixtures/scratch.js'
 for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMarker ? 'withhold a changed replica' : 'retain disjoint originals'} through two erasures and lost publication receipt`, async t => {
   const { dir, defer } = scratch(t, 'viva-recovery-native-')
   const memoryRoot = join(dir, 'memory'), root = join(dir, 'sessions')
-  const options = { root: memoryRoot, hostNamespace: 'viva', fileMode: true,
+  const options = { root: memoryRoot, hostNamespace: 'viva',
     compute: () => null, route: () => null, quiesce: async () => {} }
   const parentId = SessionId('recovery-root'), forkId = SessionId('recovery-unadmitted-fork'), thirdId = SessionId('recovery-unverified-fork')
   const first = 'First source erased phrase'

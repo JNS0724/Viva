@@ -31,6 +31,17 @@ test('standalone explicit file commands use the native session scope, versions a
   assert.throws(() => owner.rememberStandaloneFile('unregistered', { ...input, operationId: randomUUID() }), { code: 'not.found' })
   assert.ok(method(session, written.identity.id).includes(input.text))
   assert.ok(!method(personal, written.identity.id).includes(input.text))
+  const db = new DatabaseSync(join(options.root, 'memory.db'))
+  defer(() => db.close())
+  assert.deepEqual(JSON.parse(String(db.prepare('SELECT context FROM memory_sources WHERE id=?').get(input.operationId)?.context)),
+    owner.sessionContext(session).context, 'manual and native foreground files share the authenticated default scope')
+  const taskSession = 'project-one-task'
+  owner.initializeSession({ sessionId: taskSession, parentSessionId: session, cwd: cwd('one') })
+  const taskText = 'This delegated task alone uses the alternate release channel.'
+  const taskFile = await owner.rememberStandaloneFile(taskSession, { operationId: randomUUID(), text: taskText })
+  assert.notEqual(taskFile.identity.workspace, written.identity.workspace)
+  assert.ok(method(taskSession, taskFile.identity.id).includes(taskText))
+  assert.ok(!method(session, taskFile.identity.id).includes(taskText))
   await assert.rejects(owner.forgetStandaloneFile(neighbor, written.identity.id, randomUUID()), { code: 'not.found' })
   assert.ok(owner.runtime.readFile(written.identity))
   const operationId = randomUUID()
@@ -265,8 +276,8 @@ test('native remember archives the exact source span for every authenticated PTC
   defer(() => db.close())
   const archived = db.prepare('SELECT c.identity,r.evidence FROM owner_native_tool_calls c JOIN owner_native_tool_reads r ON r.call=c.id').all()
     .map(row => ({ call: JSON.parse(String(row.identity)) as { id: string }, evidence: JSON.parse(String(row.evidence)) as {
-      sources: string[], fileRanges: Array<{ sourceId: string, spans: Array<{ start: number, end: number }> }>, memoryIds: number[]
+      sources: string[], fileRanges: Array<{ sourceId: string, spans: Array<{ start: number, end: number }> }>
     } }))
   assert.deepEqual(new Set(archived.map(item => item.call.id)), new Set([root.id, leaf.id]))
-  for (const item of archived) assert.deepEqual(item.evidence, { sources: [], memoryIds: [], fileRanges: [{ sourceId, spans: [{ start: 0, end: text.length }] }] })
+  for (const item of archived) assert.deepEqual(item.evidence, { sources: [], fileRanges: [{ sourceId, spans: [{ start: 0, end: text.length }] }] })
 })

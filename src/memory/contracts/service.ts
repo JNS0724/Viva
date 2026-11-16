@@ -78,7 +78,7 @@ const page = z.strictObject({ items: z.array(memoryRecord), cursor: key.optional
 const profile = z.strictObject({ revision, fields: z.record(key, z.string().max(8_000)), sources: sourceReferences })
 const hostEffect = {
   effectId: key, causeOperationId: z.uuid(), revision, hostNamespace: key,
-  sources: sourceReferences, sessions: z.array(key).optional(), memoryIds: z.array(z.number().int().positive()).optional(),
+  sources: sourceReferences, sessions: z.array(key).optional(),
 }
 export const memoryHostErasureRange = z.strictObject({
   sourceId: key, revision, length: z.int().positive(), hash: z.string().regex(/^[0-9a-f]{64}$/),

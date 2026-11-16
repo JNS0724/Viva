@@ -26,7 +26,7 @@ test('native output evidence retains exact file ranges across sends without pers
     const attempt = { id: randomUUID(), session: 'session', generation: 0, turn: 1, step: 2, floor: 12 }
     const first = source().messageId, second = source().messageId
     const fileProof = (sourceId: string, start: number, end: number) => ({
-      dependencies: [], sources: [sourceId], fileSources: [sourceId], epoch: 0, turnOnly: false,
+      sources: [sourceId], fileSources: [sourceId], epoch: 0, turnOnly: false,
       files: [{ workspace: '0'.repeat(64), id: 'file', path: 'digest/wiki/sensitive-file-name.md', revision: 'rev',
         usageVersion: 0, policyToken: 'policy', sourceRanges: [{ sourceId, spans: [{ start, end }] }] }],
     })
@@ -36,19 +36,19 @@ test('native output evidence retains exact file ranges across sends without pers
     const readsets = db.prepare('SELECT evidence FROM owner_native_output_reads').all()
     assert.equal(readsets.length, 2)
     assert.doesNotMatch(JSON.stringify(readsets), /sensitive-file-name|policy/)
-    assert.deepEqual(outputs.affected([{ sourceId: first, spans: [{ start: 8, end: 9 }] }], []), [])
+    assert.deepEqual(outputs.affected([{ sourceId: first, spans: [{ start: 8, end: 9 }] }]), [])
     const overlapping = [{ sourceId: second, spans: [{ start: 12, end: 13 }] }]
-    assert.deepEqual(outputs.affected(overlapping, []), [{ ...attempt, result: { state: 'open' } }])
+    assert.deepEqual(outputs.affected(overlapping), [{ ...attempt, result: { state: 'open' } }])
     const terminal = { seq: 14, kind: 'attempt', digest: 'a'.repeat(64) } as const
     // A settlement may arrive after an erasure was planned from the open receipt.
     outputs.finish(attempt, terminal)
     outputs.finish(attempt, terminal)
-    assert.deepEqual(outputs.affected(overlapping, []), [{ ...attempt, result: { state: 'settled', terminal } }])
+    assert.deepEqual(outputs.affected(overlapping), [{ ...attempt, result: { state: 'settled', terminal } }])
     assert.throws(() => outputs.finish(attempt, { ...terminal, seq: 15 }), /settlement conflicts/)
     const abandonedBeforeSend = { ...attempt, id: randomUUID() }
     outputs.finish(abandonedBeforeSend)
     assert.throws(() => outputs.record(abandonedBeforeSend, fileProof(second, 9, 20)), /attempt identity conflicts/)
-    assert.equal(outputs.affected(overlapping, []).length, 1)
+    assert.equal(outputs.affected(overlapping).length, 1)
   } finally { db.close() }
 })
 test('settled native output publication leaves an immutable receipt when another target arrives', () => {

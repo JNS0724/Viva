@@ -1,9 +1,9 @@
-import type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemoryStore } from './ports/store.ts'
+import type { MemoryFileDependency, MemoryProvenance, MemoryStore } from './ports/store.ts'
 import { rawMemorySources } from '../contracts/provenance.ts'
-export type { MemoryDependency, MemoryFileDependency, MemoryProvenance } from './ports/store.ts'
+export type { MemoryFileDependency, MemoryProvenance } from './ports/store.ts'
 
 export function needsMemoryTransport(evidence: MemoryProvenance | null | undefined) {
-  return Boolean(evidence && (evidence.dependencies.length || evidence.files?.length || evidence.sources.length || evidence.turnOnly))
+  return Boolean(evidence && (evidence.files?.length || evidence.sources.length || evidence.turnOnly))
 }
 
 export { combineMemoryProvenance } from '../contracts/provenance.ts'
@@ -16,22 +16,19 @@ export class MemoryDispatchConflict extends Error {
   }
 }
 
-/** Retains the facts a DSH session has seen, including the inputs of its later replies and summaries. */
-export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoch'>, current: (items: readonly MemoryDependency[], at?: number) => boolean,
-  sourceCurrent: (id: string, at?: number) => boolean,
-  nextBoundary?: (items: readonly MemoryDependency[], sources: readonly string[], at: number) => number | null,
+/** Retains the source and file proof a session used in later replies and summaries. */
+export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoch'>, sourceCurrent: (id: string, at?: number) => boolean,
   fileCurrent: (files: readonly MemoryFileDependency[], at: number, fileSources: readonly string[]) => boolean = (files, _, sources) => !files.length && !sources.length,
 ) {
-  const { snapshot, dependencies: record, files: recordFiles, source: recordSource, turnOnly: retainTurnOnly } = store.dispatch
+  const { snapshot, files: recordFiles, source: recordSource, turnOnly: retainTurnOnly } = store.dispatch
   const liveTurnOnly = new Set<string>()
   const leases = new Map<string, { current: () => boolean, session?: string }>()
   const waiters = new Set<() => void>()
   function evidenceCurrent(evidence: MemoryProvenance, at: number) {
-    return current(evidence.dependencies, at) && rawMemorySources(evidence).every(id => sourceCurrent(id, at))
+    return rawMemorySources(evidence).every(id => sourceCurrent(id, at))
       && fileCurrent(evidence.files ?? [], at, evidence.fileSources ?? [])
   }
   function attach(session: string, evidence: MemoryProvenance) {
-    record(session, evidence.dependencies)
     if (evidence.files?.length) recordFiles(session, evidence.files, evidence.fileSources)
     for (const source of rawMemorySources(evidence)) recordSource(session, source)
     if (evidence.turnOnly) retainTurnOnly(session)
@@ -40,10 +37,10 @@ export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoc
     const at = Date.now()
     const evidence = snapshot(session)
     if ((evidence.turnOnly && !liveTurnOnly.has(session)) || !evidenceCurrent(evidence, at)) return { allowed: false } as const
-    return { allowed: true, deadline: nextBoundary?.(evidence.dependencies, rawMemorySources(evidence), at) ?? null, evidence, at } as const
+    return { allowed: true, deadline: null, evidence, at } as const
   }
   return {
-    record, recordFiles, recordSource,
+    recordFiles, recordSource,
     /** The owner must have a durable replacement receipt; this primitive never authorizes a rebase. */
     replaceAfterRecovery(session: string, sources: readonly string[]) {
       if (leases.size) throw new MemoryDispatchConflict([...leases.keys()])

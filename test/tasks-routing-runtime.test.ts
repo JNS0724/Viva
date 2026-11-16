@@ -157,7 +157,7 @@ test('a range erasure removes only dependent routing plans and prevents late rec
     ranges: [{ sourceId, revision: 1, length: original.length, hash: hash(original), afterHash: hash(after),
       spans: [{ start: 0, end: erasedText.length }] }] }
   const evidence = (start: number, end: number): MemoryProvenance => ({
-    epoch: 0, turnOnly: false, dependencies: [], sources: [sourceId], fileSources: [sourceId],
+    epoch: 0, turnOnly: false, sources: [sourceId], fileSources: [sourceId],
     files: [{ workspace: 'a'.repeat(64), id: 'digest', path: 'digest/wiki/example.md', revision: 'r1',
       usageVersion: 1, policyToken: 'current', sourceRanges: [{ sourceId, spans: [{ start, end }] }] }],
   })

@@ -106,7 +106,7 @@ test('editing a schedule card preserves its memory dependency and refuses a stal
     db, emit: () => {}, newId: () => 'p1', now: () => Date.parse('2026-11-06T10:00:00+08:00'),
     memoryCurrent: async evidence => evidence.epoch === revision,
   })
-  const memory = { epoch: 1, turnOnly: false, dependencies: [{ id: 4, revision: 1 }], sources: [] }
+  const memory = { epoch: 1, turnOnly: false, sources: ['schedule-source'] }
   const edits = { title: '月报', prompt: '起草新版月报' }
   schedules.act({ op: 'schedule_create', title: '周报', prompt: '按模板起草周报', rule: weekly }, 'c1', '/work', memory)
   revision = 2
@@ -126,7 +126,7 @@ test('an asynchronous proposal check cannot accept a declined card or save it tw
   let pending = new Promise<boolean>(resolve => { release = resolve })
   const schedules = createSchedules({ db, emit: () => {}, newId: () => 'p1',
     now: () => Date.parse('2026-11-06T10:00:00+08:00'), memoryCurrent: () => pending })
-  const memory = { epoch: 1, turnOnly: false, dependencies: [{ id: 4, revision: 1 }], sources: [] }
+  const memory = { epoch: 1, turnOnly: false, sources: ['schedule-source'] }
   const propose = () => schedules.act({ op: 'schedule_create', title: '周报', prompt: '起草周报', rule: weekly }, 'c1', '/work', memory)
   propose()
   const declined = schedules.accept('p1')
@@ -152,7 +152,7 @@ test('erasure cancels only affected proposals even while acceptance is awaiting 
   const schedules = createSchedules({ db, emit() {}, now: () => Date.parse('2026-11-06T10:00:00+08:00'),
     newId: () => `p${++n}`, memoryCurrent: () => checking })
   schedules.act({ op: 'schedule_create', title: 'Selected source', prompt: 'Affected instructions', rule: weekly }, 'c1', '/work',
-    { dependencies: [], sources: ['source-a'], turnOnly: false, epoch: 0 })
+    { sources: ['source-a'], turnOnly: false, epoch: 0 })
   schedules.act({ op: 'schedule_create', title: 'Independent', prompt: 'Retained instructions', rule: weekly }, 'c1', '/work')
   const accepted = schedules.accept('p1')
   schedules.discardMemory(memory => memory.sources.includes('source-a'))

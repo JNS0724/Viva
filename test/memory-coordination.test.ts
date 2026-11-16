@@ -10,7 +10,6 @@ function setup() {
   let valid = true
   let runtimeBusy = false
   let provisional = true
-  let deadline: number | undefined
   let activeProject: MemoryProject | undefined = { kind: 'project', id: 'project-a' }
   const projects = new Map<string, string>()
   const runtime: MemoryCoordinationRuntime = {
@@ -22,11 +21,10 @@ function setup() {
     recordSessionProject: (session, project) => { projects.set(session, project) },
     projectAllows: (evidence, project) => !evidence.projects?.some(id => id !== project?.id),
     provisionalReadsCurrent: () => provisional,
-    provisionalDeadline: () => deadline,
     computeAdmission: () => ({ current: () => valid, deadline: 250 }),
   }
   let owner: MemoryCoordinationRuntime | undefined = runtime
-  const dispatch = createMemoryDispatch(store, () => valid, () => valid)
+  const dispatch = createMemoryDispatch(store, () => valid)
   let dispatcher: MemoryCoordinationDispatch = dispatch
   const coordinator = createMemoryCoordination({ runtime: () => owner, dispatch: () => dispatcher, now: () => 100 })
   return { store, dispatch, coordinator, runtime,
@@ -35,7 +33,6 @@ function setup() {
     setValid: (value: boolean) => { valid = value },
     setRuntimeBusy: (value: boolean) => { runtimeBusy = value },
     setProvisional: (value: boolean) => { provisional = value },
-    setDeadline: (value: number | undefined) => { deadline = value },
     setOwner: (value: MemoryCoordinationRuntime | undefined) => { owner = value },
     setDispatch: (value: MemoryCoordinationDispatch) => { dispatcher = value },
   }
@@ -88,9 +85,8 @@ test('project binding and provisional dependencies constrain admission and outst
   const fixture = setup()
   const { coordinator, dispatch, store } = fixture
   try {
-    fixture.setDeadline(150)
     assert.deepEqual(coordinator.beginSession('request', 'session', fixture.project(), fixture.project), {
-      allowed: true, deadline: 150, evidence: dispatch.snapshot('session'),
+      allowed: true, deadline: null, evidence: dispatch.snapshot('session'),
     })
     assert.equal(coordinator.bindProject('session', { kind: 'project', id: 'other' }), false)
     fixture.setProject({ kind: 'project', id: 'other' })
@@ -115,7 +111,7 @@ test('recovered source dependencies still reject model and cross-project transfe
     assert.equal(coordinator.transfer('target', evidence, fixture.project(), true), true)
     assert.deepEqual(dispatch.snapshot('target').sources, ['original'])
     fixture.setValid(false)
-    const resumed = createMemoryDispatch(store, () => true, () => false)
+    const resumed = createMemoryDispatch(store, () => false)
     const restarted = createMemoryCoordination({ runtime: () => fixture.runtime, dispatch: () => resumed })
     assert.equal(restarted.allowsSession('target', fixture.project()), false)
     assert.equal(restarted.beginSession('replay', 'target', fixture.project(), fixture.project), false)
@@ -236,7 +232,7 @@ test('late completion releases the original dispatcher and mutation waits for th
   const fixture = setup()
   const { coordinator, dispatch: original, store } = fixture
   const replacementStore = openMemoryStore(':memory:')
-  const replacement = createMemoryDispatch(replacementStore, () => true, () => true)
+  const replacement = createMemoryDispatch(replacementStore, () => true)
   try {
     assert.ok(coordinator.beginSession('old-request', 'source', fixture.project(), fixture.project))
     fixture.setDispatch(replacement)

@@ -10,7 +10,7 @@ import { eraseMemoryReportCopies } from './memory-report-copies.ts'
 import type { GeneratedHistoryScope } from './history-generated-copies.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
-type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
+type Cleanup = MemoryHostEffect & { sessions?: readonly string[] }
 
 export function affectedTraceSessions(effect: MemoryHostEffect) {
   if (effect.kind === 'erase-file-copies') return [...new Set([...effect.sessions ?? [], ...effect.traceSessions ?? []])]
@@ -20,7 +20,7 @@ export function affectedTraceSessions(effect: MemoryHostEffect) {
 export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, invalidateFileHistory = () => {}, feedCopiesRemoved = () => {}, fileCopiesDurable = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
-  eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): readonly GeneratedHistoryScope[] | void,
+  eraseFileHistory(ranges: readonly MemoryHostErasureRange[]): readonly GeneratedHistoryScope[] | void,
   eraseTaskBodies?(effect: string, matches: (proof: MemoryProvenance) => boolean, erased: readonly GeneratedHistoryScope[]): readonly string[],
   invalidateTaskBodies?(sessions: readonly string[]): void | Promise<void>,
   generatedCopiesRemoved?(copies: readonly GeneratedHistoryScope[]): void,
@@ -37,11 +37,10 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   db.exec('CREATE TABLE IF NOT EXISTS memory_host_receipts (effect TEXT PRIMARY KEY,cause TEXT NOT NULL,revision INTEGER NOT NULL,fingerprint TEXT NOT NULL)')
   const table = (name: string) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name))
   function eraseDerived(effect: Cleanup) {
-    const sources = new Set(effect.sources.map(source => source.sourceId)), sessions = new Set(effect.sessions ?? []), memories = new Set(effect.memoryIds ?? [])
+    const sources = new Set(effect.sources.map(source => source.sourceId)), sessions = new Set(effect.sessions ?? [])
     const matches = (raw: unknown) => {
       const value = objectOf(raw)
-      return Boolean(value && (Array.isArray(value.sources) && value.sources.some(source => typeof source === 'string' && sources.has(source))
-        || Array.isArray(value.dependencies) && value.dependencies.some(ref => { const item = objectOf(ref); return typeof item?.id === 'number' && memories.has(item.id) })))
+      return Boolean(value && Array.isArray(value.sources) && value.sources.some(source => typeof source === 'string' && sources.has(source)))
     }
     if (table('feed_items')) for (const row of db.prepare('SELECT id,memory FROM feed_items WHERE memory IS NOT NULL').all()) {
       if (matches(JSON.parse(String(row.memory)))) {
@@ -89,9 +88,9 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
         if (effect.kind === 'erase-file-copies') {
           try {
             if (effect.ranges.some(cut => blockedRanges.has(cut.sourceId))) continue
-            const matches = (memory: MemoryProvenance) => usesErasedMemory(memory, effect.ranges, effect.memoryIds)
+            const matches = (memory: MemoryProvenance) => usesErasedMemory(memory, effect.ranges)
             const { scheduled, reports, outputs, tasks } = transaction(db, () => {
-              const outputs = eraseFileHistory(effect.ranges, effect.memoryIds) ?? []
+              const outputs = eraseFileHistory(effect.ranges) ?? []
               const tasks = eraseTaskBodies(effect.effectId, matches, outputs)
               eraseRoutedMemory(matches)
               return { scheduled: eraseScheduledMemoryCopies(db, matches, effect.effectId), reports: eraseMemoryReportCopies(db, matches), outputs, tasks }

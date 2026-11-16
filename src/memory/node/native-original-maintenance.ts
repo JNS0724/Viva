@@ -23,7 +23,7 @@ const replica = z.strictObject({
   sourceSpans: z.array(span).min(1), wireCuts: z.array(span).min(1),
 })
 const planShape = z.strictObject({
-  sessions: z.array(z.string().min(1)), ranges: z.array(memoryHostErasureRange), memoryIds: z.array(z.int().nonnegative()).optional(), originals: z.array(replica).optional(),
+  sessions: z.array(z.string().min(1)), ranges: z.array(memoryHostErasureRange), originals: z.array(replica).optional(),
 })
 const publicationShape = z.strictObject({
   intent: z.strictObject({ before: digest, after: digest, events: digest }),
@@ -191,10 +191,10 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
   const outputPlans = db.prepare('SELECT operation,payload FROM owner_file_native_erasures ORDER BY rowid')
   function outputOperations() {
     return outputPlans.all().flatMap(row => {
-      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
       const operationId = z.uuid().parse(row.operation)
       const journal = outputJournal.forOperation(operationId)
-      const targets = () => outputAttempts.affected(ranges, memoryIds ?? []).flatMap(attempt =>
+      const targets = () => outputAttempts.affected(ranges).flatMap(attempt =>
         attempt.result.state === 'settled' && !outputJournal.erased(attempt.id) ? [{ ...attempt, result: attempt.result }] : [])
       return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets }] : []
     })
@@ -213,8 +213,8 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
 
   function spillOperations() {
     return outputPlans.all().map(row => {
-      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
-      const targets = () => spills.affected(toolReads.affected(ranges), outputAttempts.affected(ranges, memoryIds ?? []))
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
+      const targets = () => spills.affected(toolReads.affected(ranges), outputAttempts.affected(ranges))
       return { operationId: z.uuid().parse(row.operation), targets, complete: spills.complete,
         pending: () => targets().length > 0 }
     }).filter(operation => operation.pending())
@@ -231,10 +231,10 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
 
   function derivedMessageOperations() {
     return outputPlans.all().flatMap(row => {
-      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
       const operationId = z.uuid().parse(row.operation)
       const journal = outputJournal.forOperation(operationId + ':derived-messages')
-      const targets = () => derived.affected(ranges, memoryIds ?? [])
+      const targets = () => derived.affected(ranges)
       return targets().length || journal.pendingSessions().length ? [{ operationId, journal, targets, complete: derived.erased,
         verify: (target: { digest: string, envelope?: string }, content: string, messageDigest: string) => hash(content) === target.digest
           && (!target.envelope || hash(messageDigest) === target.envelope),
@@ -276,8 +276,8 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
     const attempts = new Map<string, ReturnType<typeof outputAttempts.affected>[number]>()
     const tools = new Map<string, ReturnType<typeof toolReads.affected>[number]>()
     for (const row of outputPlans.all()) {
-      const { ranges, memoryIds } = planShape.parse(JSON.parse(String(row.payload)))
-      for (const item of outputAttempts.affected(ranges, memoryIds ?? [])) if (item.result.state === 'open') attempts.set(item.id, item)
+      const { ranges } = planShape.parse(JSON.parse(String(row.payload)))
+      for (const item of outputAttempts.affected(ranges)) if (item.result.state === 'open') attempts.set(item.id, item)
       for (const item of toolReads.affected(ranges)) if (!item.result && !item.absent) tools.set(item.id, item)
     }
     return { attempts: [...attempts.values()], tools: [...tools.values()] }
@@ -296,9 +296,9 @@ function assemble(db: DatabaseSync, secret: string, closeLock: () => void) {
         ...publishedDerivedSessions.all(operationId, operationId + ':%').map(row => String(row.session))]
       if (sessions.some(session => uncertainSessions.has(session)) || activeRecoveries.has(operationId) || activeSpills.has(operationId)
         || plan.originals?.length && !completedOriginal.get(operationId)
-        || outputAttempts.affected(plan.ranges, plan.memoryIds ?? []).some(item => !outputJournal.erased(item.id))
+        || outputAttempts.affected(plan.ranges).some(item => !outputJournal.erased(item.id))
         || toolReads.affected(plan.ranges).some(item => !item.result && !item.absent || !outputJournal.erased(item.id))
-        || derived.affected(plan.ranges, plan.memoryIds ?? []).length) continue
+        || derived.affected(plan.ranges).length) continue
       cleanupReceipts.acknowledge(operationId, catalog)
     }
   }

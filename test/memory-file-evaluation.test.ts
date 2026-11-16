@@ -35,7 +35,7 @@ test('evaluation audits service text and every exposed identity even without for
     id: view.id, workspace, path: view.path, revision: view.revision,
     text: view.currentMarkdown!, startLine: 1, endLine: memoryDocumentLines(view.currentMarkdown!).length,
     score: 0.01, applicability: { state: 'current', supersessions: [] }, inlinks: empty(), outlinks: empty(),
-  }], files: [{ id: view.id, workspace, path: view.path, revision: view.revision, usageVersion: view.usageVersion, policyToken: view.policyToken }],
+  }], files: [{ id: view.id, workspace, path: view.path, revision: view.revision, usageVersion: view.usageVersion, policyToken: view.policyToken, sourceRanges: view.sourceTokens.map(({ id: sourceId, spans }) => ({ sourceId, ...(spans ? { spans } : {}) })) }],
     sourceIds: view.sourceTokens.map(item => item.id), reasons: [], partial: false }
   assert.deepEqual(auditEvaluationResult(result, views), { unauthorized: [], invalidSlices: [] })
   assert.deepEqual(auditEvaluationResult({ ...result, hits: [{ ...result.hits[0]!, text: 'Invented evidence at the same valid locator.' }] }, views).invalidSlices, [view.id])

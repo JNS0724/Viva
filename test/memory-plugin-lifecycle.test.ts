@@ -89,7 +89,7 @@ test('real adapter reload recovers loaded pending contexts and isolates an unflu
   }
   const first = await mount()
   first.owner.dispatch.recordFiles(String(invalidated.id), [{ workspace: 'a'.repeat(64), id: 'no-longer-available', path: 'memory/removed.md',
-    revision: 'old-file-revision', usageVersion: 1, policyToken: 'old-policy' }])
+    revision: 'old-file-revision', usageVersion: 1, policyToken: 'old-policy', sourceRanges: [{ sourceId: 'retired-source' }] }])
   for (const session of [healthy, prepared, bad]) {
     const ticket = await first.owner.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
       candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })

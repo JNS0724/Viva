@@ -563,7 +563,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           const effects = (await memory.call('pendingHostEffects', {})).filter(effect => effect.kind === 'erase-file-copies')
           if (!lifetime.isCurrent()) return []
           const accepted = candidates.filter(({ output, proof }) =>
-            !effects.some(effect => proof.some(item => intersectsMemoryErasure(item, effect.ranges, effect.memoryIds)))
+            !effects.some(effect => proof.some(item => intersectsMemoryErasure(item, effect.ranges)))
             && historyDb.bindGeneratedCopy(session, output.key, 'assistant',
               output.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), proof))
           const kept = new Set(accepted.map(({ output }) => output.key))
@@ -577,8 +577,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       memoryStateChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
       memoryNotice: notice => {
         if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
-        try { applyChange('memory.changed', { revision: notice.revision, ids: notice.ids }, () => undefined) }
-        finally { emitToRenderer({ type: 'memory_changed', memories: notice.learned }) }
+        try { applyChange('memory.changed', { revision: notice.revision }, () => undefined) }
+        finally { emitToRenderer({ type: 'memory_changed' }) }
       },
       memoryProjection: () => emitToRenderer({ type: 'memory_changed' }),
       memoryContextUsed: notice => {

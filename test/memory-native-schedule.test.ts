@@ -16,7 +16,7 @@ function fixture() {
     async receiveSource() { registered++; return { sourceId: 'unexpected', text: '' } },
     async completeTurn() { registered++ },
     registerDerived() { registered++ },
-    dispatch: { snapshot: () => ({ dependencies: [], sources: [], turnOnly: false, epoch: 0 }) },
+    dispatch: { snapshot: () => ({ sources: [], turnOnly: false, epoch: 0 }) },
   }, async () => true)
   return { ingestion, registered: () => registered }
 }

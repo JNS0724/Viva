@@ -15,9 +15,8 @@ export interface MemoryCoordinationRuntime {
   staleSession(session: string): boolean
   sessionProject(session: string): string | undefined
   recordSessionProject(session: string, project: string): void
-  projectAllows(evidence: Pick<MemoryProvenance, 'dependencies' | 'sources' | 'projects' | 'files'>, project?: MemoryProject): boolean
+  projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject): boolean
   provisionalReadsCurrent(session: string, at?: number): boolean
-  provisionalDeadline(session: string, at: number): number | undefined
   computeAdmission(job: string): { current(): boolean, deadline: number | null } | null
 }
 
@@ -88,7 +87,7 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
     const evidence = dispatch()?.snapshot(session)
     if (isTask) return !needsMemoryTransport(evidence)
     const admission = dispatch()?.admission(session)
-    return !evidence?.turnOnly && !evidence?.dependencies.length && !evidence?.files?.length && (!admission || admission.allowed && admission.deadline === null)
+    return !evidence?.turnOnly && !evidence?.files?.length && (!admission || admission.allowed && admission.deadline === null)
   }
 
   function beginSession(id: string, session: string, project: MemoryProject | undefined, currentProject: () => MemoryProject | undefined) {
@@ -98,12 +97,11 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
     if (acquired.has(id) || !owner || !leases || blocked.has(session) || owner.staleSession(session) || !owner.provisionalReadsCurrent(session, at)) return false
     const admission = leases.admission(session)
     if (!admission.allowed || !allowsEvidence(admission.evidence, project) || !bindProject(session, project)) return false
-    const provisional = owner.provisionalDeadline(session, at)
     leases.acquireSession(id, session, admission, () => runtime() === owner && dispatch() === leases
       && !owner.staleSession(session) && owner.provisionalReadsCurrent(session, at)
       && !projectChanged(session, currentProject()) && allowsEvidence(admission.evidence, currentProject()))
     acquired.set(id, leases)
-    return { allowed: true as const, evidence: admission.evidence, deadline: provisional === undefined ? admission.deadline : Math.min(provisional, admission.deadline ?? Infinity) }
+    return { allowed: true as const, evidence: admission.evidence, deadline: admission.deadline }
   }
 
   function beginJob(id: string, jobId: string) {
@@ -143,7 +141,7 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
   }
   function allowsProjectHistory(row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject) {
     if (sourceProject?.id !== targetProject?.id || !allowsHistory(row, sessionProject)) return false
-    if (row.sourceId && !runtime()?.projectAllows({ dependencies: [], sources: [row.sourceId] }, targetProject)) return false
+    if (row.sourceId && !runtime()?.projectAllows({ sources: [row.sourceId] }, targetProject)) return false
     return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || allowsEvidence(dispatch()?.snapshot(row.sessionId), targetProject)
   }
   function useHistory(session: string | undefined, row: MemoryHistoryOccurrence) {
@@ -156,7 +154,7 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
     if (!session) return
     const targetProject = owner.sessionProject(session)
     const project = targetProject ? { kind: 'project' as const, id: targetProject } : undefined
-    if (row.sourceId && !owner.projectAllows({ dependencies: [], sources: [row.sourceId] }, project)
+    if (row.sourceId && !owner.projectAllows({ sources: [row.sourceId] }, project)
       || row.sessionId && (row.role !== 'user' || !row.sourceId) && !allowsEvidence(leases.snapshot(row.sessionId), project)) {
       throw new MemoryDomainError('revision.conflict')
     }

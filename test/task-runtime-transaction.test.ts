@@ -264,7 +264,7 @@ test('a task whose start cannot be kept: its session let go, its place given bac
 })
 
 test('the completed run captures its report proof once and retains it across transaction retry', async t => {
-  const witness: MemoryProvenance = { dependencies: [], sources: ['bound-source'], epoch: 0, turnOnly: false }
+  const witness: MemoryProvenance = { sources: ['bound-source'], epoch: 0, turnOnly: false }
   let captures = 0
   const { start, tasks, failing, effects, runDue, due } = setup(t, { captureReportMemory: async () => { captures++; return witness } })
   const { task } = await start('Captured brief')
@@ -297,7 +297,7 @@ test('a captured task report cannot be queued by a late end after its precise ev
   const secret = 'The erased part', hash = (value: string) => createHash('sha256').update(value).digest('hex')
   history.eraseFileRanges([{ sourceId: 'selected-source', revision: 1, hash: hash(secret), afterHash: hash(' '.repeat(secret.length)),
     length: secret.length, spans: [{ start: 0, end: secret.length }] }])
-  resolveProof({ dependencies: [], sources: ['selected-source'], epoch: 0, turnOnly: false })
+  resolveProof({ sources: ['selected-source'], epoch: 0, turnOnly: false })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(kept()?.status, 'done', 'the task lifecycle settled even though the report itself was withheld')
   assert.deepEqual(reports(), [])
@@ -311,15 +311,15 @@ test('shutdown keeps the task end while withholding a report proof still in flig
   tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
   await Promise.resolve()
   tasks.dispose()
-  complete({ dependencies: [], sources: [], epoch: 0, turnOnly: false })
+  complete({ sources: [], epoch: 0, turnOnly: false })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(kept()?.status, 'done')
   assert.deepEqual(reports(), [])
 })
 
 test('a report retains the original brief proof after the owner snapshot changes and omits an unproved topic title', async t => {
-  const first: MemoryProvenance = { dependencies: [], sources: ['old-brief-source'], epoch: 0, turnOnly: false }
-  const last: MemoryProvenance = { dependencies: [], sources: ['new-result-source'], epoch: 0, turnOnly: false }
+  const first: MemoryProvenance = { sources: ['old-brief-source'], epoch: 0, turnOnly: false }
+  const last: MemoryProvenance = { sources: ['new-result-source'], epoch: 0, turnOnly: false }
   const { tasks, effects, kept } = setup(t, { captureReportMemory: async () => last })
   const { taskId } = await tasks.agent.start('Original task instructions', undefined, async () => first)
   assert.deepEqual(kept()?.requestMemory, first)
@@ -341,7 +341,7 @@ test('an automatically recomputed report topic uses the evidence of the row that
     ['proved title', titleSource, 'Independent text'],
   ] as const) {
     await t.test(caseName, async subtest => {
-      const memory: MemoryProvenance = { dependencies: [], sources: [sourceId], epoch: 0, turnOnly: false }
+      const memory: MemoryProvenance = { sources: [sourceId], epoch: 0, turnOnly: false }
       const { tasks, history, main, effects } = setup(subtest, {
         captureReportMemory: async () => memory,
         mainMessages: [

@@ -19,7 +19,7 @@ export function openIndependentHistory(options: Parameters<typeof openHistoryDb>
         ?? createHash('sha256').update(JSON.stringify([conversation.id, index, message.text])).digest('hex')
       if (previous?.key !== key || previous.text !== message.text) {
         if (!conversation.sessionId) throw new Error('An independent fixture reply needs its native session identity')
-        history.bindGeneratedCopy(conversation.sessionId, key, 'assistant', message.text, [{ sources: [], fileRanges: [], memoryIds: [] }])
+        history.bindGeneratedCopy(conversation.sessionId, key, 'assistant', message.text, [{ sources: [], fileRanges: [] }])
       }
       return { ...message, key }
     })

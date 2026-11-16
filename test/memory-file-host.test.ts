@@ -151,7 +151,7 @@ test('trusted file management can re-enable a disabled digest while model reads 
 test('file writes drain transport and invalidate captured sessions before their durable completion', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   f.owner.dispatch.recordFiles(f.session, [{ workspace: f.identity.workspace, id: f.identity.id, path: before.path,
-    revision: before.version.contentRevision, usageVersion: before.version.usageVersion, policyToken: before.version.policyToken }])
+    revision: before.version.contentRevision, usageVersion: before.version.usageVersion, policyToken: before.version.policyToken, sourceRanges: [{ sourceId: f.sourceId, spans: [{ start: 0, end: 25 }] }] }])
   const permit = f.owner.acquireSend(randomUUID(), { session: f.session }, 'request using Friday report')
   const operationId = randomUUID()
   const pending = f.client.setFileEnabled({ operationId, identity: f.identity, version: before.version, enabled: false })
@@ -168,7 +168,7 @@ test('file writes drain transport and invalidate captured sessions before their 
   assert.equal(effects[0]!.causeOperationId, operationId)
   assert.ok(effects[0]!.sessions?.includes(f.session))
   assert.ok(effects[0]!.sources.some(source => source.sourceId === f.sourceId))
-  assert.equal(effects[0]!.memoryIds, undefined)
+  assert.equal(Object.hasOwn(effects[0]!, 'memoryIds'), false)
 })
 
 test('same file operation replays its receipt after restart; changed input conflicts and outbox is not duplicated', async t => {
@@ -942,7 +942,7 @@ test('a manual file replays after replacement and atomically publishes its evide
 test('manual edit waits for the physical fence and a queued stale forget cannot erase the revised file', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   f.owner.dispatch.recordFiles(f.session, [{ workspace: f.identity.workspace, id: f.identity.id, path: before.path,
-    revision: before.version.contentRevision, usageVersion: before.version.usageVersion, policyToken: before.version.policyToken }])
+    revision: before.version.contentRevision, usageVersion: before.version.usageVersion, policyToken: before.version.policyToken, sourceRanges: [{ sourceId: f.sourceId, spans: [{ start: 0, end: 25 }] }] }])
   const permit = f.owner.acquireSend(randomUUID(), { session: f.session }, 'Old digest dispatch')
   const edit = { operationId: randomUUID(), identity: before.identity, version: before.version, text: 'New text before explicit deletion.' }
   const editing = f.client.editFile(edit)
@@ -1359,4 +1359,23 @@ test('a stale native read of a different note does not create a new erasure obli
   assert.equal(f.store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId), undefined)
   const outcome = await f.owner.handleHost('getOperation', { operationId }) as HostMemoryApi['getOperation']['output']
   assert.equal(outcome?.cleanup, 'complete')
+})
+
+test('the host cannot drop exact file ranges while transferring a real file-only readset', async t => {
+  const f = await fixture(t), reader = randomUUID(), recipient = randomUUID()
+  f.owner.initializeSession({ sessionId: reader })
+  f.owner.initializeSession({ sessionId: recipient })
+  const result = f.owner.runtime.handle({ op: 'file_read', session: reader, id: f.identity.id }, f.owner.sessionContext(reader))
+  assert.match(result, /Friday report/)
+  const proof = f.owner.dispatch.snapshot(reader)
+  assert.deepEqual(proof.fileSources, [f.sourceId])
+  assert.ok(proof.files?.every(file => file.sourceRanges?.length))
+  const missing = { ...proof, files: proof.files!.map(({ sourceRanges: _ranges, ...file }) => file) }
+  for (const files of [missing.files, [...missing.files, ...proof.files!]]) {
+    await assert.rejects(f.owner.handleHost('transfer', { args: [recipient, { ...proof, files }, undefined, true] }), /sourceRanges|complete source ranges/)
+    assert.deepEqual(f.owner.dispatch.snapshot(recipient).sources, [])
+    await assert.rejects(f.owner.handleHost('transfer', { args: [recipient, { ...proof, sources: [], fileSources: [], files }, undefined, true] }), /sourceRanges/)
+  }
+  assert.equal(await f.owner.handleHost('transfer', { args: [recipient, proof, undefined, true] }), true)
+  assert.deepEqual(f.owner.dispatch.snapshot(recipient).fileSources, [f.sourceId])
 })

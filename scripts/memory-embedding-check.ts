@@ -252,11 +252,11 @@ async function main() {
   try {
     const started = performance.now()
     const warmup = await embedder.embedBatch([{ kind: 'query', text: 'Viva' }])
-    assert.ok(warmup?.[0], 'the local E5 worker must encode successfully')
+    assert.ok(warmup?.[0], 'the local embedding worker must encode successfully')
     const workerStartupMs = performance.now() - started
     const result = await checkMemoryEmbeddings(async (texts, kind) => {
       const vectors = await embedder.embedBatch(texts.map(text => ({ kind, text })))
-      assert.ok(vectors, `the local E5 worker rejected the ${kind} batch`)
+      assert.ok(vectors, `the local embedding worker rejected the ${kind} batch`)
       return vectors.map(vector => {
         assert.ok(vector, 'the benchmark text must fit the model token budget')
         return vector

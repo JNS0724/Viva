@@ -1,7 +1,7 @@
 // Domain storage port. Implementations live in memory/node.
 import type { DocumentSourceRef, DocumentSourceCut } from './documents.ts'
-import type { MemorySourceErasure, MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource } from '../../contracts/records.ts'
-export type { MemoryDependency, MemoryFileDependency, MemoryProvenance, MemorySource } from '../../contracts/records.ts'
+import type { MemorySourceErasure, MemoryFileDependency, MemoryProvenance, MemorySource } from '../../contracts/records.ts'
+export type { MemoryFileDependency, MemoryProvenance, MemorySource } from '../../contracts/records.ts'
 
 type ProfileValues = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
 
@@ -32,7 +32,6 @@ export interface MemoryStore {
   dispatch: {
     /** Only after a durable host context replacement, under the owner send fence. */
     replace(session: string, sources: readonly string[]): void
-    dependencies(session: string, dependencies: readonly MemoryDependency[]): void
     files(session: string, files: readonly MemoryFileDependency[], sources?: readonly string[]): void
     source(session: string, source: string): void
     turnOnly(session: string): void

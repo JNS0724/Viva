@@ -23,7 +23,7 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
     source TEXT NOT NULL, revision INTEGER NOT NULL, cut TEXT NOT NULL, PRIMARY KEY(source,revision)
   ); CREATE TABLE IF NOT EXISTS memory_erased_history_replicas (
     conversation TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(conversation,source)
-  ); CREATE TABLE IF NOT EXISTS memory_erased_dependency_ids (id INTEGER PRIMARY KEY)`)
+  )`)
   const latest = db.prepare('SELECT coalesce(max(rowid),0) revision FROM memory_erased_source_ranges')
   const revision = () => Number(latest.get()?.revision ?? 0)
   const read = db.prepare('SELECT cut FROM memory_erased_source_ranges WHERE source=? ORDER BY revision')
@@ -36,11 +36,7 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
   const rewrite = db.prepare('UPDATE messages SET text=?,receipt=NULL WHERE id=?')
   const whollyErased = db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?')
   const cutsOf = (source: string) => read.all(source).map(row => memoryHostErasureRange.parse(JSON.parse(String(row.cut))))
-  const erasedDependency = db.prepare('SELECT 1 FROM memory_erased_dependency_ids WHERE id=?')
-  const retireDependency = db.prepare('INSERT OR IGNORE INTO memory_erased_dependency_ids VALUES (?)')
-
   function affectsProof(evidence: MemoryErasureEvidence) {
-    if (evidence.memoryIds.some(id => erasedDependency.get(id))) return true
     const sources = new Set([...evidence.sources, ...evidence.fileRanges.map(ref => ref.sourceId)])
     return intersectsMemoryErasure(evidence, [...sources].flatMap(cutsOf))
   }
@@ -67,7 +63,7 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
   }
 
   /** Called inside the same transaction as the associated title and FTS updates. */
-  function erase(ranges: readonly MemoryHostErasureRange[], dependencyIds: readonly number[]) {
+  function erase(ranges: readonly MemoryHostErasureRange[]) {
     const conversations = new Set<string>()
     let changed = false
     for (const range of ranges) {
@@ -91,7 +87,6 @@ export function createHistoryMemoryRanges(db: DatabaseSync) {
       insert.run(cut.sourceId, cut.revision, JSON.stringify(cut))
       changed = true
     }
-    for (const id of dependencyIds) retireDependency.run(id)
     return { changed, conversations }
   }
 

@@ -1,3 +1,4 @@
+import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
@@ -47,7 +48,7 @@ function fixture({ recovered = true, admittedAfter = true, projectChanged = fals
   new AgentSideConnection(() => agent as never, ndJsonStream(Writable.toWeb(child.stdout), Readable.toWeb(child.stdin) as never))
   const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', emit() {},
     allowSession: () => { calls.push('allowsSession'); return allowed }, spawnFn: (() => child) as never })
-  return { bridge, calls, ready() { bridge.memory.receive({ type: 'memory_owner_state', protocol: 1, epoch: 'owner', state: 'ready', revision: 1, coreEpoch: 0 }) } }
+  return { bridge, calls, ready() { bridge.memory.receive({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: 'owner', state: 'ready', revision: 1, coreEpoch: 0 }) } }
 }
 
 test('a new Viva human request performs native durable recovery before rechecking admission and constructing its prompt', async t => {

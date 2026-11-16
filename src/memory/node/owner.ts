@@ -87,8 +87,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   let closed = false
   let replayingWrites = false
   const generalQuestions = new Map<string, { session: string, cards: readonly { id: string, question: string }[], check(): boolean }>()
-  const dispatch = createMemoryDispatch(store, items => runtime.dependenciesCurrent(items),
-    (id, at) => runtime.dispatchSourceCurrent(id, at), (items, sources, at) => runtime.dispatchDeadline(items, sources, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
+  const dispatch = createMemoryDispatch(store,
+    (id, at) => runtime.dispatchSourceCurrent(id, at), (files, _, sources) => runtime.fileDependenciesCurrent(files, sources))
   const nativeToolReads = createNativeToolReads(db)
   const nativeSpills = createNativeSpills(db)
   const toolReadScope = new AsyncLocalStorage<NativeToolReadScope>()
@@ -98,7 +98,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
-    validateDispatch: dispatch.validateCommit, dependencies: dispatch.record, provisionalRead: dispatch.recordTurnOnly, fileClarificationDispatch: dispatch,
+    validateDispatch: dispatch.validateCommit, fileClarificationDispatch: dispatch,
     runDocumentMutation: work => fence.mutate(work),
     fileDependencies(session, files, sources) {
       const scope = toolReadScope.getStore()
@@ -157,10 +157,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (contextRecovery.pending(session) || (origin.contextGeneration ?? 0) !== contextRecovery.contextGeneration(session)) return null
     const admission = dispatch.admission(session)
     if (!admission.allowed || !coordination.allowsSession(session, project)) return null
-    const deadline = runtime.provisionalDeadline(session, Date.now())
     return { current: () => state === 'ready' && !hasPending() && !contextRecovery.pending(session)
       && (origin.contextGeneration ?? 0) === contextRecovery.contextGeneration(session) && coordination.allowsSession(session, project),
-      deadline: deadline === undefined ? admission.deadline : Math.min(deadline, admission.deadline ?? Infinity) }
+      deadline: admission.deadline }
   } })
   function requireReady() { if (state !== 'ready' || hasPending()) throw new Error('Memory owner is recovering') }
   const contextRecovery = createOwnerContextRecovery({ db, store, hash, requireReady, mutate: work => fence.mutate(work),
@@ -398,7 +397,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const canonical = store.readSource(sourceId)
         if (canonical) {
           if (!mapped || canonical.hash !== memoryHash(text) || !runtime.sourceCurrent(sourceId)
-            || !runtime.projectAllows({ dependencies: [], sources: [sourceId] }, context.project)) throw new Error('Invalid replay alias')
+            || !runtime.projectAllows({ sources: [sourceId] }, context.project)) throw new Error('Invalid replay alias')
         } else {
           runtime.recordDeliveredSource(sourceId, context.conversation)
           if (text.trim()) runtime.accept(text, context, sourceId, undefined, { deferAutomatic: true, at: input.at, timezone: input.timezone })
@@ -540,7 +539,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     return readers
   }
-  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[], memoryIds: readonly number[], readers?: FileReaders): boolean {
+  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[], readers?: FileReaders): boolean {
     if (!cuts.length) return false
     const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => {
       const afterHash = store.readSource(sourceId)?.hash
@@ -548,7 +547,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       return { sourceId, revision, length, hash, afterHash, spans }
     })
     const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) =>
-      usesErasedMemory(dispatch.snapshot(session), ranges, memoryIds)
+      usesErasedMemory(dispatch.snapshot(session), ranges)
         || readers?.get(session)?.some(ref => !runtime.fileDependenciesCurrent([ref])) ? [session] : [])
     const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
     // File reads can reach native transcripts without creating a source occurrence.
@@ -565,18 +564,18 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       db.prepare('UPDATE owner_aliases SET payload=NULL,revoked=1 WHERE source=?').run(cut.id)
     }
     const sessions = [...new Set(invalidated)]
-    for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges, memoryIds))) nativeSessions.add(session)
-    for (const { session } of nativeOutputs.affected(ranges, memoryIds)) nativeSessions.add(session)
+    for (const session of contextRecovery.nativeReplicaSessions(proof => usesErasedMemory(proof, ranges))) nativeSessions.add(session)
+    for (const { session } of nativeOutputs.affected(ranges)) nativeSessions.add(session)
     for (const { session } of nativeToolReads.affected(ranges)) nativeSessions.add(session)
     if (nativeSessions.size) {
       const originals = nativeOriginals.replicas(ranges)
       db.prepare('INSERT INTO owner_file_native_erasures VALUES (?,?)')
-        .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges, ...(memoryIds.length ? { memoryIds } : {}),
+        .run(id, JSON.stringify({ sessions: [...nativeSessions], ranges,
           ...(originals.length ? { originals } : {}) }))
     }
     if (options.hostNamespace) {
       const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-        kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
+        kind: 'erase-file-copies', sessions,
         ...(nativeSessions.size ? { traceSessions: [...nativeSessions] } : {}),
         sources: cuts.map(cut => ({ namespace: 'canonical', sourceId: cut.id, revision: cut.version })), ranges }
       db.prepare('INSERT INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
@@ -614,8 +613,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         const surviving = db.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0 LIMIT 1')
         const removed = [...ids].filter(id => !surviving.get(id))
-        const { cuts, memoryIds } = runtime.withdraw({ conversation: change.conversation, ids: removed, onlySources: true })
-        notify = recordRangeErasure(item.id, cuts, memoryIds)
+        const { cuts } = runtime.withdraw({ conversation: change.conversation, ids: removed, onlySources: true })
+        notify = recordRangeErasure(item.id, cuts)
         for (const id of removed) {
           store.excludeSource(id)
         }
@@ -739,7 +738,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     store.tx(() => {
       for (const ancestor of scope.calls) {
         if (ancestor.session !== call.session || ancestor.generation !== call.generation) throw new Error('Native remember ancestor changed its origin')
-        nativeToolReads.recordEvidence(ancestor, { sources: [], fileRanges: [{ sourceId: proof.id, spans: proof.spans }], memoryIds: [] }, scope.readCut?.())
+        nativeToolReads.recordEvidence(ancestor, { sources: [], fileRanges: [{ sourceId: proof.id, spans: proof.spans }] }, scope.readCut?.())
       }
       if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ nativeRemember: plan }))
     })
@@ -750,7 +749,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
 
   type ManualFileCommand = Extract<HostMemoryCommand, { method: 'createFile' | 'editFile' }>
-  type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[], project?: MemoryProject }
+  type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[], project?: MemoryProject, context?: MemoryScope }
   type ManualFilePending = { manual: ManualFilePlan }
 
   async function completeManualFile(id: string, plan: ManualFilePlan, request?: MemoryFileCreateRequest | MemoryFileEditRequest) {
@@ -767,7 +766,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           notify = true
         }
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
-      }), plan.project)
+      }), plan.project, plan.context)
       if (notify) options.onHostEffects?.()
       return receipt
     } catch (error) {
@@ -778,16 +777,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
   }
 
-  async function durableManualFileWrite(command: ManualFileCommand, project?: MemoryProject) {
+  async function durableManualFileWrite(command: ManualFileCommand, origin?: Pick<ReturnType<typeof sessionContext>, 'project' | 'context'>) {
     requireReady()
-    const request = command.input.args[0], id = request.operationId, fingerprint = hash(project ? { command, project } : command)
+    const project = origin?.project, context = origin?.context ?? project ?? { kind: 'user' as const }
+    const request = command.input.args[0], id = request.operationId, fingerprint = hash(origin ? { command, project, context } : command)
     const previous = operation(id)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
     if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
       ? { workspace: request.identity.workspace, usageVersion: request.version.usageVersion, sessions: fileSessions(request.identity, []) }
-      : { workspace: runtime.manualFileWorkspace(project), usageVersion: null, sessions: [], ...(project ? { project } : {}) }
+      : { workspace: runtime.manualFileWorkspace(project, context), usageVersion: null, sessions: [], context, ...(project ? { project } : {}) }
     // Only the file journal may retain a draft, with both its old and new backing proofs.
     // Waiting for the send fence must not persist a detached copy of the submitted words.
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)")
@@ -835,8 +835,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
-          : await runtime.forgetFile(command.input.args[0], (result, cuts, memoryIds) => {
-            notify = recordRangeErasure(id, cuts, memoryIds, readers)
+          : await runtime.forgetFile(command.input.args[0], (result, cuts) => {
+            notify = recordRangeErasure(id, cuts, readers)
             db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
           }, () => { readers = currentFileReaders(request.identity.workspace) })
       if (notify) options.onHostEffects?.()
@@ -858,7 +858,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   function rememberStandaloneFile(session: string, input: MemoryFileCreateRequest) {
     const origin = standaloneFileOrigin(session), request = memoryFileCreateRequest.parse(input)
-    return durableManualFileWrite({ method: 'createFile', input: { args: [request] } }, origin.project)
+    return durableManualFileWrite({ method: 'createFile', input: { args: [request] } }, origin)
   }
   async function forgetStandaloneFile(session: string, id: string, operationId: string) {
     const origin = standaloneFileOrigin(session), previous = operation(operationId)
@@ -1066,7 +1066,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           .get(session, conversation, sourceId)) return null
         if (!store.readSource(sourceId) && !store.deliveredSource(sourceId)) runtime.recordDeliveredSource(sourceId, conversation)
         if (!runtime.dispatchSourceCurrent(sourceId)) return null
-        return combineMemoryProvenance(evidence, { dependencies: [], sources: [sourceId], epoch: evidence.epoch, turnOnly: false })
+        return combineMemoryProvenance(evidence, { sources: [sourceId], epoch: evidence.epoch, turnOnly: false })
       }
       case 'replaySources': return runtime.replaySources(command.input.args[0], command.input.args[1])
     }

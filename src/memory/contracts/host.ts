@@ -9,7 +9,7 @@ import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIden
   MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
-export const MEMORY_HOST_PROTOCOL = 1
+export const MEMORY_HOST_PROTOCOL = 2
 export type MemoryProject = { kind: 'project', id: string }
 export type MemoryHistoryOccurrence = { segmentId: string, role: string, text: string, sourceId?: string | null, sessionId?: string | null }
 export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
@@ -140,7 +140,7 @@ export type MemoryOwnerState = z.infer<typeof memoryOwnerState>
 
 /** Transient committed-change receipt; never stored in the metadata snapshot. */
 export const memoryOwnerChange = z.strictObject({ type: z.literal('memory_owner_change'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
-  epoch: key, revision: integer, ids: z.array(integer), learned: z.array(text).optional(), invalidated: z.array(integer).optional() })
+  epoch: key, revision: integer })
 export type MemoryOwnerChange = z.infer<typeof memoryOwnerChange>
 
 export const memoryOwnerContextUsed = z.strictObject({ type: z.literal('memory_owner_context_used'), protocol: z.literal(MEMORY_HOST_PROTOCOL),

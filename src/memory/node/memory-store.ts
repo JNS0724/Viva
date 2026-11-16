@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash, randomBytes } from 'node:crypto'
 import { APP_DB_PRAGMAS, transaction } from './sqlite.ts'
 import { MEMORY_CONTRACT, memoryScope } from '../contracts/memory-contract.ts'
-import { memoryFileDependencySchema } from '../contracts/provenance.ts'
+import { memoryFileDependencySchema, memoryProvenanceSchema } from '../contracts/provenance.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 import { documentSourceRestricted, planDocumentSourceErasure, subtractDocumentSourceSpans } from '../core/memory-document-restrictions.ts'
 import type { DocumentSourceRef, DocumentSourceCut } from '../core/ports/documents.ts'
@@ -198,7 +198,7 @@ export function openMemoryStore(file: string, now = Date.now) {
     files(session: string, files: readonly MemoryFileDependency[], sources: readonly string[] = []) {
       // Serialize a canonical field order; retain different scopes, versions and policies without overwriting.
       const references = files.map(file => JSON.stringify(memoryFileDependencySchema.parse(file)))
-      if (sources.length && !references.length) throw new Error('File sources require file dependencies')
+      if (sources.length) memoryProvenanceSchema.parse({ sources: [...sources], fileSources: [...sources], files: [...files], turnOnly: false, epoch: epoch() })
       tx(() => {
         for (const reference of references) insertSessionFile.run(session, reference)
         for (const source of sources) insertFileSource.run(session, source)
@@ -213,12 +213,9 @@ export function openMemoryStore(file: string, now = Date.now) {
       const files = (readSessionFiles.all(session) as Array<{ reference: string }>).map(row => memoryFileDependencySchema.parse(JSON.parse(row.reference)))
       const rawSources = (readSessionSources.all(session) as Array<{ source: string }>).map(row => row.source)
       const fileSources = (readFileSources.all(session) as Array<{ source: string }>).map(row => row.source)
-      return { dependencies: [], sources: [...rawSources, ...fileSources], ...(fileSources.length ? { fileSources } : {}),
+      return { sources: [...rawSources, ...fileSources], ...(fileSources.length ? { fileSources } : {}),
         turnOnly: Boolean(usedTurnOnly.get(session)), ...(project ? { projects: [project] } : {}), epoch: epoch(), ...(files.length ? { files } : {}) }
     },
-    dependencies(_session: string, dependencies: readonly import('../contracts/records.ts').MemoryDependency[]) {
-      if (dependencies.length) throw new Error('Numeric memory dependencies are not supported')
-    }
   }
   let temporaryFileRoot: string | undefined
   return { get fileRoot() {

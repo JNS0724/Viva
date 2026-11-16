@@ -19,8 +19,8 @@ const ONCE = { kind: 'at', at: '2026-11-06T11:00:00+08:00' } as const
 
 test('file dependencies survive saved schedules, retry recovery, result merging and feed continuation', async t => {
   const ref: MemoryFileDependency = { workspace: 'a'.repeat(64), id: 'node', path: 'digest/wiki/report.md',
-    revision: 'body', usageVersion: 1, policyToken: 'policy' }
-  const initial: MemoryProvenance = { dependencies: [], sources: [], turnOnly: false, epoch: 0,
+    revision: 'body', usageVersion: 1, policyToken: 'policy', sourceRanges: [{ sourceId: 'schedule-source' }] }
+  const initial: MemoryProvenance = { sources: [], turnOnly: false, epoch: 0,
     files: [ref, { ...ref, workspace: 'b'.repeat(64) }] }
   const result: MemoryProvenance = { ...initial, files: [{ ...ref, id: 'related', path: 'digest/wiki/related.md' }] }
   const app = setup([{ ok: false, problem: 'temporary transport failure' }, { ok: true, text: 'Current report', memory: result }])
@@ -103,7 +103,7 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = [], memoryCurren
 
 test('a cached schedule result is rechecked on storage retry and refreshed from the original prompt', async () => {
   let current = true
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
   const app = setup([{ ok: true, text: '旧地址', memory }, { ok: true, text: '新地址' }], async () => current)
   app.store.create({ title: '周报', prompt: '核对当前地址', cwd: '/work', rule: ONCE })
   app.go('2026-11-06T11:00:00+08:00')
@@ -124,7 +124,7 @@ test('a cached schedule result is rechecked on storage retry and refreshed from 
 
 test('a parked occurrence cannot replay or pause a rewritten recurring schedule after reconnect', async () => {
   let current = true
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
   const app = setup([{ ...UNAVAILABLE, memoryUnavailable: true }], async () => current)
   const { id } = app.store.create({ title: '原定时', prompt: '旧指令', cwd: '/work', memory,
     rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
@@ -134,7 +134,7 @@ test('a parked occurrence cannot replay or pause a rewritten recurring schedule 
   await app.settle()
   assert.equal(app.runs(), 1)
   app.store.setPaused(id, true)
-  app.store.update(id, { title: '新定时', prompt: '新指令', memory: { ...memory, dependencies: [] } })
+  app.store.update(id, { title: '新定时', prompt: '新指令', memory: { ...memory, sources: [] } })
   app.store.setPaused(id, false)
   current = false
   runner.wake()
@@ -303,7 +303,7 @@ test('dsh away: the run waits to be woken, not on the timer (no spinning); woken
 })
 
 test('an asynchronous stale creation check prevents a scheduled model request', async t => {
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
   const app = setup([], async () => false)
   t.after(() => app.db.close())
   app.store.create({ title: '周报', prompt: '过期的地址', cwd: '/work', rule: ONCE, memory })
@@ -319,7 +319,7 @@ test('an asynchronous stale creation check prevents a scheduled model request', 
 })
 
 test('a schedule changed while the remote admission check waits does not run its old prompt', async t => {
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
   let release!: (current: boolean) => void
   const current = new Promise<boolean>(resolve => { release = resolve })
   const app = setup([], async () => current)
@@ -339,7 +339,7 @@ test('a schedule changed while the remote admission check waits does not run its
 })
 
 test('closing a schedule runner while its remote result check waits prevents delivery', async t => {
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
   let release!: (current: boolean) => void
   const current = new Promise<boolean>(resolve => { release = resolve })
   const app = setup([{ ok: true, text: '旧结果', memory }], async () => current)
@@ -375,7 +375,7 @@ test('erasing one queued occurrence while it is in flight prevents its result an
 })
 
 test('erasure retires an in-flight cached result during the commit authorization RPC', async t => {
-  const memory: MemoryProvenance = { dependencies: [], sources: ['selected-source'], turnOnly: false, epoch: 0 }
+  const memory: MemoryProvenance = { sources: ['selected-source'], turnOnly: false, epoch: 0 }
   let allow!: (current: boolean) => void
   const checking = new Promise<boolean>(resolve => { allow = resolve })
   const app = setup([{ ok: true, text: 'Selected-source result', memory }], () => checking)

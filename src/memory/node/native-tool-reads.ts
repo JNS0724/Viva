@@ -43,7 +43,7 @@ export function createNativeToolReads(db: DatabaseSync) {
   function record(call: NativeToolCall, files: readonly MemoryFileDependency[], sources: readonly string[], cut?: NativeToolReadCut) {
     if (!files.length) return
     const evidence = memoryErasureEvidence({ files: [...files], sources: [...sources], fileSources: [...sources],
-      dependencies: [], turnOnly: false, epoch: 0 })
+      turnOnly: false, epoch: 0 })
     recordEvidence(call, evidence, cut)
   }
   function recordEvidence(call: NativeToolCall, evidence: MemoryErasureEvidence, cut?: NativeToolReadCut) {

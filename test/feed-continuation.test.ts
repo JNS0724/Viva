@@ -14,7 +14,7 @@ function deferred() {
 
 const item = { id: 'feed', source: 'schedule', key: 'run', title: 'Result', body: 'derived words', origin: { label: 'Schedule' },
   createdAt: 0, seenAt: null }
-const memory = { sources: ['original'], dependencies: [], turnOnly: false, epoch: 0 }
+const memory = { sources: ['original'], turnOnly: false, epoch: 0 }
 
 for (const phase of ['read', 'transfer', 'record'] as const) {
   for (const changed of ['session', 'conversation', 'bridge'] as const) {

@@ -91,7 +91,7 @@ for (const forked of [false, true]) {
         const attempts = createNativeOutputAttempts(archive)
         attempts.record(f.attempt, owner.dispatch.snapshot(f.session.id))
         attempts.finish(f.attempt, { seq: f.output.seq, kind: 'attempt', digest: nativeEventDigest(f.output) })
-        attempts.record(f.independentAttempt, { dependencies: [], sources: [], epoch: 0, turnOnly: false })
+        attempts.record(f.independentAttempt, { sources: [], epoch: 0, turnOnly: false })
         attempts.finish(f.independentAttempt, { seq: f.independentOutput.seq, kind: 'attempt', digest: nativeEventDigest(f.independentOutput) })
       } finally { archive.close() }
       const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']

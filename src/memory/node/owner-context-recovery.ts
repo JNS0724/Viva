@@ -167,7 +167,7 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
         db.prepare(`INSERT OR IGNORE INTO owner_context_retired_children SELECT parent,session FROM owner_session_parents WHERE parent=?`).run(item.sessionId)
         db.prepare('DELETE FROM owner_answer_sources WHERE session=?').run(item.sessionId)
         const prior = store.dispatch.snapshot(item.sessionId)
-        if (prior.sources.length || prior.files?.length || prior.dependencies.length) {
+        if (prior.sources.length || prior.files?.length) {
           db.prepare('INSERT INTO owner_context_retired_reads VALUES (?,?,?)')
             .run(item.sessionId, item.generation - 1, JSON.stringify(prior))
         }

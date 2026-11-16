@@ -185,7 +185,7 @@ test('an unreconciled stale child triggers parent recovery before cold replay tr
   const owner = openMemoryOwner({ root: dir, ...options }); defer(() => owner.close()); await owner.recover()
   const parent = randomUUID(), human = await original(owner, parent), child = randomUUID()
   owner.initializeSession({ sessionId: child, parentSessionId: parent })
-  owner.dispatch.recordFiles(child, [{ workspace: 'a'.repeat(64), id: 'missing', path: 'memory/missing.md', revision: 'missing', usageVersion: 1, policyToken: 'missing' }])
+  owner.dispatch.recordFiles(child, [{ workspace: 'a'.repeat(64), id: 'missing', path: 'memory/missing.md', revision: 'missing', usageVersion: 1, policyToken: 'missing', sourceRanges: [{ sourceId: 'retired-source' }] }])
   assert.equal(owner.dispatch.snapshot(parent).files, undefined)
   assert.equal(owner.needsContextRecovery(parent), true)
   owner.initializeSession({ sessionId: parent })

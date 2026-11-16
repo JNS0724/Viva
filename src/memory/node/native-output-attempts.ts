@@ -77,11 +77,11 @@ export function createNativeOutputAttempts(db: DatabaseSync) {
     settle.run(encoded, attempt.id)
   }
 
-  function affected(ranges: Parameters<typeof intersectsMemoryErasure>[1], memoryIds: readonly number[]) {
+  function affected(ranges: Parameters<typeof intersectsMemoryErasure>[1]) {
     const matches = new Map<string, NativeOutputAttempt & { result: Result }>()
     for (const row of relevant.iterate()) {
       const evidence = memoryErasureEvidenceSchema.parse(JSON.parse(String(row.evidence)))
-      if (!intersectsMemoryErasure(evidence, ranges, memoryIds)) continue
+      if (!intersectsMemoryErasure(evidence, ranges)) continue
       const attempt = attemptShape.parse(JSON.parse(String(row.identity)))
       const result = resultShape.parse(JSON.parse(String(row.result)))
       if (result.state !== 'abandoned') matches.set(attempt.id, { ...attempt, result })

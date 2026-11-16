@@ -178,7 +178,7 @@ test('a provisional message keeps its id when its committed proof arrives and a 
     const idOf = (seq: number) => db.timelineOf(a.id).find(message => message.seq === seq)!.id
     const first = idOf(1)
     assert.equal(db.get(a.id)?.messages[1]?.text, '', 'an unbound provisional body is held outside durable history')
-    const proof = [{ sources: [], fileRanges: [], memoryIds: [] }]
+    const proof = [{ sources: [], fileRanges: [] }]
     db.bindGeneratedCopy('session', 'provisional', 'assistant', '春眠不觉晓', proof)
     db.save(a, [user('写首诗'), { ...answer('春眠不觉晓'), key: 'provisional' }])
     assert.equal(idOf(1), first, 'the settled reply retains its provisional identity')
