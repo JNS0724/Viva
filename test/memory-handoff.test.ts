@@ -6,13 +6,14 @@ import { DatabaseSync } from 'node:sqlite'
 import { Context } from '@deepseek-ai/cordis'
 import { imageOffloadProjection } from '@deepseek-ai/dsh-compaction-image-offload/projection'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { pluginRecordOf, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { NATIVE_OUTPUT_MARKER, nativeOutputDigest } from '../plugins/memory/lib/native/output-attempts.ts'
+import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { setImmediate, setTimeout as delay } from 'node:timers/promises'
@@ -189,15 +190,30 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   } finally { db.close() }
 })
 
-test('cold Viva startup erases native originals in a root log and a fork the owner has never seen', { timeout: 45_000 }, async t => {
-  const app = await setup(t, () => null, { dailyNotes: true, fileMode: true })
+test('trace erasure preserves another projection that reused the same session and sequence', t => {
+  const { dir, defer } = scratch(t, 'viva-trace-reused-offset-')
+  const trace = openTraceDb({ file: join(dir, 'trace.db') })
+  defer(() => trace.close())
+  const session = randomUUID()
+  const original = { kind: 'thought', seq: 18, at: 10, text: 'discarded generation' } as const
+  const retained = { ...original, at: 20, text: 'independent later generation' }
+  trace.recordSteps(session, [retained])
+  assert.equal(trace.eraseSteps(session, [{ seq: original.seq, digest: traceStepDigest(original) }]), true)
+  assert.deepEqual(trace.stepsOf(session), [retained])
+})
+
+test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 45_000 }, async t => {
   const erased = '实体擦除样本只用于 R5a 验收', nearby = '独立片段仍在同一原生日志中'
   const second = '另一个有独立依据的原文裁剪目标'
   const survivor = '独立消息要在恢复后继续可用'
+  const derived = '档案里还有应擦除的助手转述'
+  const traceSecret = 'stored-private-trace-for-erasure'
   const text = [erased, nearby, second].join('。\n')
+  const app = await setup(t, request => questionOf(request.messages) === text ? { text: derived } : null,
+    { dailyNotes: true, fileMode: true })
   const sourceId = await app.ask(text)
   const survivorId = await app.ask(survivor)
-  await app.call('history:save', [
+  const savedHistory = await app.call<{ id: string }>('history:save', [
     { role: 'user', text, receipt: null, sourceId },
     { role: 'user', text: survivor, receipt: null, sourceId: survivorId },
   ])
@@ -207,15 +223,50 @@ test('cold Viva startup erases native originals in a root log and a fork the own
   const sessionsRoot = join(app.directory, 'dsh', 'sessions')
   const memoryRoot = join(app.directory, 'memory')
   const parentId = SessionId(info.sessionId), forkId = SessionId(randomUUID())
+  const affectedOutputs = new Set<number>()
+  let traceStep: { kind: 'thought', seq: number, at: number, text: string } | undefined
   const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
   try {
     const original = await cold.sessionPersistence.open(parentId, 'read')
     try {
-      const { events } = await original.read()
+      const persisted = (await original.read()).events
+      const fixture = Session.fromRestore(parentId, persisted, original.header, original.inheritedEventCount, 'detached')
+      const turn = (persisted.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1
+      const step = 1, at = Date.now()
+      fixture.append('turn/start', { turn })
+      fixture.append('step/start', { turn, step })
+      const bindAttempt = () => {
+        const marker = { id: randomUUID(), generation: 0, turn, step }
+        const floor = appendPluginRecord(fixture, NATIVE_OUTPUT_MARKER, marker) + 1
+        return { ...marker, session: parentId, floor }
+      }
+      const failedProof = bindAttempt()
+      const failed = fixture.append('assistant/attempt', { turn, step,
+        stream: [{ type: 'chunk', time: at, chunk: { type: 'text-delta', index: 0, text: traceSecret } }] })
+      const reasoningProof = bindAttempt()
+      const reasoning = fixture.append('assistant/message', { turn, step,
+        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'reasoning', text: traceSecret }] }),
+        stream: [{ type: 'chunk', time: at, chunk: { type: 'reasoning-delta', index: 0, text: traceSecret } }],
+      }, { surfaceOp: 'append' })
+      fixture.append('step/end', { turn, step })
+      fixture.append('turn/end', { turn, reason: { kind: 'completed' } })
+      const writer = await cold.sessionPersistence.open(parentId, 'write')
+      try { await writer.append(fixture.snapshotEvents(SessionLogOffset(persisted.length))); await writer.flush() }
+      finally { await writer.close() }
+      traceStep = { kind: 'thought', seq: reasoning.seq, at: reasoning.time, text: traceSecret }
+
+      const events = fixture.snapshotEvents()
       assert.ok(JSON.stringify(events).includes(erased))
+      assert.ok(JSON.stringify(events).includes(derived))
       const proofDb = new DatabaseSync(join(memoryRoot, 'memory.db'))
       try {
-        const affected = createNativeOutputAttempts(proofDb).affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
+        const archive = createNativeOutputAttempts(proofDb)
+        const evidence = { sources: [sourceId], dependencies: [], epoch: 0, turnOnly: false }
+        archive.record(failedProof, evidence)
+        archive.finish(failedProof, { seq: failed.seq, kind: 'attempt', digest: nativeOutputDigest(failed) })
+        archive.record(reasoningProof, evidence)
+        archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeOutputDigest(reasoning) })
+        const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }], [])
         assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
         for (const { result, session, floor, id, generation, turn, step } of affected) {
           assert.equal(session, parentId)
@@ -227,6 +278,9 @@ test('cold Viva startup erases native originals in a root log and a fork the own
           const event = events[result.terminal.seq]
           assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
           assert.equal(nativeOutputDigest(event), result.terminal.digest)
+          if (event.type === 'assistant/attempt' || !event.data.message.content.some(block => block.type === 'tool-call')) {
+            affectedOutputs.add(event.seq)
+          }
         }
       } finally { proofDb.close() }
       const inherited = SessionLogOffset(events.length)
@@ -235,8 +289,8 @@ test('cold Viva startup erases native originals in a root log and a fork the own
         type: 'image', attachment: { attachmentId: AttachmentId('cold-offload'), mediaType: 'image/png', bytes: 80, width: 1, height: 1 },
       }] }), { surfaceOp: 'append' })
       child.append('image/offload', { targets: [{ seq: image.seq, imageIndexes: [0] }] })
-      const writer = await cold.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
-      try { await writer.append(child.snapshotEvents()); await writer.flush() } finally { await writer.close() }
+      const branchWriter = await cold.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
+      try { await branchWriter.append(child.snapshotEvents()); await branchWriter.flush() } finally { await branchWriter.close() }
     } finally { await original.close() }
   } finally { await persistence.dispose() }
 
@@ -285,14 +339,54 @@ test('cold Viva startup erases native originals in a root log and a fork the own
     const offset = app.model.requests.length
     assert.equal(await app.startBackend(), null, 'a published artifact without a receipt must stop live DSH from opening its log')
     assert.equal(app.model.requests.length, offset)
+    const blockedTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
+    assert.equal(blockedTrace.available, false)
+    assert.doesNotMatch(JSON.stringify(blockedTrace), new RegExp(traceSecret, 'u'))
     assert.equal(control.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=0')
       .get(operationId)?.count, 1)
     await app.stopBackend()
     control.exec('DROP TRIGGER interrupt_native_publication')
   } finally { control.close() }
 
+  assert.ok(traceStep && affectedOutputs.has(traceStep.seq), 'the verified native output owns the reasoning trace')
+  const traceFile = join(app.directory, 'trace.db')
+  const independentTraceSession = randomUUID()
+  const awaitingToolCleanup = 'pending-native-tool-replica'
+  const trace = openTraceDb({ file: traceFile })
+  try {
+    for (const session of [parentId, forkId]) trace.recordSteps(session, [traceStep])
+    trace.recordSteps(independentTraceSession, [{ ...traceStep, text: 'independent trace' }])
+    trace.recordSteps(parentId, [{ kind: 'tool', seq: traceStep.seq + 1, at: Date.now(), callId: 'pending-tool', name: 'bash',
+      args: { command: awaitingToolCleanup }, status: 'completed' }])
+  } finally { trace.close() }
+
+  const traceReader = new DatabaseSync(traceFile, { readOnly: true })
+  try {
+    traceReader.exec('BEGIN')
+    assert.equal(traceReader.prepare('SELECT text FROM steps WHERE session_id=? AND seq=?').get(parentId, traceStep.seq)?.text, traceSecret)
+    const offset = app.model.requests.length
+    assert.equal(await app.startBackend(), null, 'a trace reader that still sees erased bytes must delay starting DSH')
+    assert.equal(app.model.requests.length, offset)
+    await app.stopBackend()
+  } finally { traceReader.close() }
+
   const offset = app.model.requests.length
   assert.ok(await app.startBackend())
+  const publishedTrace = openTraceDb({ file: traceFile })
+  try {
+    assert.equal(publishedTrace.stepsOf(parentId).some(step => step.seq === traceStep.seq), false)
+    assert.equal(publishedTrace.stepsOf(forkId).some(step => step.seq === traceStep.seq), false)
+    assert.equal(publishedTrace.stepsOf(independentTraceSession).length, 1)
+    assert.match(JSON.stringify(publishedTrace.stepsOf(parentId)), new RegExp(awaitingToolCleanup, 'u'))
+    for (const file of [traceFile, traceFile + '-wal']) if (fs.existsSync(file)) {
+      assert.equal(fs.readFileSync(file).includes(traceSecret), false)
+    }
+  } finally { publishedTrace.close() }
+  assert.ok(await eventually(() => app.events.some(event => event.type === 'memory_changed' && event.traceSessions?.includes(parentId))))
+  const hiddenTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
+  assert.equal(hiddenTrace.available, false)
+  const rewindTrace = await app.call<Promise<{ commands: string[] }>>('timeline:rewind-effects', { keep: 0 })
+  assert.ok(!rewindTrace.commands.includes(awaitingToolCleanup))
   assert.equal(fs.existsSync(interruptedCache), false)
   assert.equal(fs.existsSync(backupCache), false)
   assert.equal(fs.existsSync(projectionTemp), false)
@@ -316,6 +410,17 @@ test('cold Viva startup erases native originals in a root log and a fork the own
         const raw = JSON.stringify(rawInputs)
         assert.ok(raw.includes(survivor) && raw.includes(nearby))
         assert.ok(!raw.includes(erased) && !raw.includes(second))
+        const generated = events.filter(event => affectedOutputs.has(event.seq))
+        assert.equal(generated.length, affectedOutputs.size)
+        for (const event of generated) {
+          assert.ok(event.type === 'assistant/message' || event.type === 'assistant/attempt')
+          if (event.type === 'assistant/message') {
+            assert.deepEqual(event.data.message.content, [])
+            assert.equal(event.data.message.source.replayState, undefined)
+          }
+          assert.ok(event.data.stream.every(record => record.type === 'chunk' && record.chunk.type === 'usage'))
+        }
+        assert.doesNotMatch(JSON.stringify(generated), new RegExp([derived, traceSecret].join('|'), 'u'))
       } finally { await reader.close() }
     }
   } finally { await mounted.dispose() }
@@ -325,7 +430,7 @@ test('cold Viva startup erases native originals in a root log and a fork the own
     assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(nextOperation)?.count, 2)
     for (const id of [operationId, nextOperation]) assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
     assert.ok(settled.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId),
-      'native derived and host obligations remain independently pending')
+      'other native events and host replicas remain independently pending')
     assert.ok(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(forkId))
     assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
   } finally { settled.close() }

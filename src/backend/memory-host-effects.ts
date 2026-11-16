@@ -10,14 +10,20 @@ import { eraseMemoryReportCopies } from './memory-report-copies.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 
 type Cleanup = MemoryHostEffect & { sessions?: readonly string[], memoryIds?: readonly number[] }
+
+export function affectedTraceSessions(effect: MemoryHostEffect) {
+  if (effect.kind === 'erase-file-copies') return [...new Set([...effect.sessions ?? [], ...effect.traceSessions ?? []])]
+  return effect.kind === 'erase-copies' ? effect.sessions ?? [] : []
+}
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {} }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
   eraseFileHistory(ranges: readonly MemoryHostErasureRange[], memoryIds?: readonly number[]): void,
   invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
   eraseRoutedMemory?(matches: (memory: MemoryProvenance) => boolean): void,
   reportsRemoved?(reportIds: readonly string[]): void,
+  traceInvalidated?(sessions: readonly string[]): void,
   invalidate(effect: MemoryHostEffect): void | Promise<void>,
 }) {
   db.exec('CREATE TABLE IF NOT EXISTS memory_host_receipts (effect TEXT PRIMARY KEY,cause TEXT NOT NULL,revision INTEGER NOT NULL,fingerprint TEXT NOT NULL)')
@@ -53,6 +59,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   let running: Promise<void> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   let closed = false
+  const notifiedTraces = new Set<string>()
   async function recover() {
     if (closed) return
     if (running) return running
@@ -63,6 +70,11 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
       let checkpointRanges = false
       const blockedRanges = new Set<string>()
       for (const effect of effects) {
+        const trace = affectedTraceSessions(effect)
+        if (trace.length && !notifiedTraces.has(effect.effectId)) {
+          traceInvalidated(trace)
+          notifiedTraces.add(effect.effectId)
+        }
         if (effect.kind === 'erase-file-copies') {
           try {
             if (effect.ranges.some(cut => blockedRanges.has(cut.sourceId))) continue

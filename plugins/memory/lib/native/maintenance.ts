@@ -6,19 +6,22 @@ import { discoverNativeOriginalCopies } from './discover-native-replicas.ts'
 import { rewriteColdNativeSession } from './native-cold-rewrite.ts'
 import { clearNativeProjections } from './projection-cache.ts'
 import { projectNativeOriginals } from './project-native-originals.ts'
+import { eraseNativeOutputs, type NativeOutputTrace } from './erase-native-outputs.ts'
 
 export class PendingNativePublication extends Error {}
 
 /** Run inside the host's cold lifecycle gate with no live persistence readers. */
-export async function eraseColdNativeOriginals({ memoryRoot, sessionsRoot, storageRoot, hostNamespace, isCold }: {
+export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot, hostNamespace, isCold, trace }: {
   memoryRoot: string, sessionsRoot: string, storageRoot: string, hostNamespace: string, isCold(): boolean,
+  trace: NativeOutputTrace,
 }) {
   if (!isCold()) throw new Error('Native maintenance requires an exclusive cold lifecycle')
   const owner = openNativeOriginalMaintenance(memoryRoot, hostNamespace)
   if (!owner) return
   try {
     const work = owner.operations()
-    if (!work.length) return
+    const outputs = owner.outputOperations()
+    if (!work.length && !outputs.length) return
     const root = await realpath(sessionsRoot)
     for (const { operationId, plan } of work) {
       const operation = owner.operation(operationId, plan)
@@ -73,6 +76,7 @@ export async function eraseColdNativeOriginals({ memoryRoot, sessionsRoot, stora
       }
       operation.complete()
     }
+    for (const operation of outputs) await eraseNativeOutputs({ root, storageRoot, operation, isCold, trace })
   } catch (error) {
     if (owner.carriesUnsettledPublication()) throw new PendingNativePublication('Native session publication must recover before startup', { cause: error })
     throw error

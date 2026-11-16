@@ -3,7 +3,7 @@ import { readFile, readdir, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { memoryMessageText, memoryOriginalContentDigest } from '../context-recovery.ts'
 import type { ReplicaCandidate } from './project-native-originals.ts'
 import { verifyCompleteArtifact } from './verify-native-artifact.ts'
@@ -31,8 +31,27 @@ async function physicalArtifacts(root: string) {
   return names
 }
 
-/** The original identity is shared by forked events, even before a child is
- * ever admitted by the memory plugin. Scan the native catalog while cold. */
+type NativeCatalogItem = { sessionId: SessionId, inheritedEventCount: number, events: readonly SessionEvent[] }
+
+/** Scan the actual durable artifacts, including branches never opened by the memory owner. */
+export async function visitNativeSessionCatalog(root: string, persistence: SessionPersistence, visit: (item: NativeCatalogItem) => void) {
+  const files = await physicalArtifacts(await realpath(root))
+  for (const { header, formatStatus, location } of await persistence.list()) {
+    if (formatStatus !== 'current' || location?.kind !== 'jsonl' || !files.delete(await realpath(location.path))) {
+      throw new Error('Unverified historical native log can contain a replica')
+    }
+    const handle = await persistence.open(header.id, 'read')
+    try {
+      const { events } = await handle.read()
+      const fileDigest = createHash('sha256').update(await readFile(location.path)).digest('hex')
+      await verifyCompleteArtifact(location.path, fileDigest, location.path.endsWith('.zstd'), events.length)
+      visit({ sessionId: header.id, inheritedEventCount: handle.inheritedEventCount, events })
+    } finally { await handle.close() }
+  }
+  if (files.size) throw new Error('The native catalog omitted physical session files')
+}
+
+/** The original identity is shared by forked events, even before a child is admitted. */
 export async function discoverNativeOriginalCopies(
   root: string,
   persistence: SessionPersistence,
@@ -40,31 +59,20 @@ export async function discoverNativeOriginalCopies(
   verify: (candidate: ReplicaCandidate & { sessionId: SessionId }) => boolean,
 ): Promise<Map<SessionId, ReadonlySet<string>>> {
   const copies = new Map<SessionId, ReadonlySet<string>>()
-  const files = await physicalArtifacts(await realpath(root))
-  for (const { header, formatStatus, location } of await persistence.list()) {
-    if (formatStatus !== 'current' || location?.kind !== 'jsonl' || !files.delete(await realpath(location.path))) {
-      throw new Error('Unverified historical native log can contain an original replica')
-    }
-    const handle = await persistence.open(header.id, 'read')
-    try {
-      const messages = new Set<string>()
-      const { events } = await handle.read()
-      const fileDigest = createHash('sha256').update(await readFile(location.path)).digest('hex')
-      await verifyCompleteArtifact(location.path, fileDigest, location.path.endsWith('.zstd'), events.length)
-      for (const event of events) {
-        const items = event.type === 'user/message' ? [event.data] : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
-        for (const item of items) {
-          const messageId = String(item.id)
-          if (!messageIds.has(messageId)) continue
-          if (item.source.kind !== 'user' || !verify({ messageId, sessionId: header.id, wireText: memoryMessageText(item), contentDigest: memoryOriginalContentDigest(item) })) {
-            throw new Error('Native replica conflicts with its original proof')
-          }
-          messages.add(messageId)
+  await visitNativeSessionCatalog(root, persistence, ({ sessionId, events }) => {
+    const messages = new Set<string>()
+    for (const event of events) {
+      const items = event.type === 'user/message' ? [event.data] : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
+      for (const item of items) {
+        const messageId = String(item.id)
+        if (!messageIds.has(messageId)) continue
+        if (item.source.kind !== 'user' || !verify({ messageId, sessionId, wireText: memoryMessageText(item), contentDigest: memoryOriginalContentDigest(item) })) {
+          throw new Error('Native replica conflicts with its original proof')
         }
+        messages.add(messageId)
       }
-      if (messages.size) copies.set(header.id, messages)
-    } finally { await handle.close() }
-  }
-  if (files.size) throw new Error('The native catalog omitted physical session files')
+    }
+    if (messages.size) copies.set(sessionId, messages)
+  })
   return copies
 }

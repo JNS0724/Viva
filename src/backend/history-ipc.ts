@@ -1,7 +1,7 @@
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs/promises'
-import { readSessionTrace } from './dsh-log.ts'
+import { readSessionTrace, type ReadNativeTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
@@ -43,7 +43,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   db: HistoryDb,
   dshHome: string,
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
-  readNative?: <T>(read: () => Promise<T>) => Promise<T>,
+  readNativeTrace?: ReadNativeTrace,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null },
   selectSession: SelectSession,
@@ -176,12 +176,15 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     })
   })
 
-  handle('history:trace', (id, until) => (deps.readNative ?? (read => read()))(() => readSessionTrace({
-    dshHome,
-    traceDb: traceDb?.() ?? null,
-    sessionIds: db.sessionIds(assertId(id)),
-    until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now(),
-  })))
+  handle('history:trace', (id, until) => {
+    const sessions = db.sessionIds(assertId(id))
+    const read = async (visible: readonly string[]) => {
+      const result = await readSessionTrace({ dshHome, traceDb: traceDb?.() ?? null, sessionIds: visible,
+        until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now() })
+      return { ...result, missing: result.missing + sessions.length - visible.length }
+    }
+    return deps.readNativeTrace ? deps.readNativeTrace(sessions, read) : read(sessions)
+  })
 
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))

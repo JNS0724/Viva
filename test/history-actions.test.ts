@@ -8,12 +8,12 @@ import { hitTarget } from '../src/renderer/timeline-search.ts'
 
 type Located = { status: string, segmentId: string, seq?: number | null, messageId?: number }
 
-function setup(state: State, locate: (hit: SearchHit) => Promise<Located>) {
+function setup(state: State, locate: (hit: SearchHit) => Promise<Located>, loadTrace?: AgentApi['loadTrace']) {
   let current = state
   const revealed: string[] = []
   const reviewed: SearchHit[] = []
   const actions = createHistoryActions({
-    api: {} as AgentApi,
+    api: { loadTrace } as AgentApi,
     getState: () => current,
     dispatch: (action) => { current = reduce(current, action) },
     searchField: { focus() {}, select() {} } as HTMLInputElement,
@@ -52,4 +52,30 @@ test('when the history does not answer, nothing on screen is guessed at; 回顾 
   const { actions, revealed, reviewed } = setup(onScreen(), async () => { throw new Error('database is locked') })
   await actions.jumpToHit({ segmentId: 'now', seq: 1 })
   assert.deepEqual([revealed, reviewed.length], [[], 1])
+})
+
+
+test('trace refresh rejects a pre-erasure reply and retries once the agent becomes ready', async () => {
+  type Response = Awaited<ReturnType<AgentApi['loadTrace']>>
+  let resolveDelayed!: (result: Response) => void
+  const delayed = new Promise<Response>(resolve => { resolveDelayed = resolve })
+  const seen: Array<number | undefined> = []
+  const noTrace = { thoughts: [], tools: {}, timeline: [] }
+  const oldTrace = { ...noTrace, thoughts: [{ id: 'old', text: 'erased reasoning', open: false, at: 2 }] }
+  const { actions, state } = setup({ ...onScreen(), restored: { count: 2, savedAt: 10 }, restoredTrace: 'loading' },
+    async () => ({ status: 'missing', segmentId: 'now' }), async (_id, until) => {
+      seen.push(until)
+      if (seen.length === 1) return delayed
+      return { trace: noTrace, available: seen.length > 2, missing: 0 }
+    })
+  const pending = actions.loadTrace('now')
+  await actions.invalidateTrace(['earlier-session'])
+  resolveDelayed({ trace: oldTrace, available: true, missing: 0 })
+  await pending
+  assert.equal(state().restoredTrace, 'unavailable')
+  assert.deepEqual(state().thoughts, [])
+  await actions.retryTrace()
+  assert.equal(state().restoredTrace, 'loaded')
+  await actions.retryTrace()
+  assert.deepEqual(seen, [10, 10, 10])
 })

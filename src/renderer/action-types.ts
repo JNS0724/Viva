@@ -41,6 +41,7 @@ export interface ActionPayloads extends ConversationPayloads {
   topic_resumed: { info: Info, parentId: string, at?: number | null, carried?: number | null }
   topic_menu: { open: boolean }
   trace_restored: { conversationId: string, available: boolean, trace: null | Pick<ConversationView, 'thoughts' | 'tools' | 'timeline'> }
+  trace_invalidated: { currentSession: boolean }
   reveal_tick: { dt: number }
   picker_toggle: {}
   picker_close: {}

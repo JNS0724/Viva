@@ -39,5 +39,13 @@ export function createConversationIngress<Event extends ContextEvent>({ current,
     if (belongsTo(event, view.context)) deliver(event, receivedAt)
   }
 
-  return { receive, stateChanged, initialize() { initialized = true; stateChanged() } }
+  return {
+    receive, stateChanged, initialize() { initialized = true; stateChanged() },
+    reviseHeld(project: (event: Event) => Event | undefined) {
+      held = held.flatMap(item => {
+        const event = project(item.event)
+        return event === undefined ? [] : [{ ...item, event }]
+      })
+    },
+  }
 }

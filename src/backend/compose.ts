@@ -20,13 +20,14 @@ import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { memoryConversationScope, memoryProjectScope } from './memory-project.ts'
 import { createMemoryHostRecovery } from './memory-host-recovery.ts'
-import { createMemoryHostEffects } from './memory-host-effects.ts'
+import { affectedTraceSessions, createMemoryHostEffects } from './memory-host-effects.ts'
 import { createMemoryWithdrawal } from './memory-withdrawal.ts'
 import type { MemoryProvenance } from '../memory/contracts/records.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
 import { carriedRecords } from './history-carry.ts'
 import { activeHours } from './habits.ts'
-import { openTraceDb } from '../../plugins/trace/lib/store.ts'
+import { openTraceDb, traceStepDigest } from '../../plugins/trace/lib/store.ts'
+import { stepsFrom } from '../../plugins/trace/lib/steps.ts'
 import { registerLanguageIpc } from './language-ipc.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
@@ -259,12 +260,25 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     beforeStart: async ({ config }: DshContext, isCold) => {
       const memoryRoot = path.join(userData, 'memory')
       if (!fs.existsSync(path.join(memoryRoot, 'memory.db'))) return
-      const { eraseColdNativeOriginals, PendingNativePublication } = await import('../../plugins/memory/lib/native/maintenance.ts')
+      const { eraseColdNativeCopies, PendingNativePublication } = await import('../../plugins/memory/lib/native/maintenance.ts')
       const root = dshHomeOf(config)
-      try { await eraseColdNativeOriginals({ memoryRoot, sessionsRoot: path.join(root, 'sessions'), storageRoot: path.join(root, 'storages'), hostNamespace: 'viva', isCold }) }
+      try {
+        await eraseColdNativeCopies({ memoryRoot, sessionsRoot: path.join(root, 'sessions'), storageRoot: path.join(root, 'storages'),
+          hostNamespace: 'viva', isCold, trace: {
+            key(event) {
+              const step = stepsFrom([event])[0]
+              return step ? traceStepDigest(step) : undefined
+            },
+            erase(session, positions) {
+              const file = path.join(userData, 'trace.db')
+              if (!traceDb && fs.existsSync(file)) traceDb = openTraceDb({ file })
+              if (traceDb && !traceDb.eraseSteps(session, positions)) throw new Error('Trace erasure awaits a durable checkpoint')
+            },
+          } })
+      }
       catch (error) {
         if (error instanceof PendingNativePublication) throw error
-        console.warn('[memory] Native original cleanup remains pending')
+        console.warn('[memory] Native session cleanup remains pending')
       }
     },
     create: ({ config, cwd }: DshContext, lifetime) => {
@@ -323,6 +337,26 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const memoryBusy = memoryCoordination.busy
   const memoryProjectFor = async (id: string | null | undefined, cwd?: string) => cwd === undefined ? await projectOfSession(id ?? undefined) : memoryProjectScope(cwd)
   const staleMemorySession = async (id: string | null | undefined, cwd?: string) => memoryCoordination.stale(id, await memoryProjectFor(id, cwd))
+
+  function readNativeTrace<T>(sessions: readonly string[], read: (visible: readonly string[]) => T | Promise<T>) {
+    return dsh.readNative(async () => {
+      if (!fileMode || !sessions.length) return read(sessions)
+      const bridge = dsh.current
+      async function visible() {
+        if (!bridge?.memory.ready() || bridge !== dsh.current || memoryBusy()) return []
+        try {
+          const effects = await memory.call('pendingHostEffects', {})
+          if (bridge !== dsh.current || !bridge.memory.ready() || memoryBusy()) return []
+          const hidden = new Set(effects.flatMap(affectedTraceSessions))
+          return sessions.filter(session => !hidden.has(session))
+        } catch { return [] }
+      }
+      const permitted = await visible()
+      const result = await read(permitted)
+      const stillPermitted = new Set(await visible())
+      return permitted.every(session => stillPermitted.has(session)) ? result : read([])
+    })
+  }
   const allowMemorySession = async (id: string, cwd?: string) => memoryCoordination.allowsSession(id, await memoryProjectFor(id, cwd))
   const canTransferMemoryToModel = (_id: string) => Boolean(dsh.current?.memory.ready())
   function historyForProject(project: ReturnType<typeof memoryProjectScope>) {
@@ -1260,7 +1294,7 @@ ${question}` : question
       },
       dshHome: dshHomeOf(config),
       traceDb: () => traceDb,
-      readNative: dsh.readNative,
+      readNativeTrace,
       current: sessions.current,
       // A report waiting for this conversation (task-reports.ts) may go now.
       setCurrent: sessions.select,
@@ -1289,6 +1323,7 @@ ${question}` : question
       agentInfo: () => lastInfo,
       selectSession: sessions.withSelection,
       traceDb: () => traceDb,
+      readNativeTrace,
       replaySource: (id, text) => memory.replaySources([id], text, currentMemoryProject()),
       derivedSource: id => memory.isDerivedDelivery(id),
       canEditSource: async () => !await sessionProjectChanged(sessions.current().sessionId, currentMemoryProject())
@@ -1319,6 +1354,7 @@ ${question}` : question
       eraseFileHistory: historyDb.eraseFileRanges,
       eraseRoutedMemory: matches => requests.eraseMemory(matches),
       reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
+      traceInvalidated: fileMode ? traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }) : undefined,
       invalidateScheduled: (matches, changed) => {
         schedules?.discardMemory(matches)
         const discarded = scheduleRuns?.discardMemory(matches)

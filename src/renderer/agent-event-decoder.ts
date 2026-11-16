@@ -174,7 +174,9 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
   if (type === 'memory_changed') {
     const memories = item.memories === undefined ? undefined : texts(item.memories), invalidated = item.invalidated === undefined ? undefined : texts(item.invalidated)
-    return memories !== null && invalidated !== null ? { type, memories, invalidated, ...(string(item.failure) ? { failure: item.failure } : {}) } : null
+    const traceSessions = item.traceSessions === undefined ? undefined : texts(item.traceSessions)
+    return memories !== null && invalidated !== null && traceSessions !== null
+      ? { type, memories, invalidated, ...(traceSessions ? { traceSessions } : {}), ...(string(item.failure) ? { failure: item.failure } : {}) } : null
   }
   if (type === 'reports_removed') { const reportIds = texts(item.reportIds); return reportIds ? { type, reportIds } : null }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null

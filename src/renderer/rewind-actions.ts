@@ -25,13 +25,16 @@ export function createRewindActions({ api, getState, dispatch, showToast, errorM
 
   /** Going back over files written or commands run asks first (view/rewind.js rewindConfirm); else it just goes. */
   async function goBack(id: string, text: string, { confirmed = false } = {}) {
-    const target = rewindTarget(getState(), id)
+    const state = getState()
+    const target = rewindTarget(state, id)
     const trimmed = text.trim()
     const words = text === target?.words ? text : trimmed
     if (words.length > MAX_MESSAGE_CHARS) return showToast(MESSAGE_TOO_LONG)
     if (!target || !trimmed) return showToast(NOT_NOW)
     if (!confirmed) {
       const effects = await effectsOf(target)
+      const current = getState()
+      if (current.traceRevision !== state.traceRevision || current.conversationId !== state.conversationId) return showToast(NOT_NOW)
       if (effects.files.length || effects.commands.length) return dispatch({ type: 'rewind_confirm', id, text: words, effects })
     }
     dispatch({ type: 'rewind_busy' })

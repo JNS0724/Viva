@@ -24,6 +24,17 @@ import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
 
+function removeRestoredTrace(state: State): State {
+  const restored = state.restoredTraceData
+  if (!restored) return state
+  const thoughts = new Set(restored.thoughts), timeline = new Set(restored.timeline)
+  return { ...state, restoredTraceData: null,
+    thoughts: state.thoughts.filter(item => !thoughts.has(item)),
+    tools: Object.fromEntries(Object.entries(state.tools).filter(([id, tool]) => restored.tools[id] !== tool)),
+    timeline: state.timeline.filter(item => !timeline.has(item)),
+  }
+}
+
 /**
  * Pure, immutable conversation state. ACP updates go in; the views read it out.
  * Thoughts and tool calls live in `timeline` (shown in the drawer), never in `messages`.
@@ -45,6 +56,8 @@ export const initialState = Object.freeze({
   conversationId: null as string | null,
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
+  restoredTraceData: null as PayloadFor<'trace_restored'>['trace'],
+  traceRevision: 0,
   history: initialHistory,
   /** 回顾 on the 搜索 page: the timeline by day, filtered, a topic read in place, the stars (review-state.ts). */
   review: initialReview,
@@ -214,6 +227,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   /** A new session goes on below what was said so far, which stays in the timeline above: a new topic. */
   new_session: (state, { info, at = null }) => ({
     ...initialState,
+    traceRevision: state.traceRevision,
     topic: { ...initialTopic, startedAt: at },
     info: info ?? state.info,
     conversationId: typeof info?.conversationId === 'string' ? info.conversationId : null,
@@ -253,14 +267,23 @@ const ACTION_HANDLERS: ActionHandlers = {
   /** Restored trace goes first: it happened before anything the live session has added since. */
   trace_restored: (state, { conversationId, trace, available }) => {
     if (conversationId !== state.conversationId) return state
-    if (!available || !trace) return { ...state, restoredTrace: 'unavailable' }
+    const live = removeRestoredTrace(state)
+    if (!available || !trace) return { ...live, restoredTrace: 'unavailable' }
     return {
-      ...state,
+      ...live,
       restoredTrace: 'loaded',
-      thoughts: [...trace.thoughts, ...state.thoughts],
-      tools: { ...trace.tools, ...state.tools },
-      timeline: [...trace.timeline, ...state.timeline],
+      restoredTraceData: trace,
+      thoughts: [...trace.thoughts, ...live.thoughts],
+      tools: { ...trace.tools, ...live.tools },
+      timeline: [...trace.timeline, ...live.timeline],
     }
+  },
+  trace_invalidated: (state, { currentSession }) => {
+    const live = removeRestoredTrace(state)
+    return { ...live, traceRevision: live.traceRevision + 1,
+      rewind: live.rewind.confirm ? { ...live.rewind, confirm: null } : live.rewind,
+      restoredTrace: live.restoredTrace === null && !currentSession ? null : 'unavailable',
+      ...(currentSession ? { thoughts: [], tools: {}, timeline: live.timeline.filter(item => item.kind !== 'thought' && item.kind !== 'tool' && item.kind !== 'memory') } : {}) }
   },
   reveal_tick: (state, { dt }) => (isRevealing(state)
     ? {

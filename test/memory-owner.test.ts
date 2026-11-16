@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
+import { createNativeOutputJournal } from '../src/memory/node/native-output-journal.ts'
 
 function fixture(t: import('node:test').TestContext, hostNamespace?: string) {
   const root = mkdtempSync(join(tmpdir(), 'memory-owner-'))
@@ -50,6 +51,32 @@ test('native output evidence retains exact file ranges across sends without pers
     assert.equal(outputs.affected(overlapping, []).length, 1)
   } finally { db.close() }
 })
+test('settled native output publication leaves an immutable receipt when another target arrives', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    const invalidated: string[] = []
+    const journal = createNativeOutputJournal(db, session => invalidated.push(session))
+    const operation = journal.forOperation(randomUUID())
+    const session = randomUUID(), digest = (char: string) => char.repeat(64)
+    const first = { attempt: randomUUID(), seq: 32, before: digest('1'), after: digest('2'), trace: digest('3') }
+    const next = { attempt: randomUUID(), seq: 28, before: digest('4'), after: digest('5') }
+    const original = { before: digest('a'), after: digest('b'), events: digest('1') }
+    const followup = { before: digest('b'), after: digest('c'), events: digest('2') }
+    operation.prepare(session, { intent: original, replacements: [first] })
+    assert.throws(() => operation.prepare(session, { intent: followup, replacements: [first, next] }), /UNIQUE/u)
+    operation.finish(session, original)
+    operation.prepare(session, { intent: followup, replacements: [next] })
+    assert.deepEqual(operation.pendingSessions(), [session])
+    assert.deepEqual(operation.read(session).map(item => item.replacements), [[next], [first]])
+    assert.deepEqual(operation.provenProjection(first), first)
+    assert.equal(operation.provenProjection(next), undefined)
+    operation.finish(session, followup)
+    operation.complete([first.attempt, next.attempt])
+    assert.equal(journal.erased(next.attempt), true)
+    assert.deepEqual(invalidated, [session, session])
+  } finally { db.close() }
+})
+
 test('owner refuses a second process-local connection and can reopen after close', async t => {
   const { owner, root } = fixture(t)
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)

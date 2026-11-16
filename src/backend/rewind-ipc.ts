@@ -10,6 +10,7 @@ import type { Conversation, openHistoryDb } from './history-db.ts'
 import type { StartedAgent } from './history-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
+import type { ReadNativeTrace } from './dsh-log.ts'
 import type { StoredMessage } from './history-schema.ts'
 import type { MemoryHistoryEdit } from './memory-withdrawal.ts'
 import { randomUUID } from 'node:crypto'
@@ -54,6 +55,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   carryNext?: (id: string, text: string) => void,
   onContinuation?: (conversation: Conversation, started: StartedAgent) => void | Promise<void>,
   traceDb?: () => Pick<ReturnType<typeof openTraceDb>, 'stepsOf'> | null,
+  readNativeTrace?: ReadNativeTrace,
 }) {
   const { db, current, isBusy, agentInfo, traceDb, selectSession } = deps
   async function rewind(request: Parameters<typeof checked>[0]) {
@@ -160,11 +162,15 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   function effects(request: { keep?: unknown } | null | undefined) {
     const keep = request?.keep
     if (!isCount(keep)) throw new Error('invalid rewind request')
-    const trace = traceDb?.()
-    const since = db.timelineOf(current().id)[keep]?.at
-    if (!trace || since === undefined) return { files: [], commands: [] }
-    const steps = db.sessionIds(current().id).flatMap((sessionId) => trace.stepsOf(sessionId))
-    return sideEffectsOf(steps, since)
+    const conversation = current().id
+    const since = db.timelineOf(conversation)[keep]?.at
+    if (since === undefined) return { files: [], commands: [] }
+    const sessions = db.sessionIds(conversation)
+    const read = (visible: readonly string[]) => {
+      const trace = traceDb?.()
+      return sideEffectsOf(trace ? visible.flatMap(session => trace.stepsOf(session)) : [], since)
+    }
+    return deps.readNativeTrace ? deps.readNativeTrace(sessions, read) : read(sessions)
   }
 
   ipcMain.handle('timeline:rewind', (_event, request) => rewind(request))

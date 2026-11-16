@@ -567,6 +567,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (options.hostNamespace) {
       const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
         kind: 'erase-file-copies', sessions, memoryIds: [...memoryIds],
+        ...(nativeSessions.size ? { traceSessions: [...nativeSessions] } : {}),
         sources: cuts.map(cut => ({ namespace: 'canonical', sourceId: cut.id, revision: cut.version })), ranges }
       db.prepare('INSERT INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
       return true

@@ -51,6 +51,25 @@ test('production ingress buffers bootstrap, preserves omitted config fields and 
   assert.deepEqual(decodeInfo({ mode: 'setup', model: '', cwd: '', sessionId: null }), { mode: 'setup', model: '', cwd: '', sessionId: null })
 })
 
+test('a trace erasure notice removes older held reasoning and tool updates before selection commits', async () => {
+  const h = harness()
+  h.events.receive({ type: 'ready', info })
+  h.events.receive({ type: 'update', context, update: { ...chunk('retired thought'), sessionUpdate: 'agent_thought_chunk' } })
+  h.events.receive({ type: 'update', context, update: { sessionUpdate: 'tool_call', toolCallId: 'retired', title: 'retired tool' } })
+  h.events.receive({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'attempt', kind: 'settle',
+    blocks: [{ type: 'text', text: 'retained timeline text' }, { type: 'reasoning', text: 'retired settlement' }] } })
+  h.events.receive({ type: 'memory_context', context, injected: [{ at: 12, pushed: [{ names: [], text: 'retired recalled source' }] }] })
+  h.events.receive({ type: 'memory_changed', traceSessions: ['s'] })
+  h.events.receive({ type: 'update', context, update: { ...chunk('later thought'), sessionUpdate: 'agent_thought_chunk' } })
+  h.events.initialize()
+  await flush()
+  assert.deepEqual(h.state().messages.map(item => item.text), ['retained timeline text'])
+  assert.deepEqual(h.state().thoughts.map(item => item.text), ['later thought'])
+  assert.deepEqual(h.state().tools, {})
+  assert.equal(h.state().timeline.some(item => item.kind === 'memory'), false)
+  assert.deepEqual(h.issues, [])
+})
+
 test('SDK null permission fields and broker waits retain their known tool fallback through the real entry', () => {
   const h = harness(), broker = createPermissionBroker()
   h.events.receive({ type: 'ready', info }); h.events.initialize()
