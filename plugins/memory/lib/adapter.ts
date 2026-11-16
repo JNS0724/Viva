@@ -25,6 +25,7 @@ import { createSessionIngestion, retrievalQuestion } from './ingestion.ts'
 import { completeMemoryModel } from './model.ts'
 import { assertMemoryProviderSupported } from './providers.ts'
 import { registerMemoryTools } from './tools.ts'
+import { registerMemoryFileCommands } from './file-commands.ts'
 import { createControlReceipts } from './control-receipts.ts'
 import { memoryOriginalContentDigest } from './context-recovery.ts'
 import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
@@ -101,6 +102,15 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   ctx.inject(['commands'], scoped => {
     const dispose = controlReceipts.bind(scoped.commands)
     scoped.effect(() => dispose, 'memory local receipts')
+    if (!config.host && config.fileMode) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
+      const session = agent.session
+      const active = () => !closing && !signal.aborted && ctx.sessions.get(session.id) === session
+        && ctx.agents.get(session.id) === agent && agent.status !== 'running'
+      await recovery
+      if (!active() || !owner.ready()) return false
+      await ingestion.synchronize(session)
+      return active() && owner.ready()
+    }), 'standalone memory file commands')
   })
   // Suppress raw history upload before its serializer; the final transport also rejects unknown
   // extension fields. Optional because an independent DSH profile may never install this service.

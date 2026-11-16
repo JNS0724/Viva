@@ -227,6 +227,19 @@ try {
     try { return Boolean(db.prepare("SELECT 1 FROM memories WHERE text=? AND state='active' AND retention='retained'").get(marker)) }
     finally { db.close() }
   }, 'explicit memory promoted after completed turn')
+  if (fileMode) {
+    const explicit = 'The oriole release checklist has four stages.'
+    const saved = /Saved memory ([a-f0-9-]{36})\./u
+    await send(page, `/memory-remember ${explicit}`, saved)
+    const id = (await page.getByText(saved).last().textContent())?.match(saved)?.[1]
+    assert.ok(id)
+    assert.ok(collectMarkdown(dataRoot).some(file => readFileSync(file, 'utf8').includes(explicit)))
+    assert.ok(!JSON.stringify(llm.requests).includes(explicit), 'the native command does not send its input to the model')
+    await send(page, `/memory-forget ${id}`, /Memory (?:is no longer used\. Copy cleanup is pending|copies have been erased)\./u)
+    await until(() => !collectMarkdown(dataRoot).some(file => readFileSync(file, 'utf8').includes(explicit)), 'native forget clears Markdown')
+    assert.ok(!JSON.stringify(llm.requests).includes(explicit))
+    await page.screenshot({ path: path.join(output, 'web-file-command-receipts.png'), fullPage: true })
+  }
   await send(page, '查一下 周报', '查到了：')
   for (let turn = 1; turn <= 3; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
   await until(() => collectMarkdown(dataRoot).some(file => file.includes(`${path.sep}daily${path.sep}`) && readFileSync(file, 'utf8').includes(marker)), 'completed conversation daily note')
@@ -280,7 +293,7 @@ try {
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
     ipcParent: false, fileMode, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
-    ...(fileMode ? { sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget) } : {}), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
+    ...(fileMode ? { standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget) } : {}), restart: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
   passed = true

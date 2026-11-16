@@ -18,9 +18,10 @@ import { MemoryDomainError } from '../core/presentation.ts'
 import { createMemorySendFence } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
 import { MEMORY_FILE_QUESTION_PREFIX } from '../contracts/memory-contract.ts'
-import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed } from '../contracts/host.ts'
+import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed, MemoryProject } from '../contracts/host.ts'
 import type { MemoryOperationOutcome, MemoryHostEffect, MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryFileMutationResult, MemoryManagedFileIdentity, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
+import { memoryFileCreateRequest, memoryFileForgetRequest } from '../contracts/file-management.ts'
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
@@ -656,6 +657,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const payload = JSON.parse(item.payload!) as WritePayload | FileWritePayload | ManualFilePending
         try {
           if ('manual' in payload) await completeManualFile(item.id, payload.manual)
+          else if ('standaloneSession' in payload && payload.standaloneSession) await durableFileWrite(payload.command, payload.standaloneSession)
           else await handleHost(payload.command.method, payload.command.input)
         } catch (error) { if (operation(item.id)?.state !== 'failed') throw error }
       }
@@ -711,7 +713,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     })
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
-  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[] }
+  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string }
   function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
     const sourceIds = new Set(sources.map(ref => ref.sourceId))
     return (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id }) => {
@@ -721,7 +723,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     })
   }
   type ManualFileCommand = Extract<HostMemoryCommand, { method: 'createFile' | 'editFile' }>
-  type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[] }
+  type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[], project?: MemoryProject }
   type ManualFilePending = { manual: ManualFilePlan }
 
   async function completeManualFile(id: string, plan: ManualFilePlan, request?: MemoryFileCreateRequest | MemoryFileEditRequest) {
@@ -738,7 +740,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           notify = true
         }
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
-      }))
+      }), plan.project)
       if (notify) options.onHostEffects?.()
       return receipt
     } catch (error) {
@@ -749,16 +751,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
   }
 
-  async function durableManualFileWrite(command: ManualFileCommand) {
+  async function durableManualFileWrite(command: ManualFileCommand, project?: MemoryProject) {
     requireReady()
-    const request = command.input.args[0], id = request.operationId, fingerprint = hash(command)
+    const request = command.input.args[0], id = request.operationId, fingerprint = hash(project ? { command, project } : command)
     const previous = operation(id)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
     if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
       ? { workspace: request.identity.workspace, usageVersion: request.version.usageVersion, sessions: fileSessions(request.identity, []) }
-      : { workspace: runtime.manualFileWorkspace(), usageVersion: null, sessions: [] }
+      : { workspace: runtime.manualFileWorkspace(project), usageVersion: null, sessions: [], ...(project ? { project } : {}) }
     // Only the file journal may retain a draft, with both its old and new backing proofs.
     // Waiting for the send fence must not persist a detached copy of the submitted words.
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)")
@@ -770,9 +772,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
 
   /** The runtime owns the only send fence. The durable intent bridges its document receipt and
    * this completion/outbox transaction if the process exits between the two commits. */
-  async function durableFileWrite(command: FileWriteCommand): Promise<MemoryFileMutationResult> {
+  async function durableFileWrite(command: FileWriteCommand, standaloneSession?: string): Promise<MemoryFileMutationResult> {
     requireReady()
-    const request = command.input.args[0], id = request.operationId, fingerprint = hash(command)
+    const request = command.input.args[0], id = request.operationId, fingerprint = hash(standaloneSession ? { command, standaloneSession } : command)
     const previous = operation(id)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
@@ -783,7 +785,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const pending = previous?.payload ? JSON.parse(previous.payload) as FileWritePayload : null
     const sources = pending?.sources ?? (command.method === 'forgetFile' || request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
     const sessions = pending?.sessions ?? (command.method === 'forgetFile' ? [] : fileSessions(request.identity, sources))
-    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command, sources, sessions } satisfies FileWritePayload))
+    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint,
+      JSON.stringify({ command, sources, sessions, standaloneSession } satisfies FileWritePayload))
     let notify = false
     const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
       store.tx(() => {
@@ -807,7 +810,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
           : await runtime.forgetFile(command.input.args[0], (result, cuts, memoryIds) => {
             notify = recordRangeErasure(id, cuts, memoryIds, readers)
-            db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
+            db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
           }, () => { readers = currentFileReaders(request.identity.workspace) })
       if (notify) options.onHostEffects?.()
       return result
@@ -818,6 +821,39 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       // Storage/flush failures keep the intent for recovery, including a committed document receipt.
       throw error
     }
+  }
+  function standaloneFileOrigin(session: string) {
+    requireReady()
+    if (!options.fileMode || options.hostNamespace || !db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) {
+      throw new MemoryDomainError('not.found')
+    }
+    return sessionContext(session)
+  }
+  function rememberStandaloneFile(session: string, input: MemoryFileCreateRequest) {
+    const origin = standaloneFileOrigin(session), request = memoryFileCreateRequest.parse(input)
+    return durableManualFileWrite({ method: 'createFile', input: { args: [request] } }, origin.project)
+  }
+  async function forgetStandaloneFile(session: string, id: string, operationId: string) {
+    const origin = standaloneFileOrigin(session), previous = operation(operationId)
+    if (previous?.state === 'completed') {
+      const receipt = JSON.parse(previous.payload!) as { standaloneSession?: string, result: MemoryFileMutationResult }
+      if (receipt.standaloneSession !== session || receipt.result.identity.id !== id) throw new MemoryDomainError('operation.conflict')
+      return outcome(previous).cleanup
+    }
+    if (previous?.state === 'running') {
+      const payload = JSON.parse(previous.payload!) as FileWritePayload
+      if (payload.standaloneSession !== session || payload.command.method !== 'forgetFile' || payload.command.input.args[0].identity.id !== id) {
+        throw new MemoryDomainError('operation.conflict')
+      }
+      await durableFileWrite(payload.command, session)
+    } else {
+      const target = runtime.fileForSession(id, origin)
+      if (!target) throw new MemoryDomainError('not.found')
+      const request = memoryFileForgetRequest.parse({ ...target, operationId })
+      await durableFileWrite({ method: 'forgetFile', input: { args: [request] } }, session)
+    }
+    const item = operation(operationId)
+    return item?.state === 'completed' && outcome(item).cleanup === 'complete' ? 'complete' as const : 'pending' as const
   }
   async function handleHost(method: unknown, input: unknown): Promise<unknown> {
     const command = parseHostMemoryCommand(method, input)
@@ -1016,6 +1052,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
     recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost, acceptFileClarification,
+    rememberStandaloneFile, forgetStandaloneFile,
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
     nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,

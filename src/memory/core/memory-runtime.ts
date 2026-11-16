@@ -3118,15 +3118,15 @@ ${node.description}`, origin, scope))
     return offset === text.length
   }
 
-  const manualFileWorkspace = () => memoryHash(JSON.stringify([USER, null, null]))
-  function freshFileEvidence(id: string, text: string, parent?: MemorySource): MemorySource {
+  const manualFileWorkspace = (project?: Origin['project']) => memoryHash(JSON.stringify([USER, null, project ?? null]))
+  function freshFileEvidence(id: string, text: string, parent?: MemorySource, project?: Origin['project']): MemorySource {
     return { id, operation: id, version: 1, conversation: null, session: null, scope: parent?.scope ?? USER,
-      context: parent?.context ?? null, project: parent?.project ?? null, author: 'manual', text, hash: memoryHash(text), length: text.length,
+      context: parent?.context ?? null, project: parent ? parent.project ?? null : project ?? null, author: 'manual', text, hash: memoryHash(text), length: text.length,
       question: null, requestId: null, questionId: null, at: now(), timezone: timezone(), outcome: 'written', withdrawn: false }
   }
 
   async function writeManagedFile(operationId: string, workspace: string, input: MemoryFileCreateRequest | MemoryFileEditRequest | undefined,
-    committed: FileMutationCommitted): Promise<MemoryFileMutationResult | null> {
+    committed: FileMutationCommitted, project?: Origin['project']): Promise<MemoryFileMutationResult | null> {
     if (!fileMode || !documents || !fileManagement) throw domainError('not.found')
     if (!/^[a-f0-9]{64}$/u.test(workspace)) throw domainError('revision.conflict')
     const storage = documents, management = fileManagement
@@ -3159,7 +3159,7 @@ ${node.description}`, origin, scope))
         const markdown = unchanged ? target!.markdown : formatMemoryDocument({ metadata, body })
         // User edits are explicit input. A full-editor draft stays tied to the
         // accepted proof it may have quoted, so it cannot launder forgotten text.
-        const source = unchanged ? null : freshFileEvidence(operationId, sourceText, parent ?? undefined)
+        const source = unchanged ? null : freshFileEvidence(operationId, sourceText, parent ?? undefined, project)
         if (source && (resources.sourceWorkspace(source) !== workspace || store.readSource(operationId) || store.deliveredSource(operationId)
           || store.sourceExcluded(operationId) || sourceBlocked(source))) throw domainError('operation.conflict')
         receipt = storage.writeManual({ operationId, workspace, path: target?.path ?? `digest/wiki/manual-${memoryHash(operationId)}.md`,
@@ -3284,6 +3284,15 @@ ${node.description}`, origin, scope))
 
   return {
     fileProfile,
+    fileForSession(id: string, origin: Origin) {
+      if (!fileMode || !filePolicy || closed || mutation || !origin.session) return null
+      for (const workspace of fileWorkspaces()) {
+        const file = filePolicy.list(workspace).find(view => view.id === id && fileAllowsOrigin(view, origin))
+        if (file) return { identity: { kind: file.kind, workspace, id },
+          version: { contentRevision: file.revision, usageVersion: file.usageVersion, policyToken: file.policyToken } }
+      }
+      return null
+    },
     listFiles(input: MemoryFileListRequest) {
       if (!fileManagement || closed) throw new Error('Document memory is not enabled')
       return fileManagement.list(input, managementAllows)
