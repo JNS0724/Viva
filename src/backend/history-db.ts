@@ -253,7 +253,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       AND (created_at < :createdAt OR (created_at = :createdAt AND rowid < :rowid))
       ORDER BY created_at DESC, rowid DESC LIMIT :limit`),
     timelineMessages: db.prepare('SELECT id, seq, role, text, receipt, images, source_key, source_id, created_at FROM messages WHERE conversation_id = ? ORDER BY seq'),
-    messages: db.prepare('SELECT role, text, receipt, images, source_key, source_id FROM messages WHERE conversation_id = ? ORDER BY seq'),
+    messages: db.prepare('SELECT role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? ORDER BY seq'),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
@@ -309,7 +309,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return messages.map((message, index) => {
       const keyed = message.key ? keys.get(message.key) : undefined
       const replicaSession = keyed?.session_id ?? sessionId
-      if (fileMode) message = generated.forSave(message, replicaSession, keyed)
+      if (fileMode) message = generated.forSave(message, replicaSession)
       const replicas = [keyed, known[index], inherited[index]]
       let sourceId = message.sourceId
       if (!sourceId && message.role === 'user') {

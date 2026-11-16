@@ -35,16 +35,13 @@ export function createHistoryGeneratedCopies(db: DatabaseSync, affected: (proof:
     return !erased
   }
 
-  /** A late snapshot is accepted only for the exact proved payload or an already stored independent row. */
-  function forSave(message: StoredMessage, session: string | null | undefined, known?: { text: string }) {
+  /** Persist generated text only under its exact, live proof. Human messages still use their source identities. */
+  function forSave(message: StoredMessage, session: string | null | undefined) {
     if (message.role === 'note') return message
     const replica = message.key && read(message.key)
-    if (replica && replica.session === session && replica.role === message.role) {
-      if (replica.digest !== digestOf(message.text)) return known?.text === message.text ? message : blank(message)
-      return replica.erased ? blank(message) : message
-    }
-    if (message.role === 'assistant' && message.key && known?.text !== message.text) return blank(message)
-    return message
+    if (!replica) return message.role === 'assistant' ? blank(message) : message
+    return !replica.erased && replica.session === session && replica.role === message.role
+      && replica.digest === digestOf(message.text) ? message : blank(message)
   }
 
   /** Called in the history erasure transaction, so later saves see the same retirement as readers. */

@@ -32,18 +32,23 @@ test('host file erasure retires exact generated copies and task bodies through r
   const taskBody = 'task body from forgotten memory'
   const old = { key: 'erased-reply', role: 'assistant', text: sensitive, receipt: null }
   const independent = { key: 'independent-reply', role: 'assistant', text: 'independent answer in the same session', receipt: null }
+  const identical = { ...old, key: 'independently-derived-reply' }
   const taskMessage = { key: 'erased-task-input', role: 'user', text: taskBody, receipt: null }
   const taskMeta = (id: string, segmentId: string, requestMemory: MemoryProvenance): StoredTask =>
     ({ id, segmentId, title: id, words: 'independent task metadata', requestMemory })
   const session = randomUUID(), taskSession = randomUUID(), survivorTask = randomUUID(), cleanTask = randomUUID()
   assert.equal(history.bindGeneratedCopy(session, old.key, 'assistant', old.text, [memoryErasureEvidence(affected)]), true)
   assert.equal(history.bindGeneratedCopy(session, independent.key, 'assistant', independent.text, [memoryErasureEvidence(surviving)]), true)
+  assert.equal(history.bindGeneratedCopy(session, identical.key, 'assistant', identical.text, [memoryErasureEvidence(surviving)]), true)
   assert.equal(history.bindGeneratedCopy(taskSession, taskMessage.key, 'user', taskMessage.text, [memoryErasureEvidence(affected)]), true)
-  const messages = [{ role: 'user', text: original, receipt: null, sourceId: source }, old, independent]
+  const messages = [{ role: 'user', text: original, receipt: null, sourceId: source }, old, independent, identical]
   const before = history.save(history.create({ sessionId: session }), messages)
   const copy = history.save(history.create({ sessionId: randomUUID() }), messages, { copy: { from: before.id, count: messages.length } })
+  assert.equal(history.get(copy.id)?.messages[1]?.text, old.text, 'forked replies retain their verified origin session')
   const other = history.save(history.create({ sessionId: randomUUID() }), [{ role: 'user', text: sensitive, receipt: null }])
   const task = history.save(history.create({ sessionId: taskSession }), [taskMessage, { role: 'user', text: 'independent follow-up', receipt: null }])
+  const taskFork = history.save(history.create({ sessionId: randomUUID() }), [taskMessage], { copy: { from: task.id, count: 1 } })
+  assert.equal(history.get(taskFork.id)?.messages[0]?.text, taskBody)
   tasks.add({ ...taskMeta(taskSession, task.id, affected), words: taskBody })
   for (const id of [survivorTask, cleanTask]) {
     const result = { ...old, key: `preview-${id}` }
@@ -82,13 +87,16 @@ test('host file erasure retires exact generated copies and task bodies through r
   assert.deepEqual(receipts, [operation])
   assert.equal(calls.length, 2, 'recovering the checkpoint does not close tasks again')
   for (const kept of [before, copy]) {
-    assert.deepEqual(history.get(kept.id)?.messages.map(row => row.text), [' '.repeat(16) + original.slice(16), '', independent.text])
+    assert.deepEqual(history.get(kept.id)?.messages.map(row => row.text), [' '.repeat(16) + original.slice(16), '', independent.text, identical.text])
   }
   assert.equal(history.get(other.id)?.messages[0]?.text, sensitive, 'identical independent text is not inferred as a replica')
   history.save(before, messages)
+  history.save(before, [messages[0], { role: 'assistant', text: old.text, receipt: null }, independent, identical])
+  history.save(taskFork, [taskMessage])
   history.save(task, [taskMessage, { role: 'user', text: 'independent follow-up', receipt: null }])
   assert.deepEqual(history.get(task.id)?.messages.map(row => row.text), ['', 'independent follow-up'])
-  assert.equal(history.get(before.id)?.messages[1]?.text, '')
+  assert.equal(history.get(taskFork.id)?.messages[0]?.text, '', 'a late fork save uses the durable source session')
+  assert.equal(history.get(before.id)?.messages[1]?.text, '', 'dropping a stream key does not restore a retired reply')
   assert.throws(() => tasks.add(taskMeta(taskSession, task.id, affected)), /cannot be restored/)
   assert.equal(tasks.list().find(item => item.id === survivorTask)?.resultPreview, '')
   assert.equal(tasks.list().find(item => item.id === cleanTask)?.resultPreview, sensitive)
