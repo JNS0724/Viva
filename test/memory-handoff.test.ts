@@ -4,6 +4,8 @@ import { ChildProcess } from 'node:child_process'
 import fs, { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { Worker } from 'node:worker_threads'
+import { once } from 'node:events'
 import { Context } from '@deepseek-ai/cordis'
 import type { CompactionId } from '@deepseek-ai/dsh-compaction'
 import { compactCheckpointSource } from '@deepseek-ai/dsh-compaction/checkpoint'
@@ -32,6 +34,7 @@ import type { HostCapabilities, HostEvent } from '../src/backend/host.ts'
 import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
 const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { SQLITE_BUSY_TIMEOUT_MS } from '../src/memory/node/sqlite.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import type { MemoryFileDetail, MemoryFileListResult, MemoryFileProfile } from '../src/memory/contracts/file-management.ts'
@@ -42,6 +45,7 @@ import type { IpcResults } from '../src/shared/ipc-results.ts'
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
 import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/eventually.ts'
+import { openMemoryControlDb } from './fixtures/memory-control-db.ts'
 import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.ts'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
@@ -570,6 +574,36 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   } finally { db.close() }
 })
 
+const STOP_AFTER_PTC_READ = `CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
+  WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`
+
+test('a memory control connection waits for a competing writer before installing its PTC fault trigger', async t => {
+  const { dir, defer } = scratch(t, 'viva-memory-control-')
+  const file = join(dir, 'memory.db'), store = openMemoryStore(file)
+  defer(() => store.close())
+  store.db.exec('CREATE TABLE owner_native_output_reads(id INTEGER); CREATE TABLE owner_native_tool_reads(id INTEGER)')
+  const control = openMemoryControlDb(file), immediate = new DatabaseSync(file)
+  defer(() => control.close()); defer(() => immediate.close())
+  const writer = new Worker(new URL('./fixtures/memory-sqlite-writer.ts', import.meta.url), { workerData: file })
+  defer(() => writer.terminate())
+  const exited = once(writer, 'exit'); void exited.catch(() => {})
+  assert.deepEqual(await once(writer, 'message'), ['locked'])
+  assert.equal(immediate.prepare('PRAGMA busy_timeout').get()?.timeout, 0)
+  assert.throws(() => immediate.exec(STOP_AFTER_PTC_READ), (error: unknown) =>
+    error instanceof Error && 'errcode' in error && error.errcode === 5,
+  'a default connection must fail against the physically held writer, as in the Windows failure')
+  const released = once(writer, 'message')
+  writer.postMessage('release-soon')
+  control.exec(STOP_AFTER_PTC_READ)
+  assert.deepEqual(await released, ['released'])
+  assert.deepEqual(await exited, [0])
+  assert.equal(control.prepare('PRAGMA busy_timeout').get()?.timeout, SQLITE_BUSY_TIMEOUT_MS)
+  control.exec('INSERT INTO owner_native_tool_reads VALUES (1)')
+  assert.throws(() => control.exec('INSERT INTO owner_native_output_reads VALUES (1)'), /no later PTC model send/u,
+    'waiting for preparation must preserve the actual injected fault')
+  assert.equal(control.prepare('SELECT COUNT(*) AS n FROM owner_native_output_reads').get()?.n, 0)
+})
+
 for (const nextFails of [false, true]) test(`real PTC memory reads archive root/leaf and erase native/spill copies ${nextFails ? 'without a later send' : 'with the normal next send'}`, { timeout: 45_000 }, async t => {
   const prompt = '执行 PTC 记忆读取验收'
   const body = 'The PTC receipt PTC_BODY is independent of the question.' + (nextFails ? '' : ' Long receipt paragraph carrying evidence.'.repeat(85))
@@ -595,10 +629,9 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
   fileId = created.receipt.identity.id
   const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
-  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
+  const db = openMemoryControlDb(join(memoryRoot, 'memory.db'))
   try {
-    if (nextFails) db.exec(`CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
-      WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`)
+    if (nextFails) db.exec(STOP_AFTER_PTC_READ)
     await app.ask(prompt)
     assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 3),
       JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))

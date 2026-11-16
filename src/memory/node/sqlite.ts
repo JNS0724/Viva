@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const APP_DB_PRAGMAS = 'PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = 2000;'
+export const SQLITE_BUSY_TIMEOUT_MS = 2000
+export const APP_DB_PRAGMAS = `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`
 
 let savepoints = 0
 
