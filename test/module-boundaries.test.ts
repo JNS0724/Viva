@@ -76,3 +76,11 @@ test('the guard follows a plugin back into the app instead of stopping at the sr
   assert.equal(cyclesIn(complete).length, 1, 'the app -> plugin -> app cycle must be found')
   assert.equal(entryImports(complete, src).length, 1, 'a plugin may not import the composition root, even for a type')
 })
+
+test('Viva backend calls the memory owner through contracts rather than importing core domain logic', () => {
+  const backend = path.join(source, 'backend') + path.sep
+  const core = path.join(source, 'memory', 'core') + path.sep
+  const offenders = [...graph].flatMap(([file, deps]) => file.startsWith(backend)
+    ? deps.filter(dep => dep.startsWith(core)).map(dep => `${nameOf(file)} -> ${nameOf(dep)}`) : [])
+  assert.deepEqual(offenders, [])
+})

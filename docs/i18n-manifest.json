@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-10",
+  "reviewedOn": "2026-11-17",
   "pairs": [
     {
       "en": "README.md",
@@ -11,8 +11,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "a2fb92b7e2d658dbbc6f8bd4d06da50bfa993be7b747c088b876c961a19339b7",
-      "zhHash": "f16281fad258fbd16d7340224bed4ac2483731bbc5192c2be6e5054e21725a81"
+      "enHash": "1843ffedf0157a1b82c466b7e67879aaf7f04c6675a9290e0724f7869f11bd73",
+      "zhHash": "d31c6af933b29b3fc0cef1f1966f165387d3eab7f33dc316b8ec2a1c6a7970e1"
     },
     {
       "en": "docs/features.md",
@@ -71,8 +71,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "cba704de155a5a6403d1fcb6330fdc94d60d50ded1e9061734596a017814c45a",
-      "zhHash": "7e9d0d5257d751861d5bdadb462da703b60a74b47fbb8e713e5023a9f76a6a24"
+      "enHash": "a5bcf31f0d89612585cbde07a215f218e57f6141fa7cd91fdc7d1064bb793300",
+      "zhHash": "b2388b19d7770173e97ad749ecef4011429b4afa93aa9a503cf0cf41c43999e5"
     },
     {
       "en": "docs/architecture-health.md",
@@ -95,8 +95,14 @@
     {
       "en": "docs/memory-design.md",
       "zh": "docs/memory-design.zh-CN.md",
-      "enHash": "14316dd51f4f355750ed8680fd682b15b4557241467bd25073069fca0a9d63da",
-      "zhHash": "9c26d734c273a33a36d633a4631f1518aa9e72f178d6e49abf195f8292934fce"
+      "enHash": "aacfa4711deabe0ece53f77d30bd70305f4518386935df92034754ad24c68483",
+      "zhHash": "b605673f39e0ae5ffcc1bc7a6f1e199c3fdda8642fd3c3bfbb1c2b5556d4eaf1"
+    },
+    {
+      "en": "docs/memory-reme-plan.md",
+      "zh": "docs/memory-reme-plan.zh-CN.md",
+      "enHash": "e04a439ef2228d915a316f923c4aa8426420360835105dc9470379408f1f1064",
+      "zhHash": "d57d0ed1539bc92b1830d8bc916abc3bea29e9b0b4c1ab312e7d859a6a59182a"
     }
   ],
   "bilingual": [

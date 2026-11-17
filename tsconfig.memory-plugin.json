@@ -1,0 +1,14 @@
+// Standalone memory distribution: emit JS without compiling the Viva application.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "build/memory-plugin-code",
+    "rootDir": ".",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "newLine": "lf"
+  },
+  "include": ["src/memory/**/*.ts", "plugins/memory/**/*.ts"],
+  "exclude": ["plugins/**/node_modules"]
+}

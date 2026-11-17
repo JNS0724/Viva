@@ -1,9 +1,11 @@
+import type { VivaMemoryClient } from './memory-client.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs'
 import path from 'node:path'
-import { MAX_MEMORY_CHARS } from './memory-sensitive.ts'
+import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
+import type { MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
-import type { IpcResults, MemorySummaryView } from '../shared/ipc-results.ts'
+import type { IpcResults, MemoryFileSourceView } from '../shared/ipc-results.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -39,65 +41,58 @@ export function copyIntoWorkspace(files: readonly string[], cwd: string): Array<
   })
 }
 
-function assertMemoryText(value: unknown) {
-  if (typeof value !== 'string' || value.length > MAX_MEMORY_CHARS * 2) throw new Error('invalid memory text')
-  return value
+async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<MemoryFileWriteResult> {
+  try { return { status: 'applied', receipt: await write } }
+  catch (error) {
+    const code = memoryDomainErrorCode.safeParse(error && typeof error === 'object'
+      ? ('domainCode' in error ? error.domainCode : 'code' in error ? error.code : undefined) : undefined)
+    if (code.success) return { status: 'rejected', code: code.data }
+    throw error
+  }
 }
 
-export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { runtime, changingMemory, habits, cwd, chooseDocs, sourceLink, projectScope }: {
-  runtime: import('./memory-runtime.ts').MemoryRuntime,
-  changingMemory: <T>(work: () => T | Promise<T>) => Promise<T>,
+export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope }: {
+  client: VivaMemoryClient,
   habits: () => { text: string, samples: number },
   cwd: () => string,
   chooseDocs: () => Promise<string[] | null>,
   projectScope?: () => ReturnType<typeof import('./memory-project.ts').memoryProjectScope>,
-  sourceLink?: (sourceId: string, segmentId: string) => string | null,
+  sourceLink?: (sourceId: string, segmentId?: string) => string | null,
 }) {
   const handle = handlerOf(ipcMain)
-  const linkFor = (edge: { sourceId: string, conversationId: string | null }) =>
-    edge.conversationId ? sourceLink?.(edge.sourceId, edge.conversationId) ?? null : null
-  const withLinks = (item: import('./memory-store.ts').MemoryEntry) => ({
-    ...item, evidence: item.evidence.map(edge => ({
-      ...edge, link: linkFor(edge),
-    })),
-  })
-  const list = (query = '') => {
-    const result = runtime.listMemories(query)
-    return { ...result, items: result.items.map(withLinks) }
-  }
-  const summary = ({ generated, items }: ReturnType<typeof runtime.profileView>): MemorySummaryView => ({
-    generated,
-    items: items.map(({ text, dependency, evidence }) => ({
-      id: dependency.id, text, source: evidence ? { text: evidence.text, link: linkFor(evidence) } : null,
-    })),
-  })
-  handle('memory:get', () => {
+  handle('memory:get', async () => {
+    const profile = await client.profile(), onboarding = await client.onboarding()
+    const cleanupPending = await client.cleanupPending(), revision = await client.revision()
     const project = projectScope?.()
-    return {
-      profile: runtime.profile(), ...list(), onboarding: runtime.onboarding(),
-      cleanupPending: runtime.cleanupPending(),
-      revision: runtime.revision(), habits: habits(),
-      summaries: { user: summary(runtime.profileView({ kind: 'user' })), project: project ? summary(runtime.profileView(project)) : null },
-    }
+    const fileProfile = await client.fileProfile(project)
+    return { profile, onboarding, cleanupPending, revision, habits: habits(),
+      fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
   })
-  handle('memory:list', list)
-  handle('memory:set-profile', (changes, operation) => changingMemory(() => runtime.setProfile(changes, operation)))
-  handle('memory:add', (text, kind = 'fact', operation) => changingMemory(() => runtime.addMemory(assertMemoryText(text), kind, operation)))
-  handle('memory:update', (id, text, revision, operation) => changingMemory(() => runtime.editMemory(id, assertMemoryText(text), revision, operation)))
-  handle('memory:delete', (id, revision, operation) => changingMemory(() => runtime.deleteMemory(id, revision, operation)))
-  handle('memory:forget', (id, revision, operation) => changingMemory(() => runtime.forget(id, revision, 'forget', operation)))
-  handle('memory:restore', (id, revision, operation) => changingMemory(() => runtime.restore(id, revision, operation)))
-  handle('memory:resolve-conflict-pair', (first, second, resolution, operation, conflictId, interval) => changingMemory(() =>
-    runtime.resolveConflictPair(first, second, resolution.kind === 'replace' ? { ...resolution, text: assertMemoryText(resolution.text) } : resolution,
-      operation, conflictId, interval)))
-  handle('memory:list-invalid', () => runtime.listInvalid().map(withLinks))
-  handle('memory:list-changes', (): IpcResults['memory:list-changes'] => runtime.listChanges().map(change => ({
-    ...change, evidence: change.evidence.map(edge => ({ text: edge.text, link: linkFor(edge) })),
-  })))
-  handle('memory:undo-change', (id, revision, operation, expectedRevisions): Promise<IpcResults['memory:undo-change']> =>
-    changingMemory(() => runtime.undoChange(id, revision, operation, expectedRevisions)))
-  handle('memory:rebuild-indexes', () => runtime.rebuildIndexes())
-  handle('memory:onboarding', runtime.setOnboarding)
+  handle('memory:list-files', client.listFiles)
+  handle('memory:read-file', async (identity, restrictionId): Promise<IpcResults['memory:read-file']> => {
+    const item = await client.readFile(identity, restrictionId)
+    if (!item) return null
+    const link = (source: typeof item.sources[number]): MemoryFileSourceView => ({ ...source,
+      link: source.namespace === 'canonical' ? sourceLink?.(source.sourceId) ?? null : null,
+    })
+    const { sources, stoppedSnapshot, ...file } = item
+    return { ...file, sources: sources.map(link), ...(stoppedSnapshot
+      ? { stoppedSnapshot: { ...stoppedSnapshot, sources: stoppedSnapshot.sources.map(link) } } : {}) }
+  })
+  handle('memory:set-file-enabled', client.setFileEnabled)
+  handle('memory:undo-file', client.undoFile)
+  handle('memory:create-file', request => fileWrite(client.createFile(request)))
+  handle('memory:edit-file', request => fileWrite(client.editFile(request)))
+  handle('memory:forget-file', async request => {
+    const result = await fileWrite(client.forgetFile(request))
+    if (result.status === 'rejected') return result
+    const operation = await client.fileOperation(request.operationId)
+    // A mutation receipt proves withdrawal, not completion of every stored copy.
+    return { ...result, cleanup: operation?.state === 'completed' && operation.cleanup === 'complete' ? 'complete' : 'pending' }
+  })
+  handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))
+  handle('memory:rebuild-indexes', () => client.rebuildIndexes())
+  handle('memory:onboarding', client.setOnboarding)
   handle('memory:add-docs', async () => {
     const files = await chooseDocs()
     return files?.length ? copyIntoWorkspace(files, cwd()) : []

@@ -23,11 +23,14 @@ export type AgentEvent =
   | ({ type: 'waits' } & Scoped & ForegroundWaits)
   | ({ type: 'memory_context' } & Scoped & Payload<'memory_context'>)
   | ({ type: 'report_delivered' } & Scoped & ConversationPayloads['report_delivered'])
+  | { type: 'reports_removed', reportIds: readonly string[] }
   | ({ type: 'error', message: string, context?: ConversationContext })
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
-  | { type: 'memory_changed', failure?: string, memories?: readonly string[], invalidated?: readonly string[] }
+  | { type: 'memory_changed', failure?: string, traceSessions?: readonly string[],
+      erasedOutputs?: readonly { session: string, key: string }[], erasedFeedIds?: readonly string[] }
   | { type: 'files_changed', path: string }
   | { type: 'feed_changed' | 'schedules_changed' }
+  | { type: 'task_closed', taskId: string }
   | { type: 'task_snapshot', snapshot: WindowSnapshot }
   | ({ type: 'task_update' } & Position & Payload<'acp_update'>)
   | ({ type: 'task_permission_closed' } & Position & Payload<'permission_closed'>)

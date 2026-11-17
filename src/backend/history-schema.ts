@@ -1,4 +1,4 @@
-import { operationId } from '../shared/memory-contract.ts'
+import { operationId } from '../memory/contracts/memory-contract.ts'
 import { t } from '../shared/i18n/translate.ts'
 /** Validation shared by the history database and the IPC boundary. */
 import { checkImages, type ImageRef } from '../shared/images.ts'
@@ -15,7 +15,9 @@ const SAFE_ID = /^[A-Za-z0-9-]{1,64}$/
 export interface Receipt { ms: number, tools: number, thoughts: number, stopReason: string }
 
 /** A message as it is kept. */
-export interface StoredMessage { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[], sourceId?: string, key?: string }
+export type StoredMessage = { role: 'user' | 'assistant' | 'note', text: string, receipt: Receipt | null, images?: ImageRef[], sourceId?: string, key?: string,
+  /** Trusted read metadata only; normalizeMessages deliberately ignores caller claims. */
+  delivery?: 'pending' | 'not-sent' }
 
 const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0
 

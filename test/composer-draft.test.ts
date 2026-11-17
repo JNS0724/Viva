@@ -38,6 +38,24 @@ test('an Updates draft keeps its result ID across edits and both composer hosts 
   assert.equal(store.snapshot().feedItemId, undefined)
 })
 
+test('erasure clears exact derived drafts across inactive topics and both hosts while preserving independent attachments', () => {
+  const store = createComposerDraftStore()
+  store.update('main', { ...edit(store.select('inactive'), 'same body'), feedItemId: 'erased-feed', files: [file] })
+  store.update('main', { ...edit(store.select('independent'), 'same body'), images: [image] })
+  store.update('main', { ...edit(store.select('active'), 'same body'), feedItemId: 'erased-feed', images: [image] })
+  const old = store.own('desk')
+  store.eraseFeed(['erased-feed'])
+  assert.equal(store.snapshot().text, '')
+  assert.equal(store.snapshot().feedItemId, undefined)
+  assert.deepEqual(store.snapshot().images, [image])
+  assert.equal(store.update('desk', edit(old, 'late old result')).ok, false)
+  assert.equal(store.update('desk', { ...edit(store.snapshot(), 'copied from retired result'), feedItemId: 'erased-feed' }).ok, false)
+  assert.equal(store.select('inactive').text, '')
+  assert.deepEqual(store.snapshot().files, [file])
+  assert.equal(store.select('independent').text, 'same body')
+  assert.deepEqual(store.snapshot().images, [image])
+})
+
 test('an accepted send receipt cannot clear new typing, another topic, or caller-owned arrays', () => {
   const store = createComposerDraftStore()
   store.update('main', { ...edit(store.snapshot(), 'sent'), files: [file] })

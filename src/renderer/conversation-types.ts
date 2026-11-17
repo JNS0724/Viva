@@ -7,7 +7,9 @@ export interface TurnReceipt { ms: number, stopReason?: string, tools?: number, 
 export interface ConversationMessage extends StreamText {
   role: string
   sourceId?: string
+  delivery?: 'pending' | 'not-sent'
   pending?: boolean
+  feedItemId?: string
   shown?: number
   receipt?: TurnReceipt | null
   restored?: boolean
@@ -84,10 +86,11 @@ export interface ForegroundWaits {
 
 /** Only conversation payloads. Task identity and stream order belong to separate task actions. */
 export interface ConversationPayloads {
-  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean }
+  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean, feedItemId?: string }
   prompt_admitted: { sourceId: string, accepted: boolean }
   user_steer: { text: string, sourceId?: string, via?: string | null }
   steer_failed: { id: string | undefined }
+  steer_delivery: { sourceId: string, delivery: 'pending' | 'not-sent' | 'sent' }
   steer_resent: { at: number }
   agent_turn_started: { at: number, by?: string | null }
   acp_update: { update: ConversationUpdate, at: number }
@@ -96,7 +99,7 @@ export interface ConversationPayloads {
   permission_closed: { requestId: string, at?: number }
   question_request: { questionId: string, questions: readonly QuestionItem[], at: number }
   question_pick: { id: string, label: string }
-  question_answered: { questionId: string, sourceId?: string, answers: readonly QuestionAnswer[], at: number }
+  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number }
   question_closed: { questionId: string, at: number }
   secret_request: AskedSecret & { at: number }
   secret_resolved: { requestId: string, provided: boolean, at: number }

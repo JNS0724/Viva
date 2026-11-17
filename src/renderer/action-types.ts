@@ -1,15 +1,37 @@
 import type { ConversationPayloads } from './conversation-types.ts'
-import type { KeptTask } from '../shared/ipc-results.ts'
+import type { KeptTask, MemoryFileDetailView } from '../shared/ipc-results.ts'
+import type { MemoryFileCreateRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryManagedFileVersion, MemoryFileForgetRequest } from '../memory/contracts/file-management.ts'
 import type { FeedItemView, ScheduleView, FeedPick } from './feed-types.ts'
 import type { ModelDraft, ModelEntry, ModelRow, DiscoveredModel } from './model-types.ts'
 import type { ProposalCard, ProposalDraft } from './proposal-types.ts'
 import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from './capability-types.ts'
 
 type Info = AgentInfo
-type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' | 'sourceId'> & { key?: string }
+type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' | 'sourceId' | 'delivery'> & { key?: string }
 type ReadConversation = { id: string, messages: readonly SavedMessage[], records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
 type Settings = Partial<State['settings']>
 type Review = State['review']
+export type MemoryFileSelection = { identity: MemoryManagedFileIdentity, restrictionId?: string }
+export type MemoryFileDraft = { title: string, text: string }
+export type MemoryFileForget = {
+  id: number
+  request: MemoryFileForgetRequest
+  phase: 'confirm' | 'unconfirmed' | 'pending' | 'complete' | 'conflict'
+  title?: string
+  error?: string
+}
+export type MemoryFileEditor = {
+  id: number
+  draft: MemoryFileDraft
+  retry?: MemoryFileCreateRequest
+  error?: string
+  conflict?: boolean
+} & ({ kind: 'create' } | {
+  kind: 'edit'
+  identity: MemoryManagedFileIdentity
+  version: MemoryManagedFileVersion
+  originalTitle: string
+})
 /** Closed payload table: adding a UI operation requires naming its payload, never an open action dictionary. */
 export interface ActionPayloads extends ConversationPayloads {
   ready: { info: Info }
@@ -26,6 +48,7 @@ export interface ActionPayloads extends ConversationPayloads {
   topic_resumed: { info: Info, parentId: string, at?: number | null, carried?: number | null }
   topic_menu: { open: boolean }
   trace_restored: { conversationId: string, available: boolean, trace: null | Pick<ConversationView, 'thoughts' | 'tools' | 'timeline'> }
+  trace_invalidated: { currentSession: boolean }
   reveal_tick: { dt: number }
   picker_toggle: {}
   picker_close: {}
@@ -56,6 +79,9 @@ export interface ActionPayloads extends ConversationPayloads {
   history_toggle: {}
   history_query: { query: string }
   history_results: { query: string, results: State['history']['results'] }
+  history_results_invalidated: {}
+  reports_removed: { reportIds: readonly string[] }
+  generated_outputs_removed: { copies: readonly { session: string, key: string }[] }
   toast_show: { toast: NonNullable<State['toast']> }
   toast_hide: { key: number }
   feed_open: { kind?: FeedPick['kind'], id?: string }
@@ -64,6 +90,7 @@ export interface ActionPayloads extends ConversationPayloads {
   feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[] }
   feed_busy: {}
   feed_failed: { message: string | null }
+  feed_erased: { ids: readonly string[] }
   files_listed: { path: string, entries: State['files']['folders'][string] }
   files_toggled: { path: string }
   files_selected: { path: string }
@@ -89,31 +116,33 @@ export interface ActionPayloads extends ConversationPayloads {
   models_discovery_pick: { id: string }
   models_discovery_close: {}
   models_adopt: { rows: readonly ModelRow[] }
-  memory_loaded: { data: Partial<State['memory']> }
+  memory_loaded: { data: Pick<State['memory'], 'profile' | 'onboarding' | 'habits'> & { cleanupPending?: number, fileProfile?: State['memory']['fileProfile'] } }
+  memory_load_failed: { message: string }
   memory_open: { view?: string }
   memory_close: {}
   memory_edit: { key: string | null }
-  memory_edit_entry: { target: { id: number, revision: number } | null }
   memory_busy: {}
   memory_failed: { message: string }
   memory_profile_saved: { profile: State['memory']['profile'] }
   memory_summaries_stale: {}
-  memory_query: { query: string }
-  memory_listed: { query: string, items: State['memory']['items'], total: number }
-  memory_added: { memory: State['memory']['items'][number] }
-  memory_removed: { id: string | number }
-  memory_invalid_opened: {}
-  memory_invalid_listed: { items: State['memory']['invalidItems'] }
-  memory_invalid_closed: {}
-  memory_conflict_edit: { key: string | null }
-  memory_change_busy: { busy: boolean }
   memory_index_rebuild: { busy: boolean }
-  memory_changes_opened: {}
-  memory_changes_listed: { changes: State['memory']['changes'] }
-  memory_changes_closed: {}
-  memory_revived: { memory: State['memory']['items'][number] }
   memory_onboarding: { status: State['memory']['onboarding'] }
   memory_docs_added: { docs: State['memory']['docs'] }
+  memory_files_query: { query: string }
+  memory_files_invalidated: {}
+  memory_files_loading: {}
+  memory_files_listed: { query: string, page: MemoryFileListResult, more: boolean }
+  memory_files_list_failed: { message: string }
+  memory_file_select: { selection: MemoryFileSelection | null }
+  memory_file_loading: {}
+  memory_file_read: { selection: MemoryFileSelection, detail: MemoryFileDetailView }
+  memory_file_read_failed: { selection: MemoryFileSelection, message: string }
+  memory_file_editor: { editor: MemoryFileEditor | null }
+  memory_file_write_busy: { busy: boolean }
+  memory_file_write_failed: { message: string }
+  memory_file_forget: { forget: MemoryFileForget | null }
+  memory_file_forget_started: { id: number }
+  memory_file_forgotten: { id: number, cleanup: 'pending' | 'complete' }
   extensions_loaded: { view: Partial<State['extensions']> }
   extensions_busy: {}
   extensions_failed: { message: string }

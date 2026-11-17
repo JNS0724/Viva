@@ -186,9 +186,11 @@ function askedView(message: ThreadMessage): View {
     sentPictures(message.images),
     files.length ? h('div', { class: 'msg-files' }, files.map(fileChip)) : null,
     foldTall(h('div', { class: 'msg-user-text' }, text), foldKey(message)))
-  const notes = [message.steered && t("thread.sent.during.work"), message.via === 'island' && t("thread.sent.from.viva.island"), message.failed && t("thread.not.delivered")].filter(Boolean)
+  const failed = message.failed || message.delivery === 'not-sent'
+  const notes = [message.steered && t("thread.sent.during.work"), message.via === 'island' && t("thread.sent.from.viva.island"),
+    failed && t("thread.not.delivered"), message.delivery === 'pending' && t('thread.delivery.pending')].filter(Boolean)
   if (!notes.length) return bubble
-  return [bubble, h('div', { class: `msg-via${message.failed ? ' msg-via-failed' : ''}`, text: notes.join(' · ') })]
+  return [bubble, h('div', { class: `msg-via${failed ? ' msg-via-failed' : ''}`, text: notes.join(' · ') })]
 }
 
 /** A reply to the agent's question shows what it answers. */
@@ -393,7 +395,7 @@ function cachedView(cache: Map<string, CachedView>, key: string, inputs: readonl
 
 function messageInputs(message: ThreadMessage, traceReady: boolean) {
   return [message.role, message.text, message.shown, message.open, message.receipt, message.images,
-    message.asked, message.steered, message.via, message.failed, message.restored,
+    message.asked, message.steered, message.via, message.failed, message.delivery, message.restored,
     message.role === 'user' ? null : traceReady]
 }
 

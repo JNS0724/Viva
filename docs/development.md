@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-The app runs from out/. scripts/build.mjs emits src/ and plugins/ through TypeScript into matching out/src and out/plugins paths, then copies pages, styles, icons, and plugin manifests. Start, the combined smoke command, and packaging build first. Individual smoke phases require a prior build. Unit tests use source files directly. Type checking is separate: npm run typecheck.
+The app runs from out/. scripts/build.ts emits src/ and plugins/ through TypeScript into matching out/src and out/plugins paths, then copies pages, styles, icons, and plugin manifests. Start, the combined smoke command, and packaging build first. Individual smoke phases require a prior build. Unit tests use source files directly. Type checking is separate: npm run typecheck.
 
 To inspect all eight desktop island states, run `npm start -- --hidden --debug-desk-states`. Right-click the island and choose **Desktop island state preview**. The menu lets you jump to a group, move to the previous or next group, and show the restored-draft variant in group 05. Press Esc while the preview has focus, or use **Exit preview** to return to the live island. The preview window uses sample tasks and attachments in memory.
 
@@ -23,6 +23,14 @@ To inspect all eight desktop island states, run `npm start -- --hidden --debug-d
 | AGENT_CWD | Agent working directory | ./workspace |
 | DSH_BIN | JavaScript entry or executable override | node_modules/@deepseek-ai/dsh/lib/bin.js |
 | DSH_NODE | Development runtime override | App’s Electron |
+
+Use a separate profile to try Viva's daily notes and long-term consolidation:
+
+```bash
+VIVA_DAILY_MEMORY=1 npm start -- --user-data-dir=/path/to/viva-daily-memory
+```
+
+Viva updates a session's daily Markdown note every five completed rounds, using Asia/Shanghai dates. Remaining rounds are queued when leaving the session and recovered when the app restarts. At 23:00 Shanghai time, consolidation scans changed notes from today and yesterday and selects up to five units per run. Search returns five matches by default across readable notes and long-term facts, with a maximum of 50 on request. Results include the matched passages and source references. Long-term facts still pass Viva's original-text and scope checks. The profile's `memory.db` holds the notes and queued jobs. The experiment uses Viva's configured chat model and bundled local embedding model.
 
 ## Embedded dsh
 

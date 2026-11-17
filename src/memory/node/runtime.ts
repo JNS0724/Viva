@@ -1,0 +1,54 @@
+import { randomUUID } from 'node:crypto'
+import { createMemoryRuntime as createCoreMemoryRuntime } from '../core/memory-runtime.ts'
+import type { MemoryRuntimeResources } from '../core/ports/runtime.ts'
+import type { MemoryStore } from './memory-store.ts'
+import { memoryHash } from './memory-store.ts'
+import { createEffects } from './effects.ts'
+import { openMemoryNotes } from './memory-note-store.ts'
+import { openMemoryDocuments } from './memory-document-store.ts'
+import { openMemoryFileIndex } from './memory-file-index.ts'
+import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
+import { openMemoryFileCatalog } from './memory-file-catalog.ts'
+import { erasedDocumentSource } from '../core/memory-document-restrictions.ts'
+import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
+
+export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRuntime>[0], 'store' | 'resources'> & { store: MemoryStore }
+
+/** Open the platform resources consumed through explicit core ports. */
+export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore, now?: () => number }): MemoryRuntimeResources {
+  const effects = createEffects({ db: store.db, now, onError: () => console.error('[memory] durable memory queue failed') })
+  const resources: MemoryRuntimeResources = {
+    sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
+    identity: { newId: randomUUID, hash: memoryHash },
+    effects,
+    openFileRestrictions: () => openMemoryFileRestrictions(store.db),
+    openFileIndex: () => openMemoryFileIndex({ db: store.db, now }),
+    openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
+    openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
+    openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed, erasures: store.fileErasures,
+      externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
+      expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned,
+      manual: policy?.manualCurrent && { current: policy.manualCurrent, token: memorySourceToken, workspace: memorySourceWorkspace,
+        commit: store.insertManualFileSource, retainsText: store.manualFileRetainsText },
+      source(id) {
+        const source = store.readSource(id)
+        return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source),
+          text: source.text, erasure: erasedDocumentSource(source) } : undefined
+      },
+    }),
+  }
+  return resources
+}
+
+/** Default Node assembly. No Electron, Viva translation, DSH or parent-process bridge is required. */
+export function createMemoryRuntime(options: NodeMemoryRuntimeOptions) {
+  const resources = openMemoryRuntimeResources(options)
+  try {
+    return createCoreMemoryRuntime({ ...options, resources })
+  } catch (error) {
+    resources.effects.close()
+    throw error
+  }
+}
+export { MAX_RECALL_CHARS, MAX_DEEP_RECALL_CHARS } from '../core/memory-runtime.ts'
+export type { MemoryWithdrawal, MemoryRuntime } from '../core/memory-runtime.ts'

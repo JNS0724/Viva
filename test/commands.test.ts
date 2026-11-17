@@ -68,6 +68,6 @@ test('a query is marked where its channel is defined; the rest are commands', ()
   const channels = Object.keys(IPC_ARGS) as Channel[]
   for (const channel of QUERY_CHANNELS) assert.ok(channels.includes(channel), channel)
   assert.ok(QUERY_CHANNELS.has('history:read') && QUERY_CHANNELS.has('memory:get'), 'a schema over several lines is marked too')
-  assert.ok(isCommand('schedules:accept') && isCommand('memory:delete') && !isCommand('memory:get') && !isCommand('agent:prompt'))
+  assert.ok(isCommand('schedules:accept') && isCommand('memory:edit-file') && !isCommand('memory:get') && !isCommand('agent:prompt'))
   assert.ok(IPC_ARGS['history:read'].safeParse(['c-1']).success, 'the mark leaves the check as it was')
 })

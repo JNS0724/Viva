@@ -1,9 +1,9 @@
 /**
  * What the fake model says in the showcase run (test/smoke/smoke-showcase.ts), which makes the README's pictures
- * and demo: answers that read like real use, on a few fixed prompts. Anything else falls back to fake-llm.js's
+ * and demo: answers that read like real use, on a few fixed prompts. Anything else falls back to fake-llm.ts's
  * rules. Background preparation is slowed down a little, so the demo can show it at work.
  */
-import { lastWords, questionOf } from './fake-llm.js'
+import { lastWords, questionOf } from './fake-llm.ts'
 
 export const SHOWCASE_PROMPTS = Object.freeze({
   report: '把这周的进展整理成一页，用表格列出各模块',
@@ -34,7 +34,7 @@ const partsOf = (message) => (Array.isArray(message?.content) ? message.content 
 const afterTool = (request) => partsOf(request.messages.at(-1)).some((part) => part.type === 'tool_result')
 /** The tool the model called just before, when this request carries its result. */
 const toolBefore = (request) => (afterTool(request) ? partsOf(request.messages.at(-2)).find((part) => part.type === 'tool_use')?.name ?? null : null)
-/** What the user said this turn, as fake-llm.js reads it (the memory block and tool results aside). */
+/** What the user said this turn, as fake-llm.ts reads it (the memory block and tool results aside). */
 const wordsOf = (request) => (afterTool(request) ? lastWords(request.messages) : questionOf(request.messages))
 
 /** A schedule for the weekly report: every Friday at 16:00, its prompt written from what was said. */
@@ -55,10 +55,10 @@ function cleanupAnswer(request) {
   return { tool: { name: shell.name, input: { command, description: '删除 drafts 里的临时文件' } } }
 }
 
-/** @returns an answer for a showcase prompt, or null to let fake-llm.js decide */
+/** @returns an answer for a showcase prompt, or null to let fake-llm.ts decide */
 export function showcaseDecide(request) {
   const system = systemText(request)
-  // dsh's Auto review of a pending step: fake-llm.js plays the reviewer.
+  // dsh's Auto review of a pending step: fake-llm.ts plays the reviewer.
   if (system.includes('REVIEW_POLICY') || JSON.stringify(request.messages).includes('REVIEW_POLICY')) return null
   const tool = toolBefore(request)
   if (tool === 'schedule_create') return scheduleAnswer(request)

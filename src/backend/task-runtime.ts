@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
+import { autoTitle, type StoredMessage } from './history-schema.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
 import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
@@ -9,6 +10,7 @@ import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type T
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
+import { combineMemoryProvenance, memoryErasureEvidence, rawMemorySources, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * TaskRuntime (docs/system-design.md §11.2): the one writer of the background tasks. The agent starts a task
@@ -73,7 +75,8 @@ const titleOf = (words: string) => {
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
 type StartedTask = { ok: boolean, taskId?: string, reason?: string }
 type Maybe<T> = T | Promise<T>
-type AdmitBrief = (taskId: string) => boolean
+type BriefAdmission = boolean | MemoryProvenance
+type AdmitBrief = (taskId: string) => Maybe<BriefAdmission>
 /** What the runtime asks of dsh for its tasks (compose.ts taskAgent, over acp-bridge.ts). */
 export interface TaskAgent {
   startTask: () => Maybe<StartedTask>
@@ -106,6 +109,8 @@ export interface TaskRuntimeDeps {
   onEnd?: (taskId: string, status: string) => void
   /** The effects queue (effects.ts): a run's report is queued with its end. Without it, no report is queued. */
   effects?: Pick<Effects, 'queue' | 'cancel' | 'cancelStarting'> | null
+  /** Capture the completed run's owner-authenticated inputs before creating a report. */
+  captureReportMemory?: (taskId: string) => Promise<MemoryProvenance>
   now?: () => number
   newRunId?: () => string
 }
@@ -120,12 +125,16 @@ import type { WindowSnapshot } from '../shared/ipc-results.ts'
 export type TaskPiece = { type: string, taskId: string, runId: string, taskSeq: number, [field: string]: unknown }
 export type TaskPush = { type: 'task_snapshot', taskId: string, snapshot: WindowSnapshot } | TaskPiece
 
-export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {},
+type PendingEnd = { runId: string, event: Record<string, unknown>, memory?: MemoryProvenance, timer?: unknown }
+
+export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, captureReportMemory,
   waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
   const later = timers.later ?? setTimeout
   const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
   /** taskId → the end of its run still to be kept, and its next try. */
-  const pendingEnds = new Map<string, { runId: string, timer: unknown }>()
+  const revoked = new Set<string>()
+  let disposed = false
+  const pendingEnds = new Map<string, PendingEnd>()
   /** Snapshots of a change still being written, and what is let go of once it commits (`change`), not before. */
   let queued: TaskSnapshot[] = []
   let afterCommit: Array<() => void> = []
@@ -194,13 +203,24 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   function persist(taskId: string, messages: readonly unknown[]) {
     const task = tasks.get(taskId)
     const found = task ? db.get(task.segmentId) : null
-    if (!task || !found) return
+    if (revoked.has(taskId) || !task || !found) return
     db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
   }
   const taskWords = createTaskWords({
     ...timers, persist,
     onError: (err) => console.error('[tasks] could not save what the task said:', err.message),
   })
+
+  function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
+    const message: StoredMessage = { role: 'user', text, receipt: null }
+    if (typeof admission !== 'object') return message
+    const key = `generated-task:${randomUUID()}`
+    if (!db.bindGeneratedCopy(taskId, key, 'user', text, [memoryErasureEvidence(admission)])) throw new Error(t('main.memory.context.stale'))
+    return { ...message, key }
+  }
+
+  const admitted = (taskId: string, result: BriefAdmission) => !revoked.has(taskId)
+    && (typeof result === 'boolean' ? result : !db.evidenceErased(result))
 
   const taskById = (taskId: unknown) => {
     const task = tasks.get(taskId as string)
@@ -268,27 +288,30 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return { ok: false as const, problem: taskProblems()[reason] ?? t("main.task-ipc.could.not.start.in.background", { reason }) }
     }
     const taskId = started.taskId
-    if (admit && !admit(taskId)) {
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) {
       await agent.closeTask(taskId)
       return { ok: false, problem: t('main.memory.context.stale') }
     }
     const runId = newRunId()
-    const task = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
+    const { initial, task } = keepOrClose(taskId, () => change('task.started', { taskId, runId }, () => {
+      const initial = briefMessage(taskId, text, evidence)
       // A conversation whose only turns started background tasks may have no messages kept yet. Keep its identity too,
       // otherwise the task points at an absent parent and its history row cannot return after a restart.
       if (!db.get(main.id)) db.save(main, [], { keepEmpty: true })
-      const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [{ role: 'user', text, receipt: null }])
+      const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [initial])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(name?.trim() || text), words: text }
-      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent' })
+      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent',
+        ...(typeof evidence === 'object' ? { requestMemory: evidence } : {}) })
       opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
-      return begun
+      return { initial, task: begun }
     }))
     counted()
     tasks.set(task.id, { ...task, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
-    taskWords.track(task.id, [{ role: 'user', text }])
+    taskWords.track(task.id, [initial])
     agent.promptTask(task.id, text)
     return { ok: true as const, task }
   }
@@ -316,14 +339,26 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
-    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultPreview: snapshot.resultPreview })
+    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview })
+    const host = typeof entry.next === 'string' ? db.get(entry.next) : null
+    const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
+    const end = pendingEnds.get(snapshot.taskId)
+    const captured = end?.runId === snapshot.runId ? end.memory : undefined
+    const memory = captured ? combineMemoryProvenance(entry.requestMemory ?? null, captured) : undefined
+    // A title can change independently of the task, including after a derived feed continuation.
+    const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
+      titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
+    )
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
       host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview, token: randomUUID().replaceAll('-', ''),
       // Its background, for a note given while the conversation is on another topic.
       request: typeof entry.words === 'string' ? entry.words.slice(0, REQUEST_CHARS) : '',
-      topic: typeof entry.next === 'string' ? db.get(entry.next)?.conversation.title || null : null,
+      topic: titleAllowed ? host?.conversation.title || null : null, ...(memory ? { memory } : {}),
       startedAt: typeof entry.startedAt === 'number' ? entry.startedAt : null, by: entry.by === 'agent' || entry.by === 'user' ? entry.by : null }
-    effects?.queue(REPORT, reportId(snapshot.taskId, snapshot.runId), report, now() + GATHER_MS)
+    // Only a verified run can create a host report when an owner is configured.
+    if (!captureReportMemory || memory && !db.evidenceErased(memory)) {
+      effects?.queue(REPORT, reportId(snapshot.taskId, snapshot.runId), report, now() + GATHER_MS)
+    }
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED).forEach((old) => {
       store.remove(old.id)
       afterCommit = [...afterCommit, () => registry.remove(old.id)]
@@ -391,10 +426,12 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     if (!attached.has(taskId)) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
-      if (!taken.ok) return { ok: false, problem: taskProblems().gone }
+      if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().gone }
       attached = new Set([...attached, taskId])
     }
-    if (admit && !admit(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
+    const brief = briefMessage(taskId, text, evidence)
     const { endedAt: _endedAt, status: _status, ...going } = kept
     const runId = newRunId()
     const running = { ...going, runId }
@@ -407,7 +444,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     counted()
     tasks.set(taskId, running)
     if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
-    taskWords.userSaid(taskId, text)
+    taskWords.userSaid(taskId, text, brief.key)
     agent.promptTask(taskId, text)
     return { ok: true }
   }
@@ -430,8 +467,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
 
   async function resumeReserved(taskId: string, words: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
-    if (!taken.ok) return { ok: false, problem: taskProblems().lost }
-    if (admit && !admit(taskId)) return { ok: false, problem: t('main.memory.context.stale') }
+    if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().lost }
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
+    const brief = briefMessage(taskId, words, evidence)
     const runId = newRunId()
     const running = { ...kept, runId }
     change('task.restarted', { taskId, runId }, () => {
@@ -445,7 +484,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
-    const said = [...before, { role: 'user', text: words, receipt: null }]
+    const said = [...before, brief]
     taskWords.track(taskId, said)
     agent.promptTask(taskId, words)
     return { ok: true, task: restoredSummary(kept), messages: said }
@@ -480,13 +519,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * Words into a task's turn: into what it said, and to the window as a piece of its run's stream (`task_steered`),
    * numbered with that write, so a read of the task (`finished`) has them exactly when its mark counts the piece.
    */
-  function said(taskId: string, text: string) {
-    taskWords.userSaid(taskId, text)
+  function said(taskId: string, text: string, key?: string) {
+    taskWords.userSaid(taskId, text, key)
     const runId = registry.runOf(taskId)
     if (runId !== null) pushPiece(taskId, runId, { type: 'task_steered', text })
   }
 
   async function agentMessage(taskId: string, text: string, admit?: AdmitBrief) {
+    if (attached.has(taskId) && pendingEnds.has(taskId)) throw new Error(taskProblems().going)
     const kept = keptTask(taskId)
     if (isEnded(kept)) {
       const asked = await ask(taskId, text, admit)
@@ -498,8 +538,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       if (!taken.ok) throw new Error(taken.problem)
       return { taskId, delivered: 'taken up again' }
     }
-    if (admit && !admit(taskId)) throw new Error(t('main.memory.context.stale'))
-    said(taskId, text)
+    const evidence = admit ? await admit(taskId) : true
+    if (!admitted(taskId, evidence)) throw new Error(t('main.memory.context.stale'))
+    said(taskId, text, briefMessage(taskId, text, evidence).key)
     const steered = await agent.steerTask(taskId, text)
     if (!steered?.ok) throw new Error(t('task-actions.this.task.has.stopped.your.message.was'))
     return { taskId, delivered: 'into its turn' }
@@ -510,12 +551,13 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * The end is one change: what it said saved, how it ended kept (`ended`), and the `task.ended` event, together.
    */
   function receive(raw: unknown) {
+    if (disposed) return
     const event = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
     const taskId = typeof event.taskId === 'string' ? event.taskId : ''
     const runId = registry.runOf(taskId)
     // No task's: dsh speaks of one unknown, or no longer at work.
-    if (runId === null) return
-    if (event.type === 'task_end') return endRun(taskId, runId, event, 0)
+    if (revoked.has(taskId) || runId === null) return
+    if (event.type === 'task_end') return captureEnd(taskId, runId, event)
     // Taken in first, its piece then, the snapshot it changed after (queued, not pushed, while it is taken in).
     depth += 1
     try {
@@ -532,11 +574,25 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     pushQueued()
   }
 
+  function captureEnd(taskId: string, runId: string, event: Record<string, unknown>) {
+    if (registry.snapshotOf(taskId)?.endedAt != null || pendingEnds.get(taskId)?.runId === runId) return
+    const pending: PendingEnd = { runId, event }
+    pendingEnds.set(taskId, pending)
+    if (!captureReportMemory) return endRun(taskId, pending, 0)
+    const settle = (memory?: MemoryProvenance) => {
+      if (pendingEnds.get(taskId) !== pending || registry.runOf(taskId) !== runId || revoked.has(taskId)) return
+      pending.memory = memory
+      endRun(taskId, pending, 0)
+    }
+    void Promise.resolve().then(() => captureReportMemory(taskId)).then(settle, () => settle())
+  }
+
   /**
    * A run's end, kept: what it said, how it ended and `task.ended` together; then the window's snapshot and its result
    * back to the conversation. Refused by the database, nothing changed, so it is tried again later, with the same run.
    */
-  function endRun(taskId: string, runId: string, event: Record<string, unknown>, attempt: number) {
+  function endRun(taskId: string, pending: PendingEnd, attempt: number) {
+    const { runId, event } = pending
     const status = endedStatus(event.stopReason)
     try {
       change('task.ended', { taskId, runId, status }, () => {
@@ -548,21 +604,23 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     } catch (err) {
       const wait = END_RETRY_MS[Math.min(attempt, END_RETRY_MS.length - 1)]
       console.error(`[tasks] could not keep how a task ended, trying again in ${wait / 1000}s:`, err instanceof Error ? err.message : String(err))
-      const timer = later(() => {
-        pendingEnds.delete(taskId)
+      pending.timer = later(() => {
+        pending.timer = undefined
         // Only the same run: one asked again, taken up, or interrupted since is not ended by this.
-        if (registry.runOf(taskId) === runId) endRun(taskId, runId, event, attempt + 1)
+        if (pendingEnds.get(taskId) === pending && registry.runOf(taskId) === runId && !revoked.has(taskId)) {
+          endRun(taskId, pending, attempt + 1)
+        }
       }, wait)
-      pendingEnds.set(taskId, { runId, timer })
       return
     }
-    onEnd(taskId, status)
+    pendingEnds.delete(taskId)
+    if (!disposed) onEnd(taskId, status)
   }
 
   /** An end still to be kept is let go: its task closed, or a new run of it begun (the end was of the run before). */
   function letEndGo(taskId: string) {
     const pending = pendingEnds.get(taskId)
-    if (pending) cancel(pending.timer)
+    if (pending?.timer !== undefined) cancel(pending.timer)
     pendingEnds.delete(taskId)
   }
 
@@ -583,6 +641,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    * needs); one the user closed had its report cancelled with it.
    */
   function superseded(taskId: string, runId: string): boolean {
+    if (revoked.has(taskId)) return true
     let task: { status: string, runId: string }
     try {
       task = (registry.query({ op: 'get', taskId }, { taskId }) as { task: { status: string, runId: string } }).task
@@ -597,7 +656,36 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (entry && typeof entry.runId === 'string' && entry.runId) effects?.cancel(REPORT, reportId(entry.id, entry.runId))
   }
 
+  /** Owner-authored erasure already committed to host storage; discard volatile copies before acknowledging. */
+  async function revokeMemorySessions(sessionIds: readonly string[]) {
+    const ids = sessionIds.filter(id => tasks.has(id) || registry.runOf(id) !== null || beginning.has(id) || revoked.has(id))
+    for (const id of sessionIds) revoked.add(id)
+    for (const id of ids) {
+      letEndGo(id)
+      taskWords.drop(id)
+      tasks.delete(id)
+      registry.remove(id)
+      detach(id)
+      seqs.delete(id)
+      openings.delete(id)
+      queued = queued.filter(snapshot => snapshot.taskId !== id)
+      publish({ type: 'task_closed', taskId: id, runId: '', taskSeq: 0 })
+    }
+    await Promise.all(ids.map(id => agent.closeTask(id)))
+  }
+
   return {
+    revokeMemorySessions,
+    dispose() {
+      disposed = true
+      for (const [taskId, pending] of pendingEnds) {
+        if (pending.timer !== undefined) cancel(pending.timer)
+        // DSH already ended. Preserve the terminal task while the DB is open,
+        // even when an unverified report must be withheld at shutdown.
+        if (registry.runOf(taskId) === pending.runId && !revoked.has(taskId)) endRun(taskId, pending, 0)
+        letEndGo(taskId)
+      }
+    },
     /** The window's channels (task-ipc.ts). */
     window: {
       finished,

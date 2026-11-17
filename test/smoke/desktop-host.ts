@@ -160,11 +160,31 @@ export async function checkDesktopHost(application: ElectronApplication, desktop
 }
 
 /** CDP sends trusted Chromium pointer events. Supply their screen coordinates to the native mover as well. */
-export async function checkDesktopDragRelease(application: ElectronApplication, desktop: Page): Promise<void> {
+export async function checkDesktopDragRelease(application: ElectronApplication, desktop: Page, info: TestInfo): Promise<void> {
   const avatar = desktop.locator('.isl-anchor')
   const stage = desktop.locator('#desk')
   await expect(avatar).toBeVisible()
   const cdp = await desktop.context().newCDPSession(desktop)
+  const pointerAudit = await desktop.evaluateHandle(() => {
+    const rows: object[] = []
+    const events = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'gotpointercapture', 'lostpointercapture', 'blur', 'focus']
+    const record = (event: Event) => {
+      const anchor = document.querySelector<HTMLElement>('.isl-anchor')
+      const pointer = event instanceof PointerEvent ? event : undefined
+      const bounds = event.type === 'pointerdown' ? anchor?.getBoundingClientRect() : undefined
+      rows.push({ type: event.type, at: performance.now(), trusted: event.isTrusted,
+        target: event.target instanceof Element ? String(event.target.className) : 'window',
+        dragging: document.querySelector<HTMLElement>('#desk')?.dataset.dragging, focused: document.hasFocus(),
+        ...(pointer ? { pointerId: pointer.pointerId, buttons: pointer.buttons, x: pointer.clientX, y: pointer.clientY,
+          captured: anchor?.hasPointerCapture(pointer.pointerId) } : {}),
+        ...(bounds ? { anchor: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height } } : {}) })
+      if (rows.length > 150) rows.shift()
+    }
+    for (const event of events) window.addEventListener(event, record, true)
+    return { read: () => rows, close: () => { for (const event of events) window.removeEventListener(event, record, true) } }
+  })
+  let phase = 'setup'
+  let failed = false
   const audit = await application.evaluateHandle(({ app, BrowserWindow, screen }) => {
     const desk = globalThis.vivaAutomation!.desk()!
     const host = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().endsWith('/desk.html'))!
@@ -205,6 +225,7 @@ export async function checkDesktopDragRelease(application: ElectronApplication, 
     await expect(avatar).toBeFocused()
     await expect(avatar).toHaveCSS('outline-style', 'solid')
     for (const outcome of ['blur', 'released-capture', 'held-capture', 'escape', 'quick-release'] as const) {
+      phase = outcome
       const origin = (await audit.evaluate(audit => audit.read())).bounds
       const delta = outcome === 'released-capture' ? -112 : 112
       const point = { x: origin.x + mouse.x + delta, y: origin.y + mouse.y + 96 }
@@ -235,19 +256,23 @@ export async function checkDesktopDragRelease(application: ElectronApplication, 
               node.dispatchEvent(new PointerEvent('lostpointercapture', { bubbles: true, pointerId, buttons: 0 }))
             }, mousePointer)
           } else if (outcome === 'held-capture') {
-            const captured = await avatar.evaluateHandle((node, pointerId) => {
-              const events: number[] = []
-              node.addEventListener('lostpointercapture', event => {
-                if (event instanceof PointerEvent) events.push(event.buttons)
-              }, { once: true })
+            // Exercise the held-capture branch with a known pressed state. Electron's
+            // offscreen automation can report a native capture loss with zero buttons
+            // even before the driver sends mouseup.
+            const capture = await avatar.evaluate((node, pointerId) => {
+              const before = node.hasPointerCapture(pointerId)
               node.releasePointerCapture(pointerId)
-              return events
+              const released = node.hasPointerCapture(pointerId)
+              node.dispatchEvent(new PointerEvent('lostpointercapture', {
+                bubbles: true, pointerId, buttons: 1, pointerType: 'mouse', isPrimary: true,
+              }))
+              return { before, released, recovered: node.hasPointerCapture(pointerId) }
             }, mousePointer)
-            try {
-              await desktop.mouse.move(mouse.x + 15, mouse.y + 8)
-              await expect.poll(() => captured.evaluate(events => [...events])).toEqual([1])
-              expect(await avatar.evaluate((node, id) => node.hasPointerCapture(id), mousePointer)).toBe(true)
-            } finally { await captured.dispose() }
+            expect(capture).toEqual({ before: true, released: false, recovered: true })
+            await desktop.mouse.move(mouse.x + 15, mouse.y + 8)
+            await expect(stage).toHaveAttribute('data-dragging', 'true')
+            const held = await audit.evaluate(audit => audit.read())
+            expect(held.actions).toEqual(['start'])
           } else {
             await desktop.keyboard.press('Escape')
           }
@@ -281,9 +306,21 @@ export async function checkDesktopDragRelease(application: ElectronApplication, 
     await expect(avatar).not.toBeFocused()
     await avatar.press('Enter')
     await expect(avatar).toHaveAttribute('aria-expanded', 'false')
+  } catch (error) {
+    failed = true
+    throw error
   } finally {
-    await audit.evaluate(audit => audit.restore())
-    await audit.dispose()
-    await cdp.detach()
+    try {
+      await info.attach('desktop-drag-events', { contentType: 'application/json',
+        body: JSON.stringify({ phase, native: await audit.evaluate(audit => audit.read()),
+          pointers: await pointerAudit.evaluate(audit => audit.read()) }, null, 2) })
+    } catch (error) { console.warn('[smoke] could not save desktop drag events', error) }
+    const restored = await Promise.allSettled([pointerAudit.evaluate(audit => audit.close()), audit.evaluate(audit => audit.restore())])
+    const disposed = await Promise.allSettled([pointerAudit.dispose(), audit.dispose(), cdp.detach()])
+    const errors: unknown[] = [...restored, ...disposed].flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length) {
+      if (failed) console.warn('[smoke] desktop drag cleanup failed', errors)
+      else throw new AggregateError(errors, 'Desktop drag cleanup failed')
+    }
   }
 }

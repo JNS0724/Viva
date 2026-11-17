@@ -1,3 +1,11 @@
+import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult } from '../memory/contracts/file-management.ts'
+
+export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
+export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources' | 'stoppedSnapshot'> & {
+  sources: MemoryFileSourceView[]
+  stoppedSnapshot?: Omit<NonNullable<MemoryFileDetail['stoppedSnapshot']>, 'sources'> & { sources: MemoryFileSourceView[] }
+}
+
 /**
  * What the main process answers on a channel (ipc-contract.ts says what may be sent), for the channels whose answer
  * is written out so far: the background tasks' (task-runtime.ts). The backend's handlers return these types and the
@@ -51,36 +59,6 @@ export type KeptTask = ({ mark?: TaskMark }) & (
  */
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
-export interface MemorySourceLink { text: string | null, link: string | null }
-
-export interface MemorySummaryView {
-  generated: boolean
-  items: ReadonlyArray<{ id: number, text: string, source: MemorySourceLink | null }>
-}
-
-export interface MemoryChangeRecord {
-  id: number
-  revision: number
-  kind: 'correct' | 'supersede' | 'end'
-  status: 'applied' | 'undone' | 'withdrawn' | 'pending'
-  before: string | null
-  after: string | null
-  scope: import('./memory-contract.ts').MemoryScope | null
-  from: number | null
-  to: number | null
-  effectiveAt: number | null
-  createdAt: number
-  expectedRevisions: readonly { id: number, revision: number }[]
-  evidence: readonly MemorySourceLink[]
-}
-
-export type UndoMemoryChangeResult = { status: 'applied' } | {
-  status: 'conflict',
-  current: readonly { id: number, revision: number }[],
-}
-
-export type MemoryDeleteResult = { status: 'stopped' | 'cleared' }
-
 export interface IpcResults {
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void
@@ -88,7 +66,8 @@ export interface IpcResults {
   'island:begin-image-import': string | null
   'draft:append-files': void
   'agent:info': import('./agent-info.ts').AgentInfo
-  'agent:prompt': void
+  /** A negative receipt proves native dispatch never began; void preserves normal turn completion. */
+  'agent:prompt': void | { accepted: false, message: string, sourceIds: readonly string[] }
   'agent:steer': import('./agent-info.ts').SteerResult
   'agent:cancel': void
   'agent:new-session': import('./agent-info.ts').AgentInfo
@@ -104,11 +83,14 @@ export interface IpcResults {
   'agent:waits': true
   'task:close': void
   'task:stop': void
-  'memory:list-changes': readonly MemoryChangeRecord[]
-  'memory:delete': MemoryDeleteResult
-  'memory:undo-change': UndoMemoryChangeResult
-  'memory:rebuild-indexes': { fullText: boolean, semantic: boolean }
-  'memory:resolve-conflict-pair': boolean
+  'memory:list-files': MemoryFileListResult
+  'memory:read-file': MemoryFileDetailView | null
+  'memory:set-file-enabled': MemoryFileMutationResult
+  'memory:undo-file': MemoryFileMutationResult
+  'memory:create-file': MemoryFileWriteResult
+  'memory:edit-file': MemoryFileWriteResult
+  'memory:forget-file': MemoryFileForgetResult
+  'memory:rebuild-indexes': { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }
 }
 
 export type TaskStatus = 'running' | 'waiting' | 'done' | 'stopped' | 'error' | 'interrupted'

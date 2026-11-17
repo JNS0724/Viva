@@ -11,6 +11,5 @@ export const PROFILE_FIELDS: readonly ProfileField[] = Object.freeze([
   { key: 'preferences', get label() { return t('profile.preferences') }, get hint() { return t('profile.preferences.hint') } },
 ])
 
-export const PROFILE_KEYS: readonly string[] = Object.freeze(PROFILE_FIELDS.map((field) => field.key))
-export const MAX_FIELD_CHARS = 1000
+export { PROFILE_KEYS, MAX_FIELD_CHARS } from '../memory/contracts/profile.ts'
 

@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** Where `npm run build` puts the app as it runs (scripts/build.mjs), laid out like the repository. */
+/** Where `npm run build` puts the app as it runs (scripts/build.ts), laid out like the repository. */
 export const BUILD_DIR = 'out'
 
 /**

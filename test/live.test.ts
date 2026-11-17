@@ -74,3 +74,125 @@ test('the report puts both launches together, failures first, and compares with 
   assert.match(markdown, /上次 2\/2/, 'a scenario worse than last time says so')
   assert.match(markdown, /通过 2 \/ 3/)
 })
+
+/** Live helpers execute their actual page-side API calls without starting a paid model. */
+function memoryWindow(api: object): import('./smoke/smoke-kit.ts').SmokeWindow {
+  return { webContents: { executeJavaScript: async (code: string) => {
+    const { runInNewContext } = await import('node:vm')
+    return runInNewContext(code, { window: { agent: api } }) as unknown
+  } } } as import('./smoke/smoke-kit.ts').SmokeWindow
+}
+
+test('live file discovery reads full paginated bodies and ignores stopped or superseded historical evidence', async () => {
+  const { memoryFilesWith } = await import('./smoke/live-kit.ts')
+  const detail = (id: string, active = true, applicability: 'current' | 'superseded' = 'current'): import('../src/shared/ipc-results.ts').MemoryFileDetailView => ({
+    identity: { kind: 'digest', workspace: 'workspace', id }, title: 'A title without the search token', path: `digest/wiki/${id}.md`,
+    version: { contentRevision: id, usageVersion: 1, policyToken: id }, enabled: active, applicability,
+    actions: { setEnabled: true, edit: false, forget: false, undo: null }, markdown: 'Only the body has NEEDLE.', sources: [],
+  })
+  const items = [detail('disabled', false), detail('old', true, 'superseded'), detail('current')]
+  const queries: object[] = []
+  const win = memoryWindow({
+    async listMemoryFiles(request: { cursor?: { offset: number } }) {
+      queries.push(request)
+      const offset = request.cursor?.offset ?? 0
+      const { markdown: _markdown, sources: _sources, ...summary } = items[offset]!
+      return { status: 'ok', snapshot: 'snapshot', items: [summary], nextCursor: offset < 2 ? { snapshot: 'snapshot', offset: offset + 1 } : null }
+    },
+    async readMemoryFile(identity: { id: string }) { return items.find(item => item.identity.id === identity.id) ?? null },
+  })
+  assert.deepEqual((await memoryFilesWith(win, 'NEEDLE')).map(item => item.identity.id), ['current'])
+  assert.equal(queries.length, 3, 'later pages cannot disappear behind a title query')
+  assert.ok(queries.every(query => !('query' in query)))
+  assert.deepEqual((await memoryFilesWith(win, 'NEEDLE', true)).map(item => item.identity.id), ['disabled', 'old', 'current'])
+})
+
+test('live file cleanup replays an unconfirmed operation and never labels a pending replica as fully erased', async t => {
+  const { randomUUID } = await import('node:crypto')
+  const { scratch } = await import('./fixtures/scratch.js')
+  const { openMemoryOwner } = await import('../src/memory/node/owner.ts')
+  const { memoryFileMutationResult } = await import('../src/memory/contracts/file-management.ts')
+  const { memoryOperationOutcome } = await import('../src/memory/contracts/service.ts')
+  const { forgetMemories, memoryFilesWith } = await import('./smoke/live-kit.ts')
+  const { dir, defer } = scratch(t, 'viva-live-file-cleanup-')
+  const owner = openMemoryOwner({ root: dir, hostNamespace: 'live-fixture',
+    compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => owner.close())
+  await owner.recover()
+  const created = memoryFileMutationResult.parse(await owner.handleHost('createFile', {
+    args: [{ operationId: randomUUID(), title: 'General note', text: 'A live cleanup NEEDLE.' }] }))
+  const requests: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest[] = []
+  const win = memoryWindow({
+    listMemoryFiles: (request: import('../src/memory/contracts/file-management.ts').MemoryFileListRequest) => owner.handleHost('listFiles', { args: [request] }),
+    readMemoryFile: (identity: import('../src/memory/contracts/file-management.ts').MemoryManagedFileIdentity, restriction?: string) =>
+      owner.handleHost('readFile', { args: [identity, restriction] }),
+    async forgetMemoryFile(request: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest) {
+      requests.push(request)
+      const receipt = await owner.handleHost('forgetFile', { args: [request] })
+      if (requests.length === 1) throw new Error('Owner committed; the response was lost')
+      return { status: 'applied', receipt, cleanup: 'pending' }
+    },
+  })
+  assert.equal((await memoryFilesWith(win, 'NEEDLE')).length, 1)
+  await forgetMemories(win, 'NEEDLE')
+  assert.equal(requests.length, 2)
+  assert.equal(JSON.stringify(requests[0]), JSON.stringify(requests[1]))
+  assert.equal((await memoryFilesWith(win, 'NEEDLE', true)).length, 0)
+  assert.equal(owner.runtime.readFile(created.identity), null)
+  const outcome = memoryOperationOutcome.parse(await owner.handleHost('getOperation', { operationId: requests[0]!.operationId }))
+  assert.equal(outcome?.cleanup, 'pending', 'logical withdrawal is separate from physical replica completion')
+})
+
+test('the offline runtime benchmark uses source-backed files, file profile and project-scoped retrieval', async () => {
+  const { checkRuntime } = await import('../scripts/memory-embedding-check.ts')
+  const result = await checkRuntime({ fingerprint: 'unit-test-wiring-only', dimensions: 8,
+    embedBatch: async inputs => inputs.map(() => Float32Array.from([1, 0, 0, 0, 0, 0, 0, 0])), close() {} })
+  assert.equal(result.engine, 'source-backed-files')
+  assert.equal(result.retrieval.automatic, 'file-hybrid-context')
+  const absent = result.cases.find(item => item.text === 'What is the capital of Sweden?')!
+  assert.equal(absent.keyword.hits.length, 0)
+  assert.ok(absent.automatic.hits.length > 0, 'the offline unit vectors reach the async hybrid injection path, not lexical-only context')
+  assert.equal(result.cases.length > 0, true)
+  assert.deepEqual(result.scopeCases.map(item => item.expected), [[], ['allowed-escrow'], ['private-escrow']])
+})
+
+test('live file discovery restarts from the beginning when a body version changed during pagination', async () => {
+  const { memoryFilesWith } = await import('./smoke/live-kit.ts')
+  const file = { identity: { kind: 'digest' as const, workspace: 'workspace', id: 'changing' }, title: 'Title', path: 'digest/wiki/changing.md',
+    version: { contentRevision: 'new', usageVersion: 2, policyToken: 'new' }, enabled: true, applicability: 'current' as const,
+    actions: { setEnabled: true, edit: false, forget: false, undo: null } }
+  let lists = 0
+  const win = memoryWindow({
+    async listMemoryFiles() {
+      lists++
+      return { status: 'ok', snapshot: String(lists), items: [{ ...file,
+        version: lists === 1 ? { contentRevision: 'old', usageVersion: 1, policyToken: 'old' } : file.version }], nextCursor: null }
+    },
+    async readMemoryFile() { return { ...file, markdown: 'Current NEEDLE body.', sources: [] } },
+  })
+  const found = await memoryFilesWith(win, 'NEEDLE')
+  assert.equal(lists, 2)
+  assert.equal(found.length, 1)
+  assert.equal(found[0]!.version.contentRevision, 'new')
+})
+
+test('the real-model report collects authorized file bodies and source references through the owner API', async t => {
+  const { fileSnapshot } = await import('../scripts/live-memory.ts')
+  const { randomUUID } = await import('node:crypto')
+  const { scratch } = await import('./fixtures/scratch.js')
+  const { openMemoryOwner } = await import('../src/memory/node/owner.ts')
+  const { memoryFileMutationResult } = await import('../src/memory/contracts/file-management.ts')
+  const { dir, defer } = scratch(t, 'viva-live-file-report-')
+  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => owner.close())
+  await owner.recover()
+  const created = memoryFileMutationResult.parse(await owner.handleHost('createFile', {
+    args: [{ operationId: randomUUID(), text: 'An authorized report sample.' }] }))
+  const call: import('../src/memory/contracts/host.ts').HostMemoryCaller = (method, input) =>
+    owner.handleHost(method, input) as ReturnType<import('../src/memory/contracts/host.ts').HostMemoryCaller>
+  const files = await fileSnapshot(call)
+  assert.equal(files.length, 1)
+  assert.equal(files[0]!.identity.id, created.identity.id)
+  assert.ok(files[0]!.markdown.includes('An authorized report sample.'))
+  assert.equal(files[0]!.sources.length, 1)
+})

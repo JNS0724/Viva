@@ -13,7 +13,7 @@ npm install
 npm start
 ```
 
-应用从 `out/` 运行：`npm run build`（`scripts/build.mjs`）用 TypeScript 把 `src/` 和 `plugins/` 的代码写到 `out/src`、`out/plugins`，页面、样式、图标和插件的 `package.json` 原样复制过去，目录结构和仓库一样。`npm start`、`npm run smoke` 和打包会先自动构建；单独跑某个 smoke 阶段（如 `npm run smoke:memory`）前要自己先 `npm run build`。单元测试直接测 `src/`，不需要构建。类型检查是另一回事：`npm run typecheck`。
+应用从 `out/` 运行：`npm run build`（`scripts/build.ts`）用 TypeScript 把 `src/` 和 `plugins/` 的代码写到 `out/src`、`out/plugins`，页面、样式、图标和插件的 `package.json` 原样复制过去，目录结构和仓库一样。`npm start`、`npm run smoke` 和打包会先自动构建；单独跑某个 smoke 阶段（如 `npm run smoke:memory`）前要自己先 `npm run build`。单元测试直接测 `src/`，不需要构建。类型检查是另一回事：`npm run typecheck`。
 
 要逐个查看桌面岛的八组状态，运行 `npm start -- --hidden --debug-desk-states`，右键桌面岛后选择 **桌面岛状态预览**。菜单可以直接选组、切换上一组或下一组。第 05 组也可以切到草稿恢复后的画面。预览有键盘焦点时按 Esc，或选 **退出预览** 返回真实状态。预览窗口的任务和附件样例只保存在内存中。
 
@@ -23,6 +23,14 @@ npm start
 | `AGENT_CWD` | 助手的工作区（dsh 会话的 cwd） | `./workspace` |
 | `DSH_BIN` | 指定 dsh：`.js` 入口用 Node 运行，其他按可执行文件运行 | `node_modules/@deepseek-ai/dsh/lib/bin.js` |
 | `DSH_NODE` | 开发用：改用这个 Node 运行 dsh | 应用自己的 Electron |
+
+可以用独立资料目录试跑 Viva 自研的日记和长期整理流程：
+
+```bash
+VIVA_DAILY_MEMORY=1 npm start -- --user-data-dir=/path/to/viva-daily-memory
+```
+
+Viva 每完成五轮更新同一会话当天的 Markdown 笔记，日期按上海时区计算。离开会话时，未满五轮的内容进入队列，重启后可以继续写入。上海时间 23:00 整理今天和昨天有变化的笔记，每次最多选出五个条目。检索同时覆盖有权读取的短期笔记和长期事实，默认返回 5 条，按请求最多返回 50 条，并附命中段落和来源。长期事实仍通过 Viva 的原文和范围校验。笔记与任务保存在该资料目录的 `memory.db`，实验使用 Viva 已配置的对话模型和随应用提供的本地向量模型。
 
 ## 内嵌的 dsh
 

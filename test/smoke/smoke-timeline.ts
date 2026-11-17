@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { SmokeAppWindow } from './smoke-kit.ts'
-import { openHistoryDb } from '../../src/backend/history-db.ts'
+import { openIndependentHistory } from '../fixtures/independent-history.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
 /**
@@ -54,7 +55,7 @@ const messagesOf = (seed: Seed) => seed.talk.map((text, i) => (i % 2
 /** Writes the timeline into `userData`'s history before the app opens it. */
 export function seedTimeline(userData: string, now = Date.now()) {
   let clock = 0
-  const db = openHistoryDb({ file: path.join(userData, 'app.db'), now: () => clock })
+  const db = openIndependentHistory({ file: path.join(userData, 'app.db'), now: () => clock })
   let previous: string | null = null
   const ids: string[] = []
   fs.mkdirSync(seedDir(userData, 'other'), { recursive: true })
@@ -62,7 +63,7 @@ export function seedTimeline(userData: string, now = Date.now()) {
     clock = timelineSeedTime(now, seed.daysAgo, seed.hour)
     // A task is started from the conversation (task-ipc.ts start); a topic gone on goes on from its segment.
     const parentId: string | null = seed.task ? previous : seed.continues === undefined ? null : ids[seed.continues]
-    const saved: { id: string } = db.save(db.create({ cwd: seedDir(userData, seed.cwd), parentId }), messagesOf(seed))
+    const saved: { id: string } = db.save(db.create({ sessionId: `seeded-session-${randomUUID()}`, cwd: seedDir(userData, seed.cwd), parentId }), messagesOf(seed))
     if (seed.task && previous) db.fold(saved.id, { into: previous, at: 0, kind: 'side' })
     if (seed.star !== undefined) db.setStar(saved.id, seed.star, true)
     if (!seed.task) previous = saved.id
@@ -281,7 +282,7 @@ async function continueFromReview(win: SmokeAppWindow, words: string) {
 
 /**
  * 继续这个话题 in the window: another folder said before switching (and nothing switched on 取消); a folder gone asks
- * for another; a session gone (the seeds have none) goes on from the topic's records in a new conversation.
+ * for another; a session gone (the seeded native identities have no live session) goes on from the topic's records in a new conversation.
  */
 async function checkResume(win: SmokeAppWindow, outDir: string, expect: Expect) {
   const agent = await run(win, AGENT)

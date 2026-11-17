@@ -52,5 +52,5 @@ test('live credentials require explicit options and the fake bridge path is runn
   const env = applicationEnvironment({ DEEPSEEK_API_KEY: 'inherited', HTTPS_PROXY: 'http://proxy' }, { ...options, apiKey: 'explicit', bridge: 'fake' })
   assert.equal(env.DEEPSEEK_API_KEY, 'explicit')
   assert.equal(env.HTTPS_PROXY, 'http://proxy')
-  assert.equal(env.DSH_BIN, path.join(options.projectRoot, 'test', 'fixtures', 'fake-dsh.js'))
+  assert.equal(env.DSH_BIN, path.join(options.projectRoot, 'test', 'fixtures', 'fake-dsh.ts'))
 })

@@ -1,14 +1,15 @@
 import { t } from '../shared/i18n/translate.ts'
 import { MAX_MESSAGE_CHARS } from '../shared/text-limits.ts'
 import { parseTaskQuery } from './task-registry.ts'
-import type { TaskQuery } from './task-registry.ts'
+import type { TaskQuery, TaskRegistry } from './task-registry.ts'
 
 /**
  * The viva-tasks plugin's requests (plugins/tasks): queries (list, get) answered from the task registry, and the
  * agent's changes to schedules. Tasks themselves are started, stopped and messaged only by an accepted routing
  * decision (request-runtime.ts).
  */
-export type TaskRead = (request: TaskQuery, sessionId: string) => unknown
+export type TaskReadResult = ReturnType<TaskRegistry['query']>
+export type TaskRead = (request: TaskQuery, sessionId: string) => TaskReadResult | Promise<TaskReadResult>
 /**
  * What the model asks of schedules (schedule-store.ts), by talking (system-design §12.2): one proposed (the user says
  * yes on its card), the list, one changed, paused or resumed, one deleted. The rule is dsh-schedule's input, checked
@@ -74,7 +75,8 @@ export function createTasksDesk({ send, read, act = null, authorized }: {
     const isAction = Boolean(request && typeof request === 'object' && ACTIONS.has(String((request as Record<string, unknown>).op)))
     if (isAction && !act) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
     if (!isAction && !read) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-    const result = isAction ? await act!(parseTaskAction(request), sessionId) : read!(parseTaskQuery(request), sessionId)
+    const result = isAction ? await act!(parseTaskAction(request), sessionId) : await read!(parseTaskQuery(request), sessionId)
+    if (!authorized(sessionId)) throw new Error(t('main.tasks-channel.session.expired.cannot.query.tasks'))
     send({ type: 'tasks_result', id, ok: true, text: JSON.stringify(result) })
   }
 

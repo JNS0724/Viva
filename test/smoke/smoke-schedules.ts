@@ -1,8 +1,8 @@
-import { FOLLOWUP, FOLLOWUP_AHEAD_MS } from '../fixtures/fake-llm.js'
+import { FOLLOWUP, FOLLOWUP_AHEAD_MS } from '../fixtures/fake-llm.ts'
 import { capture, finishTurn, report, run, submit, UI_WAIT_MS, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
- * Schedules in the memory smoke run (smoke.ts), on the real dsh with the fake model (test/fixtures/fake-llm.js):
+ * Schedules in the memory smoke run (smoke.ts), on the real dsh with the fake model (test/fixtures/fake-llm.ts):
  * asked 「…到时候帮我…」, the model proposes a schedule a minute ahead; the card waits for 定时; 动态 lists it in
  * 接下来, where it pauses and resumes; when it is due its prompt runs where nobody watches, and its answer comes
  * into 动态 as a new item, counted in the title bar; 在对话里继续 puts it in the input for the user to send.

@@ -11,7 +11,7 @@ import { authVariable } from '../src/backend/plugin-registry.ts'
 import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { launcherText } from '../src/backend/pnpm-launcher.ts'
-import { startFakeLlm } from './fixtures/fake-llm.js'
+import { startFakeLlm } from './fixtures/fake-llm.ts'
 import { testRequests } from './fixtures/request-routing.ts'
 
 /**

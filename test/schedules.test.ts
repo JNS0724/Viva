@@ -18,29 +18,29 @@ function setup() {
 }
 const weekly = { kind: 'weekly', weekly: { time: '16:00:00', time_zone: 'Asia/Shanghai', weekdays: [5] } }
 
-test('proposed: a card for the window, nothing kept; yes keeps it; a proposal taken once', () => {
+test('proposed: a card for the window, nothing kept; yes keeps it; a proposal taken once', async () => {
   const { schedules, shown, changes } = setup()
   const said = schedules.act({ op: 'schedule_create', title: '周报', prompt: '按模板起草周报', rule: weekly }, 'c1', '/work') as { proposed: boolean, firstAt: string }
   assert.deepEqual([said.proposed, said.firstAt, schedules.list()], [true, '2026-11-06T08:00:00.000Z', []], 'nothing kept before yes (11-06 is a Friday: this afternoon)')
   assert.deepEqual(shown, [{ type: 'schedule_propose', proposal: { proposalId: 'p1', title: '周报', prompt: '按模板起草周报', rule: weekly, firstAt: '2026-11-06T08:00:00.000Z' } }])
-  const kept = schedules.accept('p1')
+  const kept = await schedules.accept('p1')
   assert.deepEqual([kept.title, kept.nextAt, kept.status, schedules.list().length, changes()], ['周报', '2026-11-06T08:00:00.000Z', 'active', 1, 1])
-  assert.throws(() => schedules.accept('p1'), 'a card says yes once')
+  await assert.rejects(() => schedules.accept('p1'), 'a card says yes once')
 })
 
-test('declined, or a time dsh refuses: nothing kept, no card for the refused', () => {
+test('declined, or a time dsh refuses: nothing kept, no card for the refused', async () => {
   const { schedules, shown } = setup()
   schedules.act({ op: 'schedule_create', title: '报销', prompt: '提醒我交报销单', rule: { kind: 'at', at: '2026-11-07T16:00:00+08:00' } }, null, '/work')
   schedules.decline('p1')
-  assert.throws(() => schedules.accept('p1'))
+  await assert.rejects(() => schedules.accept('p1'))
   assert.throws(() => schedules.act({ op: 'schedule_create', title: '过去', prompt: 'x', rule: { kind: 'at', at: '2020-01-01T00:00:00Z' } }, null, '/work'))
   assert.deepEqual([shown.length, schedules.list()], [1, []])
 })
 
-test('changed by asking: paused, resumed, moved, deleted; an unknown one is said so', () => {
+test('changed by asking: paused, resumed, moved, deleted; an unknown one is said so', async () => {
   const { schedules } = setup()
   schedules.act({ op: 'schedule_create', title: '周报', prompt: '起草周报', rule: weekly }, null, '/work')
-  const { id } = schedules.accept('p1')
+  const { id } = await schedules.accept('p1')
   assert.equal((schedules.act({ op: 'schedule_update', id, paused: true }, null, '/work') as { status: string }).status, 'paused')
   assert.equal((schedules.act({ op: 'schedule_update', id, paused: false }, null, '/work') as { status: string }).status, 'active')
   const moved = schedules.act({ op: 'schedule_update', id, rule: { kind: 'weekly', weekly: { time: '16:00:00', time_zone: 'Asia/Shanghai', weekdays: [4] } } }, null, '/work') as { nextAt: string }
@@ -49,7 +49,7 @@ test('changed by asking: paused, resumed, moved, deleted; an unknown one is said
   assert.throws(() => schedules.act({ op: 'schedule_update', id, paused: true }, null, '/work'))
 })
 
-test('what the model sends is checked before anything is done', () => {
+test('what the model sends is checked before anything is done', async () => {
   assert.deepEqual(parseTaskAction({ op: 'schedule_list', extra: 1 }), { op: 'schedule_list' })
   assert.deepEqual(parseTaskAction({ op: 'schedule_create', title: ' 周报 ', prompt: '起草', rule: { ...weekly, junk: 1 } }),
     { op: 'schedule_create', title: '周报', prompt: '起草', rule: weekly })
@@ -59,7 +59,7 @@ test('what the model sends is checked before anything is done', () => {
   assert.deepEqual(parseTaskAction({ op: 'schedule_update', id: 's1', paused: true }), { op: 'schedule_update', id: 's1', paused: true })
 })
 
-test('a yes whose save fails leaves the card to be answered again', () => {
+test('a yes whose save fails leaves the card to be answered again', async () => {
   let refuse = true
   const schedules = createSchedules({
     db: new DatabaseSync(':memory:'), emit: () => {},
@@ -73,48 +73,91 @@ test('a yes whose save fails leaves the card to be answered again', () => {
     now: () => Date.parse('2026-11-06T10:00:00+08:00'), newId: () => 'p1',
   })
   schedules.act({ op: 'schedule_create', title: '周报', prompt: '起草周报', rule: weekly }, 'c1', '/work')
-  assert.throws(() => schedules.accept('p1'), /database is locked/)
-  assert.equal(schedules.accept('p1').title, '周报', 'the proposal still there, kept the second time')
-  assert.throws(() => schedules.accept('p1'), 'and then gone')
+  await assert.rejects(() => schedules.accept('p1'), /database is locked/)
+  assert.equal((await schedules.accept('p1')).title, '周报', 'the proposal still there, kept the second time')
+  await assert.rejects(() => schedules.accept('p1'), 'and then gone')
 })
 
-test('changed on the card before yes: kept as changed, checked as the model\'s own are; a time gone by is said in words', () => {
+test('changed on the card before yes: kept as changed, checked as the model\'s own are; a time gone by is said in words', async () => {
   const { schedules } = setup()
   schedules.act({ op: 'schedule_create', title: '周报', prompt: '按模板起草周报', rule: weekly }, 'c1', '/work')
-  assert.throws(() => schedules.accept('p1', { title: '  ', prompt: 'x', rule: weekly }), /标题/, 'no name: refused before dsh')
-  assert.throws(() => schedules.accept('p1', { title: '月报', prompt: 'x', rule: { kind: 'at', at: { date: '2020-01-01', time: '09:00:00', time_zone: 'Asia/Shanghai' } } }),
+  await assert.rejects(() => schedules.accept('p1', { title: '  ', prompt: 'x', rule: weekly }), /标题/, 'no name: refused before dsh')
+  await assert.rejects(() => schedules.accept('p1', { title: '月报', prompt: 'x', rule: { kind: 'at', at: { date: '2020-01-01', time: '09:00:00', time_zone: 'Asia/Shanghai' } } }),
     { message: '这个时间已经过了，换一个以后的时间。' })
-  assert.throws(() => schedules.accept('p1', { title: '月报', prompt: 'x', rule: { kind: 'daily', daily: { time: '25:00:00', time_zone: 'Asia/Shanghai' } } }),
+  await assert.rejects(() => schedules.accept('p1', { title: '月报', prompt: 'x', rule: { kind: 'daily', daily: { time: '25:00:00', time_zone: 'Asia/Shanghai' } } }),
     { message: '时间没有填对，请检查一下。' })
-  const kept = schedules.accept('p1', { title: ' 月报 ', prompt: '起草月报', rule: { kind: 'cron', cron: { expression: '0 9 1 * *', time_zone: 'Asia/Shanghai' } } })
+  const kept = await schedules.accept('p1', { title: ' 月报 ', prompt: '起草月报', rule: { kind: 'cron', cron: { expression: '0 9 1 * *', time_zone: 'Asia/Shanghai' } } })
   assert.deepEqual([kept.title, kept.prompt, kept.kind, kept.nextAt], ['月报', '起草月报', 'cron', '2026-12-01T01:00:00.000Z'], 'still there after the refusals, kept as changed')
 })
 
-test('changed on the card with its time untouched: the proposal\'s own rule is kept, to the second', () => {
+test('changed on the card with its time untouched: the proposal\'s own rule is kept, to the second', async () => {
   const { schedules } = setup()
   const soon = { kind: 'at', at: '2026-11-06T10:00:30+08:00' }
   schedules.act({ op: 'schedule_create', title: '提醒', prompt: '交报销单', rule: soon }, null, '/work')
-  const kept = schedules.accept('p1', { title: '报销', prompt: '交报销单' })
+  const kept = await schedules.accept('p1', { title: '报销', prompt: '交报销单' })
   assert.deepEqual([kept.title, kept.nextAt], ['报销', '2026-11-06T02:00:30.000Z'], 'due within the minute, not refused as past')
 })
 
-test('editing a schedule card preserves its memory dependency and refuses a stale proposal', t => {
+test('editing a schedule card preserves its memory dependency and refuses a stale proposal', async t => {
   const db = new DatabaseSync(':memory:')
   t.after(() => db.close())
   let revision = 1
   const schedules = createSchedules({
     db, emit: () => {}, newId: () => 'p1', now: () => Date.parse('2026-11-06T10:00:00+08:00'),
-    memoryCurrent: evidence => evidence.epoch === revision,
+    memoryCurrent: async evidence => evidence.epoch === revision,
   })
-  const memory = { epoch: 1, turnOnly: false, dependencies: [{ id: 4, revision: 1 }], sources: [] }
+  const memory = { epoch: 1, turnOnly: false, sources: ['schedule-source'] }
   const edits = { title: '月报', prompt: '起草新版月报' }
   schedules.act({ op: 'schedule_create', title: '周报', prompt: '按模板起草周报', rule: weekly }, 'c1', '/work', memory)
   revision = 2
-  assert.throws(() => schedules.accept('p1', edits))
+  await assert.rejects(() => schedules.accept('p1', edits))
   assert.deepEqual(schedules.list(), [])
 
   revision = 1
-  const kept = schedules.accept('p1', edits)
+  const kept = await schedules.accept('p1', edits)
   assert.deepEqual([kept.title, kept.prompt], [edits.title, edits.prompt])
   assert.deepEqual(schedules.store.get(kept.id)?.memory, memory)
+})
+
+test('an asynchronous proposal check cannot accept a declined card or save it twice', async t => {
+  const db = new DatabaseSync(':memory:')
+  t.after(() => db.close())
+  let release!: (current: boolean) => void
+  let pending = new Promise<boolean>(resolve => { release = resolve })
+  const schedules = createSchedules({ db, emit: () => {}, newId: () => 'p1',
+    now: () => Date.parse('2026-11-06T10:00:00+08:00'), memoryCurrent: () => pending })
+  const memory = { epoch: 1, turnOnly: false, sources: ['schedule-source'] }
+  const propose = () => schedules.act({ op: 'schedule_create', title: '周报', prompt: '起草周报', rule: weekly }, 'c1', '/work', memory)
+  propose()
+  const declined = schedules.accept('p1')
+  schedules.decline('p1')
+  release(true)
+  await assert.rejects(declined)
+  assert.equal(schedules.list().length, 0)
+  pending = new Promise<boolean>(resolve => { release = resolve })
+  propose()
+  const first = schedules.accept('p1')
+  const duplicate = schedules.accept('p1')
+  release(true)
+  await first
+  await assert.rejects(duplicate)
+  assert.equal(schedules.list().length, 1)
+})
+
+test('erasure cancels only affected proposals even while acceptance is awaiting authorization', async t => {
+  const db = new DatabaseSync(':memory:'); t.after(() => db.close())
+  let allow!: (current: boolean) => void
+  const checking = new Promise<boolean>(resolve => { allow = resolve })
+  let n = 0
+  const schedules = createSchedules({ db, emit() {}, now: () => Date.parse('2026-11-06T10:00:00+08:00'),
+    newId: () => `p${++n}`, memoryCurrent: () => checking })
+  schedules.act({ op: 'schedule_create', title: 'Selected source', prompt: 'Affected instructions', rule: weekly }, 'c1', '/work',
+    { sources: ['source-a'], turnOnly: false, epoch: 0 })
+  schedules.act({ op: 'schedule_create', title: 'Independent', prompt: 'Retained instructions', rule: weekly }, 'c1', '/work')
+  const accepted = schedules.accept('p1')
+  schedules.discardMemory(memory => memory.sources.includes('source-a'))
+  allow(true)
+  await assert.rejects(accepted)
+  assert.equal((await schedules.accept('p2')).title, 'Independent')
+  assert.deepEqual(schedules.list().map(row => row.title), ['Independent'])
 })

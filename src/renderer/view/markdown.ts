@@ -1,6 +1,6 @@
 import { t } from '../../shared/i18n/translate.ts'
 // The page imports marked by its file (it has no bundler, and the build copies what is imported this way,
-// scripts/build.mjs); marked's types are those of its package, so they are taken from there.
+// scripts/build.ts); marked's types are those of its package, so they are taken from there.
 // @ts-expect-error the file has no types of its own beside it
 import { Lexer as UntypedLexer } from '../../../node_modules/marked/lib/marked.esm.js'
 import type { Lexer as MarkedLexer, Token, Tokens } from 'marked'

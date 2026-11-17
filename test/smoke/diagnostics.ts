@@ -43,17 +43,27 @@ export async function failureDiagnostics(session: SmokeApplication | null, profi
   }
   try {
     const { DatabaseSync } = await import('node:sqlite')
-    const file = path.join(profile.userData, 'memory.db')
+    const file = path.join(profile.userData, 'memory', 'memory.db')
     if (fs.existsSync(file)) {
       const db = new DatabaseSync(file, { readOnly: true })
       try {
         db.exec('PRAGMA busy_timeout = 1000')
-        const dependencies = db.prepare(`SELECT session, fact, revision, as_of, disputed
-          FROM memory_session_dependencies ORDER BY rowid DESC LIMIT 50`).all()
-        const changes = db.prepare(`SELECT id, revision, kind, status, target, replacement, effective_at
-          FROM memory_links ORDER BY id DESC LIMIT 20`).all()
-        const output = path.join(directory, 'memory-dependencies.json')
-        fs.writeFileSync(output, JSON.stringify({ dependencies, changes }, null, 2)); files.push(output)
+        const present = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)))
+        const tables = ['memory_sources', 'memory_documents', 'memory_note_turns', 'owner_operations', 'owner_host_effects',
+          'owner_file_host_receipts', 'owner_file_native_erasures', 'owner_native_original_completed', 'owner_native_cleanup_receipts']
+        const tableCounts = Object.fromEntries(tables.filter(table => present.has(table)).map(table =>
+          [table, Number(db.prepare(`SELECT count(*) AS count FROM ${table}`).get()?.count)]))
+        const operations = present.has('owner_operations')
+          ? db.prepare('SELECT id,state FROM owner_operations ORDER BY rowid DESC LIMIT 20').all() : []
+        const hostEffects = present.has('owner_host_effects')
+          ? db.prepare('SELECT id,acked FROM owner_host_effects ORDER BY rowid DESC LIMIT 20').all() : []
+        const turns = present.has('owner_turns')
+          ? db.prepare('SELECT session,turn,seq,state FROM owner_turns ORDER BY rowid DESC LIMIT 50').all() : []
+        const contexts = present.has('owner_context_generations')
+          ? db.prepare('SELECT session,generation FROM owner_context_generations ORDER BY rowid DESC LIMIT 20').all() : []
+        const output = path.join(directory, 'memory-state.json')
+        fs.writeFileSync(output, JSON.stringify({ layoutVersion: db.prepare('PRAGMA user_version').get()?.user_version,
+          tableCounts, operations, hostEffects, turns, contexts }, null, 2)); files.push(output)
       } finally { db.close() }
     }
   } catch (error) { errors.push(`memory journal: ${String(error)}`) }

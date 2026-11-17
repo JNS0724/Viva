@@ -123,8 +123,10 @@ interface TraceSource { hasSession: (sessionId: string) => boolean, stepsOf: (se
  * the trace plugin recorded the session, else from dsh's log, which may not parse after a dsh upgrade. A
  * session that can't be read is just counted as missing.
  */
+export type ReadNativeTrace = <T>(sessions: readonly string[], read: (visible: readonly string[]) => T | Promise<T>) => Promise<T>
+
 export async function readSessionTrace({ dshHome, traceDb = null, sessionIds, until }: {
-  dshHome: string, traceDb?: TraceSource | null, sessionIds: string[], until: number,
+  dshHome: string, traceDb?: TraceSource | null, sessionIds: readonly string[], until: number,
 }): Promise<{ trace: Trace, available: boolean, missing: number }> {
   let trace = emptyTrace()
   let missing = 0

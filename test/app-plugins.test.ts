@@ -6,8 +6,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins, ROUTING_PERSONA } from '../src/backend/app-plugins.ts'
-import { openMemoryStore } from '../src/backend/memory-store.ts'
-import { MEMORY_CONTRACT } from '../src/shared/memory-contract.ts'
+import { openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { MEMORY_CONTRACT } from '../src/memory/contracts/memory-contract.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */
@@ -33,7 +33,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-tasks', {}],
     ['viva-history', {}],
     ['viva-routing', { ...ROUTING_PERSONA }],
-    ['viva-memory', { host: true }],
+    ['viva-memory', { host: true, dataRoot: path.join('/data', 'memory') }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-questions', {}],
     ['viva-config', {}],

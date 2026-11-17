@@ -19,11 +19,12 @@ const CANCELLED = Symbol('retired dsh startup')
  * by compose; every replacement waits for real disposal, even if quitting stopped waiting for it earlier.
  */
 export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
-  create, connect, onReady = () => {}, onGone, onCrash, restart, onRestartError, now = Date.now, schedule = scheduleTimer,
+  beforeStart, create, connect, onReady = () => {}, onGone, onCrash, restart, onRestartError, now = Date.now, schedule = scheduleTimer,
 }: {
+  beforeStart?: (context: Context, isCold: () => boolean) => Promise<void>
   create: (context: Context, lifetime: DshLifetime) => Instance
   connect: (instance: Instance, context: Context) => Promise<Info>
-  onReady?: (info: Info, context: Context) => void
+  onReady?: (info: Info, context: Context) => void | Promise<void>
   onGone: () => void
   onCrash: (exit: { message: string }, delay: number | null) => void
   restart: () => Promise<unknown>
@@ -38,6 +39,8 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
   let active: Run | null = null, generation = 0, quitting = false
   let starting: Promise<Info | null> | null = null, stopping: Promise<void> | null = null
   let releasing: Promise<void> = Promise.resolve()
+  let cold: Promise<void> | null = null
+  const readers = new Set<Promise<unknown>>()
   let crashes: number[] = []
   let restartToken: object | null = null, cancelRestartTimer: (() => void) | null = null
 
@@ -98,7 +101,23 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
     if (active?.promise) return active.promise
     cancelRestart()
     const ticket = ++generation
-    const promise: Promise<Info | null> = releasing.then(async () => {
+    let prepared = releasing
+    if (beforeStart) {
+      const work = prepared.then(async () => {
+        if (ticket !== generation || quitting) return
+        await Promise.allSettled(readers)
+        if (ticket !== generation || quitting) return
+        let held = true
+        try { await beforeStart(context, () => held && !active && readers.size === 0) }
+        finally { held = false }
+      })
+      cold = work
+      releasing = work.catch(() => {})
+      const finished = () => { if (cold === work) cold = null }
+      void work.then(finished, finished)
+      prepared = work
+    }
+    const promise: Promise<Info | null> = prepared.then(async () => {
       if (ticket !== generation || quitting) return null
       let cancel!: () => void
       const cancellation = new Promise<typeof CANCELLED>(resolve => { cancel = () => resolve(CANCELLED) })
@@ -112,7 +131,8 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
         const connected = Promise.resolve().then<Info | typeof CANCELLED>(() => isCurrent(run) ? connect(instance, context) : CANCELLED)
         const info = await Promise.race([connected, cancellation])
         if (info === CANCELLED || !isCurrent(run)) return null
-        onReady(info, context)
+        await onReady(info, context)
+        if (!isCurrent(run)) return null
         return info
       } catch (error) {
         if (!isCurrent(run)) return null
@@ -146,7 +166,15 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
     return Promise.race([stopped, deadline]).finally(() => cancel())
   }
 
+  async function readNative<T>(read: () => Promise<T>) {
+    while (cold) await cold.catch(() => {})
+    const pending = Promise.resolve().then(read)
+    readers.add(pending)
+    try { return await pending } finally { readers.delete(pending) }
+  }
+
   return {
+    readNative,
     get current() { return active?.instance ?? null },
     start, stop, stopWithin,
     isQuitting: () => quitting,

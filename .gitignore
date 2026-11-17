@@ -15,3 +15,6 @@ out/
 
 .omx/merge-smoke/
 .omx/merge-language-smoke/
+
+/build/memory-plugin/
+/build/memory-plugin-code/

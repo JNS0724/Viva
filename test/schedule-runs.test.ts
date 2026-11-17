@@ -8,6 +8,7 @@ import type { Apply } from '../src/backend/journal.ts'
 import { MAX_ATTEMPTS, MAX_WAIT_MS, RETRY_MS, createScheduleRuns } from '../src/backend/schedule-runs.ts'
 import { openScheduleStore } from '../src/backend/schedule-store.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
+import type { MemoryFileDependency, MemoryProvenance } from '../src/memory/contracts/records.ts'
 
 /** Schedules run when due (schedule-runs.ts): one timer, runs kept with what was taken, each answer one item in 动态. */
 
@@ -15,6 +16,31 @@ const at = (iso: string) => Date.parse(iso)
 type Timer = { run: () => void, ms: number }
 const UNAVAILABLE: RunResult = { ok: false, problem: 'unavailable', unavailable: true }
 const ONCE = { kind: 'at', at: '2026-11-06T11:00:00+08:00' } as const
+
+test('file dependencies survive saved schedules, retry recovery, result merging and feed continuation', async t => {
+  const ref: MemoryFileDependency = { workspace: 'a'.repeat(64), id: 'node', path: 'digest/wiki/report.md',
+    revision: 'body', usageVersion: 1, policyToken: 'policy', sourceRanges: [{ sourceId: 'schedule-source' }] }
+  const initial: MemoryProvenance = { sources: [], turnOnly: false, epoch: 0,
+    files: [ref, { ...ref, workspace: 'b'.repeat(64) }] }
+  const result: MemoryProvenance = { ...initial, files: [{ ...ref, id: 'related', path: 'digest/wiki/related.md' }] }
+  const app = setup([{ ok: false, problem: 'temporary transport failure' }, { ok: true, text: 'Current report', memory: result }])
+  const schedule = app.store.create({ title: 'Report', prompt: 'Summarize', cwd: '/work', rule: ONCE, memory: initial })
+  assert.deepEqual(app.store.get(schedule.id)?.memory, initial)
+  app.go('2026-11-06T11:00:00+08:00')
+  let runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  runner.wake(); await app.settle()
+  const parked = app.db.prepare('SELECT memory FROM schedule_runs').get() as { memory: string }
+  assert.deepEqual((JSON.parse(parked.memory) as MemoryProvenance).files, initial.files)
+  runner.close()
+  runner = app.make()
+  app.go('2026-11-06T11:02:00+08:00')
+  runner.wake(); await app.settle()
+  assert.equal(app.asked.length, 2)
+  const item = app.feed.list()[0]!
+  assert.equal(item.body, 'Current report')
+  assert.deepEqual(app.feed.continuation(item.id)?.memory?.files, [...initial.files!, ...result.files!])
+})
 
 function setup(answers: Array<RunResult | Promise<RunResult>> = [], memoryCurrent: NonNullable<Parameters<typeof createScheduleRuns>[0]['memoryCurrent']> = () => true) {
   let now = at('2026-11-06T10:00:00+08:00')
@@ -77,8 +103,8 @@ function setup(answers: Array<RunResult | Promise<RunResult>> = [], memoryCurren
 
 test('a cached schedule result is rechecked on storage retry and refreshed from the original prompt', async () => {
   let current = true
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
-  const app = setup([{ ok: true, text: '旧地址', memory }, { ok: true, text: '新地址' }], () => current)
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
+  const app = setup([{ ok: true, text: '旧地址', memory }, { ok: true, text: '新地址' }], async () => current)
   app.store.create({ title: '周报', prompt: '核对当前地址', cwd: '/work', rule: ONCE })
   app.go('2026-11-06T11:00:00+08:00')
   app.fail('schedule.ran', 1)
@@ -98,8 +124,8 @@ test('a cached schedule result is rechecked on storage retry and refreshed from 
 
 test('a parked occurrence cannot replay or pause a rewritten recurring schedule after reconnect', async () => {
   let current = true
-  const memory = { dependencies: [{ id: 2, revision: 3 }], sources: [], turnOnly: false, epoch: 0 }
-  const app = setup([{ ...UNAVAILABLE, memoryUnavailable: true }], () => current)
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
+  const app = setup([{ ...UNAVAILABLE, memoryUnavailable: true }], async () => current)
   const { id } = app.store.create({ title: '原定时', prompt: '旧指令', cwd: '/work', memory,
     rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
   app.go('2026-11-06T18:00:01+08:00')
@@ -108,7 +134,7 @@ test('a parked occurrence cannot replay or pause a rewritten recurring schedule 
   await app.settle()
   assert.equal(app.runs(), 1)
   app.store.setPaused(id, true)
-  app.store.update(id, { title: '新定时', prompt: '新指令', memory: { ...memory, dependencies: [] } })
+  app.store.update(id, { title: '新定时', prompt: '新指令', memory: { ...memory, sources: [] } })
   app.store.setPaused(id, false)
   current = false
   runner.wake()
@@ -274,4 +300,95 @@ test('dsh away: the run waits to be woken, not on the timer (no spinning); woken
   runs.wake()
   await settle()
   assert.equal(asked.length, 2)
+})
+
+test('an asynchronous stale creation check prevents a scheduled model request', async t => {
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
+  const app = setup([], async () => false)
+  t.after(() => app.db.close())
+  app.store.create({ title: '周报', prompt: '过期的地址', cwd: '/work', rule: ONCE, memory })
+  app.go('2026-11-06T11:00:00+08:00')
+  const runner = app.make()
+  t.after(() => runner.close())
+  runner.wake()
+  await app.settle()
+  assert.equal(app.asked.length, 0)
+  assert.equal(app.feed.list().length, 1)
+  assert.ok(!app.feed.list()[0]!.body.includes('答：'))
+  assert.equal(app.runs(), 0)
+})
+
+test('a schedule changed while the remote admission check waits does not run its old prompt', async t => {
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
+  let release!: (current: boolean) => void
+  const current = new Promise<boolean>(resolve => { release = resolve })
+  const app = setup([], async () => current)
+  t.after(() => app.db.close())
+  const { id } = app.store.create({ title: '周报', prompt: '旧指令', cwd: '/work', memory,
+    rule: { kind: 'daily', daily: { time: '18:00:00', time_zone: 'Asia/Shanghai' } } })
+  app.go('2026-11-06T18:00:01+08:00')
+  const runner = app.make()
+  t.after(() => runner.close())
+  runner.wake()
+  app.store.update(id, { prompt: '新指令' })
+  release(true)
+  await app.settle()
+  assert.equal(app.asked.length, 0)
+  assert.equal(app.feed.list().length, 0)
+  assert.equal(app.runs(), 0)
+})
+
+test('closing a schedule runner while its remote result check waits prevents delivery', async t => {
+  const memory = { sources: ['schedule-source'], turnOnly: false, epoch: 0 }
+  let release!: (current: boolean) => void
+  const current = new Promise<boolean>(resolve => { release = resolve })
+  const app = setup([{ ok: true, text: '旧结果', memory }], async () => current)
+  t.after(() => app.db.close())
+  app.store.create({ title: '周报', prompt: '汇总', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  const runner = app.make()
+  runner.wake()
+  await app.settle()
+  assert.equal(app.asked.length, 1)
+  runner.close()
+  release(true)
+  await app.settle()
+  assert.equal(app.feed.list().length, 0)
+  assert.equal(app.runs(), 1)
+})
+
+test('erasing one queued occurrence while it is in flight prevents its result and notice from returning', async t => {
+  let finish!: (result: RunResult) => void
+  const running = new Promise<RunResult>(resolve => { finish = resolve })
+  const app = setup([running])
+  const runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  const schedule = app.store.create({ title: 'Independent weekly job', prompt: 'Keep this', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  runner.wake()
+  assert.equal(app.asked.length, 1)
+  app.db.prepare('DELETE FROM schedule_runs WHERE schedule_id=?').run(schedule.id)
+  finish({ ok: true, text: 'Late erased result' })
+  await app.settle()
+  assert.deepEqual([app.feed.list(), app.kept, app.delivered()], [[], [], 0])
+  assert(app.store.get(schedule.id), 'the independent schedule itself is retained')
+})
+
+test('erasure retires an in-flight cached result during the commit authorization RPC', async t => {
+  const memory: MemoryProvenance = { sources: ['selected-source'], turnOnly: false, epoch: 0 }
+  let allow!: (current: boolean) => void
+  const checking = new Promise<boolean>(resolve => { allow = resolve })
+  const app = setup([{ ok: true, text: 'Selected-source result', memory }], () => checking)
+  const runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  const schedule = app.store.create({ title: 'Independent weekly job', prompt: 'Keep this', cwd: '/work', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  runner.wake()
+  await app.settle()
+  assert.equal(app.runs(), 1)
+  assert(runner.discardMemory(result => result.sources.includes('selected-source')))
+  allow(true)
+  await app.settle()
+  assert.deepEqual([app.runs(), app.feed.list(), app.kept], [0, [], []])
+  assert(app.store.get(schedule.id))
 })

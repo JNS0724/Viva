@@ -3,10 +3,16 @@ import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
 
 type OutputBlock = { type: 'text' | 'reasoning', text: string }
-type CommittedOutput = { key: string, blocks: OutputBlock[] }
+export type CommittedOutput = { key: string, blocks: OutputBlock[], native?: { seq: number, digest: string }, requestId?: string }
+const nativeOutput = (value: unknown): value is NonNullable<CommittedOutput['native']> => {
+  const item = objectOf(value)
+  return typeof item?.seq === 'number' && Number.isSafeInteger(item.seq) && item.seq >= 0
+    && typeof item.digest === 'string' && /^[a-f0-9]{64}$/u.test(item.digest)
+}
 const committedOutput = (value: unknown): value is CommittedOutput => {
   const entry = objectOf(value)
-  return typeof entry?.key === 'string' && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
+  return typeof entry?.key === 'string' && (entry.native === undefined || nativeOutput(entry.native))
+    && (entry.requestId === undefined || typeof entry.requestId === 'string') && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
     const block = objectOf(value)
     return (block?.type === 'text' || block?.type === 'reasoning') && typeof block.text === 'string'
   })
@@ -17,9 +23,10 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
  * comes only from the plugin, which decides what may be shown (the main agent's routing steps are not). ACP's copy of
  * the text is never replayed; an operation whose output the plugin did not confirm ends in an error.
  */
-export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
+export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1000 }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
+  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
   timeoutMs?: number,
 }) {
   let ready = false
@@ -41,14 +48,15 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
       operation.live = await new Promise<boolean>(resolve => {
         const timer = setTimeout(() => { operation.resolve = undefined; resolve(false) }, timeoutMs)
         operation.resolve = live => { clearTimeout(timer); operation.resolve = undefined; resolve(live) }
-        send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId })
+        send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId, ...(recordOutputs ? { proofs: true } : {}) })
       })
     }
     return operation
   }
   const finish = (operation: Operation) => {
     if (operations.get(operation.sessionId) !== operation) return
-    for (const key of operation.active) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+    const unfinished = recordOutputs ? [...operation.keys].filter(key => !operation.settled.has(key)) : operation.active
+    for (const key of unfinished) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
     operation.resolve?.(false)
     operation.flushed?.(false)
     operations.delete(operation.sessionId)
@@ -83,9 +91,11 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: message.kind, index: message.index, blockType: message.blockType, text: message.text })
     }
     if (message.kind === 'settle' && Array.isArray(message.blocks)) {
+      operation.active.delete(message.key); operation.closed.delete(message.key)
+      // In file mode a settled body must go through the owner before it can be published.
+      if (recordOutputs && message.blocks.length) return
       operation.settled.set(message.key, message.blocks)
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks })
-      operation.active.delete(message.key); operation.closed.delete(message.key)
     }
   }
   return { begin, finish, receive,
@@ -104,11 +114,17 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
         })
         if (operations.get(operation.sessionId) !== operation) return
         if (operation.committed) {
-          const keys = new Set(operation.committed.map(message => message.key))
-          for (const key of operation.keys) if (!keys.has(key)) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+          const committed = recordOutputs ? await recordOutputs(operation.sessionId, operation.committed) : operation.committed
+          if (operations.get(operation.sessionId) !== operation) return
+          const keys = new Set(committed.map(message => message.key))
           const before: { text?: string, reasoning?: string } = {}
           let recovered = false
-          for (const message of [...operation.committed].reverse()) {
+          for (const key of operation.keys) {
+            if (keys.has(key)) continue
+            emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+            recovered = true
+          }
+          for (const message of [...committed].reverse()) {
             if (JSON.stringify(operation.settled.get(message.key)) !== JSON.stringify(message.blocks)) {
               emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks, before: { ...before } })
               recovered = true
@@ -116,11 +132,12 @@ export function createAssistantStream({ send, emit, timeoutMs = 1000 }: {
             for (const block of message.blocks) if (block.text) before[block.type] = message.key
           }
           // Task previews consume settlements too. Finish recovery on the last committed text.
-          const lastText = operation.committed.findLast(message => message.blocks.some(block => block.type === 'text' && block.text))
+          const lastText = committed.findLast(message => message.blocks.some(block => block.type === 'text' && block.text))
           if (recovered && lastText) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key: lastText.key, kind: 'settle', blocks: lastText.blocks })
           operation.active.clear()
+          operation.keys.clear()
           finish(operation)
-          return operation.finalReply
+          return operation.finalReply && (committed.length === operation.committed.length || Boolean(lastText))
         }
       }
       finish(operation)

@@ -191,3 +191,29 @@ test('going back, and back onto the path left: the records of the shared part go
   const back = await handlers['timeline:switch-path']({}, before.id)
   assert.deepEqual(back.conversation.records.map((r: { reportId: string }) => r.reportId), ['task-0001:run-1', 'task-0002:run-1'], 'back onto it: all of its records again')
 })
+
+test('late task acknowledgements cannot record or draw an erased or replaced report generation', async t => {
+  const { effects, records, shown, queue, world, history } = setup(t)
+  const original = queue('s-new')
+  let acknowledge!: (state: 'read') => void, begin!: () => void
+  const delivered = new Promise<'read'>(resolve => { acknowledge = resolve })
+  const started = new Promise<void>(resolve => { begin = resolve })
+  const run = createTaskReports({ currentConversation: () => world.current.id, session: () => 's-new', conversation: () => 'busy',
+    superseded: () => false, holds: effect => effects.holds(effect), status: async () => 'none', report: () => true,
+    amend: (effect, replacement) => effects.amend(effect, replacement), onRead: records.read,
+    deliver: async () => { begin(); return delivered },
+  })
+  const pending = run([original])
+  await started
+  effects.cancel(REPORT, ID)
+  const replacement = queue('s-new', { output: 'Current report text' })
+  acknowledge('read')
+  await pending
+  records.written(original)
+  records.read(original)
+  assert.equal(history.hasRecord(ID), false)
+  assert.deepEqual(shown, [])
+  assert(effects.holds(replacement))
+  records.read(replacement)
+  assert.match(history.recordsOf(world.current.id)[0].text, /Current report text/)
+})

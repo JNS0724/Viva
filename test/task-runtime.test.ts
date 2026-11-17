@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
@@ -134,7 +134,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   }
 
   const first = register()
-  const texts = (segmentId: string) => db.get(segmentId)?.messages.map((m: Message) => m.text)
+  const texts = (segmentId: string) => db.get(segmentId)?.messages.map(m => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
   return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length }
 }
@@ -666,4 +666,39 @@ test('a run kept is counted once: its place goes to the registry as its start co
   assert.ok(fifth, 'the fifth was begun as the first was kept')
   assert.deepEqual(await Promise.all(four), ['ok', 'ok', 'ok', 'ok'])
   assert.equal(await fifth, 'ok', 'four places taken, not five: the fifth has one')
+})
+
+test('owner erasure drops task transcripts and ignores late end or flush copies', async () => {
+  const h = setup()
+  const { task } = await h.start('derived sensitive brief')
+  h.says(task.id, 'dependent private answer')
+  h.db.eraseMemoryCopies([], [task.id])
+  await h.tasks.revokeMemorySessions([task.id])
+  h.says(task.id, 'late private answer')
+  h.ends(task.id)
+  h.runPending()
+  h.tasks.dsh.flush()
+  assert.deepEqual(h.texts(task.segmentId), ['derived sensitive brief'])
+  assert.equal(h.tasks.reports.superseded(task.id, 'any-run'), true)
+  assert(h.pushes.some(push => push.type === 'task_closed' && push.taskId === task.id))
+  assert(h.calls.some(call => call[0] === 'closeTask' && call[1] === task.id))
+  h.db.close()
+})
+
+test('owner erasure during asynchronous task admission cannot recreate the task', async () => {
+  const h = setup()
+  let release!: (value: boolean) => void
+  let entered!: () => void
+  const admitted = new Promise<void>(resolve => { entered = resolve })
+  const pending = h.tasks.agent.start('derived secret', undefined, async () => {
+    entered()
+    return new Promise<boolean>(resolve => { release = resolve })
+  })
+  await admitted
+  await h.tasks.revokeMemorySessions(['s9'])
+  release(true)
+  await assert.rejects(pending)
+  assert.equal(h.kept().length, 0)
+  assert.equal(h.calls.filter(call => call[0] === 'promptTask').length, 0)
+  h.db.close()
 })

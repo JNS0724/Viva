@@ -1,13 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { openHistoryDb } from '../src/backend/history-db.ts'
-import { historyRecall } from '../src/backend/history-recall.ts'
+import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
+import { historyRecall, historyRecallAsync } from '../src/backend/history-recall.ts'
+import { verifiedHistoryCarry, publishHistoryCarry } from '../src/backend/history-carry.ts'
 import { createHistoryDesk } from '../src/backend/history-channel.ts'
 import { createHistoryChannel } from '../plugins/history/lib/channel.ts'
 
@@ -16,6 +17,41 @@ import { createHistoryChannel } from '../plugins/history/lib/channel.ts'
 const day = (d: number, h = 10) => new Date(2026, 9, d, h).getTime()
 type Message = { role: string, text: string, receipt: null }
 const said = (role: string, text: string): Message => ({ role, text, receipt: null })
+
+for (const phase of ['authorize', 'use'] as const) test(`history read and carry reject an erasure while awaiting ${phase}`, async t => {
+  const db = openHistoryDb({ file: ':memory:' })
+  t.after(() => db.close())
+  const sourceId = randomUUID(), text = 'private fragment then independent tail'
+  const segment = db.save(db.create({ sessionId: randomUUID() }), [{ role: 'user', text, receipt: null, sourceId }])
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex')
+  const cut = () => db.eraseFileRanges([{ sourceId, revision: 1, length: text.length, hash: hash(text),
+    afterHash: hash(' '.repeat(16) + text.slice(16)), spans: [{ start: 0, end: 16 }] }])
+  const revision = db.fileErasureRevision()
+  const rows = db.read(`s:${segment.id}`)!.messages
+  const allowed = async () => { if (phase === 'authorize') cut(); return true }
+  const used = async () => { if (phase === 'use') cut() }
+  const recall = historyRecallAsync(db, allowed, used)
+  assert.deepEqual(await recall.read({ segmentId: segment.id, seq: 0 }), { status: 'deleted' })
+  const carry = await verifiedHistoryCarry(rows, allowed, revision, db.fileErasureRevision)
+  assert.deepEqual(carry, { text: '', turns: 0, evidence: [], revision })
+  assert.ok(!db.get(segment.id)!.messages[0]!.text.includes('private'))
+})
+
+test('carry publication rechecks its version after transferring sources and preserves a fresh retry', async () => {
+  let revision = 0, selected = true
+  const row = { segmentId: 'segment', role: 'user', text: 'safe words', sourceId: randomUUID() }
+  const carry = await verifiedHistoryCarry([row], async () => true, revision, () => revision)
+  const published: string[] = []
+  assert.equal(await publishHistoryCarry(carry, () => selected && carry.revision === revision,
+    async () => { revision++ }, () => published.push(carry.text)), false)
+  const fresh = await verifiedHistoryCarry([row], async () => true, revision, () => revision)
+  assert.equal(await publishHistoryCarry(fresh, () => selected && fresh.revision === revision,
+    async () => { selected = false }, () => published.push(fresh.text)), false)
+  selected = true
+  assert.equal(await publishHistoryCarry(fresh, () => selected && fresh.revision === revision,
+    async () => {}, () => published.push(fresh.text)), true)
+  assert.equal(published.length, 1)
+})
 
 function seeded() {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'history-recall-')), 'history.db')
@@ -111,4 +147,20 @@ test('late routed output can move a message without changing its memory evidence
     [2, before[1].id, answer.key, undefined, 'old-session'],
   ])
   assert.equal(db.sourceLink(sourceId, segment.id), `viva://timeline/${segment.id}/1/${before[0].id}`)
+})
+
+for (const action of ['search', 'read'] as const) test(`history ${action} does not return a result after the session expires during owner admission`, async () => {
+  let current = true, release!: () => void
+  const waiting = new Promise<void>(resolve => { release = resolve })
+  const results: object[] = []
+  const desk = createHistoryDesk({ send: message => { results.push(message) }, authorized: () => current,
+    search: async () => { await waiting; return [] },
+    read: async () => { await waiting; return { status: 'deleted' as const } },
+  })
+  const pending = desk.receive({ type: 'history_query', id: 'late-query', sessionId: 'session', request: action === 'read'
+    ? { action: 'read', link: 'viva://timeline/segment/0' } : { query: '原文' } })
+  current = false
+  release()
+  await pending
+  assert.deepEqual(results, [{ type: 'history_result', id: 'late-query', ok: false, text: '会话已失效，无法查询聊天记录' }])
 })

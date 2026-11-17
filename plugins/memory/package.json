@@ -1,26 +1,67 @@
 {
   "name": "viva-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Viva long-term memory: layered retrieval and native tools in the private dsh profile",
+  "description": "Portable memory owner and native tools for standalone DSH, DSH Web and Viva",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./persistence": "./persistence.js",
+    "./contracts": "./memory/contracts/index.js",
+    "./core": "./memory/core/index.js",
+    "./node": "./memory/node/index.js"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.2",
     "@deepseek-ai/dsh-session": "0.2.2-rc.2",
     "@deepseek-ai/dsh-tools": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-spill": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-spill-local": "0.2.2-rc.2",
     "@deepseek-ai/dsh-user-questions": "0.2.2-rc.2",
     "@deepseek-ai/schemastery": "~3.19.0",
-    "zod": "^4.0.0"
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-subagent": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-persistence": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.2-rc.2",
+    "koffi": "3.1.1",
+    "@deepseek-ai/dsh-storage": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-storage-json": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-session-projection-cache": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-compaction-image-offload": "0.2.2-rc.2"
   },
   "viva": {
     "contract": {
-      "memory": 6
+      "memory": 8
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "persistence.js",
+    "lib",
+    "memory",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "marked": "18.0.14",
+    "yaml": "2.9.1",
+    "zod": "4.6.6"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-subagent": {
+      "optional": true
     }
   }
 }

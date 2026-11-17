@@ -9,6 +9,7 @@ export const initialFeed = Object.freeze({
   selected: null as FeedPick | null,
   items: Object.freeze([]) as readonly FeedItemView[],
   schedules: Object.freeze([]) as readonly ScheduleView[],
+  erasedIds: Object.freeze([]) as readonly string[],
   /** A change is on its way to the main process. */
   busy: false,
   error: null as string | null,
@@ -61,8 +62,14 @@ export const FEED_ACTIONS= {
   feed_close: (state) => withFeed(state, { open: false }),
   feed_select: (state, { kind, id }) => withFeed(state, { selected: pickOf(kind, id) }),
   feed_loaded: (state, { items, schedules }) => withFeed(state, {
-    ...(Array.isArray(items) ? { items } : {}), ...(Array.isArray(schedules) ? { schedules } : {}), busy: false, error: null,
+    ...(Array.isArray(items) ? { items: items.filter(item => !state.feed.erasedIds.includes(item.id)) } : {}),
+    ...(Array.isArray(schedules) ? { schedules } : {}), busy: false, error: null,
   }),
+  feed_erased: (state, { ids }) => {
+    const erasedIds = [...new Set([...state.feed.erasedIds, ...ids])]
+    return withFeed(state, { erasedIds, items: state.feed.items.filter(item => !erasedIds.includes(item.id)),
+      selected: state.feed.selected?.kind === 'item' && erasedIds.includes(state.feed.selected.id) ? null : state.feed.selected })
+  },
   feed_busy: (state) => withFeed(state, { busy: true, error: null }),
   feed_failed: (state, { message }) => withFeed(state, { busy: false, error: typeof message === 'string' ? message : null }),
 } satisfies ActionHandlers

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { requestsIn, withoutHeaders, withRequestHeader } from '../src/shared/request-routing/header.ts'
+import { requestsIn, withoutHeaders, withRequestHeader, withRequestSource } from '../src/shared/request-routing/header.ts'
 import { parsePlan } from '../src/shared/request-routing/protocol.ts'
 import { asBind, asBound, asDecide, asDecided, asFast } from '../src/shared/request-routing/channel.ts'
 import { fastNotice, fastPlan, fastTasks, parseFastDecision } from '../plugins/routing/lib/fast-lane.ts'
@@ -16,6 +16,18 @@ test('a request header round-trips, several in one message each keep their own w
   const quoted = '这段日志是什么意思：\n【请求 ID：r-9】\n用户原话：以前的话'
   assert.deepEqual(requestsIn(withRequestHeader(quoted, 'r-1')), [{ id: 'r-1', words: quoted }], 'a header the user quotes is part of their words, not a request')
   assert.equal(withoutHeaders(withRequestHeader(quoted, 'r-1')), quoted, 'and comes back as they said it')
+})
+
+test('routed request binds only the actual user input through carry and quoted headers', () => {
+  const original = '🧪 请解释 【请求 ID：r-3】\n用户原话：某条旧记录'
+  const carried = `${original}\n\n${original}`
+  const routed = withRequestSource(carried, 'new-1', original)
+  assert.equal(routed.text, withRequestHeader(carried, 'new-1'))
+  assert.deepEqual(requestsIn(routed.text), [{ id: 'new-1', words: carried }])
+  assert.equal(routed.spans.map(span => routed.text.slice(span.start, span.end)).join(''), original)
+  assert.ok(routed.spans[0]!.start > routed.text.length / 2)
+  assert.equal(routed.spans[1]!.start - routed.spans[0]!.end, 1)
+  assert.throws(() => withRequestSource(carried, 'new-1', 'missing'), /final part/)
 })
 
 test('a plan is accepted only when goals and actions agree both ways, flat, within limits', () => {
@@ -148,4 +160,46 @@ test('a decision sent and not answered is not taken as refused: the host may hav
   const closing = host.decide('s1', 'r-3', {})
   host.close()
   assert.equal((await closing).accepted, 'unanswered', 'the app went away')
+})
+
+
+test('routing model history reads the current surface and invalidates frozen inputs after recovery', async () => {
+  const { routingModelHistory } = await import('../plugins/routing/lib/model-history.ts')
+  const { createUserMessage, createAssistantMessage } = await import('@deepseek-ai/dsh-llm')
+  const surface = { nodes: [], replaceGeneration: 0, contentGeneration: 0 }
+  const current = [createUserMessage({ content: [{ type: 'text', text: 'Current user request' }], source: { kind: 'user' } }),
+    createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: 'Current safe reply' }] })]
+  const session = { surface, deriveMessages: () => current,
+    snapshotEvents() { throw new Error('Retired UI history must never be read for routing') } }
+  const history = routingModelHistory(session)
+  assert.deepEqual(history.userTexts, ['Current user request'])
+  assert.deepEqual(history.recent.map(item => item.text), ['Current user request', 'Current safe reply'])
+  assert.equal(history.current(), true)
+  surface.contentGeneration++
+  assert.equal(history.current(), false)
+})
+
+test('routing cancels a lazy request when its captured context is replaced before transport starts', async () => {
+  const { completeFastRouting } = await import('../plugins/routing/lib/model-call.ts')
+  const events = new EventEmitter()
+  const session = {}
+  let current = true, sends = 0
+  const agent = { session, model: { current: () => ({ provider: 'fixture', model: 'fixture' }) } }
+  const ctx = {
+    on(name: string, listener: (value: object) => void) { events.on(name, listener); return () => { events.off(name, listener) } },
+    llm: { async *stream({ signal }: { signal: AbortSignal }) {
+      await Promise.resolve()
+      current = false
+      events.emit('session/event', session)
+      signal.throwIfAborted()
+      sends++
+    } },
+  }
+  await assert.rejects(completeFastRouting(ctx as unknown as Parameters<typeof completeFastRouting>[0],
+    agent as unknown as Parameters<typeof completeFastRouting>[1], 'captured old input', new AbortController().signal, () => current), /context changed/)
+  assert.equal(sends, 0)
+  assert.equal(events.listenerCount('session/event'), 0, 'failed calls remove the context observer')
+  await assert.rejects(completeFastRouting(ctx as unknown as Parameters<typeof completeFastRouting>[0],
+    agent as unknown as Parameters<typeof completeFastRouting>[1], 'already stale input', new AbortController().signal, () => current), /before sending/)
+  assert.equal(sends, 0)
 })

@@ -9,7 +9,7 @@
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { BlockAssembler, createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
 import * as persona from '@deepseek-ai/dsh-persona'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -17,13 +17,15 @@ import { requestsIn, withoutHeaders } from '../../src/shared/request-routing/hea
 import { createTasksChannel } from '../tasks/lib/channel.ts'
 import { installAssistantStream } from './lib/assistant-stream.ts'
 import { COMMIT_DESCRIPTION, COMMIT_PARAMETERS, MAX_NOTICE_CHARS } from './lib/commit.ts'
-import { deferCode, FAST_SYSTEM, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover, type FastTurn } from './lib/fast-lane.ts'
+import { deferCode, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover } from './lib/fast-lane.ts'
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
 import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
+import { routingModelHistory } from './lib/model-history.ts'
+import { completeFastRouting } from './lib/model-call.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']
@@ -32,7 +34,6 @@ export const Config = z.object({ prefix: z.string().required(), suffix: z.string
 
 const MAX_REPAIRS = 2
 const FAST_WAIT_MS = 20_000
-const FAST_MAX_TOKENS = 1500
 const TASK_LIST_WAIT_MS = 5_000
 
 const textOf = (content: unknown) => (Array.isArray(content) ? content as Array<{ type?: string, text?: string }> : []).filter(part => part.type === 'text').map(part => part.text ?? '').join('')
@@ -125,9 +126,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   })
 
   /** What the conversation's user messages say, oldest first: requests, results coming back, the plugins' notes. */
-  const userTexts = (agent: Agent) => agent.session.snapshotEvents()
-    .filter(event => event.type === 'user/message')
-    .map(event => textOf((event.data as { content?: unknown }).content))
+  const userTexts = (agent: Agent) => routingModelHistory(agent.session).userTexts
   // The app fails what a turn leaves undecided (request-runtime.ts endTurn); leave unused by the turn goes with it.
   ctx.on('agent/status', ({ agent, status }) => {
     const id = String(agent.session.id)
@@ -173,7 +172,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       // next). One made while the turn has more to say is mentioned at the end of that answer instead, said once.
       const notice = typeof args.notice === 'string' ? args.notice.trim().slice(0, MAX_NOTICE_CHARS) : ''
       const ends = planned === 'handed' && !hasOpenWork(decide(ledgerOf(id), requestId, planned))
-      const told = ends && notice !== '' && stream.announce(id, notice)
+      const told = ends && notice !== '' && stream.announce(id, notice, requestId)
       const status = ends && !told ? 'answering' : planned
       const ledger = update(id, l => decide(l, requestId, status))
       if (!hasOpenWork(ledger)) exec.concludeTurn()
@@ -232,40 +231,22 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     const signal = AbortSignal.timeout(FAST_WAIT_MS)
     const listed = fastTasks(await tasks.request({ op: 'list', limit: 30 }, sessionId, signal))
     if (!stillOn()) return { decided: null, reason: 'turn ended' }
-    const recent: FastTurn[] = agent.session.snapshotEvents().filter(event => event.type === 'user/message' || event.type === 'assistant/message').map(event => {
-      const data = event.data as { content?: unknown, message?: { content?: unknown } }
-      return { role: event.type === 'user/message' ? 'user' as const : 'assistant' as const, text: withoutHeaders(textOf(data.message?.content ?? data.content)) }
-    }).filter(turn => turn.text.trim())
-    const decision = parseFastDecision(await complete(ctx, agent, fastInput({ recent, tasks: listed, words }), signal), listed)
+    const history = routingModelHistory(agent.session)
+    const decision = parseFastDecision(await completeFastRouting(ctx, agent, fastInput({ recent: history.recent, tasks: listed, words }), signal, history.current), listed)
+    if (!history.current()) return { decided: null, reason: 'context changed' }
     if (!stillOn()) return { decided: null, reason: 'turn ended' }
     if (decision.decision === 'defer') return { decided: null, reason: deferCode(decision) }
     // The deadline is for deciding: a plan sent is the host's, and its answer is waited for as for the agent's own commit.
     const decided = await host.decide(sessionId, requestId, fastPlan(words, decision))
     if (decided.accepted === 'unanswered') {
-      if (stillOn()) agent.steer(userNote(fastNotice(requestId, decision as FastHandover, null)))
+      if (stillOn() && history.current()) agent.steer(userNote(fastNotice(requestId, decision as FastHandover, null)))
       return { decided: 'answering', reason: 'unanswered' }
     }
     if (!decided.accepted) return { decided: null, reason: 'refused' }
     // Accepted, the request is decided at the host whatever its receipts say: a task action not done (no free slot,
     // say) is the agent's to tell, as after its own commit, not to route again.
     const failed = decided.receipts.some(receipt => !receipt.ok)
-    if (stillOn()) agent.steer(userNote(fastNotice(requestId, decision as FastHandover, decided.receipts)))
+    if (stillOn() && history.current()) agent.steer(userNote(fastNotice(requestId, decision as FastHandover, decided.receipts)))
     return { decided: statusOfPlan(decided.receipts.map(receipt => receipt.kind), failed), reason: failed ? 'not done' : null }
   }
-}
-
-/** One text-only call on the main agent's own route, without thinking, as the memory plugin's background pass does. */
-async function complete(ctx: Context, agent: Agent, input: string, signal: AbortSignal): Promise<string> {
-  // The route in use now: since dsh 0.2.1 agent.options is only the fallback once the user switched models.
-  const { provider, model } = agent.model.current() ?? agent.options
-  if (!provider || !model) throw new Error('the agent has no model route to reuse')
-  const assembler = new BlockAssembler()
-  const stream = ctx.llm.stream({
-    provider, model, system: FAST_SYSTEM, maxTokens: FAST_MAX_TOKENS, signal, sessionId: agent.session.id,
-    reasoningEffort: 'off' as unknown as NonNullable<Parameters<Context['llm']['stream']>[0]['reasoningEffort']>,
-    purpose: 'routing-fast-lane' as unknown as NonNullable<Parameters<Context['llm']['stream']>[0]['purpose']>,
-    messages: [createUserMessage({ content: [{ type: 'text', text: input }], source: { kind: name } as unknown as MessageSource })],
-  })
-  for await (const chunk of stream) assembler.push(chunk)
-  return assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
 }

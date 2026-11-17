@@ -4,7 +4,7 @@ import {
   resolveRecurringOccurrence, ScheduleId,
 } from '@deepseek-ai/dsh-schedule'
 import type { AtInput, CronInput, DailyInput, ScheduleRecord, WeeklyInput } from '@deepseek-ai/dsh-schedule'
-import type { MemoryProvenance } from './memory-dispatch.ts'
+import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Schedules (system-design §12.2): a time and a prompt, made by talking and kept once the user says yes. A schedule's

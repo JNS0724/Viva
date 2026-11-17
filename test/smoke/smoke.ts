@@ -378,7 +378,7 @@ async function checkFiles(win: SmokeWindow, outDir: string, cwd: string) {
   return failures
 }
 
-/** What the window made of the fake dsh's Markdown answer (test/fixtures/fake-dsh.js MARKDOWN_ANSWER). */
+/** What the window made of the fake dsh's Markdown answer (test/fixtures/fake-dsh.ts MARKDOWN_ANSWER). */
 const MARKDOWN_STATE = `(() => {
   const md = [...document.querySelectorAll('.msg-agent .markdown')].at(-1)
   if (!md) return null

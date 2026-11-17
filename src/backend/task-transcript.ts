@@ -11,13 +11,14 @@ import { answerText, type AnsweredQuestion, type QuestionAnswer } from '../share
 export interface TranscriptMessage {
   readonly role: 'user' | 'assistant' | 'note'
   readonly text: string
+  readonly sourceId?: string
   readonly open?: boolean
   readonly streamKey?: string
   readonly blocks?: ReadonlyArray<{ readonly index: number, readonly text: string }>
 }
 export type Transcript = readonly TranscriptMessage[]
 /** A message as the history keeps it (history-db.ts save). */
-export interface SavedMessage { role: string, text: string, key?: string }
+export interface SavedMessage { role: string, text: string, key?: string, sourceId?: string }
 
 type Update = Readonly<Record<string, unknown>>
 type Blocks = NonNullable<TranscriptMessage['blocks']>
@@ -32,11 +33,14 @@ export function closed(transcript: Transcript): Transcript {
 }
 
 /** The user said something: words into the turn, or the next question. */
-export const said = (transcript: Transcript, words: string): Transcript => [...closed(transcript), { role: 'user', text: words }]
+export const said = (transcript: Transcript, words: string, key?: string): Transcript =>
+  [...closed(transcript), { role: 'user', text: words, ...(key ? { streamKey: key } : {}) }]
 
 /** The user answered what the agent asked: their reply, worded as the window words it. */
-export const answered = (transcript: Transcript, questions: readonly AnsweredQuestion[], answers: readonly QuestionAnswer[]): Transcript =>
-  said(transcript, answerText(questions, answers))
+export const answered = (transcript: Transcript, questions: readonly AnsweredQuestion[], answers: readonly QuestionAnswer[], sourceIds?: Readonly<Record<string, string>>): Transcript =>
+  sourceIds && Object.keys(sourceIds).length ? [...closed(transcript), ...questions.map(question => ({ role: 'user' as const,
+    text: answerText([question], answers), ...(Object.hasOwn(sourceIds, question.id) ? { sourceId: sourceIds[question.id] } : {}) }))]
+    : said(transcript, answerText(questions, answers))
 
 function contentText(content: unknown) {
   if (!isRecord(content)) return ''
@@ -107,10 +111,10 @@ export function ended(transcript: Transcript, stopReason: unknown): Transcript {
 }
 
 /** As the history keeps it. */
-export const saved = (transcript: Transcript): SavedMessage[] => transcript.map(({ role, text, streamKey }) => ({ role, text, ...(streamKey ? { key: streamKey } : {}) }))
+export const saved = (transcript: Transcript): SavedMessage[] => transcript.map(({ role, text, streamKey, sourceId }) => ({ role, text, ...(sourceId ? { sourceId } : {}), ...(streamKey ? { key: streamKey } : {}) }))
 
 /** A transcript from what the history kept, to go on from. */
-export const fromSaved = (messages: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown }>): Transcript => messages.flatMap((message): TranscriptMessage[] => {
+export const fromSaved = (messages: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown, sourceId?: unknown }>): Transcript => messages.flatMap((message): TranscriptMessage[] => {
   const { role, text } = message
-  return (role === 'user' || role === 'assistant' || role === 'note') && typeof text === 'string' ? [{ role, text, ...(typeof message.key === 'string' ? { streamKey: message.key } : {}) }] : []
+  return (role === 'user' || role === 'assistant' || role === 'note') && typeof text === 'string' ? [{ role, text, ...(typeof message.sourceId === 'string' ? { sourceId: message.sourceId } : {}), ...(typeof message.key === 'string' ? { streamKey: message.key } : {}) }] : []
 })

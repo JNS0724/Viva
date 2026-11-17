@@ -1,9 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openAppDb } from '../src/backend/app-db.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
+import { createMemoryHostEffects } from '../src/backend/memory-host-effects.ts'
+import type { HostMemoryApi, HostMemoryCaller } from '../src/memory/contracts/host.ts'
+import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
+import type { MemoryHostEffect } from '../src/memory/contracts/service.ts'
 import { createEventCore } from '../src/backend/event-core.ts'
 import { createRequestStore } from '../src/backend/request-store.ts'
 import { createRequestRuntime, type RequestTasks } from '../src/backend/request-runtime.ts'
@@ -133,4 +139,74 @@ test('the app binds a main session and waits for the plugin; decisions go to the
   const pending = desk.bind('s1')
   desk.close()
   await assert.rejects(pending)
+})
+
+
+test('a range erasure removes only dependent routing plans and prevents late receipts or remaining actions', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'requests-erasure-')), file = path.join(dir, 'app.db')
+  const app = openAppDb({ file })
+  t.after(() => { app.close(); fs.rmSync(dir, { recursive: true, force: true }) })
+  const { db } = app
+  const history = openHistoryDb({ db }), store = createRequestStore({ db })
+  const core = createEventCore({ app, publish() {} })
+  const sourceId = randomUUID(), erasedText = 'ERASEDROUTEBRIEF27', independentText = 'Retained adjacent detail'
+  const original = erasedText + independentText, after = ' '.repeat(erasedText.length) + independentText
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex')
+  const effect: MemoryHostEffect = { effectId: randomUUID(), causeOperationId: randomUUID(), revision: 1,
+    kind: 'erase-file-copies', hostNamespace: 'viva', sources: [{ namespace: 'canonical', sourceId, revision: 1 }],
+    ranges: [{ sourceId, revision: 1, length: original.length, hash: hash(original), afterHash: hash(after),
+      spans: [{ start: 0, end: erasedText.length }] }] }
+  const evidence = (start: number, end: number): MemoryProvenance => ({
+    epoch: 0, turnOnly: false, sources: [sourceId], fileSources: [sourceId],
+    files: [{ workspace: 'a'.repeat(64), id: 'digest', path: 'digest/wiki/example.md', revision: 'r1',
+      usageVersion: 1, policyToken: 'current', sourceRanges: [{ sourceId, spans: [{ start, end }] }] }],
+  })
+  let complete!: (value: { taskId: string }) => void
+  let began!: () => void
+  const running = new Promise<void>(resolve => { began = resolve })
+  let messages = 0
+  const requests = createRequestRuntime({ store, apply: core.apply, evidenceErased: history.evidenceErased, tasks: {
+    start: (_task, place) => new Promise(resolve => {
+      assert.deepEqual(place.memory, evidence(0, erasedText.length))
+      complete = resolve
+      began()
+    }),
+    message: async () => { messages++; return {} },
+    stop: async () => { throw new Error(erasedText) },
+  } })
+  const affectedId = requests.receive({ ...where, kind: 'prompt' })
+  const unaffectedId = requests.receive({ ...where, kind: 'prompt' })
+  const unaffected = { goals: [{ goal: independentText, disposition: 'answer' }], actions: [{ kind: 'reply', scope: independentText }] }
+  assert.equal((await requests.decide({ requestId: unaffectedId, sessionId: 's1', plan: unaffected },
+    evidence(erasedText.length, original.length))).accepted, true)
+  const affected = { goals: [
+    { goal: erasedText, disposition: 'stop_task' }, { goal: erasedText, disposition: 'delegate' }, { goal: erasedText, disposition: 'update_task' },
+  ], actions: [
+    { kind: 'stop', taskId: 't-old' }, { kind: 'start', brief: erasedText }, { kind: 'message', taskId: 't-old', text: erasedText },
+  ] }
+  const proof = evidence(0, erasedText.length)
+  const decision = requests.decide({ requestId: affectedId, sessionId: 's1', plan: affected }, proof)
+  await running
+  assert.equal(store.actions(affectedId)[0]?.error, erasedText, 'a previously returned action error is also a stored replica')
+  const call: HostMemoryCaller = async method => {
+    assert.equal(method, 'pendingHostEffects')
+    return [effect] as HostMemoryApi[typeof method]['output']
+  }
+  const host = createMemoryHostEffects({ db, call, apply: core.apply, invalidate() {},
+    eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges, eraseRoutedMemory: requests.eraseMemory })
+  t.after(() => host.close())
+  await host.recover()
+  complete({ taskId: 't-late' })
+  assert.equal((await decision).accepted, false)
+  assert.equal(messages, 0)
+  assert.deepEqual(store.actions(affectedId).map(({ status, error, taskId }) => [status, error, taskId]),
+    [['failed', null, null], ['uncertain', null, null], ['uncertain', null, null]])
+  const plans = db.prepare('SELECT plan FROM routing_decisions').all()
+  assert.deepEqual(plans.map(row => JSON.parse(String(row.plan))), [unaffected])
+  const lateId = requests.receive({ ...where, kind: 'prompt' })
+  assert.equal((await requests.decide({ requestId: lateId, sessionId: 's1', plan: affected }, proof)).accepted, false)
+  await host.recover()
+  for (const replica of [file, file + '-wal']) {
+    assert.equal(fs.readFileSync(replica).includes(Buffer.from(erasedText)), false)
+  }
 })

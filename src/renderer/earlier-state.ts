@@ -1,4 +1,5 @@
 import type { ActionHandlers } from './action-types.ts'
+import { withoutErasedReports } from './report-state.ts'
 /**
  * The one timeline (single-conversation design): the segments before the one on screen, oldest first, as the
  * history keeps them (main/history-db.js segmentsBefore). The window scrolls up into them; when the conversation
@@ -36,6 +37,8 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
     createdAt: at,
     messages: state.messages.map((message: ThreadMessage, seq: number) => ({
       seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
+      ...(message.streamKey ? { key: message.streamKey } : {}),
+      ...(message.feedItemId ? { feedItemId: message.feedItemId } : {}),
     })),
     records: state.records,
   }
@@ -57,7 +60,11 @@ export const EARLIER_ACTIONS= {
   /** A page of segments from before those shown; one already there is not shown twice. */
   earlier_loaded: (state, { segments, hasMore }) => {
     const shown = new Set(state.earlier.segments.map((segment: Segment) => segment.id))
-    const fresh = (segments ?? []).filter((segment: Segment) => !shown.has(segment.id))
+    const fresh = (segments ?? []).filter((segment: Segment) => !shown.has(segment.id)).map(segment => {
+      if (!segment.records) return segment
+      const records = withoutErasedReports(segment.records, state.erasedReportIds)
+      return records === segment.records ? segment : { ...segment, records }
+    })
     return withEarlier(state, { segments: [...fresh, ...state.earlier.segments], hasMore: Boolean(hasMore), loading: false })
   },
   earlier_failed: (state) => withEarlier(state, { loading: false }),

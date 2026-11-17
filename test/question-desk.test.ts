@@ -6,13 +6,35 @@ import { createQuestionDesk } from '../src/backend/question-channel.ts'
 
 const asked = (id: string, sessionId: string) => ({ type: 'question', id, sessionId, questions: [{ id: 'c', question: '哪个城市？', header: '城市', options: [{ label: '上海' }, { label: '北京' }] }] })
 
-test('the conversation on screen\'s questions still waiting are read apart from a task\'s; answered, they are gone', () => {
+test('the conversation on screen\'s questions still waiting are read apart from a task\'s; answered, they are gone', async () => {
   const sent: object[] = []
   const desk = createQuestionDesk({ send: (message) => { sent.push(message) }, emit: () => {}, sessionId: () => 'main', taskOf: (session) => (session === 'task-s' ? 'task-1' : null) })
-  desk.receive(asked('q-main', 'main'))
-  desk.receive(asked('q-task', 'task-s'))
+  await desk.receive(asked('q-main', 'main'))
+  await desk.receive(asked('q-task', 'task-s'))
   assert.deepEqual([desk.pendingOf(null).map((wait) => wait.questionId), desk.pendingOf('task-1').map((wait) => wait.questionId)], [['q-main'], ['q-task']])
-  assert.equal(desk.answer('q-main', [{ id: 'c', selected: ['北京'] }]), true)
+  assert.equal(await desk.answer('q-main', [{ id: 'c', selected: ['北京'] }]), true)
   assert.deepEqual(desk.pendingOf(null), [], 'answered: no longer waiting')
   assert.deepEqual(sent.at(-1), { type: 'answer', id: 'q-main', answers: [{ id: 'c', selected: ['北京'] }] })
+})
+
+test('a card closed during remote authorization cannot reappear, and concurrent answers intake once', async () => {
+  let release!: (value: boolean) => void
+  const events: object[] = []
+  const authorization = new Promise<boolean>(resolve => { release = resolve })
+  const desk = createQuestionDesk({ send() {}, emit: event => { events.push(event) }, sessionId: () => 'main',
+    allowGeneralQuestion: () => authorization })
+  const receiving = desk.receive(asked('late', 'main'))
+  await desk.receive({ type: 'question_closed', id: 'late' })
+  release(true); await receiving
+  assert.deepEqual(events, [])
+
+  let delivered = 0, finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const active = createQuestionDesk({ send() {}, emit() {}, sessionId: () => 'main',
+    onAnswer: async () => { delivered++; await pending; return 'source' } })
+  await active.receive(asked('once', 'main'))
+  const first = active.answer('once', [{ id: 'c', selected: ['北京'] }])
+  await Promise.resolve()
+  assert.equal(await active.answer('once', [{ id: 'c', selected: ['北京'] }]), false)
+  finish(); assert.equal(await first, true); assert.equal(delivered, 1)
 })

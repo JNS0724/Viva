@@ -5,19 +5,82 @@ import { mcpSteps, openCapabilityTab } from './smoke-mcp.ts'
 import { skillImportSteps } from './smoke-skills.ts'
 import { pluginSourceSteps } from './smoke-plugin-source.ts'
 import { taskSteps } from './smoke-tasks.ts'
+import type { MemoryManagedFileIdentity } from '../../src/memory/contracts/file-management.ts'
 
 /**
- * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.js): the
+ * Smoke steps on the real dsh with the app's plugins and the fake model (test/fixtures/fake-llm.ts): the
  * intro, the agent remembering through the plugin's tool, the profile page, a remembered name bringing its
  * memory along, the trace saying so, the agent asking a question and keeping the answer, the 扩展 section,
  * a model provider added in settings answering once picked, and the app bringing dsh back after it is killed.
  */
 const POLL_MS = 200
 const ROLE = '支付平台部的后端负责人'
-const FACT = '周报每周五下班前交给张三'
+export const REPORT_MEMORY = '周报每周五下班前交给张三'
+export const REPORT_TITLE = '周报提交约定'
+const WITHDRAWN = '海棠城合成记忆一七二'
+const WITHDRAWN_TITLE = '海棠城项目约定'
 const PROVIDER = '本地网关'
 const PROVIDER_MODEL = 'gw-smoke'
 const DEMO_KEY = 'smoke-demo-key-7f3a'
+
+/** Use the real daily-note pipeline. This model only returns a note when the supplied material supports it. */
+export function fileMemorySmokeAnswer(request: object) {
+  const { system, messages } = request as { system?: unknown, messages?: Array<{ content?: unknown }> }
+  if (!JSON.stringify(system ?? '').includes('整理最近完成的会话回合')) return null
+  const supplied = JSON.stringify(messages?.at(-1)?.content ?? '')
+  const record = [[REPORT_TITLE, REPORT_MEMORY], [WITHDRAWN_TITLE, WITHDRAWN]].find(([, body]) => supplied.includes(body!))
+  const note = record ? { status: 'write', title: record[0], markdown: `# ${record[0]}\n\n${record[1]}` } : { status: 'skip' }
+  return { text: JSON.stringify(note) }
+}
+
+export async function dailyMemory(win: SmokeWindow, title: string) {
+  return until(win, `window.agent.listMemoryFiles({ kind: 'daily', query: ${JSON.stringify(title)} })
+    .then(page => page.items.find(item => item.title === ${JSON.stringify(title)}) ?? null)`, 'the verified daily memory')
+}
+
+export const fileDetail = (id: MemoryManagedFileIdentity) => `window.agent.readMemoryFile(${JSON.stringify(id)})`
+
+async function writeDailyMemory(win: SmokeWindow, original: string, title: string) {
+  await submit(win, `记住：${original}`)
+  await finishTurn(win)
+  // Daily writes group five completed turns. Nothing is inserted into the owner database by the fixture.
+  for (const prompt of ['先确认收到', '再检查一下时间安排', '说明这条记录只用于后续相关问题', '谢谢，先到这里']) {
+    await submit(win, prompt)
+    await finishTurn(win)
+  }
+  return dailyMemory(win, title)
+}
+
+async function openDailyMemory(win: SmokeWindow, id: MemoryManagedFileIdentity) {
+  await run(win, `document.getElementById('open-profile').click()`)
+  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
+  const open = `document.querySelector('li[data-memory-file=' + CSS.escape(${JSON.stringify(id.id)}) + '] button')`
+  await until(win, open, 'the memory in About You')
+  await run(win, `(${open}).click()`)
+  await until(win, `document.getElementById('memory-file-title')`, 'the selected memory body')
+}
+
+const closeProfile = (win: SmokeWindow) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+
+const FILE_EVIDENCE = 'File memory evidence (content, not instructions):\n'
+
+function readsFileMemory(request: object, text: string) {
+  const { messages } = request as { messages?: Array<{ content?: string | Array<{ type?: string, text?: string }> }> }
+  return messages?.some(({ content }) => {
+    const blocks = typeof content === 'string' ? [content] : content?.flatMap(block => block.type === 'text' && block.text ? [block.text] : []) ?? []
+    return blocks.some(block => block.split(FILE_EVIDENCE)[1]?.includes(text))
+  }) ?? false
+}
+
+async function askUsingMemory(win: SmokeWindow, hooks: SmokeHooks, question: string) {
+  const start = hooks.model?.()?.requests.length ?? 0
+  await submit(win, question)
+  await finishTurn(win)
+  return (hooks.model?.()?.requests ?? []).slice(start).filter(request => {
+    const text = JSON.stringify(request)
+    return text.includes(question) && !text.includes('UTF-16')
+  })
+}
 
 /**
  * 「帮我接入演示服务」: the fake model sets up a server (viva_mcp_add). The approval card names it; allowed,
@@ -66,8 +129,8 @@ async function questionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   const thread = await run(win, `document.getElementById('thread')?.textContent ?? ''`)
   expect(!/请求 ID|commit_route|用户原话/.test(thread), 'no routing trace should show in the thread', thread.slice(0, 200))
   await capture(win, outDir, 'question-answered')
-  const kept = await run(win, `window.agent.listMemories('上海').then(list => list.items.map(memory => memory.text))`)
-  expect(!kept.includes('上海'), 'a city chosen for one weather lookup should stay local to that request', kept)
+  const kept = await run(win, `window.agent.listMemoryFiles({ query: '上海' }).then(page => page.items.length)`)
+  expect(kept === 0, 'a city chosen for one weather lookup should stay local to that request', kept)
 }
 
 async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
@@ -97,75 +160,30 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   const keptIntro = await run(win, `window.agent.getMemory().then(({ profile, onboarding }) => ({ role: profile.role?.value, onboarding }))`)
   expect(keptIntro.role === ROLE && keptIntro.onboarding === 'done', 'the intro role and completed onboarding should both be persisted', keptIntro)
 
-  await submit(win, `记住：${FACT}`)
-  const asked = await finishTurn(win)
-  expect(asked === 0, 'memory tools should run without a permission card', asked)
-  await until(win, `document.querySelector('.toast')?.textContent?.includes(${JSON.stringify(`已记住：${FACT}`)})`, 'the verified save notification')
-  await capture(win, outDir, 'memory-remembered')
-
-  await until(win, `window.agent.listMemories('周报').then(({ items }) =>
-    items.some(item => item.text === ${JSON.stringify(FACT)} && !item.conditional))`, 'the saved report memory to be ready for injection')
-  await run(win, `document.getElementById('open-profile').click()`)
-  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
-  await wait(UI_WAIT_MS)
+  const note = await writeDailyMemory(win, REPORT_MEMORY, REPORT_TITLE)
+  await openDailyMemory(win, note.identity)
   const page = await run(win, `({
     role: document.querySelector('[data-field="role"] .profile-value')?.textContent ?? '',
-    memories: [...document.querySelectorAll('.memory-text')].map((el) => el.textContent),
-    agentMarked: Boolean(document.querySelector('.memory-item[data-source="agent"]')),
+    detail: document.querySelector('[data-memory-files-view="detail"] article')?.textContent ?? '',
+    sources: [...document.querySelectorAll('[data-memory-files-view="detail"] button')].map(button => button.textContent),
   })`)
-  expect(page.role === ROLE && page.memories.includes(FACT) && page.agentMarked, 'the profile page should show the intro and the memory', page)
-  const meta = await run(win, `document.querySelector('.memory-item[data-source="agent"] .memory-meta')?.textContent ?? ''`)
-  expect(meta.includes('关键词：') && meta.includes('周报') && meta.includes('张三'), 'the memory should show the verified keywords', meta)
-  await until(win, `window.agent.getMemory().then(({ summaries }) => summaries?.user.generated &&
-    summaries.user.items.some(item => item.text === ${JSON.stringify(FACT)} && item.source?.link?.startsWith('viva://timeline/')))`,
-  'the generated user profile with a verified chat source')
-  await until(win, `document.querySelector('[data-profile-summary="user"] button[aria-label$="的原文"]')`, 'the summary source control')
-  const actions = await run(win, `(() => {
-    const group = document.querySelector('.memory-item[data-source="agent"] .memory-actions')
-    if (!group) return null
-    const buttons = [...group.querySelectorAll('button')]
-    const bounds = group.getBoundingClientRect()
-    const wide = buttons.map(button => button.getBoundingClientRect())
-    group.style.maxInlineSize = '150px'
-    try {
-      const narrow = buttons.map(button => button.getBoundingClientRect())
-      return {
-        labels: buttons.map(button => button.textContent),
-        deleteLabel: buttons.at(-1)?.getAttribute('aria-label'),
-        compact: wide[0]?.left === bounds.left && wide.every((box, i) => i === 0 ||
-          (box.top === wide[0].top && box.left - wide[i - 1].right <= 16)),
-        wrapped: new Set(narrow.map(box => box.top)).size > 1,
-        fits: narrow.every(box => box.right <= bounds.left + 151),
-      }
-    } finally {
-      group.style.removeProperty('max-inline-size')
-    }
-  })()`)
-  expect(actions?.labels.join('/') === '查看原文/编辑/停止使用这条记忆/删除' && actions.deleteLabel?.includes(FACT),
-    'the memory actions should include a visible delete label and name the memory for assistive technology', actions)
-  expect(actions?.compact && actions.wrapped && actions.fits, 'the actions should stay together and wrap inside a narrow row', actions)
+  expect(page.role === ROLE && page.detail.includes(REPORT_MEMORY), 'About You shows the manual profile and its separately stored note', page)
+  expect(page.sources.some((label: string) => label.startsWith('查看原文')), 'the note offers verified original links', page.sources)
   await capture(win, outDir, 'memory-profile')
   await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)
-  await until(win, `document.querySelector('.toast')?.textContent?.includes('索引已开始重建，语义索引会在后台分批补齐。')`, 'the index rebuild receipt')
-  expect(await run(win, `window.agent.listMemories('周报').then(({ items }) => items.some(item => item.text === ${JSON.stringify(FACT)}))`),
-    'the saved report memory should survive the index rebuild')
-  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
-  await wait(UI_WAIT_MS)
+  await until(win, `document.querySelector('.toast')?.textContent?.includes('已重建文件记忆的全文索引。')`, 'the file index rebuild receipt')
+  expect((await run(win, fileDetail(note.identity)))?.markdown.includes(REPORT_MEMORY), 'the current file survives index rebuilding')
+  await closeProfile(win)
 
-  await submit(win, '帮我写这周的周报')
-  await finishTurn(win)
-  await wait(UI_WAIT_MS)
-  // The fake model says what background came with the question; 周报 is a keyword of the memory.
-  const answers = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].map((el) => el.textContent)`)
-  expect(answers.some((text: string) => /^我已经了解你的背景（(?:画像、)?1 条相关记忆）/.test(text)), 'naming 周报 should bring its memory along', answers.map((t: string) => t.slice(0, 24)))
+  const question = '周报提交约定'
+  const sent = await askUsingMemory(win, hooks, question)
+  expect(sent.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a request in the source conversation receives the stored note', sent.length)
   await run(win, `document.getElementById('toggle-drawer').click()`)
-  // The trace comes in after the turn (a slower machine, a packaged app): wait for its row rather than a fixed time.
-  const rows = `[...document.querySelectorAll('.trace-row')].map((row) => row.textContent)`
-  const explainsMatch = (row: string) => row.includes('带上记忆') && /因为提到「[^」]*周报[^」]*」/u.test(row) && row.includes(`」：${FACT}`)
-  const memoryRow = `${rows}.some((row) => row.includes('带上记忆') && /因为提到「[^」]*周报[^」]*」/u.test(row) && row.includes(${JSON.stringify(`」：${FACT}`)}))`
-  const trace = await until(win, memoryRow, 'the trace showing which memory went along', UI_WAIT_MS * 10).then(() => run(win, rows), () => run(win, rows))
-  expect(trace.some(explainsMatch), 'the trace should show which memory went along and why', trace)
+  await until(win, `[...document.querySelectorAll('.trace-row')].some(row => row.textContent.includes(${JSON.stringify(REPORT_MEMORY)}))`,
+    'the trace showing which memory went along', UI_WAIT_MS * 10)
   await capture(win, outDir, 'memory-trace')
+
+  await smokeStep(hooks, 'file memory restriction, restore and source withdrawal', () => fileLifecycleSteps(win, outDir, expect, hooks))
 
   await questionSteps(win, outDir, expect)
   await configSteps(win, outDir, expect, hooks)
@@ -461,158 +479,45 @@ async function dropSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   expect(after.toast.includes('这不是电脑上的文件夹') && !after.held && after.hint === null, 'a drop that is not a folder on disk should be turned down', after)
 }
 
-async function forgettingSteps(win: SmokeWindow, expect: Expect, hooks: SmokeHooks) {
-  const marker = '紫藤城合成记忆七二一'
-  const independent = '独立的合成对话背景九三五'
-  const next = '继续这个话题并核对本轮合成请求'
+async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
+  const note = await dailyMemory(win, REPORT_TITLE)
+  await openDailyMemory(win, note.identity)
+  const detail = '[data-memory-files-view="detail"]'
+  const button = (label: string) => `[...document.querySelectorAll(${JSON.stringify(detail + ' button')})]
+    .find(button => button.textContent === ${JSON.stringify(label)})`
+  await run(win, `(${button('停止使用这条记忆')}).click()`)
+  const stopped = await until(win, `${fileDetail(note.identity)}.then(file => file?.restrictions?.length === 1 && file)`,
+    'the selected file is held by its own restriction')
+  expect(stopped.restrictions[0].version.usageVersion > note.version.usageVersion, 'stopping advances the usage version')
+  await until(win, button('查看停用片段 1'), 'the archived selection')
+  await run(win, `(${button('查看停用片段 1')}).click()`)
+  await until(win, button('恢复使用这段内容'), 'the exact archived range can be resumed')
+  await capture(win, outDir, 'memory-stopped')
+  await closeProfile(win)
+
+  const during = await askUsingMemory(win, hooks, '周报提交约定？')
+  expect(during.length > 0 && during.every(request => !readsFileMemory(request, REPORT_MEMORY)), 'the stopped range is omitted from file retrieval', during.length)
+  await openDailyMemory(win, note.identity)
+  await until(win, button('查看停用片段 1'), 'the same archived selection after reopening About You')
+  await run(win, `(${button('查看停用片段 1')}).click()`)
+  await until(win, button('恢复使用这段内容'), 'the scoped restore control')
+  await run(win, `(${button('恢复使用这段内容')}).click()`)
+  await until(win, `${fileDetail(note.identity)}.then(file => file?.markdown.includes(${JSON.stringify(REPORT_MEMORY)}) && !file.restrictions?.length)`,
+    'the released range is rebuilt from its sources')
+  await closeProfile(win)
+  const after = await askUsingMemory(win, hooks, '周报提交约定。')
+  expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
+
   await newTopic(win)
-  await submit(win, independent)
-  await finishTurn(win)
-  await submit(win, `记住：${marker}`)
-  await finishTurn(win)
-  const before = await run(win, `window.agent.getInfo()`)
-  const entry = await until(win, `window.agent.listMemories(${JSON.stringify(marker)}).then(list => list.items[0] ?? null)`, 'the sourced memory')
-  await submit(win, `忘掉 #${entry.id}`)
-  await finishTurn(win)
-  const after = await run(win, `window.agent.getInfo()`)
-  expect(after.topicId === before.topicId && after.sessionId !== before.sessionId, 'forgetting should replace the DSH session and retain the Viva topic', { before: before.sessionId, after: after.sessionId })
-  const offset = hooks.model?.()?.requests.length ?? 0
-  await submit(win, next)
-  await finishTurn(win)
-  const sent = (hooks.model?.()?.requests ?? []).slice(offset).map((request: unknown) => JSON.stringify(request))
-  const conversation = sent.find(text => text.includes(next) && !text.includes('UTF-16')) ?? ''
-  expect(conversation.includes(independent) && !conversation.includes(marker), 'filtered continuation should preserve unrelated context and omit the forgotten source', { found: Boolean(conversation) })
-  const active = await run(win, `window.agent.listMemories(${JSON.stringify(marker)}).then(list => list.items)`)
-  expect(active.length === 0, 'forgotten content should remain absent from recall', active)
-  const resumed = await run(win, `window.agent.resumeTopic(${JSON.stringify(before.conversationId)})`)
-  expect(resumed.ok && resumed.info.topicId === before.topicId && resumed.info.sessionId !== before.sessionId,
-    'review should open a fresh session for the same topic', { ok: resumed.ok, changed: resumed.info?.sessionId !== before.sessionId })
-  const followup = '从回顾续接后的合成请求'
-  const count = hooks.model()?.requests.length ?? 0
-  await run(win, `window.agent.prompt(${JSON.stringify(followup)}, [], crypto.randomUUID())`)
-  const request = (hooks.model()?.requests ?? []).slice(count).map(item => JSON.stringify(item))
-    .find(item => item.includes(followup) && !item.includes('UTF-16')) ?? ''
-  expect(request.includes(independent) && !request.includes(marker), 'resuming an old session should use filtered records', { found: Boolean(request) })
-
-  const withdrawn = '海棠城合成记忆一七二'
+  const withdrawn = await writeDailyMemory(win, WITHDRAWN, WITHDRAWN_TITLE)
+  const origin = await run(win, `window.agent.getInfo()`)
   await newTopic(win)
-  await submit(win, `记住：${withdrawn}`)
-  await finishTurn(win)
-  await until(win, `window.agent.listMemories(${JSON.stringify(withdrawn)}).then(list => list.items[0] ?? null)`, 'a memory with a single conversation as evidence')
-  const host = await run(win, `window.agent.getInfo()`)
-  await newTopic(win)
-  await until(win, `window.agent.getInfo().then(info => info.topicId !== ${JSON.stringify(host.topicId)})`, 'a new topic before removing the source conversation')
-  await run(win, `window.agent.deleteConversation(${JSON.stringify(host.conversationId)})`)
-  await run(win, `window.agent.restoreConversation(${JSON.stringify(host.conversationId)})`)
-  const afterWithdrawal = await run(win, `window.agent.listMemories(${JSON.stringify(withdrawn)}).then(list => list.items.length)`)
-  expect(afterWithdrawal === 0, 'restoring the chat cannot revive the withdrawn memory', afterWithdrawal)
-}
-
-async function conflictSteps(win: SmokeWindow, outDir: string, expect: Expect, hooks: SmokeHooks) {
-  const one = '我唯一的周报提交邮箱是 amber@example.com'
-  const two = '我唯一的周报提交邮箱是 jade@example.com'
-  await submit(win, one)
-  await finishTurn(win)
-  await until(win, `window.agent.listMemories('周报提交邮箱').then(value => value.items.some(item => item.fact?.predicate === 'report_email'))`, 'model-proposed email fact')
-  await submit(win, two)
-  await finishTurn(win)
-  const conflicted = await until(win, `window.agent.listInvalidMemories().then(items => items.some(item => item.text === ${JSON.stringify(two)}) && items)`, 'model-proposed conflict')
-  const alternatives = conflicted.filter((item: { text: string, state: string }) => [one, two].includes(item.text) && item.state === 'disputed')
-  expect(alternatives.length === 2, 'the app should expose both unresolved claims')
-
-  await submit(win, '只润色周报正文')
-  await finishTurn(win)
-  expect(!await run(win, `Boolean(document.querySelector('.ask'))`), 'polishing the report does not ask for its address')
-  await submit(win, '按记忆填写周报提交邮箱')
-  const clarification = await until(win, `(() => {
-    const cards = [...document.querySelectorAll('.ask')]
-    if (!cards.length) return null
-    return cards.map(card => [...card.querySelectorAll('.ask-option')].map(option => option.textContent))
-  })()`, 'the task-local memory question')
-  expect(clarification.length === 1 && clarification[0].length === 2
-    && clarification[0].some((text: string) => text.includes(one))
-    && clarification[0].some((text: string) => text.includes(two)), 'the card shows both versions once', clarification)
-  await capture(win, outDir, 'memory-clarification')
-  await run(win, `[...document.querySelectorAll('.ask-option')].find(option => option.textContent.includes('jade@example.com')).click()`)
-  await finishTurn(win)
-  const answer = await run(win, `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`)
-  expect(answer.includes('这次填') && answer.includes('jade@example.com'), 'the reply uses the chosen address for this request', answer)
-  const unresolved = await run(win, `window.agent.listInvalidMemories().then(items => items.filter(item => item.state === 'disputed'
-    && [${JSON.stringify(one)}, ${JSON.stringify(two)}].includes(item.text)).length)`)
-  const current = await run(win, `window.agent.listMemories('周报提交邮箱').then(result => result.items.length)`)
-  expect(unresolved === 2 && current === 0, 'the task-local choice leaves both claims in dispute', { unresolved, current })
-  const model = hooks.model?.()
-  const next = model?.requests.length ?? 0
-  const followUp = '再检查一下周报正文'
-  await submit(win, followUp)
-  await finishTurn(win)
-  const sent = (model?.requests ?? []).slice(next).map(request => JSON.stringify(request))
-    .find(request => request.includes(followUp) && !request.includes('UTF-16'))
-  expect(Boolean(sent) && !sent?.includes('这次填') && !sent?.includes('jade@example.com'),
-    'a later model request does not carry the task-local choice', { found: Boolean(sent) })
-
-  await run(win, `document.getElementById('open-profile').click()`)
-  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
-  await until(win, `document.querySelector('.memory-invalid > button[name="memory-invalid"]')`, 'other memory records')
-  await run(win, `document.querySelector('.memory-invalid > button[name="memory-invalid"]').click()`)
-  const choose = `[...document.querySelectorAll('[data-memory-conflict] [data-memory-id]')].find(row => row.querySelector('.memory-text')?.textContent === ${JSON.stringify(two)})
-    ?.querySelector('button.btn-outline')`
-  await until(win, `Boolean(${choose})`, 'conflict confirmation')
-  await run(win, `(${choose}).closest('[data-memory-conflict]').scrollIntoView({ block: 'center' })`)
-  await capture(win, outDir, 'memory-conflict')
-  await run(win, `(${choose}).click()`)
-  const entries = await until(win, `window.agent.listMemories('周报提交邮箱').then(value => {
-    const texts = value.items.map(item => item.text)
-    return texts.includes(${JSON.stringify(two)}) && texts
-  })`, 'the confirmed memory becomes active')
-  expect(entries.includes(two) && !entries.includes(one), 'only the confirmed claim should be current', entries)
-  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
-
-  await submit(win, '从现在起，我的周报提交邮箱从 jade@example.com 改为 cobalt@example.com')
-  await finishTurn(win)
-  const change = await until(win, `window.agent.listMemoryChanges().then(changes => changes.find(change =>
-    change.kind === 'supersede' && change.status === 'applied' && change.before === ${JSON.stringify(two)} &&
-    change.after?.includes('cobalt@example.com')))`, 'the explicit replacement in memory history')
-  const replaced = await run(win, `window.agent.listMemories('周报提交邮箱').then(value => value.items.map(item => item.text))`)
-  expect(replaced.some((text: string) => text.includes('cobalt@example.com')) && !replaced.includes(two), 'the replacement is current before undo', replaced)
-  const inspectModel = async (question: string, current: string, previous: string) => {
-    const model = hooks.model?.()
-    const first = model?.requests.length ?? 0
-    await submit(win, question)
-    await finishTurn(win)
-    const sent = (model?.requests ?? []).slice(first).map(request => JSON.stringify(request))
-      .find(request => request.includes(question) && !request.includes('UTF-16'))
-    expect(Boolean(sent?.includes(current)) && !sent?.includes(previous), 'the next model request contains the current address and omits stale memory', {
-      found: Boolean(sent), current: sent?.includes(current), stale: sent?.includes(previous),
-    })
-  }
-  await inspectModel('核对刚生效的周报提交邮箱', 'cobalt@example.com', 'jade@example.com')
-  const changeHistory = `document.querySelector('button[name="memory-changes"]')`
-  await run(win, `document.getElementById('open-profile').click()`)
-  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
-  await until(win, changeHistory, 'memory changes')
-  await run(win, `(${changeHistory}).click()`)
-  const changeRow = `document.querySelector('[data-memory-change="${change.id}"]')`
-  await until(win, `Boolean(${changeRow}?.querySelector('.btn-outline'))`, 'undo for the applied change')
-  const displayed = await run(win, `${changeRow}.textContent`)
-  expect(displayed.includes(two) && displayed.includes('cobalt@example.com') && displayed.includes('原文依据'), 'the change shows both values and source wording', displayed)
-  await run(win, `${changeRow}.scrollIntoView({ block: 'center' })`)
-  const toast = await run(win, `(() => {
-    const action = document.querySelector('#toast-root .toast-action')
-    if (!action) return null
-    const range = document.createRange()
-    range.selectNodeContents(action)
-    return { singleLine: range.getClientRects().length === 1,
-      abovePage: action.closest('.toast').getBoundingClientRect().bottom <= document.querySelector('#hub').getBoundingClientRect().top }
-  })()`)
-  expect(toast?.singleLine && toast.abovePage, 'the long memory notice keeps its action on one line above the page', toast)
-  await capture(win, outDir, 'memory-change-history')
-  await run(win, `${changeRow}.querySelector('.btn-outline').click()`)
-  await until(win, `${changeRow}?.dataset.status === 'undone'`, 'the change is shown as undone')
-  const restored = await run(win, `window.agent.listMemories('周报提交邮箱').then(value => value.items.map(item => item.text))`)
-  expect(restored.includes(two) && !restored.some((text: string) => text.includes('cobalt@example.com')), 'undo restores the previously confirmed value', restored)
-  await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
-  await inspectModel('核对撤销后的周报提交邮箱', two, 'cobalt@example.com')
+  await until(win, `window.agent.getInfo().then(info => info.topicId !== ${JSON.stringify(origin.topicId)})`, 'leave the source conversation')
+  await run(win, `window.agent.deleteConversation(${JSON.stringify(origin.conversationId)})`)
+  await run(win, `window.agent.restoreConversation(${JSON.stringify(origin.conversationId)})`)
+  await until(win, `${fileDetail(withdrawn.identity)}.then(file => !file || !file.markdown.includes(${JSON.stringify(WITHDRAWN)}))`, 'withdrawal has removed the note evidence')
+  const later = await askUsingMemory(win, hooks, '海棠城项目约定')
+  expect(later.length > 0 && later.every(request => !JSON.stringify(request).includes(WITHDRAWN)), 'restored chat cannot revive withdrawn note evidence', later.length)
 }
 
 /** @returns failed expectations */
@@ -625,8 +530,6 @@ export async function checkMemory(win: SmokeWindow, outDir: string, hooks: Smoke
     await smokeStep(hooks, 'backend crash recovery', () => backendCrashSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'working directory', () => workDirSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'rewind', () => rewindSteps(win, outDir, expect, hooks))
-    await smokeStep(hooks, 'forgetting and filtered continuation', () => forgettingSteps(win, expect, hooks))
-    await smokeStep(hooks, 'versioned conflict resolution', () => conflictSteps(win, outDir, expect, hooks))
     // The installed restart check opens this topic and resumes the task left waiting here.
     await smokeStep(hooks, 'background task interactions', () => taskSteps(win, outDir, expect, hooks))
   } catch (err) {

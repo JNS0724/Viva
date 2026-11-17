@@ -12,6 +12,6 @@ export function applicationEnvironment(base: NodeJS.ProcessEnv, options: { works
   result.DEEPSEEK_API_KEY = options.apiKey || ''
   result.AGENT_CWD = options.workspace
   result.DSH_HOME = options.importHome
-  if (options.bridge === 'fake') result.DSH_BIN = path.join(options.projectRoot, 'test', 'fixtures', 'fake-dsh.js')
+  if (options.bridge === 'fake') result.DSH_BIN = path.join(options.projectRoot, 'test', 'fixtures', 'fake-dsh.ts')
   return result
 }

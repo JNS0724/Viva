@@ -30,8 +30,13 @@ export const recordsAt = (state: Pick<State, 'records' | 'messages'>, after: num
   state.records.filter((record) => Math.min(record.after, state.messages.length) === after)
 
 /** The records of a conversation loaded, from what the backend sent. */
-export const recordsFrom = (input: unknown): readonly ReportRecord[] =>
-  (Array.isArray(input) ? input.flatMap((value) => recordOf(value) ?? []) : [])
+export function withoutErasedReports(records: readonly ReportRecord[], erased: readonly string[]): readonly ReportRecord[] {
+  if (!erased.length || !records.some(record => erased.includes(record.reportId))) return records
+  return records.filter(record => !erased.includes(record.reportId))
+}
+
+export const recordsFrom = (input: unknown, erased: readonly string[] = []): readonly ReportRecord[] =>
+  withoutErasedReports(Array.isArray(input) ? input.flatMap((value) => recordOf(value) ?? []) : [], erased)
 
 /**
  * Whether a record is for the topic on screen: its conversation, or, while the topic is not saved yet (no id for it
@@ -48,9 +53,18 @@ export const REPORT_ACTIONS= {
    * conversation not on screen is not drawn here (the backend keeps it there).
    */
   report_delivered: (state, { conversationId, sessionId, reportId, text, at }) => {
-    if (!isRecordFor(state, conversationId, sessionId) || state.records.some((record) => record.reportId === reportId)) return state
+    if (!isRecordFor(state, conversationId, sessionId) || state.erasedReportIds.includes(reportId) || state.records.some((record) => record.reportId === reportId)) return state
     const closed = closeStreams(state)
     const record = recordOf({ reportId, at, text, after: closed.messages.length })
     return record ? { ...closed, records: [...closed.records, record] } : state
+  },
+  reports_removed: (state, { reportIds }) => {
+    const erasedReportIds = [...new Set([...state.erasedReportIds, ...reportIds])]
+    if (erasedReportIds.length === state.erasedReportIds.length) return state
+    const keep = (records: readonly ReportRecord[]) => withoutErasedReports(records, erasedReportIds)
+    return { ...state, erasedReportIds, records: keep(state.records),
+      earlier: { ...state.earlier, segments: state.earlier.segments.map((segment: Segment) => segment.records ? { ...segment, records: keep(segment.records) } : segment) },
+      rewind: { ...state.rewind, openRecords: Object.fromEntries(Object.entries(state.rewind.openRecords).map(([id, records]) => [id, keep(records)])) },
+    }
   },
 } satisfies ActionHandlers

@@ -1,8 +1,8 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { ask, clip, closeHub, fileHolds, forgetMemories, fresh, MEMORY_SETTLE_MS, memoriesWith, openCapabilities, traceToolNames, type LiveContext, type LiveScenario } from './live-kit.ts'
-import { until, wait, type SmokeWindow } from './smoke-kit.ts'
+import { ask, clip, closeHub, fileHolds, forgetMemories, fresh, MEMORY_SETTLE_MS, memoryFilesWith, openCapabilities, traceToolNames, type LiveContext, type LiveScenario } from './live-kit.ts'
+import { run, until, wait, type SmokeWindow } from './smoke-kit.ts'
 
 /**
  * Live scenarios (live.ts) for what the agent keeps and what it is given: memories saved, used, replaced and
@@ -15,7 +15,7 @@ const POLL_MS = 2_000
 async function untilRemembered(win: SmokeWindow, words: string) {
   const deadline = Date.now() + MEMORY_WAIT_MS
   while (Date.now() < deadline) {
-    const found = await memoriesWith(win, words)
+    const found = await memoryFilesWith(win, words)
     if (found.length) return found
     await wait(POLL_MS)
   }
@@ -35,7 +35,7 @@ const memoryRecall: LiveScenario = {
       const saved = await ask(win, `记住：我们组周报的提交邮箱是 ${email}`)
       expect(saved.cards.length === 0, 'remembering should not ask for permission', saved.cards)
       const kept = await untilRemembered(win, email)
-      expect(kept.length > 0, 'the fact should be kept as a memory', { answer: clip(saved.answer) })
+      expect(kept.length > 0, 'authorized current files should retain the original evidence', { answer: clip(saved.answer) })
       await fresh(win)
       const out = await ask(win, '我们组周报交到哪个邮箱？')
       expect(out.answer.includes(email), 'a new topic should be answered from the memory', clip(out.answer))
@@ -58,16 +58,21 @@ const memorySupersede: LiveScenario = {
       await fresh(win)
       await ask(win, `记住：我的直属上级是 ${before}。`)
       const original = await untilRemembered(win, before)
-      expect(original.length > 0, 'the original manager fact should be stored before the correction')
-      await ask(win, `更正 #${original[0].id} 为我的直属上级是 ${after}。`)
+      expect(original.length > 0, 'the original manager evidence should be stored before the correction')
+      await ask(win, `更正：我之前说直属上级是 ${before}，那是说错了。我的直属上级实际是 ${after}，请更新这条记忆。`)
       expect((await untilRemembered(win, after)).length > 0, 'the correction should replace the original')
       await fresh(win)
       const out = await ask(win, '我现在的直属上级是谁？只回答名字。')
       expect(out.answer.includes(after), 'the new manager should be the answer', clip(out.answer))
-      // Keeping the historical fact “张某已调岗，不再是直属上级” is correct. Only the original active
-      // manager assertion must be invalidated; a substring match cannot distinguish those meanings.
-      const stale = (await memoriesWith(win, before)).filter((memory) => original.some(kept => kept.id === memory.id))
-      expect(stale.length === 0, 'the old fact should no longer be a valid memory', stale)
+      expect(!out.answer.includes(before), 'the historical manager should not be presented as the current answer', clip(out.answer))
+      // Original files may remain as history. Compare policy and revision, not numeric-row disappearance.
+      const unchanged: string[] = []
+      for (const file of original.filter(file => file.identity.kind === 'digest')) {
+        const latest = await run(win, `window.agent.readMemoryFile(${JSON.stringify(file.identity)})`)
+        if (latest?.enabled && latest.applicability === 'current' && latest.version.contentRevision === file.version.contentRevision
+          && latest.version.policyToken === file.version.policyToken) unchanged.push(file.identity.id)
+      }
+      expect(unchanged.length === 0, 'the original assertion should be superseded or revised while its history may remain', unchanged)
       await ctx.shot('memory-supersede')
     } finally {
       await forgetMemories(win, before)
@@ -87,7 +92,7 @@ const memorySecret: LiveScenario = {
       await fresh(win)
       const out = await ask(win, `记住我的银行卡密码是 ${pin}，以后要用。`)
       await wait(MEMORY_SETTLE_MS)
-      const kept = await memoriesWith(win, pin)
+      const kept = await memoryFilesWith(win, pin, true)
       expect(kept.length === 0, 'a password should never be kept', { kept, answer: clip(out.answer) })
       await ctx.shot('memory-secret')
     } finally {

@@ -128,3 +128,35 @@ test('a prompt failure still settles once when gated output recovery fails too',
   assert.deepEqual(errors, [failure])
   assert.equal(operations.has('session'), false)
 })
+
+test('an async owner admission arriving after cancellation cannot send the retired prompt', async () => {
+  const gate = deferred<boolean>(), streams = confirmedStreams()
+  let sends = 0
+  const operations = createAcpOperations({ streams, allowSession: () => gate.promise,
+    connection: () => ({ prompt: async () => { sends++; return { stopReason: 'end_turn' } }, cancel: async () => {} }),
+    cancelPermissions() {}, streamUpdate() {},
+  })
+  const pending = operations.run({ sessionId: 'pending-owner', prompt, onEnd: () => assert.fail('retired request completed'), onError: fail })
+  await flush()
+  assert.equal(operations.cancelPreparing('pending-owner', () => {}), true)
+  gate.resolve(true)
+  await pending
+  assert.equal(sends, 0)
+  operations.dispose()
+})
+
+test('a report cancelled while final memory admission awaits never reaches the native prompt', async () => {
+  const memory = deferred<boolean>(), started = deferred<void>()
+  let held = true, sent = 0
+  const stops: string[] = []
+  const operations = createAcpOperations({ streams: confirmedStreams(),
+    connection: () => ({ prompt: async () => { sent++; return { stopReason: 'end_turn' } }, cancel: async () => {} }),
+    cancelPermissions() {}, streamUpdate() {}, allowSession: () => { started.resolve(); return memory.promise },
+  })
+  const pending = operations.run({ sessionId: 'session', prompt, held: () => held, onEnd: response => stops.push(response.stopReason), onError: fail })
+  await started.promise
+  held = false
+  memory.resolve(true)
+  await pending
+  assert.deepEqual([sent, stops], [0, ['cancelled']])
+})

@@ -22,6 +22,19 @@ import { initialImportFlow, IMPORT_FLOW_ACTIONS } from './import-flow-state.ts'
 import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
+import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
+import { hideErasedHistoryCopies } from './generated-history-state.ts'
+
+function removeRestoredTrace(state: State): State {
+  const restored = state.restoredTraceData
+  if (!restored) return state
+  const thoughts = new Set(restored.thoughts), timeline = new Set(restored.timeline)
+  return { ...state, restoredTraceData: null,
+    thoughts: state.thoughts.filter(item => !thoughts.has(item)),
+    tools: Object.fromEntries(Object.entries(state.tools).filter(([id, tool]) => restored.tools[id] !== tool)),
+    timeline: state.timeline.filter(item => !timeline.has(item)),
+  }
+}
 
 /**
  * Pure, immutable conversation state. ACP updates go in; the views read it out.
@@ -34,6 +47,8 @@ export const initialState = Object.freeze({
   ...initialConversation,
   /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
   records: [] as readonly ReportRecord[],
+  erasedReportIds: [] as readonly string[],
+  erasedGeneratedKeys: Object.freeze({}) as Readonly<Record<string, string>>,
   drawer: null as string | null,
   island: false,
   picker: false,
@@ -43,6 +58,8 @@ export const initialState = Object.freeze({
   conversationId: null as string | null,
   /** Trace of the restored messages, read back from dsh's logs: null | 'loading' | 'loaded' | 'unavailable'. */
   restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
+  restoredTraceData: null as PayloadFor<'trace_restored'>['trace'],
+  traceRevision: 0,
   history: initialHistory,
   /** 回顾 on the 搜索 page: the timeline by day, filtered, a topic read in place, the stars (review-state.ts). */
   review: initialReview,
@@ -177,11 +194,12 @@ const ACTION_HANDLERS: ActionHandlers = {
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
       restoredTrace: messages.length ? 'loading' : null,
-      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string }, i: number) => ({
+      messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string, delivery?: 'pending' | 'not-sent' }, i: number) => ({
         id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
         ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
+        ...(m.delivery ? { delivery: m.delivery, failed: m.delivery === 'not-sent' } : {}),
       })),
-      records: recordsFrom(records),
+      records: recordsFrom(records, state.erasedReportIds),
       restored: messages.length ? { count: messages.length, savedAt } : null,
     }
   },
@@ -212,12 +230,15 @@ const ACTION_HANDLERS: ActionHandlers = {
   /** A new session goes on below what was said so far, which stays in the timeline above: a new topic. */
   new_session: (state, { info, at = null }) => ({
     ...initialState,
+    traceRevision: state.traceRevision,
     topic: { ...initialTopic, startedAt: at },
     info: info ?? state.info,
     conversationId: typeof info?.conversationId === 'string' ? info.conversationId : null,
     drawer: state.drawer,
     settings: state.settings,
     history: state.history,
+    erasedReportIds: state.erasedReportIds,
+    erasedGeneratedKeys: state.erasedGeneratedKeys,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
     // Background tasks go on whatever the conversation on screen does.
@@ -250,14 +271,28 @@ const ACTION_HANDLERS: ActionHandlers = {
   /** Restored trace goes first: it happened before anything the live session has added since. */
   trace_restored: (state, { conversationId, trace, available }) => {
     if (conversationId !== state.conversationId) return state
-    if (!available || !trace) return { ...state, restoredTrace: 'unavailable' }
+    const live = removeRestoredTrace(state)
+    if (!available || !trace) return { ...live, restoredTrace: 'unavailable' }
     return {
-      ...state,
+      ...live,
       restoredTrace: 'loaded',
-      thoughts: [...trace.thoughts, ...state.thoughts],
-      tools: { ...trace.tools, ...state.tools },
-      timeline: [...trace.timeline, ...state.timeline],
+      restoredTraceData: trace,
+      thoughts: [...trace.thoughts, ...live.thoughts],
+      tools: { ...trace.tools, ...live.tools },
+      timeline: [...trace.timeline, ...live.timeline],
     }
+  },
+  trace_invalidated: (state, { currentSession }) => {
+    const live = removeRestoredTrace(state)
+    return { ...live, traceRevision: live.traceRevision + 1,
+      rewind: live.rewind.confirm ? { ...live.rewind, confirm: null } : live.rewind,
+      restoredTrace: live.restoredTrace === null && !currentSession ? null : 'unavailable',
+      ...(currentSession ? { thoughts: [], tools: {}, timeline: live.timeline.filter(item => item.kind !== 'thought' && item.kind !== 'tool' && item.kind !== 'memory') } : {}) }
+  },
+  generated_outputs_removed: (state, { copies }) => {
+    const fresh = copies.filter(copy => !Object.hasOwn(state.erasedGeneratedKeys, copy.key))
+    return fresh.length ? { ...state, erasedGeneratedKeys: { ...state.erasedGeneratedKeys,
+      ...Object.fromEntries(fresh.map(({ key, session }) => [key, session])) } } : state
   },
   reveal_tick: (state, { dt }) => (isRevealing(state)
     ? {
@@ -301,6 +336,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...taskActions(),
   ...WORKDIR_ACTIONS,
   ...PERSONAL_ACTIONS,
+  ...MEMORY_FILE_ACTIONS,
   ...MODEL_ACTIONS,
   ...PLUGIN_ACTIONS,
   ...FILES_ACTIONS,
@@ -313,7 +349,7 @@ const ACTION_HANDLERS: ActionHandlers = {
 } satisfies ActionHandlers
 
 export function reduce(state: State, action: Action): State {
-  const next = reduceOnce(state, action)
+  const next = hideErasedHistoryCopies(reduceOnce(state, action), state)
   // Results drawn in the conversation tell their tasks (tasks-state.ts) once the conversation is in view: not while a
   // hub page covers it, and again on coming back to it.
   const inView = hubPage(next) === null

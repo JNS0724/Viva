@@ -44,6 +44,64 @@ test('normal and image questions keep their visible message and send once', asyn
   assert.equal(h.state().messages.at(-1)?.via, 'island')
 })
 
+test('a negative native admission receipt keeps text and images visibly unsent after a report clears errors', async () => {
+  for (const images of [[], [{ id: 'picture' }]]) {
+    const receipt = deferred<Awaited<ReturnType<AgentApi['prompt']>>>()
+    const h = harness({ prompt: () => receipt.promise })
+    h.actions.ask('keep these independent words', { images })
+    receipt.resolve({ accepted: false, message: 'The queued request was cancelled before dispatch.', sourceIds: [h.state().messages[0]!.sourceId!] })
+    await settle()
+    assert.equal(h.state().messages[0]?.failed, true)
+    assert.deepEqual(h.state().messages[0]?.images ?? [], images)
+    h.dispatch({ type: 'agent_turn_started', by: 'task', at: 200 })
+    h.dispatch({ type: 'turn_end', stopReason: 'end_turn', at: 201 })
+    assert.equal(h.state().messages[0]?.text, 'keep these independent words')
+    assert.equal(h.state().messages[0]?.failed, true, 'later report events cannot make an unsent bubble appear delivered')
+  }
+})
+
+test('a queued admission rejection marks only its exact source after selection changes', async () => {
+  const receipt = deferred<Awaited<ReturnType<AgentApi['prompt']>>>()
+  const h = harness({ prompt: () => receipt.promise })
+  h.actions.ask('original selection')
+  h.change({ info: { ...h.state().info, sessionId: 'replacement' } })
+  receipt.resolve({ accepted: false, message: 'The original selection retired.', sourceIds: [h.state().messages[0]!.sourceId!] })
+  await settle()
+  assert.equal(h.state().messages[0]?.failed, true)
+  assert.equal(h.state().error, null, 'an old failure must not change the replacement conversation phase')
+  const steerReceipt = deferred<Awaited<ReturnType<AgentApi['steer']>>>()
+  const steered = harness({ steer: () => steerReceipt.promise })
+  steered.change({ phase: 'working' }); steered.actions.ask('retained queued steer')
+  steered.change({ info: { ...steered.state().info, sessionId: 'replacement' } })
+  steerReceipt.resolve({ ok: false, reason: 'unavailable', delivery: 'not-sent' })
+  await settle()
+  assert.equal(steered.state().messages[0]?.failed, true)
+  assert.deepEqual(steered.toasts, [])
+})
+
+test('trusted cold history delivery metadata remains visible through report turns', () => {
+  const h = harness()
+  h.dispatch({ type: 'history_loaded', conversationId: 'saved', messages: [
+    { role: 'user', text: 'known not sent', sourceId: 'unsent', receipt: null, delivery: 'not-sent' },
+    { role: 'user', text: 'unknown crash window', sourceId: 'unknown', receipt: null, delivery: 'pending' },
+  ] })
+  assert.equal(h.state().messages[0]?.failed, true)
+  assert.equal(h.state().messages[1]?.delivery, 'pending')
+  h.dispatch({ type: 'agent_turn_started', by: 'task', at: 200 })
+  h.dispatch({ type: 'turn_end', stopReason: 'end_turn', at: 201 })
+  assert.equal(h.state().messages[0]?.delivery, 'not-sent')
+  assert.equal(h.state().messages[1]?.delivery, 'pending')
+})
+
+test('a rejected replay cannot mark an already delivered source not-sent', async () => {
+  const receipt = deferred<Awaited<ReturnType<AgentApi['prompt']>>>()
+  const h = harness({ prompt: () => receipt.promise })
+  h.actions.ask('previously delivered original')
+  receipt.resolve({ accepted: false, message: 'This retry was refused.', sourceIds: [] })
+  await settle()
+  assert.notEqual(h.state().messages[0]?.failed, true)
+})
+
 test('an Updates draft awaits backend admission before clearing or entering saved history', async () => {
   const pending = deferred<void>()
   const sent: string[] = []
@@ -75,6 +133,20 @@ test('an Updates send settles its pending message when the kept conversation reo
     assert.deepEqual(historyMessages(h.state()).map(message => message.text), accepted ? ['定时结果'] : [])
     assert.equal(h.state().phase, accepted ? 'working' : 'error')
   }
+})
+
+test('a retired feed identity clears pending text and a late successful admission cannot restore it', async () => {
+  const receipt = deferred<void>(), admitted: boolean[] = []
+  const h = harness({ prompt: () => receipt.promise })
+  h.actions.ask('derived old result', { feedItemId: 'feed-1', images: [{ id: 'independent-image' }], admitted: ok => admitted.push(ok) })
+  h.dispatch({ type: 'feed_erased', ids: ['feed-1'] })
+  assert.equal(h.state().messages[0]?.text, '')
+  assert.deepEqual(h.state().messages[0]?.images, [{ id: 'independent-image' }])
+  receipt.resolve(undefined)
+  await settle()
+  assert.deepEqual(admitted, [false])
+  assert.deepEqual(h.state().messages, [])
+  assert.equal(h.actions.ask('late island draft', { feedItemId: 'feed-1' }), false)
 })
 
 test('setup, topic switches, empty and oversized questions do not reach the agent', () => {
@@ -130,13 +202,53 @@ test('a steer refused after the visible turn ends is sent immediately as the nex
   assert.deepEqual(h.prompts.map(p => p.text), ['late words'])
 })
 
-test('a failed steer stays marked unsent and is never retried as a prompt', async () => {
+test('host-proven first deliveries keep their original aliases and register before later input alongside canonical replay', async () => {
+  const calls: Array<{ text: string, operation?: string | string[] }> = []
+  const first = deferred<void>()
+  const h = harness({
+    prompt: (text, _pictures, operation) => { calls.push({ text, operation }); return first.promise },
+    steer: async text => ({ ok: false, reason: 'idle', ...(text === 'accepted original' ? { delivery: 'sent' as const } : { delivery: 'not-sent' as const }) }),
+  })
+  h.change({ phase: 'working' })
+  h.actions.ask('first original', { sourceId: 'first', newSource: true })
+  h.actions.ask('accepted original', { sourceId: 'canonical', newSource: true })
+  h.actions.ask('second original', { sourceId: 'second', newSource: true })
+  await settle()
+  h.change({ phase: 'idle' }); h.actions.sendAfterTurn()
+  assert.deepEqual(calls, [
+    { text: 'first original', operation: 'first' },
+    { text: 'accepted original', operation: ['canonical'] },
+    { text: 'second original', operation: 'second' },
+  ], 'no native completion is awaited before registering the next shown input')
+  assert.equal(h.state().messages[0]?.delivery, 'pending')
+  first.resolve(); await settle()
+  assert.equal(h.state().messages[0]?.delivery, undefined)
+  assert.equal(h.state().messages[2]?.delivery, undefined)
+  assert.equal(h.state().messages.length, 3)
+})
+
+test('a definite pre-send steer failure retains its original domain message', async () => {
+  const message = 'The original source alias was rejected.'
+  const h = harness({ steer: async () => ({ ok: false, reason: 'unavailable', delivery: 'not-sent', message }) })
+  h.change({ phase: 'working' }); h.actions.ask('keep the rejected words')
+  await settle(); h.actions.sendAfterTurn()
+  assert.deepEqual(h.prompts, [])
+  assert.equal(h.state().messages.at(-1)?.delivery, 'not-sent')
+  assert.equal(h.state().messages.at(-1)?.failed, true)
+  assert.ok(h.toasts[0]?.includes(message))
+})
+
+test('an unconfirmed steer keeps its words with unknown delivery and is never retried as a prompt', async () => {
   const h = harness({ steer: async () => { throw new Error('offline') } })
   h.change({ phase: 'working' }); h.actions.ask('keep my words')
   await settle(); h.actions.sendAfterTurn()
   assert.deepEqual(h.prompts, [])
-  assert.equal(h.state().messages.at(-1)?.failed, true)
-  assert.match(h.toasts[0], /offline/)
+  assert.notEqual(h.state().messages.at(-1)?.failed, true)
+  assert.equal(h.state().messages.at(-1)?.delivery, 'pending')
+  assert.match(h.toasts[0], /确认|confirmed/)
+  h.dispatch({ type: 'agent_turn_started', by: 'task', at: 200 })
+  h.dispatch({ type: 'turn_end', stopReason: 'end_turn', at: 201 })
+  assert.equal(h.state().messages[0]?.delivery, 'pending')
 })
 
 test('an error clears queued turn-end words instead of resending them into a later turn', async () => {

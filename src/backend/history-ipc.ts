@@ -1,12 +1,11 @@
 import { onLocaleChange } from '../shared/i18n/locale.ts'
 import { t } from '../shared/i18n/translate.ts'
 import fs from 'node:fs/promises'
-import { readSessionTrace } from './dsh-log.ts'
+import { readSessionTrace, type ReadNativeTrace } from './dsh-log.ts'
 import { exportFileName, toMarkdown } from './history-export.ts'
 import type { Conversation, openHistoryDb } from './history-db.ts'
 import { assertId } from './history-schema.ts'
-import { CARRY_TURNS, carriedRecords } from './history-carry.ts'
-import type { HistoryEvidence } from './history-recall.ts'
+import { CARRY_TURNS, carriedRecords, type HistoryCarry } from './history-carry.ts'
 import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
@@ -43,6 +42,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   db: HistoryDb,
   dshHome: string,
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
+  readNativeTrace?: ReadNativeTrace,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null },
   selectSession: SelectSession,
@@ -54,10 +54,10 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   workDir?: () => string | null,
   /** Records to go with the first question of a conversation (main.ts agent:prompt). */
   carryNext?: (conversationId: string, text: string) => void,
-  staleSession?: (id: string | null) => boolean,
-  filteredCarry?: (conversationId: string, userOnly?: boolean, targetCwd?: string) => { text: string, turns: number, evidence: HistoryEvidence[] },
-  onCarry?: (session: string | null, evidence: readonly HistoryEvidence[]) => void,
-  recordSession?: (id: string | null) => void,
+  staleSession?: (id: string | null) => boolean | Promise<boolean>,
+  filteredCarry?: (conversationId: string, userOnly?: boolean, targetCwd?: string) => Promise<HistoryCarry>,
+  publishCarry?: (target: Conversation, carry: HistoryCarry) => Promise<boolean>,
+  recordSession?: (id: string | null) => void | Promise<void>,
   deleteHistory?: (id: string) => Promise<void>,
 }) {
   const { db, dshHome, traceDb, current, setCurrent, agentInfo, chooseExportPath } = deps
@@ -128,17 +128,16 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (!sessionId) return { ok: false as const, reason: 'gone' as const, message: GONE, cwd, info: null }
     try {
       return await selectSession(async ({ switchAgent, select }) => {
-        const stale = deps.staleSession?.(sessionId) ?? false
-        const carried = stale ? deps.filteredCarry?.(found.conversation.id, true) : null
+        const stale = await deps.staleSession?.(sessionId) ?? false
+        const carried = stale ? await deps.filteredCarry?.(found.conversation.id, true) : null
         const started = await switchAgent(stale ? null : sessionId, cwd, { exactly: true })
         const { mode, model } = agentInfo()
         const topicId = found.conversation.topicId ?? found.conversation.id
         const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? cwd, parentId: found.conversation.id, topicId })
         select(next)
-        if (stale) deps.recordSession?.(started.sessionId)
+        if (stale) await deps.recordSession?.(started.sessionId)
         if (carried?.turns) {
-          deps.onCarry?.(started.sessionId, carried.evidence)
-          carryNext(next.id, carried.text)
+          await deps.publishCarry?.(next, carried)
         }
         return { ok: true as const, info: { ...started, remembersHistory: !stale, conversationId: next.id, topicId }, parentId: found.conversation.id }
       })
@@ -159,28 +158,32 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     if (typeof dir !== 'string' || !folderExists(dir)) throw new Error(t("workspace.missing.choose"))
     const topicId = db.topicOf(found.conversation.id)
     const part = topicId ? db.read(`t:${topicId}`, { from: Number.MAX_SAFE_INTEGER, count: CARRY_TURNS * 2 }) : null
-    const filtered = deps.filteredCarry?.(found.conversation.id, false, dir)
+    const filtered = await deps.filteredCarry?.(found.conversation.id, false, dir)
     const carried = filtered ?? carriedRecords(part?.messages ?? found.messages)
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(null, dir)
       const { mode, model } = agentInfo()
       const next = db.create({ sessionId: started.sessionId, mode, model, cwd: started.cwd ?? dir, parentId: found.conversation.id, topicId: topicId ?? found.conversation.id })
       select(next)
-      deps.recordSession?.(started.sessionId)
-      if (carried.turns) {
-        if (filtered) deps.onCarry?.(started.sessionId, filtered.evidence)
-        carryNext(next.id, carried.text)
-      }
-      return { info: { ...started, remembersHistory: false, conversationId: next.id, topicId: next.topicId ?? next.id }, parentId: found.conversation.id, turns: carried.turns }
+      await deps.recordSession?.(started.sessionId)
+      let turns = carried.turns
+      if (turns && filtered) {
+        if (!await deps.publishCarry?.(next, filtered)) turns = 0
+      } else if (turns) carryNext(next.id, carried.text)
+      return { info: { ...started, remembersHistory: false, conversationId: next.id, topicId: next.topicId ?? next.id }, parentId: found.conversation.id,
+        turns }
     })
   })
 
-  handle('history:trace', (id, until) => readSessionTrace({
-    dshHome,
-    traceDb: traceDb?.() ?? null,
-    sessionIds: db.sessionIds(assertId(id)),
-    until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now(),
-  }))
+  handle('history:trace', (id, until) => {
+    const sessions = db.sessionIds(assertId(id))
+    const read = async (visible: readonly string[]) => {
+      const result = await readSessionTrace({ dshHome, traceDb: traceDb?.() ?? null, sessionIds: visible,
+        until: typeof until === 'number' && Number.isFinite(until) ? until : Date.now() })
+      return { ...result, missing: result.missing + sessions.length - visible.length }
+    }
+    return deps.readNativeTrace ? deps.readNativeTrace(sessions, read) : read(sessions)
+  })
 
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
@@ -193,11 +196,14 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:restore', (id) => db.restore(id))
 
   handle('history:export', async (id) => {
-    const found = db.get(assertId(id))
+    const conversationId = assertId(id)
+    const found = db.get(conversationId)
     if (!found) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
     const file = await chooseExportPath(exportFileName(found.conversation.title))
     if (!file) return { saved: false }
-    await fs.writeFile(file, toMarkdown(found.conversation, found.messages), 'utf8')
+    const current = db.get(conversationId)
+    if (!current) throw new Error(t("main.history-ipc.conversation.not.found.it.may.have.been"))
+    await fs.writeFile(file, toMarkdown(current.conversation, current.messages), 'utf8')
     return { saved: true, file }
   })
 }

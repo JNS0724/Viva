@@ -1,4 +1,5 @@
-import { operationId } from './memory-contract.ts'
+import { operationId } from '../memory/contracts/memory-contract.ts'
+import { memoryFileIdentity, memoryFileRestrictionId, memoryFileListRequest, memoryFileSetEnabledRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest, memoryFileForgetRequest } from '../memory/contracts/file-management.ts'
 import { z } from 'zod'
 
 /**
@@ -6,7 +7,7 @@ import { z } from 'zod'
  * by channel: the outline of the arguments, with bounds loose enough for every real use. It is the first gate:
  * a page that sends anything else is refused here, in one place, before a handler runs. The handlers still
  * check what the values mean (an id that exists, a path inside the workspace, words within their limit).
- * test/ipc-contract.test.js keeps this table, the preload scripts and the handlers in step.
+ * test/ipc-contract.test.ts keeps this table, the preload scripts and the handlers in step.
  */
 const MAX_TEXT_CHARS = 200_000
 const MAX_ID_CHARS = 1_000
@@ -22,12 +23,6 @@ const record = z.looseObject({})
 const images = z.array(z.looseObject({ id })).max(MAX_IMAGES)
 const bytes = z.union([z.instanceof(Uint8Array), z.instanceof(ArrayBuffer)])
 const none = z.tuple([])
-const memoryVersion = z.object({ id: z.number().int().positive(), revision: z.number().int().positive() })
-const memoryInterval = z.object({ from: z.number().int().nullable(), to: z.number().int().nullable() })
-const memoryResolution = z.discriminatedUnion('kind', [
-  z.object({ kind: z.enum(['keep-first', 'keep-both', 'discard-both']) }),
-  z.object({ kind: z.literal('replace'), text }),
-])
 const QUERY = 'query'
 /** A channel that only reads (QUERY_CHANNELS below): said here, where the channel is defined, not in a list apart. */
 const read = <T extends z.ZodType>(schema: T): T => schema.describe(QUERY) as T
@@ -109,17 +104,14 @@ export const IPC_ARGS = Object.freeze({
   'workdir:reveal': none,
 
   'memory:get': read(none),
-  'memory:list': read(z.tuple([text.optional()])),
+  'memory:list-files': read(z.tuple([memoryFileListRequest])),
+  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
+  'memory:set-file-enabled': z.tuple([memoryFileSetEnabledRequest]),
+  'memory:undo-file': z.tuple([memoryFileUndoRequest]),
+  'memory:create-file': z.tuple([memoryFileCreateRequest]),
+  'memory:edit-file': z.tuple([memoryFileEditRequest]),
+  'memory:forget-file': z.tuple([memoryFileForgetRequest]),
   'memory:set-profile': z.tuple([z.record(z.string(), z.unknown()), operationId.optional()]),
-  'memory:add': z.tuple([text, id.optional(), operationId.optional()]),
-  'memory:update': z.tuple([z.number(), text, z.number().int().positive(), operationId]),
-  'memory:delete': z.tuple([z.number(), z.number().int().positive(), operationId]),
-  'memory:forget': z.tuple([z.number(), z.number().int().positive(), operationId]),
-  'memory:restore': z.tuple([z.number(), z.number().int().positive(), operationId]),
-  'memory:resolve-conflict-pair': z.tuple([memoryVersion, memoryVersion, memoryResolution, operationId, z.number().int().positive(), memoryInterval]),
-  'memory:list-invalid': read(none),
-  'memory:list-changes': read(none),
-  'memory:undo-change': z.tuple([z.number().int().positive(), z.number().int().positive(), operationId, z.array(memoryVersion).max(MAX_LIST).readonly()]),
   'memory:rebuild-indexes': none,
   'memory:onboarding': z.tuple([id]),
   'memory:add-docs': none,

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test as base, expect, type TestInfo } from '@playwright/test'
-import { startFakeLlm } from '../fixtures/fake-llm.js'
+import { startFakeLlm } from '../fixtures/fake-llm.ts'
 import { showcaseDecide } from '../fixtures/showcase-llm.js'
 import { createOwnedProfile, disposeOwnedProfile, type OwnedProfile } from './owned-profile.ts'
 import { configureFakeProvider, launchSmokeApplication, type SmokeApplication } from './application.ts'
@@ -10,6 +10,7 @@ import { failureDiagnostics, recordMemoryEvents } from './diagnostics.ts'
 import { seedTimeline } from './smoke-timeline.ts'
 import { seedPerf } from './smoke-perf.ts'
 import { runSmoke } from './smoke.ts'
+import { fileMemorySmokeAnswer } from './smoke-memory.ts'
 import { smokeStep, type SmokeModel } from './smoke-kit.ts'
 
 export type SmokePhase = 'setup' | 'language' | 'walkthrough' | 'relaunch' | 'memory' | 'schedules' | 'resume-prepare' | 'resume' | 'timeline' | 'perf' | 'showcase' | 'live' | 'live-resume'
@@ -35,7 +36,9 @@ export class Scenario {
 
   async prepare(): Promise<void> {
     if (!['setup', 'language'].includes(this.options.phase) && !this.options.apiKey) {
-      this.model = await startFakeLlm({ decideFirst: this.options.phase === 'showcase' ? showcaseDecide : undefined })
+      const decideFirst = this.options.phase === 'showcase' ? showcaseDecide
+        : this.options.phase === 'memory' ? fileMemorySmokeAnswer : undefined
+      this.model = await startFakeLlm({ decideFirst })
       const initial = await this.start('bootstrap')
       await configureFakeProvider(initial, this.model, this.info.outputPath('model-picker.png'))
       // These seeds must be written while the app is closed. Installed checks keep their cold launch too.

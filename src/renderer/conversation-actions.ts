@@ -23,6 +23,16 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
   const promptFailed = (origin: ConversationContext, epoch: number) => (error: unknown) => {
     if (canReply(origin, epoch)) dispatch({ type: 'error', message: errorMessage(error) })
   }
+  const promptFinished = (origin: ConversationContext, epoch: number, sources: readonly string[]) =>
+    (result: Awaited<ReturnType<AgentApi['prompt']>>) => {
+      if (result?.accepted !== false) return
+      // Only the backend's negative admission receipt proves these words never
+      // reached native dispatch. Keep the marker when a report clears the error.
+      for (const message of getState().messages) if (message.sourceId && sources.includes(message.sourceId) && result.sourceIds.includes(message.sourceId)) {
+        dispatch({ type: 'steer_failed', id: message.id })
+      }
+      promptFailed(origin, epoch)(new Error(result.message))
+    }
   /**
    * Sends `text` as the user's next question, or, while the agent works, into the turn it is on;
    * `via: 'island'` when it was asked on the desktop island; `images`: pictures pasted with it, which go only
@@ -38,6 +48,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       return false
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
+    if (feedItemId && getState().feed.erasedIds.includes(feedItemId)) return false
     if (feedItemId && isBusy(getState())) {
       showToast(t('feed.continue.wait'))
       return false
@@ -49,7 +60,8 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     beforePrompt()
     const operation = sourceId ?? globalThis.crypto.randomUUID()
     dispatch({ type: 'user_prompt', text, at: now(), via, sourceId: operation })
-    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation).catch(promptFailed(origin, epoch))
+    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation)
+      .then(promptFinished(origin, epoch, [operation]), promptFailed(origin, epoch))
     return true
   }
 
@@ -69,27 +81,30 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
     for (const { id } of images) keepPicture(id)
     const operation = globalThis.crypto.randomUUID()
-    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, pending: Boolean(feed) })
+    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, pending: Boolean(feed), ...(feed ? { feedItemId: feed.id } : {}) })
     if (feed) {
       // The same conversation can replace its DSH session before a send. Resolve the message by its operation.
       const pendingHere = () => getState().messages.some(message => message.pending && message.sourceId === operation)
-      api.prompt(text, images, operation, feed.id).then(() => {
-        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: true })
-        feed.admitted?.(true)
-      }, error => {
-        const message = errorMessage(error)
+      const refused = (message: string) => {
         if (pendingHere()) {
           dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: false })
           if (epoch === sendEpoch && !selectionPending()) dispatch({ type: 'error', message })
         }
         feed.admitted?.(false, message)
-      })
-    } else api.prompt(text, images, operation).catch(promptFailed(origin, epoch))
+      }
+      api.prompt(text, images, operation, feed.id).then(result => {
+        if (result?.accepted === false) { refused(result.message); return }
+        const accepted = !getState().feed.erasedIds.includes(feed.id)
+        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted })
+        feed.admitted?.(accepted)
+      }, error => refused(errorMessage(error)))
+    } else api.prompt(text, images, operation)
+      .then(promptFinished(origin, epoch, [operation]), promptFailed(origin, epoch))
     return true
   }
 
   /** Words said as a turn was ending: sent as the next question once it has ended. */
-  let afterTurn: Array<{ text: string, id: string | undefined, operation: string, origin: ConversationContext, epoch: number }> = []
+  let afterTurn: Array<{ text: string, id: string | undefined, operation: string, origin: ConversationContext, epoch: number, firstDelivery: boolean }> = []
   let sendEpoch = 0
 
   function clearAfterTurn() {
@@ -108,26 +123,37 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     // The words just said, the last message now (user_steer above).
     const id = getState().messages.at(-1)?.id
     const epoch = sendEpoch, origin = context()
+    let delivery: 'pending' | 'not-sent' | 'sent' = 'pending'
     api.steer(text, operation)
       .then((result) => {
-        if (result.ok) return
+        delivery = result.delivery ?? (result.ok ? 'sent' : result.reason === 'idle' ? 'not-sent' : 'pending')
+        if (result.ok) { dispatch({ type: 'steer_delivery', sourceId: operation, delivery }); return }
         if (!canReply(origin, epoch)) throw new Error(steerLost())
-        if (result.reason !== 'idle') throw new Error(steerLost())
-        if (isBusy(getState())) afterTurn = [...afterTurn, { text, id, operation, origin, epoch }]
-        else resend(text, [operation])
+        if (result.reason !== 'idle') throw new Error(result.message || steerLost())
+        // An explicit host not-sent receipt authorizes the original alias's
+        // first native delivery; accepted sources retain canonical replay.
+        const firstDelivery = result.delivery === 'not-sent'
+        if (isBusy(getState())) afterTurn = [...afterTurn, { text, id, operation, origin, epoch, firstDelivery }]
+        else resend(text, firstDelivery ? operation : [operation])
       })
       .catch((err) => {
+        const retained = getState().messages.find(message => message.sourceId === operation)
+        if (retained) dispatch({ type: 'steer_delivery', sourceId: operation, delivery })
         if (!belongsHere(origin)) return
-        dispatch({ type: 'steer_failed', id })
-        if (canReply(origin, sendEpoch)) showToast(errorMessage(err) || steerLost())
+        if (canReply(origin, sendEpoch)) showToast(delivery === 'pending' ? t('app.message.delivery.unknown') : errorMessage(err) || steerLost())
       })
     return true
   }
 
-  function resend(text: string, operation: string[]) {
-    const origin = context(), epoch = ++sendEpoch
+  function resend(text: string, operation: string | string[], origin = context(), epoch = ++sendEpoch) {
     dispatch({ type: 'steer_resent', at: now() })
-    api.prompt(text, undefined, operation).catch(promptFailed(origin, epoch))
+    if (typeof operation === 'string') dispatch({ type: 'steer_delivery', sourceId: operation, delivery: 'pending' })
+    api.prompt(text, undefined, operation)
+      .then(result => {
+        const sources = typeof operation === 'string' ? [operation] : operation
+        promptFinished(origin, epoch, sources)(result)
+        if (result?.accepted !== false && typeof operation === 'string') dispatch({ type: 'steer_delivery', sourceId: operation, delivery: 'sent' })
+      }, promptFailed(origin, epoch))
   }
 
   function sendAfterTurn(stopReason?: string) {
@@ -136,9 +162,23 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     if (stopReason === 'cancelled') return clearAfterTurn()
     if (!afterTurn.length) return
     const pending = afterTurn.filter(item => canReply(item.origin, item.epoch))
-    const text = pending.map(item => item.text).join('\n\n')
     afterTurn = []
-    if (text) resend(text, pending.map(item => item.operation))
+    if (!pending.length) return
+    const origin = context(), epoch = ++sendEpoch
+    // Register every following question before returning control to new input.
+    // The backend retains their FIFO position until each native turn settles.
+    for (let index = 0; index < pending.length;) {
+      const next = pending[index]!
+      if (next.firstDelivery) {
+        resend(next.text, next.operation, origin, epoch)
+        index++
+      } else {
+        const end = pending.findIndex((item, at) => at > index && item.firstDelivery)
+        const group = pending.slice(index, end < 0 ? pending.length : end)
+        resend(group.map(item => item.text).join('\n\n'), group.map(item => item.operation), origin, epoch)
+        index += group.length
+      }
+    }
   }
 
   /** What the user answers to each question: the options picked, and words of their own. */

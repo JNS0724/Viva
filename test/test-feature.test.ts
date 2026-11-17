@@ -24,7 +24,7 @@ test('discovery finds nested JS and TS tests without running type fixtures or fo
 })
 
 test('multiple groups deduplicate files, keep shared boundary checks and reject unknown or empty selections', () => {
-  const files = ['test/conversation-actions.test.ts', 'test/acp-operations.test.ts', 'test/task-load.test.ts', 'test/ipc-contract.test.js', 'test/window-api.test.ts', 'test/markdown.test.js']
+  const files = ['test/conversation-actions.test.ts', 'test/acp-operations.test.ts', 'test/task-load.test.ts', 'test/ipc-contract.test.ts', 'test/window-api.test.ts', 'test/markdown.test.js']
   const selected = selectTests(files, ['conversation', 'runtime', 'conversation'])
   assert.deepEqual(selected, [files[1], files[0], files[3], files[4]])
   assert.throws(() => selectTests(files, []), /at least one/)

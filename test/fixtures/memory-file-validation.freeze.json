@@ -1,0 +1,24 @@
+{
+  "file": "test/fixtures/memory-file-validation.ts",
+  "sha256": "591d746bf0c575d5562f8fb022b84168f07888a09c69d5ccf9ec236f5c0584eb",
+  "documents": 120,
+  "queries": 60,
+  "answerable": 36,
+  "groups": {
+    "chinese-paraphrase": 9,
+    "cross-language": 9,
+    "tail-structure": 9,
+    "condition-time": 9
+  },
+  "noanswer": 12,
+  "ambiguous": 6,
+  "security": 6,
+  "candidateLimit": 25,
+  "resultLimit": 5,
+  "gate": {
+    "overallRecall": 0.9,
+    "perGroupRecall": 0.8,
+    "structureOrPermissionLeaks": 0
+  },
+  "status": "frozen-unscored"
+}

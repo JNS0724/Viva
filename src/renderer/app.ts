@@ -55,7 +55,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'steer_failed', 'question_answered', 'turn_end', 'error'])
+const SAVE_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'steer_failed', 'steer_delivery', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)
@@ -858,6 +858,7 @@ function closeTopmost() {
   else if (state.topic.menu) dispatch({ type: 'topic_menu', open: false })
   else if (state.settings.permissionMenu) dispatch({ type: 'permission_menu', open: false })
   else if (state.island) dispatch({ type: 'close_island' })
+  else if (state.memory.files.forget?.phase === 'confirm') memoryActions.cancelManagedMemoryForget(state.memory.files.forget.id)
   else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
 }
@@ -967,9 +968,20 @@ function reportMcpProblems(info: AgentInfo | undefined, { fresh = false } = {}) 
 agentEvents = createAgentEvents({
   getState: () => state, dispatch, holdTask: taskActions.hold,
   afterTurn: sendAfterTurn, clearAfterTurn: conversationActions.clearAfterTurn,
-  ready: (info) => reportMcpProblems(info, { fresh: true }), mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo), refreshWorkDir: workDirActions.refresh,
+  ready: (info) => { reportMcpProblems(info, { fresh: true }); void historyActions.retryTrace() },
+  mcpChanged: (mcp) => reportMcpProblems({ mcp } as AgentInfo),
+  refreshWorkDir: () => {
+    void workDirActions.refresh()
+    if (state.memory.open) memoryActions.onMemoryChanged({})
+  },
   refreshFiles: filesActions.filesAfterTurn,
-  memoryChanged: memoryActions.onMemoryChanged, filesChanged: filesActions.onFilesChanged,
+  memoryChanged: event => {
+    if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)
+    if (event.erasedOutputs?.length) void historyActions.invalidateSearch()
+    if (event.erasedFeedIds?.length) void feedActions.erased(event.erasedFeedIds)
+    memoryActions.onMemoryChanged(event)
+  },
+  filesChanged: filesActions.onFilesChanged,
   refreshFeed: feedActions.loadFeed,
   rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),
 })

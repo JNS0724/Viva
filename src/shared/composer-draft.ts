@@ -8,6 +8,7 @@ export const EMPTY_DRAFT: Readonly<DraftContent> = Object.freeze({ text: '', fil
 /** Stale hosts cannot replace a draft after focus/target handoff; send receipts clear only their snapshot. */
 export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => void = () => {}) {
   const drafts = new Map<string, DraftContent & { version: number }>()
+  const erasedFeed = new Set<string>()
   const aliases = new Map<string, string>()
   let key = 'startup', epoch = 0, sequence = 0, owner: DraftSnapshot['owner'] = 'main'
   function resolve(target: string): string {
@@ -39,6 +40,7 @@ export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => v
     },
     update(source: DraftSnapshot['owner'], next: DraftSnapshot): { ok: boolean, draft: DraftSnapshot } {
       if (next.key !== key || next.epoch !== epoch || source !== owner || next.sequence <= sequence) return { ok: false, draft: snapshot() }
+      if (next.feedItemId && erasedFeed.has(next.feedItemId)) return { ok: false, draft: snapshot() }
       const base = new Set(next.baseImages ?? content().images.map(image => image.id))
       const ids = new Set(next.images.map(image => image.id))
       const images = [...next.images, ...content().images.filter(image => !base.has(image.id) && !ids.has(image.id))].slice(0, 10)
@@ -50,6 +52,16 @@ export function createComposerDraftStore(changed: (snapshot: DraftSnapshot) => v
       drafts.set(key, { text: next.text, files: structuredClone(files), images: structuredClone(images), error,
         ...(feedItemId ? { feedItemId } : {}), version: content().version + 1 })
       return { ok: true, draft: publish() }
+    },
+    eraseFeed(ids: readonly string[]) {
+      for (const id of ids) erasedFeed.add(id)
+      let active = false
+      for (const [target, draft] of drafts) {
+        if (!draft.feedItemId || !erasedFeed.has(draft.feedItemId)) continue
+        drafts.set(target, { ...draft, text: '', feedItemId: undefined, error: null, version: draft.version + 1 })
+        active ||= target === key
+      }
+      if (active) { epoch++; sequence = 0; publish() }
     },
     appendImage(target: string, image: DraftImage) {
       target = resolve(target)

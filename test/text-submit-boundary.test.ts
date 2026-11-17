@@ -58,3 +58,29 @@ test('resending the unedited original keeps its text and source, including an at
   assert.deepEqual(sent, [{ text, sourceId, newSource: undefined }])
 })
 
+test('trace erasure closes an existing rewind confirmation and ignores a late effects reply', async () => {
+  let state = reduce(initialState, { type: 'history_loaded', conversationId: 'old',
+    messages: [{ role: 'user', text: '原问题', receipt: null }], savedAt: 1 })
+  const id = state.messages[0]!.id
+  state = reduce(state, { type: 'rewind_edit', id })
+  const effects = { files: [], commands: ['old command'] }
+  state = reduce(state, { type: 'rewind_confirm', id, text: '编辑内容', effects })
+  let resolveEffects!: (value: typeof effects) => void
+  const pendingEffects = new Promise<typeof effects>(resolve => { resolveEffects = resolve })
+  const actions = createRewindActions({
+    api: { rewindEffects: () => pendingEffects, rewind: unexpected, switchPath: unexpected, foldedPath: unexpected },
+    getState: () => state,
+    dispatch: action => { state = reduce(state, action) },
+    showToast: () => {},
+    errorMessage: String,
+    ask: () => { assert.fail('Must not start a new request from obsolete effects') },
+  })
+  const before = actions.submitEdit(id, '编辑内容')
+  state = reduce(state, { type: 'trace_invalidated', currentSession: true })
+  assert.equal(state.rewind.confirm, null)
+  resolveEffects(effects)
+  await before
+  await actions.confirmRewind()
+  assert.equal(state.rewind.confirm, null)
+  assert.equal(state.rewind.editing, id)
+})

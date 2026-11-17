@@ -1,23 +1,41 @@
-import { randomUUID } from 'node:crypto'
+import { memoryHostFailure } from '../../../src/memory/contracts/domain-error.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { channel } from 'node:diagnostics_channel'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Session } from '@deepseek-ai/dsh-session'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
-import type {} from '@deepseek-ai/dsh-user-questions'
-import { MEMORY_CONTRACT, MEMORY_SEMANTIC_TIMEOUT_MS, memoryClarificationResult, memoryCompute, memoryComputeFailure, memoryKinds } from '../../../src/shared/memory-contract.ts'
-import type { MemoryCompute, MemoryComputeFailure, MemoryRequest } from '../../../src/shared/memory-contract.ts'
-import { objectOf } from '../../../src/shared/unknown-value.ts'
-import { withoutHeaders } from '../../../src/shared/request-routing/header.ts'
+import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-session-log-deepseek'
+import type {} from '@deepseek-ai/dsh-session-title-llm'
+import type {} from '@deepseek-ai/dsh-compaction-basic'
+import type {} from '@deepseek-ai/dsh-subagent'
+import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
+import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
+import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
+import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
+import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
+import { MEMORY_HOST_PROTOCOL, parseHostMemoryCommand } from '../../../src/memory/contracts/host.ts'
+import { openMemoryOwner } from '../../../src/memory/node/owner.ts'
+import type { MemoryPluginConfig } from './config.ts'
+import { createMemoryTransport } from './transport.ts'
+import type { MemoryTransportOrigin } from './transport.ts'
+import { createSessionIngestion, retrievalQuestion } from './ingestion.ts'
+import { completeMemoryModel } from './model.ts'
+import { assertMemoryProviderSupported } from './providers.ts'
+import { registerMemoryTools } from './tools.ts'
+import { registerMemoryFileCommands } from './file-commands.ts'
+import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from './context-recovery.ts'
+import { createMemoryDeliveryBindings } from './delivery-provenance.ts'
+import { trackNativeOutputAttempts } from './native/output-attempts.ts'
+import { trackNativeToolReads, type NativeToolLease } from './native/tool-reads.ts'
+import { trackNativeSpills } from './native/track-spills.ts'
+import { trackNativeSpillReads } from './native/read-spills.ts'
+import { recordCompactionInputs, recordCompactionRequest } from './native/compaction-inputs.ts'
+import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    'viva-memory': { kind: 'viva-memory' }
-  }
-}
-const memorySource = { kind: 'viva-memory' } as const
+import { memorySource } from './source.ts'
 
 function clearPreviousContext(agent: Agent) {
   const session = agent.session
@@ -30,297 +48,320 @@ function clearPreviousContext(agent: Agent) {
   }
 }
 
-type Computed = { text: string } | { failure: MemoryComputeFailure }
-
-async function complete(ctx: Context, job: MemoryCompute, signal: AbortSignal, assembler: BlockAssembler): Promise<Computed> {
-  for await (const chunk of ctx.llm.stream({
-    provider: job.provider, model: job.model, system: job.system,
-    messages: [createUserMessage({ content: [{ type: 'text', text: job.input }], source: memorySource })],
-    ...(job.stage === 'extract' ? {} : { maxTokens: 2000 }),
-    signal,
-  })) assembler.push(chunk)
-  const finish = assembler.finish?.kind
-  if (finish === 'stop') return { text: assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('') }
-  const failure = memoryComputeFailure.safeParse(finish)
-  return { failure: failure.success ? failure.data : 'missing-finish' }
-}
-
-class MemoryDispatchDenied extends Error {}
-
-export function applyMemoryAdapter(ctx: Context, port = process) {
-  if (!port.send) return
-  const caller = new AsyncLocalStorage<{ agent: Agent } | { jobId: string }>()
-  type DispatchOrigin = { session: string, parent?: string } | { jobId: string }
-  const modelTransport = new AsyncLocalStorage<{ origin: DispatchOrigin, signal?: AbortSignal, denied?: Error }>()
-  const activeSend = new AsyncLocalStorage<() => void>()
-  const pending = new Map<string, (text: string | null) => void>()
-  const computations = new Map<string, { generation: number, cancel: AbortController }>()
+/** Mount once per DSH process. All correctness paths work with no parent process/channel. */
+export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}, port = process) {
+  const caller = new AsyncLocalStorage<{ agent: Agent, contextGeneration: number, toolOrigin?: MemoryToolOrigin, toolRead?: NativeToolLease } | { jobId: string }>()
+  const deliveries = new Map<string, Promise<MemoryDeliveryProof>>()
+  const deliveryBindings = createMemoryDeliveryBindings()
   const lifetime = new AbortController()
-  const send = (message: object) => { if (port.connected) port.send?.(message, () => {}) }
-  const parentOf = (agent: Agent | undefined) => {
-    if (agent?.session.header.origin !== 'subagent') return undefined
-    const seen = new Set([agent.session.id])
-    let child = agent
-    while (child.session.header.origin === 'subagent') {
-      // DSH 0.2.2 records the direct creator. Fork lineage alone is not delegation.
-      const id = child.session.header.parentSession
-      if (!id || seen.has(id)) return undefined
-      const parent = ctx.agents.get(id)
-      if (!parent) return undefined
-      seen.add(id)
-      child = parent
-    }
-    return String(child.session.id)
+  let closing = false
+  let lastRoute: { provider: string, model: string } | null = null
+  const send = (message: object) => { if (config.host && port.connected) port.send?.(message, () => {}) }
+  const root = path.resolve(config.dataRoot ?? path.join(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), 'memory'))
+  const embedding = config.modelRoot ? { modelRoot: config.modelRoot, runtimeRoot: config.runtimeRoot } : undefined
+  let lastState = ''
+  let effectsRevision = 0
+  const state = (force = false) => {
+    const value = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch,
+      state: owner.status(), revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(), effectsRevision }
+    const encoded = JSON.stringify(value)
+    if (force || encoded !== lastState) { lastState = encoded; send(value) }
   }
-  function exchange(message: { type: string; [field: string]: unknown }, id: string, signal?: AbortSignal, timeoutMs = 2000) {
-    return new Promise<string | null>(resolve => {
-      const cancel = () => {
-        if (message.type === 'memory_query') send({ type: 'memory_query_cancel', id })
-        done(null)
+  const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true,
+    route: () => lastRoute ?? ctx.agents.list().map(agent => agent.model.current()).find(route => route !== undefined) ?? null,
+    compute: (job, signal, tools) => {
+      const deadline = AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)
+      const combined = AbortSignal.any([lifetime.signal, deadline, ...(signal ? [signal] : [])])
+      return caller.run({ jobId: job.id }, () => completeMemoryModel(ctx, job, combined, tools)).catch(error => {
+        if (error instanceof MemoryComputeError) throw error
+        if (combined.aborted) throw new MemoryComputeError(combined.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted')
+        throw new MemoryComputeError('call-failed')
+      })
+    },
+    quiesce: async () => {
+      // A user may forget from inside pre-step: waiting for that same turn here deadlocks.
+      const current = caller.getStore()
+      for (const agent of ctx.agents.list()) if (agent.status === 'running' && (!current || !('agent' in current) || current.agent !== agent)) {
+        agent.cancel({ kind: 'user' }, { keepInbox: true })
       }
-      const done = (text: string | null) => {
-        clearTimeout(timer)
-        pending.delete(id)
-        signal?.removeEventListener('abort', cancel)
-        resolve(text)
-      }
-      const timer = setTimeout(cancel, timeoutMs)
-      timer.unref()
-      pending.set(id, done)
-      signal?.addEventListener('abort', cancel, { once: true })
-      if (signal?.aborted) done(null)
-      else send({ ...message, id })
-    })
+    },
+    onContextUsed: notice => send({ type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...notice }),
+    onProjectionChanged: () => send({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, revision: owner.runtime.revision() }),
+    onChange: change => { state(); send({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...change }) }, onHostEffects: () => { effectsRevision++; state() },
+  })
+  const transport = createMemoryTransport(owner)
+  const outputAttempts = trackNativeOutputAttempts(owner.contextGeneration, owner.finishNativeOutput)
+  const toolReads = trackNativeToolReads(owner.finishNativeToolRead, {
+    evidence: owner.nativeToolEvidence, archive: owner.inheritNativeToolRead,
+  })
+  const spillWriter = trackNativeSpills(ctx, owner, toolReads)
+  const spillReader = trackNativeSpillReads(ctx, owner, () => {
+    const execution = caller.getStore()
+    return execution && 'agent' in execution ? execution.toolRead : undefined
+  })
+  const ingestion = createSessionIngestion(owner, session => ctx.sessions.flush(session), async (_session, message) => {
+    const proof = deliveries.get(message.id)
+    if (!proof) return undefined
+    try { return await proof } finally { deliveries.delete(message.id) }
+  })
+  const recovery = owner.recover()
+  ctx.inject(['commands'], scoped => {
+    if (!config.host) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
+      const session = agent.session
+      const active = () => !closing && !signal.aborted && ctx.sessions.get(session.id) === session
+        && ctx.agents.get(session.id) === agent && agent.status !== 'running'
+      await recovery
+      if (!active() || !owner.ready()) return false
+      await ingestion.synchronize(session)
+      return active() && owner.ready()
+    }), 'standalone memory file commands')
+  })
+  // Suppress raw history upload before its serializer; the final transport also rejects unknown
+  // extension fields. Optional because an independent DSH profile may never install this service.
+  ctx.inject(['sessionLogDeepSeek'], scoped => {
+    const restoreUpload = scoped.sessionLogDeepSeek.registerExclusion(() => true)
+    scoped.effect(() => restoreUpload, 'memory history upload exclusion')
+  })
+  const disposed = new WeakSet<Session>()
+  const report = (error: unknown, session?: Session) => {
+    if (session && disposed.has(session)) return // The persisted log is replayed when a new handle opens.
+    console.error('[memory] session intake failed', error instanceof Error ? error.message : 'unknown error')
   }
-  const request = (input: MemoryRequest, agent: Agent, signal?: AbortSignal) =>
-    exchange({ type: 'memory_query', request: input, parent: parentOf(agent) }, randomUUID(),
-      signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal,
-      input.op === 'recall' ? MEMORY_SEMANTIC_TIMEOUT_MS + 1500 : undefined)
-
-  async function authorize(origin: DispatchOrigin, id: string, signal?: AbortSignal) {
-    const allowed = await exchange({ type: 'memory_dispatch', ...origin }, id, signal)
-    signal?.throwIfAborted()
-    if (!allowed) throw new MemoryDispatchDenied('Memory context changed. Retry from the conversation.')
-    const deadline = Number(allowed)
-    if (deadline && deadline <= Date.now()) throw new MemoryDispatchDenied('Memory context expired. Retry from the conversation.')
-    return deadline
-  }
-
-  // The app's DSH adapters use fetch at the wire boundary. Leave the prepared adapter in place and
-  // authorize each model POST, including HTTP retries made inside a provider SDK.
-  const fetchOriginal = globalThis.fetch
-  const requests = new WeakMap<object, () => void>()
-  const created = channel('undici:request:create')
-  const bodySent = channel('undici:request:bodySent')
-  function requestCreated(event: unknown) {
-    const request = objectOf(objectOf(event)?.request)
-    const settle = activeSend.getStore()
-    if (request && settle) requests.set(request, settle)
-  }
-  function requestSent(event: unknown) {
-    const request = objectOf(objectOf(event)?.request)
-    if (request) requests.get(request)?.()
-  }
-  function deniedResponse(reason: Error) {
-    // A thrown transport error can cause an SDK retry. This response stays inside DSH.
-    return new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: reason.message } }), {
-      status: 400, headers: { 'content-type': 'application/json', 'x-should-retry': 'false' },
-    })
-  }
-  function oneShotBody(init?: RequestInit): RequestInit | undefined {
-    if (typeof init?.body !== 'string') return init
-    const bytes = new TextEncoder().encode(init.body)
-    const headers = new Headers(init.headers)
-    headers.set('content-length', String(bytes.byteLength))
-    const streamed: RequestInit & { duplex: 'half' } = { ...init, headers, duplex: 'half', body: new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(bytes); controller.close() },
-    }) }
-    return streamed
-  }
-  const guardedFetch: typeof globalThis.fetch = async (input, init) => {
-    const call = modelTransport.getStore()
-    const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
-    if (!call || method.toUpperCase() !== 'POST') return fetchOriginal(input, init)
-    const url = input instanceof Request ? input.url : String(input)
-    if (!/\/(?:messages|responses|chat\/completions)\/?$/u.test(new URL(url).pathname)) return fetchOriginal(input, init)
-    if (call.denied) return deniedResponse(call.denied)
-    const providerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
-    const signal = AbortSignal.any([lifetime.signal, ...[providerSignal, call.signal].filter((signal): signal is AbortSignal => Boolean(signal))])
-    const id = randomUUID()
-    const cutoff = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let held = true
-    const release = () => {
-      if (!held) return
-      held = false
-      clearTimeout(timer)
-      send({ type: 'memory_dispatched', id })
+  ctx.on('session/disposed', session => { disposed.add(session); deliveryBindings.release(String(session.id)) })
+  const observe = (session: Session) => {
+    if (owner.ready() && !owner.nativeContextRewritten(String(session.id))) {
+      const pending = ingestion.synchronize(session)
+      void pending.catch(error => report(error, session))
+      return pending
     }
-    try {
-      const deadline = await authorize(call.origin, id, signal)
-      if (deadline) {
-        const delay = deadline - Date.now()
-        if (delay <= 0) throw new MemoryDispatchDenied('Memory context expired. Retry from the conversation.')
-        if (delay <= 2_147_483_647) {
-          timer = setTimeout(() => cutoff.abort(), delay)
-          timer.unref()
+    // Prepared host source changes resume through the host outbox; the next admitted step replays.
+  }
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    if (!closing) outputAttempts?.frame(agent.session, frame)
+  })
+  ctx.on('compaction/summary-error', ({ session, sourceEventSeqs }, next) => {
+    if (!closing) recordCompactionInputs(session, sourceEventSeqs)
+    return next()
+  })
+  ctx.on('session/event', (session, event) => {
+    if (!closing) {
+      outputAttempts?.observe(session, event)
+      toolReads?.observe(session, event)
+    }
+    const messages = event.type === 'user/message' ? [event.data] : event.type === 'agent/inbox/spliced' ? event.data.inserted : []
+    for (const message of messages) {
+      const source = message.source
+      if (deliveries.has(message.id) || !('senderSessionId' in source) || typeof source.senderSessionId !== 'string') continue
+      const digest = memoryOriginalContentDigest(message)
+      if (source.kind === 'subagent-settled') {
+        const pending = deliveryBindings.settlement(source.senderSessionId, String(session.id), digest)
+        if (pending) deliveries.set(message.id, pending)
+      } else if (source.kind === 'agent-message') {
+        const execution = caller.getStore()
+        if (execution && 'agent' in execution && execution.toolOrigin && execution.agent.session.id === source.senderSessionId) {
+          deliveries.set(message.id, Promise.resolve(deliveryBindings.relay(source.senderSessionId, String(session.id), digest, execution.toolOrigin)))
         }
       }
-    } catch (error) {
-      if (signal.aborted) throw error
-      call.denied = error instanceof Error ? error : new Error('Memory context changed.')
-      return deniedResponse(call.denied)
-    } finally {
-      if (call.denied || signal.aborted) release()
     }
-    try {
-      // Undici can replay a reusable POST internally after HTTP 421. A one-shot body leaves retries to the SDK,
-      // so another send has to acquire its own permit. Keep the same wire length for compatible gateways.
-      return await activeSend.run(release, () => fetchOriginal(input, { ...oneShotBody(init), redirect: 'error', signal: AbortSignal.any([signal, cutoff.signal]) }))
-    } finally { release() }
+    if (!closing && (event.type !== 'agent/inbox/spliced' || event.data.inserted.length > 0)
+      && ['agent/inbox/spliced', 'user/message', 'assistant/message', 'turn/end'].includes(event.type)) {
+      const pending = observe(session)
+      if (pending && event.type === 'assistant/message') deliveryBindings.output(String(session.id), event.data.turn, event.data.step, event.data.message.content, pending)
+    }
+  })
+  ctx.on('session/created', session => { if (!closing) observe(session) })
+  // The native lifecycle fires before foreground result resolution; background notices also carry sender identity.
+  // Serialize it with parent intake: a failed provenance transfer blocks that parent's next request.
+  ctx.on('subagent/start', info => {
+    deliveryBindings.start(info.runId, String(info.parentSessionId), String(info.id), owner.contextGeneration(String(info.parentSessionId)), owner.contextGeneration(String(info.id)))
+  })
+  ctx.on('subagent/end', info => {
+    const parent = ctx.sessions.get(info.parentSessionId)
+    void deliveryBindings.end(info.runId, info.lastAssistantMessage).then(generation => {
+      if (!closing && parent) return ingestion.derived(parent, { messageId: `subagent-end:${info.runId}`, sourceIds: [],
+        senderSessionId: String(info.id), contextGeneration: generation?.contextGeneration ?? 0,
+        senderContextGeneration: generation?.senderContextGeneration ?? 0, ...(generation ? { verifiedDelivery: true as const } : {}) })
+    }).catch(error => report(error, parent))
+  })
+
+  const request = async (input: MemoryRequest, agent: Agent, signal?: AbortSignal) => {
+    await ingestion.synchronize(agent.session)
+    signal?.throwIfAborted()
+    if (!owner.ready()) throw new Error('Memory owner is not ready')
+    const context = owner.sessionContext(String(agent.session.id))
+    const execution = caller.getStore()
+    if (input.op === 'remember') {
+      if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
+      const lease = execution.toolRead
+      const result = await owner.withNativeToolRead({ call: lease.call, calls: lease.calls, readCut: lease.readCut, current: () => lease.current() && !signal?.aborted },
+        () => owner.rememberNativeFile(input.text.trim()))
+      return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
+        : { status: 'rejected', reason: 'no-explicit-user-source' })
+    }
+    const read = () => owner.runtime.handleModelRequest(input, context, () => owner.ready() && !signal?.aborted, signal)
+    if (!toolReads || !['recall', 'file_read', 'node_search', 'clarify'].includes(input.op)) return read()
+    // File tools only return bytes through an authenticated native execution.
+    if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
+    return owner.withNativeToolRead(execution.toolRead, read)
   }
-  globalThis.fetch = guardedFetch
-  created.subscribe(requestCreated)
-  bodySent.subscribe(requestSent)
-  function receive(raw: unknown) {
-    const message = objectOf(raw)
-    if (message?.type === 'memory_response' && typeof message.id === 'string') {
-      pending.get(message.id)?.(typeof message.text === 'string' ? message.text : null)
-    }
-    if (message?.type === 'memory_dispatch_result' && typeof message.id === 'string') {
-      const deadline = typeof message.deadline === 'number' && Number.isSafeInteger(message.deadline) ? message.deadline : 0
-      pending.get(message.id)?.(message.allowed === true ? String(deadline) : null)
-    }
-    if (message?.type === 'memory_compute_cancel' && typeof message.id === 'string') {
-      const running = computations.get(message.id)
-      if (running && running.generation === message.generation) running.cancel.abort()
-      return
-    }
-    if (message?.type !== 'memory_compute') return
-    const result = memoryCompute.safeParse(message.job)
-    if (!result.success) return
-    const job = result.data
-    const cancel = new AbortController()
-    const signal = AbortSignal.any([lifetime.signal, cancel.signal, AbortSignal.timeout(115_000)])
-    const running = { generation: job.generation, cancel }
-    computations.set(job.id, running)
-    const assembler = new BlockAssembler()
-    const answer = (result: Computed) => {
-      if (computations.get(job.id) !== running) return
-      computations.delete(job.id)
-      if (!cancel.signal.aborted) {
-        send({ type: 'memory_computed', id: job.id, generation: job.generation, ...result,
-          ...(job.stage === 'extract' && assembler.usage ? { usage: assembler.usage } : {}) })
-      }
-    }
-    void caller.run({ jobId: job.id }, () => complete(ctx, job, signal, assembler)).then(answer, error => {
-      const failure = signal.aborted ? (signal.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted') : 'call-failed'
-      answer({ failure: error instanceof MemoryDispatchDenied ? 'dispatch-denied' : failure })
-    })
-  }
-  port.on('message', receive)
-  ctx.effect(() => () => {
-    port.off('message', receive)
-    created.unsubscribe(requestCreated)
-    bodySent.unsubscribe(requestSent)
-    if (globalThis.fetch === guardedFetch) globalThis.fetch = fetchOriginal
-    lifetime.abort()
-    for (const done of pending.values()) done(null)
-  }, 'memory channel')
-  // Auto review builds a request from the session surface inside this tool hook without a session ID.
-  // Take ownership from the actual tool execution rather than guessing from the request text.
+  // Automatic tool review may omit sessionId. Bind the actual execution, not its text.
   let unbindTools: (() => unknown) | undefined
   const bindTools = () => {
     unbindTools?.()
-    unbindTools = ctx.on('tools/pre-execute', (exec, next) => exec.agent ? caller.run({ agent: exec.agent }, next) : next(), { prepend: true })
+    unbindTools = ctx.on('tools/pre-execute', (exec, next) => {
+      if (!exec.agent) return next()
+      const agent = exec.agent, origin = deliveryBindings.tool(String(agent.session.id), String(exec.rootCallId))
+      const generation = origin?.generation ?? 0
+      if (generation !== owner.contextGeneration(String(agent.session.id))) throw new Error('Tool review belongs to a retired context generation')
+      toolReads?.bind(agent.session, exec)
+      return caller.run({ agent, contextGeneration: generation, toolOrigin: origin }, async () => {
+        await ingestion.synchronize(agent.session)
+        return next()
+      })
+    }, { prepend: true })
     return undefined
   }
   bindTools()
   ctx.on('agent/created', bindTools)
-  ctx.on('llm/stream', async function* (options, next) {
-    const origin = caller.getStore()
-    const agent = options.sessionId ? ctx.agents.get(options.sessionId) : origin && 'agent' in origin ? origin.agent : undefined
-    const sessionId = options.sessionId ?? agent?.session.id
-    const jobId = origin && 'jobId' in origin ? origin.jobId : undefined
-    if (!sessionId && !jobId) throw new Error('Model request has no verified memory context')
-    const dispatch: DispatchOrigin = sessionId ? { session: String(sessionId), parent: parentOf(agent) } : { jobId: jobId! }
-    // Installed DeepSeek and configured Viva providers use the intercepted transport above.
-    if (options.provider === 'deepseek-official' || options.provider === 'deepseek-account' || options.provider.startsWith('custom-')) {
-      const transport = { origin: dispatch, signal: options.signal, denied: undefined as Error | undefined }
-      const stream = modelTransport.run(transport, next)
-      const iterator = stream[Symbol.asyncIterator]()
-      try {
-        for (;;) {
-          const chunk = await modelTransport.run(transport, () => iterator.next())
-          if (transport.denied) throw transport.denied
-          if (chunk.done) return
-          yield chunk.value
-        }
-      } finally { await iterator.return?.() }
-    }
-
-    // A third-party DSH adapter may use another transport. Hold its lease through any internal
-    // retries. A request with an expiring dependency needs a supported final transport gate.
-    const id = randomUUID()
-    try {
-      if (await authorize(dispatch, id, options.signal)) throw new Error('The model adapter cannot send time-bound memory safely.')
-      yield* next()
-    } finally {
-      send({ type: 'memory_dispatched', id })
-    }
+  ctx.on('tools/execute', (exec, next) => {
+    if (!exec.agent) return next()
+    const agent = exec.agent, origin = deliveryBindings.tool(String(agent.session.id), String(exec.rootCallId))
+    // Unknown old calls may only retain the initial generation; they never inherit a recovery's
+    // fresh authority just because execution or an asynchronous relay was delayed.
+    const generation = origin?.generation ?? 0
+    if (generation !== owner.contextGeneration(String(agent.session.id))) throw new Error('Tool call belongs to a retired context generation')
+    const toolRead = toolReads?.acquire(agent.session, exec, generation)
+    return caller.run({ agent, contextGeneration: generation, toolOrigin: origin, toolRead }, next)
   }, { prepend: true })
-  ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
+  ctx.on('llm/stream', async function* (options, next) {
+    const current = caller.getStore()
+    const agent = options.sessionId ? ctx.agents.get(options.sessionId) : current && 'agent' in current ? current.agent : undefined
+    const session = options.sessionId ? ctx.sessions.get(options.sessionId) : agent?.session
+    const contextGeneration = session ? current && 'agent' in current && current.agent.session === session
+      ? current.contextGeneration : owner.contextGeneration(String(session.id)) : undefined
+    const jobId = current && 'jobId' in current ? current.jobId : undefined
+    if (!session && !jobId) throw new Error('Model request has no verified memory origin')
+    if (!owner.ready()) throw new Error('Memory owner is not ready')
+    if (true && session && options.purpose === 'compaction') recordCompactionRequest(session, options.messages)
+    // Only the pinned loop's own request object may inherit the active attempt.
+    const loopRequest = outputAttempts && isAgentLoopRequest(options)
+    const output = loopRequest && session ? outputAttempts.prepare(session) : undefined
+    if (loopRequest && !output) throw new Error('Model request has no active native output attempt')
+    if (session) {
+      await ingestion.synchronize(session)
+      if (output && outputAttempts?.current(session) !== output) throw new Error('Model output attempt changed while its marker was being persisted')
+      if (contextGeneration !== owner.contextGeneration(String(session.id))) throw new Error('Model request belongs to a retired context generation')
+      if (options.purpose === 'session-title') {
+        const recorded = session.snapshotEvents().findLast(event => event.type === 'session/title-llm-request')
+        if (recorded?.type !== 'session/title-llm-request') throw new Error('Session title has no recorded source dependencies')
+        await ingestion.titleDependencies(session, recorded.data.messageSeqs)
+      }
+    }
+    // Only audited fetch-based adapters provide an observable physical send/retry boundary.
+    assertMemoryProviderSupported(ctx.llm, options.provider)
+    const origin: MemoryTransportOrigin = session ? { session: String(session.id), contextGeneration, ...(output ? { output } : {}) } : { jobId: jobId! }
+    const currentOrigin = () => owner.ready() && ('jobId' in origin
+      ? Boolean(owner.runtime.computeAdmission(origin.jobId)?.current())
+      : origin.contextGeneration === owner.contextGeneration(origin.session)
+        && owner.coordination.allowsSession(origin.session, owner.sessionContext(origin.session).project))
+    const stream = transport.run(origin, next)
+    const iterator = stream[Symbol.asyncIterator]()
+    try {
+      for (;;) {
+        const chunk = await transport.run(origin, () => iterator.next())
+        if (!currentOrigin()) throw new Error('Memory context changed before model output was accepted')
+        if (chunk.done) return
+        yield chunk.value
+      }
+    } finally { await transport.run(origin, () => iterator.return?.()) }
+  }, { prepend: true })
+  ctx.on('system-prompt/assemble', (_presentation, { agent, toolSet, signal }, next) => {
+    if (agent && toolSet && signal) toolReads?.assembly(agent.session, signal, toolSet)
+    return next()
+  })
+  ctx.on('agent/pre-step', ({ agent, messages, turn, step, signal }, next) => caller.run({ agent, contextGeneration: owner.contextGeneration(String(agent.session.id)) }, async () => {
+    if (!owner.ready()) throw new Error('Memory owner is not ready')
+    toolReads?.step(agent.session, turn, step, signal)
+    // This hook precedes request construction. Never recover inside llm/stream: its options
+    // may already contain the retired transcript, including on SDK transport retries.
+    await ingestion.recoverContext(agent.session, () => !signal.aborted)
+    const execution = caller.getStore()
+    if (execution && 'agent' in execution) execution.contextGeneration = owner.contextGeneration(String(agent.session.id))
+    deliveryBindings.step(String(agent.session.id), turn, step, owner.contextGeneration(String(agent.session.id)),
+      new Map(ctx.sessions.list().map(session => [String(session.id), owner.contextGeneration(String(session.id))])))
+    const selected = agent.model.current()
+    if (selected) lastRoute = { provider: selected.provider, model: selected.model }
+    // Receipt precedes downstream hooks; admission is recorded only for the accepted message list.
+    await ingestion.receive(agent.session, messages, turn, step, false)
     const decision = await next()
-    if (decision.kind === 'reject' || signal.aborted || step !== 1) return decision
-    clearPreviousContext(agent)
-    const question = decision.messages.filter(message => message.source.kind === 'user')
-      .flatMap(message => message.content.flatMap(part => part.type === 'text' ? [withoutHeaders(part.text)] : [])).join('\n').slice(0, 20_000)
+    if (decision.kind === 'reject' || signal.aborted) return decision
+    const receipts = await ingestion.receive(agent.session, decision.messages, turn, step, true)
+    const question = retrievalQuestion(receipts)
     if (!question) return decision
+    clearPreviousContext(agent)
     const text = await request({ op: 'context', session: String(agent.session.id), turn, question }, agent, signal)
     if (!text || signal.aborted) return decision
-    return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text }], source: memorySource })] }
-  }, { prepend: true })
+    const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
+    await owner.registerDerived({ sessionId: String(agent.session.id), messageId: message.id, nativeUserSource: memorySource.kind, nativeMessageDigest: memoryRecoveryMessageHash(message), sourceIds: owner.dispatch.snapshot(String(agent.session.id)).sources,
+      contextGeneration: owner.contextGeneration(String(agent.session.id)), contentDigest: memoryOriginalContentDigest(message) })
+    return { ...decision, messages: [...decision.messages, message] }
+  }), { prepend: true })
+  registerMemoryTools(ctx, request, async (questionId, text, agent, signal) => {
+    const execution = caller.getStore()
+    if (!execution || !('agent' in execution) || execution.agent !== agent || signal?.aborted) return false
+    return Boolean(await owner.acceptFileClarification({ session: String(agent.session.id), contextGeneration: execution.contextGeneration,
+      questionId, text, requireShown: false }, () => !closing && !disposed.has(agent.session) && !signal?.aborted))
+  }, (questionId, agent) => {
+    owner.runtime.cancelFileClarification(String(agent.session.id), questionId)
+  })
 
-  const tools = [
-    { op: 'remember', description: '保存用户本轮明确要求记住的原文。只传原文，保留时间、条件和例外。',
-      parameters: { text: { type: 'string', required: true }, kind: { type: 'string', enum: memoryKinds }, keywords: { type: 'array', items: { type: 'string' } } },
-      input: (session: string, args: { text: string, kind?: typeof memoryKinds[number], keywords?: string[] }): MemoryRequest => ({ op: 'remember', session, ...args }) },
-    { op: 'recall', description: '查有关的有效记忆，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope 设为 project 可查当前工作区项目；不能指定其他项目。用户明确深查或需要关系链、跨记录归纳时可设 deep。中文句子中的关系起点可用「」标出完整名称。match 为 semantic 表示按语义相似度找到的候选，使用前依据原文核对实际对象、关系和限制。relations 是带原始证据和适用区间的路径。conflicts 包含成对依据，pendingChanges 仍待确认。partial 表示结果不完整，可参考 reasons 缩小范围。只有不确定性会改变答案或操作、且无法用原文、本轮指示或条件式答案继续时才用 memory_clarify。后台任务记录歧义并完成可做部分。',
-      parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' }, scope: { type: 'string', enum: ['project'] }, deep: { type: 'boolean' } },
-      input: (session: string, args: { query: string, asOf?: string, scope?: 'project', deep?: boolean }): MemoryRequest => ({ op: 'recall', session, ...args }) },
-    { op: 'forget', description: '用户明确要求忘掉时使用。请用户说「忘掉 #编号」，也可以在关于你中操作。',
-      parameters: { id: { type: 'integer', required: true } },
-      input: (session: string, args: { id: number }): MemoryRequest => ({ op: 'forget', session, id: args.id }) },
-  ] as const
-  const output = {
-    schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } },
-    render: (_args: unknown, value: { text: string }) => [{ type: 'text' as const, text: value.text }],
-  } as const
-  function register<P extends ParameterSchemaSpec>(op: string, description: string, parameters: P, make: (session: string, args: unknown) => MemoryRequest) {
-    ctx.tools.register(defineTool({
-      name: 'memory_' + op, description, parameters, output,
-      execute: async (args, exec) => ({ text: exec.agent
-        ? await request(make(String(exec.agent.session.id), args), exec.agent, exec.signal) ?? '{"status":"unavailable"}'
-        : '{"status":"unavailable"}' }),
-    }))
+  const receive = (raw: unknown) => {
+    const message = objectOf(raw)
+    if (!config.host || message?.type !== 'memory_host_request' || typeof message.requestId !== 'string') return
+    const requestId = message.requestId
+    void (async () => {
+      if (message.protocol !== MEMORY_HOST_PROTOCOL || message.epoch !== owner.epoch) throw new Error('Memory host protocol or epoch mismatch')
+      const command = parseHostMemoryCommand(message.method, message.input)
+      let result: unknown
+      if (command.method === 'recoverContext') {
+        const id = SessionId(command.input.args[0]), session = ctx.sessions.get(id)
+        const idle = () => !closing && Boolean(session) && ctx.sessions.get(id) === session && ctx.agents.get(id)?.status !== 'running'
+        if (!session || !idle()) result = false
+        else {
+          await ingestion.recoverContext(session, idle)
+          await ingestion.synchronize(session)
+          result = idle() && !owner.needsContextRecovery(String(id))
+            && owner.coordination.allowsSession(String(id), owner.sessionContext(String(id)).project)
+        }
+      } else result = await owner.handleHost(command.method, command.input)
+      // The host must see recovery/admission metadata before an acknowledged mutation resumes work.
+      state()
+      send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: true, result })
+    })().catch(error => send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: false,
+      error: memoryHostFailure(error) }))
   }
-  for (const tool of tools) register(tool.op, tool.description, tool.parameters, (session, args) => tool.input(session, args as never))
-  ctx.tools.register(defineTool({
-    name: 'memory_clarify',
-    description: '仅在当前回答或操作确实需要某项争议事实、也无法先给条件式答案或继续其他部分时使用。ref 必须来自本轮 memory_recall。回答只决定本轮用值。',
-    parameters: { ref: { type: 'string', required: true } }, output,
-    async execute({ ref }, exec) {
-      const agent = exec.agent
-      const unavailable = { text: '{"status":"unavailable"}' }
-      if (!agent || !ctx.userQuestions) return unavailable
-      const reply = await request({ op: 'clarify', session: String(agent.session.id), ref }, agent, exec.signal)
-      if (!reply) return unavailable
-      const result = memoryClarificationResult.safeParse(JSON.parse(reply))
-      if (!result.success) return unavailable
-      if (result.data.status !== 'ready') return { text: reply }
-      const answer = await ctx.userQuestions.ask({ agent, signal: exec.signal, questions: [result.data.question] })
-      return { text: JSON.stringify({ status: 'answered', scope: 'turn', answer }) }
-    },
-  }))
-  send({ type: 'memory_ready', version: MEMORY_CONTRACT })
+  if (config.host) port.on('message', receive)
+  ctx.effect(() => async () => {
+    if (config.host) port.off('message', receive)
+    closing = true
+    await spillReader?.dispose()
+    await spillWriter?.dispose()
+    lifetime.abort()
+    deliveryBindings.close()
+    deliveries.clear()
+    await ingestion.drain()
+    await owner.close()
+    transport.dispose()
+  }, 'memory owner')
+  state()
+  await recovery
+  if (owner.ready()) for (const session of ctx.sessions.list()) {
+    try {
+      const idle = () => ctx.sessions.get(session.id) === session && ctx.agents.get(session.id)?.status !== 'running'
+      if (idle()) await ingestion.recoverContext(session, idle)
+      await ingestion.synchronize(session)
+    } catch (error) { report(error, session) }
+  }
+  state()
+  return owner
 }

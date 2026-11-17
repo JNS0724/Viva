@@ -13,11 +13,10 @@ import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
 import { createSteerDesk, interjection } from './steer-channel.ts'
-import { createMemoryChannel } from './memory-channel.ts'
-import type { MemoryDispatchAdmission } from './memory-channel.ts'
-import type { MemoryRequest } from '../shared/memory-contract.ts'
+import { memoryProjectScope } from './memory-project.ts'
+import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
-import { withRequestHeader } from '../shared/request-routing/header.ts'
+import { withRequestSource } from '../shared/request-routing/header.ts'
 import { createForkDesk } from './fork-channel.ts'
 import { createTasksDesk } from './tasks-channel.ts'
 import { createHistoryDesk, type HistoryRead, type HistorySearch } from './history-channel.ts'
@@ -27,7 +26,7 @@ import { createQuestionDesk } from './question-channel.ts'
 import { ResumeError, resumeReason } from './resume-failure.ts'
 import { createAcpOperations } from './acp-operations.ts'
 import { createAcpTaskSessions } from './acp-task-sessions.ts'
-import { createAssistantStream } from './assistant-stream.ts'
+import { createAssistantStream, type CommittedOutput } from './assistant-stream.ts'
 import { createFreshSessions } from './fresh-sessions.ts'
 import { sessionTiming, type SessionTiming } from './session-timing.ts'
 import { describeConfig, describeError } from './session-info.ts'
@@ -83,8 +82,8 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null, routing, memoryRequest, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, readyMemory,
-  beginMemoryDispatch, beginMemoryJobDispatch, endMemoryDispatch, memoryClarificationQuestion, allowGeneralQuestion,
+  launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, recordOutputs, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
+  memoryClarificationQuestion, cancelMemoryClarification, allowGeneralQuestion, taskSourceAlias,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -94,6 +93,7 @@ export function createAcpBridge({
   spawnFn?: typeof spawn, mcpServers?: () => McpServerEntry[],
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
+  taskSourceAlias?: (session: string, text: string) => Promise<string>,
   taskRead?: TaskRead | null,
   /** Schedule actions from viva-tasks. */
   taskAct?: TaskAct | null,
@@ -104,17 +104,20 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
-  memoryRequest?: (request: MemoryRequest, foregroundTurn: string | undefined, turn: string | undefined, stillCurrent: () => boolean, signal: AbortSignal) => string | Promise<string>,
-  beginMemoryDispatch?: (id: string, session: string) => MemoryDispatchAdmission | Promise<MemoryDispatchAdmission>,
-  beginMemoryJobDispatch?: (id: string, jobId: string) => MemoryDispatchAdmission | Promise<MemoryDispatchAdmission>,
-  endMemoryDispatch?: (id: string) => void,
   memoryClarificationQuestion?: (session: string, turn: string, id: string, phase: 'show' | 'check') =>
     ReturnType<NonNullable<Parameters<typeof createQuestionDesk>[0]['memoryClarificationQuestion']>>,
-  allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean) =>
+  cancelMemoryClarification?: Parameters<typeof createQuestionDesk>[0]['cancelMemoryClarification'],
+  allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') =>
     import('./question-channel.ts').QuestionAdmission | Promise<import('./question-channel.ts').QuestionAdmission>,
-  allowSession?: (id: string, memoryReady: boolean, task: boolean, cwd?: string) => boolean,
+  allowSession?: (id: string, memoryReady: boolean, task: boolean, cwd?: string) => boolean | Promise<boolean>,
   readyMemory?: () => void,
-  onSessionCreated?: (id: string, cwd: string, parent?: string) => void,
+  memoryRequired?: boolean,
+  memoryContextUsed?: (notice: import('../memory/contracts/host.ts').MemoryOwnerContextUsed) => void,
+  memoryProjection?: (notice: import('../memory/contracts/host.ts').MemoryOwnerProjection) => void,
+  memoryNotice?: (notice: import('../memory/contracts/host.ts').MemoryOwnerChange) => void,
+  memoryStateChanged?: (state: import('../memory/contracts/host.ts').MemoryOwnerState) => void,
+  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
+  onSessionCreated?: (id: string, cwd: string, parent?: string) => void | Promise<void>,
   onQuestionAnswer?: Parameters<typeof createQuestionDesk>[0]['onAnswer'],
   /**
    * The request runtime (request-runtime.ts): the user's words to the main conversation are each a request, taken
@@ -146,25 +149,29 @@ export function createAcpBridge({
   const taskOf = (id: string) => taskSessions.taskOf(id)
   const isTask = (id: string | null) => id !== null && taskSessions.has(id)
   const allowSession = (id: string, cwd = id === sessionId ? sessionCwd : undefined) => sessionAllowed(id, memory.ready(), isTask(id), cwd)
+  async function allowHumanSession(id: string, cwd = id === sessionId ? sessionCwd : undefined) {
+    if (await allowSession(id, cwd)) return true
+    return !isTask(id) && memory.ready() && await memory.call('recoverContext', { args: [id] }) && await allowSession(id, cwd)
+  }
   const allowTask = (id: string, cwd?: string) => sessionAllowed(id, memory.ready(), true, cwd)
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.context(id) : undefined
-  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
-    allowGeneralQuestion: (session, cards, waiting) => {
+  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer, cancelMemoryClarification,
+    allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
       const operation = operations.turn(session)
-      if (!operation || !allowSession(session)) return false
+      if (!operation || !await allowSession(session)) return false
       const stillWaiting = () => waiting() && !disposed && operations.turn(session) === operation
-      const result = allowGeneralQuestion(session, operation, cards, stillWaiting)
+      const result = allowGeneralQuestion(session, operation, cards, stillWaiting, phase)
       const bound = (allowed: import('./question-channel.ts').QuestionAdmission) => allowed === false ? false
-        : () => stillWaiting() && allowSession(session) && (typeof allowed !== 'function' || allowed())
+        : () => stillWaiting() && (typeof allowed !== 'function' || allowed())
       return typeof result === 'object' ? result.then(bound) : bound(result)
     },
-    memoryClarificationQuestion: (session, id, phase) => {
+    memoryClarificationQuestion: async (session, id, phase) => {
       const turn = operations.userTurn(session)
-      return turn && session === sessionId && allowSession(session) ? memoryClarificationQuestion?.(session, turn, id, phase) ?? null : null
+      return turn && session === sessionId && await allowSession(session) ? memoryClarificationQuestion?.(session, turn, id, phase) ?? null : null
     },
   })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
@@ -180,36 +187,15 @@ export function createAcpBridge({
   const mcpDesk = createMcpDesk({ send: toPlugins, servers: mcpServers, onStatus: (mcp) => emit({ type: 'mcp_status', mcp }) })
   const tasksDesk = createTasksDesk({ send: toPlugins, read: taskRead, act: taskAct, authorized: id => id === sessionId || taskSessions.has(id) })
   const historyDesk = createHistoryDesk({ send: toPlugins, search: historySearch, read: historyRead, authorized: id => id === sessionId || taskSessions.has(id) })
-  const streams = createAssistantStream({ send: toPlugins, emit: (id, update) => operations.forwardStream(id, update) })
-  const ownedSession = (id: string) => id === sessionId || taskSessions.has(id)
-  const memory = createMemoryChannel({
-    send: toPlugins, onReady: readyMemory, beginJobDispatch: beginMemoryJobDispatch, endDispatch: endMemoryDispatch,
-    beginDispatch: (id, session, parent) => {
-      const owner = parent ?? session
-      return ownedSession(owner) && (beginMemoryDispatch?.(id, owner) ?? allowSession(owner))
-    },
-    handle: memoryRequest && ((request, parent, signal) => {
-      const owner = parent ?? request.session
-      if (!ownedSession(owner) || !allowSession(owner) || (parent && request.op !== 'recall')) return '{"status":"unavailable"}'
-      const operation = operations.turn(owner)
-      if (request.op === 'recall' && !operation) return '{"status":"unavailable"}'
-      const stillCurrent = () => !signal.aborted && !disposed && ownedSession(owner) && allowSession(owner) && operations.turn(owner) === operation
-      const response = memoryRequest({ ...request, session: owner }, !parent && owner === sessionId ? operations.userTurn(owner) : undefined, operation, stillCurrent, signal)
-      const afterRead = (text: string) => {
-        if (!stillCurrent()) return '{"status":"unavailable"}'
-        questions.refreshMemoryQuestions()
-        return text
-      }
-      return typeof response === 'string' ? afterRead(response) : response.then(afterRead)
-    }),
-  })
+  const streams = createAssistantStream({ send: toPlugins, recordOutputs, emit: (id, update) => operations.forwardStream(id, update) })
+  const memory = createRemoteMemoryChannel({ send: toPlugins, onReady: readyMemory, onChanged: state => { memoryStateChanged?.(state) }, onNotice: memoryNotice, onContextUsed: memoryContextUsed, onProjection: memoryProjection })
   // The main conversation routes every request (the viva-routing plugin); its role is bound before each prompt.
   const routingDesk = createRoutingDesk({ send: toPlugins, handlers: routing })
   /** The user's words as the main agent reads them: under the header of the request they are taken as. */
-  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection') => {
+  const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string, sourceText = words) => {
     const context = contextFor(session)
-    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind })
-    return { requestId, text: withRequestHeader(words, requestId) }
+    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, ...(sourceId ? { sourceId } : {}) })
+    return { requestId, ...withRequestSource(words, requestId, sourceText) }
   }
   const operations = createAcpOperations({
     connection: live, streams,
@@ -247,7 +233,7 @@ export function createAcpBridge({
     async requestPermission(params: RequestPermissionRequest) {
       if (disposed || (params.sessionId !== sessionId && !taskSessions.has(params.sessionId))) return { outcome: { outcome: 'cancelled' as const } }
       // Nobody is there to answer. A stale session cannot ask for permission to proceed.
-      if (taskSessions.isUnattended(params.sessionId) || !allowSession(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
+      if (taskSessions.isUnattended(params.sessionId) || !await allowSession(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       if (conversationContext && !taskSessions.has(params.sessionId) && !operations.context(params.sessionId)) return { outcome: { outcome: 'cancelled' as const } }
       const { requestId, promise } = broker.create(params)
       const taskId = taskOf(params.sessionId)
@@ -267,12 +253,12 @@ export function createAcpBridge({
     if (launch) proc.send?.(launch, (err) => { if (err) console.error('[dsh] launch not sent:', err.message) })
     proc.on('message', (message) => {
       if (disposed) return
-      questions.receive(message)
+      void questions.receive(message).catch(error => { console.error('[questions] owner authorization failed', error); questions.declineAll() })
       config?.receive(message)
       steering.receive(message)
       forking.receive(message)
       tasksDesk.receive(message)
-      historyDesk.receive(message)
+      void historyDesk.receive(message)
       pluginsDesk.receive(message)
       streams.receive(message)
       memory.receive(message)
@@ -323,19 +309,27 @@ export function createAcpBridge({
   const taskSessions = createAcpTaskSessions({
     connection: live,
     acquire: {
-      resume: (id, cwd) => {
-        if (!allowTask(id, cwd)) throw new Error('session has outdated memory context')
+      resume: async (id, cwd) => {
+        if (!await allowTask(id, cwd)) throw new Error('session has outdated memory context')
         return live().resumeSession({ sessionId: id, cwd, mcpServers: [] })
       },
       fresh: async cwd => {
         const { response } = await fresh.take(freshKey(cwd), cwd)
-        onSessionCreated?.(response.sessionId, cwd)
+        await onSessionCreated?.(response.sessionId, cwd)
         return response
       },
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
     operations, permissions: broker, questions, allowSession: allowTask,
-    steer: (id, text) => steering.steer(text, id),
+    preparePrompt: async (id, text) => {
+      const sourceId = await taskSourceAlias?.(id, text)
+      return memory.ready() ? (await memory.call('bindWireAlias', { args: [id, text, text, sourceId] })).wireText : text
+    },
+    steer: async (id, text) => {
+      const sourceId = await taskSourceAlias?.(id, text)
+      if (memory.ready()) text = (await memory.call('bindWireAlias', { args: [id, text, text, sourceId] })).wireText
+      return steering.steer(text, id)
+    },
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
@@ -349,7 +343,7 @@ export function createAcpBridge({
     }))
     await measure('session.source', async () => {}, source)
     sessionId = response.sessionId
-    onSessionCreated?.(sessionId, sessionCwd)
+    await onSessionCreated?.(sessionId, sessionCwd)
     prepareFresh()
     return { ...infoFrom(response.configOptions), resumed: false }
   }
@@ -360,16 +354,26 @@ export function createAcpBridge({
    */
   async function resumeOrOpen(resumeSessionId: string | null, targetCwd = sessionCwd) {
     sessionCwd = targetCwd
-    if (!resumeSessionId || !canResume || !allowSession(resumeSessionId, targetCwd)) return openSession()
+    if (!resumeSessionId || !canResume) return openSession()
+    // An identity mismatch is not a recoverable history surface: the saved session
+    // belongs to a different project. This non-exact acquisition path may open an
+    // empty session at startup, switch or reload; exact switches never use it.
+    // Storage, flush and recovery failures below still fail closed.
+    if (memory.ready() && await memory.call('projectChanged', { args: [resumeSessionId, memoryProjectScope(targetCwd)] })) return openSession()
+    let response
     try {
-      const response = await live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: [] })
-      sessionId = resumeSessionId
-      prepareFresh()
-      return { ...infoFrom(response.configOptions), resumed: true }
+      // Loading native history sends no model request. Recovery needs this real, idle
+      // session before it can replace and durably flush its model-visible surface.
+      response = await live().resumeSession({ sessionId: resumeSessionId, cwd: targetCwd, mcpServers: [] })
     } catch (err) {
+      if (resumeReason(err) !== 'gone') throw err
       console.error('[acp-bridge] could not resume the saved session, starting a new one:', describeError(err))
       return openSession()
     }
+    if (!await allowHumanSession(resumeSessionId, targetCwd)) throw new Error(t('main.memory.context.stale'))
+    sessionId = resumeSessionId
+    prepareFresh()
+    return { ...infoFrom(response.configOptions), resumed: true }
   }
 
   /**
@@ -379,9 +383,11 @@ export function createAcpBridge({
    * screen without its session, nor puts a new one in its place.
    */
   async function switchExactly(targetSessionId: string, targetCwd: string, measure: ReturnType<typeof sessionTiming>) {
-    if (!allowSession(targetSessionId, targetCwd)) throw new ResumeError('gone', t('main.memory.context.stale'))
     const leaving = sessionId
-    if (targetSessionId === leaving) return { ...infoFrom(configNow ?? undefined), resumed: true }
+    if (targetSessionId === leaving) {
+      if (!await allowHumanSession(targetSessionId, targetCwd)) throw new ResumeError('unavailable', t('main.memory.context.stale'))
+      return { ...infoFrom(configNow ?? undefined), resumed: true }
+    }
     if (!canResume) throw new ResumeError('gone', t("session.resume.unsupported"))
     let response
     try {
@@ -392,6 +398,7 @@ export function createAcpBridge({
       console.error('[acp-bridge] could not resume the topic\'s session; staying where it was:', describeError(err))
       throw new ResumeError(resumeReason(err), describeError(err, stderrTail))
     }
+    if (!await allowHumanSession(targetSessionId, targetCwd)) throw new ResumeError('unavailable', t('main.memory.context.stale'))
     questions.declineAll()
     config?.closeAll()
     steering.closeAll()
@@ -428,6 +435,7 @@ export function createAcpBridge({
       })
       canResume = Boolean(init.agentCapabilities?.sessionCapabilities?.resume)
       seesImages = Boolean(init.agentCapabilities?.promptCapabilities?.image)
+      if (memoryRequired) await memory.waitReady()
       const info = await resumeOrOpen(resumeSessionId)
       prepareFresh()
       return info
@@ -442,8 +450,8 @@ export function createAcpBridge({
    * @param images pictures pasted with it, base64
    * @param request whether these are the user's words, a request of their own; a task's result coming back is not
    */
-  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart }: {
-    request?: boolean, userTurn?: boolean, onStart?: () => void,
+  async function prompt(text: string, images: Array<{ data: string, mimeType: string }> = [], { request = true, userTurn = request, onStart, sourceId, sourceText, held }: {
+    request?: boolean, userTurn?: boolean, onStart?: () => void, sourceId?: string, sourceText?: string, held?: () => boolean,
   } = {}) {
     // Mid-switch (or while one is prepared) it would go to the session about to be left, cut off when that closes.
     if (isSwitching()) throw new Error(switchingMessage())
@@ -452,15 +460,27 @@ export function createAcpBridge({
       return
     }
     const asked = sessionId
-    if (asked && !allowSession(asked)) throw new Error(t('main.memory.context.stale'))
+    if (asked && !await allowSession(asked)) {
+      // Only a new human request may ask the native adapter to replace stale generated
+      // context. Relayed task output and retries must retain their original provenance.
+      if (!request || !userTurn || isTask(asked) || !memory.ready()
+        || !await memory.call('recoverContext', { args: [asked] }) || !await allowSession(asked)) {
+        throw new Error(t('main.memory.context.stale'))
+      }
+    }
+    if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
+    if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
-    const words = request && asked ? asRequest(text, asked, 'prompt').text : text
+    const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, sourceText) : null
+    let words = routed?.text ?? text
+    if (asked && memory.ready()) words = (await memory.call('bindWireAlias', { args: [asked, sourceText ?? text, words, sourceId, routed?.spans] })).wireText
+    if (asked !== sessionId || isSwitching() || disposed) throw new Error(switchingMessage())
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
       ...(words ? [{ type: 'text' as const, text: words }] : []),
     ]
     await operations.run({
-      sessionId: asked, prompt: blocks, context, userTurn, onStart,
+      sessionId: asked, prompt: blocks, context, userTurn, held, onStart,
       prepare: asked ? () => routingDesk.bind(asked) : undefined,
       onEnd: (response, finalReply) => {
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
@@ -573,13 +593,14 @@ export function createAcpBridge({
     { ok: false, reason: string } | { ok: true, info: Awaited<ReturnType<typeof switchSession>> }
   > {
     return preparingSwitch(async () => {
-      if (sessionId && !allowSession(sessionId)) return { ok: false, reason: 'missing' }
+      if (sessionId && !await allowSession(sessionId)) return { ok: false, reason: 'missing' }
       const result = await forking.fork({ before, words, occurrence, cwd: targetCwd })
       if (!result.ok) return result
       const directory = targetCwd ?? sessionCwd
-      onSessionCreated?.(result.sessionId, directory, sessionId ?? undefined)
-      if (!allowSession(result.sessionId, directory)) return { ok: false, reason: 'missing' }
-      return { ok: true as const, info: await switchSession(result.sessionId, directory) }
+      await onSessionCreated?.(result.sessionId, directory, sessionId ?? undefined)
+      // A new fork can inherit a retired native surface. Resume it without
+      // sending, so the human-session admission can replace that surface.
+      return { ok: true as const, info: await switchSession(result.sessionId, directory, { exactly: true }) }
     })
   }
 
@@ -610,18 +631,40 @@ export function createAcpBridge({
    * The user's words into the running turn of the conversation on screen, marked as said mid-turn, a request of their
    * own; one that reached no turn fails, since the window asks the words anew.
    */
-  async function steer(text: string) {
+  async function steer(text: string, sourceId?: string, held: () => boolean = () => true, retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable') {
+    const retired = () => ({ ok: false as const, reason: retiredReason(), delivery: 'not-sent' as const })
+    if (!held()) return retired()
     if (!sessionId) return steering.steer(interjection(text))
     const asked = sessionId
-    if (!allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
-    const request = asRequest(text, asked, 'interjection')
-    const result = await steering.steer(interjection(request.text), asked, { fast: memory.ready() })
-    if (!result.ok) routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
-    return result
+    if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
+    if (!held()) return retired()
+    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
+    const request = asRequest(text, asked, 'interjection', sourceId)
+    const wrapped = interjection(request.text)
+    const prefixLength = wrapped.length - request.text.length
+    const spans = request.spans.map(({ start, end }) => ({ start: start + prefixLength, end: end + prefixLength }))
+    let dispatched = false
+    const undelivered = () => routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
+    try {
+      const wire = memory.ready() ? (await memory.call('bindWireAlias', { args: [asked, text, wrapped, sourceId, spans] })).wireText : wrapped
+      if (!held()) { undelivered(); return retired() }
+      if (asked !== sessionId || isSwitching() || disposed) { undelivered(); return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const } }
+      dispatched = true
+      const result = await steering.steer(wire, asked, { fast: memory.ready() })
+      if (!result.ok) undelivered()
+      return result
+    } catch (error) {
+      if (!dispatched) undelivered()
+      throw error
+    }
   }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
-  const deliverReport = (session: string, reportId: string, token: string, text: string) => allowSession(session)
-    ? steering.report(session, reportId, token, text) : Promise.resolve('unavailable' as const)
+  const deliverReport = async (session: string, reportId: string, token: string, text: string, held: () => boolean = () => true) => {
+    if (!await allowSession(session) || !held()) return 'unavailable' as const
+    if (memory.ready()) text = (await memory.call('bindWireAlias', { args: [session, text, text] })).wireText
+    if (!held() || session !== sessionId || isSwitching() || disposed) return 'unavailable' as const
+    return steering.report(session, reportId, token, text)
+  }
   /** How a background task's result stands in `session`: read, pending, or nowhere. */
   const reportStatus = (session: string, reportId: string, token: string) => steering.reportStatus(session, reportId, token)
   /** The main conversation's session, as dsh knows it; null while there is none. */
@@ -633,7 +676,7 @@ export function createAcpBridge({
   }
 
   /** @returns false when the question is no longer waiting; throws when the answer does not fit it */
-  const answerQuestion = (questionId: string, answers: unknown, operation?: string): boolean => questions.answer(questionId, answers, operation)
+  const answerQuestion = (questionId: string, answers: unknown, operation?: string): Promise<boolean> => questions.answer(questionId, answers, operation)
   /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
   const taskWaits = taskSessions.waits
   /**

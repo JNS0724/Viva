@@ -2,6 +2,7 @@ import { test, expect } from './fixtures.ts'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import type { JSHandle } from '@playwright/test'
 import { checkDeskSignals, checkIslandLayouts } from './island-layout.ts'
 import { checkDesktopDragRelease, checkDesktopHost } from './desktop-host.ts'
 import { checkDesktopRedesign } from './desktop-states.ts'
@@ -9,6 +10,7 @@ import { checkStreamingDrawer } from './drawer-interaction.ts'
 import { checkStreamingNavigation } from './ui-retention.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
+type DeskDraftFocusEvent = { at: number, event: string, focused: boolean, open: string | null, active: string | null }
 declare global { interface Window { vivaDraftAudit?: Array<{ key: string, version: number, sequence: number, epoch: number, owner: string, chars: number, files: number, images: number }> } }
 
 test('MCP import menu stays inside its sidebar and cancelling an edit restores the saved server', async ({ scenario }, info) => {
@@ -81,6 +83,26 @@ test('desktop drafts retain text, real images and files through collapse and win
   const run = await scenario({ phase: 'memory', bridge: 'real' })
   const session = await run.start('shared-draft')
   const { page } = session, desk = session.hooks.desk()
+  const nativeAudit = await session.application.evaluateHandle(({ app, BrowserWindow }) => {
+    const entries: Array<{ at: number, event: string, windowId: number, focusedWindowId: number | null, inputOpen: boolean | null }> = []
+    const remove: Array<() => void> = []
+    const watch = (window: ReturnType<typeof BrowserWindow.getAllWindows>[number]) => {
+      const record = (event: string) => entries.push({ at: Date.now(), event, windowId: window.id,
+        focusedWindowId: BrowserWindow.getFocusedWindow()?.id ?? null,
+        inputOpen: globalThis.vivaAutomation?.desk()?.inputOpen() ?? null })
+      const focus = () => record('focus'), blur = () => record('blur'), show = () => record('show'), hide = () => record('hide')
+      window.on('focus', focus); window.on('blur', blur); window.on('show', show); window.on('hide', hide)
+      remove.push(() => {
+        window.removeListener('focus', focus); window.removeListener('blur', blur)
+        window.removeListener('show', show); window.removeListener('hide', hide)
+      })
+    }
+    for (const window of BrowserWindow.getAllWindows()) watch(window)
+    const created = (_event: Electron.Event, window: ReturnType<typeof BrowserWindow.getAllWindows>[number]) => watch(window)
+    app.on('browser-window-created', created)
+    return { entries, dispose() { app.removeListener('browser-window-created', created); for (const stop of remove) stop() } }
+  })
+  let rendererAudit: JSHandle<{ entries: DeskDraftFocusEvent[], dispose(): void }> | undefined
   await page.evaluate(() => {
     window.vivaDraftAudit = []
     window.agent.onDraft(draft => window.vivaDraftAudit!.push({ key: draft.key, version: draft.version, sequence: draft.sequence, epoch: draft.epoch, owner: draft.owner, chars: draft.text.length, files: draft.files.length, images: draft.images.length }))
@@ -95,6 +117,19 @@ test('desktop drafts retain text, real images and files through collapse and win
     await desk.openInput()
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     let desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
+    rendererAudit = await desktop.evaluateHandle(() => {
+      const entries: DeskDraftFocusEvent[] = []
+      const record = (event: string) => entries.push({ at: Date.now(), event, focused: document.hasFocus(),
+        open: document.querySelector('.isl')?.getAttribute('data-open') ?? null,
+        active: document.activeElement?.getAttribute('class') ?? null })
+      const focus = () => record('focus'), blur = () => record('blur')
+      window.addEventListener('focus', focus); window.addEventListener('blur', blur)
+      const observer = new MutationObserver(() => record('data-open'))
+      const island = document.querySelector('.isl')
+      if (island) observer.observe(island, { attributes: true, attributeFilter: ['data-open'] })
+      record('installed')
+      return { entries, dispose() { observer.disconnect(); window.removeEventListener('focus', focus); window.removeEventListener('blur', blur) } }
+    })
     await expect(desktop.locator('.isl-field')).toHaveValue(text)
     const before = await desktop.locator('.isl-anchor').boundingBox()
     const surface = desktop.locator('.isl-surface')
@@ -120,9 +155,14 @@ test('desktop drafts retain text, real images and files through collapse and win
     expect(Math.abs(before!.x - folded!.x)).toBeLessThanOrEqual(1)
     expect(Math.abs(before!.y - folded!.y)).toBeLessThanOrEqual(1)
     await desktop.locator('.isl-anchor').click()
+    await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'true')
+    await expect(surface).toBeVisible()
+    await expect(desktop.locator('.isl-field')).toBeVisible()
     await expect(desktop.locator('.isl-field')).toHaveValue(text)
     await expect(desktop.locator('.isl-file')).toHaveCount(2)
     await desktop.screenshot({ path: info.outputPath('shared-desktop-draft.png') })
+    await expect(desktop.locator('.isl'), 'capturing the draft should leave its panel open').toHaveAttribute('data-open', 'true')
+    await expect(surface).toBeVisible()
     await desktop.getByRole('button', { name: '打开 Viva', exact: true }).click()
     await expect(page.locator('#composer-input')).toHaveValue(text)
     await expect(page.locator('.composer-shared-files .isl-file')).toHaveCount(1)
@@ -141,6 +181,13 @@ test('desktop drafts retain text, real images and files through collapse and win
     await expect(desktop.locator('.isl')).toHaveAttribute('data-open', 'false')
     await expect.poll(() => page.evaluate(async () => (await window.agent.getDraft()).text)).toBe('')
   } finally {
+    await info.attach('shared-draft-native-focus', { body: JSON.stringify(await nativeAudit.evaluate(audit => audit.entries), null, 2), contentType: 'application/json' })
+    await nativeAudit.evaluate(audit => audit.dispose()); await nativeAudit.dispose()
+    if (rendererAudit) {
+      const entries = await rendererAudit.evaluate(audit => { audit.dispose(); return audit.entries }).catch(error => ({ unavailable: String(error) }))
+      await info.attach('shared-draft-renderer-focus', { body: JSON.stringify(entries, null, 2), contentType: 'application/json' })
+      await rendererAudit.dispose()
+    }
     await info.attach('shared-draft-events', { body: JSON.stringify(await page.evaluate(() => window.vivaDraftAudit), null, 2), contentType: 'application/json' })
     await desk.force(false)
   }
@@ -234,7 +281,7 @@ test('desktop island preserves draft and focus while showing requests and compac
   await checkDesktopRedesign(session, info, file)
 })
 
-test('desktop portrait releases without undoing the drag or opening the panel', async ({ scenario }) => {
+test('desktop portrait releases without undoing the drag or opening the panel', async ({ scenario }, info) => {
   test.skip(process.platform !== 'darwin' && process.platform !== 'win32', 'Uses the fixed desktop host')
   const run = await scenario({ phase: 'setup', bridge: 'real' })
   const session = await run.start('desktop-gesture')
@@ -243,7 +290,7 @@ test('desktop portrait releases without undoing the drag or opening the panel', 
   try {
     await expect.poll(() => session.application.windows().some(window => window.url().endsWith('/desk.html'))).toBe(true)
     const desktop = session.application.windows().find(window => window.url().endsWith('/desk.html'))!
-    await checkDesktopDragRelease(session.application, desktop)
+    await checkDesktopDragRelease(session.application, desktop, info)
   } finally { await desk.force(false) }
 })
 

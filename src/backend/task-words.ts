@@ -84,14 +84,14 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
   }
 
   /** A task this launch holds, from what it had said (none for a new one). */
-  function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown }> = []) {
+  function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown, sourceId?: unknown }> = []) {
     transcripts.set(taskId, fromSaved(before))
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
-  function userSaid(taskId: string, words: string) {
+  function userSaid(taskId: string, words: string, key?: string) {
     const transcript = transcripts.get(taskId)
-    if (transcript) change(taskId, said(transcript, words))
+    if (transcript) change(taskId, said(transcript, words, key))
   }
 
   /**
@@ -132,13 +132,13 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
    * About to answer a question: what was asked is taken now, because dsh closes the question (task_question_closed)
    * while it takes the answer. Returns how to keep the reply once dsh accepted it; null for a question of no task held.
    */
-  function holdQuestion(questionId: string): ((raw: unknown) => void) | null {
+  function holdQuestion(questionId: string): ((raw: unknown, sourceIds?: Readonly<Record<string, string>>) => void) | null {
     const asked = questions.get(questionId)
     if (!asked) return null
-    return (raw) => {
+    return (raw, sourceIds) => {
       questions.delete(questionId)
       const transcript = transcripts.get(asked.taskId)
-      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw)))
+      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw), sourceIds))
     }
   }
 
@@ -162,8 +162,8 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
    */
   const current = (taskId: string) => {
     const transcript = transcripts.get(taskId)
-    return transcript ? transcript.map(({ role, text, open, streamKey, blocks }) => ({
-      role, text, ...(open ? { open: true } : {}), ...(streamKey ? { streamKey, ...(blocks ? { blocks } : {}) } : {}),
+    return transcript ? transcript.map(({ role, text, open, streamKey, blocks, sourceId }) => ({
+      role, text, ...(sourceId ? { sourceId } : {}), ...(open ? { open: true } : {}), ...(streamKey ? { streamKey, ...(blocks ? { blocks } : {}) } : {}),
     })) : null
   }
 
