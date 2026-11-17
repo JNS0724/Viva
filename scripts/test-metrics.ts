@@ -37,7 +37,7 @@ export function createTestMetrics(root: string, platform = process.platform) {
     return current
   }
   function record(filePath: string, name: string, outcome: MetricCase['outcome'], durationMs: number) {
-    if (path.resolve(name) === filePath) return
+    if (path.resolve(name) === path.resolve(filePath)) return
     const current = fileFor(filePath)
     current.caseDurationMs += durationMs
     current.cases.push({ name, outcome, durationMs })

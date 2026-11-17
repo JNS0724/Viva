@@ -11,11 +11,14 @@
 | 运行 | Windows headless job | Windows Node runner | 结果 |
 | --- | ---: | ---: | --- |
 | [`c3224d7` 主线](https://github.com/JNS0724/Viva/actions/runs/44004336689) | 688 秒 | 约 613 秒 | 成功，但接近 15 分钟上限 |
-| [`a134bac` 同机分片](https://github.com/JNS0724/Viva/actions/runs/44117048557) | 724 秒 | 622.4 秒 | 测试执行结束；metrics 路径断言失败 |
+| [`a134bac` 同机分片](https://github.com/JNS0724/Viva/actions/runs/44117048557) | 724 秒 | 622.4 秒 | 测试执行结束；metrics 断言失败 |
+| [`175b262` 恢复原文件](https://github.com/JNS0724/Viva/actions/runs/44122992424) | 831 秒 | 741.9 秒 | 两个功能场景超时；metrics 断言失败 |
 
-同机分片没有缩短 Windows 关键路径，反而增加约 36 秒 job 耗时。单次运行不能用于计算 p95，但已经足以否定“继续在同一 runner 上细拆重型文件”这一主要方向。
+只比较后两次，分片少约 120 秒；但与更早的 613 秒基线相比又没有净收益。逐场景日志还显示，同一 case 在恢复原文件后会慢 5–26 秒，并出现 45 秒 DSH 场景和 15 秒 owner lock 超时。说明 runner 波动与资源竞争足以抵消理论并发收益，不能根据单次总时长声称分片有效或无效。
 
-独立 UI job 的结果不同：[run 44112795498](https://github.com/JNS0724/Viva/actions/runs/44112795498) 中，macOS memory integration 从主线 374 秒降为 169 秒。有效的是把已有独立场景交给独立 runner，不是增加同一进程内的文件数量。
+因此不再把同机分片作为默认优化方向：它的收益不稳定，且长期增加初始化与维护成本。恢复原文件是为了降低复杂度和获得可审查基线，不代表恢复原文件能够提速。
+
+独立 UI job 的一次结果较好：[run 44112795498](https://github.com/JNS0724/Viva/actions/runs/44112795498) 中，macOS memory integration 从主线 374 秒降为 169 秒。但后续运行也出现过取消，仍需至少三次成功结果验证，不能由一次运行推广结论。
 
 两轮临时目录改造还暴露了资源生命周期顺序问题：`scratch` 的目录删除 hook 先于 `startHarness` 的 DSH 关闭 hook 执行。虽然后续已修正顺序，但没有证据表明目录改造本身带来收益，因此不再保留这项风险和复杂度。
 
@@ -24,8 +27,8 @@
 | 前阶段改动 | 决定 | 理由 |
 | --- | --- | --- |
 | metrics、JSON artifact、慢文件摘要 | 保留并修正 | 能定位真实成本；需统一 Windows 路径并排除文件级 runner 事件 |
-| interaction、memory、schedules-lifecycle 独立 UI job | 保留 | 已有独立应用实例，实测缩短 memory 关键路径 |
-| `memory-handoff`、`memory-file-host`、`memory-document-store` 同机分片 | 撤回 | 没有墙钟收益，增加初始化与维护成本 |
+| interaction、memory、schedules-lifecycle 独立 UI job | 保留 | 场景已有独立应用实例，但仍需重复验证收益 |
+| `memory-handoff`、`memory-file-host`、`memory-document-store` 同机分片 | 撤回 | 收益易被资源竞争抵消，增加初始化与维护成本 |
 | 文件级临时目录容器和统一 `scratch` 改造 | 撤回 | 无实测收益，曾破坏资源关闭顺序 |
 | 删除无生产消费者的通用 memory client/service 协议 | 作为独立架构清理保留 | 减少无用代码，但不计为测试提速收益 |
 | 文档清理和评审报告 | 保留 | 与 CI 性能收益分开记录 |

@@ -11,11 +11,14 @@ Initial draft: 2026-11-17. Reassessed: 2026-11-18. This document replaces the pr
 | Run | Windows headless job | Windows Node runner | Result |
 | --- | ---: | ---: | --- |
 | [`c3224d7` on main](https://github.com/JNS0724/Viva/actions/runs/44004336689) | 688s | about 613s | Passed, but close to the 15-minute limit |
-| [`a134bac` with same-runner splitting](https://github.com/JNS0724/Viva/actions/runs/44117048557) | 724s | 622.4s | Tests finished; a metrics path assertion failed |
+| [`a134bac` with same-runner splitting](https://github.com/JNS0724/Viva/actions/runs/44117048557) | 724s | 622.4s | Tests finished; a metrics assertion failed |
+| [`175b262` with restored files](https://github.com/JNS0724/Viva/actions/runs/44122992424) | 831s | 741.9s | Two functional scenarios timed out; a metrics assertion failed |
 
-Same-runner splitting did not shorten the Windows critical path and added about 36 seconds to the job. One run is insufficient for p95, but it is enough to reject further fine-grained splitting on the same runner as the main direction.
+Comparing only the latter two runs, splitting saved about 120 seconds; compared with the earlier 613-second baseline, it produced no net gain. Per-scenario logs also show identical cases taking 5–26 seconds longer after restoring the files, including a 45-second DSH timeout and a 15-second owner-lock timeout. Runner variance and resource contention can offset theoretical concurrency gains, so one total duration cannot prove splitting either effective or ineffective.
 
-Independent UI jobs behaved differently: in [run 44112795498](https://github.com/JNS0724/Viva/actions/runs/44112795498), macOS memory integration fell from 374 seconds on main to 169 seconds. Assigning existing independent scenarios to independent runners worked; increasing file count within one test process did not.
+Same-runner splitting is therefore no longer a default optimization: its benefit is unstable and it adds lasting initialization and maintenance costs. Restoring the original files reduces complexity and provides a reviewable baseline; it is not a performance improvement itself.
+
+One independent UI result was better: in [run 44112795498](https://github.com/JNS0724/Viva/actions/runs/44112795498), macOS memory integration fell from 374 seconds on main to 169 seconds. A later run was cancelled, however, so at least three successful results are still required before generalizing that outcome.
 
 The two temporary-directory attempts also exposed a resource-lifecycle ordering bug: the `scratch` deletion hook ran before the `startHarness` DSH-close hook. Although that ordering was subsequently corrected, there is no evidence that the directory redesign itself produced a benefit, so its risk and complexity are not retained.
 
@@ -24,8 +27,8 @@ The two temporary-directory attempts also exposed a resource-lifecycle ordering 
 | Earlier change | Decision | Reason |
 | --- | --- | --- |
 | Metrics, JSON artifacts, and slow-file summaries | Keep and correct | They identify real costs; normalize Windows paths and exclude file-level runner events |
-| Independent interaction, memory, and schedules-lifecycle UI jobs | Keep | Existing independent application instances produced a shorter memory critical path |
-| Same-runner splitting of `memory-handoff`, `memory-file-host`, and `memory-document-store` | Revert | No wall-time benefit, with additional initialization and maintenance costs |
+| Independent interaction, memory, and schedules-lifecycle UI jobs | Keep | Scenarios already use independent application instances, but the benefit still needs repeated verification |
+| Same-runner splitting of `memory-handoff`, `memory-file-host`, and `memory-document-store` | Revert | Gains are easily offset by resource contention, with additional initialization and maintenance costs |
 | File-level temporary containers and shared `scratch` redesign | Revert | No measured benefit and a previous resource-ordering regression |
 | Removal of the generic memory client/service protocol with no production consumer | Keep as independent architecture cleanup | It removes dead code but is not counted as test acceleration |
 | Documentation cleanup and review reports | Keep | Recorded separately from CI performance claims |
