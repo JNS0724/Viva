@@ -7,8 +7,34 @@ import os from 'node:os'
 import path from 'node:path'
 import { assembleMemoryPlugin, buildMemoryPlugin } from '../scripts/build-memory-plugin.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
+import { runOfflineNpm } from './fixtures/offline-npm.ts'
+import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
+
+test('offline npm failures retain stages and error codes without exposing raw configuration', t => {
+  const dir = scratch(t)
+  mkdirSync(path.join(dir, 'cache/_logs'), { recursive: true })
+  writeFileSync(path.join(dir, 'cache/_logs', 'z-prior-pack-debug-0.log'), '0 timing reify:unpack Completed in 99999ms\n')
+  assert.throws(() => runOfflineNpm({ node: process.execPath, cli: fileURLToPath(new URL('./fixtures/offline-npm-failure.ts', import.meta.url)),
+    command: 'install', args: [], cwd: dir, cache: path.join(dir, 'cache') }), (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /npm install failed.*status=7/u)
+    assert.match(error.message, /timing reify:unpack 17ms/u)
+    assert.match(error.message, /silly idealTree/u)
+    assert.match(error.message, /npm error EOFFLINE/u)
+    assert.ok(!error.message.includes('PRIVATE_NPM_CONFIG_MUST_NOT_APPEAR'))
+    assert.ok(!error.message.includes('private/location'))
+    assert.ok(!error.message.includes('99999ms'), 'the previous pack must not be reported as the failed install')
+    return true
+  })
+})
+
+test('offline npm remains bounded and reports the actual timeout without retrying', t => {
+  const dir = scratch(t)
+  assert.throws(() => runOfflineNpm({ node: process.execPath, cli: fileURLToPath(new URL('./fixtures/offline-npm-failure.ts', import.meta.url)),
+    command: 'install', args: ['hang'], cwd: dir, cache: path.join(dir, 'cache'), timeoutMs: 250 }), /code=ETIMEDOUT/u)
+})
 
 function scratch(t: test.TestContext) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'viva-memory-package-'))
@@ -49,11 +75,9 @@ test('npm-packed JS artifact installs offline and its Node API works without the
   if (!npm || !existsSync(npm)) throw new Error('Run the package acceptance test through npm')
   const node = process.env.npm_node_execpath ?? process.execPath
   const cache = path.join(dir, 'npm-cache')
-  const npmRun = (args: string[], cwd = dir) => execFileSync(node, [realpathSync(npm), ...args, '--cache', cache], {
-    cwd, encoding: 'utf8', timeout: 60_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  const npmRun = (command: 'pack' | 'install', args: string[], cwd = dir) => runOfflineNpm({ node, cli: realpathSync(npm), command, args, cwd, cache })
   const pack = (source: string) => {
-    const output: unknown = JSON.parse(npmRun(['pack', source, '--offline', '--ignore-scripts', '--json', '--pack-destination', dir]))
+    const output: unknown = JSON.parse(npmRun('pack', [source, '--offline', '--ignore-scripts', '--json', '--pack-destination', dir]))
     assert.ok(Array.isArray(output) && output.length === 1)
     const item: unknown = output[0]
     assert.ok(item && typeof item === 'object' && 'filename' in item && typeof item.filename === 'string')
@@ -64,7 +88,7 @@ test('npm-packed JS artifact installs offline and its Node API works without the
   const clean = path.join(dir, 'clean-project')
   mkdirSync(clean)
   writeFileSync(path.join(clean, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
-  npmRun(['install', tarball, ...libraries, '--offline', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--package-lock=false'], clean)
+  npmRun('install', [tarball, ...libraries, '--offline', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--package-lock=false'], clean)
   // Hide the build output: execution must resolve the installed tarball's own JS and dependencies.
   rmSync(artifact, { recursive: true })
   rmSync(path.join(dir, 'compiled'), { recursive: true })
