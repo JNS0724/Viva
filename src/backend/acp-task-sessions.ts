@@ -1,6 +1,7 @@
 import type { ClientSideConnection, NewSessionResponse, ResumeSessionResponse, SessionConfigOption } from '@agentclientprotocol/sdk'
 import type { AcpOperations } from './acp-operations.ts'
 import type { SteerResult } from '../shared/agent-info.ts'
+import { emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
 
 type Choice = { id: string } & ({ type: 'select', currentValue: string } | { type: 'boolean', currentValue: boolean })
 interface Attachment { attached: boolean, unattended: boolean, config: readonly Choice[] | null }
@@ -37,9 +38,9 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     if (existing) return existing
     const close = (async () => {
       try { await before() }
-      catch (error) { console.error('[acp-bridge] task wait cleanup failed:', describeError(error)) }
-      try { await connection().closeSession({ sessionId: id }) }
-      catch (error) { console.error('[acp-bridge] closing a task failed:', describeError(error)) }
+      catch (error) { emitDiagnosticFailure('task', error, { stage: 'draining', identities: { sessionId: id } }) }
+      try { await withOperation('task', () => connection().closeSession({ sessionId: id }), { stage: 'closed', identities: { sessionId: id } }) }
+      catch (error) { emitDiagnosticFailure('task', error, { stage: 'closed', identities: { sessionId: id } }) }
     })()
     retiring.set(id, close)
     void close.finally(() => { if (retiring.get(id) === close) retiring.delete(id) }).catch(() => {})
@@ -58,7 +59,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     try {
       await retiring.get(taskId)
       if (!current(taskId, attachment)) return { ok: false, reason: 'unavailable' }
-      const response = await acquire.resume(taskId, cwd)
+      const response = await withOperation('task', () => acquire.resume(taskId, cwd), { stage: 'recovering', identities: { sessionId: taskId } })
       if (!current(taskId, attachment)) { await release(taskId, attachment); return { ok: false, reason: 'unavailable' } }
       attachment.config = choices(response.configOptions) ?? source
       attachment.attached = true
@@ -68,7 +69,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
         if (previous?.attached) sessions.set(taskId, previous)
         else { sessions.delete(taskId); await closeNative(taskId) }
       }
-      if (!disposed) console.error('[acp-bridge] could not take up the task again:', describeError(error))
+      if (!disposed) emitDiagnosticFailure('task', error, { stage: 'recovering', identities: { sessionId: taskId } })
       return { ok: false, reason: 'missing' }
     }
   }
@@ -91,7 +92,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
     if (disposed || !origin.sessionId) return { ok: false, reason: 'missing' }
     let acquired: { id: string, attachment: Attachment } | null = null
     try {
-      const response = await acquire.fresh(cwd ?? origin.cwd)
+      const response = await withOperation('task', () => acquire.fresh(cwd ?? origin.cwd), { stage: 'connecting' })
       const attachment: Attachment = { attached: true, unattended: false, config: choices(response.configOptions) ?? [] }
       acquired = { id: response.sessionId, attachment }
       if (disposed) { await release(acquired.id, attachment); return { ok: false, reason: 'unavailable' } }
@@ -101,7 +102,7 @@ export function createAcpTaskSessions({ connection, acquire, foreground, canResu
       return { ok: true, taskId: acquired.id, attachment: acquired.attachment }
     } catch (error) {
       if (acquired) await release(acquired.id, acquired.attachment)
-      if (!disposed) console.error('[acp-bridge] could not start a task:', describeError(error))
+      if (!disposed) emitDiagnosticFailure('task', error, { stage: 'connecting' })
       return { ok: false, reason: 'missing' }
     }
   }

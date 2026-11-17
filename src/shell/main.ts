@@ -26,7 +26,7 @@ import { devIcon, windowChrome, windowSize } from './window-options.ts'
 import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
 import { createDiagnosticClearer } from '../diagnostics/node/clear.ts'
-import { emitDiagnostic, inDiagnosticContext, installDiagnosticPort } from '../diagnostics/node/context.ts'
+import { emitDiagnostic, emitDiagnosticFailure, inDiagnosticContext, installDiagnosticPort, withOperation } from '../diagnostics/node/context.ts'
 import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { createDiagnosticExporter } from '../diagnostics/node/export.ts'
 import { registerDiagnosticIpc } from './diagnostics-ipc.ts'
@@ -295,7 +295,8 @@ const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
 function runHostCall(call: HostCall): unknown {
   const handler = Object.hasOwn(HOST, call.method) ? HOST[call.method] : undefined
   if (!handler) throw new Error(`no host call ${String(call.method)}`)
-  return handler(...call.args)
+  return call.method === 'window.send' ? handler(...call.args)
+    : withOperation('ipc', () => handler(...call.args), { identities: { requestId: call.n, methodId: call.method } })
 }
 
 /** The backend kept crashing: without it there is nothing the window can do. */
@@ -389,7 +390,7 @@ async function setShellPreference<K extends keyof ShellPreferences>(key: K, valu
   return (await backendConnection()).control('preferences-set', key, value)
 }
 
-const logged = (what: string) => (err: Error) => console.error(`[desk] ${what}:`, err.message)
+const logged = (what: string) => (err: Error) => emitDiagnosticFailure('window', err, { identities: { methodId: what } })
 
 /** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
 function registerShortcut() {
@@ -522,6 +523,7 @@ function useDevIcon() {
 }
 
 function createWindow() {
+  emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'start' })
   const icon = useDevIcon()
   const created = new BrowserWindow({
     ...windowSize(screen.getPrimaryDisplay().workAreaSize),
@@ -541,13 +543,15 @@ function createWindow() {
   win = created
   attachDeskIsland(created)
   created.once('ready-to-show', () => {
+    emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'ready' })
     if (!startedHidden || automationMode) return created.show()
     // Started with the computer: in the tray, the island on the desktop, until the user opens it.
     showTray()
     desk?.setAway(true)
   })
   // Coming back to the window is one of the user's gaps.
-  created.on('focus', () => tellBackend('signal', { kind: 'window.foreground' }))
+  created.on('focus', () => { emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'received' }); tellBackend('signal', { kind: 'window.foreground' }) })
+  created.on('closed', () => emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'closed' }))
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

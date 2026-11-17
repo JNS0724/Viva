@@ -1,4 +1,5 @@
 import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
+import { emitDiagnostic, emitDiagnosticFailure } from '../diagnostics/node/context.ts'
 import { createConversationSession } from './conversation-session.ts'
 import { createForegroundRequests, ForegroundRequestRetired } from './foreground-requests.ts'
 import { sameContext } from '../shared/conversation-context.ts'
@@ -208,7 +209,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
     } catch (error) {
       // A failed receipt stays pending. It cannot prevent cancellation or release.
-      console.error('[prompts] could not persist delivery retirement:', error instanceof Error ? error.message : String(error))
+      emitDiagnosticFailure('conversation.send', error, { stage: 'checkpoint' })
     } finally { foregroundRequests.invalidate() }
   }
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
@@ -239,7 +240,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const taskSignals = createTaskSignals({
     signal: (input) => signal(input),
     receive: (event) => taskRuntime?.dsh.receive(event),
-    onError: (err) => console.error('[tasks] could not record what a task reported; it goes on all the same:', err instanceof Error ? err.message : String(err)),
+    onError: (err) => emitDiagnosticFailure('task.report', err, { stage: 'checkpoint' }),
   })
 
   /** Scheduled runs have their own events, separate from background tasks. */
@@ -308,7 +309,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
       catch (error) {
         if (error instanceof PendingNativePublication) throw error
-        console.warn('[memory] Native session cleanup remains pending')
+        emitDiagnostic({ event: 'operation.progress', operation: 'memory.forget', stage: 'waiting', reason: 'cleanup_pending' })
       }
     },
     create: ({ config, cwd }: DshContext, lifetime) => {
@@ -347,14 +348,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     },
     onCrash: ({ message }, delay) => {
       turn = { active: false, startedAt: 0 }
-      console.error('[dsh] exited unexpectedly:', message)
+      emitDiagnosticFailure('process', message, { stage: 'closed' })
       emitToRenderer({ type: 'error', message: delay === null
         ? t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message })
         : t("main.main.the.assistant.exited.unexpectedly.reconnecting.in.seconds", { value1: Math.round(delay / 1000) }) })
     },
     restart: async (): Promise<unknown> => startBridge(),
     onRestartError: error => {
-      console.error('[dsh] could not restart:', error)
+      emitDiagnosticFailure('process', error, { stage: 'recovering' })
       emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: error instanceof Error ? error.message : String(error) }) })
     },
   })
@@ -477,7 +478,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
         memory: { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime'), dailyNotes } })
       pluginProblems = problems
-      problems.forEach(({ name, problem }) => console.error(`[plugins] ${name} left out: ${problem}`))
+      problems.forEach(({ name }) => emitDiagnostic({ event: 'operation.progress', operation: 'plugin', stage: 'unavailable', reason: 'validation_failed', identities: { resourceId: name } }))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
       const dir = ensureDshProfile({
         dshHome: dshHomeOf(config), profile: DSH_PROFILE, plugins, persona: PERSONA, models: profileModels(config), imagesDir: imagesDir(), pnpmCommand, registry,
@@ -489,7 +490,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       pluginPnpm = found ? { call: pnpmCallFor(pnpmCommand, dir, registry, found), registry } : null
       return { profile: DSH_PROFILE, overlay: vivaLayerFile(dshHomeOf(config)), launch: launch() }
     } catch (err: any) {
-      console.error('[plugins] could not prepare the dsh profile, starting without the app plugins:', err.message)
+      emitDiagnosticFailure('plugin', err, { stage: 'unavailable' })
       pluginPnpm = null
       // dsh's stock profile knows no company registry: its plugin manager would install from the public ones.
       if (registry) refuse()
@@ -515,7 +516,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     try {
       return pnpmScopes({ command: pnpmCommand ?? 'pnpm', cwd: dir, env: process.env })
     } catch (err: any) {
-      console.error('[plugins] could not read the scoped registries pnpm knows, so no plugin is installed until it can:', err.message)
+      emitDiagnosticFailure('plugin', err, { stage: 'unavailable' })
       return null
     }
   }
@@ -550,7 +551,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const memoryHostRecovery = createMemoryHostRecovery({
     state: () => dsh.current?.memory.state(),
     recover: async () => { await memoryWithdrawal.recover(); await memoryHostEffects?.recover() },
-    onError: error => console.error('[memory] recovery pending', error),
+    onError: error => emitDiagnosticFailure('memory.recover', error, { stage: 'waiting' }),
   })
   const recoverMemoryHost = () => { void memoryHostRecovery.notify() }
 
@@ -598,7 +599,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           const kept = new Set(accepted.map(({ output }) => output.key))
           return outputs.filter(output => !output.blocks.length || kept.has(output.key))
         } catch (error) {
-          console.warn('[memory] Could not authenticate generated output:', error instanceof Error ? error.message : 'unknown error')
+          emitDiagnosticFailure('memory.intake', error, { stage: 'checkpoint' })
           return []
         }
       },
@@ -693,7 +694,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           try {
             return event.type === 'report_written' ? records.written(queued) : records.read(queued)
           } catch (err) {
-            console.error('[reports]', err instanceof Error ? err.message : String(err))
+            emitDiagnosticFailure('task.report', err)
             return wakeEffects()
           }
         }
@@ -768,7 +769,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const failed = requests.endTurn({ sessionId, reason })
       if (failed.length && reason !== 'cancelled') emitToRenderer({ type: 'error', message: t('main.requests.not.routed'), context: sessions.context() })
     } catch (err) {
-      console.error('[requests] could not end the turn\'s requests:', err instanceof Error ? err.message : String(err))
+      emitDiagnosticFailure('task.route', err, { stage: 'settled' })
     }
   }
 
@@ -821,7 +822,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       try {
         records.read(effect)
       } catch (err) {
-        console.error('[reports] could not keep a report\'s record:', err instanceof Error ? err.message : String(err))
+        emitDiagnosticFailure('task.report', err, { stage: 'checkpoint' })
         throw err
       }
     },
@@ -897,7 +898,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const started = await dsh.start({ config, ...context })
       return started ? lastInfo : null
     } catch (err) {
-      console.error('[main] failed to start agent bridge:', err)
+      emitDiagnosticFailure('startup', err)
       emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: err instanceof Error ? err.message : String(err) }) })
       return null
     }
@@ -1420,9 +1421,9 @@ ${question}` : question
     try {
       traceDb = openTraceDb({ file: path.join(userData, 'trace.db') })
     } catch (err: any) {
-      console.error('[trace] could not open trace.db; reopened conversations fall back to dsh logs:', err.message)
+      emitDiagnosticFailure('storage', err, { stage: 'recovering' })
     }
-    mcpStore = createMcpConfigStore({ file: path.join(userData, 'mcp-servers.json'), crypto: host.secrets, onError: (err) => console.error('[mcp]', err.message) })
+    mcpStore = createMcpConfigStore({ file: path.join(userData, 'mcp-servers.json'), crypto: host.secrets, onError: (err) => emitDiagnosticFailure('mcp', err) })
     personal = createPersonal({ historyDb, mcpStore })
     registerPersonalIpc(config)
     const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
@@ -1446,7 +1447,7 @@ ${question}` : question
         feedChanged()
       },
       changed: schedulesChanged,
-      onError: (err) => console.error('[schedules]', err instanceof Error ? err.message : String(err)),
+      onError: (err) => emitDiagnosticFailure('schedule', err),
     })
     ipcMain.handle('schedules:list', () => schedules?.list() ?? [])
     ipcMain.handle('schedules:accept', (_event, proposalId, edits) => requireSchedules().accept(String(proposalId), edits ?? undefined))
@@ -1548,8 +1549,8 @@ ${question}` : question
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
     // runtime writes them, each change with its event (task.started, task.ended, …).
     taskStore = createTaskStore({ db: appDb.db, retainedReply: historyDb.retainedReply,
-      onError: (err) => console.error('[tasks]', err.message) })
-    effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => console.error('[effects]', err instanceof Error ? err.message : String(err)) })
+      onError: (err) => emitDiagnosticFailure('task', err) })
+    effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => emitDiagnosticFailure('effects', err) })
     memoryWithdrawal.register()
     memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
       eraseFileHistory: historyDb.eraseFileRanges,
@@ -1646,7 +1647,7 @@ ${question}` : question
       },
     })
     const recovered = requests.recover()
-    if (recovered.uncertain) console.error(`[requests] ${recovered.uncertain} task action(s) were left without a receipt when Viva stopped; they are not done again`)
+    if (recovered.uncertain) emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'recovering', metrics: { pendingCount: recovered.uncertain } })
   }
 
   /** Opens the stores and registers the backend's channels, before the window loads. */

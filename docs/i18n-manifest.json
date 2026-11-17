@@ -107,8 +107,8 @@
     {
       "en": "docs/logging-design.md",
       "zh": "docs/logging-design.zh-CN.md",
-      "enHash": "43b401b849f0e94efda03de63f9cb569d1bda620d2aff382ef726ba6b002b53b",
-      "zhHash": "8e009c7383d3e4fc2a55280e9e8c520a8e401f2cb87fe5ab3a0fd0abe2204f39"
+      "enHash": "b88a7f8eb0a0fcdc6246655ef7d034368d71444746f962f336cc4d8cd05922b6",
+      "zhHash": "63a30bc5fe1c5c862aa9e354964349a62b529028e0d9899b5fd6caedf308cb39"
     }
   ],
   "bilingual": [
@@ -150,6 +150,11 @@
       "path": "docs/qa-logging-l1c-implementation-20261118.zh-CN.md",
       "locale": "zh-CN",
       "sha256": "0f5b7e33c5e63d25b2dce805e7bd7210fd58f9e0ca311d13b7b2b6792f332e7c"
+    },
+    {
+      "path": "docs/qa-logging-l2-implementation-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "5502e567a3656c0219a42021284015d3283e631e4532c9b2d21a408cea16c417"
     }
   ]
 }

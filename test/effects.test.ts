@@ -5,6 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { createEffects, RETRY_MS, type Effect, type Outcome } from '../src/backend/effects.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 /**
  * The effects queue (system-design §11.4) on a real app database: queued with the change that calls for it, run after,
@@ -34,6 +36,33 @@ function runner(answer: (effect: Effect) => Outcome) {
   }
   return { run, seen }
 }
+
+test('effect retry diagnostics follow the committed generation and cannot announce a rolled-back or superseded retry', async t => {
+  const { app } = setup(t)
+  let now = 1000, refusing = true
+  const events: DiagnosticEvent[] = []
+  t.after(installDiagnosticPort({ emit(event) { events.push(event); return undefined } }))
+  const effects = createEffects({ db: app.db, now: () => now, later: () => null, cancel: () => {},
+    apply: (_kind, _data, work) => { if (refusing) throw new Error('SECRET_STORAGE_ERROR'); return { value: transaction(app.db, work) } } })
+  t.after(() => effects.close())
+  effects.queue('report', 'task:run', { text: 'SECRET_EFFECT_PAYLOAD' })
+  effects.runs('report', runner(() => 'retry').run)
+  await effects.wake()
+  assert.equal(events.filter(event => event.event === 'retry.scheduled').length, 0)
+  assert.equal(effects.get('report', 'task:run')?.attempts, 0)
+  refusing = false; now += 10_000; await effects.wake()
+  assert.equal(events.filter(event => event.event === 'retry.scheduled').length, 1)
+  assert.equal(events.find(event => event.event === 'retry.scheduled')?.metrics?.attempt, 1)
+  now += RETRY_MS[0]
+  effects.runs('report', async batch => {
+    effects.queue('report', 'task:run', { text: 'replacement' })
+    return new Map(batch.map(effect => [effect.key, 'retry' as const]))
+  })
+  await effects.wake()
+  assert.equal(events.filter(event => event.event === 'retry.scheduled').length, 1)
+  assert.equal(effects.get('report', 'task:run')?.attempts, 0)
+  assert.doesNotMatch(JSON.stringify(events), /SECRET_/)
+})
 
 test('an effect is queued with its change: undone with it, kept with it', (t) => {
   const { app, effects } = setup(t)

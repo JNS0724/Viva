@@ -7,8 +7,10 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { createNativeOutputJournal } from '../src/memory/node/native-output-journal.ts'
 import { scratch } from './fixtures/scratch.js'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+import type { MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 
-function fixture(t: import('node:test').TestContext, hostNamespace?: string, options: Pick<Parameters<typeof openMemoryOwner>[0], 'dailyNotes'> = {}) {
+function fixture(t: import('node:test').TestContext, hostNamespace?: string, options: Pick<Parameters<typeof openMemoryOwner>[0], 'dailyNotes' | 'diagnostics'> = {}) {
   const { dir: root, defer } = scratch(t, 'memory-owner-')
   const owner = openMemoryOwner({ root, hostNamespace, ...options, compute: () => null, route: () => null, quiesce: async () => {} })
   defer(() => owner.close())
@@ -17,6 +19,46 @@ function fixture(t: import('node:test').TestContext, hostNamespace?: string, opt
 const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>['receiveSource']>[0]> = {}) => ({
   sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1,
   admitted: true, inherited: false, ...overrides,
+})
+
+test('owner diagnostics preserve durable write, replay, undo and pending erasure receipts without copying memory text', async t => {
+  const events: DiagnosticEvent[] = []
+  const { owner } = fixture(t, 'viva', { diagnostics: { emit(event) { events.push(event); return undefined } } })
+  await owner.recover()
+  const create = { operationId: randomUUID(), text: 'PRIVATE_MEMORY_BODY 提交周报。', title: 'PRIVATE_MEMORY_TITLE' }
+  const first = await owner.handleHost('createFile', { args: [create] }) as MemoryFileMutationResult
+  assert.deepEqual(await owner.handleHost('createFile', { args: [create] }), first)
+  assert.equal(events.filter(event => event.stage === 'applied' && event.identities?.requestId === create.operationId).length, 1)
+  assert.ok(events.some(event => event.reason === 'idempotent' && event.identities?.requestId === create.operationId))
+  const detail = owner.runtime.readFile(first.identity)!
+  const edit = { operationId: randomUUID(), identity: first.identity, version: detail.version, text: 'PRIVATE_REPLACEMENT_BODY 改成周一。' }
+  await owner.handleHost('editFile', { args: [edit] })
+  const edited = owner.runtime.readFile(first.identity)!
+  const undo = { operationId: randomUUID(), identity: first.identity, version: edited.version, changeId: edit.operationId }
+  await owner.handleHost('undoFile', { args: [undo] })
+  assert.ok(events.some(event => event.operation === 'memory.undo' && event.stage === 'applied' && event.identities?.requestId === undo.operationId))
+  const failed = { ...edit, operationId: randomUUID() }
+  await assert.rejects(owner.handleHost('editFile', { args: [failed] }), { code: 'revision.conflict' })
+  assert.equal(events.some(event => event.stage === 'applied' && event.identities?.requestId === failed.operationId), false)
+  const restored = owner.runtime.readFile(first.identity)!
+  const forget = { operationId: randomUUID(), identity: first.identity, version: restored.version }
+  await owner.handleHost('forgetFile', { args: [forget] })
+  assert.ok(events.some(event => event.operation === 'memory.forget' && event.stage === 'applied' && event.identities?.requestId === forget.operationId))
+  assert.equal((await owner.handleHost('getOperation', { operationId: forget.operationId }) as { cleanup: string }).cleanup, 'pending')
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE_MEMORY_BODY|PRIVATE_MEMORY_TITLE|PRIVATE_REPLACEMENT_BODY/)
+})
+
+test('a throwing owner observer cannot change source intake, write receipts or the real validation failure', async t => {
+  const { owner } = fixture(t, undefined, { diagnostics: { emit() { throw new Error('broken observer') } } })
+  await owner.recover()
+  const input = source()
+  assert.ok((await owner.receiveSource(input)).sourceId)
+  const create = { operationId: randomUUID(), text: '每周五提交周报。' }
+  const first = await owner.handleHost('createFile', { args: [create] }) as MemoryFileMutationResult
+  assert.deepEqual(await owner.handleHost('createFile', { args: [create] }), first)
+  const detail = owner.runtime.readFile(first.identity)!
+  await assert.rejects(owner.handleHost('editFile', { args: [{ operationId: randomUUID(), identity: first.identity,
+    version: { ...detail.version, contentRevision: 'stale' }, text: '改成周一。' }] }), { code: 'revision.conflict' })
 })
 test('native output evidence retains exact file ranges across sends without persisting file names', () => {
   const db = new DatabaseSync(':memory:')

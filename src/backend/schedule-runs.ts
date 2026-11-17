@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { transaction } from './app-db.ts'
 import { RETRY_MS as HOLD_MS } from './effects.ts'
@@ -137,7 +138,8 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   /** What is due, taken and kept as runs together. */
   function take(): void {
     if ((store.nextDueAt() ?? Infinity) > now()) return
-    change('schedule.taken', {}, () => store.takeDue().map(queue))
+    const taken = change('schedule.taken', {}, () => store.takeDue().map(queue)).value
+    emitDiagnostic({ event: 'state.changed', operation: 'schedule', stage: 'claim', metrics: { count: taken.length, mark: store.nextDueAt() ?? 0 } })
     changed()
   }
 
@@ -173,6 +175,8 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
       if (added.made) keep(added.item)
       return added.made
     }).value
+    emitDiagnostic({ event: 'state.changed', operation: 'schedule', stage: 'applied', reason: made ? 'normal' : 'idempotent',
+      identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision }, metrics: { attempt: item.attempts } })
     if (needsReview) changed()
     if (made) delivered()
   }
@@ -216,6 +220,9 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     else {
       change('schedule.retry', { key: item.key, attempts: outcome.attempts }, () => db.prepare('UPDATE schedule_runs SET attempts = ?, due_at = ? WHERE key = ?')
         .run(outcome.attempts, now() + RETRY_MS * outcome.attempts, item.key))
+      emitDiagnostic({ event: 'retry.scheduled', operation: 'schedule', stage: 'queued', reason: 'retry',
+        identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision },
+        metrics: { attempt: outcome.attempts, retryDelayMs: RETRY_MS * outcome.attempts } })
     }
     forget(item.key)
   }
@@ -231,6 +238,8 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     if (runCurrent(item)) {
       if (scheduleCurrent(item)) return false
       change('schedule.dropped', { key: item.key }, () => drop.run(item.key, item.scheduleRevision))
+      emitDiagnostic({ event: 'state.changed', operation: 'schedule', stage: 'closed', reason: 'stale',
+        identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision } })
     }
     forget(item.key)
     return true
@@ -238,19 +247,27 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
 
   /** false: dsh is not there. */
   async function runOne(item: Run): Promise<boolean> {
-    if (dropIfSuperseded(item)) return true
-    const startedAtWake = wakes
-    const outcome = await outcomeOf(item)
-    if (closed) return false
-    if (dropIfSuperseded(item)) return true
-    if (outcome === 'unavailable') return false
-    if (outcome === 'superseded') return true
-    if (outcome === 'memory-unavailable') {
-      if (wakes === startedAtWake) waitingForMemory.add(item.key)
+    return withOperation('schedule', async () => {
+      if (dropIfSuperseded(item)) return true
+      const startedAtWake = wakes
+      const outcome = await outcomeOf(item)
+      if (closed) return false
+      if (dropIfSuperseded(item)) return true
+      if (outcome === 'unavailable') {
+        emitDiagnostic({ event: 'operation.progress', operation: 'schedule', stage: 'waiting', reason: 'not_ready' })
+        return false
+      }
+      if (outcome === 'superseded') return true
+      if (outcome === 'memory-unavailable') {
+        emitDiagnostic({ event: 'operation.progress', operation: 'schedule', stage: 'waiting', reason: 'unavailable' })
+        if (wakes === startedAtWake) waitingForMemory.add(item.key)
+        return true
+      }
+      await commit(item, outcome)
       return true
-    }
-    await commit(item, outcome)
-    return true
+    }, { stage: item.attempts ? 'recovering' : 'dispatch',
+      identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision,
+        operationId: JSON.stringify([item.key, item.scheduleRevision, item.attempts]) }, metrics: { attempt: item.attempts } })
   }
 
   async function pump(): Promise<void> {

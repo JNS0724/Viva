@@ -3,7 +3,7 @@ import http from 'node:http'
 import type { StoredEvent } from './event-core.ts'
 import type { RemoteHost } from './remote-host.ts'
 import { type Answer, type ChannelKind, decodeValue, encodeValue, isBlobRef, MAX_JSON_BYTES, SEQ_HEADER, sseMessage, TOKEN_HEADER } from './wire.ts'
-import { separateDiagnosticEnvelope } from '../diagnostics/contracts.ts'
+import { safeDiagnosticReason, separateDiagnosticEnvelope } from '../diagnostics/contracts.ts'
 import { emitDiagnostic, withRemoteOperation } from '../diagnostics/node/context.ts'
 import { diagnosticOperationForChannel } from '../diagnostics/node/operations.ts'
 import { createRequestBudget, MEMORY_READ_BUDGET_MS, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
@@ -100,6 +100,8 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
   const server = http.createServer((req, res) => {
     route(req, res).catch((err: Error) => {
       const status = err instanceof HttpProblem ? err.status : 500
+      emitDiagnostic({ event: 'operation.end', operation: 'http', outcome: 'failed',
+        reason: status === 401 || status === 403 ? 'denied' : status === 413 ? 'oversized' : status === 400 ? 'validation_failed' : safeDiagnosticReason(err), metrics: { statusCode: status } })
       if (status === 500) onError(`${req.method} ${req.url}`, err)
       if (!res.headersSent) sendJson(res, status, { ok: false, error: err.message })
       else res.end()
@@ -211,6 +213,8 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
   }
 
   function events(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+    const operationId = randomUUID()
+    emitDiagnostic({ event: 'operation.start', operation: 'sse', stage: 'connecting', identities: { operationId } })
     // A shell listening again says the last stored event it saw; one listening for the first time has none to miss.
     const given = url.searchParams.get('since')
     const after = given === null ? null : Number(given)
@@ -221,6 +225,7 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
     const stop = remote.listen((call) => res.write(sseMessage('host', call)), Number.isInteger(ran) && ran > 0 ? ran : 0)
     const alive = setInterval(() => res.write(': alive\n\n'), KEEP_ALIVE_MS)
     req.on('close', () => {
+      emitDiagnostic({ event: 'operation.end', operation: 'sse', stage: 'closed', outcome: 'completed', reason: 'normal', identities: { operationId } })
       clearInterval(alive)
       stop()
     })

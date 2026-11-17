@@ -1,5 +1,5 @@
 import { restartDelay } from '../shared/restart-delay.ts'
-import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
+import { emitDiagnostic, emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
 
 /**
  * Keeps the backend process running for the shell (docs/system-design.md §8): started once at launch,
@@ -72,12 +72,11 @@ export function createBackendKeeper<B extends { shutdown: () => Promise<void> }>
       onGaveUp(why)
       return
     }
-    console.error(`[backend] ended (${why}); starting it again in ${delay / 1000}s`)
     emitDiagnostic({ event: 'retry.scheduled', operation: 'startup', reason: 'process_exited', metrics: { attempt: crashes.length, retryDelayMs: delay } })
     schedule(() => {
       if (stopped !== null) return
       launch(true).catch((err: Error) => {
-        console.error('[backend] could not start again:', err.message)
+        emitDiagnosticFailure('startup', err, { stage: 'recovering' })
         died(null, null, null)
       })
     }, delay)

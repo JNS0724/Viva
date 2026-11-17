@@ -8,6 +8,8 @@ import { initialState, reduce } from '../src/renderer/state.ts'
 import { recordsAt } from '../src/renderer/report-state.ts'
 import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/shared/task-report.ts'
 import { createForegroundRequests, ForegroundRequestRetired } from '../src/backend/foreground-requests.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 const admissionGate = () => {
   let release = () => {}
@@ -109,6 +111,24 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
   return { outcomes, turns, delivered, world, asked, kept, reads }
 }
+
+test('report diagnostics follow committed reads and durable retry identity without logging the secret token or note', async t => {
+  const events: DiagnosticEvent[] = []
+  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  t.after(restore)
+  const report = effect({ ...payload('diagnostic-task', 'SECRET_REPORT_TITLE', 'c1', 'SECRET_REPORT_OUTPUT'), token: 'SECRET_REPORT_TOKEN' })
+  const known = { [report.key]: 'read' as const }
+  assert.deepEqual(await setup({ known, keeps: false }).outcomes([report]), { [report.key]: 'retry' })
+  assert.equal(events.some(event => event.operation === 'task.report' && event.stage === 'applied'), false)
+  assert.deepEqual(await setup({ known }).outcomes([report]), { [report.key]: 'wait' })
+  assert.ok(events.some(event => event.operation === 'task.report' && event.stage === 'applied'
+    && event.identities?.jobId === report.key && event.identities.generation === report.generation))
+  assert.doesNotMatch(JSON.stringify(events), /SECRET_REPORT/)
+  restore()
+  const broken = installDiagnosticPort({ emit() { throw new Error('observer failed') } })
+  try { assert.deepEqual(await setup({ known }).outcomes([report]), { [report.key]: 'wait' }) }
+  finally { broken() }
+})
 
 test('idle: reports due together for the conversation on screen share one turn, done once read', async () => {
   const { outcomes, turns } = setup()

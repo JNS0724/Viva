@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
+import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { asData, IN_TURN_MARK, REPORT_HEAD, reportId, shownNote, TOKEN_MARK } from '../shared/task-report.ts'
 import type { Effect, Outcome, Runner } from './effects.ts'
 import type { ReportState } from './steer-channel.ts'
@@ -143,7 +145,7 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * is first sent, so every later try knows it by the same token.
  */
 export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, eligible = () => true, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
-  return async (effects: readonly Effect[]) => {
+  return (effects: readonly Effect[]) => withOperation('task.report', async () => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
     const bound = session()
@@ -168,15 +170,22 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     }
     /** The effect with what this try learned, kept first; null when it could not be kept (its generation gone). */
     const held = (effect: Effect<ReportPayload>) => currentConversation() === here && session() === bound && holds(effect)
-    const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null =>
-      (amend(effect, payload) ? { ...effect, payload } : null)
+    const fields = (effect: Effect<ReportPayload>) => ({ identities: { jobId: effect.key, generation: effect.generation,
+      taskId: effect.payload.taskId, taskRunId: effect.payload.runId }, metrics: { attempt: effect.attempts } })
+    const kept = (effect: Effect<ReportPayload>, payload: ReportPayload): Effect<ReportPayload> | null => {
+      if (!amend(effect, payload)) return null
+      emitDiagnostic({ ...fields(effect), event: 'operation.progress', operation: 'task.report', stage: 'checkpoint' })
+      return { ...effect, payload }
+    }
 
     /** Read: its record kept, and so done (onRead); not kept now (the database busy), tried again after a wait. */
     const readOutcome = (effect: Effect<ReportPayload>): Outcome => {
       try {
         onRead(effect)
+        emitDiagnostic({ ...fields(effect), event: 'operation.progress', operation: 'task.report', stage: 'applied' })
         return 'wait'
-      } catch {
+      } catch (error) {
+        emitDiagnostic({ ...fields(effect), event: 'operation.progress', operation: 'task.report', stage: 'waiting', reason: safeDiagnosticReason(error) })
         // Said where it failed (compose.ts onRead); here only when to try again.
         return 'retry'
       }
@@ -189,7 +198,8 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       if (!effect) { outcomes.set(original.key, 'wait'); continue }
       const token = effect.payload.token as string
       const where = effect.payload.deliveredTo ?? bound
-      const now = await still(effect) ? await status(where, effect.key, token) : 'unavailable'
+      const now = await still(effect) ? await withOperation('task.report', () => status(where, effect.key, token),
+        { ...fields(effect), stage: 'recovering', identities: { ...fields(effect).identities, sessionId: where } }) : 'unavailable'
       if (!await still(effect)) outcomes.set(effect.key, 'wait')
       // Read: done once its record is kept (onRead), not before; kept where it was read, which is where it went (one
       // queued before `deliveredTo` was kept says so now).
@@ -204,8 +214,9 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
       const sending = await still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
-      const sent = sending ? await deliver(bound, sending.key, sending.payload.token as string,
-        noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId, () => held(sending), sending.payload.memory) : 'unavailable'
+      const sent = sending ? await withOperation('task.report', () => deliver(bound, sending.key, sending.payload.token as string,
+        noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId, () => held(sending), sending.payload.memory),
+        { ...fields(sending), stage: 'sending', identities: { ...fields(sending).identities, sessionId: bound } }) : 'unavailable'
       if (sent === 'read' && sending && await still(sending)) outcomes.set(effect.key, readOutcome(sending))
       else if (sent === 'idle' && sending) forTurn.push(sending)
       else outcomes.set(effect.key, sent === 'failed' ? 'retry' : 'wait')
@@ -218,11 +229,13 @@ export function createTaskReports({ currentConversation, session, superseded, ho
         if (saved) opening.push(saved)
       }
       const ready = opening.filter(held)
-      if (ready.length) await report(noteFor(ready.map(endedOf)), ready.map(({ payload: { taskId, memory } }) => ({ taskId, memory })), () => ready.every(held))
+      if (ready.length) await withOperation('task.report', () => report(noteFor(ready.map(endedOf)),
+        ready.map(({ payload: { taskId, memory } }) => ({ taskId, memory })), () => ready.every(held)),
+        { stage: 'sending', identities: { sessionId: bound }, metrics: { count: ready.length } })
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')
     return outcomes
-  }
+  }, { stage: 'report', metrics: { count: effects.length } })
 }
 
 /**

@@ -55,6 +55,10 @@ export function emitDiagnostic(event: DiagnosticEvent, current?: DiagnosticConte
   return undefined
 }
 export const diagnosticPort: DiagnosticPort = Object.freeze({ emit: emitDiagnostic })
+/** Classify once at an existing failure boundary; never serialize an Error or its message. */
+export function emitDiagnosticFailure(operation: DiagnosticOperation, error: unknown, fields: DiagnosticFields = {}): undefined {
+  return emitDiagnostic({ ...fields, event: 'operation.progress', operation, stage: fields.stage ?? 'failed', reason: safeDiagnosticReason(error) })
+}
 export function inDiagnosticContext<T>(incoming: DiagnosticContext | undefined, work: () => T): T {
   incoming = remoteParent(incoming)
   if (!incoming && port === NO_DIAGNOSTICS) return work()

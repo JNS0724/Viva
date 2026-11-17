@@ -1,7 +1,9 @@
 import { type ChildProcess, fork } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import http from 'node:http'
 import type { StoredEvent } from '../backend/event-core.ts'
-import { diagnosticContext, emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
+import { diagnosticContext, emitDiagnostic, emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
+import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { encodeDiagnosticEnvelope } from '../diagnostics/node/envelope.ts'
 import { diagnosticOperationForChannel } from '../diagnostics/node/operations.ts'
 import { diagnosticHub } from '../diagnostics/node/hub.ts'
@@ -65,7 +67,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
       const abort = () => { cleanup(); reject(signal?.reason) }
       const release = () => { cleanup(); resolve() }
       const timer = setTimeout(() => {
-        console.error(`[backend] host calls up to ${mark} did not come in ${CATCH_UP_MS / 1000}s; answering anyway`)
+        emitDiagnostic({ event: 'operation.progress', operation: 'host.catchup', stage: 'waiting', reason: 'timeout', metrics: { mark } })
         release()
       }, CATCH_UP_MS)
       waiters = [...waiters, { mark, release }]
@@ -164,14 +166,14 @@ export function connect({ port, token }: { port: number, token: string }): Conne
     listen({ host, stored = () => {}, ended, since, lost = () => {} }) {
       const answerHost = (id: number, answer: Answer) => {
         request('POST', `/host/${id}`, Buffer.from(JSON.stringify(encodeValue(answer))), { 'content-type': 'application/json' })
-          .catch((err: Error) => console.error('[backend] could not answer a host call:', err.message))
+          .catch((err: Error) => emitDiagnosticFailure('ipc', err, { stage: 'responded', identities: { requestId: id } }))
       }
       const run = (hostCall: HostCall) => {
         if (hostCall.id === null) {
           try {
             host(hostCall)
           } catch (err) {
-            console.error(`[backend] host call ${hostCall.method} failed:`, err)
+            emitDiagnosticFailure('ipc', err, { identities: { methodId: hostCall.method } })
           }
           return
         }
@@ -198,7 +200,17 @@ export function connect({ port, token }: { port: number, token: string }): Conne
           advance(hostCall.n)
         } else if (event === 'stored') stored(data as StoredEvent)
       })
+      const operationId = randomUUID()
+      let observedEnd = false
+      emitDiagnostic({ event: 'operation.start', operation: 'sse', stage: 'connecting', identities: { operationId } })
+      const recordEnd = (err?: Error) => {
+        if (observedEnd) return
+        observedEnd = true
+        emitDiagnostic({ event: 'operation.end', operation: 'sse', stage: 'closed', identities: { operationId },
+          outcome: err ? 'failed' : 'completed', reason: err ? safeDiagnosticReason(err) : 'normal' })
+      }
       const end = (err?: Error) => {
+        recordEnd(err)
         stopListening()
         ended(err)
       }
@@ -210,6 +222,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
           return
         }
         res.setEncoding('utf8')
+        emitDiagnostic({ event: 'operation.progress', operation: 'sse', stage: 'ready', identities: { operationId }, metrics: { statusCode: res.statusCode } })
         res.on('data', read)
         res.on('end', () => end())
         res.on('error', end)
@@ -217,6 +230,7 @@ export function connect({ port, token }: { port: number, token: string }): Conne
       req.on('error', end)
       req.end()
       return () => {
+        recordEnd()
         stopListening()
         req.destroy()
       }
@@ -264,7 +278,7 @@ export function spawnBackend({ entry, start, onExit }: {
     try {
       await connection.control('close')
     } catch (err) {
-      console.error('[backend] could not close:', (err as Error).message)
+      emitDiagnosticFailure('shutdown', err)
     }
     const timer = setTimeout(() => child.kill(), EXIT_WAIT_MS)
     await exited

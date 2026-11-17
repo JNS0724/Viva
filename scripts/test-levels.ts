@@ -3,6 +3,7 @@
 // timing retains real long-duration deadlines. Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
+    'session-timing',
     'renderer-initialization',
     'diagnostics',
     'diagnostics-ipc',

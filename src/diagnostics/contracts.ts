@@ -35,7 +35,7 @@ export const REASONS = ['unknown_error', 'aborted', 'timeout', 'unavailable', 'n
   'busy', 'stale', 'denied', 'model_failed', 'validation_failed', 'source_changed',
   'deferred', 'retry', 'external_wake', 'closed', 'epoch_changed', 'process_exited', 'late',
   'ENOSPC', 'EACCES', 'EPERM', 'EBUSY', 'EAGAIN', 'EIO', 'ENOENT', 'EEXIST', 'EISDIR', 'ENOTDIR', 'EMFILE', 'ENFILE', 'cleanup_pending',
-  'continued_after_clear', 'normal', 'gap', 'buffer_limit'] as const
+  'continued_after_clear', 'normal', 'gap', 'buffer_limit', 'idempotent'] as const
 export type DiagnosticReason = typeof REASONS[number]
 export const ID_KEYS = ['requestId', 'operationId', 'sessionId', 'conversationId', 'taskId', 'taskRunId',
   'jobId', 'ownerEpoch', 'generation', 'methodId', 'resourceId', 'blockingSpanId', 'readBatchId'] as const
@@ -68,6 +68,7 @@ export interface DiagnosticEvent extends DiagnosticFields {
 export interface DiagnosticPort { emit(event: DiagnosticEvent, context?: DiagnosticContext): undefined }
 export const NO_DIAGNOSTICS: DiagnosticPort = Object.freeze({ emit: (_event: DiagnosticEvent) => undefined })
 export function guardDiagnosticPort(port: DiagnosticPort = NO_DIAGNOSTICS): DiagnosticPort {
+  if (port === NO_DIAGNOSTICS) return port
   return { emit(event, context) { try { port.emit(event, context) } catch { /* Diagnostics cannot change a business outcome. */ }; return undefined } }
 }
 
@@ -100,6 +101,8 @@ export function safeDiagnosticReason(error: unknown): DiagnosticReason {
   try {
     if (!record(error)) return 'unknown_error'
     const code = ownData(error, 'code'), reason = ownData(error, 'reason')
+    const sqliteCode = ownData(error, 'errcode')
+    if (code === 'ERR_SQLITE_ERROR' && typeof sqliteCode === 'number' && Number.isSafeInteger(sqliteCode) && [5, 6].includes(sqliteCode & 255)) return 'busy'
     let name = ownData(error, 'name')
     if (typeof code === 'string' && (REASONS as readonly string[]).includes(code)) return code as DiagnosticReason
     if (name === 'AbortError') return 'aborted'

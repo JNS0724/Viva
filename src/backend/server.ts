@@ -2,7 +2,7 @@ import { getLocale } from '../shared/i18n/locale.ts'
 import path from 'node:path'
 import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
-import { emitDiagnostic, installDiagnosticPort } from '../diagnostics/node/context.ts'
+import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort } from '../diagnostics/node/context.ts'
 import pkg from '../../package.json' with { type: 'json' }
 import { imageResponse } from './image-protocol.ts'
 import { checkedIpc } from '../shared/ipc-contract.ts'
@@ -45,12 +45,12 @@ async function start(message: StartMessage) {
   // Electron as Node is for this process only: what it starts (dsh, pnpm) is told so on its own where it needs it.
   delete process.env.ELECTRON_RUN_AS_NODE
   const secrets = createEnvelope({ key: message.dataKey ? Buffer.from(message.dataKey, 'base64') : null })
-  const remote = createRemoteHost({ start: message, secrets, onDropped: (n) => console.error(`[backend] no shell listened: host calls from ${n} on are being let go`) })
+  const remote = createRemoteHost({ start: message, secrets, onDropped: (n) => emitDiagnostic({ event: 'operation.progress', operation: 'host.catchup', reason: 'gap', metrics: { mark: n } }) })
   const channels = new Map<string, { kind: ChannelKind, listener: ChannelListener }>()
   const ipc = checkedIpc({
     handle: (channel, listener) => { channels.set(channel, { kind: 'handle', listener }) },
     on: (channel, listener) => { channels.set(channel, { kind: 'on', listener }) },
-  }, { onRefused: (_channel, problem) => console.error('[ipc] refused:', problem) })
+  }, { onRefused: channel => emitDiagnostic({ event: 'operation.progress', operation: 'ipc', reason: 'validation_failed', identities: { methodId: channel } }) })
   const backend = createBackend({ host: remote.host, ipc })
   backend.open()
 
@@ -61,7 +61,7 @@ async function start(message: StartMessage) {
     remote,
     since: backend.since,
     image: (url) => imageResponse(url, backend.images()),
-    onError: (where, err) => console.error(`[backend] ${where}:`, err),
+    onError: (where, err) => emitDiagnosticFailure('http', err, { identities: { methodId: where } }),
     controls: {
       'start-bridge': () => backend.startBridge(),
       signal: (input) => {
@@ -118,7 +118,7 @@ process.once('message', (raw) => {
     return
   }
   start(parsed.data).catch((err: Error) => {
-    console.error('[backend] could not start:', err)
+    emitDiagnosticFailure('startup', err)
     fail(err?.message ?? String(err))
   })
 })

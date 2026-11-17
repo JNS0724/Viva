@@ -396,6 +396,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       })
       advanceOwnReads(plan, item.workspace, receipt)
       committed(receipt)
+      diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'applied',
+        identities: { requestId: item.operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
+        metrics: { count: evidence.length } })
       documents.resolve(item.workspace, item.operationId)
       if (receipt.revision) {
         const tag = plan.tags.find(tag => tag.workspace === item.workspace && tag.path === receipt.path)

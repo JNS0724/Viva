@@ -38,7 +38,7 @@ import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenanc
 import { memorySource } from './source.ts'
 import { createManagedDiagnostics } from '../../../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
-import { diagnosticPort, emitDiagnostic, installDiagnosticPort, withOperation, withRemoteOperation } from '../../../src/diagnostics/node/context.ts'
+import { diagnosticPort, emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort, withOperation, withRemoteOperation } from '../../../src/diagnostics/node/context.ts'
 import { parseDiagnosticContext } from '../../../src/diagnostics/contracts.ts'
 import { observeDshDiagnostics } from './diagnostics.ts'
 
@@ -148,7 +148,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const disposed = new WeakSet<Session>()
   const report = (error: unknown, session?: Session) => {
     if (session && disposed.has(session)) return // The persisted log is replayed when a new handle opens.
-    console.error('[memory] session intake failed', error instanceof Error ? error.message : 'unknown error')
+    emitDiagnosticFailure('memory.intake', error)
   }
   ctx.on('session/disposed', session => { disposed.add(session); deliveryBindings.release(String(session.id)) })
   const observe = (session: Session) => {

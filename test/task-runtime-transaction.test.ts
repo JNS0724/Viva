@@ -12,6 +12,8 @@ import { createTaskRuntime, KEEP_ENDED } from '../src/backend/task-runtime.ts'
 import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
 import type { TaskSnapshot } from '../src/backend/task-registry.ts'
 import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 /**
  * TaskRuntime over the real thing (system-design §11.2): one app database holding the history, the task store and
@@ -97,6 +99,8 @@ function setup(t: TestContext, { uncancelled = false, captureReportMemory, mainM
 }
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
+  const events: DiagnosticEvent[] = []
+  t.after(installDiagnosticPort({ emit(event) { events.push(event); return undefined } }))
   const { start, tasks, failing, snapshots, reported, runDue, status, kept, ended } = setup(t)
   const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('写好了。') })
@@ -108,6 +112,7 @@ test('a task\'s end that cannot be kept leaves nothing, in the database or in me
   assert.equal(status(), 'running', 'still at work in memory')
   assert.equal(snapshots.length, before, 'the window was told nothing')
   assert.deepEqual(reported, [], 'no result reported for an end not kept')
+  assert.equal(events.some(event => event.operation === 'task' && event.stage === 'complete'), false)
   runDue()
   assert.equal(ended().length, 0, 'refused again: still nothing')
 
@@ -117,6 +122,9 @@ test('a task\'s end that cannot be kept leaves nothing, in the database or in me
   assert.equal(ended().length, 1)
   assert.equal(snapshots.at(-1)?.status, 'done')
   assert.deepEqual(reported, [[task.id, 'done']], 'its result reported once, after it is kept')
+  assert.ok(events.some(event => event.operation === 'task' && event.stage === 'complete' && event.identities?.taskId === task.id
+    && event.identities?.taskRunId === 'run-1'))
+  assert.doesNotMatch(JSON.stringify(events), /整理发布说明|写好了|task-runtime-tx/)
 })
 
 test('what the task said cannot be saved: its end is not kept either', async (t) => {

@@ -339,13 +339,13 @@ L1a 执行诊断无业务影响、基础资源边界、隐私和导出用例；�
 - macOS 原生菜单和 Windows 托盘提供本地 ZIP 导出、打开日志目录。导出由独立子进程完成，不依赖 memory:get；并发、总期限、源范围和输出大小受限，损坏整行与尾部残片分别报告。仅收集 Shell/Renderer 的实时快照，其他组件缺失会写入 manifest，不冒充已实现心跳。
 - Viva profile 明确关闭 DSH OTEL；独立 DSH Web 验收 profile 同时关闭 OTEL 与原生日志上传。插件不修改外部宿主的全局遥测设置。
 
-导出临时路径只保存在私有配额清单中，用于子进程异常退出后清理已确认属于该导出的临时文件；它不进入 JSONL 或 ZIP。构建提交目前写为 `unknown`，发布产物的提交标记注入属于 L3。当前没有交付清空、debug 开关或设置页入口；身份替换工具不代表跨进程清空协调已完成。
+导出临时路径只保存在私有配额清单中，用于子进程异常退出后清理已确认属于该导出的临时文件；它不进入 JSONL 或 ZIP。构建提交目前写为 `unknown`，发布产物的提交标记注入属于 L3。L1a 首批没有交付清空、debug 开关或设置页入口；后续原生控制面见第 16 节，设置页仍属后续工作。
 
 验证命令包括 `npm run typecheck`、`npm test`、`npm run build`、`npm run smoke`、`npm run test:memory-plugin`、`npm run smoke:memory-plugin`、`npm run check:i18n`。另有[框架微基准](../scripts/benchmark-diagnostics.ts)、[真实 memory:get 交错对照](../scripts/benchmark-memory-diagnostics.ts)和[原生导出故障注入](../scripts/smoke-local-diagnostics.ts)：后者在 macOS 暂停测试自己的 Backend 与 Renderer，确认原生菜单仍可导出，再恢复并关闭进程。Windows 的定向故障注入与安装包验证留在 L1c/L3，本轮不声明已经验证。
 
 最后一轮真实 memory:get 对照为 3.263875ms → 3.690667ms，增加 0.426792ms / 13.0762%，无丢弃。它未通过第 13 节原始性能门槛；L1a 尚未完成全部验收，未放宽门槛。已收敛性能优化范围，完整证据与剩余验证见[实施记录](qa-logging-l1a-implementation-20261117.zh-CN.md)。
 
-L1a 的记录不包含 L1b 业务修复；L1b 当前实施状态见第 15 节。L1c 心跳、清空和完整故障矩阵，以及 L2 的其余主线覆盖、L3 发布验收仍待实施。
+L1a 的记录不包含 L1b 业务修复；L1b 当前实施状态见第 15 节，L1c 进展见第 16 节，L2 进展见第 17 节。L3 发布验收仍未完成。
 
 ## 15 L1b 实施状态
 
@@ -367,3 +367,11 @@ memory:get 在 Renderer、Shell、Backend 和 owner 通道分别建立本地单�
 原生 macOS 菜单和 Windows 托盘已提供清空与限时 15 分钟 debug。清空先关闭目录配额中的新 writer 准入，等待已知组件和实际文件关闭回执；所有槽都关闭、无导出 pin 且旧文件删除后才轮换盐和 diagnosticRunId。超时显示 cleanup_pending，实际未结束的控制仍占名额；恢复后重试同一清空身份。轮换后的恢复重试不重复删除新代次文件。跨清空继续执行的本地业务使用新 trace，旧远程诊断元数据失效；readBatchId 名额、owner epoch、任务及发送屏障不变。
 
 macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-20261118.zh-CN.md)。永久 pending 写入/关闭、部分写入、ENOSPC/EAGAIN/EACCES、IPC 无响应、清空失败恢复、队列洪泛、旧代次回调和插件独立运行均有回归。Windows 原生故障与安装包验收未执行，性能门槛仍未通过，因此不声明 L1 整体完成；L2/L3 继续按原范围推进。
+
+## 17 L2 实施进展
+
+已补主对话发送与取消后真实结算、SessionTiming、后台任务及路由、定时任务与报告、daily 摄取、管理写入与撤销、清理 ACK、检索与重建、SQLite、Worker、HTTP/SSE、MCP 和窗口生命周期的关键元数据。Core 只依赖可移植观察端口，Node 层拥有 ALS、存储和宿主适配。检索词、正文、路径、报告令牌、工具输入输出与 Error.message 不进入新增事件；流式响应只记录一次首响应，不逐 token 或逐帧记录。
+
+提交与重试事件以实际持久化结果为准，回滚和已失效 generation 不误报成功。诊断关闭时可移植异步环绕直接返回原业务 Promise，避免增加会影响真实回执顺序的微任务。daily 也修复了与 dream 相同的无恢复工作仍关闭发送屏障的问题：仅存在实际文件意图或清理时才进入恢复屏障，模型失败重试和 runner 重启不干扰无关前台请求，真实提交与恢复仍等待物理请求结算。
+
+回归及集成验证进展见 [L2 实施记录](qa-logging-l2-implementation-20261118.zh-CN.md)。性能门槛与 Windows 原生验收仍按原要求保留，不因主线埋点覆盖而改为通过。

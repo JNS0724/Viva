@@ -33,7 +33,7 @@ test('memory contracts/core/node obey the declared dependency direction, includi
       const target = relative(memory, resolve(dirname(full), imported)).replaceAll('\\', '/')
       // Shared diagnostics is below the domain and has no product or runtime-framework imports.
       // Keep this exception file-specific: Core must never acquire the Node logger or Pino.
-      if (target === '../diagnostics/contracts.ts' || layer === 'node' && target === '../diagnostics/node/context.ts') continue
+      if (['../diagnostics/contracts.ts', '../diagnostics/operation.ts'].includes(target) || layer === 'node' && target === '../diagnostics/node/context.ts') continue
       assert.ok(!target.startsWith('../'), `${file}: dependency escapes memory module: ${imported}`)
       if (layer === 'contracts') assert.ok(target.startsWith('contracts/'), `${file}: contracts depend on ${target}`)
       if (layer === 'core') assert.ok(!target.startsWith('node/'), `${file}: core depends on storage implementation ${target}`)
@@ -50,6 +50,9 @@ test('shared diagnostic contracts are portable and diagnostic infrastructure nev
       if (ts.isImportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
         const dependency = node.moduleSpecifier.text
         if (file === 'contracts.ts') assert.fail(`portable diagnostic port imports ${dependency}`)
+        if (!file.replaceAll('\\', '/').startsWith('node/')) {
+          assert.ok(dependency.startsWith('.') && !relative(dir, resolve(dirname(full), dependency)).replaceAll('\\', '/').startsWith('node/'), `${file} imports a runtime adapter`)
+        }
         if (dependency.startsWith('.')) assert.ok(!relative(dir, resolve(dirname(full), dependency)).startsWith('..'), `${file} depends on product code`)
         else assert.ok(dependency.startsWith('node:') || ['pino', 'sonic-boom', 'yazl'].includes(dependency), `${file} imports ${dependency}`)
       }
@@ -64,7 +67,7 @@ test('copied Node memory runs in a clean project without Viva, DSH or Electron i
   try {
     cpSync(memory, join(dir, 'src/memory'), { recursive: true })
     mkdirSync(join(dir, 'src/diagnostics/node'), { recursive: true })
-    for (const file of ['contracts.ts', 'node/context.ts']) cpSync(join(root, 'src/diagnostics', file), join(dir, 'src/diagnostics', file))
+    for (const file of ['contracts.ts', 'operation.ts', 'node/context.ts']) cpSync(join(root, 'src/diagnostics', file), join(dir, 'src/diagnostics', file))
     mkdirSync(join(dir, 'test/fixtures'), { recursive: true })
     cpSync(join(root, 'test/fixtures/memory-standalone.ts'), join(dir, 'test/fixtures/memory-standalone.ts'))
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ private: true, type: 'module' }))

@@ -4,6 +4,7 @@ import type { MemoryRuntimeResources } from '../core/ports/runtime.ts'
 import type { MemoryStore } from './memory-store.ts'
 import { memoryHash } from './memory-store.ts'
 import { createEffects } from './effects.ts'
+import { emitDiagnosticFailure } from '../../diagnostics/node/context.ts'
 import { openMemoryNotes } from './memory-note-store.ts'
 import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
@@ -16,7 +17,7 @@ export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRu
 
 /** Open the platform resources consumed through explicit core ports. */
 export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore, now?: () => number }): MemoryRuntimeResources {
-  const effects = createEffects({ db: store.db, now, onError: () => console.error('[memory] durable memory queue failed') })
+  const effects = createEffects({ db: store.db, now, onError: error => emitDiagnosticFailure('effects', error) })
   const resources: MemoryRuntimeResources = {
     sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
     identity: { newId: randomUUID, hash: memoryHash },

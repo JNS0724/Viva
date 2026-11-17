@@ -7,6 +7,7 @@ import { createMemoryFileRetrieval, memoryFileChunkKey, memoryFileLexicalQuery, 
 import type { MemoryDocumentView } from '../src/memory/core/memory-document-read-policy.ts'
 import type { MemoryEmbedder, MemoryEmbeddingInput } from '../src/memory/contracts/embedding.ts'
 import type { MemoryFileHit } from '../src/memory/core/ports/file-index.ts'
+import type { DiagnosticEvent, DiagnosticPort } from '../src/diagnostics/contracts.ts'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const workspace = hash('workspace')
@@ -17,13 +18,13 @@ function view(id: string, text: string, extra: Partial<MemoryDocumentView> = {})
     policyToken:hash(markdown),updatedAt:1,markdown,currentMarkdown:markdown,sources:[],sourceTokens:[{id:`source-${id}`,token:'v1'}],
     backing:null,supporting:[],applicability:{state:'current',supersessions:[]},...extra }
 }
-function setup(t: test.TestContext, initial: MemoryDocumentView[], embedder?: MemoryEmbedder) {
+function setup(t: test.TestContext, initial: MemoryDocumentView[], embedder?: MemoryEmbedder, diagnostics?: DiagnosticPort) {
   const db=new DatabaseSync(':memory:')
   const index=openMemoryFileIndex({db})
   const views=new Map(initial.map(item=>[item.id,item]))
   const policy={read: (scope:string,path:string)=>[...views.values()].find(item=>item.workspace===scope && item.path===path) ?? null,
     list: (scope:string)=>[...views.values()].filter(item=>item.workspace===scope)}
-  const retrieval=createMemoryFileRetrieval({index,policy,workspaces:()=>[workspace],hash,embedder})
+  const retrieval=createMemoryFileRetrieval({index,policy,workspaces:()=>[workspace],hash,embedder,diagnostics})
   t.after(()=>{retrieval.close();db.close()})
   return {db,index,views,policy,retrieval}
 }
@@ -33,6 +34,43 @@ function encoder() {
   const embedder: MemoryEmbedder={dimensions:384,fingerprint:'test-space',close(){},async embedBatch(inputs){calls.push([...inputs]);return inputs.map(item=>unit(item.text.includes('needle')?0:1))}}
   return {embedder,calls}
 }
+
+test('retrieval diagnostics identify lexical, vector, fusion and relations without copying query or evidence', async t => {
+  const events: DiagnosticEvent[] = []
+  const model = encoder()
+  const f = setup(t, [view('private-document', 'needle PRIVATE_BODY_CANARY')], model.embedder, {
+    emit(event) { events.push(event); return undefined },
+  })
+  const result = await f.retrieval.search({ query: 'needle PRIVATE_QUERY_CANARY', allows })
+  assert.ok(result.hits.length)
+  assert.deepEqual(events.filter(event => event.event === 'operation.progress' && event.operation === 'memory.recall').map(event => event.stage), ['lexical', 'vector', 'fusion', 'relations'])
+  assert.ok(events.some(event => event.operation === 'memory.index' && event.stage === 'checkpoint' && event.metrics?.ok === true))
+  assert.equal(events.at(-1)?.outcome, 'completed')
+  assert.equal(events.at(-1)?.metrics?.count, result.hits.length)
+  assert.equal(JSON.stringify(events).includes('PRIVATE_'), false)
+  f.retrieval.read({ id: 'private-document', allows })
+  f.retrieval.nodeSearch({ query: 'PRIVATE_NODE_QUERY', allows })
+  f.retrieval.relations({ workspace, path: 'digest/wiki/private-document.md', allows })
+  f.retrieval.reindex()
+  assert.ok(events.some(event => event.operation === 'memory.index' && event.stage === 'rebuild'))
+  assert.equal(JSON.stringify(events).includes('PRIVATE_'), false)
+  const error = new Error('PRIVATE_ERROR_CANARY')
+  await assert.rejects(f.retrieval.search({ query: 'needle', allows() { throw error } }), value => value === error)
+  assert.equal(events.at(-1)?.outcome, 'failed')
+  assert.equal(JSON.stringify(events).includes('PRIVATE_'), false)
+})
+
+test('a failed retrieval observer preserves synchronous cached and asynchronous search behavior', async t => {
+  const f = setup(t, [view('document', 'needle')], undefined, { emit() { throw new Error('observer failed') } })
+  assert.equal(f.retrieval.searchCached({ query: 'needle', allows }).hits.length, 1)
+  assert.equal((await f.retrieval.search({ query: 'needle', allows })).hits.length, 1)
+  assert.equal(f.retrieval.read({ id: 'document', allows })?.id, 'document')
+  assert.equal(f.retrieval.nodeSearch({ query: 'document', allows }).nodes.length, 1)
+  assert.ok(f.retrieval.relations({ workspace, path: 'digest/wiki/document.md', allows }))
+  f.retrieval.reindex()
+  const controller = new AbortController(); controller.abort()
+  assert.equal((await f.retrieval.search({ query: 'needle', allows, signal: controller.signal })).status, 'unavailable')
+})
 
 test('file search covers daily and digest with complete source lines and filters scope before quota', async t=>{
   const initial=Array.from({length:30},(_,i)=>view(`hidden-${i}`,'needle needle needle'))

@@ -4,6 +4,8 @@ import type { PromptResponse } from '@agentclientprotocol/sdk'
 import { createAcpOperations } from '../src/backend/acp-operations.ts'
 import { createAssistantStream } from '../src/backend/assistant-stream.ts'
 import { STOP_GRACE_MS } from '../src/backend/stop-in-time.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void
@@ -25,6 +27,8 @@ function confirmedStreams() {
 }
 
 test('cancel deadline revokes one operation, and its late response/finally cannot end a newer operation of the same session', async t => {
+  const events: DiagnosticEvent[] = []
+  t.after(installDiagnosticPort({ emit(event) { events.push(event); return undefined } }))
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const first = deferred<PromptResponse>(), second = deferred<PromptResponse>(), ended: string[] = [], cancelled: string[] = []
   let requested = 0, forced = 0
@@ -36,8 +40,11 @@ test('cancel deadline revokes one operation, and its late response/finally canno
   const old = operations.run({ sessionId: 'same', prompt, context: { conversationId: 'old', sessionId: 'same' }, onEnd: () => { ended.push('old') }, onError: fail })
   await flush(); await operations.cancelInTime('same', () => { forced++ })
   t.mock.timers.tick(STOP_GRACE_MS); assert.equal(forced, 1); assert.equal(operations.isReleased('same'), true)
+  assert.equal(events.filter(event => event.operation === 'conversation.send' && event.event === 'operation.end').length, 0,
+    'a forced UI cancellation is not actual prompt settlement')
   const next = operations.run({ sessionId: 'same', prompt, context: { conversationId: 'new', sessionId: 'same' }, onEnd: () => { ended.push('new') }, onError: fail })
   await flush(); first.resolve({ stopReason: 'end_turn' }); await old
+  assert.ok(events.some(event => event.operation === 'conversation.send' && event.outcome === 'late_completed'))
   assert.equal(operations.has('same'), true)
   assert.deepEqual(operations.context('same'), { conversationId: 'new', sessionId: 'same' })
   t.mock.timers.tick(STOP_GRACE_MS); assert.equal(forced, 1)
@@ -45,6 +52,39 @@ test('cancel deadline revokes one operation, and its late response/finally canno
   assert.deepEqual(ended, ['new']); assert.deepEqual(cancelled, ['same'])
   assert.equal(operations.has('same'), false)
   operations.dispose()
+})
+
+test('prompt diagnostics record only the first response and preserve updates, results and errors with a broken sink', async t => {
+  const events: DiagnosticEvent[] = []
+  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  t.after(restore)
+  const result = deferred<PromptResponse>(), updates: unknown[] = [], errors: unknown[] = []
+  const streams = confirmedStreams()
+  const failure = new Error('SECRET_NATIVE_ERROR')
+  let nextFails = false
+  const operations = createAcpOperations({ streams, cancelPermissions: () => {}, streamUpdate: (_id, update) => updates.push(update),
+    connection: () => ({ prompt: () => nextFails ? Promise.reject(failure) : result.promise, cancel: async () => {} }) })
+  t.after(() => operations.dispose())
+  let ended = 0
+  const run = () => operations.run({ sessionId: 's', prompt: [{ type: 'text', text: 'SECRET_PROMPT_BODY' }], onEnd: () => { ended++ }, onError: error => errors.push(error) })
+  const pending = run(); await flush()
+  const strange = Object.defineProperty({}, 'sessionUpdate', { get() { throw new Error('diagnostic getter must never run') } })
+  operations.forwardStream('s', strange)
+  for (let index = 0; index < 500; index++) operations.forwardStream('s', { sessionUpdate: 'agent_message_chunk', content: { text: 'SECRET_OUTPUT_BODY' } })
+  result.resolve({ stopReason: 'end_turn' }); await pending
+  assert.equal(updates.length, 501)
+  assert.equal(ended, 1)
+  assert.equal(events.filter(event => event.stage === 'first-response').length, 1)
+  assert.ok(events.length < 10)
+  assert.doesNotMatch(JSON.stringify(events), /SECRET_/)
+  restore()
+  const broken = installDiagnosticPort({ emit() { throw new Error('broken sink') } })
+  try {
+    nextFails = true
+    await run()
+    assert.deepEqual(errors, [failure])
+    assert.equal(operations.has('s'), false)
+  } finally { broken() }
 })
 
 test('disposal while stream binding waits cannot send a late native prompt or reopen the operation book', async () => {
