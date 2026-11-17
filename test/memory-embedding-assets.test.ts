@@ -6,7 +6,6 @@ import { test } from 'node:test'
 import { MEMORY_EMBEDDING_MANIFEST, parseMemoryEmbeddingManifest, readMemoryEmbeddingDescriptor,
   verifyMemoryEmbeddingAssets, writeMemoryEmbeddingManifest } from '../src/memory/node/memory-embedding-assets.ts'
 import { embeddingFixture } from './fixtures/memory-embedding-assets.ts'
-import { closeScratchRoots } from './fixtures/scratch.ts'
 
 const query = [{ kind: 'query', text: 'available fact' }] as const
 
@@ -58,7 +57,6 @@ test('the embedding fixture releases independently held files before removing ev
     release()
     await scope
     assert.equal(closed, true)
-    await closeScratchRoots()
     assert.equal(existsSync(root), false)
   } finally {
     release()

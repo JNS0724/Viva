@@ -2,7 +2,7 @@
 
 English | [简体中文](test-engineering-optimization.zh-CN.md)
 
-Date: 2026-11-17. This document defines the order of test-engineering and CI changes. The PR 0 metrics entry, PR 1 file-level cleanup and lane split, and PR 2 heavy-file splitting are implemented in the current worktree; PR 3 and later stages remain planned. The goal is faster feedback while preserving process isolation, failure recovery, privacy, and behavior acceptance on both shipping platforms.
+Date: 2026-11-17. This document defines the order of test-engineering and CI changes. The PR 0 metrics entry, PR 1 shared fixture cleanup and lane split, and PR 2 heavy-file splitting are implemented in the current worktree; PR 3 and later stages remain planned. The goal is faster feedback while preserving process isolation, failure recovery, privacy, and behavior acceptance on both shipping platforms.
 
 ## 1 Evidence and diagnosis
 
@@ -109,24 +109,24 @@ The purpose is to let Node's file-level concurrency shorten the existing critica
 
 ## 5 Fixture lifecycle optimization
 
-The current `startHarness` creates and deletes a complete DSH temporary directory for every test, with a Windows deletion wait of up to 15 seconds. Move to file-level cleanup:
+`startHarness` and other temporary-directory fixtures share `scratch`. Tests in one file share an outer container but keep independent case directories. Each case directory is removed immediately after its resources close; finishing the file removes only the empty outer container:
 
 ```text
-Temporary root per test file
-  ├─ independent subdirectory for test-a
-  ├─ independent subdirectory for test-b
-  └─ independent subdirectory for test-c
+Temporary container per test file
+  ├─ independent subdirectory for test-a: removed after its resources close
+  ├─ independent subdirectory for test-b: removed after its resources close
+  └─ independent subdirectory for test-c: removed after its resources close
 
 Each test still closes its own DSH, Workers, SQLite and fake LLM
-The root is recursively deleted once when the file finishes
+The empty container is deleted when the file finishes
 ```
 
 Requirements:
 
 - Keep independent subdirectories and business state per test.
-- Close processes and databases before root cleanup, preserving LIFO resource order.
-- Retain diagnostic directories when cleanup fails; do not hide a failure through root reuse.
-- Route `scratch` and other temporary-directory fixtures through the same cleanup utility rather than adding another policy.
+- Close processes and databases before removing that case directory, preserving LIFO resource order and the Windows deletion wait of up to 15 seconds.
+- Retain diagnostic directories when cleanup fails; do not hide a failure through container reuse.
+- Do not defer recursive deletion of case directories that child processes may still hold until the end of the file; the first Windows CI run demonstrated cleanup failure and a stuck test process with that approach.
 
 Only later evaluate sharing read-only build artifacts, profile templates, and fake-provider configuration. Never share mutable sessions.
 
@@ -208,7 +208,7 @@ A happy path should not be repeated at all three layers, but platform difference
 
 ### PR 1: Low-risk fixture and lane changes (implemented)
 
-- Implement file-level temporary-root cleanup.
+- Share the temporary-directory fixture, removing case directories per test and empty containers per file.
 - Split the schedules-lifecycle UI lane.
 - Keep all tests and assertions unchanged.
 

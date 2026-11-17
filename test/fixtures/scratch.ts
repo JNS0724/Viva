@@ -24,36 +24,38 @@ async function removeEventually(dir: string) {
 }
 
 export function createScratchRegistry() {
-  const roots = new Map<string, string>()
+  const containers = new Map<string, string>()
   return {
     scratch(t: TestContext, prefix: string) {
       const identity = createHash('sha256').update(t.filePath ?? 'unknown').digest('hex').slice(0, 16)
-      let root = roots.get(identity)
-      if (!root) {
-        root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), prefix)), identity)
-        roots.set(identity, root)
-        fs.mkdirSync(root, { recursive: true })
+      let container = containers.get(identity)
+      if (!container) {
+        container = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+        containers.set(identity, container)
       }
-      const dir = fs.mkdtempSync(path.join(root, 'case-'))
+      const dir = fs.mkdtempSync(path.join(container, 'case-'))
       const closers: Array<() => unknown> = []
       t.after(async () => {
         const errors: unknown[] = []
         for (const close of [...closers].reverse()) {
           try { await close() } catch (error) { errors.push(error) }
         }
-        if (errors.length) throw new AggregateError(errors, 'Scratch resource cleanup failed')
+        try { await removeEventually(dir) } catch (error) { errors.push(error) }
+        if (errors.length) throw new AggregateError(errors, 'Scratch cleanup failed')
       })
       return { dir, defer: (close: () => unknown) => { closers.push(close) } }
     },
-    async close() {
-      const errors: unknown[] = []
-      for (const [identity, root] of [...roots].reverse()) {
+    close() {
+      for (const [identity, container] of [...containers].reverse()) {
         try {
-          await removeEventually(root)
-          roots.delete(identity)
-        } catch (error) { errors.push(error) }
+          fs.rmdirSync(container)
+          containers.delete(identity)
+        } catch (error) {
+          const code = (error as { code?: string }).code
+          if (code === 'ENOENT') containers.delete(identity)
+          else if (code !== 'ENOTEMPTY' && code !== 'EPERM' && code !== 'EBUSY') throw error
+        }
       }
-      if (errors.length) throw new AggregateError(errors, 'Scratch directory cleanup failed')
     },
   }
 }
@@ -61,7 +63,7 @@ export function createScratchRegistry() {
 const registry = createScratchRegistry()
 let registered = false
 
-/** Independent case directories share one root per test file, removed after the file finishes. */
+/** Case directories are removed after their resources close; their empty per-file container follows the file. */
 export function scratch(t: TestContext, prefix: string): { dir: string, defer: (close: () => unknown) => void } {
   if (!registered) {
     afterFile(() => registry.close())
@@ -69,5 +71,3 @@ export function scratch(t: TestContext, prefix: string): { dir: string, defer: (
   }
   return registry.scratch(t, prefix)
 }
-
-export const closeScratchRoots = () => registry.close()
