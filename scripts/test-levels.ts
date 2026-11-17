@@ -252,6 +252,7 @@ export const testLevels = {
     'workspace-files',
   ],
   integration: [
+    'memory-file-checkout',
     'model-fixtures',
     'memory-file-initialization',
     'build-page-libraries',
