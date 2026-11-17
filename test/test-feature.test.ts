@@ -86,6 +86,7 @@ test('CLI rejects ambiguous all/features, unknown options and invalid levels', (
 test('test metrics preserve scenario identities and separate file wall time from case durations', t => {
   const metrics = createTestMetrics('/repo', 'linux')
   const first = '/repo/test/a.test.ts', second = '/repo/test/b.test.ts'
+  metrics.record(first, first, 'passed', 999)
   metrics.record(first, 'first scenario', 'passed', 25)
   metrics.record(first, 'second scenario', 'failed', 50)
   metrics.completeFile(first, 200)

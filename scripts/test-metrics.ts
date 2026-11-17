@@ -28,7 +28,7 @@ export function createTestMetrics(root: string, platform = process.platform) {
   const startedAt = new Date().toISOString()
   const files = new Map<string, MetricFile>()
   function fileFor(filePath: string): MetricFile {
-    const file = path.relative(root, filePath)
+    const file = path.relative(root, filePath).replaceAll(path.sep, '/')
     let current = files.get(file)
     if (!current) {
       current = { file, wallMs: 0, caseDurationMs: 0, cases: [] }
@@ -37,6 +37,7 @@ export function createTestMetrics(root: string, platform = process.platform) {
     return current
   }
   function record(filePath: string, name: string, outcome: MetricCase['outcome'], durationMs: number) {
+    if (path.resolve(name) === filePath) return
     const current = fileFor(filePath)
     current.caseDurationMs += durationMs
     current.cases.push({ name, outcome, durationMs })
