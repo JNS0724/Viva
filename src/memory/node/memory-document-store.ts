@@ -947,6 +947,11 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     return [...refs, ...expandRestrictions(refs)]
   }
   const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count) + Number(locatorCopiesPending())
+  function needsRecovery() {
+    if (pendingCleanup() > 0) return true
+    return (db.prepare("SELECT plan FROM memory_file_intents WHERE namespace='documents' AND plan IS NOT NULL").all() as Array<{ plan: string }>)
+      .some(row => !managed((JSON.parse(row.plan) as FilePlan<Data>).data))
+  }
   if (!deferRecovery) recover()
   return {
     reconcileRename, reconcileEdit, acceptedSnapshot,
@@ -957,7 +962,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, sources: refsOf(row), state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),
     workspaces: () => db.prepare('SELECT DISTINCT workspace FROM memory_documents').all().map(row => String(row.workspace)),
-    recover,
+    needsRecovery, recover,
     recoverManagement(operationId) {
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined

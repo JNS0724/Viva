@@ -167,20 +167,29 @@ test('dream model waits, repeated retry and persisted recovery never become a de
     t.diagnostic(`dream ${attempt + 1} scheduled`)
     await started
     await read()
+    t.diagnostic(`read ${attempt + 1} completed`)
     finish(); await running
+    t.diagnostic(`dream ${attempt + 1} completed`)
   }
   assert.equal(dreamCount, 2)
   await owner.close()
+  t.diagnostic('initial owner closed')
   // Make the durable failed job due before reopen, without changing its generation or payload.
   const db = new DatabaseSync(path.join(root, 'memory.db'))
-  db.prepare("UPDATE effects SET due_at=0 WHERE kind='memory.dream'").run(); db.close()
+  assert.equal(db.prepare("UPDATE effects SET due_at=0 WHERE kind='memory.dream'").run().changes, 1); db.close()
   const resumed = new Promise<void>(resolve => { entered = resolve })
   owner = open()
+  t.diagnostic('replacement owner opened')
   const recoveryBudget = createRequestBudget(500)
   try { await recoveryBudget.run(() => owner.recover()) } finally { recoveryBudget.close() }
+  t.diagnostic('replacement owner recovered')
   running = owner.runtime.wake()
-  await resumed
+  const resumedBudget = createRequestBudget(1000)
+  try { await resumedBudget.run(() => resumed) } finally { resumedBudget.close() }
+  t.diagnostic('replacement dream started')
   await read()
+  t.diagnostic('replacement read completed')
   assert.equal(dreamCount, 3, 'the persisted retry resumes independently of management reads')
   finish(); await running
+  t.diagnostic('replacement dream completed')
 })

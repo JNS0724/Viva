@@ -14,6 +14,7 @@ import { inspectMemoryDocumentText } from '../src/memory/core/memory-dream-mater
 import { formatMemoryDocument, updateMemoryFrontmatter } from '../src/memory/core/memory-document.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { createEffects } from '../src/memory/node/effects.ts'
+import { createMemorySendFence } from '../src/memory/core/send-fence.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
@@ -23,7 +24,8 @@ import type { MemorySource } from '../src/memory/core/ports/store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
 
-function harness(t: TestContext, options: { units?: number, budget?: number, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'], diagnostics?: DiagnosticPort } = {}) {
+function harness(t: TestContext, options: { units?: number, budget?: number, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'], diagnostics?: DiagnosticPort,
+  mutate?: <T>(work: () => T) => Promise<T>, eligible?: () => boolean } = {}) {
   let now = Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(':memory:', () => now)
   const readable = (id: string) => Boolean(store.readSource(id)?.text && !store.readSource(id)?.withdrawn)
@@ -48,9 +50,9 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
   const start = () => createMemoryDreamJobs({ notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
     diagnostics: options.diagnostics,
     settings: { timezone: 'UTC', dreamUnits: options.units ?? 5, dreamBatchBytes: options.budget ?? 40_000 },
-    readable, eligible: () => true, source: id => store.readSource(id) ?? undefined,
+    readable, eligible: options.eligible ?? (() => true), source: id => store.readSource(id) ?? undefined,
     reference: id => { const original = store.readSource(id); return original ? { namespace: 'canonical', sourceId: id, revision: original.version } : null },
-    transaction: store.tx, mutate: async work => { beforeMutation(); return work() }, committed: receipt => afterCommit(receipt),
+    transaction: store.tx, mutate: options.mutate ?? (async work => { beforeMutation(); return work() }), committed: receipt => afterCommit(receipt),
     allowsText: text => !looksSecret(text),
     calculate: async request => { requests.push(request); assert.equal(request.current(), true); return model(request) },
   })
@@ -112,6 +114,82 @@ test('an unavailable model result is not mislabeled as changed source evidence',
   await h.run()
   assert.ok(events.some(event => event.stage === 'extract' && event.reason === 'unavailable'))
   assert.equal(events.some(event => event.reason === 'source_changed'), false)
+})
+
+test('dream timeout retries leave unrelated foreground sends admitted when no recovery is pending', async t => {
+  const fence = createMemorySendFence({ epoch: 'owner', admit: () => ({ current: () => true, deadline: null }) })
+  t.after(() => fence.close())
+  const h = harness(t, { mutate: work => fence.mutate(work) })
+  h.add('The report is due Friday.')
+  h.setModel(async () => { throw new MemoryComputeError('timeout') })
+  const foreground = fence.acquire('foreground', { session: 'main' }, 'foreground payload')
+  foreground.signal.addEventListener('abort', () => foreground.settled(), { once: true })
+  try {
+    await h.run()
+    await h.retry()
+    assert.equal(foreground.signal.aborted, false)
+    assert.equal(fence.blocked(), false)
+    const next = fence.acquire('next-foreground', { session: 'main' }, 'next foreground payload')
+    next.settled()
+  } finally { foreground.settled() }
+})
+
+for (const failure of ['invalid-json', 'semantic-rejection', 'aborted'] as const) {
+  test(`dream ${failure} retries and runner recovery preserve unrelated physical foreground sends`, async t => {
+    const fence = createMemorySendFence({ epoch: 'owner', admit: () => ({ current: () => true, deadline: null }) })
+    t.after(() => fence.close())
+    const h = harness(t, { mutate: work => fence.mutate(work) })
+    h.add('The report is due Friday.')
+    h.setModel(request => {
+      if (failure === 'invalid-json') return Promise.resolve('not JSON')
+      if (failure === 'aborted') return Promise.reject(new MemoryComputeError('aborted'))
+      return request.stage === 'verify' ? Promise.resolve('{"verdict":"rejected","reason":"The generated instruction is unsupported."}') : h.defaultModel(request)
+    })
+    const foreground = fence.acquire('held-main', { session: 'main' }, 'authorized current evidence')
+    foreground.signal.addEventListener('abort', () => foreground.settled(), { once: true })
+    try {
+      await h.run(); await h.retry(); h.restart(); await h.retry()
+      assert.equal(foreground.signal.aborted, false)
+      assert.equal(fence.blocked(), false)
+      assert.equal(h.store.db.prepare("SELECT count(*) n FROM effects WHERE kind='memory.dream'").get()?.n, 1)
+      const next = fence.acquire('new-main', { session: 'main' }, 'authorized current evidence'); next.settled()
+    } finally { foreground.settled() }
+  })
+}
+
+test('temporary recovery admission preserves the same pending dream until the next wake', async t => {
+  let ready = false
+  const h = harness(t, { eligible: () => ready })
+  const note = h.add('The report is due Friday.')
+  await h.run()
+  assert.equal(h.requests.length, 0)
+  const before = h.store.db.prepare("SELECT generation,due_at,attempts FROM effects WHERE kind='memory.dream'").get()
+  assert.equal(before?.attempts, 0, 'waiting for admission is not a provider failure')
+  assert.equal(h.notes.read(note.key)?.processed, 0)
+  ready = true
+  await h.retry()
+  assert.ok(h.requests.some(request => request.stage === 'extract'))
+  assert.ok(h.notes.read(note.key)!.processed > 0)
+})
+
+test('dream still fences foreground sends when a prepared document needs recovery', async t => {
+  const fence = createMemorySendFence({ epoch: 'owner', admit: () => ({ current: () => true, deadline: null }) })
+  t.after(() => fence.close())
+  let interrupted = false
+  const h = harness(t, { mutate: work => fence.mutate(work), checkpoint(at) {
+    if (at === 'intent' && !interrupted) { interrupted = true; throw new Error('interrupted document publication') }
+  } })
+  h.add('The report is due Friday.')
+  await h.run()
+  assert.equal(interrupted, true)
+  assert.equal(h.documents.needsRecovery(), true)
+  const foreground = fence.acquire('foreground-recovery', { session: 'main' }, 'foreground payload')
+  foreground.signal.addEventListener('abort', () => foreground.settled(), { once: true })
+  try {
+    await h.retry()
+    assert.equal(foreground.signal.aborted, true)
+    assert.equal(h.documents.needsRecovery(), false)
+  } finally { foreground.settled() }
 })
 
 test('four-stage dream combines daily files in one authorized workspace through real tools, verifies originals and checkpoints', async t => {

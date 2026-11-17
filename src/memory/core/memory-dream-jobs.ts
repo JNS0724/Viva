@@ -149,15 +149,21 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     })
     return plan.retryExtraction ? 'retry' : 'done'
   }
-  async function extract(job: Effect): Promise<DreamPlan | undefined> {
+  async function extract(job: Effect): Promise<DreamPlan | 'wait' | undefined> {
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
     const plan: DreamPlan = { version: 1, files: [], units: [], tags: [], retryExtraction: false }
+    let waitingForAdmission = false
     const changed = notes.changed(from, today).filter(note => {
       const refs = notes.references(note.key)
-      return refsCurrent(refs) && !refs.some(ref => documentSourceRestricted(ref, documents.sourceRestrictions(note.workspace))) && refs.every(ref => { const original = source(ref.id); return original && eligible(original) })
-        && materialAllowed(note.document, refs)
+      if (!refsCurrent(refs) || refs.some(ref => documentSourceRestricted(ref, documents.sourceRestrictions(note.workspace))) || !materialAllowed(note.document, refs)) return false
+      const admitted = refs.every(ref => { const original = source(ref.id); return original && eligible(original) })
+      if (!admitted) waitingForAdmission = true
+      return admitted
     })
+    // Temporary recovery/turn admission is not an empty extraction. Keep the same durable job
+    // until the owner's next wake, rather than postponing unprocessed notes to tomorrow.
+    if (waitingForAdmission) return 'wait'
     const allNotes = notes.list(null, null)
     const workspaces = unique(allNotes.map(note => note.workspace))
     const extracted: Array<{ workspace: string, unit: DreamUnit }> = []
@@ -443,9 +449,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     }
   }
   async function runJob(job: Effect): Promise<Outcome> {
-    await mutate(() => { notes.recover(); documents.recover() })
+    if (notes.needsRecovery() || documents.needsRecovery()) await mutate(() => {
+      if (notes.needsRecovery()) notes.recover()
+      if (documents.needsRecovery()) documents.recover()
+    })
     let plan = planSchema.safeParse(job.payload).data
-    if (!plan) plan = await extract(job)
+    if (!plan) {
+      const extracted = await extract(job)
+      if (extracted === 'wait') return 'wait'
+      plan = extracted
+    }
     if (!plan) return 'done'
     // A journal receipt can precede the effect-plan write when the process stops. Only exact owned receipts
     // may advance these reads; unrelated later revisions never count as our continuation.
