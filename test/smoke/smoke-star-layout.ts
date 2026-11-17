@@ -30,11 +30,13 @@ export async function checkStarLayouts(win: SmokeAppWindow, outDir: string): Pro
       await settle(win)
       const seen = await run(win, `(()=>{
         const pane=document.getElementById('scroll'),fixture=document.getElementById('smoke-star-layout').shadowRoot,bounds=pane.getBoundingClientRect()
+        const portrait=document.querySelector('#island .isl-face')?.getBoundingClientRect(),actions=document.querySelector('.titlebar-right').getBoundingClientRect()
         // At fractional zoom innerWidth can truncate a CSS pixel while scrollWidth rounds it. Compare
         // the same layout viewport's rounded width so that a DPI rounding difference is not overflow.
-        return {width:Math.ceil(document.documentElement.getBoundingClientRect().width),pane:pane.clientWidth,scroll:pane.scrollWidth,body:document.body.scrollWidth,buttons:[...fixture.querySelectorAll('.star-btn')].map(button=>{const r=button.getBoundingClientRect();return{left:r.left,right:r.right,inPane:r.left>=bounds.left&&r.right<=bounds.right,pressed:button.getAttribute('aria-pressed'),label:button.getAttribute('aria-label')}})}
-      })()`) as { width: number, pane: number, scroll: number, body: number, buttons: Array<{ inPane: boolean, pressed: string, label: string }> }
+        return {width:Math.ceil(document.documentElement.getBoundingClientRect().width),pane:pane.clientWidth,scroll:pane.scrollWidth,body:document.body.scrollWidth,titlebarClear:!portrait||portrait.right+4<=actions.left,buttons:[...fixture.querySelectorAll('.star-btn')].map(button=>{const r=button.getBoundingClientRect();return{left:r.left,right:r.right,inPane:r.left>=bounds.left&&r.right<=bounds.right,pressed:button.getAttribute('aria-pressed'),label:button.getAttribute('aria-label')}})}
+      })()`) as { width: number, pane: number, scroll: number, body: number, titlebarClear: boolean, buttons: Array<{ inPane: boolean, pressed: string, label: string }> }
       if (seen.scroll > seen.pane || seen.body > seen.width || seen.buttons.length !== 3 || seen.buttons.some(button => !button.inPane || button.pressed !== 'true' || button.label !== '取消收藏')) failures.push(`star layout ${width}x${height} zoom ${factor}: ${JSON.stringify(seen)}`)
+      if (!seen.titlebarClear) failures.push(`title-bar portrait overlaps actions at ${width}x${height} zoom ${factor}: ${JSON.stringify(seen)}`)
       report(`star layout ${width}x${height} zoom ${factor}: ${JSON.stringify(seen)}`)
       if (factor === 1.5) {
         await run(win, `document.getElementById('smoke-star-layout').shadowRoot.querySelector('.thread').scrollIntoView({block:'start'});true`)

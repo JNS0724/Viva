@@ -50,6 +50,9 @@
   --titlebar-gutter: 12px;
   /* the 动态 button (about 96px) and 2 title bar buttons (36px), with 6px gaps */
   --titlebar-actions: 180px;
+  --titlebar-compact-button: 32px;
+  --titlebar-compact-gap: 4px;
+  --titlebar-badge-inset: -4px;
   /* macOS: room for the traffic lights */
   --reserve-left: 84px;
   --reserve-right: 0px;
@@ -121,6 +124,15 @@ html:not([data-platform="darwin"]) .titlebar {
 .feed-btn:hover { color: var(--ink); border-color: var(--ink-3); }
 .feed-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 .feed-btn .feed-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: var(--bg); font: 600 11px/20px var(--font-mono); text-align: center; }
+/* At 150% zoom the minimum window has less title-bar room; keep her portrait clear of the actions. */
+@media (max-width: 720px) {
+  .titlebar { --titlebar-actions: calc(3 * var(--titlebar-compact-button) + 2 * var(--titlebar-compact-gap)); }
+  .titlebar-right { gap: var(--titlebar-compact-gap); }
+  .titlebar .icon-btn, .titlebar .feed-btn { width: var(--titlebar-compact-button); flex: none; }
+  .titlebar .feed-btn { position: relative; justify-content: center; padding: 0; }
+  .feed-btn > [data-i18n="feed.title"] { display: none; }
+  .feed-btn .feed-count { position: absolute; top: var(--titlebar-badge-inset); right: var(--titlebar-badge-inset); }
+}
 
 .icon-btn {
   width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
