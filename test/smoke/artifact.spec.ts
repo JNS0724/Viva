@@ -2,6 +2,7 @@ import { test, expect } from './fixtures.ts'
 import { run } from './smoke-kit.ts'
 import { timelinePlace } from '../../src/renderer/timeline-search.ts'
 import { dailyMemory, fileDetail, REPORT_MEMORY, REPORT_TITLE } from './smoke-memory.ts'
+import { installedDiagnostics } from './diagnostics-artifact.ts'
 
 test('installed artifact completes memory and restart acceptance', async ({ scenario }) => {
   expect(process.env.VIVA_SMOKE_EXECUTABLE, 'Set VIVA_SMOKE_EXECUTABLE to the installed application').toBeTruthy()
@@ -24,5 +25,8 @@ test('installed artifact completes memory and restart acceptance', async ({ scen
       const toolResult = JSON.stringify(messages?.at(-1) ?? null)
       return toolResult.includes('tool_result') && toolResult.includes(REPORT_MEMORY) && toolResult.includes('notes')
     }), 'The installed ONNX runtime should send the grounded memory as a semantic tool result').toBe(true)
+  })
+  await test.step('installed diagnostics exports metadata and clears without restarting memory', async () => {
+    await installedDiagnostics(check.current!, check.info.outputPath('diagnostics'), [REPORT_MEMORY, REPORT_TITLE])
   })
 })
