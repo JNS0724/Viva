@@ -100,6 +100,19 @@ function trailingUserTexts(messages: readonly Message[]) {
   return messages.slice(start).flatMap(textParts)
 }
 
+/** Native inbox notices can follow the result before the next model request. */
+function trailingToolResult(messages: readonly Message[]): Part | undefined {
+  let start = messages.length
+  while (start > 0 && messages[start - 1].role === 'user') start -= 1
+  const parts = messages.slice(start).flatMap(partsOf)
+  const hasNewInput = parts.some(part => {
+    if (part.type === 'tool_result') return false
+    if (part.type !== 'text' || typeof part.text !== 'string' || requestsIn(part.text).length > 0) return true
+    return currentTurnTextParts([part.text]).some(text => !text.startsWith(CONTEXT_OPEN) && !TASK_REPORT.test(text))
+  })
+  return hasNewInput ? undefined : parts.findLast(part => part.type === 'tool_result')
+}
+
 function currentWords(text: string) {
   // Test responder ignores the trusted delivery suffix; production admission uses exact owner aliases.
   text = text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
@@ -303,7 +316,7 @@ export function routeFixtureTools<Raw extends object, Reply extends object>(deci
     if (!hasTool(request, ROUTE)) return decideFirst(raw as Raw)
     const messages = request.messages
     const last = toolUses(messages).at(-1)
-    if (last?.name === ROUTE && partsOf(messages.at(-1)).some(part => part.type === 'tool_result')) {
+    if (last?.name === ROUTE && trailingToolResult(messages)) {
       const id = typeof last.input?.requestId === 'string' ? last.input.requestId : ''
       const action = actions.get(id)
       actions.delete(id)
@@ -335,7 +348,12 @@ export function decide(raw: object): Answer {
   if (routing) return routing
   const messages = request.messages
   const last = messages[messages.length - 1]
-  const result = partsOf(last).find((part) => part.type === 'tool_result')
+  const use = toolUses(messages).at(-1)
+  // Finish the granted app operation before handling an inbox report appended
+  // after its route receipt. Ordinary completed routes may answer the report.
+  const appRoute = use?.name === ROUTE && Array.isArray(use.input?.actions)
+    && use.input.actions.some((action: unknown) => objectOf(action)?.kind === 'app_action')
+  const result = appRoute ? trailingToolResult(messages) : partsOf(last).find((part) => part.type === 'tool_result')
   // Once a request is routed, the rules go on with its words, as if just asked.
   const routed = result && toolUses(messages).at(-1)?.name === ROUTE
   if (result && !routed) return afterTool(request, messages, result)

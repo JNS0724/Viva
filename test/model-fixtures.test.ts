@@ -108,6 +108,67 @@ test('the common routing wrapper still grants the chosen app action and preserve
     JSON.stringify({ risk: 'medium', decision: 'deny', reason: '要删除原有的文件' }))
 })
 
+test('a late native report after a route result does not drop the chosen fixture app action', () => {
+  const words = '任意标题的定时汇总', action = { tool: { name: 'schedule_create', input: { title: words, prompt: '合成汇总', kind: 'at', at: '2030-01-01T00:00:00.000Z' } } }
+  const request = { tools: [{ name: 'commit_route' }], messages: [human(withRequestHeader(words, 'late-report-action'))] }
+  const respond = routeFixtureTools((value: { messages: Parameters<typeof questionOf>[0] }) => questionOf(value.messages) === words ? action : null)
+  const route = respond(request)
+  assert.equal(route?.tool?.name, 'commit_route')
+  const messages = [...request.messages, { role: 'assistant', content: [{ type: 'tool_use', name: 'commit_route', input: route!.tool!.input }] },
+    { role: 'user', content: [{ type: 'tool_result', content: 'accepted' }] },
+    human('【后台任务结束】这不是用户说的话。\n任务：「独立任务」'), human('<about-user>synthetic profile')]
+  assert.deepEqual(respond({ ...request, messages }), action)
+  assert.equal(respond({ ...request, messages: [...messages, { role: 'assistant', content: [{ type: 'tool_use', name: 'schedule_create', input: action.tool.input }] },
+    { role: 'user', content: [{ type: 'tool_result', content: 'proposed' }] }] }), null, 'the cached action is consumed once')
+})
+
+test('a late native report after routing does not replace the generic remember operation', () => {
+  const text = '此次持续安排保留原始条件', request = { tools: [{ name: 'commit_route' }], messages: [human(withRequestHeader(`记住：${text}`, 'late-report-remember'))] }
+  const route = decide(request)
+  assert.equal(route.tool?.name, 'commit_route')
+  const messages = [...request.messages, { role: 'assistant', content: [{ type: 'tool_use', name: 'commit_route', input: route.tool!.input }] },
+    { role: 'user', content: [{ type: 'tool_result', content: 'accepted' }] }]
+  const report = human('【后台任务结束】这不是用户说的话。\n任务：「独立任务」')
+  assert.deepEqual(decide({ ...request, messages: [...messages, report, human('<about-user>synthetic profile')] }).tool,
+    { name: 'memory_remember', input: { text } })
+  assert.equal(decide({ ...request, messages: [...messages, { role: 'assistant', content: [{ type: 'text', text: '已经完成' }] }, report] }).tool,
+    undefined, 'an earlier turn\'s result cannot resume an already completed action')
+})
+
+test('a new marked user request cannot consume an older cached app operation', () => {
+  const first = '先前的合成定时任务', second = '后来的独立定时任务'
+  const action = (title: string) => ({ tool: { name: 'schedule_create', input: { title } } })
+  const respond = routeFixtureTools((value: { messages: Parameters<typeof questionOf>[0] }) => {
+    const question = questionOf(value.messages)
+    return [first, second].includes(question) ? action(question) : null
+  })
+  const request = { tools: [{ name: 'commit_route' }], messages: [human(withRequestHeader(first, 'previous-operation'))] }
+  const route = respond(request)
+  const messages = [...request.messages, { role: 'assistant', content: [{ type: 'tool_use', name: 'commit_route', input: route!.tool!.input }] },
+    { role: 'user', content: [{ type: 'tool_result', content: 'accepted' }] }, human(withRequestHeader(second, 'next-operation'))]
+  const next = respond({ ...request, messages })
+  assert.equal(next?.tool?.name, 'commit_route')
+  const input = next?.tool?.input
+  assert.ok(input && 'requestId' in input && 'actions' in input)
+  assert.equal(input.requestId, 'next-operation')
+  assert.deepEqual(input.actions, [{ kind: 'app_action', operation: 'schedule_create' }])
+  assert.deepEqual(respond({ ...request, messages: [...messages, { role: 'assistant', content: [{ type: 'tool_use', name: 'commit_route', input: next!.tool!.input }] },
+    { role: 'user', content: [{ type: 'tool_result', content: 'accepted' }] }] }), action(second))
+})
+
+test('ordinary unmarked user input does not resume an older routed fixture operation', () => {
+  for (const next of ['这是另一个未标记的新请求', '引用：<about-user>这是用户的正文', '请解释【后台任务结束】这个标记']) {
+    const words = '记住：旧安排仍须准确引用', action = { tool: { name: 'schedule_create', input: { title: '旧定时任务' } } }
+    const request = { tools: [{ name: 'commit_route' }], messages: [human(withRequestHeader(words, 'old-operation'))] }
+    const respond = routeFixtureTools((value: { messages: Parameters<typeof questionOf>[0] }) => questionOf(value.messages) === words ? action : null)
+    const route = respond(request)
+    const messages = [...request.messages, { role: 'assistant', content: [{ type: 'tool_use', name: 'commit_route', input: route!.tool!.input }] },
+      { role: 'user', content: [{ type: 'tool_result', content: 'accepted' }] }, human(next)]
+    assert.equal(respond({ ...request, messages }), null)
+    assert.equal(decide({ ...request, messages }).tool, undefined)
+  }
+})
+
 test('the native TypeScript fixture serves models, tool SSE, HTTP failures and held-response cancellation', async () => {
   let release = () => {}
   const held = new Promise<void>(resolve => { release = resolve })
