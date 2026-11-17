@@ -36,7 +36,7 @@ export const DSH_TIMEOUT_MS = 60_000
  * `requests` is the app's request runtime every bridge of the harness routes through (request-runtime.ts).
  */
 export async function startHarness(t, { mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks } = {}) {
-  const { dir, defer } = scratch(t, 'dsh-harness-')
+  const { dir, defer: deferScratch } = scratch(t, 'dsh-harness-')
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)
@@ -51,11 +51,12 @@ export async function startHarness(t, { mcpServers = [], prewarmSessions = false
   writeProfile()
   const bridges = []
   const closers = []
-  t.after(async () => {
+  deferScratch(async () => {
     await Promise.all(bridges.map((bridge) => bridge.dispose()))
-    for (const close of [...closers].reverse()) close()
+    for (const close of [...closers].reverse()) await close()
     await llm.close()
   })
+  const defer = (close) => { closers.push(close) }
   const events = []
   /** @param {Partial<Parameters<typeof createAcpBridge>[0]>} [options] */
   function bridge(options = {}) {

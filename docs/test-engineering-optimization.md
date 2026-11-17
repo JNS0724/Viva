@@ -126,7 +126,7 @@ Requirements:
 - Keep independent subdirectories and business state per test.
 - Close processes and databases before removing that case directory, preserving LIFO resource order and the Windows deletion wait of up to 15 seconds.
 - Retain diagnostic directories when cleanup fails; do not hide a failure through container reuse.
-- Do not defer recursive deletion of case directories that child processes may still hold until the end of the file; the first Windows CI run demonstrated cleanup failure and a stuck test process with that approach.
+- `startHarness` must register DSH, fake LLM, and caller resource cleanup through `scratch.defer`, never a separate `t.after` that runs after directory deletion; Windows CI covers the cleanup failure and stuck process caused by the previous ordering.
 
 Only later evaluate sharing read-only build artifacts, profile templates, and fake-provider configuration. Never share mutable sessions.
 
