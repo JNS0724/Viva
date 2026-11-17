@@ -139,7 +139,6 @@ export const testLevels = {
     'mcp-import',
     'memory-coordination',
     'memory-node-runtime',
-    'memory-service',
     'memory-client',
     'remote-memory-channel',
     'memory-host-effects',
