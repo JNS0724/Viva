@@ -219,6 +219,8 @@ interface AgentApi extends DraftApi {
   exportDiagnostics: Invoke<'diagnostics:export'>
   openDiagnosticsFolder: Invoke<'diagnostics:open-folder'>
   diagnosticsStatus: Invoke<'diagnostics:status'>
+  clearDiagnostics: Invoke<'diagnostics:clear'>
+  debugDiagnostics: Invoke<'diagnostics:debug'>
   listMemoryFiles: Invoke<'memory:list-files'>
   readMemoryFile: Invoke<'memory:read-file'>
   setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>

@@ -62,6 +62,10 @@ export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: 
 export interface IpcResults {
   'diagnostics:export': { status: 'saved' | 'cancelled' | 'failed' | 'busy'; reason?: string }
   'diagnostics:open-folder': void
+  'diagnostics:binding': string | undefined
+  'diagnostics:health': string | undefined
+  'diagnostics:clear': { status: 'cleared' | 'cleanup_pending' | 'busy' }
+  'diagnostics:debug': void
   'diagnostics:status': { state: 'initializing' | 'ready' | 'stalled' | 'unavailable' | 'closed'; droppedCount: number; queuedBytes: number; activeCount: number; exporting: boolean }
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void

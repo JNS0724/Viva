@@ -14,8 +14,8 @@ export function observeDshDiagnostics(ctx: Context) {
   observe(() => {
     ctx.logger.exporter({ colors: false, export(message) {
       observe(() => {
-        if (message.type === 'debug') return
         emitDiagnostic({ event: 'operation.progress', operation: 'plugin',
+          ...(message.type === 'debug' ? { debug: true as const } : {}),
           identities: { methodId: message.name }, metrics: { count: message.args.length, eventCursor: message.sn },
           ...(message.type === 'error' ? { reason: 'unknown_error' as const, outcome: 'failed' as const } : {}) })
       })

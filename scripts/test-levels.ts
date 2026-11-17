@@ -6,6 +6,7 @@ export const testLevels = {
     'renderer-initialization',
     'diagnostics',
     'diagnostics-ipc',
+    'diagnostics-health',
     'memory-dream-tools',
     'memory-markdown',
     'memory-daily-usage',
@@ -305,6 +306,7 @@ export const testLevels = {
     'trace-plugin',
   ],
   timing: [
+    'diagnostics-sink',
     'backend-wire-timing',
   ],
 } as const

@@ -1,5 +1,35 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+/** The preload keeps at most one heartbeat awaiting its supervisor. No page content is inspected. */
+/** @type {string | undefined} */
+let diagnosticRunId
+let diagnosticActive = 0
+let diagnosticHealthPending = false
+let diagnosticLastPulse = performance.now()
+const diagnosticProcessId = globalThis.crypto?.randomUUID?.()
+ipcRenderer.on('diagnostics:binding', (_event, runId) => {
+  if (typeof runId === 'string' && /^[a-f0-9-]{36}$/.test(runId)) diagnosticRunId = runId
+})
+void ipcRenderer.invoke('diagnostics:binding').then(runId => { diagnosticRunId = runId }).catch(() => {})
+if (diagnosticProcessId) setInterval(() => {
+  const now = performance.now(), eventLoopDelayMs = Math.max(0, now - diagnosticLastPulse - 5000)
+  diagnosticLastPulse = now
+  if (diagnosticHealthPending) return
+  diagnosticHealthPending = true
+  void ipcRenderer.invoke('diagnostics:health', { type: 'diagnostic-health', version: 1, component: 'renderer',
+    processInstanceId: diagnosticProcessId, ...(diagnosticRunId ? { diagnosticRunId } : {}),
+    activeCount: diagnosticActive, oldestMs: 0, eventLoopDelayMs, sinkState: 'ready', droppedCount: 0,
+  }).then(runId => { diagnosticRunId = runId }).catch(() => {}).finally(() => { diagnosticHealthPending = false })
+}, 5000)
+
+/** @param {unknown} event */
+function bindDiagnosticEvent(event) {
+  if (!event || typeof event !== 'object') return undefined
+  return { ...event, ...(diagnosticRunId ? { diagnostics: { version: 1,
+    traceId: globalThis.crypto.randomUUID().replaceAll('-', ''), spanId: globalThis.crypto.randomUUID().replaceAll('-', '').slice(0, 16), diagnosticRunId,
+  } } : {}) }
+}
+
 /**
  * @template {import('../shared/ipc-contract.ts').Channel} C
  * @param {C} channel
@@ -11,16 +41,19 @@ function diagnosticInvoke(channel, args) {
   let diagnostics
   try {
     const hex = (/** @type {number} */ size) => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(size)), value => value.toString(16).padStart(2, '0')).join('')
-    diagnostics = { version: 1, traceId: hex(16), spanId: hex(8) }
+    diagnostics = { version: 1, traceId: hex(16), spanId: hex(8), ...(diagnosticRunId ? { diagnosticRunId } : {}) }
   } catch { return ipcRenderer.invoke(channel, ...args) }
+  diagnosticActive++
   const started = performance.now()
   /** @param {import('../diagnostics/contracts.ts').DiagnosticEvent} event */
   const report = event => { try { ipcRenderer.send('diagnostics:event', { ...event, diagnostics }) } catch { /* Logging must not fail a call. */ } }
   report({ event: 'operation.start', operation: channel === 'memory:get' ? 'memory.get' : 'ipc' })
   return ipcRenderer.invoke('diagnostics:invoke', { channel, args, diagnostics }).then(value => {
     report({ event: 'operation.end', operation: channel === 'memory:get' ? 'memory.get' : 'ipc', outcome: 'completed', metrics: { durationMs: performance.now() - started } })
+    diagnosticActive--
     return value
   }, error => {
+    diagnosticActive--
     report({ event: 'operation.end', operation: channel === 'memory:get' ? 'memory.get' : 'ipc', outcome: 'failed', reason: 'unknown_error', metrics: { durationMs: performance.now() - started } })
     throw error
   })
@@ -28,7 +61,7 @@ function diagnosticInvoke(channel, args) {
 
 // Each call takes its channel's arguments, as the page is told it does (globals.d.ts AgentApi).
 contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
-  reportDiagnostic: (event) => { try { ipcRenderer.send('diagnostics:event', event) } catch { /* Optional observation only. */ } },
+  reportDiagnostic: (event) => { try { ipcRenderer.send('diagnostics:event', bindDiagnosticEvent(event)) } catch { /* Optional observation only. */ } },
   getLanguage: () => ipcRenderer.invoke('language:get'),
   setLanguage: (language) => ipcRenderer.invoke('language:set', language),
   onLanguage: (callback) => {
@@ -131,6 +164,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   exportDiagnostics: () => ipcRenderer.invoke('diagnostics:export'),
   openDiagnosticsFolder: () => ipcRenderer.invoke('diagnostics:open-folder'),
   diagnosticsStatus: () => ipcRenderer.invoke('diagnostics:status'),
+  clearDiagnostics: () => ipcRenderer.invoke('diagnostics:clear'),
+  debugDiagnostics: (enabled) => ipcRenderer.invoke('diagnostics:debug', enabled),
   listMemoryFiles: (request) => ipcRenderer.invoke('memory:list-files', request),
   readMemoryFile: (identity, restrictionId) => ipcRenderer.invoke('memory:read-file', identity, restrictionId),
   setMemoryFileEnabled: (request) => ipcRenderer.invoke('memory:set-file-enabled', request),

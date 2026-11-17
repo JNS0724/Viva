@@ -23,6 +23,7 @@ export function safeDiagnosticEvent(raw: unknown): DiagnosticEvent | undefined {
       if (typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) { metrics ??= {}; metrics[key] = value }
     }
     return { event: raw.event, operation: raw.operation,
+      ...(raw.debug === true ? { debug: true as const } : {}),
       ...(member(STAGES, raw.stage) ? { stage: raw.stage } : {}),
       ...(member(REASONS, raw.reason) ? { reason: raw.reason } : {}),
       ...(member(OUTCOMES, raw.outcome) ? { outcome: raw.outcome } : {}),
@@ -30,7 +31,7 @@ export function safeDiagnosticEvent(raw: unknown): DiagnosticEvent | undefined {
   } catch { return undefined }
 }
 export interface StoredDiagnostic extends DiagnosticEvent {
-  level?: 30 | 40 | 50
+  level?: 20 | 30 | 40 | 50
   schemaVersion: 1; time: string; sequence: number; component: DiagnosticComponent
   processInstanceId: string; diagnosticRunId: string; traceId: string; spanId: string; parentSpanId?: string
   appVersion: string; platform: string; arch: string
@@ -103,7 +104,7 @@ export function sanitizeStoredDiagnostic(raw: unknown, exportIdentity: Diagnosti
       identities[key as keyof typeof identities] = diagnosticAlias(exportIdentity, value)
     }
     return { ...event, ...(event.identities ? { identities } : {}), schemaVersion: 1, time: raw.time, sequence: Number(raw.sequence), component: raw.component,
-      ...(raw.level === 30 || raw.level === 40 || raw.level === 50 ? { level: raw.level } : {}),
+      ...(raw.level === 20 || raw.level === 30 || raw.level === 40 || raw.level === 50 ? { level: raw.level } : {}),
       appVersion: version(raw.appVersion), componentVersion: version(raw.componentVersion),
       buildCommit: typeof raw.buildCommit === 'string' && /^[a-f0-9]{7,40}$/.test(raw.buildCommit) ? raw.buildCommit : 'unknown',
       ...(typeof raw.monotonicMs === 'number' && Number.isFinite(raw.monotonicMs) && raw.monotonicMs >= 0 && raw.monotonicMs <= Number.MAX_SAFE_INTEGER ? { monotonicMs: raw.monotonicMs } : {}),

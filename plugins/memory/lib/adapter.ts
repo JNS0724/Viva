@@ -36,7 +36,8 @@ import { recordCompactionInputs, recordCompactionRequest } from './native/compac
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
 import { memorySource } from './source.ts'
-import { createNodeDiagnostics } from '../../../src/diagnostics/node/logger.ts'
+import { createManagedDiagnostics } from '../../../src/diagnostics/node/managed.ts'
+import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
 import { diagnosticPort, emitDiagnostic, installDiagnosticPort, withOperation, withRemoteOperation } from '../../../src/diagnostics/node/context.ts'
 import { parseDiagnosticContext } from '../../../src/diagnostics/contracts.ts'
 import { observeDshDiagnostics } from './diagnostics.ts'
@@ -62,12 +63,16 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   let lastRoute: { provider: string, model: string } | null = null
   const send = (message: object) => { if (config.host && port.connected) port.send?.(message, () => {}) }
   const root = path.resolve(config.dataRoot ?? path.join(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), 'memory'))
-  const diagnostics = createNodeDiagnostics({ directory: typeof config.diagnosticsRoot === 'string' && path.isAbsolute(config.diagnosticsRoot)
+  const diagnostics = createManagedDiagnostics({ directory: typeof config.diagnosticsRoot === 'string' && path.isAbsolute(config.diagnosticsRoot)
     ? config.diagnosticsRoot : path.join(root, 'diagnostics'), component: 'dsh', componentVersion: '0.2.0',
     version: typeof config.diagnosticsVersion === 'string' ? config.diagnosticsVersion : 'unknown' })
   const restoreDiagnostics = installDiagnosticPort(diagnostics)
+  const diagnosticsHub = createDiagnosticHub({ component: 'dsh', writers: [{ component: 'dsh', writer: diagnostics }],
+    ...(config.host ? { send: (message: object, settled: (error?: Error | null) => void) => {
+      if (port.connected && port.send) port.send(message, settled); else settled(new Error('Diagnostic parent disconnected'))
+    } } : {}) })
   let diagnosticsTransferred = false
-  const stopDiagnostics = async () => { restoreDiagnostics(); await diagnostics.close().catch(() => false) }
+  const stopDiagnostics = async () => { diagnosticsHub.close(); restoreDiagnostics(); await diagnostics.close().catch(() => false) }
   // Cordis disposes effects concurrently. Before owner cleanup is registered, this guard owns the sink.
   ctx.effect(() => async () => {
     if (diagnosticsTransferred) return
@@ -334,6 +339,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   })
 
   const receive = (raw: unknown) => {
+    if (diagnosticsHub.receive(raw)) return
     const message = objectOf(raw)
     if (!config.host || message?.type !== 'memory_host_request' || typeof message.requestId !== 'string') return
     const requestId = message.requestId

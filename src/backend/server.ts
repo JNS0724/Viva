@@ -1,6 +1,7 @@
 import { getLocale } from '../shared/i18n/locale.ts'
 import path from 'node:path'
-import { createNodeDiagnostics } from '../diagnostics/node/logger.ts'
+import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
+import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
 import { emitDiagnostic, installDiagnosticPort } from '../diagnostics/node/context.ts'
 import pkg from '../../package.json' with { type: 'json' }
 import { imageResponse } from './image-protocol.ts'
@@ -34,8 +35,12 @@ function fail(message: string): void {
 }
 
 async function start(message: StartMessage) {
-  const diagnostics = createNodeDiagnostics({ directory: path.join(message.paths.userData, 'diagnostics'), component: 'backend', version: pkg.version })
+  const diagnostics = createManagedDiagnostics({ directory: path.join(message.paths.userData, 'diagnostics'), component: 'backend', version: pkg.version })
   installDiagnosticPort(diagnostics)
+  const hub = createDiagnosticHub({ component: 'backend', writers: [{ component: 'backend', writer: diagnostics }],
+    send: (message, settled) => { if (process.connected && process.send) process.send(message, settled); else settled(new Error('Diagnostic parent disconnected')) } })
+  const diagnosticMessage = (raw: unknown) => { hub.receive(raw) }
+  process.on('message', diagnosticMessage)
   emitDiagnostic({ event: 'process.start', operation: 'startup', stage: 'start' })
   // Electron as Node is for this process only: what it starts (dsh, pnpm) is told so on its own where it needs it.
   delete process.env.ELECTRON_RUN_AS_NODE
@@ -89,7 +94,7 @@ async function start(message: StartMessage) {
     await backend.stop()
     backend.close()
     // The answer to `close` goes out before the server does.
-    setImmediate(() => { void server.close().then(() => diagnostics.close()).finally(() => process.exit(0)) })
+    setImmediate(() => { hub.close(); process.off('message', diagnosticMessage); void server.close().then(() => diagnostics.close()).finally(() => process.exit(0)) })
   }
 
   const port = await server.listen()

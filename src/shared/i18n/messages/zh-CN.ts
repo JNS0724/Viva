@@ -1349,4 +1349,9 @@ export const zhCN = {
   "plugins.problem.network": "连不上包的源，检查网络后再试。",
   "plugins.problem.incompatible-version": "这个插件不支持 Viva 里的 dsh 版本。",
   "plugins.problem.unknown": "插件管理器没能做到：{detail}",
+  "diagnostics.clear": "清空本地诊断日志",
+  "diagnostics.clear.done": "本地诊断日志已清空，正在进行的工作继续运行。",
+  "diagnostics.clear.pending": "尚未确认清理完成，请在进程恢复响应后重试清空。",
+  "diagnostics.debug": "开启调试日志（15 分钟）",
+  "diagnostics.debug.stop": "停止调试日志",
 } as const satisfies Record<MessageKey, string>

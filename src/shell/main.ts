@@ -23,11 +23,14 @@ import type { KeptImage } from '../backend/image-store.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
-import { createNodeDiagnostics } from '../diagnostics/node/logger.ts'
+import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
+import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
+import { createDiagnosticClearer } from '../diagnostics/node/clear.ts'
 import { emitDiagnostic, inDiagnosticContext, installDiagnosticPort } from '../diagnostics/node/context.ts'
 import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { createDiagnosticExporter } from '../diagnostics/node/export.ts'
 import { registerDiagnosticIpc } from './diagnostics-ipc.ts'
+import { createRendererHealth } from './renderer-health.ts'
 import type { IpcResults } from '../shared/ipc-results.ts'
 
 /**
@@ -49,24 +52,27 @@ if (profileDirectory) {
 }
 
 const diagnosticsDirectory = path.join(app.getPath('userData'), 'diagnostics')
-const shellDiagnostics = createNodeDiagnostics({ directory: diagnosticsDirectory, component: 'shell', version: app.getVersion() })
-const rendererDiagnostics = createNodeDiagnostics({ directory: diagnosticsDirectory, component: 'renderer', version: app.getVersion() })
+const shellDiagnostics = createManagedDiagnostics({ directory: diagnosticsDirectory, component: 'shell', version: app.getVersion() })
+const rendererDiagnostics = createManagedDiagnostics({ directory: diagnosticsDirectory, component: 'renderer', version: app.getVersion() })
 let rendererIpcDrops = () => 0
 function rendererDiagnosticSnapshot() {
   const snapshot = rendererDiagnostics.snapshot()
   return { ...snapshot, stats: { ...snapshot.stats, droppedCount: snapshot.stats.droppedCount + rendererIpcDrops() } }
 }
 installDiagnosticPort(shellDiagnostics)
+const diagnosticsHub = createDiagnosticHub({ component: 'shell', writers: [
+  { component: 'shell', writer: shellDiagnostics }, { component: 'renderer', writer: rendererDiagnostics, snapshot: rendererDiagnosticSnapshot },
+], onBinding: runId => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('diagnostics:binding', runId) } })
 emitDiagnostic({ event: 'process.start', operation: 'startup' })
-const diagnosticExporter = createDiagnosticExporter({ quota: shellDiagnostics.quota, snapshots: async () => [
-  { component: 'shell', ...shellDiagnostics.snapshot() }, { component: 'renderer', ...rendererDiagnosticSnapshot() },
-] })
+const diagnosticExporter = createDiagnosticExporter({ quota: shellDiagnostics.quota, snapshots: () => diagnosticsHub.collect() })
+const diagnosticClearer = createDiagnosticClearer({ quota: shellDiagnostics.quota, hub: diagnosticsHub, idle: () => diagnosticExporter.state() === 'idle' && !exportingDiagnostics })
 const forwardedDiagnosticChannels = new Set<string>()
+const rendererHealth = createRendererHealth({ snapshot: rendererDiagnosticSnapshot })
 let exportingDiagnostics: Promise<IpcResults['diagnostics:export']> | undefined
 
 function exportDiagnostics(): Promise<IpcResults['diagnostics:export']> {
   if (exportingDiagnostics) return exportingDiagnostics
-  if (diagnosticExporter.state() !== 'idle') return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
+  if (diagnosticExporter.state() !== 'idle' || diagnosticClearer.pending()) return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
   exportingDiagnostics = (async (): Promise<IpcResults['diagnostics:export']> => {
     const selected = await dialog.showSaveDialog({ title: t('diagnostics.export.title'),
       defaultPath: path.join(app.getPath('downloads'), `Viva-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`),
@@ -91,6 +97,18 @@ function exportDiagnostics(): Promise<IpcResults['diagnostics:export']> {
   return exportingDiagnostics
 }
 const openDiagnosticsFolder = async () => { await shell.openPath(diagnosticsDirectory).catch(() => {}) }
+async function clearDiagnostics() {
+  const result = await diagnosticClearer.clear()
+  emitDiagnostic({ event: 'diagnostics.cleared', operation: 'diagnostics.clear', outcome: result.status === 'cleared' ? 'completed' : 'failed',
+    reason: result.status === 'cleared' ? 'normal' : 'cleanup_pending' })
+  return result
+}
+async function clearDiagnosticsFromMenu() {
+  const result = await clearDiagnostics()
+  await dialog.showMessageBox({ type: result.status === 'cleared' ? 'info' : 'warning', title: t('diagnostics.clear'),
+    message: t(result.status === 'cleared' ? 'diagnostics.clear.done' : 'diagnostics.clear.pending') })
+}
+const debugDiagnostics = (enabled: boolean) => diagnosticsHub.debug(enabled ? 15 * 60_000 : 0)
 
 function installDiagnosticsMenu() {
   if (process.platform !== 'darwin') return
@@ -102,9 +120,15 @@ function installDiagnosticsMenu() {
     const exported = menu.getMenuItemById('viva-diagnostics-export'), opened = menu.getMenuItemById('viva-diagnostics-open')
     if (exported) exported.label = t('diagnostics.export')
     if (opened) opened.label = t('diagnostics.open')
+    for (const [id, key] of [['viva-diagnostics-clear', 'diagnostics.clear'], ['viva-diagnostics-debug', 'diagnostics.debug'], ['viva-diagnostics-debug-stop', 'diagnostics.debug.stop']] as const) {
+      const item = menu.getMenuItemById(id); if (item) item.label = t(key)
+    }
   } else menu.append(new MenuItem({ id: 'viva-diagnostics', label: t('diagnostics.menu'), submenu: [
     { id: 'viva-diagnostics-export', label: t('diagnostics.export'), click: () => { void exportDiagnostics() } },
     { id: 'viva-diagnostics-open', label: t('diagnostics.open'), click: () => { void openDiagnosticsFolder() } },
+    { id: 'viva-diagnostics-clear', label: t('diagnostics.clear'), click: () => { void clearDiagnosticsFromMenu() } },
+    { id: 'viva-diagnostics-debug', label: t('diagnostics.debug'), click: () => debugDiagnostics(true) },
+    { id: 'viva-diagnostics-debug-stop', label: t('diagnostics.debug.stop'), click: () => debugDiagnostics(false) },
   ] }))
   Menu.setApplicationMenu(menu)
 }
@@ -406,6 +430,9 @@ function showTray() {
     onPending: openFeedPage,
     onDiagnosticsExport: () => { void exportDiagnostics() },
     onDiagnosticsOpen: () => { void openDiagnosticsFolder() },
+    onDiagnosticsClear: () => { void clearDiagnosticsFromMenu() },
+    onDiagnosticsDebug: () => debugDiagnostics(true),
+    onDiagnosticsDebugStop: () => debugDiagnostics(false),
     pending: pendingFeed,
   })
 }
@@ -545,6 +572,7 @@ app.whenReady().then(async () => {
   const diagnosticIpc = registerDiagnosticIpc(ipcMain, { renderer: rendererDiagnostics, forwarded: () => forwardedDiagnosticChannels,
     invoke: async (channel, args) => (await backendConnection()).rpc(channel, args),
     exportBundle: exportDiagnostics, openFolder: openDiagnosticsFolder,
+    clear: clearDiagnostics, debug: debugDiagnostics, health: rendererHealth.receive,
     status: () => ({ ...shellDiagnostics.snapshot().stats, exporting: diagnosticExporter.state() !== 'idle' }),
   })
   rendererIpcDrops = diagnosticIpc.droppedCount
@@ -590,6 +618,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   backendClosing ??= keeper.shutdown().finally(async () => {
     emitDiagnostic({ event: 'process.exit', operation: 'shutdown', reason: 'normal' })
+    diagnosticsHub.close(); rendererHealth.close()
     await Promise.allSettled([shellDiagnostics.close(), rendererDiagnostics.close()])
     backendClosed = true
     app.quit()

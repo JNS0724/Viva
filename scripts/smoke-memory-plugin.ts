@@ -375,6 +375,11 @@ try {
   assert.deepEqual(dream.stages, ['extract', 'integrate:deferred', 'integrate:resumed', 'verify', 'tag'],
     'the same dormant work resumes without another Extract')
   assert.deepEqual(new Set(dream.tools), new Set(['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update']))
+  await until(() => readDream(db => {
+    const notes = db.prepare('SELECT path,revision,processed FROM memory_daily_notes').all()
+      .filter(note => venueDaily().some(file => file.endsWith(String(note.path).split('/').join(path.sep))))
+    return notes.length > 0 && notes.every(note => note.revision === note.processed)
+  }), 'the dream finalizes its durable input checkpoints after TAG publication')
   const checkpoint = readDream(db => {
     const receipt = db.prepare('SELECT receipt FROM memory_document_receipts WHERE operation=?').get(deferredId)
     assert.ok(receipt, 'the original deferred operation owns the committed document receipt')

@@ -1348,5 +1348,10 @@ export const en = {
   "plugins.problem.network": "Could not reach the package registry. Check the network and try again.",
   "plugins.problem.incompatible-version": "This plugin does not support the dsh version in Viva.",
   "plugins.problem.unknown": "The plugin manager could not do that: {detail}",
+  "diagnostics.clear": "Clear local diagnostics",
+  "diagnostics.clear.done": "Local diagnostics cleared. Active work continues.",
+  "diagnostics.clear.pending": "Cleanup is not confirmed yet. Retry clearing after the processes respond.",
+  "diagnostics.debug": "Enable debug logs for 15 minutes",
+  "diagnostics.debug.stop": "Stop debug logs",
 } as const
 export type MessageKey = keyof typeof en

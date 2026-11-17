@@ -27,6 +27,10 @@ export interface NodeDiagnostics extends DiagnosticPort {
   readonly quota: DiagnosticQuota
   readonly directory: string
   snapshot(): { stats: DiagnosticStats; active: Array<{ operation: string; stage?: string; ageMs: number }> }
+  identity(): { diagnosticRunId: string, processInstanceId: string } | undefined
+  released(): boolean
+  setDebug(durationMs: number): void
+  debugRemainingMs(): number
   close(): Promise<boolean>
 }
 
@@ -36,6 +40,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
 }: { directory: string; component: DiagnosticComponent; version?: string; componentVersion?: string; fileBytes?: number; queueBytes?: number; quota?: DiagnosticQuota }): NodeDiagnostics {
   const instance = randomUUID()
   let state: State = 'initializing', closing = false, draining = false, closePromise: Promise<boolean> | undefined
+  let debugUntil = 0
   let droppedCount = 0, reserved = 0, writtenBytes = 0, sequence = 0
   let peakQueuedBytes = 0, maxWriteDelayMs = 0, encodingAt = 0
   let wallMillis = -1, wallTime = ''
@@ -58,6 +63,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
   }
   const fail = (error: unknown) => {
     reason = safeDiagnosticReason(error); state = closing ? 'closed' : 'unavailable'
+    if (reason === 'epoch_changed') { identity = undefined; format = undefined }
     discardQueues()
     resolveReady()
     retryWhenClosed()
@@ -99,7 +105,8 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
       encodingAt = item.admittedAt
       try {
         const record = format(item.event, item.context, item.sequence, item.time, item.admittedAt)
-        if (item.event.outcome === 'failed') logger.error(record)
+        if (item.event.debug) logger.debug(record)
+        else if (item.event.outcome === 'failed') logger.error(record)
         else if (item.event.event === 'operation.slow' || item.event.event === 'retry.scheduled' || item.event.event === 'context.dropped') logger.warn(record)
         else logger.info(record)
       }
@@ -130,7 +137,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     let slot: DiagnosticSlot | undefined, descriptor: number | undefined
     try {
       if (identity && !format) format = diagnosticRecordFormatter(identity, { component, instance, version, componentVersion })
-      slot = await quota.reserve(component)
+      slot = await quota.reserve(component, identity?.runId)
       if (closing && !draining) { await quota.close(slot); return }
       // SonicBoom leaves its ready/periodic-flush lifecycle pending after an asynchronous open error.
       // Acquire exclusively first, so no stream/timer exists on failure and an existing link is never followed.
@@ -230,6 +237,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
       if (closing) { droppedCount++; return undefined }
       let event = safeDiagnosticEvent(raw)
       if (!event) { droppedCount++; return undefined }
+      if (event.debug && performance.now() >= debugUntil) return undefined
       let context = suppliedContext ?? diagnosticContext() ?? newDiagnosticContext()
       const key = event.identities?.operationId === undefined ? undefined : `${event.operation}:${event.identities.operationId}`
       if (key && explicit.has(key)) context = explicit.get(key)!
@@ -255,6 +263,14 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     },
     snapshot: () => ({ stats: { state, queuedBytes: reserved, peakQueuedBytes, maxWriteDelayMs, droppedCount, writtenBytes, activeCount: active.size, ...(reason ? { reason } : {}) },
       active: [...active.values()].map(entry => ({ operation: entry.event.operation, ...(entry.event.stage ? { stage: entry.event.stage } : {}), ageMs: performance.now() - entry.started })) }),
+    identity: () => identity ? { diagnosticRunId: identity.runId, processInstanceId: instance } : undefined,
+    released: () => closing && !creating && !rotating && !current && cleanup.size === 0 && !cleanupUncertain,
+    setDebug(durationMs) {
+      const duration = Number.isFinite(durationMs) ? Math.min(15 * 60_000, Math.max(0, durationMs)) : 0
+      debugUntil = duration ? performance.now() + duration : 0
+      logger.level = duration ? 'debug' : 'info'
+    },
+    debugRemainingMs: () => Math.max(0, debugUntil - performance.now()),
     close() {
       if (closePromise) return closePromise
       closePromise = (async () => {

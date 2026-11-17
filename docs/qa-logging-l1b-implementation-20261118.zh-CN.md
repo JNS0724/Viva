@@ -1,6 +1,6 @@
 # L1b 记忆可用性实施记录
 
-日期：2026-11-18。分支 `codex/local-diagnostics`，worktree 为 `/private/tmp/viva-local-diagnostics`，延续 L1a 未提交实现。原工作区和 ReMe 分支未被修改。本轮没有新增运行时依赖。
+日期：2026-11-18。分支 `codex/local-diagnostics`，worktree 为 `/private/tmp/viva-local-diagnostics`，延续已本地提交的 L1a/L1b 实现。原工作区和 ReMe 分支未被修改。本轮没有新增运行时依赖。
 
 ## 实现与分层
 
@@ -40,3 +40,21 @@
 ## 边界与剩余工作
 
 本轮不放宽 L1a 的性能门槛；上一轮 P95 增加 0.426792ms / 13.0762% 的失败仍有效。L1c 的心跳、清空协调与 Windows 故障矩阵、L2 其余主线日志覆盖、L3 双平台安装包和发布性能验收仍未完成。Windows 实机验证未在本轮 macOS 环境执行。本记录是实施自检，不代表新增了独立子 agent 的全面代码评审。
+
+
+## 追加：dream 重试与前台发送
+
+已确认一条风险路径，不将它等同于另一台电脑现场的唯一原因：`runJob` 无条件通过全局物理发送 fence 执行 notes/documents recovery，即便没有待恢复的文件提交。每次失败重试都可能关闭前台准入、撤销未提交的前台 transport；若 transport 尚未真实 settlement，fence 仍须保持等待。
+
+修复在存储端提供只读 `needsRecovery()`，Core 仅在确有 journal/清理待办时进入原有 mutation；不释放实际 transport、不改变 owner epoch，不绕过来源变更/遗忘准入。同时修复临时准入不满足的扫描：保留当前 dream 待办并等待下一次 wake，不能把暂时不可用的笔记视为已完成的空扫描、推迟到次日。
+
+复现与回归：
+
+- 用本地提交 `63043ac` 的旧 `memory-dream-jobs.ts` 在隔离临时模块运行同一回归，得到前台 permit 的 `true !== false`（被错误撤销）；当前源码通过。临时模块已删除，失败日志保留于 `/private/tmp/viva-l1b-old-fence-repro.log`。
+- 模型超时、无效 JSON、语义校验拒绝、取消，连续失败和 runner 恢复均不撤销无关的前台发送；真正的 prepared 文件恢复继续撤销并等待 transport settlement。
+- 真实嵌入式 DSH 使用本机 HTTP 503 和无效 JSON，实际发生至少两轮失败后，带已许可记忆的前台请求能够送到模型；再次重启恢复 dream 后仍能发送，memory:get 可读，owner 没有遗留 source-change intent。
+- 首轮实机回归误把冷启动尚未选择模型的 unavailable route 计为模型失败；修正为先通过真实前台读取已许可记忆、选定模型，再等待实际失败次数。未放宽生产准入。
+
+完整测试及 L1c 故障验证的最终追加记录见 [L1c 实施记录](qa-logging-l1c-implementation-20261118.zh-CN.md)。
+
+追加修复已本地提交 `254dc2e`。最终完整测试 2182 项：2180 通过、2 跳过、0 失败；完整冒烟 15/15 通过，另有最终构建的进程暂停/清空恢复与原生导出故障冒烟通过。

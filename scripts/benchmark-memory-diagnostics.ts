@@ -52,7 +52,7 @@ function mode(enabled: boolean): Promise<{ stats: unknown; cpu: NodeJS.CpuUsage 
 }
 const handlers = new Map<string, { kind: 'handle' | 'on'; listener: ChannelListener }>()
 registerRuntimeMemoryIpc(checkedIpc({ handle: (key, listener) => { handlers.set(key, { kind: 'handle', listener }) }, on() {} }), {
-  client: createVivaMemoryClient(channel.call), cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null,
+  client: createVivaMemoryClient(channel.call, channel.readBatch), cwd: () => '', habits: () => ({ text: '', samples: 0 }), chooseDocs: async () => null,
 })
 const remote = createRemoteHost({ start: START, secrets: createEnvelope({ key: randomBytes(32) }) })
 const token = randomBytes(32).toString('hex')

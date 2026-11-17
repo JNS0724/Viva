@@ -6,7 +6,7 @@ import type { DiagnosticComponent } from '../contracts.ts'
 
 export interface DiagnosticSlot { id: string; file: string; pid: number; instance: string; bytes: number; closed: boolean; createdAt: number }
 export interface ExportPin { id: string; pid: number; files: string[]; temporary?: string }
-interface Inventory { version: 1; slots: DiagnosticSlot[]; pins: ExportPin[] }
+interface Inventory { version: 1; slots: DiagnosticSlot[]; pins: ExportPin[]; runId?: string; clearing?: string }
 export const DIAGNOSTIC_FILE = /^(shell|renderer|backend|dsh|memory|worker)-[a-f0-9-]{36}\.jsonl$/
 const INVENTORY_BYTES = 64 * 1024
 const CONTROL_BYTES = 2 * INVENTORY_BYTES + 8192
@@ -14,7 +14,7 @@ const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const isObject = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
 const absent = (error: unknown) => isObject(error) && error.code === 'ENOENT'
 const missingPid = (pid: number) => { try { process.kill(pid, 0); return false } catch (error) { return isObject(error) && error.code === 'ESRCH' } }
-const unavailable = (message: string, code: 'quota_full' | 'busy') => Object.assign(new Error(message), { code })
+const unavailable = (message: string, code: 'quota_full' | 'busy' | 'epoch_changed') => Object.assign(new Error(message), { code })
 
 /** Reservations include open files and pins. Uncertain handles remain charged. */
 export class DiagnosticQuota {
@@ -42,6 +42,7 @@ export class DiagnosticQuota {
     }
     const data: unknown = JSON.parse(text)
     if (!isObject(data) || data.version !== 1 || !Array.isArray(data.slots) || data.slots.length > 128 || !Array.isArray(data.pins) || data.pins.length > 1) throw new Error('Invalid diagnostic inventory')
+    for (const key of ['runId', 'clearing']) if (data[key] !== undefined && (typeof data[key] !== 'string' || !/^[a-f0-9-]{36}$/.test(data[key]))) throw new Error('Invalid diagnostic generation')
     for (const slot of data.slots) {
       if (!isObject(slot) || typeof slot.id !== 'string' || !/^[a-f0-9-]{36}$/.test(slot.id)
         || typeof slot.file !== 'string' || !DIAGNOSTIC_FILE.test(slot.file) || typeof slot.instance !== 'string'
@@ -102,8 +103,11 @@ export class DiagnosticQuota {
     this.serial = task
     return task
   }
-  reserve(component: DiagnosticComponent): Promise<DiagnosticSlot> {
+  reserve(component: DiagnosticComponent, runId?: string): Promise<DiagnosticSlot> {
     return this.run(async data => {
+      if (data.clearing) throw unavailable('Diagnostic clear admission is paused', 'busy')
+      if (data.runId && data.runId !== runId) throw unavailable('Diagnostic generation changed', 'epoch_changed')
+      if (runId) data.runId = runId
       const active = new Set(data.slots.filter(slot => !slot.closed).map(slot => slot.instance))
       if (!active.has(this.instance) && active.size >= DIAGNOSTIC_LIMITS.writers) throw unavailable('Diagnostic writer limit', 'quota_full')
       const pinned = new Set(data.pins.flatMap(pin => pin.files))
@@ -134,6 +138,7 @@ export class DiagnosticQuota {
   }
   pin(pid: number, options: { id?: string; temporary?: string } = {}): Promise<{ pin: ExportPin; files: Array<{ file: string; cutoff: number }> }> {
     return this.run(async data => {
+      if (data.clearing) throw unavailable('Diagnostic clear admission is paused', 'busy')
       if (data.pins.length) throw unavailable('Diagnostic export is active', 'busy')
       const files: Array<{ file: string; cutoff: number }> = []
       let bytes = 0
@@ -154,6 +159,24 @@ export class DiagnosticQuota {
     })
   }
   release(pin: ExportPin): Promise<void> { return this.run(async data => { data.pins = data.pins.filter(item => item.id !== pin.id) }) }
+  clearState(): Promise<{ clearId?: string, runId?: string }> {
+    return this.run(async data => ({ clearId: data.clearing, runId: data.runId }))
+  }
+  beginClear(clearId: string): Promise<boolean> {
+    return this.run(async data => {
+      if (!/^[a-f0-9-]{36}$/.test(clearId)) throw new Error('Invalid diagnostic clear identity')
+      if (data.pins.length || data.clearing && data.clearing !== clearId) return false
+      data.clearing = clearId
+      return true
+    })
+  }
+  finishClear(clearId: string, runId: string): Promise<boolean> {
+    return this.run(async data => {
+      if (data.clearing !== clearId || data.slots.some(slot => !slot.closed) || data.pins.length || !/^[a-f0-9-]{36}$/.test(runId)) return false
+      data.runId = runId; delete data.clearing
+      return true
+    })
+  }
   clearClosed(): Promise<boolean> {
     return this.run(async data => {
       const pinned = new Set(data.pins.flatMap(pin => pin.files))

@@ -4,6 +4,7 @@ import type { StoredEvent } from '../backend/event-core.ts'
 import { diagnosticContext, emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
 import { encodeDiagnosticEnvelope } from '../diagnostics/node/envelope.ts'
 import { diagnosticOperationForChannel } from '../diagnostics/node/operations.ts'
+import { diagnosticHub } from '../diagnostics/node/hub.ts'
 import { createRequestBudget, MEMORY_READ_BUDGET_MS, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
 import { t } from '../shared/i18n/translate.ts'
 import {
@@ -249,8 +250,10 @@ export function spawnBackend({ entry, start, onExit }: {
     serialization: 'json',
   })
   let expected = false
+  const diagnostics = diagnosticHub()?.attach('backend', (message, settled) => { child.send(message, settled) })
   const exited = new Promise<void>((resolve) => {
     child.once('exit', (code, signal) => {
+      diagnostics?.close()
       resolve()
       if (!expected) onExit(code, signal)
     })
@@ -281,7 +284,11 @@ export function spawnBackend({ entry, start, onExit }: {
       reject(new Error(`the backend ended before it was ready (exit ${code})`))
     }
     child.once('exit', early)
-    child.once('message', (raw) => {
+    let ready = false
+    child.on('message', (raw) => {
+      if (diagnostics?.receive(raw)) return
+      if (ready || !raw || typeof raw !== 'object' || !('type' in raw) || !['ready', 'failed'].includes(String(raw.type))) return
+      ready = true
       clearTimeout(timer)
       child.off('exit', early)
       const message = raw as ReadyMessage | FailedMessage

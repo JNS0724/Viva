@@ -1,4 +1,7 @@
 import test from 'node:test'
+import { spawnBackend } from '../src/shell/backend-client.ts'
+import { START, TOKEN } from './fixtures/backend-wire.ts'
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { mkdtemp, writeFile, readFile, appendFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,6 +28,15 @@ const fixture = (sequence: number) => ({ schemaVersion: 1, time: '2026-11-17T00:
 const report = (): DiagnosticFileManifest => ({ entry: 'backend-1.jsonl', rawCutoffBytes: 0, sourceBytesRead: 0,
   exportedThroughByte: 0, trailingBytesOmitted: 0, partial_trailing_record: false, outputBytes: 0, invalid_record: 0 })
 const scratch = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostic-export-'))
+
+test('backend startup explicitly separates early health messages from its ready handshake', { timeout: 10_000 }, async t => {
+  let unexpected = false
+  const backend = await spawnBackend({ entry: fileURLToPath(new URL('./fixtures/diagnostic-startup.ts', import.meta.url)),
+    start: { ...START, type: 'start', token: TOKEN, dataKey: null }, onExit: () => { unexpected = true } })
+  t.after(() => backend.shutdown())
+  assert.equal(backend.ready.type, 'ready')
+  assert.equal(unexpected, false)
+})
 
 /** Independent store-only ZIP reader: checks central offsets, local headers and native CRC32. */
 function unzipStored(archive: Buffer): Map<string, Buffer> {
@@ -132,16 +144,18 @@ test('real ZIP export respects fixed cutoffs, excludes private files and validat
     await appendFile(path.join(directory, name), `${JSON.stringify(fixture(9))}\n`)
     const destination = path.join(directory, 'diagnostics.zip')
     await writeDiagnosticBundle({ directory, destination, files: [{ file: name, cutoff: Buffer.byteLength(source) }], snapshots: [
-      { component: 'shell', stats: { state: 'ready', queuedBytes: 0, secret: 'SNAPSHOT_CANARY' }, active: [] },
+      { component: 'shell', stats: { state: 'ready', queuedBytes: 0, activeCount: 99, secret: 'SNAPSHOT_CANARY' },
+        active: Array.from({ length: 32 }, () => ({ operation: 'memory.get', ageMs: 20 })) },
     ] })
     const archive = await readFile(destination), files = unzipStored(archive)
     assert.deepEqual([...files.keys()], ['backend-1.jsonl', 'manifest.json'])
     assert.deepEqual(files.get('backend-1.jsonl')!.toString().trim().split('\n').map(line => JSON.parse(line).sequence), [1, 3])
     assert.equal(archive.includes(Buffer.from('CANARY')), false)
-    const manifest = JSON.parse(files.get('manifest.json')!.toString()) as { files: DiagnosticFileManifest[] }
+    const manifest = JSON.parse(files.get('manifest.json')!.toString()) as { files: DiagnosticFileManifest[], snapshots: Array<{ activeOmitted: number }> }
     assert.equal(manifest.files[0]!.invalid_record, 1)
     assert.equal(manifest.files[0]!.partial_trailing_record, false)
     assert.equal(manifest.files[0]!.rawCutoffBytes, Buffer.byteLength(source))
+    assert.equal(manifest.snapshots[0]!.activeOmitted, 67, 'a bounded peer snapshot must retain the number of operations omitted before export')
     assert.equal((await readdir(directory)).some(file => file.endsWith('.partial')), false)
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

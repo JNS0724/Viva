@@ -358,3 +358,12 @@ memory:get 在 Renderer、Shell、Backend 和 owner 通道分别建立本地单�
 真实执行批次由可信 Backend owner 通道管理，使用独立 `readBatchId`，每 owner epoch 最多两个页面读取批次。调用方超时或恢复/不可用状态不释放尚未结束的实际执行；可信终态先结算执行，再查 caller waiter。只有全部已发读取结算、已证明未发出、owner 退出或换代才释放。满额即时返回 busy，恢复期间返回 unavailable，不改变写入/遗忘/撤销回执或 DSH 发送屏障。业务协议升级为 `MEMORY_HOST_PROTOCOL = 3`；这与 L1a 可丢弃的诊断 envelope 分开。
 
 回归包含真实 owner 的 dream 模型等待、连续超时重试及持久化恢复期间五项页面读取，两个超时后 busy、迟到终态后再次成功、同 epoch 恢复/不可用、换代、HTTP 丢响应、必要快照超时、缓冲上限、旧推送和日志端口故障。实际 SIGSTOP 故障注入入口为[记忆可用性冒烟](../scripts/smoke-memory-availability.ts)。抽屉冒烟的合成流改走现有自动化驱动和真实 Backend 发布入口，运行器与 CI 未改。最终测试与平台限制见[实施记录](qa-logging-l1b-implementation-20261118.zh-CN.md)。L1a 性能门槛的失败结论仍保留，L1b 不将其改为通过。
+
+
+## 16 L1c 实施进展
+
+2026-11-18 已接入独立的 Backend→Shell、DSH→Backend 有界 IPC 心跳和诊断控制，以及两个 Renderer preload 的分别监督。ready 握手显式分流健康消息；监督仅记录 suspect、恢复和 sink 状态，不结束进程、不解除业务屏障。快照由诊断拓扑递归收集，每层预留应答时间，未响应组件仍明确缺失。
+
+原生 macOS 菜单和 Windows 托盘已提供清空与限时 15 分钟 debug。清空先关闭目录配额中的新 writer 准入，等待已知组件和实际文件关闭回执；所有槽都关闭、无导出 pin 且旧文件删除后才轮换盐和 diagnosticRunId。超时显示 cleanup_pending，实际未结束的控制仍占名额；恢复后重试同一清空身份。轮换后的恢复重试不重复删除新代次文件。跨清空继续执行的本地业务使用新 trace，旧远程诊断元数据失效；readBatchId 名额、owner epoch、任务及发送屏障不变。
+
+macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-20261118.zh-CN.md)。永久 pending 写入/关闭、部分写入、ENOSPC/EAGAIN/EACCES、IPC 无响应、清空失败恢复、队列洪泛、旧代次回调和插件独立运行均有回归。Windows 原生故障与安装包验收未执行，性能门槛仍未通过，因此不声明 L1 整体完成；L2/L3 继续按原范围推进。

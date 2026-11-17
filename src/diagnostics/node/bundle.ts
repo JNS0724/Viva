@@ -72,7 +72,8 @@ function safeSnapshots(raw: unknown): unknown[] {
     return [{ component: item.component, stats: { ...numbers,
       ...(member(['initializing', 'ready', 'stalled', 'unavailable', 'closed'], stats.state) ? { state: stats.state } : {}),
       ...(member(REASONS, stats.reason) ? { reason: stats.reason } : {}) }, active,
-      activeOmitted: Array.isArray(item.active) ? Math.max(0, item.active.length - active.length) : 0 }]
+      activeOmitted: Math.max(0, (typeof stats.activeCount === 'number' && Number.isFinite(stats.activeCount) && stats.activeCount >= 0
+        && stats.activeCount <= Number.MAX_SAFE_INTEGER ? stats.activeCount : Array.isArray(item.active) ? item.active.length : 0) - active.length) }]
   })
 }
 

@@ -51,6 +51,7 @@ export interface DiagnosticContext {
   traceId: string
   spanId: string
   parentSpanId?: string
+  diagnosticRunId?: string
 }
 export interface DiagnosticFields {
   stage?: DiagnosticStage
@@ -62,6 +63,7 @@ export interface DiagnosticFields {
 export interface DiagnosticEvent extends DiagnosticFields {
   event: DiagnosticEventName
   operation: DiagnosticOperation
+  debug?: true
 }
 export interface DiagnosticPort { emit(event: DiagnosticEvent, context?: DiagnosticContext): undefined }
 export const NO_DIAGNOSTICS: DiagnosticPort = Object.freeze({ emit: (_event: DiagnosticEvent) => undefined })
@@ -73,12 +75,14 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 /** No parser error or rejected value may escape into either business or logs. */
 export function parseDiagnosticContext(value: unknown): DiagnosticContext | undefined {
   try {
-    if (!record(value) || Object.keys(value).some(key => !['version', 'traceId', 'spanId', 'parentSpanId'].includes(key))) return
+    if (!record(value) || Object.keys(value).some(key => !['version', 'traceId', 'spanId', 'parentSpanId', 'diagnosticRunId'].includes(key))) return
     if (value.version !== DIAGNOSTIC_VERSION || typeof value.traceId !== 'string' || !/^[a-f0-9]{32}$/.test(value.traceId)
       || typeof value.spanId !== 'string' || !/^[a-f0-9]{16}$/.test(value.spanId)
-      || value.parentSpanId !== undefined && (typeof value.parentSpanId !== 'string' || !/^[a-f0-9]{16}$/.test(value.parentSpanId))) return
+      || value.parentSpanId !== undefined && (typeof value.parentSpanId !== 'string' || !/^[a-f0-9]{16}$/.test(value.parentSpanId))
+      || value.diagnosticRunId !== undefined && (typeof value.diagnosticRunId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.diagnosticRunId))) return
     return { version: DIAGNOSTIC_VERSION, traceId: value.traceId, spanId: value.spanId,
-      ...(typeof value.parentSpanId === 'string' ? { parentSpanId: value.parentSpanId } : {}) }
+      ...(typeof value.parentSpanId === 'string' ? { parentSpanId: value.parentSpanId } : {}),
+      ...(typeof value.diagnosticRunId === 'string' ? { diagnosticRunId: value.diagnosticRunId } : {}) }
   } catch { return undefined }
 }
 /** The sole removable field. Unknown business fields remain available to their strict decoder. */

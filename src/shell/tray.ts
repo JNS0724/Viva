@@ -27,11 +27,14 @@ interface TrayDeps {
   onPending?: () => void
   onDiagnosticsExport?: () => void
   onDiagnosticsOpen?: () => void
+  onDiagnosticsClear?: () => void
+  onDiagnosticsDebug?: () => void
+  onDiagnosticsDebugStop?: () => void
   /** How many follow-ups are ready, at the start. */
   pending?: number
 }
 
-export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit, onPending = onOpen, pending = 0, onDiagnosticsExport, onDiagnosticsOpen }: TrayDeps): {
+export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit, onPending = onOpen, pending = 0, onDiagnosticsExport, onDiagnosticsOpen, onDiagnosticsClear, onDiagnosticsDebug, onDiagnosticsDebugStop }: TrayDeps): {
   destroy: () => void, setPending: (count: number) => void,
 } {
   const image = nativeImage.createFromPath(path.join(iconDir, iconFile(platform)))
@@ -46,6 +49,9 @@ export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen,
       { label: t('native.open'), click: onOpen },
       ...(onDiagnosticsExport ? [{ label: t('diagnostics.export'), click: onDiagnosticsExport }] : []),
       ...(onDiagnosticsOpen ? [{ label: t('diagnostics.open'), click: onDiagnosticsOpen }] : []),
+      ...(onDiagnosticsClear ? [{ label: t('diagnostics.clear'), click: onDiagnosticsClear }] : []),
+      ...(onDiagnosticsDebug ? [{ label: t('diagnostics.debug'), click: onDiagnosticsDebug }] : []),
+      ...(onDiagnosticsDebugStop ? [{ label: t('diagnostics.debug.stop'), click: onDiagnosticsDebugStop }] : []),
       { type: 'separator' },
       { label: t('native.quit'), click: onQuit },
     ]))

@@ -3,14 +3,15 @@ import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { guardDiagnosticPort, parseDiagnosticContext } from '../diagnostics/contracts.ts'
 import type { DiagnosticPort } from '../diagnostics/contracts.ts'
 import { safeDiagnosticEvent } from '../diagnostics/node/record.ts'
-import { emitDiagnostic, inDiagnosticContext } from '../diagnostics/node/context.ts'
+import { diagnosticBinding, emitDiagnostic, inDiagnosticContext } from '../diagnostics/node/context.ts'
 
 /** The original channel decoder still authorizes every business call. */
-export function registerDiagnosticIpc(ipcMain: IpcRegistry, { renderer, forwarded, invoke, exportBundle, openFolder, status }: {
+export function registerDiagnosticIpc(ipcMain: IpcRegistry, { renderer, forwarded, invoke, exportBundle, openFolder, status, clear, debug, health }: {
   renderer: DiagnosticPort,
   forwarded: () => ReadonlySet<string>,
   invoke: (channel: string, args: readonly unknown[]) => Promise<unknown>,
   exportBundle: () => Promise<unknown>, openFolder: () => unknown, status: () => unknown,
+  clear?: () => Promise<unknown>, debug?: (enabled: boolean) => void, health?: (sender: unknown, raw: unknown) => void,
 }) {
   let second = 0, received = 0, droppedCount = 0
   const safeRenderer = guardDiagnosticPort(renderer)
@@ -21,6 +22,7 @@ export function registerDiagnosticIpc(ipcMain: IpcRegistry, { renderer, forwarde
     const event = safeDiagnosticEvent(raw)
     if (!event) { droppedCount++; return }
     const context = parseDiagnosticContext('diagnostics' in raw ? raw.diagnostics : undefined)
+    if (context && diagnosticBinding() && context.diagnosticRunId !== diagnosticBinding()) { droppedCount++; return }
     inDiagnosticContext(context, () => safeRenderer.emit(event))
   })
   ipcMain.handle('diagnostics:invoke', async (_event, envelope) => {
@@ -34,5 +36,9 @@ export function registerDiagnosticIpc(ipcMain: IpcRegistry, { renderer, forwarde
   ipcMain.handle('diagnostics:export', () => exportBundle())
   ipcMain.handle('diagnostics:open-folder', () => openFolder())
   ipcMain.handle('diagnostics:status', () => status())
+  ipcMain.handle('diagnostics:binding', () => diagnosticBinding())
+  ipcMain.handle('diagnostics:health', (event, raw) => { try { health?.(event.sender, raw) } catch { droppedCount++ }; return diagnosticBinding() })
+  ipcMain.handle('diagnostics:clear', () => clear?.() ?? { status: 'cleanup_pending' })
+  ipcMain.handle('diagnostics:debug', (_event, enabled) => { debug?.(enabled) })
   return { droppedCount: () => droppedCount }
 }
