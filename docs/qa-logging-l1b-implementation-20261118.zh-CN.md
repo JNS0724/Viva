@@ -62,3 +62,17 @@
 后续日志批次再次复核本轮行为：全量 2206 项、2204 通过、2 跳过，完整桌面冒烟 15/15。改用测试专用进程暂停适配器后，macOS 两次真实 owner 读取分别在 10003.6ms、10004.8ms 超时，第三次 2.9ms 返回 busy；恢复真实执行后，新读取、页面手动重试、草稿和附件保留均通过。日志为 `/private/tmp/viva-l3-portable-owner-smoke.log`，实机结果保存在 `smoke/l1b-availability/result.json`。Windows 适配代码还需原生 CI 验证，不将它计入已通过平台。
 
 随后原生 Windows CI 实际通过该 owner 故障专项：两次超时 10011.8ms、10002.2ms，满额 2.3ms busy，恢复后新读取、手动重试、草稿与附件保留通过。证据见 [b165003 诊断专项](https://github.com/JNS0724/Viva/actions/runs/44163578395)。该 workflow 仍因独立的 5% 日志性能门槛失败，不能将 L1b 的通过概括为日志方案整体通过。
+
+## 本轮 L1b 复核：初始化缺口与重试水位
+
+本轮继续仅修改 `/private/tmp/viva-local-diagnostics`，保持 `codex/local-diagnostics` 分支；没有修改另一个 agent 的工作目录、测试运行器、测试分路或 CI。没有新增依赖。
+
+先补回归再修复了三类实际同步问题：首条收到的增量为游标 3、快照水位为 0 时，原实现没有识别游标 1/2 的缺口；同一游标的缓冲推送会被重复应用；失败时丢弃的事件未必被手动重试返回的较旧快照覆盖。前三项在修复前均失败，记录为 `/private/tmp/viva-l1b-startup-boundary-repro.log`。补充检查还复现了流换代时沿用旧流缺口的问题，记录为 `/private/tmp/viva-l1b-replacement-boundary-repro.log`。
+
+Renderer actions 现在独立校验本次初始化的首个游标、缺口及重试前已收到的水位，快照覆盖缺口时仍可正常初始化；同流重复或较旧推送不会再次应用，换代使用新流自己的首游标和缺口。不能证明完整性时保持 gap 失败，不安装快照或释放模型发送。所有检查只保留有界同步元数据，不增加事件缓冲容量。
+
+Backend 的页面读取方法准入改为依赖 `memory/contracts/host.ts` 的业务定义，不再依赖 `READ_STAGE` 日志标签表；该表现在只生成诊断阶段。真实执行名额、readBatchId 结算与物理发送屏障语义保持不变。
+
+本轮全量测试为 2221 项：2219 通过、2 跳过、0 失败，168.8 秒。包含真实 owner 的 dream 模型等待、两轮超时失败及持久化恢复期间五项页面读取；真实 DSH 的 HTTP 503/无效 JSON 连续失败、重启恢复后前台发送和 `memory:get` 均通过。初始化定向回归 14/14，类型检查、构建通过。日志分别为 `/private/tmp/viva-l1b-current-full-tests.log`、`/private/tmp/viva-l1b-startup-final-targeted.log`、`/private/tmp/viva-l1b-current-typecheck.log` 和 `/private/tmp/viva-l1b-current-build.log`。
+
+当前构建完整桌面冒烟 15/15 通过（4.6 分钟），日志为 `/private/tmp/viva-l1b-current-full-smoke.log`，独立产物目录为 `smoke/l1b-stream-boundary/`。macOS 真实 owner 暂停专项也通过：两次请求分别在 10005.4ms、10004.1ms 超时，第三次在 3.0ms 返回满额 busy；恢复真实进程后，新读取、页面手动重新加载、草稿与附件保留均通过。日志为 `/private/tmp/viva-l1b-current-owner-smoke.log`，实机结果为 `smoke/l1b-availability/result.json`，截图为该目录的 `owner-busy.png` 和 `recovered.png`。本轮新增的同步边界修改尚未在原生 Windows 执行，不将先前提交的 Windows 验证冒充本轮证据；日志整体的原始性能门槛结论也没有改变。

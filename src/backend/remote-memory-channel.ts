@@ -1,7 +1,7 @@
 import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
-import { MEMORY_HOST_PROTOCOL, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, memoryOwnerProjection, parseHostMemoryCommand } from '../memory/contracts/host.ts'
+import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, memoryOwnerProjection, parseHostMemoryCommand } from '../memory/contracts/host.ts'
 import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemoryOwnerState, MemoryOwnerChange, MemoryOwnerContextUsed, MemoryOwnerProjection } from '../memory/contracts/host.ts'
 import { createRequestBudget, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
 import { objectOf } from '../shared/unknown-value.ts'
@@ -53,7 +53,7 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
   }
   async function execute<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], batch?: ReadBatch): Promise<HostMemoryApi[M]['output']> {
     const budgetMs = batch?.lifetime.remainingMs()
-    if (batch && (!READ_STAGE[method] || batch.epoch !== current?.epoch || !batches.has(batch.id))) throw new MemoryOwnerUnavailable()
+    if (batch && (!MEMORY_PAGE_READ_METHODS.has(method) || batch.epoch !== current?.epoch || !batches.has(batch.id))) throw new MemoryOwnerUnavailable()
     const recovery = ['getOperation', 'prepareSourceChange', 'commitSourceChange', 'sourceAlias', 'pendingHostEffects', 'ackHostEffect'].includes(method)
     if (closed || !current || current.state !== 'ready' && !(recovery && current.state === 'recovering')) {
       emitDiagnostic({ event: 'operation.progress', operation: 'memory.owner', stage: READ_STAGE[method], reason: closed ? 'closed' : 'not_ready', identities: { methodId: method, ownerEpoch: current?.epoch ?? null } })

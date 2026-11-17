@@ -34,6 +34,68 @@ test('startup installs trusted snapshot then replay and only deltas beyond its c
   assert.equal(received.length, 3)
 })
 
+test('initialization rejects a missing first delta instead of silently advancing the snapshot watermark', async t => {
+  const required = deferred<RendererSnapshot>(), installed: RendererSnapshot[] = [], received: unknown[] = [], failures: string[] = []
+  const actions = createInitializationActions({ snapshot: () => required.promise, install: view => installed.push(view),
+    deliver: event => received.push(event), pause() {}, initialized() {}, loading() {}, failed: reason => failures.push(reason) })
+  t.after(actions.close)
+  const pending = actions.initialize()
+  actions.receive(push(3))
+  required.resolve(snapshot(0))
+  assert.equal(await pending, false)
+  assert.deepEqual(installed, [])
+  assert.deepEqual(received, [])
+  assert.deepEqual(failures, ['gap'])
+})
+
+test('a snapshot may cover missing early deltas; duplicate buffered pushes are applied once', async t => {
+  const required = deferred<RendererSnapshot>(), received: unknown[] = []
+  const actions = createInitializationActions({ snapshot: () => required.promise, install() {},
+    deliver: event => received.push(event), pause() {}, initialized() {}, loading() {}, failed() { assert.fail('snapshot covers the gap') } })
+  t.after(actions.close)
+  const pending = actions.initialize()
+  actions.receive(push(3))
+  actions.receive(push(3, 'duplicate'))
+  actions.receive(push(4))
+  required.resolve(snapshot(2))
+  assert.equal(await pending, true)
+  assert.deepEqual(received, [push(3), push(4)])
+  assert.equal(actions.watermark()?.eventCursor, 4)
+})
+
+test('a retry cannot install a snapshot older than events discarded by the failed initialization', async t => {
+  const required = deferred<RendererSnapshot>(), installed: RendererSnapshot[] = [], failures: string[] = []
+  const actions = createInitializationActions({ snapshot: () => required.promise, install: view => installed.push(view),
+    deliver() {}, pause() {}, initialized() {}, loading() {}, failed: reason => failures.push(reason), maxEvents: 1 })
+  t.after(actions.close)
+  const first = actions.initialize()
+  actions.receive(push(1)); actions.receive(push(2))
+  assert.equal(await first, false)
+  actions.receive(push(3))
+  const retry = actions.initialize()
+  required.resolve(snapshot(2))
+  assert.equal(await retry, false)
+  assert.deepEqual(installed, [])
+  assert.deepEqual(failures, ['capacity', 'gap'])
+})
+
+test('a replacement stream validates its own first delta and does not inherit the previous stream gap', async t => {
+  for (const firstCursor of [1, 3]) {
+    const required = deferred<RendererSnapshot>(), received: unknown[] = [], failures: string[] = []
+    const actions = createInitializationActions({ snapshot: () => required.promise, install() {},
+      deliver: event => received.push(event), pause() {}, initialized() {}, loading() {}, failed: reason => failures.push(reason) })
+    t.after(actions.close)
+    const pending = actions.initialize()
+    actions.receive(push(1, 'obsolete', 'old-generation'))
+    actions.receive(push(99, 'obsolete gap', 'old-generation'))
+    actions.receive(push(firstCursor))
+    required.resolve(snapshot(0))
+    assert.equal(await pending, firstCursor === 1)
+    assert.deepEqual(received, firstCursor === 1 ? [push(1)] : [])
+    assert.deepEqual(failures, firstCursor === 1 ? [] : ['gap'])
+  }
+})
+
 test('hung required snapshots stop accumulation on count, bytes, age and deadline; retry rejects old asynchronous snapshots', async t => {
   for (const [limits, reason] of [
     [{ maxEvents: 1 }, 'capacity'], [{ maxBytes: 1 }, 'capacity'], [{ maxAgeMs: 5 }, 'age'], [{ budgetMs: 5 }, 'timeout'],

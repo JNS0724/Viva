@@ -21,7 +21,7 @@ export function createInitializationActions({ snapshot, install, deliver, pause,
   let bytes = 0, ageTimer: ReturnType<typeof setTimeout> | undefined
   let lifetime: ReturnType<typeof createRequestBudget> | undefined
   let observed: StreamMark | null = null
-  let gapAfter = 0
+  let received: { first: StreamMark | null, gapAfter: number } = { first: null, gapAfter: 0 }
   let invalidation: StreamMark | null = null
   const retired = new Set<string>()
   const log = (event: DiagnosticEvent) => { try { observe(event) } catch { /* Optional diagnostics never control synchronization. */ } }
@@ -36,10 +36,14 @@ export function createInitializationActions({ snapshot, install, deliver, pause,
     if (!raw || typeof raw !== 'object') return
     const value = raw as ContextEvent, mark = streamMark(raw)
     if (mark && retired.has(mark.streamGeneration)) return
+    if (mark && observed?.streamGeneration === mark.streamGeneration && mark.eventCursor <= observed.eventCursor) return
     if (mark && invalidatesConversationSnapshot(raw)
       && (invalidation?.streamGeneration !== mark.streamGeneration || mark.eventCursor > invalidation.eventCursor)) invalidation = mark
     if (mark) {
-      if (observed?.streamGeneration === mark.streamGeneration && mark.eventCursor > observed.eventCursor + 1) gapAfter = observed.eventCursor + 1
+      if (mode === 'loading') {
+        if (received.first?.streamGeneration !== mark.streamGeneration) received = { first: mark, gapAfter: 0 }
+        if (observed?.streamGeneration === mark.streamGeneration && mark.eventCursor > observed.eventCursor + 1) received.gapAfter = Math.max(received.gapAfter, observed.eventCursor + 1)
+      }
       if (!observed || observed.streamGeneration !== mark.streamGeneration || mark.eventCursor > observed.eventCursor) observed = mark
     }
     if (mode === 'ready') {
@@ -63,7 +67,9 @@ export function createInitializationActions({ snapshot, install, deliver, pause,
   }
   async function initialize() {
     const attempt = ++generation
-    lifetime?.cancel(); lifetime?.close(); clearHeld(); mode = 'loading'; active = null; gapAfter = 0
+    // Events received before this attempt are no longer buffered. Its snapshot must cover them.
+    const baseline = observed
+    lifetime?.cancel(); lifetime?.close(); clearHeld(); mode = 'loading'; active = null; received = { first: null, gapAfter: 0 }
     pause(); loading()
     log({ event: 'state.changed', operation: 'startup', stage: 'start', identities: { generation: attempt } })
     const budget = createRequestBudget(budgetMs); lifetime = budget
@@ -72,9 +78,12 @@ export function createInitializationActions({ snapshot, install, deliver, pause,
       if (attempt !== generation || mode !== 'loading') return false
       const mark = streamMark({ streamGeneration: view.streamGeneration, eventCursor: view.cutoverCursor })
       if (!mark || !Array.isArray(view.replay) || observed && observed.streamGeneration !== mark.streamGeneration && !retired.has(observed.streamGeneration)
-        || gapAfter > mark.eventCursor || invalidation?.streamGeneration === mark.streamGeneration && invalidation.eventCursor > mark.eventCursor
+        || invalidation?.streamGeneration === mark.streamGeneration && invalidation.eventCursor > mark.eventCursor
         || (view.history && view.history.id !== view.context.conversationId)
         || (view.info.conversationId ?? null) !== view.context.conversationId || (view.info.sessionId ?? null) !== view.context.sessionId) throw new Error('Untrusted snapshot boundary')
+      if (baseline?.streamGeneration === mark.streamGeneration && baseline.eventCursor > mark.eventCursor
+        || received.first?.streamGeneration === mark.streamGeneration && received.first.eventCursor > mark.eventCursor + 1
+        || received.gapAfter > mark.eventCursor) { fail('gap'); return false }
       let previous = -1
       for (const event of view.replay) {
         const at = streamMark(event)
