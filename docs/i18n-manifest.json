@@ -103,6 +103,12 @@
       "zh": "docs/memory-reme-plan.zh-CN.md",
       "enHash": "e04a439ef2228d915a316f923c4aa8426420360835105dc9470379408f1f1064",
       "zhHash": "d57d0ed1539bc92b1830d8bc916abc3bea29e9b0b4c1ab312e7d859a6a59182a"
+    },
+    {
+      "en": "docs/logging-design.md",
+      "zh": "docs/logging-design.zh-CN.md",
+      "enHash": "cd442fa853fbd43d9352a327257115832ded9d937271e0557fc30aa1332db4c2",
+      "zhHash": "27ed5d668416986397a4c0a8b82d5dfab8cb149e7c106a2129a41aae53fed06e"
     }
   ],
   "bilingual": [
@@ -119,6 +125,26 @@
       "path": "docs/qa-windows-ui-issues-20261108.zh-CN.md",
       "locale": "zh-CN",
       "sha256": "ba6691b0828cdba750e9cd08d47ee0d790284906bdb344b06bfd9ef9874b3bc3"
+    },
+    {
+      "path": "docs/qa-logging-design-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "d415aaf3338940fdb6b30897d1b3b7283b1cc9b7664a30e1d8cd78ce5a18fa57"
+    },
+    {
+      "path": "docs/qa-logging-design-independent-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "474f5b0aaedabae8bbd15387b3467e584d64b6079f6be8320cdf3dc06f549600"
+    },
+    {
+      "path": "docs/qa-logging-l1a-implementation-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "e7a5bdb1fa18cd23885d3466d298f1258de394b96cc5a2014ed43a64953295f7"
+    },
+    {
+      "path": "docs/qa-logging-l1b-implementation-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "483ed578e12f876b633f4aca573455a5be529865de3ba2b19e904685909d84ae"
     }
   ]
 }

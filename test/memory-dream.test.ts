@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
+import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
+import type { DiagnosticEvent, DiagnosticPort } from '../src/diagnostics/contracts.ts'
 import { createMemoryDreamJobs, batchDreamNotes } from '../src/memory/core/memory-dream-jobs.ts'
 import type { DreamCalculate } from '../src/memory/core/memory-dream-jobs.ts'
 import { validateDreamReview } from '../src/memory/core/memory-dream-evidence.ts'
@@ -21,7 +23,7 @@ import type { MemorySource } from '../src/memory/core/ports/store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
 
-function harness(t: TestContext, options: { units?: number, budget?: number, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'] } = {}) {
+function harness(t: TestContext, options: { units?: number, budget?: number, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'], diagnostics?: DiagnosticPort } = {}) {
   let now = Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(':memory:', () => now)
   const readable = (id: string) => Boolean(store.readSource(id)?.text && !store.readSource(id)?.withdrawn)
@@ -44,6 +46,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
   let beforeMutation = () => {}
   let afterCommit: (receipt: DocumentReceipt) => void = () => {}
   const start = () => createMemoryDreamJobs({ notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
+    diagnostics: options.diagnostics,
     settings: { timezone: 'UTC', dreamUnits: options.units ?? 5, dreamBatchBytes: options.budget ?? 40_000 },
     readable, eligible: () => true, source: id => store.readSource(id) ?? undefined,
     reference: id => { const original = store.readSource(id); return original ? { namespace: 'canonical', sourceId: id, revision: original.version } : null },
@@ -74,6 +77,42 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
     sourceRef: (original: MemorySource) => ({ id: original.id, token: memorySourceToken(original) }),
   }
 }
+
+test('dream diagnostics distinguish invalid model output, provider failures and retries without changing recovery', async t => {
+  const events: DiagnosticEvent[] = []
+  const h = harness(t, { diagnostics: { emit(event) { events.push(event); return undefined } } })
+  const first = h.add('The report is due Friday.')
+  h.setModel(async () => '{SECRET_INVALID_JSON')
+  await h.run()
+  assert.equal(events.filter(event => event.reason === 'validation_failed' && event.stage === 'extract').length, 2)
+  assert.ok(events.some(event => event.reason === 'retry'))
+  events.length = 0
+  h.setModel(async () => { throw new MemoryComputeError('timeout') })
+  await h.retry()
+  assert.ok(events.some(event => event.reason === 'timeout' && event.stage === 'extract'))
+  h.setModel(h.defaultModel)
+  await h.retry()
+  assert.equal(h.documents.list(first.note.workspace).length, 1)
+  assert.equal(JSON.stringify(events).includes('SECRET_INVALID_JSON'), false)
+})
+
+test('a failing diagnostic port cannot interrupt dream publication', async t => {
+  const h = harness(t, { diagnostics: { emit() { throw new Error('broken diagnostic sink') } } })
+  const first = h.add('The report is due Friday.')
+  await h.run()
+  assert.equal(h.documents.list(first.note.workspace).length, 1)
+  assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
+})
+
+test('an unavailable model result is not mislabeled as changed source evidence', async t => {
+  const events: DiagnosticEvent[] = []
+  const h = harness(t, { diagnostics: { emit(event) { events.push(event); return undefined } } })
+  h.add('The report is due Friday.')
+  h.setModel(async () => undefined)
+  await h.run()
+  assert.ok(events.some(event => event.stage === 'extract' && event.reason === 'unavailable'))
+  assert.equal(events.some(event => event.reason === 'source_changed'), false)
+})
 
 test('four-stage dream combines daily files in one authorized workspace through real tools, verifies originals and checkpoints', async t => {
   const h = harness(t)

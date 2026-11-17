@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -12,6 +12,25 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { memoryRecoveryCandidates, memorySessionSurfaceHash, planMemoryContextRecovery } from '../plugins/memory/lib/context-recovery.ts'
+import { emitDiagnostic, installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+
+test('failed owner initialization releases its diagnostic file and restores the previous port', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'memory-diagnostic-startup-'))
+  const first = openMemoryOwner({ root, route: () => null, compute: () => null, quiesce: async () => {} })
+  const captured: DiagnosticEvent[] = []
+  const restore = installDiagnosticPort({ emit(event) { captured.push(event); return undefined } })
+  const cleanups: Array<() => unknown> = []
+  const scope = { logger: { exporter() {} }, on() {}, effect(execute: () => () => unknown) { const cleanup = execute(); cleanups.push(cleanup); return cleanup } } as unknown as Context
+  t.after(async () => { restore(); await first.close(); rmSync(root, { recursive: true, force: true }) })
+  await assert.rejects(memoryPlugin.apply(scope, { dataRoot: root }), /active owner/)
+  assert.equal(cleanups.length, 1, 'diagnostic cleanup exists before owner construction can fail')
+  await Promise.all(cleanups.map(cleanup => cleanup()))
+  const inventory = JSON.parse(readFileSync(join(root, 'diagnostics', 'inventory.json'), 'utf8')) as { slots: Array<{ closed: boolean }> }
+  assert.ok(inventory.slots.every(slot => slot.closed))
+  emitDiagnostic({ event: 'health', operation: 'diagnostics' })
+  assert.equal(captured.at(-1)?.event, 'health')
+})
 
 // Actual DSH loader/services, with no model providers, agent model selection, host IPC or network.
 // This isolates plugin lifecycle acceptance from the browser/CLI surfaces tested by Web smoke.

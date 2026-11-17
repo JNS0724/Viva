@@ -11,6 +11,8 @@ export const Config = z.object({
   dataRoot: z.string(),
   modelRoot: z.string(),
   runtimeRoot: z.string(),
+  diagnosticsRoot: z.string(),
+  diagnosticsVersion: z.string(),
   dailyNotes: z.boolean().default(true),
 })
 export function apply(ctx: Context, config: MemoryPluginConfig = {}) {

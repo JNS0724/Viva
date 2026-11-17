@@ -1,7 +1,34 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+/**
+ * @template {import('../shared/ipc-contract.ts').Channel} C
+ * @param {C} channel
+ * @param {import('../shared/ipc-contract.ts').ChannelArgs<C>} args
+ * @returns {Promise<C extends keyof import('../shared/ipc-results.ts').IpcResults ? import('../shared/ipc-results.ts').IpcResults[C] : unknown>}
+ */
+function diagnosticInvoke(channel, args) {
+  /** @type {import('../diagnostics/contracts.ts').DiagnosticContext | undefined} */
+  let diagnostics
+  try {
+    const hex = (/** @type {number} */ size) => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(size)), value => value.toString(16).padStart(2, '0')).join('')
+    diagnostics = { version: 1, traceId: hex(16), spanId: hex(8) }
+  } catch { return ipcRenderer.invoke(channel, ...args) }
+  const started = performance.now()
+  /** @param {import('../diagnostics/contracts.ts').DiagnosticEvent} event */
+  const report = event => { try { ipcRenderer.send('diagnostics:event', { ...event, diagnostics }) } catch { /* Logging must not fail a call. */ } }
+  report({ event: 'operation.start', operation: channel === 'memory:get' ? 'memory.get' : 'ipc' })
+  return ipcRenderer.invoke('diagnostics:invoke', { channel, args, diagnostics }).then(value => {
+    report({ event: 'operation.end', operation: channel === 'memory:get' ? 'memory.get' : 'ipc', outcome: 'completed', metrics: { durationMs: performance.now() - started } })
+    return value
+  }, error => {
+    report({ event: 'operation.end', operation: channel === 'memory:get' ? 'memory.get' : 'ipc', outcome: 'failed', reason: 'unknown_error', metrics: { durationMs: performance.now() - started } })
+    throw error
+  })
+}
+
 // Each call takes its channel's arguments, as the page is told it does (globals.d.ts AgentApi).
 contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
+  reportDiagnostic: (event) => { try { ipcRenderer.send('diagnostics:event', event) } catch { /* Optional observation only. */ } },
   getLanguage: () => ipcRenderer.invoke('language:get'),
   setLanguage: (language) => ipcRenderer.invoke('language:set', language),
   onLanguage: (callback) => {
@@ -12,6 +39,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: process.platform,
   getInfo: () => ipcRenderer.invoke('agent:info'),
+  getSnapshot: (options) => ipcRenderer.invoke('agent:snapshot', ...options ? [options] : []),
   waits: () => ipcRenderer.invoke('agent:waits'),
   /** @param {{ id: string }[]} [images] pictures kept by keepImage, sent with the words */
   prompt: (text, images = [], operation = undefined, feedItemId = undefined) => ipcRenderer.invoke('agent:prompt', text, images, operation, feedItemId),
@@ -47,7 +75,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   removeModelProvider: (id) => ipcRenderer.invoke('models:remove', id),
   discoverModels: (input, providerId) => ipcRenderer.invoke('models:discover', input, providerId),
   loadHistory: () => ipcRenderer.invoke('history:load'),
-  saveHistory: (messages) => ipcRenderer.invoke('history:save', messages),
+  saveHistory: (messages, mark) => ipcRenderer.invoke('history:save', messages, ...mark ? [mark] : []),
   listHistory: (offset) => ipcRenderer.invoke('history:list', offset),
   searchHistory: (query) => ipcRenderer.invoke('history:search', query),
   /** 回到这个话题 / 撤销 a new topic: { info, parentId } (history-ipc.js). */
@@ -99,7 +127,10 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   pathForFile: (file) => webUtils.getPathForFile(file),
   /** The folder in use, in Finder or Explorer. */
   revealWorkDir: () => ipcRenderer.invoke('workdir:reveal'),
-  getMemory: () => ipcRenderer.invoke('memory:get'),
+  getMemory: (options) => typeof globalThis.crypto === 'undefined' ? ipcRenderer.invoke('memory:get', ...options ? [options] : []) : diagnosticInvoke('memory:get', options ? [options] : []),
+  exportDiagnostics: () => ipcRenderer.invoke('diagnostics:export'),
+  openDiagnosticsFolder: () => ipcRenderer.invoke('diagnostics:open-folder'),
+  diagnosticsStatus: () => ipcRenderer.invoke('diagnostics:status'),
   listMemoryFiles: (request) => ipcRenderer.invoke('memory:list-files', request),
   readMemoryFile: (identity, restrictionId) => ipcRenderer.invoke('memory:read-file', identity, restrictionId),
   setMemoryFileEnabled: (request) => ipcRenderer.invoke('memory:set-file-enabled', request),

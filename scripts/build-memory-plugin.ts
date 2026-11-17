@@ -29,15 +29,17 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   }
   const plugin = path.join(compiledRoot, 'plugins/memory')
   const memory = path.join(compiledRoot, 'src/memory')
+  const diagnostics = path.join(compiledRoot, 'src/diagnostics')
   if (!existsSync(path.join(plugin, 'index.js')) || !existsSync(path.join(memory, 'node/index.js'))) throw new Error('Compile memory and its plugin before assembly')
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest
   const declared = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})])
   const targetOf = (file: string): string => {
     if (within(plugin, file)) return path.join(destination, path.relative(plugin, file))
     if (within(memory, file)) return path.join(destination, 'memory', path.relative(memory, file))
+    if (within(diagnostics, file)) return path.join(destination, 'diagnostics', path.relative(diagnostics, file))
     throw new Error(`Memory plugin depends on a repository-only module: ${path.relative(compiledRoot, file)}`)
   }
-  const sources = [...files(plugin), ...files(memory)].filter(file => file.endsWith('.js'))
+  const sources = [...files(plugin), ...files(memory), ...(existsSync(diagnostics) ? files(diagnostics) : [])].filter(file => file.endsWith('.js'))
   const sourceSet = new Set(sources.map(file => path.resolve(file)))
   const output = sources.map(file => {
     const target = targetOf(file)

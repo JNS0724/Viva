@@ -1,5 +1,18 @@
 import type { MessageKey } from './en.ts'
 export const zhCN = {
+  "memory.read.timeout": "记忆加载超时，可以重试；对话仍可操作。",
+  "memory.read.busy": "仍有两个记忆读取在执行，请等其中一个结束后重试。",
+  "memory.read.unavailable": "记忆正在恢复或暂不可用，请稍后重试。",
+  "startup.title": "正在恢复会话",
+  "startup.loading": "正在恢复会话，等待期间可以编辑草稿。",
+  "startup.failed": "会话同步未完成，可能缺少部分实时内容。草稿和附件已保留，请重试同步后再发送。",
+  "startup.retry": "重试同步",
+  "diagnostics.menu": "诊断",
+  "diagnostics.export": "导出诊断包…",
+  "diagnostics.open": "打开本地日志",
+  "diagnostics.export.title": "导出本地诊断包",
+  "diagnostics.archive": "诊断 ZIP 归档",
+  "diagnostics.export.failed": "诊断包未能导出。可以打开本地日志目录继续排查。",
   "main.memory.invalid.text": "请输入有效的记忆内容。",
   "main.memory.credentials": "凭据不能写入记忆。",
   "main.memory.operation.conflict": "这次记忆操作与之前的提交冲突。",

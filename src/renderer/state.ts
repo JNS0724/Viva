@@ -41,6 +41,7 @@ function removeRestoredTrace(state: State): State {
  * Thoughts and tool calls live in `timeline` (shown in the drawer), never in `messages`.
  */
 export const initialState = Object.freeze({
+  initialization: Object.freeze({ status: 'ready' as 'loading' | 'ready' | 'failed', reason: null as import('./initialization-actions.ts').InitializationFailure | null }),
   info: { mode: 'connecting', model: '', cwd: '', reason: '' } as AgentInfo,
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
   /** The conversation on screen: what was said and done, and where its turn is (conversation-state.ts). */
@@ -153,6 +154,15 @@ const readyStartsNewTopic = (state: State, info: AgentInfo) => topicChanged(stat
   || (info.remembersHistory === false && Boolean(info.conversationId && state.conversationId && info.conversationId !== state.conversationId))
 
 const ACTION_HANDLERS: ActionHandlers = {
+  initialization_status: (state, { status, reason }) => ({ ...state, initialization: { status, reason: reason ?? null } }),
+  initialization_snapshot: (state, { snapshot }) => {
+    const clean = { ...state, ...initialConversation, info: snapshot.info, conversationId: snapshot.info.conversationId ?? null,
+      restored: null, restoredTrace: null, restoredTraceData: null, records: [], folds: [], topic: initialTopic,
+      switching: false, newTopicPending: false }
+    const saved = snapshot.history
+    return saved ? ACTION_HANDLERS.history_loaded!(clean, { conversationId: saved.id, messages: saved.messages,
+      records: saved.records, savedAt: saved.updatedAt, folds: [...saved.folds], parentId: saved.parentId, createdAt: saved.createdAt }) : clean
+  },
   ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,

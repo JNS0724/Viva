@@ -1,0 +1,86 @@
+import { fork } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
+import { unlink } from 'node:fs/promises'
+import { DIAGNOSTIC_LIMITS, safeDiagnosticReason } from '../contracts.ts'
+import type { DiagnosticQuota, ExportPin } from './quota.ts'
+import type { DiagnosticBundleRequest } from './bundle.ts'
+export type DiagnosticExportResult = { status: 'saved' | 'failed' | 'busy'; reason?: string }
+
+/** One export and one watchdog. Unconfirmed cleanup prevents another child/pin allocation. */
+export function createDiagnosticExporter({ quota, snapshots = async () => [], timeoutMs = DIAGNOSTIC_LIMITS.exportMs }: { quota: DiagnosticQuota; snapshots?: () => Promise<unknown>; timeoutMs?: number }) {
+  let state: 'idle' | 'exporting' | 'cleanup_pending' = 'idle'
+  let running: Promise<DiagnosticExportResult> | undefined
+  let snapshotInFlight = false
+  function boundedSnapshots(): Promise<unknown> {
+    if (snapshotInFlight) return Promise.resolve([])
+    snapshotInFlight = true
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve([]), DIAGNOSTIC_LIMITS.snapshotMs)
+      void Promise.resolve().then(snapshots).then(value => { snapshotInFlight = false; clearTimeout(timer); resolve(value) }, () => { snapshotInFlight = false; clearTimeout(timer); resolve([]) })
+    })
+  }
+  function exportBundle(destination: string): Promise<DiagnosticExportResult> {
+    if (running) return running
+    if (state !== 'idle') return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
+    state = 'exporting'
+    const task = new Promise<DiagnosticExportResult>(resolve => {
+      const exportId = randomUUID()
+      const temporary = `${destination}.${exportId}.partial`
+      const entry = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? './export-worker.ts' : './export-worker.js', import.meta.url))
+      let child: ChildProcess
+      try { child = fork(entry, [], { execPath: process.execPath, execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] }) }
+      catch (error) { state = 'idle'; resolve({ status: 'failed', reason: safeDiagnosticReason(error) }); return }
+      let pin: ExportPin | undefined, acquiring = true, exited = false, settled = false
+      let reply: DiagnosticExportResult = { status: 'failed', reason: 'unknown_error' }
+      const finish = (result: DiagnosticExportResult) => { if (!settled) { settled = true; clearTimeout(deadline); resolve(result) } }
+      const cleanup = async () => {
+        if (!exited || acquiring) return
+        try {
+          await unlink(temporary).catch(error => { if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error })
+          if (pin) await quota.release(pin)
+          state = 'idle'
+        }
+        catch { state = 'cleanup_pending' }
+      }
+      const deadline = setTimeout(() => {
+        state = 'cleanup_pending'
+        child.kill('SIGKILL')
+        finish({ status: 'failed', reason: 'timeout' })
+      }, timeoutMs)
+      const snapshot = boundedSnapshots()
+      child.on('message', (raw: unknown) => {
+        if (!raw || typeof raw !== 'object' || !('type' in raw) || raw.type !== 'diagnostic-export-result') return
+        reply = 'ok' in raw && raw.ok === true ? { status: 'saved' } : { status: 'failed', reason: 'unknown_error' }
+      })
+      child.once('error', error => {
+        reply = { status: 'failed', reason: safeDiagnosticReason(error) }; state = 'cleanup_pending'
+        if (!child.pid) exited = true
+        void cleanup()
+        finish(reply)
+      })
+      child.once('exit', () => {
+        exited = true; state = 'cleanup_pending'
+        void cleanup().finally(() => finish(reply))
+      })
+      void (async () => {
+        try {
+          const selected = await quota.pin(child.pid ?? process.pid, { id: exportId, temporary })
+          pin = selected.pin; acquiring = false
+          if (settled || exited) { await cleanup(); return }
+          const request: DiagnosticBundleRequest = { directory: quota.directory, destination, temporary, files: selected.files, snapshots: await snapshot }
+          if (settled || exited) { await cleanup(); return }
+          child.send(request)
+        } catch (error) {
+          acquiring = false; reply = { status: 'failed', reason: safeDiagnosticReason(error) }
+          state = 'cleanup_pending'; child.kill('SIGKILL')
+          if (exited) await cleanup()
+        }
+      })()
+    })
+    running = task.finally(() => { running = undefined })
+    return running
+  }
+  return { exportBundle, state: () => state }
+}

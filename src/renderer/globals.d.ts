@@ -147,9 +147,11 @@ interface DraftApi extends LanguageApi {
   onDraft: (callback: (draft: import('../shared/composer-draft.ts').DraftSnapshot) => void) => Unlisten
 }
 interface AgentApi extends DraftApi {
+  reportDiagnostic: (event: Args<'diagnostics:event'>[0]) => void
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: string
   getInfo: Invoke<'agent:info'>
+  getSnapshot: Invoke<'agent:snapshot'>
   waits: Invoke<'agent:waits'>
   prompt: Invoke<'agent:prompt'>
   keepImage: Invoke<'images:keep'>
@@ -214,6 +216,9 @@ interface AgentApi extends DraftApi {
   pathForFile: (file: File) => string
   revealWorkDir: Invoke<'workdir:reveal'>
   getMemory: Invoke<'memory:get'>
+  exportDiagnostics: Invoke<'diagnostics:export'>
+  openDiagnosticsFolder: Invoke<'diagnostics:open-folder'>
+  diagnosticsStatus: Invoke<'diagnostics:status'>
   listMemoryFiles: Invoke<'memory:list-files'>
   readMemoryFile: Invoke<'memory:read-file'>
   setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>

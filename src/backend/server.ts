@@ -1,4 +1,8 @@
 import { getLocale } from '../shared/i18n/locale.ts'
+import path from 'node:path'
+import { createNodeDiagnostics } from '../diagnostics/node/logger.ts'
+import { emitDiagnostic, installDiagnosticPort } from '../diagnostics/node/context.ts'
+import pkg from '../../package.json' with { type: 'json' }
 import { imageResponse } from './image-protocol.ts'
 import { checkedIpc } from '../shared/ipc-contract.ts'
 import { createBackend } from './compose.ts'
@@ -30,6 +34,9 @@ function fail(message: string): void {
 }
 
 async function start(message: StartMessage) {
+  const diagnostics = createNodeDiagnostics({ directory: path.join(message.paths.userData, 'diagnostics'), component: 'backend', version: pkg.version })
+  installDiagnosticPort(diagnostics)
+  emitDiagnostic({ event: 'process.start', operation: 'startup', stage: 'start' })
   // Electron as Node is for this process only: what it starts (dsh, pnpm) is told so on its own where it needs it.
   delete process.env.ELECTRON_RUN_AS_NODE
   const secrets = createEnvelope({ key: message.dataKey ? Buffer.from(message.dataKey, 'base64') : null })
@@ -70,17 +77,19 @@ async function start(message: StartMessage) {
       'agent-pid': () => backend.agentPid(),
       since: (seq) => backend.since(Number(seq)),
       'automation.seed-feed': (item) => seedFeed(message.automation, backend, item),
+      'automation.publish-event': (event) => backend.publishAutomation(event),
       close: () => { closing ??= shutdown() },
     },
   })
 
   async function shutdown() {
+    emitDiagnostic({ event: 'process.exit', operation: 'shutdown', reason: 'normal' })
     backend.markQuitting()
     remote.abandon('the shell has gone')
     await backend.stop()
     backend.close()
     // The answer to `close` goes out before the server does.
-    setImmediate(() => { void server.close().finally(() => process.exit(0)) })
+    setImmediate(() => { void server.close().then(() => diagnostics.close()).finally(() => process.exit(0)) })
   }
 
   const port = await server.listen()

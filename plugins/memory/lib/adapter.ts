@@ -16,7 +16,7 @@ import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
 import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
-import { MEMORY_HOST_PROTOCOL, parseHostMemoryCommand } from '../../../src/memory/contracts/host.ts'
+import { MEMORY_HOST_PROTOCOL, memoryHostRead, MEMORY_PAGE_READ_METHODS, parseHostMemoryCommand } from '../../../src/memory/contracts/host.ts'
 import { openMemoryOwner } from '../../../src/memory/node/owner.ts'
 import type { MemoryPluginConfig } from './config.ts'
 import { createMemoryTransport } from './transport.ts'
@@ -36,6 +36,10 @@ import { recordCompactionInputs, recordCompactionRequest } from './native/compac
 import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenance.ts'
 
 import { memorySource } from './source.ts'
+import { createNodeDiagnostics } from '../../../src/diagnostics/node/logger.ts'
+import { diagnosticPort, emitDiagnostic, installDiagnosticPort, withOperation, withRemoteOperation } from '../../../src/diagnostics/node/context.ts'
+import { parseDiagnosticContext } from '../../../src/diagnostics/contracts.ts'
+import { observeDshDiagnostics } from './diagnostics.ts'
 
 function clearPreviousContext(agent: Agent) {
   const session = agent.session
@@ -58,6 +62,20 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   let lastRoute: { provider: string, model: string } | null = null
   const send = (message: object) => { if (config.host && port.connected) port.send?.(message, () => {}) }
   const root = path.resolve(config.dataRoot ?? path.join(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), 'memory'))
+  const diagnostics = createNodeDiagnostics({ directory: typeof config.diagnosticsRoot === 'string' && path.isAbsolute(config.diagnosticsRoot)
+    ? config.diagnosticsRoot : path.join(root, 'diagnostics'), component: 'dsh', componentVersion: '0.2.0',
+    version: typeof config.diagnosticsVersion === 'string' ? config.diagnosticsVersion : 'unknown' })
+  const restoreDiagnostics = installDiagnosticPort(diagnostics)
+  let diagnosticsTransferred = false
+  const stopDiagnostics = async () => { restoreDiagnostics(); await diagnostics.close().catch(() => false) }
+  // Cordis disposes effects concurrently. Before owner cleanup is registered, this guard owns the sink.
+  ctx.effect(() => async () => {
+    if (diagnosticsTransferred) return
+    emitDiagnostic({ event: 'process.exit', operation: 'shutdown', outcome: 'failed', reason: 'unavailable' })
+    await stopDiagnostics()
+  }, 'memory diagnostics startup guard')
+  observeDshDiagnostics(ctx)
+  emitDiagnostic({ event: 'process.start', operation: 'startup' })
   const embedding = config.modelRoot ? { modelRoot: config.modelRoot, runtimeRoot: config.runtimeRoot } : undefined
   let lastState = ''
   let effectsRevision = 0
@@ -67,7 +85,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const encoded = JSON.stringify(value)
     if (force || encoded !== lastState) { lastState = encoded; send(value) }
   }
-  const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true,
+  const owner = openMemoryOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true, diagnostics: diagnosticPort,
     route: () => lastRoute ?? ctx.agents.list().map(agent => agent.model.current()).find(route => route !== undefined) ?? null,
     compute: (job, signal, tools) => {
       const deadline = AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)
@@ -104,7 +122,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     if (!proof) return undefined
     try { return await proof } finally { deliveries.delete(message.id) }
   })
-  const recovery = owner.recover()
+  const recovery = withOperation('memory.recover', () => owner.recover())
   ctx.inject(['commands'], scoped => {
     if (!config.host) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
       const session = agent.session
@@ -319,9 +337,16 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const message = objectOf(raw)
     if (!config.host || message?.type !== 'memory_host_request' || typeof message.requestId !== 'string') return
     const requestId = message.requestId
-    void (async () => {
+    const diagnostic = parseDiagnosticContext(message.diagnostics)
+    if (message.diagnostics !== undefined && !diagnostic) emitDiagnostic({ event: 'context.dropped', operation: 'memory.owner', reason: 'invalid_context' })
+    void withRemoteOperation(diagnostic, 'memory.owner', async () => {
       if (message.protocol !== MEMORY_HOST_PROTOCOL || message.epoch !== owner.epoch) throw new Error('Memory host protocol or epoch mismatch')
       const command = parseHostMemoryCommand(message.method, message.input)
+      if (message.read !== undefined) {
+        const read = memoryHostRead.parse(message.read)
+        const deadline = performance.now() + read.budgetMs
+        if (!MEMORY_PAGE_READ_METHODS.has(command.method) || performance.now() >= deadline) throw new Error('Memory read budget expired or invalid read method')
+      }
       let result: unknown
       if (command.method === 'recoverContext') {
         const id = SessionId(command.input.args[0]), session = ctx.sessions.get(id)
@@ -337,22 +362,30 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       // The host must see recovery/admission metadata before an acknowledged mutation resumes work.
       state()
       send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: true, result })
-    })().catch(error => send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: false,
+    }, { identities: { requestId, ownerEpoch: owner.epoch } }).catch(error => send({ type: 'memory_host_result', requestId, epoch: owner.epoch, ok: false,
       error: memoryHostFailure(error) }))
   }
   if (config.host) port.on('message', receive)
   ctx.effect(() => async () => {
-    if (config.host) port.off('message', receive)
-    closing = true
-    await spillReader?.dispose()
-    await spillWriter?.dispose()
-    lifetime.abort()
-    deliveryBindings.close()
-    deliveries.clear()
-    await ingestion.drain()
-    await owner.close()
+    let stopped = false
+    try {
+      if (config.host) port.off('message', receive)
+      closing = true
+      await spillReader?.dispose()
+      await spillWriter?.dispose()
+      lifetime.abort()
+      deliveryBindings.close()
+      deliveries.clear()
+      await ingestion.drain()
+      await owner.close()
+      stopped = true
+    } finally {
+      emitDiagnostic({ event: 'process.exit', operation: 'shutdown', outcome: stopped ? 'completed' : 'failed', reason: stopped ? 'normal' : 'unknown_error' })
+      await stopDiagnostics()
+    }
     transport.dispose()
   }, 'memory owner')
+  diagnosticsTransferred = true
   state()
   await recovery
   if (owner.ready()) for (const session of ctx.sessions.list()) {

@@ -1,9 +1,14 @@
 import { type ChildProcess, fork } from 'node:child_process'
 import http from 'node:http'
 import type { StoredEvent } from '../backend/event-core.ts'
+import { diagnosticContext, emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
+import { encodeDiagnosticEnvelope } from '../diagnostics/node/envelope.ts'
+import { diagnosticOperationForChannel } from '../diagnostics/node/operations.ts'
+import { createRequestBudget, MEMORY_READ_BUDGET_MS, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
+import { t } from '../shared/i18n/translate.ts'
 import {
   type Answer, bearer, decodeValue, encodeValue, type FailedMessage, type HostCall, isBytes, type ReadyMessage,
-  SEQ_HEADER, sseReader, type StartMessage, TOKEN_HEADER,
+  MAX_JSON_BYTES, SEQ_HEADER, sseReader, type StartMessage, TOKEN_HEADER,
 } from '../backend/wire.ts'
 
 /**
@@ -48,20 +53,24 @@ export function connect({ port, token }: { port: number, token: string }): Conne
   let waiters: ReadonlyArray<{ mark: number, release: () => void }> = []
 
   /** Resolves once the host calls up to `mark` have run: what the backend pushed before answering comes first. */
-  function caughtUp(mark: number): Promise<void> {
+  function caughtUp(mark: number, signal?: AbortSignal): Promise<void> {
     if (!listening || ran >= mark) return Promise.resolve()
-    return new Promise((resolve) => {
-      const release = () => {
+    return withOperation('host.catchup', () => new Promise((resolve, reject) => {
+      const cleanup = () => {
         clearTimeout(timer)
+        signal?.removeEventListener('abort', abort)
         waiters = waiters.filter((waiter) => waiter.release !== release)
-        resolve()
       }
+      const abort = () => { cleanup(); reject(signal?.reason) }
+      const release = () => { cleanup(); resolve() }
       const timer = setTimeout(() => {
         console.error(`[backend] host calls up to ${mark} did not come in ${CATCH_UP_MS / 1000}s; answering anyway`)
         release()
       }, CATCH_UP_MS)
       waiters = [...waiters, { mark, release }]
-    })
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+    }), { metrics: { mark } })
   }
   function advance(n: number) {
     ran = Math.max(ran, n)
@@ -74,12 +83,12 @@ export function connect({ port, token }: { port: number, token: string }): Conne
   }
 
   type Reply = { status: number, headers: http.IncomingHttpHeaders, body: Buffer }
-  function request(method: 'GET' | 'POST', pathname: string, body: Buffer | null, headers: Record<string, string> = {}, retried = false): Promise<Reply> {
+  function request(method: 'GET' | 'POST', pathname: string, body: Buffer | readonly Buffer[] | null, headers: Record<string, string> = {}, retried = false, signal?: AbortSignal): Promise<Reply> {
     return new Promise((resolve, reject) => {
       let answered = false
       const req = http.request({
-        host: '127.0.0.1', port, method, path: pathname, agent,
-        headers: { [TOKEN_HEADER]: bearer(token), ...(body ? { 'content-length': String(body.length) } : {}), ...headers },
+        host: '127.0.0.1', port, method, path: pathname, agent, signal,
+        headers: { [TOKEN_HEADER]: bearer(token), ...(body ? { 'content-length': String(Buffer.isBuffer(body) ? body.length : body.reduce((sum, chunk) => sum + chunk.length, 0)) } : {}), ...headers },
       }, (res) => {
         answered = true
         const chunks: Buffer[] = []
@@ -90,25 +99,29 @@ export function connect({ port, token }: { port: number, token: string }): Conne
       req.on('error', (err) => {
         // A kept-alive socket the server had just let go: the request never reached it, so it goes again once,
         // with the same number, on a new socket. Lost, its number would hold up every call after it.
-        if (!answered && !retried && req.reusedSocket) resolve(request(method, pathname, body, headers, true))
+        if (!answered && !retried && req.reusedSocket && !signal?.aborted) resolve(request(method, pathname, body, headers, true, signal))
         else reject(err)
       })
-      req.end(body ?? undefined)
+      if (body && !Buffer.isBuffer(body)) { req.cork(); for (const chunk of body) req.write(chunk); req.end() }
+      else req.end(body ?? undefined)
     })
   }
 
-  async function call(pathname: string, args: readonly unknown[], ordered: boolean): Promise<unknown> {
-    const body = Buffer.from(JSON.stringify({ args }))
+  async function call(pathname: string, args: readonly unknown[], ordered: boolean, signal?: AbortSignal): Promise<unknown> {
+    const business = Buffer.from(JSON.stringify({ args }))
+    const encoded = encodeDiagnosticEnvelope(business, diagnosticContext(), MAX_JSON_BYTES)
+    if (encoded.dropped) emitDiagnostic({ event: 'context.dropped', operation: 'http', reason: 'transport_budget', metrics: { businessBytes: business.length, diagnosticBytes: encoded.diagnosticBytes } })
+    const body = encoded.body
     const headers: Record<string, string> = { 'content-type': 'application/json', ...(ordered ? { [SEQ_HEADER]: String(++seq) } : {}) }
-    const res = await request('POST', pathname, body, headers)
+    const res = await request('POST', pathname, body, headers, false, signal)
     let answer: Answer
     try {
       answer = JSON.parse(res.body.toString('utf8')) as Answer
     } catch {
       throw new Error(`the backend answered ${pathname} with status ${res.status} and no JSON`)
     }
-    if (typeof answer.mark === 'number') await caughtUp(answer.mark)
-    if (!answer.ok) throw new Error(answer.error)
+    if (typeof answer.mark === 'number') await caughtUp(answer.mark, signal)
+    if (!answer.ok) throw Object.assign(new Error(answer.error), { code: answer.code })
     return decodeValue(answer.value)
   }
 
@@ -121,8 +134,22 @@ export function connect({ port, token }: { port: number, token: string }): Conne
 
   return {
     async rpc(channel, args) {
+      if (channel === 'memory:get' || channel === 'agent:snapshot') {
+        const limit = channel === 'memory:get' ? MEMORY_READ_BUDGET_MS : INITIALIZATION_BUDGET_MS
+        const requested = (args[0] as { budgetMs?: number } | undefined)?.budgetMs ?? limit
+        if (!Number.isFinite(requested) || requested <= 0 || requested > limit) throw new Error('Invalid request budget')
+        const lifetime = createRequestBudget(requested)
+        try {
+          return await withOperation(channel === 'memory:get' ? 'memory.get' : 'startup', () => lifetime.run(() => call(`/rpc/${encodeURIComponent(channel)}`,
+            [{ budgetMs: lifetime.remainingMs() }], true, lifetime.signal)), { identities: { methodId: channel } })
+        } catch (error) {
+          if (channel !== 'memory:get') throw error
+          const code = lifetime.signal.aborted ? 'timeout' : error && typeof error === 'object' && 'code' in error ? error.code : 'unavailable'
+          throw new Error(t(code === 'timeout' ? 'memory.read.timeout' : code === 'busy' ? 'memory.read.busy' : 'memory.read.unavailable'))
+        } finally { lifetime.close() }
+      }
       const sent = await Promise.all(args.map((arg) => (isBytes(arg) ? upload(arg) : arg)))
-      return call(`/rpc/${encodeURIComponent(channel)}`, encodeValue(sent) as unknown[], true)
+      return withOperation(diagnosticOperationForChannel(channel), () => call(`/rpc/${encodeURIComponent(channel)}`, encodeValue(sent) as unknown[], true), { identities: { methodId: channel } })
     },
     control: async <T>(op: string, ...args: unknown[]) => (await call(`/control/${encodeURIComponent(op)}`, encodeValue(args) as unknown[], true)) as T,
     async image(url) {

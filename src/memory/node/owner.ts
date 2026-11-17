@@ -1,4 +1,5 @@
 import { createOwnerContextRecovery } from './owner-context-recovery.ts'
+import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { removeAbandonedMemoryTemps } from './memory-file-store.ts'
 import { memoryProjectScope } from './project-scope.ts'
 import path from 'node:path'
@@ -41,6 +42,7 @@ export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number,
   assistant: string, completed: boolean, at: number, timezone: string }
 export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, nativeMessageDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
+  diagnostics?: DiagnosticPort
   root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
@@ -92,7 +94,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const nativeToolReads = createNativeToolReads(db)
   const nativeSpills = createNativeSpills(db)
   const toolReadScope = new AsyncLocalStorage<NativeToolReadScope>()
-  const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
+  const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route, diagnostics: options.diagnostics,
     dailyNotes: options.dailyNotes ?? true,
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding) } : {}),
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
@@ -150,7 +152,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       ...(project ? { project: { kind: 'project' as const, id: project } } : {}) }
   }
   const hasPending = () => Boolean(db.prepare("SELECT 1 FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed') LIMIT 1").get())
-  const fence = createMemorySendFence({ epoch, admit(origin) {
+  const fence = createMemorySendFence({ epoch, diagnostics: options.diagnostics, admit(origin) {
     if (state !== 'ready' || replayingWrites || hasPending()) return null
     if ('jobId' in origin) return runtime.computeAdmission(origin.jobId)
     const session = origin.session, project = sessionContext(session).project

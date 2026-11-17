@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { createMemoryFileActions } from './memory-file-actions.ts'
+import { createRequestBudget, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
 const NOTICE_TOAST_MS = 6000
 /** The profile fields the intro asks for: all three. Sites and documents are only read, not kept. */
 export const INTRO_FIELDS = Object.freeze(['role', 'projects', 'preferences'])
@@ -26,23 +27,28 @@ export function introChanges(values: IntroValues) {
 }
 
 /** The "关于你" page and the intro. */
-export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'>) {
+export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask, readBudgetMs = MEMORY_READ_BUDGET_MS }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'> & { readBudgetMs?: number }) {
   const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage })
   let memoryRequest = 0
+  let active: { page: string, lifetime: ReturnType<typeof createRequestBudget>, promise: Promise<boolean> } | undefined
   const fail = (err: unknown) => dispatch({ type: 'memory_failed', message: errorMessage(err) })
 
-  async function loadMemory() {
+  function loadMemory(): Promise<boolean> {
+    const page = `${getState().memory.open}:${getState().memory.view}`
+    if (active?.page === page && !active.lifetime.signal.aborted) return active.promise
+    active?.lifetime.cancel(); active?.lifetime.close()
     const request = ++memoryRequest
-    try {
-      const data = await api.getMemory()
+    const lifetime = createRequestBudget(readBudgetMs)
+    const promise = lifetime.run(() => api.getMemory({ budgetMs: lifetime.remainingMs() })).then(data => {
       if (request !== memoryRequest) return false
-      dispatch({ type: 'memory_loaded', data })
-      await files.refreshFiles()
-      return request === memoryRequest
-    } catch (err) {
-      if (request === memoryRequest) dispatch({ type: 'memory_load_failed', message: errorMessage(err) })
+      dispatch({ type: 'memory_loaded', data }); void files.refreshFiles()
+      return true
+    }, err => {
+      if (request === memoryRequest) dispatch({ type: 'memory_load_failed', message: err instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(err) })
       return false
-    }
+    }).finally(() => { lifetime.close(); if (request === memoryRequest) active = undefined })
+    active = { page, lifetime, promise }
+    return promise
   }
 
   async function refreshMemoryViews() {
@@ -77,6 +83,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     closeProfile() {
       files.cancelReads()
       memoryRequest++
+      active?.lifetime.cancel(); active?.lifetime.close(); active = undefined
       dispatch({ type: 'memory_close' })
     },
     editField: (key: string | null) => dispatch({ type: 'memory_edit', key }),

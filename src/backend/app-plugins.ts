@@ -2,6 +2,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { MEMORY_CONTRACT } from '../memory/contracts/memory-contract.ts'
 import fs from 'node:fs'
 import path from 'node:path'
+import appPackage from '../../package.json' with { type: 'json' }
 
 /**
  * What the app adds to dsh: its persona, and its plugins with the data contract each one provides.
@@ -127,7 +128,7 @@ export const APP_PLUGINS: readonly AppPlugin[] = Object.freeze(([
   { name: 'viva-tasks', dir: 'plugins/tasks', contract: 'tasks', config: () => ({}) },
   { name: 'viva-history', dir: 'plugins/history', contract: 'history', config: () => ({}) },
   { name: 'viva-routing', dir: 'plugins/routing', contract: 'stream', config: () => ({ ...ROUTING_PERSONA }) },
-  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData, memory }) => ({ host: true, dataRoot: path.join(userData, 'memory'), ...memory }) },
+  { name: 'viva-memory', dir: 'plugins/memory', contract: 'memory', config: ({ userData, memory }) => ({ host: true, dataRoot: path.join(userData, 'memory'), diagnosticsRoot: path.join(userData, 'diagnostics'), diagnosticsVersion: appPackage.version, ...memory }) },
   { name: 'viva-trace', dir: 'plugins/trace', contract: 'trace', config: ({ userData }) => ({ file: path.join(userData, 'trace.db') }) },
   {
     name: 'viva-questions', dir: 'plugins/questions', contract: 'questions', config: () => ({}),

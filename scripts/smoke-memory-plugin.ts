@@ -23,6 +23,7 @@ import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { buildMemoryPlugin } from './build-memory-plugin.ts'
 import { beginMemoryWebSession, submitMemoryWebMessage } from './memory-plugin-browser.ts'
 import { startFakeLlm } from '../test/fixtures/fake-llm.ts'
+import { installedRuntimePackages } from '../test/fixtures/package-closure.ts'
 import { createVenueModelFixture, venue } from '../test/fixtures/memory-plugin-venue.ts'
 
 const project = path.resolve(import.meta.dirname, '..')
@@ -140,7 +141,7 @@ function installArtifact() {
     return path.dirname(manifest)
   }
   const plugin = pack(artifact)
-  const dependencies = ['yaml', 'zod', 'marked'].map(name => pack(packageRoot(name)))
+  const dependencies = installedRuntimePackages(['yaml', 'zod', 'marked', 'pino', 'sonic-boom', 'yazl'], require).map(pack)
   writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   run(['install', plugin, ...dependencies, '--offline', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--package-lock=false'], installed)
   const manifest = JSON.parse(readFileSync(path.join(installed, 'node_modules/viva-memory/package.json'), 'utf8')) as { peerDependencies: Record<string, string> }
@@ -188,7 +189,7 @@ try {
   const plugin = installArtifact()
   const patch = path.join(temporary, 'memory.patch.yml')
   const persistence = pathToFileURL(createRequire(path.join(installed, 'package.json')).resolve('viva-memory/persistence')).href
-  writeFileSync(patch, `- id: session-log-deepseek\n  config:\n    enabled: false\n- id: session-persistence-jsonl\n  disabled: true\n- insert:\n    - id: viva-memory-session-persistence\n      name: ${JSON.stringify(persistence)}\n      config:\n        root: ${JSON.stringify(sessionsRoot)}\n        storageRoot: ${JSON.stringify(storageRoot)}\n        memoryRoot: ${JSON.stringify(dataRoot)}\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      inject: [sessionPersistence]\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n`)
+  writeFileSync(patch, `- id: session-telemetry-otel\n  disabled: true\n- id: session-log-deepseek\n  config:\n    enabled: false\n- id: session-persistence-jsonl\n  disabled: true\n- insert:\n    - id: viva-memory-session-persistence\n      name: ${JSON.stringify(persistence)}\n      config:\n        root: ${JSON.stringify(sessionsRoot)}\n        storageRoot: ${JSON.stringify(storageRoot)}\n        memoryRoot: ${JSON.stringify(dataRoot)}\n    - id: portable-memory\n      name: ${JSON.stringify(pathToFileURL(plugin).href)}\n      inject: [sessionPersistence]\n      config:\n        dataRoot: ${JSON.stringify(dataRoot)}\n        dailyNotes: true\n`)
   browser = await chromium.launch({ headless: true })
   const launch = async () => {
     let launchLog = ''

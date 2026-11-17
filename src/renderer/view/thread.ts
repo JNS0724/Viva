@@ -22,6 +22,7 @@ import { keepTyped, proposalCard } from './proposal-card.ts'
 import { proposalHost } from '../proposal-state.ts'
 import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
+import { initializationNotice } from './initialization.ts'
 
 /** The card that waits on the user carries her, whole and moving (withMaid). */
 const CARD_MAID_PX = 96
@@ -412,7 +413,7 @@ export type ThreadView = ConversationView & Pick<State, 'records' | 'conversatio
   | 'proposals' | 'tasks' | 'taskCards' | 'info'>
 
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
-export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number) {
+export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number, initialization?: State['initialization']) {
   const streams = containerStreams.get(container) ?? new Map<string, MarkdownStream>()
   containerStreams.set(container, streams)
   const messageIds = new Set(state.messages.map(message => message.id))
@@ -471,6 +472,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     : views
   const focus = editorFocus()
   const nodes = [
+    initialization && initialization.status !== 'ready' ? part('initialization', [initialization], () => initializationNotice({ initialization }, handlers)) : '',
     start > 0 ? part('thread-rest', [start, state.conversationId], () => restLine(state, start, handlers)) : '',
     ...earlierCards,
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),

@@ -3,6 +3,9 @@
 // timing retains real long-duration deadlines. Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
+    'renderer-initialization',
+    'diagnostics',
+    'diagnostics-ipc',
     'memory-dream-tools',
     'memory-markdown',
     'memory-daily-usage',
@@ -254,6 +257,8 @@ export const testLevels = {
     'workspace-files',
   ],
   integration: [
+    'memory-availability',
+    'diagnostics-export',
     'memory-file-checkout',
     'model-fixtures',
     'memory-file-initialization',

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { emitDiagnostic, withOperation } from '../../diagnostics/node/context.ts'
 type Apply = <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
 
 /**
@@ -148,7 +149,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
       if (!run) continue
       let outcomes: ReadonlyMap<string, Outcome>
       try {
-        outcomes = await run(effects)
+        outcomes = await withOperation('effects', () => run(effects), { identities: { methodId: kind }, metrics: { count: effects.length } })
       } catch (err) {
         if (closed) return
         onError(err)
@@ -164,6 +165,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     if (outcome === 'done') apply('effect.done', data, () => dropDone.run(effect.kind, effect.key, effect.generation))
     if (outcome === 'retry') {
       const wait = retries.get(effect.kind)?.(effect.attempts) ?? RETRY_MS[Math.min(effect.attempts, RETRY_MS.length - 1)]
+      emitDiagnostic({ event: 'retry.scheduled', operation: 'effects', identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind }, metrics: { attempt: effect.attempts, retryDelayMs: wait } })
       apply('effect.retry', { ...data, waitMs: wait }, () => putOff.run(now() + wait, effect.kind, effect.key, effect.generation))
     }
     // `wait`: left as it is, due; run again when woken.

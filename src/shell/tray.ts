@@ -4,7 +4,7 @@ import type { Menu as ElectronMenu, NativeImage, Tray as ElectronTray } from 'el
 
 /**
  * The tray icon (the menu bar on macOS, the notification area on Windows): there from the first time the
- * window is closed (or from launch, when Viva starts with the computer), since closing the window keeps Viva
+ * window is closed (or from launch on Windows and when Viva starts with the computer), since closing the window keeps Viva
  * running there. Clicking it, or 打开 Viva in its menu, brings the window back; 退出 Viva quits. When follow-ups
  * are ready, the tray says how many (beside the icon on macOS, in the tooltip on Windows), and the menu leads to
  * them.
@@ -25,11 +25,13 @@ interface TrayDeps {
   onQuit: () => void
   /** 「N 件等你看」: the 后台 page. */
   onPending?: () => void
+  onDiagnosticsExport?: () => void
+  onDiagnosticsOpen?: () => void
   /** How many follow-ups are ready, at the start. */
   pending?: number
 }
 
-export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit, onPending = onOpen, pending = 0 }: TrayDeps): {
+export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen, onQuit, onPending = onOpen, pending = 0, onDiagnosticsExport, onDiagnosticsOpen }: TrayDeps): {
   destroy: () => void, setPending: (count: number) => void,
 } {
   const image = nativeImage.createFromPath(path.join(iconDir, iconFile(platform)))
@@ -42,6 +44,8 @@ export function createTray({ Tray, Menu, nativeImage, iconDir, platform, onOpen,
     tray.setContextMenu(Menu.buildFromTemplate([
       ...(count ? [{ label: t('native.pending', { count }), click: onPending }, { type: 'separator' as const }] : []),
       { label: t('native.open'), click: onOpen },
+      ...(onDiagnosticsExport ? [{ label: t('diagnostics.export'), click: onDiagnosticsExport }] : []),
+      ...(onDiagnosticsOpen ? [{ label: t('diagnostics.open'), click: onDiagnosticsOpen }] : []),
       { type: 'separator' },
       { label: t('native.quit'), click: onQuit },
     ]))

@@ -9,6 +9,7 @@ import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins, R
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { MEMORY_CONTRACT } from '../src/memory/contracts/memory-contract.ts'
 import { ROOT } from './fixtures/dsh-harness.js'
+import appPackage from '../package.json' with { type: 'json' }
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */
 function tempDir(t: TestContext) {
@@ -33,7 +34,7 @@ test('the plugins shipped with the app all pass, each with its data file under u
     ['viva-tasks', {}],
     ['viva-history', {}],
     ['viva-routing', { ...ROUTING_PERSONA }],
-    ['viva-memory', { host: true, dataRoot: path.join('/data', 'memory') }],
+    ['viva-memory', { host: true, dataRoot: path.join('/data', 'memory'), diagnosticsRoot: path.join('/data', 'diagnostics'), diagnosticsVersion: appPackage.version }],
     ['viva-trace', { file: path.join('/data', 'trace.db') }],
     ['viva-questions', {}],
     ['viva-config', {}],

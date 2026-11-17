@@ -2,15 +2,18 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
 import type { StoredEvent } from './event-core.ts'
 import type { RemoteHost } from './remote-host.ts'
-import { type Answer, type ChannelKind, decodeValue, encodeValue, isBlobRef, SEQ_HEADER, sseMessage, TOKEN_HEADER } from './wire.ts'
+import { type Answer, type ChannelKind, decodeValue, encodeValue, isBlobRef, MAX_JSON_BYTES, SEQ_HEADER, sseMessage, TOKEN_HEADER } from './wire.ts'
+import { separateDiagnosticEnvelope } from '../diagnostics/contracts.ts'
+import { emitDiagnostic, withRemoteOperation } from '../diagnostics/node/context.ts'
+import { diagnosticOperationForChannel } from '../diagnostics/node/operations.ts'
+import { createRequestBudget, MEMORY_READ_BUDGET_MS, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
+import { memoryReadContext } from './memory-read-context.ts'
 
 /**
  * The backend's loopback HTTP server (docs/system-design.md §3); wire.ts lists the routes. Only
  * 127.0.0.1, only requests with the launch token and the server's own Host (a page in a browser can do neither).
  */
 const LOOPBACK = '127.0.0.1'
-/** A JSON body: a conversation's history is the largest (history:save). */
-const MAX_JSON_BYTES = 32 * 1024 * 1024
 /** Bytes uploaded before the call that uses them: a pasted picture. */
 const MAX_BLOB_BYTES = 64 * 1024 * 1024
 /** How long an uploaded blob waits for its call. */
@@ -123,7 +126,9 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
       const value = encodeValue(await run())
       sendJson(res, 200, { ok: true, value, mark: remote.mark() })
     } catch (err) {
-      sendJson(res, 200, { ok: false, error: (err as Error)?.message ?? String(err), mark: remote.mark() })
+      const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined
+      sendJson(res, 200, { ok: false, error: (err as Error)?.message ?? String(err),
+        ...(code === 'timeout' || code === 'busy' || code === 'unavailable' ? { code } : {}), mark: remote.mark() })
     }
   }
 
@@ -161,28 +166,42 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
   }
 
   /** A call to a channel or a control, ready to start; what is wrong with it is found before its turn. */
-  async function prepare(kind: 'rpc' | 'control', key: string, req: http.IncomingMessage): Promise<() => unknown> {
-    const body = await readJson(req)
+  async function prepare(kind: 'rpc' | 'control', key: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<() => unknown> {
+    const separated = separateDiagnosticEnvelope(await readJson(req))
+    const body = separated.business
+    if (separated.dropped) emitDiagnostic({ event: 'context.dropped', operation: 'http', reason: 'invalid_context' })
     if (kind === 'rpc') {
       const entry = channels.get(key)
       if (!entry) throw new HttpProblem(404, `no channel ${key}`)
       const args = withBlobs(argsOf(body))
-      return async () => {
+      const invoke = () => withRemoteOperation(separated.context, diagnosticOperationForChannel(key), async () => {
         const value = await entry.listener({}, ...args)
         return entry.kind === 'on' ? null : value
+      }, { identities: { methodId: key } })
+      if (key !== 'memory:get' && key !== 'agent:snapshot') return invoke
+      const limit = key === 'memory:get' ? MEMORY_READ_BUDGET_MS : INITIALIZATION_BUDGET_MS
+      const requested = (args[0] as { budgetMs?: unknown } | undefined)?.budgetMs
+      if (requested !== undefined && (typeof requested !== 'number' || !Number.isFinite(requested) || requested <= 0 || requested > limit)) throw new HttpProblem(400, 'invalid request budget')
+      const disconnected = new AbortController()
+      const lifetime = createRequestBudget(typeof requested === 'number' ? requested : limit, disconnected.signal)
+      const stop = () => { if (!res.writableEnded) disconnected.abort(new Error('Request caller disconnected')) }
+      res.once('close', stop)
+      return async () => {
+        try { return await lifetime.run(() => key === 'memory:get' ? memoryReadContext.run(lifetime, invoke) : invoke()) }
+        finally { lifetime.close(); res.off('close', stop) }
       }
     }
     const control = Object.hasOwn(controls, key) ? controls[key] : undefined
     if (!control) throw new HttpProblem(404, `no control ${key}`)
     const args = decodeValue(argsOf(body)) as unknown[]
-    return () => control(...args)
+    return () => withRemoteOperation(separated.context, 'http', () => control(...args), { identities: { methodId: key } })
   }
 
   async function ordered(kind: 'rpc' | 'control', key: string, req: http.IncomingMessage, res: http.ServerResponse) {
     const seq = seqOf(req)
     let run: () => unknown
     try {
-      run = await prepare(kind, key, req)
+      run = await prepare(kind, key, req, res)
     } catch (err) {
       // Its turn passes, or every call after it would wait for it.
       inOrder(seq, () => {})

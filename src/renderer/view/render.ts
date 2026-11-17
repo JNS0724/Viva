@@ -114,7 +114,7 @@ function latestQuestionTop(thread: HTMLElement, scroll: HTMLElement) {
 /** Re-render the thread, then let the follower decide whether (and how far) to scroll. */
 function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: number) {
   // Stream updates grow retained text nodes even when the thread's direct children stay attached.
-  renderThread(dom.thread, state, handlers, now)
+  renderThread(dom.thread, state, handlers, now, state.initialization)
   queueLayout(dom.thread, () => {
     if (!dom.thread.isConnected || dom.thread.hidden) return
     return dom.follower.measureAfterRender(() => latestQuestionTop(dom.thread, dom.scroll))
@@ -195,7 +195,7 @@ export function renderSendButton(dom: Dom, state: State) {
 }
 
 function renderComposer(dom: Dom, state: State, handlers: Handlers) {
-  renderComposerAvailability(dom, setupView(state.info), state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
+  renderComposerAvailability(dom, setupView(state.info), state.initialization.status !== 'ready' || state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
   renderSendButton(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)

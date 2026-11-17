@@ -82,6 +82,8 @@ import { historyRecallAsync } from './history-recall.ts'
 import type { HistoryEvidence } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
+import { createRendererStream } from './renderer-stream.ts'
+import type { RendererSnapshot } from '../shared/renderer-sync.ts'
 import { createTaskSignals, taskEventOf } from './task-signals.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
@@ -136,6 +138,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The backend's database and its event core (app-db.ts, event-core.ts), opened first. */
   let appDb!: AppDb
   let core: EventCore | null = null
+  const rendererStream = createRendererStream(host.window.send)
   /** One change of the backend's state and its event (event-core.ts apply), for the stores' writes. */
   const applyChange: Apply = (kind, data, write) => {
     if (!core) throw new Error(`${kind} before the event core was opened`)
@@ -157,7 +160,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const bridge = dsh.current
     if (!bridge) return Promise.reject(new MemoryOwnerUnavailable())
     return bridge.memory.call(method, input)
-  }, () => dsh.current?.memory.state())
+  }, () => dsh.current?.memory.state(), (work, options) => {
+    const bridge = dsh.current
+    if (!bridge) return Promise.reject(new MemoryOwnerUnavailable())
+    return bridge.memory.readBatch(work, options)
+  })
   const memoryCoordination = memory
   /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
   let traceDb: ReturnType<typeof openTraceDb> | null = null
@@ -967,6 +974,17 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
 
   function registerAgentIpc() {
     ipcMain.handle('agent:info', () => lastInfo)
+    ipcMain.handle('agent:snapshot', (): RendererSnapshot => {
+      if (sessions.isChanging()) throw new Error('Conversation selection is changing; retry initialization')
+      const selected = sessions.current(), context = sessions.context()
+      const found = historyDb.get(selected.id)
+      // No await between the history read and publication cutoff: both share this boundary.
+      const history = found ? { id: found.conversation.id, updatedAt: found.conversation.updatedAt,
+        createdAt: found.conversation.createdAt, parentId: found.conversation.parentId,
+        messages: found.messages, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
+      return { ...rendererStream.snapshot(selected.id, context), context, history,
+        info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
+    })
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
     // on the live channel, so it comes in its place among the pushes (renderer waits-state.ts), not in the answer.
     ipcMain.handle('agent:waits', () => {
@@ -976,7 +994,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       return true
     })
     ipcMain.handle('agent:prompt', (_event, text, images = [], operation, feedItemId) => {
-      if (memoryBusy() || sessions.isChanging()) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
+      if (memoryBusy()) throw new Error(t('memory.read.unavailable'))
+      if (sessions.isChanging()) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
       // With pictures the words may be left out.
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
       const pictures = imagesForPrompt(imageStore, images)
@@ -1481,6 +1500,11 @@ ${question}` : question
       // A report waiting for this conversation (task-reports.ts) may go now.
       setCurrent: sessions.select,
       agentInfo: () => lastInfo,
+      validateSave: (id, mark) => {
+        if (mark && !sameContext(mark.context, sessions.context())) throw new Error('Conversation save belongs to an old selection')
+        rendererStream.validateSave(id, mark)
+      },
+      historySaved: rendererStream.save,
       selectSession: sessions.withSelection,
       chooseExportPath,
       isBusy: () => turn.active || memoryBusy(),
@@ -1631,7 +1655,7 @@ ${question}` : question
   /** Opens the stores and registers the backend's channels, before the window loads. */
   function open() {
     appDb = openAppDb({ file: path.join(userData, 'app.db') })
-    core = createEventCore({ app: appDb, publish: host.window.send })
+    core = createEventCore({ app: appDb, publish: rendererStream.send })
     settingsStore = createSettingsStore({
       file: path.join(userData, 'settings.json'), crypto: host.secrets,
       onError: (err) => console.error('[settings] could not read saved settings:', err.message),
@@ -1724,6 +1748,13 @@ ${question}` : question
       if (added.made) feedChanged()
     },
     agentPid: () => dsh.current?.pid() ?? null,
+    publishAutomation: (value: unknown) => {
+      if (!host.automation) throw new Error('Only available to external automation')
+      if (!value || typeof value !== 'object') throw new Error('Invalid automation event')
+      const event = value as Record<string, unknown>
+      if (typeof event.type !== 'string' || !['turn_started', 'turn_end', 'update'].includes(event.type)) throw new Error('Invalid automation event type')
+      emitToRenderer({ ...event, type: event.type, context: sessions.context() })
+    },
     hasBridge: () => Boolean(dsh.current),
     isQuitting: dsh.isQuitting,
     /** Quitting has begun (or the session ends): dsh must not be started again. */
