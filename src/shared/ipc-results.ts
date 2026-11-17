@@ -66,7 +66,7 @@ export interface IpcResults {
   'diagnostics:health': string | undefined
   'diagnostics:clear': { status: 'cleared' | 'cleanup_pending' | 'busy' }
   'diagnostics:debug': void
-  'diagnostics:status': { state: 'initializing' | 'ready' | 'stalled' | 'unavailable' | 'closed'; droppedCount: number; queuedBytes: number; activeCount: number; exporting: boolean }
+  'diagnostics:status': { state: 'initializing' | 'ready' | 'stalled' | 'unavailable' | 'closed'; droppedCount: number; queuedBytes: number; activeCount: number; exporting: boolean; debugRemainingMs: number; cleanupPending: boolean }
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void
   'draft:keep-images': void

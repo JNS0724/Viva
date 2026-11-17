@@ -107,7 +107,9 @@ type IslandAct = (action: { kind: string, [field: string]: unknown }) => void
 type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
 /** The window's state: what state.ts's initialState can become. */
-type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info'> & ConversationView & { info: AgentInfo }
+type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info' | 'diagnostics'> & ConversationView & {
+  info: AgentInfo, diagnostics: import('./diagnostics-types.ts').DiagnosticsState
+}
 /**
  * One conversation as it is reduced (conversation-state.ts): the one on screen (part of State) or a background
  * task's (BackgroundTask.view), and no more.

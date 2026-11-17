@@ -23,6 +23,7 @@ import { initialWorkDir, WORKDIR_ACTIONS } from './workdir-state.ts'
 import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
+import { initialDiagnostics, DIAGNOSTICS_ACTIONS } from './diagnostics-state.ts'
 import { hideErasedHistoryCopies } from './generated-history-state.ts'
 
 function removeRestoredTrace(state: State): State {
@@ -90,6 +91,7 @@ export const initialState = Object.freeze({
   /** Cards for the schedules the model proposed in this conversation (proposal-state.ts ProposalCard). */
   proposals: [] as Untyped[],
   models: initialModels,
+  diagnostics: initialDiagnostics,
   /** The 插件 section of settings (plugins-state.ts). */
   plugins: initialPlugins,
   /** 能力: which of skills, MCP and plugins is shown, and the one picked (capabilities-state.ts). */
@@ -246,6 +248,7 @@ const ACTION_HANDLERS: ActionHandlers = {
     conversationId: typeof info?.conversationId === 'string' ? info.conversationId : null,
     drawer: state.drawer,
     settings: state.settings,
+    diagnostics: state.diagnostics,
     history: state.history,
     erasedReportIds: state.erasedReportIds,
     erasedGeneratedKeys: state.erasedGeneratedKeys,
@@ -348,6 +351,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ...PERSONAL_ACTIONS,
   ...MEMORY_FILE_ACTIONS,
   ...MODEL_ACTIONS,
+  ...DIAGNOSTICS_ACTIONS,
   ...PLUGIN_ACTIONS,
   ...FILES_ACTIONS,
   ...SECRET_ACTIONS,

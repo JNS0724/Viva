@@ -4,6 +4,8 @@ import { languageControl } from '../language.ts'
 import { formatSize } from '../selectors.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { modelsSection } from './models.ts'
+import { diagnosticsSection } from './diagnostics.ts'
+import { initialDiagnostics } from '../diagnostics-state.ts'
 
 /**
  * The 设置 page's part of the state (state.ts), with what only comes once the settings are read (settings:get):
@@ -160,7 +162,7 @@ function imagesSection(settings: Settings, handlers: Handlers) {
  * The 设置 page (view/hub.js): the DeepSeek key, other models, the desktop island, pictures and privacy. Skills, MCP
  * and plugins are 能力's (view/capabilities.ts). Re-rendered only when its slices change, and typed text survives a re-render.
  */
-export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], handlers: Handlers) {
+export function renderSettings(container: HTMLElement, settings: Settings, models: State['models'], handlers: Handlers, diagnostics: State['diagnostics'] = initialDiagnostics) {
   if (!settings.open) {
     container.replaceChildren()
     return
@@ -183,6 +185,7 @@ export function renderSettings(container: HTMLElement, settings: Settings, model
       deskSection(settings, handlers),
       webSearchSection(settings, handlers),
       imagesSection(settings, handlers),
+      diagnosticsSection(diagnostics, handlers),
       h('section', { class: 'ext', 'aria-label': t("handoff.privacy.title") },
         h('span', { class: 'profile-heading', text: t("handoff.privacy.title") }),
         h('p', { class: 'help', text: t("handoff.privacy.scope") })))))

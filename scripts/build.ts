@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildRevision, writeBuildRevision } from './build-revision.ts'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 const OUT = path.join(ROOT, 'out')
@@ -76,6 +77,7 @@ export function copyPageLibraryPackages(root: string, output: string, libraries:
 function build() {
   fs.rmSync(OUT, { recursive: true, force: true })
   emitCode()
+  writeBuildRevision(OUT, buildRevision(ROOT))
   const assets = SOURCES.flatMap((dir) => filesIn(path.join(ROOT, dir))).filter((rel) => !CODE.test(rel))
   assets.forEach(copy)
   const libraries = pageLibraries()

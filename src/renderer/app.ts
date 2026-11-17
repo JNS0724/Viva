@@ -22,6 +22,7 @@ import { createHistoryActions } from './history-actions.ts'
 import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
+import { createDiagnosticsActions } from './diagnostics-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
 import { createCapabilityActions } from './capability-actions.ts'
 import { createImportFlowActions } from './import-flow-actions.ts'
@@ -258,6 +259,7 @@ function saveHistory() {
 
 /** At launch: the permission level picked, shown by the input (the rest of settings is read when they open). */
 async function loadSettings() {
+  void diagnosticActions.refresh()
   try {
     dispatch({ type: 'settings_loaded', view: await api.getSettings() })
   } catch (err) {
@@ -467,6 +469,7 @@ doneNotice = createDoneNotice({
 })
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
+const diagnosticActions = createDiagnosticsActions({ api, getState: () => state, dispatch })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const importFlowActions = createImportFlowActions({ api, getState: () => state, dispatch, errorMessage })
 const capabilityActions = createCapabilityActions({
@@ -667,6 +670,7 @@ const handlers = {
   },
   async openSettings() {
     dispatch({ type: 'settings_open' })
+    void diagnosticActions.refresh()
     modelActions.loadModels()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
@@ -675,6 +679,11 @@ const handlers = {
     }
   },
   closeSettings: () => dispatch({ type: 'settings_close' }),
+  refreshDiagnostics: () => diagnosticActions.refresh(),
+  exportDiagnostics: () => diagnosticActions.export(),
+  clearDiagnostics: () => diagnosticActions.clear(),
+  debugDiagnostics: (enabled: boolean) => diagnosticActions.debug(enabled),
+  openDiagnosticsFolder: () => diagnosticActions.openFolder(),
   /** The page under the title bar: on the page asked for, or on the one last shown (hub-state.js). */
   openHubPage: (page: string) => HUB_OPENERS[page]?.(),
   openHub: () => {

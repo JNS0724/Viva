@@ -375,3 +375,7 @@ macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-
 提交与重试事件以实际持久化结果为准，回滚和已失效 generation 不误报成功。诊断关闭时可移植异步环绕直接返回原业务 Promise，避免增加会影响真实回执顺序的微任务。daily 也修复了与 dream 相同的无恢复工作仍关闭发送屏障的问题：仅存在实际文件意图或清理时才进入恢复屏障，模型失败重试和 runner 重启不干扰无关前台请求，真实提交与恢复仍等待物理请求结算。
 
 回归及集成验证进展见 [L2 实施记录](qa-logging-l2-implementation-20261118.zh-CN.md)。性能门槛与 Windows 原生验收仍按原要求保留，不因主线埋点覆盖而改为通过。
+
+## 18 L3 发布收尾进展
+
+设置页已接入现有 Shell 诊断控制面，提供导出、目录、清空重试、限时调试与状态读取，不等待业务 Backend 或 memory:get。应用与独立插件构建注入干净源码 checkout 的实际提交；脏构建和无 Git 源包仍明确为 unknown。中英 UI、state/actions/view 分层、输入保护及实际窄窗验证见 [L3 进展记录](qa-logging-l3-progress-20261118.zh-CN.md)。性能仍未达到第 13 节的 5% 门槛，Windows 原生与发布安装包验证尚未完成，不能声明整个日志方案完成。

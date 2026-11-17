@@ -79,10 +79,10 @@ function renderPermissionIfChanged(area: HTMLElement | null, state: State, handl
 }
 
 function renderSettingsIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
-  const inputs = [localeRevision(), state.settings, state.models]
+  const inputs = [localeRevision(), state.settings, state.models, state.diagnostics]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.models, handlers)
+  renderSettings(container, state.settings, state.models, handlers, state.diagnostics)
 }
 let renderedCapabilities: unknown[] = []
 /** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins, how the servers stand now, and on itself. */

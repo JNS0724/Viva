@@ -1,4 +1,5 @@
 import { COMPONENTS, EVENTS, ID_KEYS, METRIC_KEYS, OPERATIONS, REASONS, STAGES } from '../contracts.ts'
+import { BUILD_COMMIT } from '../build-info.ts'
 import type { DiagnosticEvent, DiagnosticFields, DiagnosticContext, DiagnosticComponent } from '../contracts.ts'
 import { diagnosticAlias } from './identity.ts'
 import type { DiagnosticIdentity } from './identity.ts'
@@ -83,7 +84,7 @@ function makeDiagnosticFields(event: DiagnosticEvent, context: DiagnosticContext
   return { ...event, schemaVersion: 1, time: base.time, sequence: base.sequence,
     appVersion: version(base.version), platform: process.platform, arch: process.arch,
     componentVersion: version(base.componentVersion ?? base.version),
-    buildCommit: 'unknown', monotonicMs: base.monotonicMs ?? performance.now(),
+    buildCommit: BUILD_COMMIT, monotonicMs: base.monotonicMs ?? performance.now(),
     ...(base.aliases ?? { diagnosticRunId: diagnosticAlias(identity, identity.runId), processInstanceId: diagnosticAlias(identity, base.instance),
     traceId: diagnosticAlias(identity, context.traceId), spanId: diagnosticAlias(identity, context.spanId),
     ...(context.parentSpanId ? { parentSpanId: diagnosticAlias(identity, context.parentSpanId) } : {}) }),

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
+import { buildRevision, writeBuildRevision } from './build-revision.ts'
 
 const project = path.resolve(import.meta.dirname, '..')
 const require = createRequire(import.meta.url)
@@ -112,6 +113,7 @@ export function buildMemoryPlugin({ destination = path.join(project, 'build/memo
   rmSync(compiledRoot, { recursive: true, force: true })
   const tsc = require.resolve('typescript/bin/tsc')
   execFileSync(process.execPath, [tsc, '-p', path.join(project, 'tsconfig.memory-plugin.json'), '--outDir', compiledRoot], { cwd: project, stdio: 'inherit' })
+  writeBuildRevision(compiledRoot, buildRevision(project))
   return assembleMemoryPlugin({ compiledRoot, destination })
 }
 

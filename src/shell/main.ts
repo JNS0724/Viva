@@ -577,7 +577,8 @@ app.whenReady().then(async () => {
     invoke: async (channel, args) => (await backendConnection()).rpc(channel, args),
     exportBundle: exportDiagnostics, openFolder: openDiagnosticsFolder,
     clear: clearDiagnostics, debug: debugDiagnostics, health: rendererHealth.receive,
-    status: () => ({ ...shellDiagnostics.snapshot().stats, exporting: diagnosticExporter.state() !== 'idle' }),
+    status: () => ({ ...shellDiagnostics.snapshot().stats, exporting: Boolean(exportingDiagnostics) || diagnosticExporter.state() !== 'idle',
+      debugRemainingMs: shellDiagnostics.debugRemainingMs(), cleanupPending: diagnosticClearer.pending() }),
   })
   rendererIpcDrops = diagnosticIpc.droppedCount
   // Windows has no visible application menu; keep its independent diagnostic entry available.
