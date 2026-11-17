@@ -366,7 +366,7 @@ memory:get 在 Renderer、Shell、Backend 和 owner 通道分别建立本地单�
 
 原生 macOS 菜单和 Windows 托盘已提供清空与限时 15 分钟 debug。清空先关闭目录配额中的新 writer 准入，等待已知组件和实际文件关闭回执；所有槽都关闭、无导出 pin 且旧文件删除后才轮换盐和 diagnosticRunId。超时显示 cleanup_pending，实际未结束的控制仍占名额；恢复后重试同一清空身份。轮换后的恢复重试不重复删除新代次文件。跨清空继续执行的本地业务使用新 trace，旧远程诊断元数据失效；readBatchId 名额、owner epoch、任务及发送屏障不变。
 
-macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-20261118.zh-CN.md)。永久 pending 写入/关闭、部分写入、ENOSPC/EAGAIN/EACCES、IPC 无响应、清空失败恢复、队列洪泛、旧代次回调和插件独立运行均有回归。Windows 原生故障与安装包验收未执行，性能门槛仍未通过，因此不声明 L1 整体完成；L2/L3 继续按原范围推进。
+首批 macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-20261118.zh-CN.md)。永久 pending 写入/关闭、部分写入、ENOSPC/EAGAIN/EACCES、IPC 无响应、清空失败恢复、队列洪泛、旧代次回调和插件独立运行均有回归。后续 Windows 原生故障和安装包结果见第 18 节。性能门槛仍未通过，因此不声明 L1 整体完成；L2/L3 继续按原范围推进。
 
 ## 17 L2 实施进展
 
@@ -378,4 +378,4 @@ macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-
 
 ## 18 L3 发布收尾进展
 
-设置页已接入现有 Shell 诊断控制面，提供导出、目录、清空重试、限时调试与状态读取，不等待业务 Backend 或 memory:get。应用与独立插件构建注入干净源码 checkout 的实际提交；脏构建和无 Git 源包仍明确为 unknown。中英 UI、state/actions/view 分层、输入保护及实际窄窗验证见 [L3 进展记录](qa-logging-l3-progress-20261118.zh-CN.md)。已只读挂载 macOS DMG，在仓库外通过记忆与重启验收。诊断字段改为单次读取后校验及复制，动态 getter 的回归覆盖真实落盘。测试自有进程暂停夹具已有 Unix/Windows 适配，独立诊断故障工作流不修改现有测试工程分路。性能仍未达到第 13 节的 5% 门槛，Windows 原生验收仍未完成；增加 Windows 代码不等于实际运行通过，不能声明整个日志方案完成。
+设置页已接入现有 Shell 诊断控制面，提供导出、目录、清空重试、限时调试与状态读取，不等待业务 Backend 或 memory:get。应用与独立插件构建注入干净源码 checkout 的实际提交；脏构建和无 Git 源包仍明确为 unknown。中英 UI、state/actions/view 分层、输入保护及实际窄窗验证见 [L3 进展记录](qa-logging-l3-progress-20261118.zh-CN.md)。已只读挂载 macOS DMG，在仓库外通过记忆与重启验收。诊断字段改为单次读取后校验及复制，动态 getter 的回归覆盖真实落盘。测试自有进程暂停夹具已有 Unix/Windows 适配，独立诊断故障工作流不修改现有测试工程分路。双平台原生故障和设置检查均已实际通过，干净 b165003 的 Windows 安装包也通过安装、记忆/重启及卸载；对应 macOS CI job 仍在排队。两个诊断 job 均仅在原始性能门槛失败：macOS 增加 0.621583ms/20.2759%，Windows 增加 0.261400ms/12.8623%，零丢弃。原门槛未改，不能声明整个日志方案完成。

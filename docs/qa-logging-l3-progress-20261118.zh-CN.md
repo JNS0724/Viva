@@ -41,3 +41,20 @@ macOS 已实际构建 DMG、只读挂载并从卷内启动安装产物，在仓�
 本批最终全量测试 2206 项：2204 通过、2 跳过、0 失败（169.7 秒），类型检查、构建和双语检查通过。完整桌面冒烟 15/15（4.6 分钟），记录为 `/private/tmp/viva-l3-portable-fault-full-smoke.log`。本地夹具运行在 macOS；Windows 分支仍等待原生 CI 验证，不因增加夹具就算验收完成。
 
 三个故障专项均通过：owner 两次实际读取约 10003.6ms、10004.8ms 超时，满额 2.9ms busy，恢复后新读取/手动重试成功并保留草稿和附件；Backend/Renderer 同时暂停后原生导出 60562 字节 ZIP，保留到 `smoke/l1c-export/`；Backend 沉默被心跳识别，清空先在 2003.1ms 返回 cleanup_pending，恢复后实际关闭并轮换盐，Backend/owner PID 均不变，memory:get 正常。相应日志为 `/private/tmp/viva-l3-portable-{owner,export,controls}-smoke.log`。设置宽/窄窗、导出、清空、临时 debug 和未保存 key 保留再次通过，日志为 `/private/tmp/viva-l3-portable-settings-smoke.log`。
+
+## 追加：独立分支双平台 CI（源码 b165003）
+
+隐私修复提交为 `e317f63`，故障夹具/验收提交为 `b165003`，均已推送 `codex/local-diagnostics`。未创建 PR、未合入主线，原工作区和 ReMe 未修改。
+
+[诊断专项 CI](https://github.com/JNS0724/Viva/actions/runs/44163578395) 的 macOS 与 Windows 均通过进程暂停夹具、owner 期限/真实结算、冻结 Backend/Renderer 后原生导出、心跳/清空恢复，以及设置控制和隐私检查。Windows owner 两次超时为 10011.8ms、10002.2ms，满额 2.3ms busy；恢复后新读取、手动重试、草稿和附件保留通过。原生托盘导出 80435 字节；清空先在 2002.6ms 返回 cleanup_pending，实际恢复后盐轮换且业务 PID 不变。已下载 Windows 证据至 `/private/tmp/viva-l3-windows-diagnostic-evidence/` 并核对实际窄窗截图；这次是原生 Windows 结果。
+
+两个诊断 job 的最终结论均为 failure，唯一失败步骤是原有性能门槛，不将前面功能通过冒充 job 全绿：
+
+| 环境 | 关闭诊断 P95 | 开启诊断 P95 | 增加 | 丢弃 |
+| --- | --- | --- | --- | --- |
+| macOS CI | 3.065625ms | 3.687208ms | 0.621583ms / 20.2759% | 0 |
+| Windows CI | 2.032300ms | 2.293700ms | 0.261400ms / 12.8623% | 0 |
+
+[安装包工作流](https://github.com/JNS0724/Viva/actions/runs/44163691374) 的 Windows job 已完整通过：NSIS 安装、仓库外实际安装产物的记忆与重启 1/1（3.9 分钟）、许可证及卸载均 PASS；macOS job 仍在等待 runner，没有把排队记为成功或失败。本地此前 DMG 的实际验收仍有效，但不冒充这一干净提交的远端 job 结果。
+
+对干净 `b165003` 再次构建应用和独立插件，两个 build-info 均严格等于 `b1650037f6369b15a77c6778d472b898d193f312`，独立插件产物测试 4/4 通过。仓库外的字段展开探针虽降低校验计时，但完整负载仍增加 0.337292ms / 13.9396%，没有改善整体门槛，因此未将重复白名单或生成器加入生产代码。性能目标仍按方案保留，尚未宣布日志系统全部验收完成。
