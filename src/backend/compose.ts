@@ -1049,12 +1049,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:cancel', () => { retireForegroundRequests(); return dsh.current?.cancel() })
     ipcMain.handle('agent:new-session', async () => {
       if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
-      const info = await sessions.newTopic()
-      if (info.sessionId) {
-        await memory.recordSession(info.sessionId)
-        await bindSessionProject(info.sessionId, currentMemoryProject())
-      }
-      return info
+      // The bridge's onSessionCreated binds owner metadata before returning the acquired session.
+      // Repeating it after selection commits can turn a successful switch into an unrelated recovery failure.
+      return sessions.newTopic()
     })
     ipcMain.handle('agent:set-config', async (_event, configId, value) => {
       if (!CONFIG_IDS.includes(configId)) throw new Error(`invalid config option: ${configId}`)

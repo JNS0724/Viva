@@ -50,11 +50,25 @@ import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtur
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
 const oldFact = `记住：我的周报提交邮箱是 ${oldValue}`
 const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', import.meta.url)
+
+test('a newly selected native session registers its owner metadata once before selection commits', async t => {
+  const app = await setup(t, () => null)
+  let registrations = 0
+  const restore = installDiagnosticPort({ emit(event) {
+    if (event.event === 'wait.begin' && event.operation === 'memory.owner' && event.identities?.methodId === 'recordSession') registrations++
+    return undefined
+  } })
+  t.after(restore)
+  const selected = await app.newTopic()
+  assert.ok(selected.sessionId)
+  assert.equal(registrations, 1, 'a second post-selection registration can race owner recovery after native initialization already succeeded')
+})
 type ModelMessage = { role?: string, content?: string | { text?: string, type?: string }[] }
 type Request = { system?: unknown, messages: ModelMessage[] }
 type Task = IpcResults['task:finished'][number]
