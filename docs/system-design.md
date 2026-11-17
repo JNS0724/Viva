@@ -2,7 +2,7 @@
 
 English | [简体中文](system-design.zh-CN.md)
 
-> The process split is based on PR #132 (`82a5bf3`, 2026-11-10); memory responsibilities, storage and plugin boundaries were checked against local commit `3085bad` on 2026-11-17. This is a local implementation snapshot: this round's PR CI has not run, and the snapshot does not imply a merge or completion of all delivery acceptance. The split's plan and implementation notes remain in git history; the later module-by-module work is recorded in the [architecture cleanup](architecture-health.md).
+> The process split is based on PR #132 (`82a5bf3`, 2026-11-10); memory responsibilities, storage and plugin boundaries were checked against local commit `3085bad` on 2026-11-17. This is a local implementation snapshot: this round's PR CI has not run, and the snapshot does not imply a merge or completion of all delivery acceptance. The split's plan and implementation notes remain in git history.
 
 ## 1. Overview
 
@@ -119,7 +119,7 @@ The backend keeps its application data in `app.db`; the Node owner in `viva-memo
 | `settings.json`, `models.json`, `mcp-servers.json`, `preferences.json` | Key, model providers, MCP servers, preferences | Backend | None |
 | `data-key.bin` | The data key that encrypts keys, itself encrypted by the system keychain | Shell | None |
 
-**Four memory layers.** [`contracts`](../src/memory/contracts/index.ts) defines plain DTOs and validation; [`core`](../src/memory/core/index.ts) handles writes, forgetting, retrieval, dream, versions and source permissions without Electron, DSH or Node storage dependencies; [`node`](../src/memory/node/index.ts) supplies SQLite, files, indexes, model resources and the owner lock; the [DSH adapter](../plugins/memory/lib/adapter.ts) binds actual sessions, tool executions, model transport, persistence and lifecycle. Viva calls the service through a trusted [owner client](../src/backend/remote-memory-channel.ts), conveys user actions and manages its own copies; it runs no second memory engine. Phase scope follows the [file memory and independent plugin plan](memory-reme-plan.md); [M1–M4](memory-design.md) records the old fact store.
+**Four memory layers.** [`contracts`](../src/memory/contracts/index.ts) defines plain DTOs and validation; [`core`](../src/memory/core/index.ts) handles writes, forgetting, retrieval, dream, versions and source permissions without Electron, DSH or Node storage dependencies; [`node`](../src/memory/node/index.ts) supplies SQLite, files, indexes, model resources and the owner lock; the [DSH adapter](../plugins/memory/lib/adapter.ts) binds actual sessions, tool executions, model transport, persistence and lifecycle. Viva calls the service through a trusted [owner client](../src/backend/remote-memory-channel.ts), conveys user actions and manages its own copies; it runs no second memory engine. Phase scope follows the [file memory and independent plugin plan](memory-reme-plan.md).
 
 **File writes and reads.** Native session ingestion persists user originals before completed turns contribute to daily notes; unsafe assistant context cannot discard an independent human original. Dream processes documents through Extract → Integrate → Verify → Tag. The model proposes creation or correction in a draft; the core checks original spans, workspace, file revisions and operation receipts before committing. Explicit Remember requests and management-page creation and edits use the same file service. `personal`, `procedure` and `wiki` are document buckets, with no predicate table deciding conflicts. Retrieval combines full text, configured local embeddings and relationship expansion, and indexes can be rebuilt. Unclear corrections remain deferred work; basic clarification is requested only when relevant material is actually retrieved.
 
@@ -256,7 +256,7 @@ The tests that keep these boundaries:
 - `test/backend-wire.test.ts`, `test/backend-keeper.test.ts`: call order, the token, answers waiting for pushes, backend restart and giving up.
 - The memory smoke group kills the backend process, then checks that a new backend is up, the conversation is still there, and the next question is answered. The packaged app runs this group too.
 
-`npm test` discovers the full test collection; CI runs unit tests and full smoke on macOS and Windows. For quick feedback while changing one part, `npm run test:feature -- <group>` runs that part's tests (`conversation`, `runtime`, `tasks`, `architecture`; `--list` shows the files); the full suite stays the gate. The [architecture cleanup](architecture-health.md) records the 2026-11-06 responsibility audit and the modules taken out of `compose.ts` and `app.ts` since.
+`npm test` discovers the full test collection; CI runs unit tests and full smoke on macOS and Windows. For quick feedback while changing one part, `npm run test:feature -- <group>` runs that part's tests (`conversation`, `runtime`, `tasks`, `architecture`; `--list` shows the files); the full suite stays the gate. The 2026-11-06 responsibility audit and subsequent module cleanup remain in git history.
 
 ## 10. Known limits and direction
 

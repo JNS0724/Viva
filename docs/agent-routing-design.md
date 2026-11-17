@@ -2,7 +2,7 @@
 
 English | [简体中文](agent-routing-design.zh-CN.md)
 
-Status: implemented (#131, #132). This document describes the design as of `82a5bf3`. The validation it rests on is in the [feasibility report](agent-routing-feasibility.md) and the [results summary](agent-routing-supplement-results.json). For how routing fits with background tasks, storage, and plugins, see the [system design](system-design.md).
+Status: implemented (#131, #132). This document describes the design as of `82a5bf3`; section 15 summarizes its validation evidence. For how routing fits with background tasks, storage, and plugins, see the [system design](system-design.md).
 
 The agent in the main conversation (the main agent) does four things: it understands the request, recovers the context it needs, decides where the work goes, and tells the user the result. Research, commands, and file writes go to background tasks. Every request ends either with a decision the host accepts or marked failed with a reason; the runtime guarantees that. Whether the decision is right is checked by the context mechanisms and by acceptance runs on a real model.
 
@@ -27,7 +27,7 @@ Requests often need different destinations. "Make today's briefing, then analyze
 
 | Not done | Why |
 | --- | --- |
-| A separate index or database for routing items | Chat search, memory retrieval, and compaction already supply context. The [memory system](memory-design.md) owns its local semantic index |
+| A separate index or database for routing items | Chat search, memory retrieval, and compaction already supply context. The [memory system](memory-reme-plan.md) owns its local semantic index |
 | Task queues and automatic dependencies | At most 5 tasks run at once; when all are taken, the user is told |
 | Interrupting the current answer for an interjection | DSH can only cancel a whole turn, and output from the next turn never reaches the window; the fast lane already shows where an interjection went within seconds |
 | Withdrawing a sent addition, rolling back a task's changes, task snapshots | These need new DSH or task interfaces; damage is limited by visible handovers, stops, and corrections (9.5) |
@@ -342,7 +342,7 @@ Real-app scenarios live in [`test/smoke/live-scenarios-routing.ts`](../test/smok
 
 | Round | Setup | Result |
 | --- | --- | --- |
-| First round | Isolated probes, a trimmed persona, reasoning off | Mechanisms 12/12; structured contract 22/27, mostly failing by using `reply` for clarification ([report sections 1–8](agent-routing-feasibility.md)) |
+| First round | Isolated probes, a trimmed persona, reasoning off | Mechanisms 12/12; structured contract 22/27, mostly failing by using `reply` for clarification |
 | Supplementary | Deterministic tests, the bridge layer with the production configuration, the real app | Parallel out-of-scope calls, interjection bookkeeping, the gate, and binding all passed; the first round's clarification failures disappeared with the production configuration; constraints found on binding timing, the gate, app operations and approval, and invalid JSON (report section 9) |
 | Layered narrowing | Real app, 10 scenarios, 5 runs each | 50/50; 0 out-of-scope calls and 0 routing failures; 15/15 app operations completed by the original tools under grants; adding an MCP server took 6.8 to 10.3 seconds per turn (report section 10) |
 | After implementation | Real app, the three core scenarios (answer, handover, interjection), 3 runs each | 9/9 before #131 merged; 9/9 after #132 merged, every handover accepted on its first submission |

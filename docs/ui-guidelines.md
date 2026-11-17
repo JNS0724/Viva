@@ -99,7 +99,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 
 ## Layout
 
-- **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 36px, centred in it. The title-bar island uses a state dot. The height must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
+- **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 44px, centred in it with her 36px portrait concentric on the left. The height must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
 - **Room for window buttons.** On macOS, `--reserve-left` keeps 84px on the left for the traffic lights. On Windows and Linux, `env(titlebar-area-width)` gives how much to leave on the right. This value is set only on `.titlebar`, so resizing the window doesn't invalidate the inherited style of every message.
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
 - **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail.
@@ -234,11 +234,11 @@ Ring colors match the interface's state colors: orange waits on you, red is an e
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 48px in conversation. Both sets display their complete canvas.
-- **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
-- **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
+- **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 36px in the title-bar island. Both sets display their complete canvas.
+- **Animations** are used by default on the home page, approval and question cards, the title-bar island and the desktop island. Feed lists and details remain still. Reduced motion selects the matching still.
+- **In the conversation** messages carry no portrait and no left indent, so assistant prose, code blocks, tables and cards align flush with the composer's left edge while the title-bar island carries her global portrait and state. Cards that wait on your decision keep her 96px half-body picture.
 - **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Status is told by the shape of a ring as well as by text and colour (`view/island-dom.ts` `deskSignal`):
-  - The portrait's ring: a turning blue arc while working; a solid orange ring with an outward pulse when it needs your approval or answer; a breathing blue ring when done and not yet seen; a solid red ring on an error; a dashed grey ring when not connected, with her in grey; no ring at rest, only the thin outline. Her picture is never scaled or faded, which would blur it.
+  - The portrait's ring: a turning blue arc while working; a solid orange ring with an outward pulse when it needs your approval or answer; a breathing blue ring when done and not yet seen; a solid red ring on an error; a dashed grey ring when not connected; no ring at rest, only the thin outline. Her picture is never scaled or faded, which would blur it.
   - A sign beside the status: "!" to approve, "?" to answer, "✓" done, "×" error, "–" not connected, and a small spinner while working. It goes before the status words, and the strip's edge takes the state's colour.
   - The sign is worn on the portrait's lower right only when she is alone, with no status words beside her; with them, the sign before the words says it, not twice.
   - At rest she is alone, with no strip: the strip appears only while background tasks are running. Finished tasks are not counted on her (see above). When she is alone and running tasks still need counting, the count sits on her lower right, inside her round, and a click there opens the background list; when both the count and a state sign would show, the count takes that place and the ring tells the state. The strip is as long as its content, up to `--desk-peek-width`.

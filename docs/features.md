@@ -149,7 +149,7 @@ The backend owns `memory.db`. The memory plugin connects Viva's private DSH prof
 
 Viva accepts clear requests to remember and extracts longer-term facts in the background. Memory records carry original evidence, scope, time, and conditions. A separate review checks whether a proposed correction, replacement, or ending is supported. Confirmed changes update the records and retain an undoable history. When the current answer or action requires resolving a disagreement, Viva can ask once per turn. The selected option applies to that turn. A lasting correction written by the user goes through the same review as a chat message. Passwords, keys, verification codes, and identity numbers are excluded from memory intake.
 
-The current request can receive the user-entered profile, today's date, and up to three relevant memories. The assistant can also call `memory_recall` with keywords and an optional date. Activity shows which memories were included. About You shows sources and changes, and provides editing, forgetting, and deletion controls. [Memory design](memory-design.md)
+The current request can receive the user-entered profile, today's date, and up to three relevant memories. The assistant can also call `memory_recall` with keywords and an optional date. Activity shows which memories were included. About You shows sources and changes, and provides editing, forgetting, and deletion controls. [Memory design](memory-reme-plan.md)
 
 <a id="消息里的-markdown"></a>
 ## Markdown in messages

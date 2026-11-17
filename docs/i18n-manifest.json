@@ -11,20 +11,26 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "1843ffedf0157a1b82c466b7e67879aaf7f04c6675a9290e0724f7869f11bd73",
-      "zhHash": "d31c6af933b29b3fc0cef1f1966f165387d3eab7f33dc316b8ec2a1c6a7970e1"
+      "enHash": "d8a37fdb5d16610b6061a6f1c968c37b245ca90824083a938f83b50dc86e5e85",
+      "zhHash": "1f4e850caa074f655633dd524381e141bd3ee3ebde16d5edd9c7a6159d93cf59"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "2c229d1a1c9d9d36c02d3c77cb63fd5e2b77314bd932bf82ef9a1badd2241516",
-      "zhHash": "6aebf68e69e4ef130637780c8a49fe68c501d8be18ea913986eaddf27b7503e1"
+      "enHash": "7529de0c10ea3a5459e0c007061c023a98b5edfb2e571b5e648b63fafd79dfbe",
+      "zhHash": "60c08b078404c3acf2fb70c8283a992b3159da8daa10052030a736e8c0dfd598"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
       "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
+    },
+    {
+      "en": "docs/test-engineering-optimization.md",
+      "zh": "docs/test-engineering-optimization.zh-CN.md",
+      "enHash": "287e15c97f36437ab0f8020866229657ca3481d9ddd24beaeaed99af545d643a",
+      "zhHash": "de695f4f8d259d1afc7255a82a12de32a4dcf81777369739aa12be2de8c8cee5"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -65,44 +71,32 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "fc82f88847779e4b50d3e6b8af855660f62889dace88ae466a17b0b8b6f0f6f0",
-      "zhHash": "c1ae0927ecb54b7b9dcead1efabe182d3e2b72744ab678a455b3e3077542a9da"
+      "enHash": "60b665b5c12b6ed97dac9573c6d2dcbc619f77a59440e838c146ac0d5fdba2ff",
+      "zhHash": "12a41e473f396f61b8d5c749c870c0c519e95996bd16f42e0fad2f7922cf0fec"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a5bcf31f0d89612585cbde07a215f218e57f6141fa7cd91fdc7d1064bb793300",
-      "zhHash": "b2388b19d7770173e97ad749ecef4011429b4afa93aa9a503cf0cf41c43999e5"
-    },
-    {
-      "en": "docs/architecture-health.md",
-      "zh": "docs/architecture-health.zh-CN.md",
-      "enHash": "6fd68cf2215c553d2b8bcb39d4fa4c126346def14417ada892ff313caeec92e5",
-      "zhHash": "a7cd843eb80c16a2e3dcb158402dfc9660e83477835d1294a252a251fe3969e2"
+      "enHash": "fb6965d6fe4a47b74a89b1cb1a05fc4c6efa17aac26b6f9529eddce324c5e427",
+      "zhHash": "24666f138a243cd2f0d5a46b58950ec97b49cd1aa7a2d4a4490c10d0231f3d0c"
     },
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "e0d47f83db34cfe5d7ff807a540a88f7c2f849a1582209fdc324b6449c925dd4",
-      "zhHash": "387740a148e9b9d57c87bfbdcff7889cde60ac6d60feb6a717cca8d5cc17e966"
-    },
-    {
-      "en": "docs/agent-routing-feasibility.md",
-      "zh": "docs/agent-routing-feasibility.zh-CN.md",
-      "enHash": "33f622f960b23b457214d323f7255406754915b8609b0f30459782996f0af47b",
-      "zhHash": "98700dc2147e522f687ed82ec8c733ddf6c9731a4e06f59fcdea2b85a4579c7d"
-    },
-    {
-      "en": "docs/memory-design.md",
-      "zh": "docs/memory-design.zh-CN.md",
-      "enHash": "aacfa4711deabe0ece53f77d30bd70305f4518386935df92034754ad24c68483",
-      "zhHash": "b605673f39e0ae5ffcc1bc7a6f1e199c3fdda8642fd3c3bfbb1c2b5556d4eaf1"
+      "enHash": "628623306a2a09e1917a42efa36a08945ad272b8e9de97b282d4a773c97baa6b",
+      "zhHash": "75c54648b5273f42a912d874ab234bbf390d33e0ad554b6c90bd6370f4bcc5e5"
     },
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
       "enHash": "e04a439ef2228d915a316f923c4aa8426420360835105dc9470379408f1f1064",
       "zhHash": "d57d0ed1539bc92b1830d8bc916abc3bea29e9b0b4c1ab312e7d859a6a59182a"
+    },
+    {
+      "en": "docs/logging-design.md",
+      "zh": "docs/logging-design.zh-CN.md",
+      "enHash": "0a9b243da42731defa2aef883c15ad09e519761b46d341062808ead728810c79",
+      "zhHash": "29d5eb13b54d42eabbd87e5697537810a7754b805bc2ce0e87524b43d6c40a8c"
     }
   ],
   "bilingual": [
@@ -111,14 +105,29 @@
   ],
   "sourceReports": [
     {
-      "path": "docs/qa-desktop-island-interaction-20261108.md",
-      "locale": "zh-CN",
-      "sha256": "e1e9e8537e233bca874cbdbadea9eaf3dd21759b9147205ce54b2241d86f7953"
-    },
-    {
       "path": "docs/qa-windows-ui-issues-20261108.zh-CN.md",
       "locale": "zh-CN",
       "sha256": "ba6691b0828cdba750e9cd08d47ee0d790284906bdb344b06bfd9ef9874b3bc3"
+    },
+    {
+      "path": "docs/qa-memory-recall-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "b8a72f09f2b0d9bd6c79932a8dbbf1266191487881c4c89fa1cd2fe4c00e2e9e"
+    },
+    {
+      "path": "docs/qa-logging-design-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "d415aaf3338940fdb6b30897d1b3b7283b1cc9b7664a30e1d8cd78ce5a18fa57"
+    },
+    {
+      "path": "docs/qa-logging-design-independent-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "474f5b0aaedabae8bbd15387b3467e584d64b6079f6be8320cdf3dc06f549600"
+    },
+    {
+      "path": "docs/qa-test-engineering-optimization-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "155b60c5bfa8773a7c5c6cc0e0869beddab98248820dd4f4e257382b71c50269"
     }
   ]
 }

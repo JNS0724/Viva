@@ -2,7 +2,7 @@
 
 [English](system-design.md) | 简体中文
 
-> 进程拆分以 PR #132（`82a5bf3`，2026-11-10）为基线；记忆相关职责、存储与插件边界已对照 2026-11-17 的本地提交 `3085bad` 更新。这是本地实现快照，本轮 PR CI 尚未运行，不代表已经合入或完成全部交付验收。拆分的设计稿和实施记录保留在 git 历史里；之后按模块做的整治记在[架构整治](architecture-health.zh-CN.md)里。
+> 进程拆分以 PR #132（`82a5bf3`，2026-11-10）为基线；记忆相关职责、存储与插件边界已对照 2026-11-17 的本地提交 `3085bad` 更新。这是本地实现快照，本轮 PR CI 尚未运行，不代表已经合入或完成全部交付验收。拆分的设计稿和实施记录保留在 git 历史里。
 
 ## 1. 概述
 
@@ -119,7 +119,7 @@ flowchart TB
 | `settings.json`、`models.json`、`mcp-servers.json`、`preferences.json` | key、模型提供方、MCP 服务器、偏好 | 后端 | 无 |
 | `data-key.bin` | 加密 key 用的数据密钥，由系统钥匙串加密 | 外壳 | 无 |
 
-**记忆的四层。** [`contracts`](../src/memory/contracts/index.ts) 定义纯 DTO 与校验；[`core`](../src/memory/core/index.ts) 负责写入、遗忘、检索、dream、版本与来源权限，不依赖 Electron、DSH 或 Node 存储；[`node`](../src/memory/node/index.ts) 实现 SQLite、文件、索引、模型资源和 owner 锁；[DSH 适配器](../plugins/memory/lib/adapter.ts) 绑定真实会话、工具执行、模型传输、持久化与生命周期。Viva 经受信的 [owner 客户端](../src/backend/remote-memory-channel.ts) 调用服务、传递用户操作和处理自己的副本，不再运行第二套记忆引擎。阶段范围以[文件记忆与独立插件方案](memory-reme-plan.zh-CN.md)为准；[M1–M4 文档](memory-design.zh-CN.md)是旧事实库的历史记录。
+**记忆的四层。** [`contracts`](../src/memory/contracts/index.ts) 定义纯 DTO 与校验；[`core`](../src/memory/core/index.ts) 负责写入、遗忘、检索、dream、版本与来源权限，不依赖 Electron、DSH 或 Node 存储；[`node`](../src/memory/node/index.ts) 实现 SQLite、文件、索引、模型资源和 owner 锁；[DSH 适配器](../plugins/memory/lib/adapter.ts) 绑定真实会话、工具执行、模型传输、持久化与生命周期。Viva 经受信的 [owner 客户端](../src/backend/remote-memory-channel.ts) 调用服务、传递用户操作和处理自己的副本，不再运行第二套记忆引擎。阶段范围以[文件记忆与独立插件方案](memory-reme-plan.zh-CN.md)为准。
 
 **文件写入与读取。** 原生会话摄取先持久化用户原文，再按完成轮次生成 daily 笔记；不安全的助手上下文不能使独立用户原文丢失。dream 按 Extract → Integrate → Verify → Tag 处理文档，模型在草稿中提出新建或更正，核心核验原文跨度、workspace、文件 revision 与操作回执后提交。明确的「记住」和管理页新建、编辑也走同一文件服务。`personal`、`procedure`、`wiki` 是文档桶，没有按谓词裁决冲突的小表。检索统一组合全文、配置的本地向量与关系展开，索引可以重建；证据不清的更正保留待定工作，实际查到相关资料时才发起基础澄清。
 
@@ -256,7 +256,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 - `test/backend-wire.test.ts`、`test/backend-keeper.test.ts`：调用顺序、令牌、回答等推送、后端重启和放弃。
 - 冒烟测试的记忆组会杀掉后端进程，检查新后端起来、对话还在、下一个问题能正常回答；打包后的应用也跑这一组。
 
-完整测试集合由 `npm test` 发现；CI 在 macOS 和 Windows 上运行单元测试和完整冒烟。只改一块时，`npm run test:feature -- <分组>` 只跑这一块的测试（`conversation`、`runtime`、`tasks`、`architecture`，`--list` 列出文件），合入前仍以完整测试为准。2026-11-06 的职责审查，以及之后从 `compose.ts`、`app.ts` 拆出的模块，记在[架构整治](architecture-health.zh-CN.md)里。
+完整测试集合由 `npm test` 发现；CI 在 macOS 和 Windows 上运行单元测试和完整冒烟。只改一块时，`npm run test:feature -- <分组>` 只跑这一块的测试（`conversation`、`runtime`、`tasks`、`architecture`，`--list` 列出文件），合入前仍以完整测试为准。2026-11-06 的职责审查和后续模块整治记录保留在 git 历史里。
 
 ## 10. 已知限制与演进方向
 
