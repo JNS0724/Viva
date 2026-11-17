@@ -6,10 +6,12 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { ZipFile } from 'yazl'
 import { COMPONENTS, DIAGNOSTIC_LIMITS, OPERATIONS, REASONS, STAGES, safeDiagnosticReason } from '../contracts.ts'
-import { newDiagnosticIdentity } from './identity.ts'
+import { diagnosticAlias, newDiagnosticIdentity } from './identity.ts'
 import type { DiagnosticIdentity } from './identity.ts'
 import { sanitizeStoredDiagnostic } from './record.ts'
 import { DIAGNOSTIC_FILE } from './quota.ts'
+import { diagnosticJsonl } from './jsonl.ts'
+import { safeDiagnosticRecovery } from './recovery.ts'
 
 export interface DiagnosticFileRange { file: string; cutoff: number }
 export interface DiagnosticFileManifest {
@@ -22,46 +24,21 @@ const member = (items: readonly string[], v: unknown): v is string => typeof v =
 
 /** Newline framing precedes UTF-8 decoding. Oversized/malformed records never enter the archive. */
 export async function* diagnosticRecords(input: AsyncIterable<Uint8Array>, report: DiagnosticFileManifest, identity: DiagnosticIdentity): AsyncGenerator<Buffer> {
-  let partial: Buffer = Buffer.alloc(0), oversized = false, offset = 0
-  const record = (piece: Buffer): Buffer | undefined => {
-    try {
-      const parsed: unknown = JSON.parse(piece.toString('utf8'))
-      const safe = sanitizeStoredDiagnostic(parsed, identity)
-      if (!safe) { report.invalid_record++; return }
-      return Buffer.from(`${JSON.stringify(safe)}\n`)
-    } catch { report.invalid_record++; return }
+  for await (const raw of diagnosticJsonl(input, report)) {
+    const safe = sanitizeStoredDiagnostic(raw, identity)
+    if (!safe) { report.invalid_record++; continue }
+    const encoded = Buffer.from(`${JSON.stringify(safe)}\n`)
+    report.outputBytes += encoded.length
+    yield encoded
   }
-  for await (const chunk of input) {
-    const data = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-    let from = 0
-    while (from < data.length) {
-      const newline = data.indexOf(10, from), end = newline === -1 ? data.length : newline
-      const piece = data.subarray(from, end)
-      if (partial.length + piece.length > DIAGNOSTIC_LIMITS.eventBytes) { oversized = true; partial = Buffer.alloc(0) }
-      else if (!oversized) partial = partial.length ? Buffer.concat([partial, piece]) : Buffer.from(piece)
-      offset += piece.length
-      if (newline === -1) break
-      offset++
-      if (oversized) report.invalid_record++
-      else {
-        const safe = record(partial)
-        if (safe) { report.outputBytes += safe.length; yield safe }
-      }
-      report.exportedThroughByte = offset
-      partial = Buffer.alloc(0); oversized = false; from = newline + 1
-    }
-  }
-  report.sourceBytesRead = offset
-  report.trailingBytesOmitted = offset - report.exportedThroughByte
-  report.partial_trailing_record = report.trailingBytesOmitted > 0
 }
 
-function safeSnapshots(raw: unknown): unknown[] {
+function safeSnapshots(raw: unknown, identity: DiagnosticIdentity): unknown[] {
   if (!Array.isArray(raw)) return []
   return raw.slice(0, 8).flatMap(item => {
     if (!object(item) || !member(COMPONENTS, item.component) || !object(item.stats)) return []
     const stats = item.stats
-    const numbers = Object.fromEntries(['queuedBytes', 'peakQueuedBytes', 'maxWriteDelayMs', 'droppedCount', 'writtenBytes', 'activeCount'].flatMap(key => {
+    const numbers = Object.fromEntries(['queuedBytes', 'peakQueuedBytes', 'maxWriteDelayMs', 'droppedCount', 'writtenBytes', 'activeCount', 'untrackedCount'].flatMap(key => {
       const value = stats[key]
       return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? [[key, value]] : []
     }))
@@ -69,9 +46,13 @@ function safeSnapshots(raw: unknown): unknown[] {
       if (!object(entry) || !member(OPERATIONS, entry.operation) || typeof entry.ageMs !== 'number' || !Number.isFinite(entry.ageMs)) return []
       return [{ operation: entry.operation, ageMs: Math.max(0, entry.ageMs), ...(member(STAGES, entry.stage) ? { stage: entry.stage } : {}) }]
     }) : []
+    const previous = safeDiagnosticRecovery(item.previous)
     return [{ component: item.component, stats: { ...numbers,
       ...(member(['initializing', 'ready', 'stalled', 'unavailable', 'closed'], stats.state) ? { state: stats.state } : {}),
       ...(member(REASONS, stats.reason) ? { reason: stats.reason } : {}) }, active,
+      ...(previous ? { previous: { ...previous, spans: previous.spans.map(span => ({ ...span,
+        traceId: diagnosticAlias(identity, span.traceId), spanId: diagnosticAlias(identity, span.spanId),
+        processInstanceId: diagnosticAlias(identity, span.processInstanceId), diagnosticRunId: diagnosticAlias(identity, span.diagnosticRunId) })) } } : {}),
       activeOmitted: Math.max(0, (typeof stats.activeCount === 'number' && Number.isFinite(stats.activeCount) && stats.activeCount >= 0
         && stats.activeCount <= Number.MAX_SAFE_INTEGER ? stats.activeCount : Array.isArray(item.active) ? item.active.length : 0) - active.length) }]
   })
@@ -113,9 +94,10 @@ export async function writeDiagnosticBundle(request: DiagnosticBundleRequest): P
       zip.addReadStream(sanitized, report.entry, { compress: false })
       await Promise.race([finished(sanitized, { cleanup: true }), failedOutput])
     }
+    const snapshots = safeSnapshots(request.snapshots, identity)
     const manifest = Buffer.from(JSON.stringify({ schemaVersion: 1, createdAt: new Date().toISOString(),
-      files: reports, snapshots: safeSnapshots(request.snapshots),
-      missingSnapshots: COMPONENTS.filter(component => !safeSnapshots(request.snapshots).some(item => object(item) && item.component === component)) }, null, 2))
+      files: reports, snapshots,
+      missingSnapshots: COMPONENTS.filter(component => !snapshots.some(item => object(item) && item.component === component)) }, null, 2))
     zip.addBuffer(manifest, 'manifest.json', { compress: false })
     zip.end()
     await completion

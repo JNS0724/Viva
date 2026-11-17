@@ -6,7 +6,7 @@ import { createEnvelope } from '../../src/backend/envelope.ts'
 
 process.once('message', async raw => {
   const start = START.parse(raw)
-  const source = { snapshot: () => ({ stats: { state: 'unavailable' as const, queuedBytes: 0, peakQueuedBytes: 0, maxWriteDelayMs: 0, droppedCount: 0, writtenBytes: 0, activeCount: 0 }, active: [] }) }
+  const source = { snapshot: () => ({ stats: { state: 'unavailable' as const, queuedBytes: 0, peakQueuedBytes: 0, maxWriteDelayMs: 0, droppedCount: 0, writtenBytes: 0, activeCount: 0, untrackedCount: 0 }, active: [] }) }
   // Deliberately publishes health before readiness, as a real cold backend may.
   const peer = createDiagnosticPeer({ component: 'backend', source, send(message, settled) { process.send?.(message, settled) } })
   process.on('message', peer.receive)

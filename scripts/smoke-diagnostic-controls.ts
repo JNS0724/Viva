@@ -34,7 +34,8 @@ try {
   })
   await expect.poll(async () => (await records()).some(record => record.component === 'renderer' && record.level === 20)).toBe(true)
   stopped = await pauseOwnedProcess(backend)
-  await expect.poll(async () => (await records()).some(record => record.component === 'shell' && record.event === 'health' && record.reason === 'timeout'), { timeout: 22_000 }).toBe(true)
+  await expect.poll(async () => (await records()).some(record => record.component === 'shell' && record.event === 'health'
+    && record.operation === 'process' && record.reason === 'timeout'), { timeout: 22_000 }).toBe(true)
   const first = await running.page.evaluate(async () => {
     const started = performance.now(), result = await window.agent.clearDiagnostics()
     return { result, milliseconds: performance.now() - started }

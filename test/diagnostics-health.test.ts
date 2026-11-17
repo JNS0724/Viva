@@ -16,7 +16,7 @@ import { DiagnosticQuota } from '../src/diagnostics/node/quota.ts'
 import { diagnosticAlias, loadDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
 import { diagnosticBinding, diagnosticContext, emitDiagnostic, installDiagnosticPort, setDiagnosticBinding, withOperation } from '../src/diagnostics/node/context.ts'
 
-const source = { snapshot: () => ({ stats: { state: 'unavailable' as const, queuedBytes: 0, peakQueuedBytes: 0, maxWriteDelayMs: 0, droppedCount: 2, writtenBytes: 0, activeCount: 1 },
+const source = { snapshot: () => ({ stats: { state: 'unavailable' as const, queuedBytes: 0, peakQueuedBytes: 0, maxWriteDelayMs: 0, droppedCount: 2, writtenBytes: 0, activeCount: 1, untrackedCount: 0 },
   active: [{ operation: 'memory.dream', stage: 'recovering', ageMs: 24_000 }] }) }
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const temporary = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostic-health-'))

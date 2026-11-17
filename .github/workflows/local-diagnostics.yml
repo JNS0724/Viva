@@ -41,8 +41,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Owned-process pause fixture
-        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/diagnostics-process-pause.test.ts
+      - run: npm run typecheck
+      - name: Process suspension, historical spans and real export
+        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/diagnostics-process-pause.test.ts test/diagnostics-recovery.test.ts test/diagnostics-export.test.ts
       - run: npm run build
       - name: Owner deadlines and actual late settlement
         run: node scripts/smoke-memory-availability.ts

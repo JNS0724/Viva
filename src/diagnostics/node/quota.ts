@@ -6,6 +6,7 @@ import type { DiagnosticComponent } from '../contracts.ts'
 
 export interface DiagnosticSlot { id: string; file: string; pid: number; instance: string; bytes: number; closed: boolean; createdAt: number }
 export interface ExportPin { id: string; pid: number; files: string[]; temporary?: string }
+export interface DiagnosticPreviousRanges { files: Array<{ file: string; cutoff: number }>; partial: boolean }
 interface Inventory { version: 1; slots: DiagnosticSlot[]; pins: ExportPin[]; runId?: string; clearing?: string }
 export const DIAGNOSTIC_FILE = /^(shell|renderer|backend|dsh|memory|worker)-[a-f0-9-]{36}\.jsonl$/
 const INVENTORY_BYTES = 64 * 1024
@@ -159,6 +160,24 @@ export class DiagnosticQuota {
     })
   }
   release(pin: ExportPin): Promise<void> { return this.run(async data => { data.pins = data.pins.filter(item => item.id !== pin.id) }) }
+  /** Only a fully closed prior writer is historical; live/uncertain PIDs cannot imply a crashed span. */
+  previous(component: DiagnosticComponent, runId: string): Promise<DiagnosticPreviousRanges> {
+    return this.run(async data => {
+      if (data.clearing || data.runId !== runId) throw unavailable('Diagnostic generation changed', 'epoch_changed')
+      const live = new Set(data.slots.filter(slot => !slot.closed).map(slot => slot.instance))
+      const prior = [...data.slots].reverse().find(slot => slot.file.startsWith(`${component}-`) && slot.instance !== this.instance && !live.has(slot.instance))
+      if (!prior) return { files: [], partial: false }
+      const files: DiagnosticPreviousRanges['files'] = []
+      let bytes = 0, partial = false
+      for (const slot of [...data.slots].reverse()) if (slot.instance === prior.instance && slot.file.startsWith(`${component}-`)) {
+        const cutoff = Math.min(slot.bytes, DIAGNOSTIC_LIMITS.fileBytes)
+        if (cutoff < slot.bytes) partial = true
+        if (bytes + cutoff > DIAGNOSTIC_LIMITS.exportSourceBytes) { partial = true; continue }
+        files.unshift({ file: slot.file, cutoff }); bytes += cutoff
+      }
+      return { files, partial }
+    })
+  }
   clearState(): Promise<{ clearId?: string, runId?: string }> {
     return this.run(async data => ({ clearId: data.clearing, runId: data.runId }))
   }

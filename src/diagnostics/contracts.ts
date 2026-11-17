@@ -3,7 +3,7 @@ export const DIAGNOSTIC_VERSION = 1
 export const DIAGNOSTIC_LIMITS = Object.freeze({
   eventBytes: 8 * 1024, queueBytes: 4 * 1024 * 1024, writeBytes: 64 * 1024,
   directoryBytes: 100 * 1024 * 1024, fileBytes: 8 * 1024 * 1024, writers: 8,
-  retentionMs: 7 * 86_400_000, activeSpans: 2048, slowMs: 2000, slowRepeatMs: 30_000,
+  retentionMs: 7 * 86_400_000, activeSpans: 2048, previousSpans: 16, slowMs: 2000, slowRepeatMs: 30_000,
   shutdownMs: 2000, exportMs: 30_000, snapshotMs: 2000,
   exportSourceBytes: 32 * 1024 * 1024, exportOutputBytes: 40 * 1024 * 1024,
 })
@@ -35,7 +35,7 @@ export const REASONS = ['unknown_error', 'aborted', 'timeout', 'unavailable', 'n
   'busy', 'stale', 'denied', 'model_failed', 'validation_failed', 'source_changed',
   'deferred', 'retry', 'external_wake', 'closed', 'epoch_changed', 'process_exited', 'late',
   'ENOSPC', 'EACCES', 'EPERM', 'EBUSY', 'EAGAIN', 'EIO', 'ENOENT', 'EEXIST', 'EISDIR', 'ENOTDIR', 'EMFILE', 'ENFILE', 'cleanup_pending',
-  'continued_after_clear', 'normal', 'gap', 'buffer_limit', 'idempotent'] as const
+  'continued_after_clear', 'normal', 'gap', 'buffer_limit', 'idempotent', 'incomplete'] as const
 export type DiagnosticReason = typeof REASONS[number]
 export const ID_KEYS = ['requestId', 'operationId', 'sessionId', 'conversationId', 'taskId', 'taskRunId',
   'jobId', 'ownerEpoch', 'generation', 'methodId', 'resourceId', 'blockingSpanId', 'readBatchId'] as const

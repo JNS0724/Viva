@@ -4,6 +4,7 @@ import type { DiagnosticComponent, DiagnosticEvent } from '../contracts.ts'
 import { createDiagnosticHeartbeat, createDiagnosticHealthMonitor } from './health.ts'
 import type { DiagnosticHealthSource } from './health.ts'
 import type { NodeDiagnostics } from './logger.ts'
+import { safeDiagnosticRecovery } from './recovery.ts'
 
 export type DiagnosticSnapshot = ReturnType<NodeDiagnostics['snapshot']> & { activeOmitted?: number }
 export type ComponentDiagnosticSnapshot = DiagnosticSnapshot & { component: DiagnosticComponent }
@@ -22,13 +23,14 @@ export function safeDiagnosticSnapshot(raw: unknown): DiagnosticSnapshot | undef
   if (!object(raw) || !object(raw.stats) || !Array.isArray(raw.active)) return
   const stats = raw.stats
   if (!member(['initializing', 'ready', 'stalled', 'unavailable', 'closed'], stats.state)) return
-  for (const key of ['queuedBytes', 'peakQueuedBytes', 'maxWriteDelayMs', 'droppedCount', 'writtenBytes', 'activeCount']) if (!number(stats[key])) return
+  for (const key of ['queuedBytes', 'peakQueuedBytes', 'maxWriteDelayMs', 'droppedCount', 'writtenBytes', 'activeCount', 'untrackedCount']) if (!number(stats[key])) return
   const active = raw.active.slice(0, 32).flatMap(value => object(value) && member(OPERATIONS, value.operation) && number(value.ageMs)
     ? [{ operation: value.operation, ageMs: value.ageMs, ...(member(STAGES, value.stage) ? { stage: value.stage } : {}) }] : [])
+  const previous = safeDiagnosticRecovery(raw.previous)
   return { stats: { state: stats.state as DiagnosticSnapshot['stats']['state'], queuedBytes: Number(stats.queuedBytes), peakQueuedBytes: Number(stats.peakQueuedBytes),
-    maxWriteDelayMs: Number(stats.maxWriteDelayMs), droppedCount: Number(stats.droppedCount), writtenBytes: Number(stats.writtenBytes), activeCount: Number(stats.activeCount),
+    maxWriteDelayMs: Number(stats.maxWriteDelayMs), droppedCount: Number(stats.droppedCount), writtenBytes: Number(stats.writtenBytes), activeCount: Number(stats.activeCount), untrackedCount: Number(stats.untrackedCount),
     ...(member(REASONS, stats.reason) ? { reason: stats.reason } : {}) }, active,
-    activeOmitted: Math.max(0, Number(stats.activeCount) - active.length) }
+    activeOmitted: Math.max(0, Number(stats.activeCount) - active.length), ...(previous ? { previous } : {}) }
   } catch { return undefined }
 }
 function safeComponents(raw: unknown): ComponentDiagnosticSnapshot[] | undefined {

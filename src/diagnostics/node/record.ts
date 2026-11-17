@@ -47,6 +47,21 @@ export interface StoredDiagnostic extends DiagnosticEvent {
   componentVersion?: string
   buildCommit?: string
 }
+export type StoredDiagnosticReference = Pick<StoredDiagnostic, 'event' | 'operation' | 'stage' | 'traceId' | 'spanId' | 'processInstanceId' | 'diagnosticRunId'>
+/** Existing opaque aliases only; startup inspection must not retain bodies or apply a second HMAC. */
+export function storedDiagnosticReference(raw: unknown): StoredDiagnosticReference | undefined {
+  try {
+    if (!object(raw) || raw.schemaVersion !== 1 || !member(COMPONENTS, raw.component)
+      || typeof raw.time !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(raw.time)
+      || !Number.isSafeInteger(raw.sequence) || Number(raw.sequence) < 0) return
+    const event = raw.event, operation = raw.operation, stage = raw.stage
+    const traceId = raw.traceId, spanId = raw.spanId, processInstanceId = raw.processInstanceId, diagnosticRunId = raw.diagnosticRunId
+    if (!member(EVENTS, event) || !member(OPERATIONS, operation)
+      || ![traceId, spanId, processInstanceId, diagnosticRunId].every(value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value))) return
+    return { event, operation, ...(member(STAGES, stage) ? { stage } : {}),
+      traceId: traceId as string, spanId: spanId as string, processInstanceId: processInstanceId as string, diagnosticRunId: diagnosticRunId as string }
+  } catch { return undefined }
+}
 type Aliases = Pick<StoredDiagnostic, 'traceId' | 'spanId' | 'parentSpanId' | 'processInstanceId' | 'diagnosticRunId'>
 /** Both caches have fixed capacities; completed promises cannot grow diagnostic metadata indefinitely. */
 export function diagnosticRecordFormatter(identity: DiagnosticIdentity, base: { component: DiagnosticComponent; instance: string; version: string; componentVersion?: string }) {

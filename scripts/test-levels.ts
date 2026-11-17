@@ -263,6 +263,7 @@ export const testLevels = {
     'memory-availability',
     'diagnostics-export',
     'diagnostics-process-pause',
+    'diagnostics-recovery',
     'memory-file-checkout',
     'model-fixtures',
     'memory-file-initialization',

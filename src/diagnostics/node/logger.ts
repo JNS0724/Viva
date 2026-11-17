@@ -12,6 +12,9 @@ import type { DiagnosticIdentity } from './identity.ts'
 import { diagnosticRecordFormatter, safeDiagnosticEvent } from './record.ts'
 import { DiagnosticQuota } from './quota.ts'
 import type { DiagnosticSlot } from './quota.ts'
+import { createDiagnosticRecovery } from './recovery.ts'
+import type { DiagnosticRecoverySnapshot } from './recovery.ts'
+import { diagnosticAlias } from './identity.ts'
 
 type State = 'initializing' | 'ready' | 'stalled' | 'unavailable' | 'closed'
 const SonicBoom = SonicBoomModule.default
@@ -21,12 +24,12 @@ interface Active { event: DiagnosticEvent; context: DiagnosticContext; started: 
 // Before encoding, cover UTF-16 identity storage, field containers and the transient JSON string.
 // After encoding, only the actual UTF-8 destination bytes remain charged.
 const PENDING_CHARGE = DIAGNOSTIC_LIMITS.eventBytes * 4
-export interface DiagnosticStats { state: State; queuedBytes: number; peakQueuedBytes: number; maxWriteDelayMs: number; droppedCount: number; writtenBytes: number; activeCount: number; reason?: string }
+export interface DiagnosticStats { state: State; queuedBytes: number; peakQueuedBytes: number; maxWriteDelayMs: number; droppedCount: number; writtenBytes: number; activeCount: number; untrackedCount: number; reason?: string }
 export interface NodeDiagnostics extends DiagnosticPort {
   readonly ready: Promise<void>
   readonly quota: DiagnosticQuota
   readonly directory: string
-  snapshot(): { stats: DiagnosticStats; active: Array<{ operation: string; stage?: string; ageMs: number }> }
+  snapshot(): { stats: DiagnosticStats; active: Array<{ operation: string; stage?: string; ageMs: number }>; previous?: DiagnosticRecoverySnapshot }
   identity(): { diagnosticRunId: string, processInstanceId: string } | undefined
   released(): boolean
   setDebug(durationMs: number): void
@@ -41,7 +44,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
   const instance = randomUUID()
   let state: State = 'initializing', closing = false, draining = false, closePromise: Promise<boolean> | undefined
   let debugUntil = 0
-  let droppedCount = 0, reserved = 0, writtenBytes = 0, sequence = 0
+  let droppedCount = 0, untrackedCount = 0, reserved = 0, writtenBytes = 0, sequence = 0
   let peakQueuedBytes = 0, maxWriteDelayMs = 0, encodingAt = 0
   let wallMillis = -1, wallTime = ''
   let identity: DiagnosticIdentity | undefined, current: { stream: SonicBoomStream; slot: DiagnosticSlot; accepted: number; outstanding: number; writes: Array<{ bytes: number; admittedAt: number }> } | undefined
@@ -176,7 +179,11 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
         try { stream.flush() } catch (error) { fail(error); try { stream.destroy() } catch { /* Keep the uncertain slot charged. */ } }
       })
       stream.on('error', (error: unknown) => { fail(error); try { stream.destroy() } catch { /* Closure remains uncertain. */ } })
-      stream.once('ready', () => { if (closing && !draining) { stream.end(); return }; state = 'ready'; reason = undefined; resolveReady(); schedule() })
+      stream.once('ready', () => {
+        if (closing && !draining) { stream.end(); return }
+        state = 'ready'; reason = undefined; resolveReady(); schedule()
+        if (!closing && identity) recovery.start(identity.runId, diagnosticAlias(identity, identity.runId))
+      })
       stream.once('close', () => {
         release(destination.outstanding); destination.outstanding = 0
         destination.writes.length = 0
@@ -230,6 +237,12 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     pending.push({ event, context, time: wallTime, sequence: ++sequence, admittedAt: performance.now() })
     schedule()
   }
+  const recovery = createDiagnosticRecovery({ directory, component, quota, completed(value) {
+    if (closing) return
+    if (value.incompleteCount || value.status !== 'complete') runtime.emit({ event: 'health', operation: 'diagnostics',
+      reason: value.reason ?? (value.incompleteCount ? 'incomplete' : 'unavailable'),
+      metrics: { count: value.incompleteCount, remainingCount: value.omittedCount, partial: value.status !== 'complete' } })
+  } })
   const runtime: NodeDiagnostics = {
     ready, quota, directory,
     emit(raw, suppliedContext) {
@@ -241,30 +254,34 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
       let context = suppliedContext ?? diagnosticContext() ?? newDiagnosticContext()
       const key = event.identities?.operationId === undefined ? undefined : `${event.operation}:${event.identities.operationId}`
       if (key && explicit.has(key)) context = explicit.get(key)!
-      else if (key && event.event === 'operation.start' && active.has(context.spanId) && active.size < DIAGNOSTIC_LIMITS.activeSpans) {
-        context = newDiagnosticContext(context); explicit.set(key, context)
-      }
+      else if (key && active.has(context.spanId)) context = newDiagnosticContext(context)
       if (key && event.event === 'operation.start' && active.size < DIAGNOSTIC_LIMITS.activeSpans) explicit.set(key, context)
-      if (event.event === 'operation.start' && active.size < DIAGNOSTIC_LIMITS.activeSpans) active.set(context.spanId, { event, context, started: performance.now(), warnedAt: 0 })
+      if (event.event === 'operation.start') {
+        if (active.size < DIAGNOSTIC_LIMITS.activeSpans) active.set(context.spanId, { event, context, started: performance.now(), warnedAt: 0 })
+        else untrackedCount = Math.min(Number.MAX_SAFE_INTEGER, untrackedCount + 1)
+      }
       if (event.event === 'operation.progress' || event.event === 'wait.begin') {
         const entry = active.get(context.spanId)
         if (entry) entry.event = { ...entry.event, ...(event.stage ? { stage: event.stage } : {}),
           ...(event.reason ? { reason: event.reason } : {}), identities: { ...entry.event.identities, ...event.identities }, metrics: { ...entry.event.metrics, ...event.metrics } }
       }
       if (event.event === 'operation.end') {
-        const entry = active.get(context.spanId)
+        const candidate = active.get(context.spanId)
+        const entry = candidate?.event.operation === event.operation
+          && candidate.event.identities?.operationId === event.identities?.operationId ? candidate : undefined
         if (entry?.event.stage && !event.stage) event = { ...event, stage: entry.event.stage }
         if (entry && event.metrics?.durationMs === undefined) event = { ...event, metrics: { ...event.metrics, durationMs: performance.now() - entry.started } }
-        active.delete(context.spanId); if (key) explicit.delete(key)
+        if (entry) active.delete(context.spanId)
+        if (key) explicit.delete(key)
       }
       enqueue(event, context)
       } catch { droppedCount++ }
       return undefined
     },
-    snapshot: () => ({ stats: { state, queuedBytes: reserved, peakQueuedBytes, maxWriteDelayMs, droppedCount, writtenBytes, activeCount: active.size, ...(reason ? { reason } : {}) },
-      active: [...active.values()].map(entry => ({ operation: entry.event.operation, ...(entry.event.stage ? { stage: entry.event.stage } : {}), ageMs: performance.now() - entry.started })) }),
+    snapshot: () => ({ stats: { state, queuedBytes: reserved, peakQueuedBytes, maxWriteDelayMs, droppedCount, writtenBytes, activeCount: active.size, untrackedCount, ...(reason ? { reason } : {}) },
+      active: [...active.values()].map(entry => ({ operation: entry.event.operation, ...(entry.event.stage ? { stage: entry.event.stage } : {}), ageMs: performance.now() - entry.started })), previous: recovery.snapshot() }),
     identity: () => identity ? { diagnosticRunId: identity.runId, processInstanceId: instance } : undefined,
-    released: () => closing && !creating && !rotating && !current && cleanup.size === 0 && !cleanupUncertain,
+    released: () => closing && !creating && !rotating && !current && cleanup.size === 0 && !cleanupUncertain && recovery.settled(),
     setDebug(durationMs) {
       const duration = Number.isFinite(durationMs) ? Math.min(15 * 60_000, Math.max(0, durationMs)) : 0
       debugUntil = duration ? performance.now() + duration : 0
@@ -277,6 +294,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
         clearInterval(timer); clearTimeout(retry); clearTimeout(scheduled); scheduled = undefined; retry = undefined; resolveReady()
         // Stop admission, then drain across rotations under the same total shutdown deadline.
         closing = true; draining = true
+        const recoveryClosed = recovery.close()
         const completed = (async () => {
           await initialization
           while (draining && (pending.length || encoded.length || creating || rotating)) {
@@ -291,6 +309,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
             try { destination.stream.end() } catch (error) { reject(error) }
           })
           await Promise.all([...cleanup])
+          await recoveryClosed
           return !creating && !rotating && reason !== 'cleanup_pending'
         })().catch(() => false)
         let timeout: ReturnType<typeof setTimeout> | undefined
