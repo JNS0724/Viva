@@ -38,9 +38,11 @@ export function runOfflineNpm({ node, cli, command, args, cwd, cache, timeoutMs 
   const started = performance.now()
   const previous = new Set(logFiles(cache))
   try {
-    return execFileSync(node, [cli, command, ...args, '--cache', cache, '--timing', '--loglevel=silly'], {
+    const result = execFileSync(node, [cli, command, ...args, '--cache', cache, '--timing', '--loglevel=silly'], {
       cwd, encoding: 'utf8', timeout: timeoutMs, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
     })
+    console.info(`[memory-package] npm ${command} completed in ${Math.round(performance.now() - started)}ms`)
+    return result
   } catch (error) {
     const failure = error && typeof error === 'object' ? error as { code?: unknown, status?: unknown, signal?: unknown, stderr?: unknown } : {}
     const code = typeof failure.code === 'string' && /^E[A-Z0-9_]{1,30}$/u.test(failure.code) ? failure.code : 'command-failed'

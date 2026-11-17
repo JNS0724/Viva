@@ -66,7 +66,10 @@ test('standalone assembly contains its module graph and refuses host imports bef
   assert.throws(() => assembleMemoryPlugin({ compiledRoot, destination: compiledRoot }), /outside source/u)
 })
 
-test('npm-packed JS artifact installs offline and its Node API works without the development tree or DSH', { timeout: 90_000 }, t => {
+// The Windows CI cold install completed idealTree after 54.66s and was still
+// unpacking when the old 60s command budget expired. Keep a finite install
+// budget with room for that measured work, packing, compilation and Node use.
+test('npm-packed JS artifact installs offline and its Node API works without the development tree or DSH', { timeout: 180_000 }, t => {
   const dir = scratch(t)
   const artifact = path.join(dir, 'artifact')
   buildMemoryPlugin({ destination: artifact, compiledRoot: path.join(dir, 'compiled') })
@@ -75,7 +78,8 @@ test('npm-packed JS artifact installs offline and its Node API works without the
   if (!npm || !existsSync(npm)) throw new Error('Run the package acceptance test through npm')
   const node = process.env.npm_node_execpath ?? process.execPath
   const cache = path.join(dir, 'npm-cache')
-  const npmRun = (command: 'pack' | 'install', args: string[], cwd = dir) => runOfflineNpm({ node, cli: realpathSync(npm), command, args, cwd, cache })
+  const npmRun = (command: 'pack' | 'install', args: string[], cwd = dir) => runOfflineNpm({ node, cli: realpathSync(npm), command, args, cwd, cache,
+    timeoutMs: command === 'install' ? 120_000 : 60_000 })
   const pack = (source: string) => {
     const output: unknown = JSON.parse(npmRun('pack', [source, '--offline', '--ignore-scripts', '--json', '--pack-destination', dir]))
     assert.ok(Array.isArray(output) && output.length === 1)
