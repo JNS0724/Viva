@@ -12,23 +12,30 @@ const OUTCOMES = ['completed', 'failed', 'timed_out', 'cancelled', 'late_complet
 const version = (value: unknown) => typeof value === 'string' && value.length <= 48 && VERSION.test(value) ? value : 'unknown'
 export function safeDiagnosticEvent(raw: unknown): DiagnosticEvent | undefined {
   try {
-    if (!object(raw) || !member(EVENTS, raw.event) || !member(OPERATIONS, raw.operation)) return
+    if (!object(raw)) return
+    // Read each envelope field once: a getter must not change a validated name before it is copied.
+    const event = raw.event, operation = raw.operation
+    if (!member(EVENTS, event) || !member(OPERATIONS, operation)) return
+    const result: DiagnosticEvent = { event, operation }
+    const debug = raw.debug, stage = raw.stage, reason = raw.reason, outcome = raw.outcome
+    if (debug === true) result.debug = true
+    if (member(STAGES, stage)) result.stage = stage
+    if (member(REASONS, reason)) result.reason = reason
+    if (member(OUTCOMES, outcome)) result.outcome = outcome
     let identities: DiagnosticFields['identities']
     let metrics: DiagnosticFields['metrics']
-    if (object(raw.identities)) for (const key of ID_KEYS) {
-      const value = raw.identities[key]
+    const rawIdentities = raw.identities, rawMetrics = raw.metrics
+    if (object(rawIdentities)) for (const key of ID_KEYS) {
+      const value = rawIdentities[key]
       if (typeof value === 'string' && value.length <= 512 || typeof value === 'number' && Number.isSafeInteger(value)) { identities ??= {}; identities[key] = value }
     }
-    if (object(raw.metrics)) for (const key of METRIC_KEYS) {
-      const value = raw.metrics[key]
+    if (object(rawMetrics)) for (const key of METRIC_KEYS) {
+      const value = rawMetrics[key]
       if (typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) { metrics ??= {}; metrics[key] = value }
     }
-    return { event: raw.event, operation: raw.operation,
-      ...(raw.debug === true ? { debug: true as const } : {}),
-      ...(member(STAGES, raw.stage) ? { stage: raw.stage } : {}),
-      ...(member(REASONS, raw.reason) ? { reason: raw.reason } : {}),
-      ...(member(OUTCOMES, raw.outcome) ? { outcome: raw.outcome } : {}),
-      ...(identities ? { identities } : {}), ...(metrics ? { metrics } : {}) }
+    if (identities) result.identities = identities
+    if (metrics) result.metrics = metrics
+    return result
   } catch { return undefined }
 }
 export interface StoredDiagnostic extends DiagnosticEvent {

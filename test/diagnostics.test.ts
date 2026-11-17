@@ -17,6 +17,42 @@ const context = { version: 1 as const, traceId: 'a'.repeat(32), spanId: 'b'.repe
 const temporary = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostics-test-'))
 const encodedBytes = (value: ReturnType<typeof encodeDiagnosticEnvelope>) => Buffer.isBuffer(value.body) ? value.body : Buffer.concat(value.body)
 
+test('changing diagnostic getters cannot replace validated fields or repeatedly read nested envelopes before persistence', async t => {
+  const changing = () => {
+    const reads = new Map<string, number>()
+    const value = (key: string, first: unknown, later: unknown) => {
+      reads.set(key, (reads.get(key) ?? 0) + 1)
+      return reads.get(key) === 1 ? first : later
+    }
+    return { reads, raw: {
+      get event() { return value('event', 'operation.progress', 'SECRET_EVENT_NAME') },
+      get operation() { return value('operation', 'diagnostics', 'SECRET_OPERATION') },
+      get stage() { return value('stage', 'ready', 'SECRET_STAGE') },
+      get reason() { return value('reason', 'normal', 'SECRET_REASON') },
+      get outcome() { return value('outcome', 'completed', 'SECRET_OUTCOME') },
+      get identities() { return value('identities', { requestId: 'opaque-request' }, { resourceId: 'SECRET_IDENTITY' }) },
+      get metrics() { return value('metrics', { count: 7 }, { count: 999 }) },
+    } }
+  }
+  const first = changing()
+  assert.deepEqual(safeDiagnosticEvent(first.raw), { event: 'operation.progress', operation: 'diagnostics', stage: 'ready',
+    reason: 'normal', outcome: 'completed', identities: { requestId: 'opaque-request' }, metrics: { count: 7 } })
+  assert.ok([...first.reads.values()].every(count => count === 1))
+  const directory = await temporary()
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const logger = createNodeDiagnostics({ directory, component: 'backend' })
+  await logger.ready
+  const second = changing()
+  logger.emit(second.raw as unknown as DiagnosticEvent)
+  assert.equal(await logger.close(), true)
+  const files = (await readdir(directory)).filter(file => file.endsWith('.jsonl'))
+  const output = (await Promise.all(files.map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  assert.match(output, /"event":"operation.progress"/)
+  assert.match(output, /"count":7/)
+  assert.doesNotMatch(output, /SECRET_/)
+  assert.ok([...second.reads.values()].every(count => count === 1))
+})
+
 test('invalid diagnostic metadata is removed independently of strict business fields', () => {
   for (const diagnostics of [undefined, { ...context, version: 99 }, { ...context, secret: 'CANARY' }, { ...context, spanId: null }, { ...context, traceId: '../CANARY' }]) {
     const original = { method: 'profile', input: { args: [] }, extraBusiness: true, diagnostics }
