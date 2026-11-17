@@ -10,7 +10,8 @@ test('integration lanes cover every integration spec exactly once and reject inv
   const lanes = Object.keys(integrationLanes).flatMap(lane => integrationSpecs(lane))
   assert.deepEqual([...lanes].sort(), [...full].sort())
   assert.equal(new Set(lanes).size, lanes.length)
-  assert.deepEqual(integrationSpecs('memory'), ['memory.spec.ts', 'schedules.spec.ts', 'lifecycle.spec.ts'])
+  assert.deepEqual(integrationSpecs('memory'), ['memory.spec.ts'])
+  assert.deepEqual(integrationSpecs('schedules-lifecycle'), ['schedules.spec.ts', 'lifecycle.spec.ts'])
   assert.throws(() => integrationSpecs(''), /Unknown smoke lane/)
   assert.throws(() => integrationSpecs('typo'), /Unknown smoke lane/)
   const projects = config.projects!

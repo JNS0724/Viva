@@ -42,7 +42,7 @@ test('CI runs complete headless checks, independent core and every integration l
   }
   assert.deepEqual(jobs.integration.strategy.matrix.lane, Object.keys(integrationLanes))
   const commands = (name: string) => jobs[name].steps.flatMap(step => step.run ? [step.run] : [])
-  for (const command of ['npm run typecheck', 'npm test', 'npm run check:i18n']) assert.ok(commands('headless').includes(command))
+  for (const command of ['npm run typecheck', 'npm run test:metrics', 'npm run check:i18n']) assert.ok(commands('headless').includes(command))
   assert.ok(commands('core').includes('npm run smoke:core'))
   assert.ok(commands('integration').includes('npx playwright test -c test/smoke/playwright.config.ts --project=integration'))
   for (const name of ['core', 'integration']) assert.ok(commands(name).includes('npm run build'))

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { auditTests, discoverTests, featureNames, levelNames, runFeatures, selectAllTests, selectTests } from '../scripts/test-feature.ts'
 import { testLevels } from '../scripts/test-levels.ts'
+import { createTestMetrics, metricsSummary, writeTestMetrics } from '../scripts/test-metrics.ts'
 
 test('discovery finds nested JS and TS tests without running type fixtures or following links', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'viva test discovery '))
@@ -80,4 +81,30 @@ test('CLI rejects ambiguous all/features, unknown options and invalid levels', (
   assert.equal(runFeatures(['--all', 'architecture', '--list']), 2)
   assert.equal(runFeatures(['--all', '--level=typo', '--list']), 2)
   assert.equal(runFeatures(['--unknown-option']), 2)
+})
+
+test('test metrics preserve scenario identities and separate file wall time from case durations', t => {
+  const metrics = createTestMetrics('/repo', 'linux')
+  const first = '/repo/test/a.test.ts', second = '/repo/test/b.test.ts'
+  metrics.record(first, 'first scenario', 'passed', 25)
+  metrics.record(first, 'second scenario', 'failed', 50)
+  metrics.completeFile(first, 200)
+  metrics.record(second, 'third scenario', 'passed', 50)
+  metrics.record(second, 'skipped scenario', 'skipped', 0)
+  metrics.record(second, 'todo scenario', 'todo', 0)
+  metrics.completeFile(second, 150)
+  const report = metrics.finish()
+  assert.deepEqual(report.totals, { files: 2, cases: 5, passed: 2, failed: 1, skipped: 1, todo: 1, caseDurationMs: 125 })
+  assert.equal(report.files[0]!.file, 'test/a.test.ts')
+  assert.equal(report.files[0]!.wallMs, 200)
+  assert.equal(report.files[0]!.caseDurationMs, 75)
+  assert.deepEqual(report.files[0]!.cases.map(item => item.name), ['first scenario', 'second scenario'])
+  assert.match(metricsSummary(report), /test\/a\.test\.ts \| 0\.2 \| 0\.1 \| 2/)
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-test-metrics-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const output = path.join(dir, 'report.json'), summary = path.join(dir, 'summary.md')
+  writeTestMetrics(report, output, summary)
+  assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')).totals, report.totals)
+  assert.match(fs.readFileSync(summary, 'utf8'), /## Test metrics/)
 })

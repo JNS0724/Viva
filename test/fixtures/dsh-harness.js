@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createAcpBridge } from '../../src/backend/acp-bridge.ts'
@@ -9,7 +8,7 @@ import { DSH_PROFILE } from '../../src/backend/config.ts'
 import { ensureDshProfile, vivaLayerFile } from '../../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../../src/backend/dsh-runtime.ts'
 import { pnpmLauncher } from '../../src/backend/pnpm-launcher.ts'
-import { removeTree } from '../../src/backend/remove-tree.ts'
+import { scratch } from './scratch.ts'
 import { startFakeLlm } from './fake-llm.ts'
 import { testRequests } from './request-routing.ts'
 
@@ -37,7 +36,7 @@ export const DSH_TIMEOUT_MS = 60_000
  * `requests` is the app's request runtime every bridge of the harness routes through (request-runtime.ts).
  */
 export async function startHarness(t, { mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
+  const { dir, defer } = scratch(t, 'dsh-harness-')
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
   fs.mkdirSync(workspace)
@@ -53,16 +52,10 @@ export async function startHarness(t, { mcpServers = [], prewarmSessions = false
   const bridges = []
   const closers = []
   t.after(async () => {
-    // dsh runs in the workspace: on Windows it cannot go until the process has exited.
-    try {
-      await Promise.all(bridges.map((bridge) => bridge.dispose()))
-      for (const close of [...closers].reverse()) close()
-      await llm.close()
-    } finally {
-      await removeEventually(dir)
-    }
+    await Promise.all(bridges.map((bridge) => bridge.dispose()))
+    for (const close of [...closers].reverse()) close()
+    await llm.close()
   })
-  const defer = (close) => { closers.push(close) }
   const events = []
   /** @param {Partial<Parameters<typeof createAcpBridge>[0]>} [options] */
   function bridge(options = {}) {
@@ -88,23 +81,6 @@ export async function startHarness(t, { mcpServers = [], prewarmSessions = false
   /** The profile written again, as the app's next launch does. */
   const relaunch = writeProfile
   return { dir, dshHome, userData, workspace, llm, events, requests, bridge, defer, relaunch, profileDir: path.join(dshHome, 'profiles', DSH_PROFILE) }
-}
-
-/** On Windows what dsh started (an image worker, or a virus scanner looking at what it wrote) may hold the folder a while after it exits. */
-const REMOVE_PATIENCE_MS = 15_000
-const REMOVE_PAUSE_MS = 500
-
-async function removeEventually(dir) {
-  const deadline = Date.now() + REMOVE_PATIENCE_MS
-  for (;;) {
-    try {
-      removeTree(dir)
-      return
-    } catch (err) {
-      if ((err.code !== 'EPERM' && err.code !== 'EBUSY') || Date.now() > deadline) throw err
-      await new Promise((resolve) => setTimeout(resolve, REMOVE_PAUSE_MS))
-    }
-  }
 }
 
 /** The assistant's visible text, in order. */

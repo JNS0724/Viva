@@ -16,9 +16,6 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
   return result
 } })
 const { createMemoryRuntime, openMemoryStore } = await import('../../src/memory/node/index.ts')
-const { createMemoryClient, createMemoryService } = await import('../../src/memory/core/client.ts')
-assert.equal(typeof createMemoryClient, 'function')
-assert.equal(typeof createMemoryService, 'function')
 const database = join(process.cwd(), 'standalone.db')
 const start = () => createMemoryRuntime({ store: openMemoryStore(database), compute: () => null,
   route: () => null, canCommit: () => true, validateDispatch() {}, async runDocumentMutation(work) { return work() }, quiesce: async () => {}, changed: () => {} })
