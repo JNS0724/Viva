@@ -5,7 +5,7 @@ import type { MemoryFileDetailView, MemoryFileSourceView } from '../../shared/ip
 import { canEditMemoryFile, canForgetMemoryFile } from '../memory-file-state.ts'
 import type { MemoryFileEditor } from '../action-types.ts'
 import { timelinePlace } from '../timeline-search.ts'
-import { h } from './dom.ts'
+import { composedInput, h } from './dom.ts'
 import { renderMarkdown } from './markdown.ts'
 
 const titleOf = (item: MemoryFileSummary) => item.title || t(item.identity.kind === 'daily' ? 'memory-files.daily' : 'memory-files.untitled')
@@ -99,7 +99,7 @@ function detailView(files: State['memory']['files'], handlers: Handlers) {
 
 function listView(files: State['memory']['files'], handlers: Handlers) {
   const search = h('input', { class: 'field', name: 'memory-files-search', type: 'search', value: files.query, maxlength: 500,
-    'aria-label': t('memory-files.search'), placeholder: t('memory-files.search'), onInput: () => handlers.searchMemoryFiles(search.value) })
+    'aria-label': t('memory-files.search'), placeholder: t('memory-files.search'), ...composedInput((value) => handlers.searchMemoryFiles(value)) })
   return h('div', { class: 'profile-section', 'data-memory-files-view': 'list' },
     h('div', { class: 'memory-file-tools' }, search,
       h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-file-create', disabled: files.writing,

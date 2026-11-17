@@ -1,6 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { localeRevision } from '../../shared/i18n/locale.ts'
 import { formatElapsed } from '../selectors.ts'
+import { userError } from '../user-error.ts'
 import { maidFor, maidMood, showMaid } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
@@ -19,12 +20,13 @@ const NS = 'http://www.w3.org/2000/svg'
 /** The island's border, on both sides: its content is this much narrower than the shape. */
 const BORDER = 3
 type Host = 'bar' | 'desk'
+const BAR_FACE_PX = 36
 /**
- * In the title bar the island carries no picture of her, only a dot in the tone of the moment: the conversation's
- * latest answer shows her already. On the desktop she is the island, large enough to read her expression.
+ * In the title bar the island carries her dedicated 36px conversation portrait on the left; on the desktop she is the
+ * island at 72px, with her neighbouring status and cards beside her.
  */
 const SIZES = {
-  bar: { head: 36, panel: 360, maxHead: 360 },
+  bar: { head: 44, panel: 380, maxHead: 380 },
 }
 
 export type DeskLayout = 'rest' | 'capsule' | 'input' | 'content'
@@ -37,11 +39,14 @@ export function deskLayoutFor(view: IslandShown, open: boolean, _tools = false):
   return view.form === 'mini' && !view.background?.count ? 'rest' : 'capsule'
 }
 
+const safeDetail = (view: IslandShown): string | undefined =>
+  (view.form === 'error' && !view.incomplete && view.detail ? userError(view.detail) : view.detail)
+
 /** The second line of the peek: what the state is about, said once (the label says the state). */
 function peekDetail(view: IslandShown): string | undefined {
   if (view.form === 'waiting' && view.permission) return view.permission.title
   if (view.form === 'asking' && view.question) return view.question.header ?? view.question.text
-  return view.action ?? view.task ?? view.detail
+  return view.action ?? view.task ?? safeDetail(view)
 }
 
 /**
@@ -120,10 +125,10 @@ function headParts(view: IslandShown, { host, now, tools, shortcut }: { host: Ho
       ? [label(view.label), more(view.action), time(elapsedSince(view, now)), ring()]
       : [label(view.label), time(elapsedSince(view, now)), view.steps ? more(t("island-dom.steps", { steps: view.steps })) : null, ring()]
     case 'waiting':
-    case 'asking': return desk ? [label(view.label), taskTag(view)] : [label(t("island-dom.needs.your.attention")), taskTag(view), more('↓')]
+    case 'asking': return [label(desk ? view.label : t("island-dom.needs.your.attention")), taskTag(view)]
     // A task in the background that has just ended says only that (island-view.js).
     case 'done': return view.task ? [label(view.label)] : [label(view.label), time(formatElapsed(view.elapsedMs ?? 0)), desk ? more(view.detail) : null]
-    default: return [label(view.label), more(view.detail)]
+    default: return [label(view.label), more(safeDetail(view))]
   }
 }
 
@@ -187,7 +192,8 @@ export function islandSignatures(view: IslandShown, open: boolean, showTools: bo
 /** options: the desktop's input, and the ask shortcut as the user presses it */
 function createBarIsland(act: IslandAct) {
   const size = SIZES.bar
-  const face = h('span', { class: 'isl-face', 'aria-hidden': 'true' }, h('span', { class: 'isl-dot' }))
+  const maids: MaidSlots = new Map()
+  const face = h('span', { class: 'isl-face', 'aria-hidden': 'true' })
   const head = h('button', { type: 'button', class: 'isl-head' })
   const tools = h('span', { class: 'isl-tools' })
   const row = h('div', { class: 'isl-row' }, head, tools)
@@ -205,6 +211,8 @@ function createBarIsland(act: IslandAct) {
   })
   function layout(open: boolean) {
     head.style.width = 'max-content'
+    // Measure the new content without capping it to the capsule's previous width.
+    head.style.maxWidth = 'none'
     queueLayout(el, () => {
       if (!el.isConnected) return
       const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
@@ -214,6 +222,7 @@ function createBarIsland(act: IslandAct) {
       const inner = open ? Math.min(size.panel - BORDER, room) : headWidth
       return () => {
         head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
+        head.style.maxWidth = ''
         panel.style.width = `${inner}px`; el.style.width = `${inner + BORDER}px`
         if (!open) el.style.height = `${size.head}px`
         else queueLayout(panel, () => {
@@ -224,6 +233,8 @@ function createBarIsland(act: IslandAct) {
     })
   }
   function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
+    const portrait = maidFor(maids, 'bar', maidMood(view.mood, view.tone), { size: BAR_FACE_PX, framing: 'face', moving: !view.still })
+    showMaid(face, portrait)
     const unfolds = hasPanel(view), open = unfolds && pinned
     const next = islandSignatures(view, open, false)
     next.row = `${localeRevision()}:${next.row}`; next.panel = `${localeRevision()}:${next.panel}`
@@ -240,7 +251,7 @@ function createBarIsland(act: IslandAct) {
         .filter((part): part is NonNullable<typeof part> => Boolean(part)))
       onHead = headAction(view, unfolds)
       head.disabled = !onHead && !view.background
-      head.setAttribute('aria-label', [view.label, view.action ?? view.detail].filter(Boolean).join('：'))
+      head.setAttribute('aria-label', [view.label, view.action ?? safeDetail(view)].filter(Boolean).join('：'))
       if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
       else head.removeAttribute('aria-expanded')
     }

@@ -34,7 +34,9 @@ export async function openCapabilityTab(win: SmokeWindow, tab: 'skills' | 'mcp' 
   await run(win, `document.querySelector('.hub-nav[data-page="capabilities"]').click()`)
   await until(win, `Boolean(document.querySelector('#capabilities-root .cap-tabs'))`, 'the 能力 page')
   await run(win, `document.querySelector('#capabilities-root .cap-tabs [data-tab="${tab}"]').click()`)
-  await until(win, `(() => { const side = document.querySelector('#capabilities-root .cap-side'); return side && !side.textContent.includes('加载中') })()`, 'its list')
+  const loaded = { skills: '.cap-search', mcp: '.cap-tools', plugins: '.cap-row' }[tab]
+  await until(win, `Boolean(document.querySelector('#capabilities-root .cap-tabs [data-tab="${tab}"][aria-pressed="true"]') &&
+    document.querySelector('#capabilities-root .cap-side ${loaded}'))`, 'its loaded list')
   await settle(win)
 }
 

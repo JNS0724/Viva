@@ -15,6 +15,7 @@ export function createPageElements(page: Document, platform: string) {
   page.documentElement.dataset.platform = platform
 
   const elements = {
+    app: page.querySelector<HTMLElement>('.app'),
     turnRail: byId('turn-rail'),
     leftGrip: byId('col-grip-left'),
     rightGrip: byId('col-grip-right'),

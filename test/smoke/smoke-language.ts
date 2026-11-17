@@ -94,9 +94,17 @@ export async function checkLanguage(win: SmokeAppWindow, outDir: string, hooks: 
       !document.querySelector('.isl-field')`, 'English desktop island disconnected card')
     await run(win, `window.agent.islandView({ form: 'idle', tone: 'idle', mood: 'idle', label: 'Idle', recent: [] })`)
     await until(page, `document.querySelector('.isl-field')?.getAttribute('aria-label') === 'Ask Viva, or drop files…'`, 'English desktop island composer')
-    await run(page, `document.querySelector('.isl-field').value = 'island draft'`)
+    await run(page, `(() => {
+      const field = document.querySelector('.isl-field'); field.value = 'island draft';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`)
+    await until(win, `document.getElementById('composer-input')?.value === 'island draft'`, 'shared desktop island draft')
     await run(win, `window.agent.setLanguage('zh-CN')`)
     await until(page, `document.documentElement.lang === 'zh-CN'`, 'desktop island language broadcast')
+    // The locale redraw republishes the real setup state, replacing the connected fixture with its translated card.
+    await until(page, `document.querySelector('.isl[data-signal=offline] .isl-footer button')?.textContent === '去设置' &&
+      !document.querySelector('.isl-field')`, 'Chinese desktop island disconnected card')
+    await run(win, `window.agent.islandView({ form: 'idle', tone: 'idle', mood: 'idle', label: '待命', recent: [] })`)
     await until(page, `document.querySelector('.isl-field')?.getAttribute('aria-label') === '问 Viva，或拖入文件…'`, 'Chinese desktop island text')
     if (await run(page, `document.querySelector('.isl-field')?.value !== 'island draft'`)) problems.push('Desktop island lost its draft during language switching')
     await desk.force(false)

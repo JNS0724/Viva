@@ -218,7 +218,7 @@ export interface ActionPayloads extends ConversationPayloads {
   tasks_page_close: {}
   tasks_page_select: { taskId: string }
   tasks_seen_restored: { ids: readonly string[] }
-  tasks_page_steps: {}
+  tasks_page_steps: { open?: boolean }
   tasks_page_all_steps: {}
   task_closed: { taskId: string }
 }

@@ -63,6 +63,7 @@ export function createScrollFollower(scrollEl: HTMLElement, jumpButton: HTMLElem
     if (event.deltaY < 0) yieldToReader()
   }, { passive: true })
   scrollEl.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return
     if (KEYS_THAT_SCROLL_UP.has(event.key)) yieldToReader()
   })
   scrollEl.addEventListener('scroll', () => {

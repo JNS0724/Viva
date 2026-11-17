@@ -1,7 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import type { CatalogEntry } from '../capability-types.ts'
 import { catalogPick } from '../plugins-state.ts'
-import { h, label } from './dom.ts'
+import { composedInput, h, label } from './dom.ts'
 import { fitText, fitTone } from './plugin-fit-text.ts'
 import { PLUGIN_SOURCE } from './plugin-source.ts'
 import { installCard } from './plugins.ts'
@@ -55,7 +55,7 @@ export function catalogSection(plugins: Plugins, handlers: Handlers) {
       h('input', {
         class: 'field', name: 'plugin-catalog-query', type: 'search', value: catalog.query, placeholder: t('plugins.catalog.query.hint'),
         'aria-label': t('plugins.catalog.query'), spellcheck: 'false', autocomplete: 'off',
-        onInput: (event: Event) => handlers.editCatalogQuery((event.target as HTMLInputElement).value),
+        ...composedInput((value) => handlers.editCatalogQuery(value)),
       })),
     h('div', { class: 'settings-actions' },
       h('button', { class: 'btn btn-outline btn-small', type: 'submit', disabled: catalog.searching, text: catalog.searching ? t('plugins.catalog.searching') : t('plugins.catalog.search') }))),

@@ -4,9 +4,8 @@ import { t } from '../../shared/i18n/translate.ts'
 import { fileName, splitFiles } from '../../shared/attachments.ts'
 import { optionName } from '../approval.ts'
 import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt-card.ts'
-import { catMood, currentAction, receiptLine, restoredNote } from '../selectors.ts'
-import type { CatMood } from '../selectors.ts'
-import { maidFor, maidMood, showMaid } from './maid.ts'
+import { currentAction, receiptLine, restoredNote } from '../selectors.ts'
+import { maidFor } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
 import { caretHost, expandMarkdown, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
@@ -24,54 +23,16 @@ import { proposalHost } from '../proposal-state.ts'
 import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
 
-const AVATAR_PX = 48
 /** The card that waits on the user carries her, whole and moving (withMaid). */
 const CARD_MAID_PX = 96
-/** While a card waits on the user she is on the card, not also beside the answer. */
-const ON_THE_CARD: ReadonlySet<MaidMood> = new Set(['confirm', 'ask'])
 
 /**
- * Whether a message is the answer of the turn in progress or just finished, and what Viva is doing; and, in a
- * view that redraws as an answer is typed out, where each answer being typed was drawn last frame.
+ * Whether a message is the answer of the turn in progress or just finished, and, in a view that redraws as an answer is
+ * typed out, where each answer being typed was drawn last frame.
  */
-/** `still`: done with nobody looking, her pose held (done-notice-actions.ts), as on the island. */
-type Look = { latest: boolean, mood: CatMood | 'idle', still?: boolean, maids?: MaidSlots, streams?: Map<string, MarkdownStream> }
-const containerMaids = new WeakMap<HTMLElement, MaidSlots>()
+type Look = { latest: boolean, streams?: Map<string, MarkdownStream> }
 /** Per view, the answers being typed out (markdown.ts streamMarkdown): each frame draws only what changed. */
 const containerStreams = new WeakMap<HTMLElement, Map<string, MarkdownStream>>()
-const avatarLooks = new WeakMap<Element, string>()
-
-function avatarMood(message: ThreadMessage, look: Look): MaidMood {
-  const typing = message.open || (message.shown ?? message.text.length) < message.text.length
-  return maidMood(typing && WRITES_OVER.has(look.mood) ? 'typing' : look.mood)
-}
-
-/** Her face beside the latest answer, saying what she does now; earlier answers keep the room and show no one. */
-function portrait(message: ThreadMessage, look: Look): HTMLElement[] {
-  if (!look.latest) return []
-  const mood = avatarMood(message, look)
-  if (ON_THE_CARD.has(mood)) return []
-  return [maidFor(look.maids ?? new Map(), message.id, mood, { size: AVATAR_PX, framing: 'face', moving: !(look.still && mood === 'done') })]
-}
-
-const lookKey = (message: ThreadMessage, look: Look) => (look.latest ? `${avatarMood(message, look)}${look.still ? '|still' : ''}` : 'none')
-
-function avatar(message: ThreadMessage, look: Look) {
-  const slot = h('span', { class: 'maid-avatar', 'aria-hidden': 'true' }, ...portrait(message, look))
-  avatarLooks.set(slot, lookKey(message, look))
-  return slot
-}
-
-/** Status changes update only the portrait, keeping a reader-expanded answer and its nodes intact. */
-function refreshAvatar(view: View, message: ThreadMessage, look: Look) {
-  if (message.role !== 'assistant' || !look.latest) return
-  const slot = firstElement(view)?.querySelector<HTMLElement>('.maid-avatar')
-  if (!slot) return
-  const key = lookKey(message, look)
-  if (avatarLooks.get(slot) === key) return
-  showMaid(slot, portrait(message, look)[0] ?? null)
-  avatarLooks.set(slot, key)
-}
 
 const cardMaids: MaidSlots = new Map()
 
@@ -81,9 +42,6 @@ function withMaid(className: string, label: string, mood: MaidMood, ...body: unk
     maidFor(cardMaids, className, mood, { size: CARD_MAID_PX, moving: true }),
     h('div', { class: 'confirm-body' }, ...body))
 }
-
-/** Moods Viva leaves for `typing` while the answer is still being typed out, the agent's own turn over or not. */
-const WRITES_OVER = new Set(['idle', 'thinking', 'done'])
 
 /** A restored message links to the trace only once it has been read back from dsh's logs. */
 function receiptButton(message: ThreadMessage & { receipt: Receipt }, handlers: Handlers, traceReady: boolean) {
@@ -167,7 +125,6 @@ function assistantView(message: ThreadMessage, handlers: Handlers, traceReady: b
   // A long answer folds once it is no longer the latest: the one being read stays whole.
   else if (!look.latest) foldTall(text, foldKey(message))
   return h('div', { class: 'msg-agent' },
-    avatar(message, look),
     h('div', { class: 'msg-body' },
       text,
       hasReceipt(message) && !typing ? receiptButton(message, handlers, traceReady) : null))
@@ -206,7 +163,7 @@ const MESSAGE_VIEWS: Readonly<Record<string, (message: ThreadMessage, handlers: 
     hasReceipt(message) ? receiptButton(message, handlers, traceReady) : null),
 }
 
-const STILL: Look = Object.freeze({ latest: false, mood: 'idle' })
+const STILL: Look = Object.freeze({ latest: false })
 
 /** A search hit is found by its message's row (timeline-search.js); a view may be several elements, or none. */
 export function markMessage<T extends View>(view: T, id: string): T {
@@ -223,7 +180,6 @@ export function pastMessageView(message: ThreadMessage, handlers: Handlers): Vie
   if (message.role === 'user') return userView(message)
   if (message.role === 'note') return h('div', { class: 'msg-note' }, h('span', { text: message.text }))
   return h('div', { class: 'msg-agent' },
-    avatar(message, STILL),
     h('div', { class: 'msg-body' },
       answerText(message, handlers, STILL),
       message.receipt ? h('span', { class: 'receipt receipt-static', text: receiptLine(message.receipt) }) : null))
@@ -264,7 +220,7 @@ function questionItem(item: QuestionItem, question: AskedQuestion, handlers: Han
   return h('div', { class: 'ask-item' },
     item.header ? h('span', { class: 'ask-header', text: item.header }) : null,
     h('div', { class: 'ask-question', text: item.question }),
-    item.options.length ? h('div', { class: 'ask-options', role: item.multiSelect ? 'group' : 'radiogroup', 'aria-label': item.question },
+    item.options.length ? h('div', { class: 'ask-options', role: 'group', 'aria-label': item.question },
       item.options.map((option) => h('button', {
         class: `${picked.includes(option.label) ? BUTTON.primary : BUTTON.secondary} ask-option`,
         'aria-pressed': String(picked.includes(option.label)),
@@ -278,25 +234,25 @@ function questionItem(item: QuestionItem, question: AskedQuestion, handlers: Han
  * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
  * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
  */
-function questionCard(question: AskedQuestion, handlers: Handlers) {
+function questionCard(question: AskedQuestion, handlers: Handlers, hasComposer = true) {
   const head = PROMPT_HEADS.question
   const single = question.questions.length === 1 && !question.questions[0].multiSelect
+  const hint = single && question.questions[0].options.length
+    ? (hasComposer ? `${t('desk.interaction.immediate.answer')} ${t('thread.you.can.also.type.your.answer.below')}` : t('desk.interaction.immediate.answer'))
+    : (hasComposer ? t("thread.you.can.also.type.your.answer.below") : '')
   return withMaid('confirm ask', head, 'ask',
     cardHead(head),
     question.questions.map((item) => questionItem(item, question, handlers)),
     h('div', { class: 'confirm-actions' },
       single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: t("thread.submit"), onClick: () => handlers.submitAnswer() }),
       h('button', { class: `${BUTTON.text} ask-skip`, text: t("island-dom.skip"), onClick: () => handlers.skipQuestion() }),
-      h('span', { class: 'confirm-hint', text: t("thread.you.can.also.type.your.answer.below") })))
+      hint ? h('span', { class: 'confirm-hint', text: hint }) : null))
 }
 
-const workingMaids: MaidSlots = new Map()
-
-/** Where the next answer will appear: Viva at work and what she is doing now (the island keeps the time). */
+/** Where the next answer will appear: what the agent is doing now (the title-bar island carries her portrait and the time). */
 function workingRow(state: ThreadView) {
   return h('div', { class: 'msg-working', role: 'status' },
-    h('span', { class: 'maid-avatar', 'aria-hidden': 'true' },
-      maidFor(workingMaids, 'working', maidMood(catMood(state)), { size: AVATAR_PX, framing: 'face', moving: true })),
+    h('span', { class: 'working-dot', 'aria-hidden': 'true' }),
     h('span', { class: 'msg-working-text', text: `${currentAction(state)}…` }))
 }
 
@@ -307,17 +263,22 @@ function errorRow(message: string) {
     h('div', { class: 'muted', text: t("thread.check.the.model.key.api.address.network") }))
 }
 
-let secretForm: { requestId: string, el: HTMLFormElement } | null = null
+let secretForm: { requestId: string, locale: number, inputs: HTMLInputElement[], el: HTMLFormElement } | null = null
 
 /**
  * Keys a server the model set up needs. The form is kept while the same request waits, since the thread is
  * rebuilt on every frame and would otherwise lose what was typed.
  */
 function secretCard(secret: { requestId: string, server: string, names: readonly string[] }, handlers: Handlers) {
-  if (secretForm && secretForm.requestId === secret.requestId) return secretForm.el
-  const inputs = secret.names.map((name) => h('input', {
-    class: 'field', type: 'password', name: `secret-${name}`, autocomplete: 'off', spellcheck: 'false', 'aria-label': name, placeholder: name,
-  }))
+  if (secretForm && secretForm.requestId === secret.requestId && secretForm.locale === localeRevision()) return secretForm.el
+  const previous = secretForm?.requestId === secret.requestId ? secretForm.inputs.map((input) => input.value) : null
+  const inputs = secret.names.map((name, i) => {
+    const input = h('input', {
+      class: 'field', type: 'password', name: `secret-${name}`, autocomplete: 'off', spellcheck: 'false', 'aria-label': name, placeholder: name,
+    })
+    if (previous?.[i]) input.value = previous[i]
+    return input
+  })
   const el = h('form', {
     class: 'confirm ask secret', 'aria-label': t("thread.credentials.needed"),
     onSubmit: (event: SubmitEvent) => {
@@ -332,7 +293,7 @@ function secretCard(secret: { requestId: string, server: string, names: readonly
     h('button', { class: BUTTON.primary, type: 'submit', text: t("extensions.save") }),
     h('button', { class: BUTTON.secondary, type: 'button', text: t("thread.do.not.connect"), onClick: () => handlers.declineSecrets() }),
     h('span', { class: 'confirm-hint', text: t("thread.encrypted.on.this.computer.never.sent.to") })))
-  secretForm = { requestId: secret.requestId, el }
+  secretForm = { requestId: secret.requestId, locale: localeRevision(), inputs, el }
   return el
 }
 
@@ -452,12 +413,9 @@ export type ThreadView = ConversationView & Pick<State, 'records' | 'conversatio
 
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
 export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number) {
-  const maids = containerMaids.get(container) ?? new Map()
-  containerMaids.set(container, maids)
   const streams = containerStreams.get(container) ?? new Map<string, MarkdownStream>()
   containerStreams.set(container, streams)
   const messageIds = new Set(state.messages.map(message => message.id))
-  for (const id of maids.keys()) if (!messageIds.has(id)) maids.delete(id)
   for (const id of streams.keys()) if (!messageIds.has(id)) streams.delete(id)
   const previous = threadViews.get(container) ?? new Map<string, CachedView>()
   const cache = new Map<string, CachedView>()
@@ -471,18 +429,14 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   const traceReady = state.restoredTrace === 'loaded'
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
-  const mood = catMood(state)
-  const still = mood === 'done' && state.doneNotice === 'still'
   const start = threadStart(state)
   // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
-    const look = { latest: message.id === latestAnswer, mood, still, maids, streams }
+    const look = { latest: message.id === latestAnswer, streams }
     // Whether it is the latest answer is an input: once it is not, it is built again, and folds if tall (message-fold.ts).
-    const view = part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look),
+    return part(`message:${message.id}`, [...messageInputs(message, traceReady), look.latest], () => messageView(message, handlers, traceReady, look),
       view => localizeAssistant(view, message), (before, after, view) => typeOn(message, handlers, look, before, after, view))
-    refreshAvatar(view, message, look)
-    return view
   })
   // A background task's card goes under the words that started it, or under the message that was last when
   // it started (moved there mid-turn); it moves with the conversation. One with neither here is not this one's.
@@ -524,9 +478,9 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     ...proposalsAfter((at) => at < start),
     ...divided.flat().filter(isContent),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
-    state.question ? part('question', [state.question], () => questionCard(state.question!, handlers)) : '',
+    state.question ? part('question', [state.question, !container.classList?.contains('tp-thread')], () => questionCard(state.question!, handlers, !container.classList?.contains('tp-thread'))) : '',
     state.secret ? secretCard(state.secret, handlers) : '',
-    state.phase === 'working' && !last?.open ? part('working', [catMood(state), currentAction(state)], () => workingRow(state)) : '',
+    state.phase === 'working' && !last?.open ? part('working', [currentAction(state)], () => workingRow(state)) : '',
     state.phase === 'error' ? part('error', [state.error], () => errorRow(state.error ?? '')) : '',
   ].flat().filter(isContent)
   const changed = reconcileChildren(container, nodes)

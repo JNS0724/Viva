@@ -141,14 +141,20 @@ function introView(memory: MemoryPage, handlers: Handlers): View[] {
   ]
 }
 
+const editingShown = new WeakMap<HTMLElement, string | null>()
+
 /** The 关于你 page (view/hub.ts), or the intro form in its place. Rebuilt only when its slice changes; typed text survives. */
 export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, handlers: Handlers) {
   if (!memory.open) {
+    editingShown.delete(container)
     container.replaceChildren()
     return
   }
   const editor = memory.view === 'profile' ? memory.files.editor : null
   if (editor && deferMemoryFileEditorRender(container, editor, () => renderProfilePanel(container, memory, handlers))) return
+  const previousEditing = editingShown.get(container) ?? null
+  const nextEditing = memory.view === 'profile' ? memory.editing : null
+  editingShown.set(container, nextEditing)
   const shownView = container.querySelector<HTMLElement>('.profile')?.dataset.view ?? null
   const shownFiles = container.querySelector<HTMLElement>('[data-memory-files-view]')?.dataset.memoryFilesView
   const shownForget = container.querySelector<HTMLElement>('[data-memory-file-forget]')?.dataset.memoryFileForget
@@ -171,7 +177,7 @@ export function renderProfilePanel(container: HTMLElement, memory: MemoryPage, h
     const focus = edit ?? container.querySelector<HTMLElement>(target)
     focus?.focus()
   }
-  container.querySelector<HTMLElement>('.profile-input')?.focus()
+  if (nextEditing !== null && nextEditing !== previousEditing) container.querySelector<HTMLElement>('.profile-input')?.focus()
 }
 
 onLocaleChange(() => {
