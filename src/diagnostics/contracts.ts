@@ -47,11 +47,11 @@ export const METRIC_KEYS = ['count', 'attempt', 'retryDelayMs', 'durationMs', 'p
 export type DiagnosticMetric = typeof METRIC_KEYS[number]
 export type DiagnosticOutcome = 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'late_completed'
 export interface DiagnosticContext {
-  version: typeof DIAGNOSTIC_VERSION
-  traceId: string
-  spanId: string
-  parentSpanId?: string
-  diagnosticRunId?: string
+  readonly version: typeof DIAGNOSTIC_VERSION
+  readonly traceId: string
+  readonly spanId: string
+  readonly parentSpanId?: string
+  readonly diagnosticRunId?: string
 }
 export interface DiagnosticFields {
   stage?: DiagnosticStage
@@ -77,13 +77,14 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 export function parseDiagnosticContext(value: unknown): DiagnosticContext | undefined {
   try {
     if (!record(value) || Object.keys(value).some(key => !['version', 'traceId', 'spanId', 'parentSpanId', 'diagnosticRunId'].includes(key))) return
-    if (value.version !== DIAGNOSTIC_VERSION || typeof value.traceId !== 'string' || !/^[a-f0-9]{32}$/.test(value.traceId)
-      || typeof value.spanId !== 'string' || !/^[a-f0-9]{16}$/.test(value.spanId)
-      || value.parentSpanId !== undefined && (typeof value.parentSpanId !== 'string' || !/^[a-f0-9]{16}$/.test(value.parentSpanId))
-      || value.diagnosticRunId !== undefined && (typeof value.diagnosticRunId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.diagnosticRunId))) return
-    return { version: DIAGNOSTIC_VERSION, traceId: value.traceId, spanId: value.spanId,
-      ...(typeof value.parentSpanId === 'string' ? { parentSpanId: value.parentSpanId } : {}),
-      ...(typeof value.diagnosticRunId === 'string' ? { diagnosticRunId: value.diagnosticRunId } : {}) }
+    const version = value.version, traceId = value.traceId, spanId = value.spanId,
+      parentSpanId = value.parentSpanId, diagnosticRunId = value.diagnosticRunId
+    if (version !== DIAGNOSTIC_VERSION || typeof traceId !== 'string' || !/^[a-f0-9]{32}$/.test(traceId)
+      || typeof spanId !== 'string' || !/^[a-f0-9]{16}$/.test(spanId)
+      || parentSpanId !== undefined && (typeof parentSpanId !== 'string' || !/^[a-f0-9]{16}$/.test(parentSpanId))
+      || diagnosticRunId !== undefined && (typeof diagnosticRunId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(diagnosticRunId))) return
+    return Object.freeze({ version: DIAGNOSTIC_VERSION, traceId, spanId,
+      ...(parentSpanId ? { parentSpanId } : {}), ...(diagnosticRunId ? { diagnosticRunId } : {}) })
   } catch { return undefined }
 }
 /** The sole removable field. Unknown business fields remain available to their strict decoder. */

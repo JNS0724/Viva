@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import { types } from 'node:util'
-import { DIAGNOSTIC_VERSION, NO_DIAGNOSTICS, safeDiagnosticReason } from '../contracts.ts'
+import { DIAGNOSTIC_VERSION, NO_DIAGNOSTICS, parseDiagnosticContext, safeDiagnosticReason } from '../contracts.ts'
 import type { DiagnosticContext, DiagnosticEvent, DiagnosticFields, DiagnosticOperation, DiagnosticPort } from '../contracts.ts'
 
 const context = new AsyncLocalStorage<DiagnosticContext>()
@@ -9,13 +9,30 @@ let port: DiagnosticPort = NO_DIAGNOSTICS
 let failures = 0
 let binding: string | undefined
 const rebound = new WeakMap<DiagnosticContext, { runId: string, context: DiagnosticContext }>()
-export function setDiagnosticBinding(runId: string | undefined) { binding = runId }
+const trusted = new WeakSet<object>()
+const snapshots = new WeakMap<object, DiagnosticContext>()
+function immutable(value: DiagnosticContext): DiagnosticContext { trusted.add(value); return Object.freeze(value) }
+/** Weak keys never keep an arbitrary caller object alive; retained values contain opaque scalars only. */
+export function snapshotDiagnosticContext(value: unknown): DiagnosticContext | undefined {
+  if (!value || typeof value !== 'object') return
+  if (trusted.has(value)) return value as DiagnosticContext
+  let snapshot = snapshots.get(value)
+  if (!snapshot) {
+    snapshot = parseDiagnosticContext(value)
+    if (!snapshot) return
+    trusted.add(snapshot); snapshots.set(value, snapshot)
+  }
+  return snapshot
+}
+export function setDiagnosticBinding(runId: string | undefined) {
+  binding = runId && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(runId) ? runId : undefined
+}
 export function diagnosticBinding() { return binding }
 function localContext(value: DiagnosticContext): DiagnosticContext {
   if (!binding || value.diagnosticRunId === binding) return value
   const cached = rebound.get(value)
   if (cached?.runId === binding) return cached.context
-  const next = value.diagnosticRunId || cached ? newDiagnosticContext() : { ...value, diagnosticRunId: binding }
+  const next = value.diagnosticRunId || cached ? newDiagnosticContext() : immutable({ ...value, diagnosticRunId: binding })
   rebound.set(value, { runId: binding, context: next })
   if (value.diagnosticRunId || cached) {
     try { port.emit({ event: 'state.changed', operation: 'diagnostics', reason: 'continued_after_clear' }, next) } catch { failures++ }
@@ -23,6 +40,12 @@ function localContext(value: DiagnosticContext): DiagnosticContext {
   return next
 }
 function remoteParent(incoming: DiagnosticContext | undefined) {
+  const snapshot = snapshotDiagnosticContext(incoming)
+  if (incoming && !snapshot) {
+    emitDiagnostic({ event: 'context.dropped', operation: 'diagnostics', reason: 'invalid_context' })
+    return undefined
+  }
+  incoming = snapshot
   if (incoming && binding && incoming.diagnosticRunId !== binding) {
     emitDiagnostic({ event: 'context.dropped', operation: 'diagnostics', reason: 'epoch_changed' })
     return undefined
@@ -40,9 +63,10 @@ function randomId(bytes: number): string {
 }
 export function diagnosticContext() { const current = context.getStore(); return current ? localContext(current) : undefined }
 export function newDiagnosticContext(parent?: DiagnosticContext): DiagnosticContext {
+  parent = snapshotDiagnosticContext(parent)
   parent = parent ? localContext(parent) : undefined
-  return { version: DIAGNOSTIC_VERSION, traceId: parent?.traceId ?? randomId(16),
-    spanId: randomId(8), ...(parent ? { parentSpanId: parent.spanId } : {}), ...(binding ? { diagnosticRunId: binding } : {}) }
+  return immutable({ version: DIAGNOSTIC_VERSION, traceId: parent?.traceId ?? randomId(16),
+    spanId: randomId(8), ...(parent ? { parentSpanId: parent.spanId } : {}), ...(binding ? { diagnosticRunId: binding } : {}) })
 }
 export function installDiagnosticPort(next: DiagnosticPort) {
   const previous = port
@@ -51,7 +75,7 @@ export function installDiagnosticPort(next: DiagnosticPort) {
 }
 export function diagnosticFailures() { return failures }
 export function emitDiagnostic(event: DiagnosticEvent, current?: DiagnosticContext): undefined {
-  try { port.emit(event, current ? localContext(current) : undefined) } catch { failures = Math.min(Number.MAX_SAFE_INTEGER, failures + 1) }
+  try { const snapshot = snapshotDiagnosticContext(current); port.emit(event, snapshot ? localContext(snapshot) : undefined) } catch { failures = Math.min(Number.MAX_SAFE_INTEGER, failures + 1) }
   return undefined
 }
 export const diagnosticPort: DiagnosticPort = Object.freeze({ emit: emitDiagnostic })

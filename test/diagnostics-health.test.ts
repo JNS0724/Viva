@@ -13,13 +13,37 @@ import { createManagedDiagnostics } from '../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../src/diagnostics/node/hub.ts'
 import { createDiagnosticClearer } from '../src/diagnostics/node/clear.ts'
 import { DiagnosticQuota } from '../src/diagnostics/node/quota.ts'
-import { diagnosticAlias, loadDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
+import { diagnosticAlias, loadDiagnosticIdentity, replaceDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
 import { diagnosticBinding, diagnosticContext, emitDiagnostic, installDiagnosticPort, setDiagnosticBinding, withOperation } from '../src/diagnostics/node/context.ts'
 
 const source = { snapshot: () => ({ stats: { state: 'unavailable' as const, queuedBytes: 0, peakQueuedBytes: 0, maxWriteDelayMs: 0, droppedCount: 2, writtenBytes: 0, activeCount: 1, untrackedCount: 0 },
   active: [{ operation: 'memory.dream', stage: 'recovering', ageMs: 24_000 }] }) }
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const temporary = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostic-health-'))
+
+test('resume rejects a retired remote context before its replacement writer finishes initialization', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const writer = createManagedDiagnostics({ directory, component: 'backend' }); t.after(() => writer.close())
+  await writer.ready
+  const before = await loadDiagnosticIdentity(directory), token = randomUUID()
+  assert.equal(await writer.quota.beginClear(token), true)
+  assert.equal(await writer.prepare(token), true)
+  assert.equal(await writer.quota.clearClosed(), true)
+  const after = await replaceDiagnosticIdentity(directory)
+  assert.equal(await writer.quota.finishClear(token, after.runId), true)
+  assert.equal(await writer.resume(token, after.runId), true)
+  assert.equal(writer.identity(), undefined, 'exercise the actual replacement initialization window')
+  writer.emit({ event: 'operation.start', operation: 'memory.get', metrics: { count: 111 } },
+    { version: 1, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), diagnosticRunId: before.runId })
+  assert.equal(writer.snapshot().stats.activeCount, 0, 'the known new run must reject the retired message immediately')
+  await writer.ready
+  writer.emit({ event: 'operation.progress', operation: 'memory.get', metrics: { count: 222 } },
+    { version: 1, traceId: 'c'.repeat(32), spanId: 'd'.repeat(16), diagnosticRunId: after.runId })
+  assert.equal(await writer.close(), true)
+  const output = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  assert.doesNotMatch(output, /"count":111/)
+  assert.match(output, /"count":222/)
+})
 
 test('a failed sink remains independently responsive; pending heartbeat IPC is strictly bounded', () => {
   let now = 0, settled: ((error?: Error | null) => void) | undefined

@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { runInNewContext } from 'node:vm'
+import crypto from 'node:crypto'
+import { syncBuiltinESMExports } from 'node:module'
 import { DIAGNOSTIC_LIMITS, parseDiagnosticContext, separateDiagnosticEnvelope, safeDiagnosticReason } from '../src/diagnostics/contracts.ts'
 import type { DiagnosticComponent, DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 import { diagnosticContext, emitDiagnostic, inDiagnosticContext, installDiagnosticPort, withOperation } from '../src/diagnostics/node/context.ts'
@@ -16,6 +18,109 @@ import { loadDiagnosticIdentity, newDiagnosticIdentity, diagnosticAlias, replace
 const context = { version: 1 as const, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
 const temporary = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostics-test-'))
 const encodedBytes = (value: ReturnType<typeof encodeDiagnosticEnvelope>) => Buffer.isBuffer(value.body) ? value.body : Buffer.concat(value.body)
+
+test('identity text is aliased synchronously before writer admission and is not hashed twice on disk', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const logger = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => logger.close())
+  await logger.ready
+  const identity = await loadDiagnosticIdentity(directory)
+  const secret = '/workspace/forgotten-body-and-model-name'
+  const hmac = t.mock.method(crypto, 'createHmac')
+  syncBuiltinESMExports()
+  try {
+    const before = hmac.mock.callCount()
+    logger.emit({ event: 'operation.progress', operation: 'diagnostics', identities: { resourceId: secret } }, context)
+    assert.equal(hmac.mock.callCount() - before, 1, 'the identity must be aliased before emit returns, rather than retained until the pump')
+  } finally { hmac.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(await logger.close(), true)
+  const output = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  const record = JSON.parse(output.trim()) as { identities: { resourceId: string } }
+  assert.equal(record.identities.resourceId, diagnosticAlias(identity, secret))
+  assert.doesNotMatch(output, /forgotten-body-and-model-name/)
+})
+
+test('opaque-looking model names and resource identities are not retained as raw alias-cache keys', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const logger = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => logger.close())
+  await logger.ready
+  const hmac = t.mock.method(crypto, 'createHmac'); syncBuiltinESMExports()
+  try {
+    const before = hmac.mock.callCount()
+    for (let count = 0; count < 2; count++) logger.emit({ event: 'operation.progress', operation: 'model',
+      identities: { resourceId: 'abcdef0123456789' } }, context)
+    assert.equal(hmac.mock.callCount() - before, 2, 'identity format does not prove a resource name is content-free')
+  } finally { hmac.mock.restore(); syncBuiltinESMExports() }
+})
+
+test('context getters are captured once and cannot replace validated opaque identifiers', () => {
+  let traceReads = 0
+  const parsed = parseDiagnosticContext({ ...context, get traceId() { return ++traceReads === 1 ? context.traceId : 'SECRET_CONTEXT_BODY' } })
+  assert.deepEqual(parsed, context)
+  assert.equal(traceReads, 1)
+  assert.equal(Object.isFrozen(parsed), true)
+})
+
+test('starts before salt readiness omit identity text but still match independent terminals after readiness', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const logger = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => logger.close())
+  const first = 'body-like-first-operation', second = '/path-like-second-operation'
+  for (const operationId of [first, second]) logger.emit({ event: 'operation.start', operation: 'memory.dream', identities: { operationId } }, context)
+  assert.equal(logger.snapshot().stats.activeCount, 2)
+  await logger.ready
+  const identity = await loadDiagnosticIdentity(directory)
+  logger.emit({ event: 'operation.end', operation: 'memory.dream', identities: { operationId: second } }, context)
+  assert.equal(logger.snapshot().stats.activeCount, 1)
+  logger.emit({ event: 'operation.end', operation: 'memory.dream', identities: { operationId: first } }, context)
+  assert.equal(logger.snapshot().stats.activeCount, 0)
+  assert.equal(await logger.close(), true)
+  const output = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  const records = output.trim().split('\n').map(line => JSON.parse(line) as { event: string, traceId: string, spanId: string,
+    reason?: string, metrics?: { partial?: boolean }, identities?: { operationId: string } })
+  const starts = records.filter(record => record.event === 'operation.start')
+  const ends = records.filter(record => record.event === 'operation.end')
+  assert.equal(starts.length, 2); assert.equal(ends.length, 2)
+  assert.ok(starts.every(record => record.identities === undefined && record.reason === 'not_ready' && record.metrics?.partial === true))
+  assert.equal(ends[0]!.identities?.operationId, diagnosticAlias(identity, second))
+  assert.equal(ends[1]!.identities?.operationId, diagnosticAlias(identity, first))
+  assert.equal(ends[0]!.spanId, starts[1]!.spanId)
+  assert.equal(ends[1]!.spanId, starts[0]!.spanId)
+  assert.doesNotMatch(output, /body-like|path-like/)
+})
+
+test('retained contexts are immutable scalar snapshots rather than caller-owned object graphs', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const logger = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => logger.close())
+  await logger.ready
+  const supplied = { ...context }
+  logger.emit({ event: 'operation.start', operation: 'memory.get' }, supplied)
+  supplied.spanId = 'c'.repeat(16)
+  Object.assign(supplied, { body: 'MUST_NOT_RETAIN_BODY' })
+  logger.emit({ event: 'operation.end', operation: 'memory.get' }, supplied)
+  assert.equal(logger.snapshot().stats.activeCount, 0)
+  const invalid = { ...context, body: 'MUST_NOT_RETAIN_BODY' }
+  logger.emit({ event: 'operation.progress', operation: 'memory.get' }, invalid)
+  assert.ok(logger.snapshot().stats.droppedCount > 0)
+  const identity = await loadDiagnosticIdentity(directory)
+  assert.equal(await logger.close(), true)
+  const output = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  const records = output.trim().split('\n').map(line => JSON.parse(line) as { spanId: string, reason?: string })
+  assert.equal(records[0]!.spanId, diagnosticAlias(identity, context.spanId))
+  assert.equal(records[1]!.spanId, records[0]!.spanId)
+  assert.equal(records[2]!.reason, 'invalid_context')
+  assert.doesNotMatch(output, /MUST_NOT_RETAIN_BODY/)
+})
+
+test('identity readiness discards early contexts from a different diagnostic run before encoding', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const logger = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => logger.close())
+  logger.emit({ event: 'operation.start', operation: 'memory.dream' }, { ...context, diagnosticRunId: crypto.randomUUID() })
+  assert.equal(logger.snapshot().stats.activeCount, 1)
+  await logger.ready
+  assert.equal(logger.snapshot().stats.activeCount, 0)
+  assert.equal(await logger.close(), true)
+  const output = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  assert.doesNotMatch(output, /"operation":"memory.dream"/)
+})
 
 test('changing diagnostic getters cannot replace validated fields or repeatedly read nested envelopes before persistence', async t => {
   const changing = () => {

@@ -107,8 +107,8 @@
     {
       "en": "docs/logging-design.md",
       "zh": "docs/logging-design.zh-CN.md",
-      "enHash": "68c096a04a229d2e54558dc057d53aa7db5a20b4941f71a8f7940ccba86eaa97",
-      "zhHash": "114d456378c02625f90f8e58cdbd630bef313d3024a76ca72c708fd9c18e49e1"
+      "enHash": "a2910f4b292623b40cf266883e99f597178887fc79803364670d86c84463c269",
+      "zhHash": "ade17f9febcfef02ab9786bd02a27bd5c938ebb6b911fecb4e25d91213ed4d44"
     }
   ],
   "bilingual": [
@@ -164,7 +164,7 @@
     {
       "path": "docs/qa-logging-completion-audit-20261118.zh-CN.md",
       "locale": "zh-CN",
-      "sha256": "f593d12d5593808173edd3abe67c0689107fd4bda288fcf71f0830b6a485ec07"
+      "sha256": "f75e924b7369b3fa5f58440fd727b122306b1f90bd16f7a23946167276ef24ff"
     }
   ]
 }
