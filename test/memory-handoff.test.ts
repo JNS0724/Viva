@@ -1426,7 +1426,31 @@ test('startup completes a history withdrawal interrupted by process death before
   }
 })
 
-test('source-backed project files, exact recall and chat history remain in their Git workspace', { timeout: 45_000 }, async t => {
+// This case spans two process starts, project switches, a fork and topic recovery.
+// Its individual waits retain their existing bounds.
+test('source-backed project files, exact recall and chat history remain in their Git workspace', { timeout: 90_000 }, async t => {
+  const began = performance.now()
+  const timings: { step: string, startedMs: number, elapsedMs?: number }[] = []
+  let inspect: () => unknown = () => ({ state: 'setting-up' })
+  const snapshot = () => {
+    try { return inspect() } catch { return { state: 'fixture-closed' } }
+  }
+  const cancelled = () => process.stderr.write(`[project-memory-cancelled] ${JSON.stringify({
+    elapsedMs: Math.round(performance.now() - began), activeStep: timings.findLast(timing => timing.elapsedMs === undefined)?.step,
+    timings, state: snapshot(),
+  })}\n`)
+  t.signal.addEventListener('abort', cancelled, { once: true })
+  t.after(() => t.signal.removeEventListener('abort', cancelled))
+  const step = async <T>(name: string, work: () => T | Promise<T>): Promise<T> => {
+    const timing = { step: name, startedMs: Math.round(performance.now() - began), elapsedMs: undefined as number | undefined }
+    timings.push(timing)
+    const started = performance.now()
+    try { return await work() }
+    finally {
+      timing.elapsedMs = Math.round(performance.now() - started)
+      t.diagnostic(`[project-memory] ${JSON.stringify(timing)}`)
+    }
+  }
   const firstFact = '记住：当前项目的构建标记是 alpha-orchid-71'
   const secondFact = '记住：当前项目的构建标记是 beta-copper-23'
   const firstMarker = 'alpha-orchid-71'
@@ -1441,7 +1465,7 @@ test('source-backed project files, exact recall and chat history remain in their
   const updateSchedule = '修改指定的定时任务'
   const changedTitle = '不应写入的修改标题'
   let scheduleId: string | undefined
-  const app = await setup(t, request => {
+  const app = await step('setup', () => setup(t, request => {
     const last = request.messages.at(-1)
     if (JSON.stringify(last).includes('tool_result')) return null
     if (Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === 'image')) return { text: rawHistoryText }
@@ -1457,7 +1481,17 @@ test('source-backed project files, exact recall and chat history remain in their
       id: scheduleId, title: changedTitle, prompt: '不应写入的修改指令',
     } } }
     return null
-  }, { image: true })
+  }, { image: true }))
+  inspect = () => {
+    const agent = app.call<AgentInfo>('agent:info')
+    return {
+      agent: { mode: agent.mode, cwd: agent.cwd, sessionId: agent.sessionId, conversationId: agent.conversationId, topicId: agent.topicId },
+      requests: app.model.requests.length,
+      recentQuestions: (app.model.requests.slice(-3) as Request[]).map(request => questionOf(request.messages)),
+      tasks: app.tasks().map(task => ({ id: task.task.id, status: task.status, endedAt: task.endedAt })),
+      events: app.events.filter(event => event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error').slice(-6),
+    }
+  }
   const repo = (name: string) => {
     const path = join(app.directory, name)
     mkdirSync(join(path, '.git', 'objects'), { recursive: true })
@@ -1466,26 +1500,26 @@ test('source-backed project files, exact recall and chat history remain in their
   }
   const projectA = repo('project-a')
   const projectB = repo('project-b')
-  const enter = async (directory: string, text: string) => {
-    const switched = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', directory, { confirmed: true })
+  const enter = async (label: string, directory: string, text: string) => {
+    const switched = await step(`${label}:switch`, () => app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', directory, { confirmed: true }))
     assert.ok(switched.ok)
     const sourceId = randomUUID()
-    await app.call('agent:prompt', text, [], sourceId)
-    await app.call('history:save', [{ role: 'user', text, receipt: null, sourceId }])
-    const summary = await eventually(async () => {
+    await step(`${label}:remember`, () => app.call('agent:prompt', text, [], sourceId))
+    await step(`${label}:save-history`, () => app.call('history:save', [{ role: 'user', text, receipt: null, sourceId }]))
+    const summary = await step(`${label}:file-profile`, () => eventually(async () => {
       const { fileProfile } = await app.call<Promise<{ fileProfile: { project: { identity: MemoryFileDetail['identity'], text: string }[] | null } }>>('memory:get')
       return fileProfile.project?.find(item => item.text.includes(text.slice('记住：'.length)))
-    })
+    }))
     assert.ok(summary)
-    const detail = await app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', summary.identity)
+    const detail = await step(`${label}:read-file`, () => app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', summary.identity))
     assert.ok(detail?.sources.some(source => source.link))
     return switched.info
   }
-  const check = async (present: string, excluded: string) => {
+  const check = async (label: string, present: string, excluded: string) => {
     const count = app.model.requests.length
-    await app.ask('查看本项目构建标记的基本资料')
-    await app.ask(recall)
-    await app.ask(history)
+    await step(`${label}:profile-prompt`, () => app.ask('查看本项目构建标记的基本资料'))
+    await step(`${label}:recall`, () => app.ask(recall))
+    await step(`${label}:search-history`, () => app.ask(history))
     const messages = app.model.requests.slice(count).map(raw => (raw as Request).messages)
     assert.ok(messages.some(rows => {
       const last = JSON.stringify(rows.at(-1))
@@ -1496,41 +1530,41 @@ test('source-backed project files, exact recall and chat history remain in their
     JSON.stringify({ name, results: messages.flatMap(rows => modelToolResults({ messages: rows }, name)) }))
     assert.ok(messages.every(rows => !JSON.stringify(rows).includes(excluded)), JSON.stringify({ excluded, leaked: messages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
   }
-  const sessionA = await enter(projectA, firstFact)
-  await check(firstMarker, secondMarker)
+  const sessionA = await enter('project-a', projectA, firstFact)
+  await check('project-a', firstMarker, secondMarker)
   const taskOffset = app.model.requests.length
-  await app.ask(`后台做：${backgroundBrief}`)
-  assert.ok(await eventually(() => app.tasks().some(task => task.endedAt && task.task.title === backgroundBrief)))
+  await step('project-a:background-start', () => app.ask(`后台做：${backgroundBrief}`))
+  assert.ok(await step('project-a:background-end', () => eventually(() => app.tasks().some(task => task.endedAt && task.task.title === backgroundBrief))))
   assert.ok(app.model.requests.slice(taskOffset).some(raw => {
     const request = raw as Request
     return questionOf(request.messages) === backgroundBrief && JSON.stringify(request.messages).includes(firstMarker)
   }), JSON.stringify({ tasks: app.tasks(), requests: app.model.requests.slice(taskOffset).map(raw => ({ question: questionOf((raw as Request).messages), messages: (raw as Request).messages.at(-1) })), errors: app.events.filter(event => event.type === 'error' || event.type === 'task_end') }))
-  await app.schedule(scheduleTitle)
+  await step('project-a:create-schedule', () => app.schedule(scheduleTitle))
   const schedules = () => app.call<{ id: string, title: string }[]>('schedules:list')
   scheduleId = schedules().find(item => item.title === scheduleTitle)?.id
   assert.ok(scheduleId)
   const listOffset = app.model.requests.length
-  await app.ask(listSchedules)
+  await step('project-a:list-schedules', () => app.ask(listSchedules))
   const listResults = (app.model.requests.slice(listOffset) as Request[]).flatMap(request => modelToolResults(request, 'schedule_list'))
   assert.ok(listResults.some(result => JSON.stringify(result).includes(scheduleTitle)),
     JSON.stringify({ schedules: schedules(), results: listResults, lastMessages: (app.model.requests.slice(listOffset) as Request[]).map(request => request.messages.at(-1)) }))
   const subdirectory = join(projectA, 'nested')
   mkdirSync(subdirectory)
-  const forked = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', subdirectory, { confirmed: true })
+  const forked = await step('project-a:fork-nested-directory', () => app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', subdirectory, { confirmed: true }))
   assert.ok(forked.ok)
   assert.equal(forked.info.topicId, sessionA.topicId)
-  await check(firstMarker, secondMarker)
+  await check('project-a/nested', firstMarker, secondMarker)
   const beforeSwitch = app.model.requests.length
-  const sessionB = await enter(projectB, secondFact)
+  const sessionB = await enter('project-b', projectB, secondFact)
   assert.notEqual(sessionA.sessionId, sessionB.sessionId)
-  await check(secondMarker, firstMarker)
+  await check('project-b', secondMarker, firstMarker)
   const restrictedOffset = app.model.requests.length
-  await app.ask(listSchedules)
+  await step('project-b:restricted-list', () => app.ask(listSchedules))
   const modelLists = (app.model.requests.slice(restrictedOffset) as Request[]).flatMap(request => modelToolResults(request, 'schedule_list'))
   assert.ok(modelLists.length)
   assert.ok(modelLists.every(result => !JSON.stringify(result).includes(scheduleId)))
   const updateOffset = app.model.requests.length
-  await app.ask(updateSchedule)
+  await step('project-b:rejected-update', () => app.ask(updateSchedule))
   assert.ok((app.model.requests.slice(updateOffset) as Request[]).some(request => modelToolResults(request, 'schedule_update').length))
   assert.equal(schedules().find(item => item.id === scheduleId)?.title, scheduleTitle)
   const afterSwitch = app.model.requests.slice(beforeSwitch) as Request[]
@@ -1540,35 +1574,35 @@ test('source-backed project files, exact recall and chat history remain in their
 
   // A picture-only conversation has delivery provenance without a memory source to recover its original project from.
   assert.ok(sessionA.conversationId)
-  const resumedA = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('history:resume-topic', sessionA.conversationId)
+  const resumedA = await step('project-a:resume-topic', () => app.call<Promise<{ ok: boolean, info: AgentInfo }>>('history:resume-topic', sessionA.conversationId))
   assert.ok(resumedA.ok)
-  const pictureTopic = await app.newTopic()
+  const pictureTopic = await step('project-a:picture-topic', () => app.newTopic())
   assert.ok(pictureTopic.sessionId)
   const sourceId = randomUUID()
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
   const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
   assert.ok(image)
-  await app.call('agent:prompt', '', [image], sourceId)
+  await step('project-a:picture-prompt', () => app.call('agent:prompt', '', [image], sourceId))
   assert.ok(app.model.requests.some(raw => JSON.stringify(raw).includes(png)))
-  await app.call('history:save', [
+  await step('project-a:save-picture-history', () => app.call('history:save', [
     { role: 'user', text: '', images: [image], receipt: null, sourceId },
     { role: 'assistant', text: rawHistoryText, receipt: null },
-  ])
+  ]))
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
     assert.ok(db.prepare('SELECT project FROM memory_session_projects WHERE session=?').get(pictureTopic.sessionId))
   } finally { db.close() }
-  await app.stopBackend()
+  await step('stop-before-git-removal', () => app.stopBackend())
   rmSync(join(projectA, '.git'), { recursive: true })
   const outsideOffset = app.model.requests.length
-  assert.ok(await app.startBackend())
+  assert.ok(await step('cold-start-without-git', () => app.startBackend()))
   assert.notEqual(app.call<AgentInfo>('agent:info').sessionId, pictureTopic.sessionId)
-  await app.ask('继续查看现在可以用的记录')
+  await step('without-git:continue', () => app.ask('继续查看现在可以用的记录'))
   const outside = join(app.directory, 'workspace')
-  const loose = await app.call<Promise<{ ok: boolean }>>('workdir:switch', outside, { confirmed: true })
+  const loose = await step('outside:switch', () => app.call<Promise<{ ok: boolean }>>('workdir:switch', outside, { confirmed: true }))
   assert.ok(loose.ok)
-  await app.ask(history)
-  await app.ask(imageHistory)
+  await step('outside:search-history', () => app.ask(history))
+  await step('outside:search-picture-history', () => app.ask(imageHistory))
   const outsideRequests = (app.model.requests.slice(outsideOffset) as Request[])
     .filter(request => JSON.stringify(request.system).includes('个人工作助手'))
   assert.ok(outsideRequests.some(request => JSON.stringify(request.messages.at(-1)).includes('tool_result')))
