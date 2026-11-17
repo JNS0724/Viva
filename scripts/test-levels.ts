@@ -220,6 +220,7 @@ export const testLevels = {
     'task-page-state',
     'task-query',
     'task-reports',
+    'task-report-boundary',
     'task-freshness',
     'task-runtime-transaction',
     'task-runtime',

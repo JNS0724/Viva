@@ -2,6 +2,7 @@ import { capture, run, submit, until, UI_WAIT_MS, wait, type Expect, type SmokeH
 import { columnSteps } from './smoke-column.ts'
 import { checkTaskCardRetention } from './smoke-task-card.ts'
 import { providerReceivedTaskBrief, readTaskFirstRequest } from '../fixtures/task-first-request.ts'
+import { taskRunOf, waitForReportedTaskRun } from './smoke-task-report.ts'
 
 /**
  * Background tasks on the real dsh: 后台做 starts a task of its own at any time, also while a turn waits on an
@@ -381,6 +382,9 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, `[...document.querySelectorAll('#tasks-page .tp-row')].find((el) => el.querySelector('.tp-name').textContent === ${JSON.stringify(ASKS_LATER)}).click()`)
   await until(win, `(${pageState}).title === ${JSON.stringify(`#${ASKS_LATER}`)}`, 'the task from last time on show')
   await run(win, escape)
+  const taskId: unknown = await run(win, `(${cardOf(ASKS_LATER)})?.dataset.task`)
+  if (typeof taskId !== 'string' || !taskId) throw new Error('The restored task card has no native task identity')
+  const previousRunId = await taskRunOf(win, taskId)
   await tellTask(win, ASKS_LATER, RESTORED_ASK)
   await openFromLine(win, ASKS_LATER)
   await until(win, `(${pageState}).said.some((text) => text.includes('收到：「${RESTORED_ASK}」'))`, 'the task from last time answering')
@@ -395,4 +399,5 @@ async function restoredSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await run(win, escape)
   const answers = await run(win, `[...document.querySelectorAll('#thread > .msg-agent .msg-text')].map((el) => el.textContent)`)
   expect(!answers.some((text: string) => text.includes(`收到：「${RESTORED_ASK}」`)), 'the task\'s answer should not land in the conversation on screen', answers)
+  await waitForReportedTaskRun(win, taskId, previousRunId, ASKS_LATER)
 }
