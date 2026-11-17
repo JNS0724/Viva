@@ -1,0 +1,65 @@
+# Diagnostic fault acceptance is separate from the general smoke/test engineering lanes.
+name: local diagnostics
+
+on:
+  push:
+    branches: [codex/local-diagnostics]
+  pull_request:
+    paths:
+      - src/diagnostics/**
+      - src/memory/**
+      - src/backend/**
+      - src/shell/**
+      - src/preload/**
+      - scripts/smoke-*diagnostic*.ts
+      - scripts/smoke-memory-availability.ts
+      - scripts/benchmark-memory-diagnostics.ts
+      - test/diagnostics*.test.ts
+      - test/fixtures/diagnostic*.ts
+      - .github/workflows/local-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  faults:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Owned-process pause fixture
+        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/diagnostics-process-pause.test.ts
+      - run: npm run build
+      - name: Owner deadlines and actual late settlement
+        run: node scripts/smoke-memory-availability.ts
+      - name: Frozen Backend and Renderer native export
+        run: node scripts/smoke-local-diagnostics.ts
+      - name: Heartbeat and coordinated clear recovery
+        run: node scripts/smoke-diagnostic-controls.ts
+      - name: Settings controls and privacy
+        run: node scripts/smoke-diagnostics-settings.ts
+      - name: Fixed-load default diagnostics latency gate
+        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/benchmark-memory-diagnostics.ts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            smoke/l1b-availability
+            smoke/l1c-controls
+            smoke/l1c-export
+            smoke/l3-settings

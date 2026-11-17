@@ -27,3 +27,17 @@
 另外在仓库外建立编码工作线程原型，仅用于判断收益，没有合入生产 logger。相同完整固定负载测得 2.546083→2.804250ms，增加 0.258167ms / 10.1398%，仍未达标；总 CPU 开销和最大写入延迟反而上升（约 57–61ms）。因此没有仅为这点收益引入新的生产线程、关闭回执及双份消息计账复杂度。原型及结果位于 `/private/tmp/viva-diagnostic-encoder-prototype/` 与 `/private/tmp/viva-encoder-prototype-latency.json`，不作为发布通过证据。
 
 同样 500 次/模式的上下文隔离对照（无 sink，保留实际环绕、ALS 和跨进程上下文）为 2.453667→2.472750ms，增加 0.019083ms / 0.7777%，记录为 `/private/tmp/viva-l3-context-latency.json`。这支持继续检查日志端口之后的校验、活动登记、编码与写入，而不是把请求期限、真实执行名额或业务上下文机制删掉。它不代表完整日志性能验收通过。
+
+## 追加：隐私边界、安装包与跨平台故障夹具
+
+自检复现 `safeDiagnosticEvent` 对事件名等字段校验后再次读取的问题：动态 getter 可在第二次读取时返回未校验文本。旧提交的临时模块得到 `oldGuardAllowedChangedName=true`，当前实现将每个字段及 identities/metrics 信封只读取一次，再复制通过白名单的原始值。新增回归同时检查 guard 输出和真实 Pino/SonicBoom JSONL，不以类型断言替代运行时校验。没有改用无界字段枚举。
+
+修改后的固定完整负载仍未通过性能门槛：2.387292→2.781333ms，增加 0.394041ms / 16.5058%，零丢弃，最终队列和活动数为零，记录为 `/private/tmp/viva-l3-captured-event-latency.json`。仅保留接收校验/活动登记、不编码写入的隔离试验为 2.373250→2.711250ms；它用于区分开销，不是性能通过证据。CPU profile 会明显影响绝对时延，不能用 profile 结果替代相同条件下的正式测量。本次 getter 修复属于隐私修复，不声称已优化性能。
+
+macOS 已实际构建 DMG、只读挂载并从卷内启动安装产物，在仓库外完成完整记忆与重启验收：`smoke:package` 1/1，通过真实打包的本地向量模型；控制台无异常。日志为 `/private/tmp/viva-l3-installed-mac-smoke.log`，产物证据在 `smoke/l3-installed-mac/`。该 DMG 包含 `50406fa` 和本次 getter 修复，尚未包含随后增加的跨平台故障夹具/托盘菜单 ID；未提交源码构建的 buildCommit 正确为 unknown，不将它标成干净提交。自有挂载卷已卸载，没有安装到用户的 Applications 或修改用户配置。
+
+新增测试专用进程暂停夹具：Unix 用 SIGSTOP/SIGCONT；Windows 通过独立 PowerShell/Win32 调试进程持有初始断点，先关闭 debugger-exit 杀目标行为，收到恢复指令或 stdin EOF 后继续并分离。只允许测试自有进程，拒绝自进程和非法 PID。测试确认真实心跳暂停与恢复，恢复可重复调用。三个自有故障脚本改用该夹具，原生导出在 Windows 复用真实托盘菜单，不新增应用自动化接口。设置冒烟也纳入严格类型检查。新增独立 `local-diagnostics.yml`，没有改动现有 check/package 工作流或另一工作区的测试运行器；其中固定负载性能门槛保持真实失败，不允许 continue-on-error。
+
+本批最终全量测试 2206 项：2204 通过、2 跳过、0 失败（169.7 秒），类型检查、构建和双语检查通过。完整桌面冒烟 15/15（4.6 分钟），记录为 `/private/tmp/viva-l3-portable-fault-full-smoke.log`。本地夹具运行在 macOS；Windows 分支仍等待原生 CI 验证，不因增加夹具就算验收完成。
+
+三个故障专项均通过：owner 两次实际读取约 10003.6ms、10004.8ms 超时，满额 2.9ms busy，恢复后新读取/手动重试成功并保留草稿和附件；Backend/Renderer 同时暂停后原生导出 60562 字节 ZIP，保留到 `smoke/l1c-export/`；Backend 沉默被心跳识别，清空先在 2003.1ms 返回 cleanup_pending，恢复后实际关闭并轮换盐，Backend/owner PID 均不变，memory:get 正常。相应日志为 `/private/tmp/viva-l3-portable-{owner,export,controls}-smoke.log`。设置宽/窄窗、导出、清空、临时 debug 和未保存 key 保留再次通过，日志为 `/private/tmp/viva-l3-portable-settings-smoke.log`。

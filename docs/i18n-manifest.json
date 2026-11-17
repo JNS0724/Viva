@@ -107,8 +107,8 @@
     {
       "en": "docs/logging-design.md",
       "zh": "docs/logging-design.zh-CN.md",
-      "enHash": "65a00cf699a5e77ed9ad7cffa36287264c70c9fde7bd28bdf7c810e41d43092d",
-      "zhHash": "71ba29c3e3a664b77869f56e9b24169c0f34ce7ce048b63e4313850717bbeeee"
+      "enHash": "5a77ae26240ade59ea429e826ce9812123cbaba7c8840454ce3782ab57884df8",
+      "zhHash": "344bda047fbaa319bb2728351d8cbb1901fa9da7c07919849491ce73ecafad0f"
     }
   ],
   "bilingual": [
@@ -144,7 +144,7 @@
     {
       "path": "docs/qa-logging-l1b-implementation-20261118.zh-CN.md",
       "locale": "zh-CN",
-      "sha256": "2bb93d48a1ed1984a5a573acbc12e33fbf8828001228e419e377bf855d2ae4b9"
+      "sha256": "0c1a97b1dac556b96c9e22c27107e2a4f861ab26b066fb685ada5dc7ddbb2c78"
     },
     {
       "path": "docs/qa-logging-l1c-implementation-20261118.zh-CN.md",
@@ -159,7 +159,7 @@
     {
       "path": "docs/qa-logging-l3-progress-20261118.zh-CN.md",
       "locale": "zh-CN",
-      "sha256": "2f41a05ad18446258d0e46af74cebe10dd7f15e8a432f09f69478471064b8172"
+      "sha256": "ebca15202cb6327ce0348513ffc2453f03cc2fcfb85eff9adfd2214cad9efc2a"
     }
   ]
 }

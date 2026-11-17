@@ -336,14 +336,14 @@ L1a 执行诊断无业务影响、基础资源边界、隐私和导出用例；�
 - L1a 已接入 Renderer 的记忆读取入口、Shell/Backend RPC、owner 通道、五个读取步骤、dream 四阶段及解析/校验重试、effects、物理发送屏障和进程退出/重启。模型请求和业务回执保持原有语义；仅 L1a 诊断没有提升 MEMORY_HOST_PROTOCOL，后续 L1b 业务升级见第 15 节。
 - 诊断字段先走白名单，再由 Pino redact 保护。排队对象按保守内存上界预留，编码后按实际 UTF-8 计账，覆盖目的端在途数据；摘要洪泛保留开始/终态/失败的空间。轮转和退出等待实际文件关闭及配额回执，退出总期限仍为 2 秒。
 - 目的端先独立异步取得独占文件句柄，再交给 SonicBoom，避免库在打开失败后继续定时 flush。文件打开失败、配额不足和诊断端口异常均自行降级；SonicBoom 不自动无界重试 EAGAIN。RPC 以原始业务字节视图加小型后缀分块发送，避免为追加诊断复制大型 body；超过既有 32 MiB 限额时只撤去诊断。
-- macOS 原生菜单和 Windows 托盘提供本地 ZIP 导出、打开日志目录。导出由独立子进程完成，不依赖 memory:get；并发、总期限、源范围和输出大小受限，损坏整行与尾部残片分别报告。仅收集 Shell/Renderer 的实时快照，其他组件缺失会写入 manifest，不冒充已实现心跳。
+- macOS 原生菜单和 Windows 托盘提供本地 ZIP 导出、打开日志目录。导出由独立子进程完成，不依赖 memory:get；并发、总期限、源范围和输出大小受限，损坏整行与尾部残片分别报告。首批仅收集 Shell/Renderer 实时快照并报告缺失组件，后续监督能力见第 16 节。
 - Viva profile 明确关闭 DSH OTEL；独立 DSH Web 验收 profile 同时关闭 OTEL 与原生日志上传。插件不修改外部宿主的全局遥测设置。
 
-导出临时路径只保存在私有配额清单中，用于子进程异常退出后清理已确认属于该导出的临时文件；它不进入 JSONL 或 ZIP。构建提交目前写为 `unknown`，发布产物的提交标记注入属于 L3。L1a 首批没有交付清空、debug 开关或设置页入口；后续原生控制面见第 16 节，设置页仍属后续工作。
+导出临时路径只保存在私有配额清单中，用于子进程异常退出后清理已确认属于该导出的临时文件；它不进入 JSONL 或 ZIP。首批构建提交写为 `unknown`，没有交付清空、debug 开关或设置页入口。后续原生控制面见第 16 节，已实现的设置入口与提交注入见第 18 节。
 
 验证命令包括 `npm run typecheck`、`npm test`、`npm run build`、`npm run smoke`、`npm run test:memory-plugin`、`npm run smoke:memory-plugin`、`npm run check:i18n`。另有[框架微基准](../scripts/benchmark-diagnostics.ts)、[真实 memory:get 交错对照](../scripts/benchmark-memory-diagnostics.ts)和[原生导出故障注入](../scripts/smoke-local-diagnostics.ts)：后者在 macOS 暂停测试自己的 Backend 与 Renderer，确认原生菜单仍可导出，再恢复并关闭进程。Windows 的定向故障注入与安装包验证留在 L1c/L3，本轮不声明已经验证。
 
-最后一轮真实 memory:get 对照为 3.263875ms → 3.690667ms，增加 0.426792ms / 13.0762%，无丢弃。它未通过第 13 节原始性能门槛；L1a 尚未完成全部验收，未放宽门槛。已收敛性能优化范围，完整证据与剩余验证见[实施记录](qa-logging-l1a-implementation-20261117.zh-CN.md)。
+首批最后一轮真实 memory:get 对照为 3.263875ms → 3.690667ms，增加 0.426792ms / 13.0762%，无丢弃。它未通过第 13 节原始性能门槛，未放宽门槛。该批证据与待验证项保留在[实施记录](qa-logging-l1a-implementation-20261117.zh-CN.md)，后续性能工作见第 18 节。
 
 L1a 的记录不包含 L1b 业务修复；L1b 当前实施状态见第 15 节，L1c 进展见第 16 节，L2 进展见第 17 节。L3 发布验收仍未完成。
 
@@ -378,4 +378,4 @@ macOS 实测与故障矩阵见 [L1c 实施记录](qa-logging-l1c-implementation-
 
 ## 18 L3 发布收尾进展
 
-设置页已接入现有 Shell 诊断控制面，提供导出、目录、清空重试、限时调试与状态读取，不等待业务 Backend 或 memory:get。应用与独立插件构建注入干净源码 checkout 的实际提交；脏构建和无 Git 源包仍明确为 unknown。中英 UI、state/actions/view 分层、输入保护及实际窄窗验证见 [L3 进展记录](qa-logging-l3-progress-20261118.zh-CN.md)。性能仍未达到第 13 节的 5% 门槛，Windows 原生与发布安装包验证尚未完成，不能声明整个日志方案完成。
+设置页已接入现有 Shell 诊断控制面，提供导出、目录、清空重试、限时调试与状态读取，不等待业务 Backend 或 memory:get。应用与独立插件构建注入干净源码 checkout 的实际提交；脏构建和无 Git 源包仍明确为 unknown。中英 UI、state/actions/view 分层、输入保护及实际窄窗验证见 [L3 进展记录](qa-logging-l3-progress-20261118.zh-CN.md)。已只读挂载 macOS DMG，在仓库外通过记忆与重启验收。诊断字段改为单次读取后校验及复制，动态 getter 的回归覆盖真实落盘。测试自有进程暂停夹具已有 Unix/Windows 适配，独立诊断故障工作流不修改现有测试工程分路。性能仍未达到第 13 节的 5% 门槛，Windows 原生验收仍未完成；增加 Windows 代码不等于实际运行通过，不能声明整个日志方案完成。

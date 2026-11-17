@@ -7,8 +7,9 @@ import { expect } from '@playwright/test'
 import { startFakeLlm } from '../test/fixtures/fake-llm.ts'
 import { launchSmokeApplication, configureFakeProvider } from '../test/smoke/application.ts'
 import { createOwnedProfile, disposeOwnedProfile } from '../test/smoke/owned-profile.ts'
+import { pauseOwnedProcess } from '../test/fixtures/diagnostics-process-pause.ts'
+import type { PausedProcess } from '../test/fixtures/diagnostics-process-pause.ts'
 
-if (process.platform !== 'darwin') throw new Error('This owner suspension check uses macOS SIGSTOP')
 const root = await mkdtemp(path.join(tmpdir(), 'viva-memory-availability-'))
 const output = path.resolve('smoke/l1b-availability')
 await mkdir(output, { recursive: true })
@@ -16,7 +17,7 @@ const profile = createOwnedProfile(root, 'availability')
 await writeFile(path.join(profile.userData, 'preferences.json'), JSON.stringify({ language: 'zh-CN' }))
 const model = await startFakeLlm()
 const running = await launchSmokeApplication({ profile, outputDirectory: path.join(output, 'application'), model, bridge: 'real' })
-let stopped: number | undefined
+let stopped: PausedProcess | undefined
 try {
   await configureFakeProvider(running, model)
   await expect.poll(() => running.page.evaluate(async () => {
@@ -24,7 +25,7 @@ try {
   }), { timeout: 15_000 }).toBe(true)
   const owner = await running.hooks.agentPid()
   assert.ok(owner && owner > 0)
-  process.kill(owner, 'SIGSTOP'); stopped = owner
+  stopped = await pauseOwnedProcess(owner)
   const first = running.page.evaluate(async () => {
     const started = performance.now()
     try { await window.agent.getMemory(); return { ok: true, milliseconds: performance.now() - started, error: '' } }
@@ -68,7 +69,7 @@ try {
   await running.page.locator('#profile-root').getByRole('button', { name: /重新加载|Reload/, exact: true }).click()
   await expect(running.page.locator('#profile-root .form-error')).toContainText(/两个|busy/)
   await running.page.screenshot({ path: path.join(output, 'owner-busy.png') })
-  process.kill(owner, 'SIGCONT'); stopped = undefined
+  await stopped.resume(); stopped = undefined
   await expect.poll(() => running.page.evaluate(async () => {
     try { return Boolean((await window.agent.getMemory()).profile) } catch { return false }
   }), { timeout: 10_000 }).toBe(true)
@@ -79,11 +80,13 @@ try {
   await running.page.locator('#hub-back').click()
   await expect(running.page.locator('#composer-input')).toHaveValue('故障期间保留的草稿')
   await running.page.screenshot({ path: path.join(output, 'recovered.png') })
-  const result = { firstResult, secondResult, busy, recovered: true, manualRetryExposed: true, draftRetained: true, attachmentRetained: true }
+  const result = { platform: process.platform, firstResult, secondResult, busy, recovered: true, manualRetryExposed: true, draftRetained: true, attachmentRetained: true }
   await writeFile(path.join(output, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
 } finally {
-  if (stopped) { try { process.kill(stopped, 'SIGCONT') } catch { /* Already exited. */ } }
-  await running.close(); await model.close(); disposeOwnedProfile(profile)
-  await rm(root, { recursive: true, force: true })
+  try { await stopped?.resume() }
+  finally {
+    try { await running.close() }
+    finally { await model.close(); disposeOwnedProfile(profile); await rm(root, { recursive: true, force: true }) }
+  }
 }

@@ -7,8 +7,9 @@ import { expect } from '@playwright/test'
 import { startFakeLlm } from '../test/fixtures/fake-llm.ts'
 import { launchSmokeApplication, configureFakeProvider } from '../test/smoke/application.ts'
 import { createOwnedProfile, disposeOwnedProfile } from '../test/smoke/owned-profile.ts'
+import { pauseOwnedProcess } from '../test/fixtures/diagnostics-process-pause.ts'
+import type { PausedProcess } from '../test/fixtures/diagnostics-process-pause.ts'
 
-if (process.platform !== 'darwin') throw new Error('This native pause check requires macOS; Windows needs its own process-pause fixture')
 const root = await mkdtemp(path.join(tmpdir(), 'viva-diagnostic-controls-'))
 const output = path.resolve('smoke/l1c-controls')
 await mkdir(output, { recursive: true })
@@ -18,7 +19,7 @@ const running = await launchSmokeApplication({ profile, outputDirectory: path.jo
 const diagnostics = path.join(profile.userData, 'diagnostics')
 const records = async () => (await Promise.all((await readdir(diagnostics)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(diagnostics, file), 'utf8'))))
   .join('').trim().split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line) as Record<string, unknown>] } catch { return [] } })
-let stopped: number | undefined
+let stopped: PausedProcess | undefined
 try {
   await configureFakeProvider(running, model)
   await expect.poll(() => running.page.evaluate(async () => {
@@ -32,7 +33,7 @@ try {
     window.agent.reportDiagnostic({ event: 'state.changed', operation: 'diagnostics', debug: true })
   })
   await expect.poll(async () => (await records()).some(record => record.component === 'renderer' && record.level === 20)).toBe(true)
-  process.kill(backend, 'SIGSTOP'); stopped = backend
+  stopped = await pauseOwnedProcess(backend)
   await expect.poll(async () => (await records()).some(record => record.component === 'shell' && record.event === 'health' && record.reason === 'timeout'), { timeout: 22_000 }).toBe(true)
   const first = await running.page.evaluate(async () => {
     const started = performance.now(), result = await window.agent.clearDiagnostics()
@@ -42,19 +43,21 @@ try {
   assert.ok(first.milliseconds < 3_500)
   assert.equal((JSON.parse(await readFile(path.join(diagnostics, 'identity.json'), 'utf8')) as { runId: string }).runId, before.runId,
     'salt/run rotation waits for actual close acknowledgments')
-  process.kill(backend, 'SIGCONT'); stopped = undefined
+  await stopped.resume(); stopped = undefined
   await expect.poll(() => running.page.evaluate(async () => (await window.agent.clearDiagnostics()).status), { timeout: 15_000 }).toBe('cleared')
   const after = JSON.parse(await readFile(path.join(diagnostics, 'identity.json'), 'utf8')) as { runId: string, salt: string }
   assert.notEqual(after.runId, before.runId); assert.notEqual(after.salt, before.salt)
   assert.equal(await running.hooks.backendPid(), backend); assert.equal(await running.hooks.agentPid(), owner)
   assert.ok((await running.page.evaluate(() => window.agent.getMemory())).profile)
   await running.page.screenshot({ path: path.join(output, 'after-clear.png') })
-  const result = { supervisedBackendSilence: true, debugMetadataWritten: true, first, resumedClear: true, saltRotated: true,
+  const result = { platform: process.platform, supervisedBackendSilence: true, debugMetadataWritten: true, first, resumedClear: true, saltRotated: true,
     backendAndOwnerUnchanged: true, memoryGetAfterClear: true, localModelRequests: model.requests.length }
   await writeFile(path.join(output, 'result.json'), JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))
 } finally {
-  if (stopped) { try { process.kill(stopped, 'SIGCONT') } catch { /* Owned process already exited. */ } }
-  await running.close(); await model.close(); disposeOwnedProfile(profile)
-  await rm(root, { recursive: true, force: true })
+  try { await stopped?.resume() }
+  finally {
+    try { await running.close() }
+    finally { await model.close(); disposeOwnedProfile(profile); await rm(root, { recursive: true, force: true }) }
+  }
 }
