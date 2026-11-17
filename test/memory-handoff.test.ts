@@ -138,13 +138,30 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   openBackend()
   await call('models:add', { name: 'Local fixture', api: 'anthropic-messages', baseURL: model.url, models: [{ id: 'deepseek-chat', image }], key: 'test-gateway-key' })
   assert.ok(await eventually(() => call<AgentInfo>('agent:info').sessionId))
+  const prompts = new Map<string, { result: IpcResults['agent:prompt'], requestOffset: number, eventOffset: number }>()
+  // This fixture only sends the synthetic text below. Keep failure evidence to
+  // that prompt's model messages and host events, without transport credentials.
+  const promptDiagnostic = (sourceId: string) => {
+    const prompt = prompts.get(sourceId)
+    return JSON.stringify({ sourceId, operation: sourceId,
+      returned: prompt?.result === undefined ? { kind: 'void' } : { kind: 'receipt', value: prompt.result },
+      requests: model.requests.slice(prompt?.requestOffset ?? model.requests.length).map(raw => {
+        const request = raw as Request
+        return { question: questionOf(request.messages), messages: request.messages.slice(-4) }
+      }),
+      events: events.slice(prompt?.eventOffset ?? events.length).filter(event =>
+        event.type === 'error' || event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'schedule_propose'),
+    })
+  }
   async function ask(text: string) {
     // A completed task may still be reporting in the foreground. The real composer waits for that turn too.
     assert.ok(await eventually(() => events.findLast(event =>
       event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error')?.type !== 'turn_started'),
     'the foreground is ready for the next prompt')
     const sourceId = randomUUID()
-    await call<Promise<void>>('agent:prompt', text, [], sourceId)
+    const requestOffset = model.requests.length, eventOffset = events.length
+    const result = await call<Promise<IpcResults['agent:prompt']>>('agent:prompt', text, [], sourceId)
+    prompts.set(sourceId, { result, requestOffset, eventOffset })
     return sourceId
   }
   const newTopic = () => call<Promise<AgentInfo>>('agent:new-session')
@@ -167,14 +184,14 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   const restart = () => call<Promise<unknown>>('settings:set-permission', 'workspace-write')
   async function schedule(text: string) {
-    await ask(text)
+    const sourceId = await ask(text)
     const proposal = events.findLast(event => event.type === 'schedule_propose')?.proposal
-    assert.equal(proposal?.title, text)
+    assert.equal(proposal?.title, text, promptDiagnostic(sourceId))
     await call('schedules:accept', proposal.proposalId)
   }
   async function recallOld() {
-    await ask(oldFact)
-    assert.ok(await eventually(async () => (await files()).some(item => item.markdown.includes(oldValue))))
+    const sourceId = await ask(oldFact)
+    assert.ok(await eventually(async () => (await files()).some(item => item.markdown.includes(oldValue))), promptDiagnostic(sourceId))
     await ask('查一下 周报提交邮箱')
   }
   async function replace() {
