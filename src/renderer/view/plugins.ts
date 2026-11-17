@@ -1,6 +1,6 @@
 import { t } from '../../shared/i18n/translate.ts'
 import type { PluginFit } from '../capability-types.ts'
-import { h, label } from './dom.ts'
+import { composedInput, h, label } from './dom.ts'
 import { fitText } from './plugin-fit-text.ts'
 
 /** Installing a dsh plugin, for 能力 · 插件 (view/capability-plugins.ts): the spec, what it names, then 安装. */
@@ -54,7 +54,7 @@ export function installForm(plugins: Plugins, handlers: Handlers) {
   h('label', { class: 'intro-item' }, label(t('plugins.spec')),
     h('input', {
       class: 'field', name: 'plugin-spec', type: 'text', value: plugins.spec, 'data-version': String(plugins.specVersion), placeholder: t('plugins.spec.hint'), 'aria-label': t('plugins.spec'),
-      spellcheck: 'false', autocomplete: 'off', onInput: (event: Event) => handlers.editPluginSpec((event.target as HTMLInputElement).value),
+      spellcheck: 'false', autocomplete: 'off', ...composedInput((value) => handlers.editPluginSpec(value)),
     })),
   h('div', { class: 'settings-actions' },
     h('button', { class: 'btn btn-outline btn-small', type: 'submit', disabled: plugins.busy, text: t('plugins.look') })))

@@ -8,6 +8,7 @@ import { checkDesktopDragRelease, checkDesktopHost } from './desktop-host.ts'
 import { checkDesktopRedesign } from './desktop-states.ts'
 import { checkStreamingDrawer } from './drawer-interaction.ts'
 import { checkStreamingNavigation } from './ui-retention.ts'
+import { checkUiPolish } from './ui-polish.ts'
 
 type MaidModule = typeof import('../../src/renderer/view/maid.ts')
 type DeskDraftFocusEvent = { at: number, event: string, focused: boolean, open: string | null, active: string | null }
@@ -254,10 +255,11 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   const session = await run.start('startup')
   const { page } = session
   await expect(page.locator('#composer-input')).toBeDisabled()
-  await page.getByRole('button', { name: '回顾、后台、关于你和设置', exact: true }).click()
+  await page.getByRole('button', { name: '回顾、后台、关于你、能力和设置', exact: true }).click()
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await expect(page.locator('#settings-root')).toBeVisible()
   await checkIslandLayouts(page, info)
+  await checkUiPolish(page)
   await checkDeskSignals(page, info)
   const desk = session.hooks.desk()
   await desk.force(true)
@@ -344,10 +346,10 @@ test('centred chat avatars and the folded desktop island animate without restart
   await page.locator('#composer-input').fill('你好，头像动图验证')
   await page.getByRole('button', { name: '发送', exact: true }).click()
   await expect(page.locator('#send-btn')).toHaveAttribute('data-busy', 'false')
-  const avatar = page.locator('.msg-agent .maid-avatar .maid-image').last()
+  const avatar = page.locator('#island .isl-face .maid-image')
   await expect(avatar).toBeVisible()
   await expect(avatar).toHaveAttribute('src', /\/maid\/avatars\/\w+-motion\.webp$/)
-  await expect(avatar).toHaveCSS('width', '48px')
+  await expect(avatar).toHaveCSS('width', '36px')
   await expect(avatar).toHaveCSS('left', '0px')
   const frames = new Set<string>()
   await expect.poll(async () => {

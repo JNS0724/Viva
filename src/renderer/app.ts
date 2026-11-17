@@ -407,11 +407,16 @@ composerDraft = createComposerDraftActions({ api, host: 'main',
     composerFiles = draft.files; composerError = draft.error
     draftImages.replace(draft.images)
     sharedFiles.hidden = !draft.files.length && !draft.error
+    dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
     sharedFiles.replaceChildren(...draft.files.map(file => h('div', { class: 'isl-file', title: file.path },
       h('span', { class: 'isl-file-name', text: file.name }), h('button', { type: 'button', class: 'isl-file-x', text: '×',
         'aria-label': t('island-input.remove', { name: file.name }), onClick: () => {
-          composerFiles = composerFiles.filter(item => item.path !== file.path); composerDraft?.changed()
+          composerFiles = composerFiles.filter(item => item.path !== file.path)
+          dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
           sharedFiles.querySelector(`[title="${CSS.escape(file.path)}"]`)?.remove()
+          sharedFiles.hidden = !composerFiles.length && !composerError
+          composerDraft?.changed()
+          renderSendButton(dom, state)
         } }))), ...(draft.error ? [h('div', { class: 'isl-error', role: 'alert', text: draft.error })] : []))
     renderSendButton(dom, state)
   },
@@ -501,6 +506,7 @@ async function imagesChange(run: () => Promise<unknown>, done: string) {
 const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>) => unknown>> = {
   'open-profile': () => memoryActions.openProfile(),
   'open-settings': () => handlers.openSettings(),
+  'open-mcp': () => capabilityActions.openCapabilities('mcp'),
   'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
   'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
 }
@@ -701,6 +707,7 @@ const handlers = {
   pauseSchedule: (id: string, paused: boolean) => feedActions.pauseSchedule(id, paused),
   deleteSchedule: (id: string) => feedActions.deleteSchedule(id),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
+  openTaskSteps: () => dispatch({ type: 'tasks_page_steps', open: true }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),
   inputProblem: (message: string) => historyActions.showToast(message),
   toggleHub: () => (hubPage(state) ? handlers.closeHub() : handlers.openHub()),
@@ -851,16 +858,20 @@ const isHistoryShortcut = (event: KeyboardEvent) => (event.metaKey || event.ctrl
 
 /** Escape closes the innermost thing that is open. */
 function closeTopmost() {
-  if (state.rewind.confirm) rewindActions.cancelRewindConfirm()
+  if (state.resume) resumeActions.resumeDismiss()
+  else if (state.rewind.confirm) rewindActions.cancelRewindConfirm()
   else if (state.rewind.editing) rewindActions.cancelEdit()
   else if (state.workDir.confirm) workDirActions.cancelConfirm()
   else if (state.workDir.menu) workDirActions.closeMenu()
+  else if (state.files.menu) dispatch({ type: 'files_menu', open: false })
   else if (state.topic.menu) dispatch({ type: 'topic_menu', open: false })
   else if (state.settings.permissionMenu) dispatch({ type: 'permission_menu', open: false })
   else if (state.island) dispatch({ type: 'close_island' })
+  else if (state.extensions.importMenu) dispatch({ type: 'extensions_import_menu', open: false })
   else if (state.memory.files.forget?.phase === 'confirm') memoryActions.cancelManagedMemoryForget(state.memory.files.forget.id)
   else if (hubPage(state)) dispatch({ type: 'hub_close' })
   else if (state.picker) dispatch({ type: 'picker_close' })
+  else if (state.drawer && getComputedStyle(dom.drawer).position === 'absolute') dispatch({ type: 'close_drawer' })
 }
 
 function wireDismissal(target: Document = document) {
@@ -961,7 +972,7 @@ function reportMcpProblems(info: AgentInfo | undefined, { fresh = false } = {}) 
   for (const item of dropped) mcpProblemsSaid.add(item.name)
   if (dropped.length === 0) return
   const names = dropped.map((item) => (item.name === 'memory' ? t("app.memory.tools") : `「${item.name}」`)).join('、')
-  historyActions.showToast(t("app.could.not.connect.and.were.skipped.for", { names: names }), { action: { label: t("app.view"), kind: 'open-settings' }, ms: 8000 })
+  historyActions.showToast(t("app.could.not.connect.and.were.skipped.for", { names: names }), { action: { label: t("app.view"), kind: 'open-mcp' }, ms: 8000 })
 }
 
 /** An event from the agent (main.js agent:event), into the state and on to what follows from it. */
@@ -988,13 +999,17 @@ agentEvents = createAgentEvents({
 function handleEvent(event: AgentEvent) { agentEvents!.replay(event) }
 
 async function boot() {
-  if (api) await initializeLanguage(api, () => render(dom, state, handlers))
+  if (api) await initializeLanguage(api, () => { render(dom, state, handlers); publishIsland() })
   labelShortcuts()
   render(dom, state, handlers)
   if (!api) {
     dispatch({ type: 'error', message: t("app.the.preload.bridge.window.agent.is.missing") })
     return
   }
+  wireComposer()
+  wireHub()
+  wireDismissal()
+  wireFolderDrop()
   api.onIslandAction?.((action) => handlers.islandAction(action))
   // Coming to the window, or leaving it, changes what 已完成 waits for (done-notice-actions.ts).
   for (const type of ['focus', 'blur']) window.addEventListener(type, () => doneNotice?.check())
@@ -1007,10 +1022,6 @@ async function boot() {
   await timelineActions.loadEarlier()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
-  wireComposer()
-  wireHub()
-  wireDismissal()
-  wireFolderDrop()
   void mountHistorySearchFrame(dom.historySearch).then((searchDocument) => {
     if (searchDocument) {
       registerLanguageDocument(searchDocument)
@@ -1022,7 +1033,10 @@ async function boot() {
   })
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
   const info = await api.getInfo()
-  if (info?.mode && info.mode !== 'connecting') dispatch({ type: 'ready', info })
+  if (info?.mode && info.mode !== 'connecting') {
+    dispatch({ type: 'ready', info })
+    capabilityActions.refreshCapabilities()
+  }
   agentEvents!.initialize()
   // Opened on a dsh at work (a reload): what the conversation waits on the user for, which the backend says on the
   // live channel, in its place among the pushes (waits-state.ts, system-design §12.1).

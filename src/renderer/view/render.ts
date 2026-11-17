@@ -12,6 +12,7 @@ import { queueLayout } from './reconcile.ts'
 import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
+import { hubPage } from '../hub-state.ts'
 import { renderTasksPage } from './tasks-page.ts'
 import { renderFeedPage } from './feed-page.ts'
 import { feedCount } from '../feed-state.ts'
@@ -212,7 +213,7 @@ export const showsHome = (state: State) => state.messages.length === 0 && state.
 export function render(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
   // One timeline: the welcome is only for someone with nothing said yet, anywhere in it.
   const isHome = showsHome(state)
-  if (isHome) dom.island.replaceChildren()
+  if (isHome && !hubPage(state)) dom.island.replaceChildren()
   else renderIsland(dom.island, state, handlers, now)
   dom.home.hidden = !isHome
   dom.thread.hidden = isHome
@@ -231,18 +232,19 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)
   renderResumeDialog(dom.resumeDialog, state.resume, handlers)
+  if (dom.app) dom.app.inert = Boolean(state.workDir.confirm || state.rewind.confirm || state.resume)
 }
 
 /** Per-frame update while text is being typed out: only the thread and the status island. */
 export function renderStream(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
   if (state.messages.length === 0) return
   renderThreadFollowing(dom, state, handlers, now)
-  renderIsland(dom.island, state, handlers, now)
+  if (!showsHome(state) || hubPage(state)) renderIsland(dom.island, state, handlers, now)
 }
 
 /** Once-a-second refresh of the elapsed time in the island while the agent works. */
 export function renderTick(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
-  if (state.messages.length > 0 && isBusy(state)) renderIsland(dom.island, state, handlers, now)
+  if ((!showsHome(state) || hubPage(state)) && isBusy(state)) renderIsland(dom.island, state, handlers, now)
 }
 
 onLocaleChange(() => {

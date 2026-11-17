@@ -24,16 +24,58 @@ export const label = (text: string) => h('span', { class: 'label', text })
 const FIELDS = 'input[name], textarea[name], select[name]'
 type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
 const fieldsIn = (root: ParentNode): Field[] => [...root.querySelectorAll<Field>(FIELDS)]
-const isCheckbox = (el: Element): el is HTMLInputElement => el instanceof HTMLInputElement && el.type === 'checkbox'
+const isCheckbox = (el: Element): el is HTMLInputElement => typeof HTMLInputElement !== 'undefined' && el instanceof HTMLInputElement && el.type === 'checkbox'
+
+type ComposingState = { active: boolean, deferred: (() => void) | null }
+const composingIn = new WeakMap<HTMLElement, ComposingState>()
+
+function compositionOf(container: HTMLElement): ComposingState | null {
+  if (typeof container.addEventListener !== 'function') return null
+  let state = composingIn.get(container)
+  if (state) return state
+  state = { active: false, deferred: null }
+  container.addEventListener('compositionstart', () => { state!.active = true })
+  container.addEventListener('compositionend', () => {
+    state!.active = false
+    if (!state!.deferred) return
+    const schedule = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn: () => void) => setTimeout(fn, 0)
+    schedule(() => {
+      if (state!.active || !state!.deferred || container.isConnected === false) return
+      const run = state!.deferred
+      state!.deferred = null
+      run()
+    })
+  })
+  composingIn.set(container, state)
+  return state
+}
+
+/** Calls `onChange` as the user types, deferring mid-pinyin IME composition updates until confirmed. */
+export function composedInput(onChange: (value: string) => void) {
+  return {
+    onInput: (event: Event) => {
+      if ((event as InputEvent).isComposing) return
+      onChange((event.currentTarget as HTMLInputElement).value)
+    },
+    onCompositionEnd: (event: Event) => onChange((event.currentTarget as HTMLInputElement).value),
+  }
+}
 
 /**
  * Rebuilds `container` without losing what the user typed: named fields keep their value, checked
  * state, focus and caret. A field whose `data-version` changed starts fresh (e.g. cleared after saving).
+ * Active IME composition inside `container` defers the rebuild until composition completes.
  */
 export function keepingInput(container: HTMLElement, rebuild: () => void): void {
+  const composition = compositionOf(container)
+  if (composition?.active && container.contains(document.activeElement)) {
+    composition.deferred = () => keepingInput(container, rebuild)
+    return
+  }
+  if (composition) composition.deferred = null
   const saved = new Map(fieldsIn(container).map((el) => [el.name, { value: el.value, checked: isCheckbox(el) && el.checked, version: el.dataset.version }]))
   const active = container.contains(document.activeElement) ? document.activeElement as Field | null : null
-  const typed = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? active : null
+  const typed = active && 'selectionStart' in active ? active as HTMLInputElement | HTMLTextAreaElement : null
   const focus = active?.name ? { name: active.name, start: typed?.selectionStart ?? null, end: typed?.selectionEnd ?? null } : null
   rebuild()
   for (const el of fieldsIn(container)) {

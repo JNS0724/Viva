@@ -1,7 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import { shownSkill, skillGroups } from '../capabilities-state.ts'
 import type { SkillIssueCode, SkillView } from '../capability-types.ts'
-import { h } from './dom.ts'
+import { composedInput, h } from './dom.ts'
 import { importing } from '../import-flow-state.ts'
 import { importMain } from './import-flow.ts'
 
@@ -29,7 +29,7 @@ export function skillsSide(state: State, handlers: Handlers): Node[] {
   const search = h('input', {
     class: 'field cap-search', type: 'search', name: 'skill-search', value: state.capabilities.query,
     placeholder: t('capabilities.search.skills'), 'aria-label': t('capabilities.search.skills'), autocomplete: 'off', spellcheck: 'false',
-    onInput: (event: Event) => handlers.searchSkills((event.target as HTMLInputElement).value),
+    ...composedInput((value) => handlers.searchSkills(value)),
   })
   const rows = groups.flatMap((group) => [
     h('div', { class: 'tp-group' }, group.label, h('span', { class: 'tp-group-count', text: String(group.skills.length) })),

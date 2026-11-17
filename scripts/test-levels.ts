@@ -182,6 +182,7 @@ export const testLevels = {
     'remove-tree',
     'renderer-css',
     'renderer-hotpaths',
+    'ui-polish',
     'report-records',
     'resume-actions',
     'resume-carry',

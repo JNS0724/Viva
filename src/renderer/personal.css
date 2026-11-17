@@ -121,6 +121,7 @@ select.field { cursor: pointer; font-family: var(--font-sans); }
   background: var(--panel-2); border: 1px solid var(--line); font-family: var(--font-mono); font-size: 12px; color: var(--ink-2);
 }
 .secret-row[data-missing="true"] .field { border-color: var(--orange); }
+.secret-row[data-missing="true"] .field:focus { border-color: var(--accent); }
 .secret-del {
   width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; border: 1px solid var(--line);
   background: transparent; color: var(--ink-3); cursor: pointer;

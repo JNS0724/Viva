@@ -1,7 +1,7 @@
 /* ---------- Viva island (view/island-dom.js): the title bar's and the desktop's ---------- */
 .isl {
-  /* The title bar's: 36px, a dot in the tone of the moment, no picture of her (view/island-dom.ts SIZES). */
-  --isl-head: 36px; --isl-pad: 30px; --isl-rim: var(--line); --isl-dot: var(--accent);
+  /* The title bar's: 44px, with her 36px portrait concentric in its left end (view/island-dom.ts SIZES). */
+  --isl-head: var(--island-h, 44px); --isl-pad: var(--island-pad, 48px); --isl-rim: var(--line); --isl-dot: var(--accent);
   position: relative; box-sizing: border-box; width: 120px; height: var(--isl-head); flex: none;
   border: 1.5px solid var(--isl-rim); border-radius: calc(var(--isl-head) / 2);
   background: var(--island-bg); color: var(--ink); font-family: var(--font-sans);
@@ -10,6 +10,8 @@
 }
 /* In the title bar it never grows past the room left between the window's buttons. */
 .isl[data-host="bar"] { max-width: 100%; }
+.isl[data-host="bar"] .isl-head { max-width: 100%; }
+.isl[data-host="bar"][data-tone="working"] { --isl-rim: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
 .isl[data-open="true"] { border-radius: calc(var(--isl-head) / 2); box-shadow: 0 24px 60px rgba(0, 0, 0, .6); }
 .isl[data-tone="idle"] { --isl-dot: var(--ink-3); }
 .isl[data-tone="pending"] { --isl-rim: var(--line-2); --isl-dot: var(--ink-3); }
@@ -22,8 +24,14 @@
 
 /* The content is clipped to the shape; her picture is not, so its ring and badge stay whole. */
 .isl-clip { position: absolute; inset: 0; border-radius: inherit; overflow: hidden; }
-/* Concentric with the capsule's rounded end: the same gap all round. */
-.isl-face { position: absolute; left: 12px; top: 12px; pointer-events: none; }
+/* Concentric with the capsule's rounded end: the same gap top, bottom and left, pinned to the head when open. */
+.isl-face {
+  position: absolute;
+  left: calc((var(--isl-head) - 3px - var(--island-face, 36px)) / 2);
+  top: calc((var(--isl-head) - 3px - var(--island-face, 36px)) / 2);
+  display: grid; place-items: center; pointer-events: none;
+}
+.isl-face > .maid { box-shadow: 0 0 0 1.5px var(--maid-ring); }
 .isl-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--isl-dot); transition: background .3s; }
 .isl[data-tone="waiting"] .isl-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 25%, transparent); }
 
@@ -200,32 +208,14 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .desk-stage .isl[data-host="desk"] { box-shadow: none; }
 
 /* Desktop families (view/island-dom.ts): one portrait outline, explicit content and action ownership. */
-.isl[data-host="desk"] {
-  --isl-head: var(--desk-capsule-height); --isl-rim: var(--line-2);
-  width: var(--desk-capsule-width); height: auto; border-width: 1px; border-color: var(--isl-rim);
-  transition: width .2s ease, border-color .2s ease;
-}
-.isl[data-host="desk"][data-tone="waiting"] { --isl-rim: color-mix(in srgb, var(--orange) 30%, var(--line-2)); }
-.isl[data-host="desk"][data-tone="error"] { --isl-rim: color-mix(in srgb, var(--red) 35%, var(--line-2)); }
 .isl[data-host="desk"][data-tone="error"] .isl-label { color: var(--error-ink); }
-.isl[data-host="desk"] .isl-clip { position: relative; display: flex; flex-direction: column; height: auto; min-height: 0; }
-.isl[data-host="desk"] .isl-row { flex: none; height: calc(var(--desk-capsule-height) - 2px); }
-.isl[data-host="desk"] .isl-face { left: 12px; top: 50%; bottom: auto; transform: translateY(-50%); }
-.isl[data-host="desk"] .maid { box-shadow: 0 0 0 1px var(--line-2); }
-.isl[data-host="desk"] .isl-head {
-  flex: 1; min-width: 0; height: 100%; padding: 0 var(--desk-gap) 0 calc(12px + var(--desk-face-capsule) + var(--desk-pad));
-  gap: var(--desk-gap);
-}
 .isl-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .isl-status { display: flex; align-items: center; gap: 8px; }
 .isl-status .isl-label { flex: none; font-size: 14px; }
 .isl-status .isl-dot { width: 5px; height: 5px; flex: none; box-shadow: none; }
 .isl-status .isl-time { font-size: 11px; color: var(--ink-3); }
 .isl-copy .isl-more { display: block; font-size: 12px; }
-.isl[data-host="desk"] .isl-tools { padding-right: 12px; }
 .isl[data-host="desk"] .isl-bg { border-left: 0; padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 7px; }
-.isl[data-host="desk"] .isl-panel { position: static; flex: 1; display: flex; min-height: 0; padding: 0; }
-.isl[data-host="desk"] .isl-in { flex: 1; min-height: 0; gap: 0; animation: none; }
 /* One surface: head, body and buttons share the island's ground, apart by space only (view/island-dom.ts createDeskCardParts). */
 .isl[data-host="desk"] .isl-body { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: var(--desk-gap); overflow: auto; padding: 2px var(--desk-pad) var(--desk-pad); overscroll-behavior: contain; }
 .isl[data-host="desk"] .isl-body:has(+ .isl-footer) { padding-bottom: 0; }
@@ -246,25 +236,7 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl-choices .isl-btn:hover { background: var(--raised); border-color: var(--accent); }
 .isl[data-host="desk"] .isl-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
 .isl[data-host="desk"] .isl-bg-list ol { max-height: none; overflow: visible; }
-.isl[data-host="desk"][data-layout="rest"] { width: var(--desk-round); height: var(--desk-round); border: none; background: transparent; }
-.isl[data-host="desk"][data-layout="rest"] .isl-face { left: 50%; top: 50%; transform: translate(-50%, -50%); }
-.isl[data-host="desk"][data-layout="rest"] .isl-row { height: var(--desk-round); }
-.isl[data-host="desk"][data-layout="rest"] .isl-head { padding: 0; opacity: 0; }
-.isl[data-host="desk"][data-layout="rest"] .isl-panel { display: none; }
-.isl[data-host="desk"][data-layout="content"] { width: var(--desk-card-width); max-height: var(--desk-card-max); border-radius: var(--desk-radius); }
-.isl[data-host="desk"][data-layout="content"] .isl-clip { max-height: calc(var(--desk-card-max) - 2px); }
-.isl[data-host="desk"][data-layout="content"] .isl-row { height: var(--desk-card-head); }
-.isl[data-host="desk"][data-layout="content"] .isl-face { left: var(--desk-pad); top: calc(var(--desk-card-head) / 2); }
-.isl[data-host="desk"][data-layout="content"] .isl-head { padding-left: calc(var(--desk-pad) * 2 + var(--desk-face-card)); }
-.isl[data-host="desk"][data-layout="input"] { width: var(--desk-input-width); max-height: var(--desk-card-max); border-radius: var(--desk-radius); }
-.isl[data-host="desk"][data-layout="input"] .isl-clip { box-sizing: border-box; min-height: calc(var(--desk-input-height) - 2px); max-height: calc(var(--desk-card-max) - 2px); justify-content: center; gap: var(--desk-gap); padding: var(--desk-pad) var(--desk-pad) var(--desk-pad) calc(var(--desk-pad) * 2 + var(--desk-face-input)); }
-.isl[data-host="desk"][data-layout="input"] .isl-face { left: var(--desk-pad); }
-.isl[data-host="desk"][data-layout="input"] .isl-row { display: none; }
-.isl[data-host="desk"][data-layout="input"] .isl-panel { flex: 0 1 auto; order: 2; overflow: auto; }
-.isl[data-host="desk"][data-layout="input"] .isl-in { gap: 8px; }
 .isl[data-host="desk"] .isl-entry { position: static; order: 1; left: auto; top: auto; right: auto; bottom: auto; height: auto; min-height: var(--desk-control); flex: none; }
-.isl[data-host="desk"][data-layout="content"] .isl-entry { margin: 0 var(--desk-pad) var(--desk-gap); }
-.isl[data-host="desk"][data-layout="content"] .isl-panel { order: 2; }
 .isl[data-host="desk"] .isl-field { field-sizing: content; min-height: 28px; max-height: var(--desk-field-max); height: auto; font-size: 16px; line-height: 28px; white-space: pre-wrap; overflow: auto; }
 .isl[data-host="desk"] .isl-field::placeholder { opacity: 1; }
 .isl-send { display: inline-grid; flex: none; place-items: center; width: var(--desk-control); height: var(--desk-control); padding: 0; border: none; border-radius: 8px; background: var(--accent); color: var(--bg); cursor: pointer; }
@@ -323,7 +295,7 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl[data-host="desk"][data-signal="asking"] .isl-anchor > .maid { animation: isl-ring-call 1.6s ease-out infinite; box-shadow: 0 0 0 var(--desk-ring) var(--orange); }
 .isl[data-host="desk"][data-signal="done"] .isl-anchor > .maid { animation: isl-ring-breathe 3.6s ease-in-out infinite; box-shadow: 0 0 0 calc(var(--desk-ring) - .5px) var(--accent); }
 .isl[data-host="desk"][data-signal="error"] .isl-anchor > .maid { box-shadow: 0 0 0 var(--desk-ring) var(--red); }
-.isl[data-host="desk"][data-signal="offline"] .isl-anchor > .maid { box-shadow: none; outline: 2px dashed var(--ink-3); outline-offset: 2px; filter: grayscale(.85); opacity: .7; }
+.isl[data-host="desk"][data-signal="offline"] .isl-anchor > .maid { box-shadow: none; outline: 2px dashed var(--ink-3); outline-offset: 2px; }
 @keyframes isl-ring-turn { to { transform: translate(-50%, -50%) rotate(360deg); } }
 @keyframes isl-ring-call {
   0%, 100% { box-shadow: 0 0 0 var(--desk-ring) var(--orange), 0 0 0 calc(var(--desk-ring) + 1px) color-mix(in srgb, var(--orange) 40%, transparent); }
@@ -337,7 +309,7 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl-sign {
   position: absolute; left: calc(var(--desk-round) / 2 + var(--desk-face-rest) / 4); top: calc(var(--desk-round) / 2 + var(--desk-face-rest) / 4);
   display: grid; place-items: center; width: var(--desk-sign); height: var(--desk-sign); border-radius: 50%; pointer-events: none;
-  font: 800 13px/1 var(--font-sans); color: var(--bg); background: var(--accent); box-shadow: 0 0 0 2px var(--bg); z-index: 1;
+  font: 700 13px/1 var(--font-sans); color: var(--bg); background: var(--accent); box-shadow: 0 0 0 2px var(--bg); z-index: 1;
 }
 .isl-sign[hidden] { display: none; }
 /* Alone at rest, the count of what ended in the background sits on her lower right, inside her round (the window
@@ -351,7 +323,7 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
 .isl[data-signal="confirm"] .isl-sign, .isl[data-signal="asking"] .isl-sign { background: var(--orange); }
 .isl[data-signal="error"] .isl-sign { background: var(--red); }
 /* The words beside her: the sign before them, the edge in the state's colour. */
-.isl[data-host="desk"] .isl-peek .isl-status .isl-dot:not(:empty) { display: grid; place-items: center; width: var(--desk-sign-glyph); height: var(--desk-sign-glyph); background: none; font: 800 12px/1 var(--font-sans); }
+.isl[data-host="desk"] .isl-peek .isl-status .isl-dot:not(:empty) { display: grid; place-items: center; width: var(--desk-sign-glyph); height: var(--desk-sign-glyph); background: none; font: 700 12px/1 var(--font-sans); }
 .isl[data-host="desk"][data-signal="working"] .isl-peek .isl-status .isl-dot {
   width: calc(var(--desk-sign-glyph) - 2px); height: calc(var(--desk-sign-glyph) - 2px); box-sizing: border-box; border-radius: 50%; background: none;
   border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent); animation: spin .9s linear infinite;

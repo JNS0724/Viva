@@ -328,7 +328,8 @@ export function taskActions() {
     tasks_seen_restored: (state, { ids }) => withTasks(state, {
       seen: [...new Set([...state.tasks.seen, ...(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])])],
     }),
-    tasks_page_steps: (state) => withTasks(state, { page: { ...state.tasks.page, steps: !state.tasks.page.steps, allSteps: false } }),
+    tasks_page_steps: (state, { open = !state.tasks.page.steps }) => open === state.tasks.page.steps ? state
+      : withTasks(state, { page: { ...state.tasks.page, steps: open, allSteps: false } }),
     tasks_page_all_steps: (state) => withTasks(state, { page: { ...state.tasks.page, allSteps: true } }),
 
     /**

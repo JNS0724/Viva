@@ -21,7 +21,17 @@ export function registerLanguageDocument(doc: Document): void {
   applyDocument(doc, state)
 }
 
+function enableWebFonts(doc: Document): void {
+  if (typeof doc.querySelectorAll !== 'function') return
+  for (const link of doc.querySelectorAll<HTMLLinkElement>('link[data-web-fonts]')) {
+    if (link.media === 'all') continue
+    if (link.sheet) link.media = 'all'
+    else link.addEventListener('load', () => { link.media = 'all' }, { once: true })
+  }
+}
+
 function applyDocument(doc: Document, next: LanguageState): void {
+  enableWebFonts(doc)
   doc.documentElement.lang = next.locale
   for (const el of doc.querySelectorAll<HTMLElement>('[data-i18n]')) {
     el.textContent = translate(el.dataset.i18n ?? '')
