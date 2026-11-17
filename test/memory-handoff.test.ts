@@ -1735,17 +1735,51 @@ test('withdrawing a picture-only prompt also invalidates tasks that depended on 
   } finally { db.close() }
 })
 
-test('a persisted schedule and foreground requests wait for the independent memory owner', { timeout: 45_000 }, async t => {
+// The deliberately absent owner consumes the real 30-second readiness deadline.
+// The outer budget also covers preparation and both failed and recovered starts.
+test('a persisted schedule and foreground requests wait for the independent memory owner', { timeout: 90_000 }, async t => {
+  const began = performance.now()
+  const timings: { step: string, startedMs: number, elapsedMs?: number }[] = []
+  let inspect: () => unknown = () => ({ state: 'setting-up' })
+  const snapshot = () => {
+    try { return inspect() } catch { return { state: 'fixture-closed' } }
+  }
+  const cancelled = () => process.stderr.write(`[owner-readiness-cancelled] ${JSON.stringify({
+    elapsedMs: Math.round(performance.now() - began), activeStep: timings.findLast(timing => timing.elapsedMs === undefined)?.step,
+    timings, state: snapshot(),
+  })}\n`)
+  t.signal.addEventListener('abort', cancelled, { once: true })
+  t.after(() => t.signal.removeEventListener('abort', cancelled))
+  const step = async <T>(name: string, work: () => T | Promise<T>): Promise<T> => {
+    const timing = { step: name, startedMs: Math.round(performance.now() - began), elapsedMs: undefined as number | undefined }
+    timings.push(timing)
+    const started = performance.now()
+    try { return await work() }
+    finally {
+      timing.elapsedMs = Math.round(performance.now() - started)
+      t.diagnostic(`[owner-readiness] ${JSON.stringify(timing)}`)
+    }
+  }
   const title = '给邮箱建立定时归档'
   const prompt = '归档到 ' + oldValue
-  const app = await setup(t, request => {
+  const app = await step('setup', () => setup(t, request => {
     if (questionOf(request.messages) !== title || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
     return { tool: { name: 'schedule_create', input: {
       title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
     } } }
-  })
-  await app.recallOld()
-  await app.schedule(title)
+  }))
+  inspect = () => {
+    const agent = app.call<AgentInfo>('agent:info')
+    return {
+      agent: { mode: agent.mode, cwd: agent.cwd, sessionId: agent.sessionId, conversationId: agent.conversationId, topicId: agent.topicId },
+      requests: app.model.requests.length,
+      recentQuestions: (app.model.requests.slice(-3) as Request[]).map(request => questionOf(request.messages)),
+      events: app.events.filter(event => event.type === 'ready' || event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error').slice(-6)
+        .map(event => event.type === 'ready' ? { type: event.type, mode: event.info.mode } : event),
+    }
+  }
+  await step('remember-and-recall-source', () => app.recallOld())
+  await step('persist-schedule', () => app.schedule(title))
   const manifest = join(CODE_ROOT, 'plugins', 'memory', 'package.json')
   const read = fs.readFileSync
   const invalid = JSON.parse(read(manifest, 'utf8')) as { viva: { contract: { memory: number } } }
@@ -1755,18 +1789,18 @@ test('a persisted schedule and foreground requests wait for the independent memo
   const db = new DatabaseSync(join(app.directory, 'app.db'))
   try {
     db.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
-    await app.restart()
+    await step('restart-with-owner-rejected', () => app.restart())
   } finally {
     db.close()
     override.mock.restore()
   }
   const words = '记忆 owner 恢复前不应发出模型请求'
   const offset = app.model.requests.length
-  await assert.rejects(app.ask(words))
+  await step('reject-foreground-without-owner', () => assert.rejects(app.ask(words)))
   assert.ok(!app.model.requests.slice(offset).some(raw => questionOf((raw as Request).messages) === words))
   assert.ok(!app.model.requests.some(raw => questionOf((raw as Request).messages) === prompt))
-  await app.restart()
-  assert.ok(await eventually(() => app.feed().find(item => item.title === title)))
+  await step('restart-with-owner-restored', () => app.restart())
+  assert.ok(await step('recovered-schedule-result', () => eventually(() => app.feed().find(item => item.title === title))))
   assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === prompt))
 })
 
