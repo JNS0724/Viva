@@ -13,6 +13,7 @@ export interface AutomationDriver {
   backendPid: () => number | null
   desk: () => ReturnType<typeof createDeskIsland> | null
   seedFeed: (item: SeededItem) => Promise<void>
+  publishEvent: (event: object) => Promise<void>
 }
 
 declare global {

@@ -1,5 +1,20 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
+// This sandboxed CommonJS entry cannot import the Node heartbeat implementation.
+// Keep one fixed metadata message pending; each renderer is independently supervised.
+const diagnosticProcessId = globalThis.crypto?.randomUUID?.()
+let diagnosticHealthPending = false
+let diagnosticLastPulse = performance.now()
+if (diagnosticProcessId) setInterval(() => {
+  const now = performance.now(), eventLoopDelayMs = Math.max(0, now - diagnosticLastPulse - 5000)
+  diagnosticLastPulse = now
+  if (diagnosticHealthPending) return
+  diagnosticHealthPending = true
+  void ipcRenderer.invoke('diagnostics:health', { type: 'diagnostic-health', version: 1, component: 'renderer',
+    processInstanceId: diagnosticProcessId, activeCount: 0, oldestMs: 0, eventLoopDelayMs, sinkState: 'ready', droppedCount: 0,
+  }).catch(() => {}).finally(() => { diagnosticHealthPending = false })
+}, 5000)
+
 /**
  * The desktop island's page (desk.js) hears what to show and says what was clicked, where the island is,
  * and what the user asks with which dropped files. Dropped files are known to it only by their paths.

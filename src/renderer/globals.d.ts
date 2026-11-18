@@ -107,7 +107,9 @@ type IslandAct = (action: { kind: string, [field: string]: unknown }) => void
 type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
 /** The window's state: what state.ts's initialState can become. */
-type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info'> & ConversationView & { info: AgentInfo }
+type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info' | 'diagnostics'> & ConversationView & {
+  info: AgentInfo, diagnostics: import('./diagnostics-types.ts').DiagnosticsState
+}
 /**
  * One conversation as it is reduced (conversation-state.ts): the one on screen (part of State) or a background
  * task's (BackgroundTask.view), and no more.
@@ -147,9 +149,11 @@ interface DraftApi extends LanguageApi {
   onDraft: (callback: (draft: import('../shared/composer-draft.ts').DraftSnapshot) => void) => Unlisten
 }
 interface AgentApi extends DraftApi {
+  reportDiagnostic: (event: Args<'diagnostics:event'>[0]) => void
   /** 'darwin' | 'win32' | 'linux': the page lays out its title bar around the system window buttons. */
   platform: string
   getInfo: Invoke<'agent:info'>
+  getSnapshot: Invoke<'agent:snapshot'>
   waits: Invoke<'agent:waits'>
   prompt: Invoke<'agent:prompt'>
   keepImage: Invoke<'images:keep'>
@@ -214,6 +218,11 @@ interface AgentApi extends DraftApi {
   pathForFile: (file: File) => string
   revealWorkDir: Invoke<'workdir:reveal'>
   getMemory: Invoke<'memory:get'>
+  exportDiagnostics: Invoke<'diagnostics:export'>
+  openDiagnosticsFolder: Invoke<'diagnostics:open-folder'>
+  diagnosticsStatus: Invoke<'diagnostics:status'>
+  clearDiagnostics: Invoke<'diagnostics:clear'>
+  debugDiagnostics: Invoke<'diagnostics:debug'>
   listMemoryFiles: Invoke<'memory:list-files'>
   readMemoryFile: Invoke<'memory:read-file'>
   setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>

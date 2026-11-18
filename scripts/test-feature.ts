@@ -10,8 +10,8 @@ import { testLevels, type TestLevel } from './test-levels.ts'
 const ROOT = path.resolve(import.meta.dirname, '..')
 const CONTRACTS = /^(?:ipc-contract|window-api|module-boundaries)\.test\.(?:js|ts)$/
 const FEATURES = {
-  conversation: /^(?:conversation-|composer-draft\.|new-topic-|topic-|history(?:[.-])|resume-|rewind-|work-?dir(?:[.-])|workdir-|waits-|handoff-|text-submit-|assistant-stream|report-records|state\.|secret-state\.|agent-events\.|topics\.)/,
-  runtime: /^(?:acp-|dsh-|fresh-sessions|stream-runtime|stop-in-time|prewarm-runtime|mcp-bridge|mcp-manager|images-bridge|steer-channel|config-channel|questions(?:[.-])|(?:permission|questions|fork|stream|steer)-plugin|tasks-bridge|backend-wire|backend-keeper|question-desk|mcp-import|codex-mcp|fake-dsh|(?:config|policy|trace)-plugin)/,
+  conversation: /^(?:renderer-initialization\.|conversation-|composer-draft\.|new-topic-|topic-|history(?:[.-])|resume-|rewind-|work-?dir(?:[.-])|workdir-|waits-|handoff-|text-submit-|assistant-stream|report-records|state\.|secret-state\.|agent-events\.|topics\.)/,
+  runtime: /^(?:diagnostics[.-]|session-timing|acp-|dsh-|fresh-sessions|stream-runtime|stop-in-time|prewarm-runtime|mcp-bridge|mcp-manager|images-bridge|steer-channel|config-channel|questions(?:[.-])|(?:permission|questions|fork|stream|steer)-plugin|tasks-bridge|backend-wire|backend-keeper|question-desk|mcp-import|codex-mcp|fake-dsh|(?:config|policy|trace)-plugin)/,
   tasks: /^(?:tasks?(?:[.-])|schedule(?:s|[.-])|unattended-|report-records|steer-reports|waits-|handoff-|feed-|event-core|effects|side-effects|agent-events|proposal-state|proposal-draft|source-report-registration)/,
   architecture: /^(?:module-boundaries|backend-boundary|backend-wire(?:-timing)?|main-modules|ipc-contract|window-api|smoke-isolation|smoke-diagnostics|smoke-fixtures|smoke-layout|ci-check|test-feature)\.test\.(?:js|ts)$/,
   models: /^(?:models?[.-])/,
@@ -19,7 +19,7 @@ const FEATURES = {
   capabilities: /^(?:capabilit|extensions[.-]|plugins?[.-]|app-plugins[.-]|import-flow[.-]|config-actions[.-]|commands[.-])/,
   files: /^(?:file(?:s[.-]|-access)|workspace-files[.-]|attachments[.-]|image-(?:ipc|store)[.-]|paste[.-]|csv[.-]|remove-tree[.-])/,
   memory: /^(?:remote-)?memory[.-]/,
-  rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:desk-card|dom|view)|done-notice|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-(?:css|hotpaths)|review-(?:actions|state)|scroll-follow|selectors|stars|timeline-search|turn-rail|user-error)\.test\.(?:js|ts)$/,
+  rendering: /^(?:column-resize|earlier-(?:row|state)|frame|full-screen|hub-state|island-(?:desk-card|dom|view)|done-notice|long-answer|markdown|prompt-card|reader-control|reconcile|renderer-(?:css|hotpaths)|review-(?:actions|state)|scroll-follow|selectors|stars|timeline-search|turn-rail|ui-polish|user-error)\.test\.(?:js|ts)$/,
   storage: /^(?:app-db|envelope|journal|preferences|settings|history-db|feed-store|task-store)\.test\.(?:js|ts)$/,
   i18n: /^i18n[.-]/,
   shell: /^(?:desk-(?:island|place)|island-main|tray|window-options)\.test\.(?:js|ts)$/,
@@ -102,7 +102,7 @@ export function runFeatures(args: readonly string[]): number {
     list = values.list ?? false
   } catch (error) {
     console.error(`[test:feature] ${error instanceof Error ? error.message : String(error)}`)
-    console.error(`Usage: npm run test:feature -- ${featureNames.join('|')} [more features] [--level fast|integration|timing] [--list]`)
+    console.error(`Usage: npm run test:feature -- ${featureNames.join('|')} [more features] [--level ${levelNames.join('|')}] [--list]`)
     console.error('       npm run test:fast -- [--list]')
     return 2
   }

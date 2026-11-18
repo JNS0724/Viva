@@ -12,6 +12,7 @@ import { queueLayout } from './reconcile.ts'
 import { renderHistoryPanel, renderToast } from './history-panel.ts'
 import { renderHome } from './home.ts'
 import { renderHub } from './hub.ts'
+import { hubPage } from '../hub-state.ts'
 import { renderTasksPage } from './tasks-page.ts'
 import { renderFeedPage } from './feed-page.ts'
 import { feedCount } from '../feed-state.ts'
@@ -78,10 +79,10 @@ function renderPermissionIfChanged(area: HTMLElement | null, state: State, handl
 }
 
 function renderSettingsIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
-  const inputs = [localeRevision(), state.settings, state.models]
+  const inputs = [localeRevision(), state.settings, state.models, state.diagnostics]
   if (inputs.every((value, i) => value === renderedSettings[i])) return
   renderedSettings = inputs
-  renderSettings(container, state.settings, state.models, handlers)
+  renderSettings(container, state.settings, state.models, handlers, state.diagnostics)
 }
 let renderedCapabilities: unknown[] = []
 /** 能力, and how many need looking at by its name in the hub, depend on the skills, servers and plugins, how the servers stand now, and on itself. */
@@ -113,7 +114,7 @@ function latestQuestionTop(thread: HTMLElement, scroll: HTMLElement) {
 /** Re-render the thread, then let the follower decide whether (and how far) to scroll. */
 function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: number) {
   // Stream updates grow retained text nodes even when the thread's direct children stay attached.
-  renderThread(dom.thread, state, handlers, now)
+  renderThread(dom.thread, state, handlers, now, state.initialization)
   queueLayout(dom.thread, () => {
     if (!dom.thread.isConnected || dom.thread.hidden) return
     return dom.follower.measureAfterRender(() => latestQuestionTop(dom.thread, dom.scroll))
@@ -194,7 +195,7 @@ export function renderSendButton(dom: Dom, state: State) {
 }
 
 function renderComposer(dom: Dom, state: State, handlers: Handlers) {
-  renderComposerAvailability(dom, setupView(state.info), state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
+  renderComposerAvailability(dom, setupView(state.info), state.initialization.status !== 'ready' || state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
   renderSendButton(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)
@@ -212,7 +213,7 @@ export const showsHome = (state: State) => state.messages.length === 0 && state.
 export function render(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
   // One timeline: the welcome is only for someone with nothing said yet, anywhere in it.
   const isHome = showsHome(state)
-  if (isHome) dom.island.replaceChildren()
+  if (isHome && !hubPage(state)) dom.island.replaceChildren()
   else renderIsland(dom.island, state, handlers, now)
   dom.home.hidden = !isHome
   dom.thread.hidden = isHome
@@ -231,18 +232,19 @@ export function render(dom: Dom, state: State, handlers: Handlers, now = Date.no
   renderToastIfChanged(dom.toast, state.toast, handlers)
   renderRewindConfirm(dom.rewindConfirm, state, handlers)
   renderResumeDialog(dom.resumeDialog, state.resume, handlers)
+  if (dom.app) dom.app.inert = Boolean(state.workDir.confirm || state.rewind.confirm || state.resume)
 }
 
 /** Per-frame update while text is being typed out: only the thread and the status island. */
 export function renderStream(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
   if (state.messages.length === 0) return
   renderThreadFollowing(dom, state, handlers, now)
-  renderIsland(dom.island, state, handlers, now)
+  if (!showsHome(state) || hubPage(state)) renderIsland(dom.island, state, handlers, now)
 }
 
 /** Once-a-second refresh of the elapsed time in the island while the agent works. */
 export function renderTick(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
-  if (state.messages.length > 0 && isBusy(state)) renderIsland(dom.island, state, handlers, now)
+  if ((!showsHome(state) || hubPage(state)) && isBusy(state)) renderIsland(dom.island, state, handlers, now)
 }
 
 onLocaleChange(() => {

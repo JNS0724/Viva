@@ -5,6 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { createEffects, RETRY_MS, type Effect, type Outcome } from '../src/backend/effects.ts'
+import { installDiagnosticPort, withOperation } from '../src/diagnostics/node/context.ts'
+import { createNodeDiagnostics } from '../src/diagnostics/node/logger.ts'
+import type { StoredDiagnostic } from '../src/diagnostics/node/record.ts'
 
 /**
  * The effects queue (system-design §11.4) on a real app database: queued with the change that calls for it, run after,
@@ -22,7 +25,7 @@ function setup(t: TestContext) {
     later: (run, ms) => { const timer = { run, ms }; timers = [...timers, timer]; return timer },
     cancel: (timer) => { timers = timers.filter((entry) => entry !== timer) },
   })
-  return { app, make, effects: make(), advance: (ms: number) => { clock += ms }, timers: () => timers }
+  return { app, dir, make, effects: make(), advance: (ms: number) => { clock += ms }, timers: () => timers }
 }
 
 /** A runner that answers each effect as told, and keeps what it was given. */
@@ -34,6 +37,59 @@ function runner(answer: (effect: Effect) => Outcome) {
   }
   return { run, seen }
 }
+
+test('effect retry diagnostics follow the committed generation and cannot announce a rolled-back or superseded retry', async t => {
+  const { app, dir } = setup(t)
+  const directory = path.join(dir, 'logs')
+  const writer = createNodeDiagnostics({ directory, component: 'backend' })
+  t.after(installDiagnosticPort(writer))
+  let now = 1000, refusing = true
+  const effects = createEffects({ db: app.db, now: () => now, later: () => null, cancel: () => {},
+    apply: (_kind, _data, work) => ({ value: transaction(app.db, () => {
+      const result = work()
+      if (refusing) throw new Error('SECRET_STORAGE_ERROR')
+      return result
+    }) }) })
+  t.after(() => effects.close())
+  await writer.ready
+  try {
+    effects.queue('report', 'task:run', { text: 'SECRET_EFFECT_PAYLOAD' })
+    effects.runs('report', runner(() => 'retry').run)
+    const wake = () => withOperation('conversation', () => effects.wake())
+    await wake()
+    assert.equal(effects.get('report', 'task:run')?.attempts, 0)
+    refusing = false; now += 10_000
+    effects.runs('report', async () => { throw new Error('SECRET_RUNNER_ERROR') })
+    await wake()
+    assert.equal(effects.get('report', 'task:run')?.attempts, 1)
+    now += RETRY_MS[0]
+    effects.runs('report', async batch => {
+      effects.queue('report', 'task:run', { text: 'replacement' })
+      return new Map(batch.map(effect => [effect.key, 'retry' as const]))
+    })
+    await wake()
+    assert.equal(effects.get('report', 'task:run')?.attempts, 0)
+  } finally {
+    await writer.close()
+  }
+  const data = fs.readdirSync(directory).filter(name => name.endsWith('.jsonl')).map(name => fs.readFileSync(path.join(directory, name), 'utf8')).join('')
+  assert.doesNotMatch(data, /SECRET_/)
+  const records = data.trim().split('\n').map(line => JSON.parse(line) as StoredDiagnostic)
+  const attempts = records.filter(row => row.operation === 'effects' && row.event === 'operation.start')
+  assert.equal(attempts.length, 3)
+  const ends = records.filter(row => row.operation === 'effects' && row.event === 'operation.end')
+  assert.equal(ends[0]?.outcome, 'failed', 'the rolled-back settlement fails its attempt')
+  const retries = records.filter(row => row.event === 'retry.scheduled')
+  assert.equal(retries.length, 1, 'only the committed retry is announced')
+  const [retry] = retries, attempt = attempts[1]!
+  assert.equal(retry.metrics?.attempt, 1)
+  assert.equal(retry.traceId, attempt.traceId)
+  assert.equal(retry.spanId, attempt.spanId)
+  assert.ok(attempt.sequence < retry.sequence && retry.sequence < ends[1]!.sequence)
+  const triggers = records.filter(row => row.operation === 'conversation' && row.event === 'operation.start')
+  assert.notEqual(attempt.traceId, triggers[1]!.traceId)
+  assert.deepEqual(attempt.links, [{ traceId: triggers[1]!.traceId, spanId: triggers[1]!.spanId }])
+})
 
 test('an effect is queued with its change: undone with it, kept with it', (t) => {
   const { app, effects } = setup(t)

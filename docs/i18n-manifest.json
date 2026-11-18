@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-17",
+  "reviewedOn": "2026-11-18",
   "pairs": [
     {
       "en": "README.md",
@@ -11,8 +11,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "1843ffedf0157a1b82c466b7e67879aaf7f04c6675a9290e0724f7869f11bd73",
-      "zhHash": "d31c6af933b29b3fc0cef1f1966f165387d3eab7f33dc316b8ec2a1c6a7970e1"
+      "enHash": "320385429c380b457aae9755b389cdf66405729933722809ab18353c511d064d",
+      "zhHash": "b176e7486f345a43b765674ed37238494e613b6072510a8f86cc37e19ad283a8"
     },
     {
       "en": "docs/features.md",
@@ -25,6 +25,12 @@
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
       "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
+    },
+    {
+      "en": "docs/ci-full-acceptance.md",
+      "zh": "docs/ci-full-acceptance.zh-CN.md",
+      "enHash": "0f21c5576526bbbb6a28939c69dfb56a41cefc3cd419222f8d95ba9659293c59",
+      "zhHash": "06499327485feeaefb3a1b63032db853e2c05adecff5ec160d53b01a1e1a52e9"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -103,6 +109,12 @@
       "zh": "docs/memory-reme-plan.zh-CN.md",
       "enHash": "e04a439ef2228d915a316f923c4aa8426420360835105dc9470379408f1f1064",
       "zhHash": "d57d0ed1539bc92b1830d8bc916abc3bea29e9b0b4c1ab312e7d859a6a59182a"
+    },
+    {
+      "en": "docs/logging-design.md",
+      "zh": "docs/logging-design.zh-CN.md",
+      "enHash": "ab4783e48c5f9ff859e74976550f4582dbb3752d15807711d1047a9458793bdf",
+      "zhHash": "bcf694c56c0e04b3aa7d32e83eb3c8792a048daec75646323e249d9ca96aba76"
     }
   ],
   "bilingual": [
@@ -119,6 +131,46 @@
       "path": "docs/qa-windows-ui-issues-20261108.zh-CN.md",
       "locale": "zh-CN",
       "sha256": "ba6691b0828cdba750e9cd08d47ee0d790284906bdb344b06bfd9ef9874b3bc3"
+    },
+    {
+      "path": "docs/qa-logging-design-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "d415aaf3338940fdb6b30897d1b3b7283b1cc9b7664a30e1d8cd78ce5a18fa57"
+    },
+    {
+      "path": "docs/qa-logging-design-independent-review-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "474f5b0aaedabae8bbd15387b3467e584d64b6079f6be8320cdf3dc06f549600"
+    },
+    {
+      "path": "docs/qa-logging-l1a-implementation-20261117.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "e7a5bdb1fa18cd23885d3466d298f1258de394b96cc5a2014ed43a64953295f7"
+    },
+    {
+      "path": "docs/qa-logging-l1b-implementation-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "ee010f748975e30ebdbb87a802b5e79e853f87a9742b4af2b5bdbda4583f3584"
+    },
+    {
+      "path": "docs/qa-logging-l1c-implementation-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "0f5b7e33c5e63d25b2dce805e7bd7210fd58f9e0ca311d13b7b2b6792f332e7c"
+    },
+    {
+      "path": "docs/qa-logging-l2-implementation-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "5502e567a3656c0219a42021284015d3283e631e4532c9b2d21a408cea16c417"
+    },
+    {
+      "path": "docs/qa-logging-l3-progress-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "c2822d16529ccf15efee1f1673bc3fa281ebbafb2146320f9472d3468bd43235"
+    },
+    {
+      "path": "docs/qa-logging-completion-audit-20261118.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "e8bc0422c5307ffe533b1f8e6e529042cb0f05c2ba93a8b9bd96c8b537d4965c"
     }
   ]
 }

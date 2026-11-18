@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { transaction } from '../src/backend/app-db.ts'
@@ -9,6 +10,8 @@ import { MAX_ATTEMPTS, MAX_WAIT_MS, RETRY_MS, createScheduleRuns } from '../src/
 import { openScheduleStore } from '../src/backend/schedule-store.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
 import type { MemoryFileDependency, MemoryProvenance } from '../src/memory/contracts/records.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 /** Schedules run when due (schedule-runs.ts): one timer, runs kept with what was taken, each answer one item in 动态. */
 
@@ -16,6 +19,36 @@ const at = (iso: string) => Date.parse(iso)
 type Timer = { run: () => void, ms: number }
 const UNAVAILABLE: RunResult = { ok: false, problem: 'unavailable', unavailable: true }
 const ONCE = { kind: 'at', at: '2026-11-06T11:00:00+08:00' } as const
+
+test('schedule retry diagnostics are published only after the durable retry and keep their identity across restart', async t => {
+  const events: DiagnosticEvent[] = []
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
+  t.after(restore)
+  const app = setup([{ ok: false, problem: 'SECRET_SCHEDULE_FAILURE' }, { ok: true, text: 'SECRET_SCHEDULE_RESULT' }])
+  app.store.create({ title: 'SECRET_SCHEDULE_TITLE', prompt: 'SECRET_SCHEDULE_PROMPT', cwd: '/PRIVATE_PATH', rule: ONCE })
+  app.go('2026-11-06T11:00:00+08:00')
+  let runner = app.make()
+  t.after(() => { runner.close(); app.db.close() })
+  app.fail('schedule.retry', 1)
+  runner.wake(); await app.settle()
+  assert.equal(events.filter(event => event.operation === 'schedule' && event.event === 'retry.scheduled').length, 0)
+  app.go('2026-11-06T11:00:02+08:00')
+  runner.wake(); await app.settle()
+  const retry = events.find(event => event.operation === 'schedule' && event.event === 'retry.scheduled')
+  assert.ok(retry)
+  assert.equal(retry.metrics?.attempt, 1)
+  runner.close(); runner = app.make()
+  app.go('2026-11-06T11:02:00+08:00')
+  runner.wake(); await app.settle()
+  assert.equal(app.feed.list()[0]?.body, 'SECRET_SCHEDULE_RESULT')
+  assert.ok(events.some(event => event.operation === 'schedule' && event.event === 'operation.start' && event.stage === 'recovering'
+    && event.identities?.jobId === retry.identities?.jobId && event.identities?.generation === retry.identities?.generation))
+  const starts = events.filter(event => event.operation === 'schedule' && event.event === 'operation.start')
+  assert.ok(starts.some(event => event.metrics?.attempt === 0) && starts.some(event => event.metrics?.attempt === 1))
+  assert.ok(starts[0]!.identities?.operationId)
+  assert.equal(new Set(starts.map(event => event.identities?.operationId)).size, 1)
+  assert.doesNotMatch(JSON.stringify(events), /SECRET_SCHEDULE|PRIVATE_PATH/)
+})
 
 test('file dependencies survive saved schedules, retry recovery, result merging and feed continuation', async t => {
   const ref: MemoryFileDependency = { workspace: 'a'.repeat(64), id: 'node', path: 'digest/wiki/report.md',

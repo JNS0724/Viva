@@ -1,4 +1,6 @@
 import { fork } from 'node:child_process'
+import { diagnosticBinding, diagnosticContext, emitDiagnostic, withOperation } from '../../diagnostics/node/context.ts'
+import { parseDiagnosticContext } from '../../diagnostics/contracts.ts'
 import type { ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,9 +60,10 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
       env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     })
+    emitDiagnostic({ event: 'process.start', operation: 'embedding', stage: 'connecting', identities: { generation: fingerprint } })
     child = worker
     worker.on('error', () => retire(worker, true))
-    worker.on('exit', () => retire(worker, true))
+    worker.on('exit', () => { emitDiagnostic({ event: 'process.exit', operation: 'embedding', reason: 'process_exited', identities: { generation: fingerprint } }); retire(worker, true) })
     return worker
   }
 
@@ -76,7 +79,12 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
     }
     return new Promise(resolve => {
       const id = ++requestId
+      const context = diagnosticContext()
+      const observedStages = new Set<string>()
+      let droppedContext = false
       const finish = (vectors: MemoryEmbeddingResult | null) => {
+        emitDiagnostic({ event: 'operation.progress', operation: 'embedding', stage: vectors ? 'complete' : 'unavailable',
+          reason: vectors ? 'normal' : signal?.aborted ? 'aborted' : 'unavailable', identities: { requestId: id }, metrics: { ok: Boolean(vectors) } }, context)
         clearTimeout(timer)
         signal?.removeEventListener('abort', abort)
         worker.off('message', receive)
@@ -87,9 +95,25 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
       const receive = (raw: unknown) => {
         const message = objectOf(raw)
         if (child !== worker) return
+        if (message?.type === 'diagnostic-worker') {
+          const incoming = parseDiagnosticContext(message.diagnostics)
+          const stage = message.stage
+          const validStage = stage === 'connecting' || stage === 'ready' || stage === 'vector'
+          if (message.id === id && message.version === 1 && validStage
+            && (message.diagnostics === undefined || incoming && (!diagnosticBinding() || incoming.diagnosticRunId === diagnosticBinding()))) {
+            if (observedStages.has(stage)) return
+            observedStages.add(stage)
+            emitDiagnostic({ event: 'operation.progress', operation: 'embedding',
+              stage, identities: { requestId: id } }, context)
+          } else if (!droppedContext) {
+            droppedContext = true
+            emitDiagnostic({ event: 'context.dropped', operation: 'embedding', reason: 'invalid_context' })
+          }
+          return
+        }
         if (message?.type === 'ready') {
           if (message.fingerprint !== fingerprint || message.dimensions !== dimensions) retire(worker, true)
-          else authenticated.add(worker)
+          else { authenticated.add(worker); emitDiagnostic({ event: 'state.changed', operation: 'embedding', stage: 'ready', identities: { generation: fingerprint } }) }
           return
         }
         if (message?.id !== id) return
@@ -101,14 +125,14 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
         if (vectors) finish(vectors)
         else retire(worker, true)
       }
-      const timer = setTimeout(() => retire(worker, true), timeoutMs)
+      const timer = setTimeout(() => { emitDiagnostic({ event: 'operation.progress', operation: 'embedding', stage: 'unavailable', reason: 'timeout' }); retire(worker, true) }, timeoutMs)
       timer.unref()
       pending = { id, finish }
       worker.on('message', receive)
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
       else {
-        try { worker.send({ id, inputs, fingerprint, dimensions }, error => { if (error) retire(worker, true) }) }
+        try { worker.send({ id, inputs, fingerprint, dimensions, ...(context ? { diagnostics: context } : {}) }, error => { if (error) retire(worker, true) }) }
         catch { retire(worker, true) }
       }
     })
@@ -117,7 +141,7 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
   return Object.freeze({
     fingerprint,
     dimensions,
-    embedBatch,
+    embedBatch: (inputs: readonly MemoryEmbeddingInput[], signal?: AbortSignal) => withOperation('embedding', () => embedBatch(inputs, signal), { stage: 'vector', metrics: { count: inputs.length } }),
     close() {
       closed = true
       if (child) retire(child, false)

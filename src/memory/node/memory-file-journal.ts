@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { withOperation } from '../../diagnostics/node/context.ts'
 import { existsSync, lstatSync } from 'node:fs'
 import { join } from 'node:path'
 import { transaction } from './sqlite.ts'
@@ -98,6 +99,9 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     return accepted
   }
   function recover(id?: string, includes = (_data: T) => true) {
+    return withOperation('storage', () => recoverPrepared(id, includes), { stage: 'recovering', identities: { requestId: id ?? null, methodId: namespace } })
+  }
+  function recoverPrepared(id: string | undefined, includes: (data: T) => boolean) {
     for (const intent of pending()) {
       if (id !== undefined && intent.id !== operationKey(id) || !includes(intent.plan.data)) continue
       try { apply(intent) } catch (error) {
@@ -106,6 +110,9 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     }
   }
   function commit(id: string, input: string, plan: () => FilePlan<T>) {
+    return withOperation('storage', () => commitPrepared(id, input, plan), { stage: 'checkpoint', identities: { requestId: id, methodId: namespace } })
+  }
+  function commitPrepared(id: string, input: string, plan: () => FilePlan<T>) {
     if (db.isTransaction) throw new Error('memory-file-commit-inside-transaction')
     id = operationKey(id)
     const existing = db.prepare('SELECT input,state FROM memory_file_intents WHERE id=?').get(id) as { input: string, state: string } | undefined

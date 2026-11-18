@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { emitDiagnostic, emitDiagnosticFailure, withDetachedOperation } from '../../diagnostics/node/context.ts'
 type Apply = <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
 
 /**
@@ -146,25 +147,33 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
       if (closed) return
       const run = runners.get(kind)
       if (!run) continue
-      let outcomes: ReadonlyMap<string, Outcome>
-      try {
-        outcomes = await run(effects)
-      } catch (err) {
+      await withDetachedOperation('effects', async () => {
+        let outcomes: ReadonlyMap<string, Outcome>
+        try {
+          outcomes = await run(effects)
+        } catch (err) {
+          if (closed) return
+          emitDiagnosticFailure('effects', err)
+          onError(err)
+          outcomes = new Map(effects.map(effect => [effect.key, 'retry' as const]))
+        }
         if (closed) return
-        onError(err)
-        outcomes = new Map(effects.map((effect) => [effect.key, 'retry' as const]))
-      }
-      if (closed) return
-      for (const effect of effects) settle(effect, outcomes.get(effect.key) ?? 'wait')
+        for (const effect of effects) settle(effect, outcomes.get(effect.key) ?? 'wait')
+      }, { identities: { methodId: kind }, metrics: { count: effects.length } })
     }
   }
 
   function settle(effect: Effect, outcome: Outcome) {
     const data = { kind: effect.kind, key: effect.key, generation: effect.generation }
-    if (outcome === 'done') apply('effect.done', data, () => dropDone.run(effect.kind, effect.key, effect.generation))
+    if (outcome === 'done') {
+      const result = apply('effect.done', data, () => dropDone.run(effect.kind, effect.key, effect.generation)).value
+      if (result.changes) emitDiagnostic({ event: 'state.changed', operation: 'effects', stage: 'checkpoint',
+        identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind } })
+    }
     if (outcome === 'retry') {
       const wait = retries.get(effect.kind)?.(effect.attempts) ?? RETRY_MS[Math.min(effect.attempts, RETRY_MS.length - 1)]
-      apply('effect.retry', { ...data, waitMs: wait }, () => putOff.run(now() + wait, effect.kind, effect.key, effect.generation))
+      const result = apply('effect.retry', { ...data, waitMs: wait }, () => putOff.run(now() + wait, effect.kind, effect.key, effect.generation)).value
+      if (result.changes) emitDiagnostic({ event: 'retry.scheduled', operation: 'effects', identities: { jobId: effect.key, generation: effect.generation, methodId: effect.kind }, metrics: { attempt: effect.attempts + 1, retryDelayMs: wait } })
     }
     // `wait`: left as it is, due; run again when woken.
   }

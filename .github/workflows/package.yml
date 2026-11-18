@@ -1,34 +1,22 @@
 # The app as users get it: the installer built, the app run from outside the repository (where a missing package
 # would show instead of being found in the repo's node_modules), through the memory smoke phase with dsh, its
-# plugins and the fake model. Slower than `check`, so only for changes to how the app is built or packaged, and
-# by hand (Actions > package > Run workflow), before a release for instance. A release (release.yml) runs it too
-# and publishes the installers it uploads.
+# plugins and the fake model. check.yml invokes this for affected PRs, daily.yml runs complete acceptance,
+# and release.yml reuses these installers for publication.
 name: package
 
 on:
-  pull_request:
-    paths:
-      - package.json
-      - package-lock.json
-      - build/memory-embedding/**
-      - scripts/**
-      - tsconfig*.json
-      - src/backend/config.ts
-      - src/backend/memory-embedder*.ts
-      - src/backend/app-plugins.ts
-      - src/shell/automation-driver.ts
-      - test/smoke/**
-      - test/fixtures/**
-      - .github/workflows/package.yml
-      - .github/workflows/release.yml
   workflow_dispatch:
   workflow_call:
+    inputs:
+      runKey:
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: package-${{ github.ref }}
+  group: package-${{ github.ref }}-${{ inputs.runKey || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -46,6 +34,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run test:memory-plugin
       - run: npm run dist:mac
       - name: Smoke the app from the mounted dmg
         run: |
@@ -80,6 +69,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run test:memory-plugin
       - name: Build the installer, install it silently, smoke it, uninstall
         run: powershell -ExecutionPolicy Bypass -File scripts\verify-windows.ps1 -PackageOnly
       - uses: actions/upload-artifact@v4

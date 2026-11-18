@@ -19,7 +19,7 @@ function withoutHeldTrace(event: AgentEvent, sessions: ReadonlySet<string>): Age
 }
 
 /** Owns the wire boundary, foreground selection handoff, task-load handoff and push-triggered effects. */
-export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, mcpChanged = () => {}, refreshWorkDir, refreshFiles, memoryChanged, filesChanged, refreshFeed, rejected, now = Date.now }: {
+export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, mcpChanged = () => {}, refreshWorkDir, refreshFiles, memoryChanged, filesChanged, refreshFeed, rejected, overflow, now = Date.now }: {
   getState: () => State, dispatch: (action: Action) => void
   holdTask: (event: AgentEvent) => boolean
   afterTurn: (reason?: string) => void, clearAfterTurn: () => void
@@ -31,10 +31,11 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
   filesChanged: (event: Extract<AgentEvent, { type: 'files_changed' }>) => void
   rejected?: (issue: EventIssue) => void
   now?: () => number
+  overflow?: (reason: 'capacity' | 'age') => void
 }) {
   const actionFor = createEventActions({ now })
   const ingress = createConversationIngress<AgentEvent>({
-    initialized: false, now,
+    initialized: false, now, overflow,
     current: () => {
       const state = getState()
       return {
@@ -78,5 +79,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
     replay: ingress.receive,
     stateChanged: ingress.stateChanged,
     initialize: ingress.initialize,
+    pause: ingress.pause,
+    settled: ingress.settled,
   }
 }

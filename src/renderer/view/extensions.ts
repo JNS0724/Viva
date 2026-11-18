@@ -30,7 +30,11 @@ function keyRow(key: Draft['keys'][number], version: string, handlers: Handlers)
       class: 'field', type: 'password', name: `mcp-key-${key.id}`, 'data-version': version, placeholder, autocomplete: 'off', spellcheck: 'false',
       'aria-label': key.name ? t("extensions.value.of", { name: key.name }) : t("extensions.credential.value"),
     }),
-    h('button', { class: 'secret-del', type: 'button', title: t("extensions.delete.this.credential"), 'aria-label': t("extensions.delete.credential", { name: key.name }), onClick: () => handlers.removeEditKey(key.id) }, icon('close', 14)))
+    h('button', {
+      class: 'secret-del', type: 'button', title: t("extensions.delete.this.credential"),
+      'aria-label': key.name ? t("extensions.delete.credential", { name: key.name }) : t("extensions.delete.this.credential"),
+      onClick: () => handlers.removeEditKey(key.id),
+    }, icon('close', 14)))
 }
 
 /** What the form holds, as extensions-ipc.ts formChanges takes it; fields of the other type are left out. */

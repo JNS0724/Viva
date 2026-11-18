@@ -1,4 +1,6 @@
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
+import { beginDiagnosticOperation, observeDiagnosticSync } from '../../diagnostics/operation.ts'
+import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { MEMORY_EMBEDDING_BATCH } from '../contracts/embedding.ts'
 import type { MemoryEmbedder, MemoryEmbeddingInput } from '../contracts/embedding.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
@@ -52,9 +54,10 @@ const sameVersion = (a: MemoryFileIdentity, b: MemoryDocumentView) => a.id === b
 export { memoryFileLexicalQuery } from './search-tokens.ts'
 
 /** Shared file retrieval. No filesystem, database, transport or host state crosses this layer. */
-export function createMemoryFileRetrieval({ index, policy, workspaces, hash, embedder, resolveAlias }: {
+export function createMemoryFileRetrieval({ index, policy, workspaces, hash, embedder, resolveAlias, diagnostics }: {
   index: MemoryFileIndex, policy: FileReadPolicy, workspaces(): string[], hash(text: string): string,
   embedder?: MemoryEmbedder | null, now?: () => number, resolveAlias?(workspace: string, path: string): string | null,
+  diagnostics?: DiagnosticPort,
 }) {
   let closed = false
   let preparing = false
@@ -159,6 +162,8 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   }
   async function prepareVectors(signal?: AbortSignal) {
     if (!embedder || closed || preparing || signal?.aborted) return false
+    const observation = beginDiagnosticOperation(diagnostics, 'memory.index', { stage: 'rebuild' })
+    let complete = false, staged = 0
     preparing = true
     const run = scopedController(signal)
     try {
@@ -166,6 +171,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       const files = index.files(workspaces())
       if (files.some(file => !current(file))) return false
       const expected = index.chunks(files).map(chunk => chunk.ref)
+      observation.progress({ stage: 'vector', identities: { generation }, metrics: { count: expected.length } })
       for (const chunk of index.missingVectors(generation)) {
         if (closed || run.controller.signal.aborted || !current(chunk.file)) return false
         const vectors: Float32Array[] = []
@@ -205,11 +211,18 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
           }
         }
         if (!vectors.length || closed || run.controller.signal.aborted || !current(chunk.file) || index.stageVectors(generation, [{ref:chunk.ref,vectors}]) !== 1) return false
+        staged++
       }
       if (closed || run.controller.signal.aborted || files.some(file => !current(file))) return false
-      return index.finishVectors(generation, expected)
-    } catch { return false }
-    finally { run.done(); preparing = false }
+      complete = index.finishVectors(generation, expected)
+      return complete
+    } catch (error) { observation.fail(error); return false }
+    finally {
+      observation.end(complete ? 'completed' : run.controller.signal.aborted ? 'cancelled' : 'failed', {
+        stage: complete ? 'checkpoint' : 'unavailable', reason: complete ? 'normal' : run.controller.signal.aborted ? 'aborted' : 'unavailable',
+        metrics: { completedCount: staged, ok: complete } })
+      run.done(); preparing = false
+    }
   }
   function unavailable(reason: string): FileSearchResult { return { status:'unavailable', hits:[], files:[], sourceIds:[], reasons:[reason], partial:true } }
   function checkedLimit(limit?: number) {
@@ -289,34 +302,49 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       reasons,partial:remaining.length > limit || lexical.hits.length === candidates || vector.length === candidates || reasons.length > 0}
   }
   function searchCached(request: FileSearchRequest): FileSearchResult {
-    if (closed || request.signal?.aborted) return unavailable('cancelled')
-    const plan = beginSearch(request)
-    if (embedder) plan.reasons.push('semantic-not-run')
-    return finishSearch(request, plan, [])
+    const observation = beginDiagnosticOperation(diagnostics, 'memory.recall', { identities: { sessionId: request.contextKey ?? null } })
+    try {
+      if (closed || request.signal?.aborted) { observation.end('cancelled', { reason: 'aborted' }); return unavailable('cancelled') }
+      const plan = beginSearch(request)
+      observation.progress({ stage: 'lexical', metrics: { count: plan.lexical.hits.length } })
+      if (embedder) plan.reasons.push('semantic-not-run')
+      const result = finishSearch(request, plan, [])
+      observation.end('completed', { stage: 'fusion', metrics: { count: result.hits.length, partial: result.partial } })
+      return result
+    } catch (error) { observation.fail(error); throw error }
   }
   async function search(request: FileSearchRequest): Promise<FileSearchResult> {
-    if (closed || request.signal?.aborted) return unavailable('cancelled')
-    const plan = beginSearch(request)
-    const { allowed, candidates, reasons } = plan
-    let vector: MemoryFileHit[] = []
-    if (embedder && allowed.length) {
-      const run = scopedController(request.signal)
-      try {
-        const generation = index.beginVectors(space())
-        const needsPreparation = !index.vectorState().active || index.missingVectors(generation).length > 0
-        const ready = !needsPreparation || await prepareVectors(run.controller.signal)
-        if (ready && !run.controller.signal.aborted && index.vectorState().active) {
-          const output = await encode([{kind:'query',text:request.query}], run.controller.signal)
-          if (output?.[0] && !run.controller.signal.aborted) {
-            const hits = index.vector(output[0], space(), allowed, candidates)
-            if (hits) vector = hits
-            else reasons.push('semantic-unavailable')
-          } else reasons.push('semantic-unavailable')
-        } else reasons.push('semantic-index-incomplete')
-      } catch { reasons.push('semantic-unavailable') }
-      finally { run.done() }
-    }
-    return finishSearch(request, plan, vector)
+    const observation = beginDiagnosticOperation(diagnostics, 'memory.recall', { identities: { sessionId: request.contextKey ?? null } })
+    try {
+      if (closed || request.signal?.aborted) { observation.end('cancelled', { reason: 'aborted' }); return unavailable('cancelled') }
+      const plan = beginSearch(request)
+      observation.progress({ stage: 'lexical', metrics: { count: plan.lexical.hits.length } })
+      const { allowed, candidates, reasons } = plan
+      let vector: MemoryFileHit[] = []
+      if (embedder && allowed.length) {
+        observation.progress({ stage: 'vector', metrics: { count: allowed.length } })
+        const run = scopedController(request.signal)
+        try {
+          const generation = index.beginVectors(space())
+          const needsPreparation = !index.vectorState().active || index.missingVectors(generation).length > 0
+          const ready = !needsPreparation || await prepareVectors(run.controller.signal)
+          if (ready && !run.controller.signal.aborted && index.vectorState().active) {
+            const output = await encode([{kind:'query',text:request.query}], run.controller.signal)
+            if (output?.[0] && !run.controller.signal.aborted) {
+              const hits = index.vector(output[0], space(), allowed, candidates)
+              if (hits) vector = hits
+              else reasons.push('semantic-unavailable')
+            } else reasons.push('semantic-unavailable')
+          } else reasons.push('semantic-index-incomplete')
+        } catch { reasons.push('semantic-unavailable') }
+        finally { run.done() }
+      }
+      observation.progress({ stage: 'fusion', metrics: { count: vector.length } })
+      const result = finishSearch(request, plan, vector)
+      observation.progress({ stage: 'relations', metrics: { count: result.hits.reduce((count, hit) => count + hit.inlinks.visibleCount + hit.outlinks.visibleCount, 0) } })
+      observation.end(request.signal?.aborted ? 'cancelled' : 'completed', { metrics: { count: result.hits.length, partial: result.partial } })
+      return result
+    } catch (error) { observation.fail(error); throw error }
   }
   /** Existing passage vectors only: this path never embeds or enables a different space.
    * The caller applies its mixed-corpus candidate budget after receiving these scores. */
@@ -372,8 +400,21 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const result=expand(file,allowed)
     return {inlinks:result.inlinks,outlinks:result.outlinks,...readSet([file,...result.dependencies].flatMap(item=>current(item,input.allows) ?? []))}
   }
-  return {sync,search,searchCached,read,nodeSearch,relations,prepareVectors,indexedScores,
-    reindex:()=>{ if (closed) throw new Error('memory-file-retrieval-closed'); return index.reindex() },
+  return {sync,search,searchCached,
+    read: (input: Parameters<typeof read>[0]) => observeDiagnosticSync(diagnostics, 'memory.recall', () => read(input), { stage: 'received', identities: { resourceId: input.id } }),
+    nodeSearch: (input: Parameters<typeof nodeSearch>[0]) => observeDiagnosticSync(diagnostics, 'memory.recall', observation => {
+      const result = nodeSearch(input)
+      observation.progress({ stage: 'lexical', metrics: { count: result.nodes.length, partial: result.partial } })
+      return result
+    }, { stage: 'lexical' }),
+    relations: (input: Parameters<typeof relations>[0]) => observeDiagnosticSync(diagnostics, 'memory.recall', observation => {
+      const result = relations(input)
+      observation.progress({ stage: 'relations', metrics: { count: result ? result.inlinks.visibleCount + result.outlinks.visibleCount : 0 } })
+      return result
+    }, { stage: 'relations' }), prepareVectors,indexedScores,
+    reindex:()=>observeDiagnosticSync(diagnostics, 'memory.index', () => {
+      if (closed) throw new Error('memory-file-retrieval-closed'); return index.reindex()
+    }, { stage: 'rebuild' }),
     close(){closed=true;controllers.forEach(controller=>controller.abort());returned.clear()},
   }
 }

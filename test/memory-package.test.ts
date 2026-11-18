@@ -8,6 +8,7 @@ import path from 'node:path'
 import { assembleMemoryPlugin, buildMemoryPlugin } from '../scripts/build-memory-plugin.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import { runOfflineNpm } from './fixtures/offline-npm.ts'
+import { installedRuntimePackages } from './fixtures/package-closure.ts'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -88,7 +89,7 @@ test('npm-packed JS artifact installs offline and its Node API works without the
     return path.join(dir, item.filename)
   }
   const tarball = pack(artifact)
-  const libraries = ['zod', 'yaml', 'marked'].map(name => pack(path.dirname(require.resolve(`${name}/package.json`))))
+  const libraries = installedRuntimePackages(['zod', 'yaml', 'marked', 'pino', 'sonic-boom', 'yazl'], require).map(pack)
   const clean = path.join(dir, 'clean-project')
   mkdirSync(clean)
   writeFileSync(path.join(clean, 'package.json'), JSON.stringify({ private: true, type: 'module' }))

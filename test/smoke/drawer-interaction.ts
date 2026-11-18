@@ -9,8 +9,14 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
   const current = await page.evaluate(() => window.agent.getInfo())
   fs.writeFileSync(path.join(current.cwd, 'drawer-long-preview.txt'), Array.from({ length: 40000 }, (_, index) => `${index}: ${'test text '.repeat(8)}\n`).join(''))
   const main = await application.browserWindow(page)
-  const stream = await main.evaluateHandle((window, context) => {
-    const send = (event: object) => window.webContents.send('agent:event', { ...event, context })
+  const stream = await main.evaluateHandle(() => {
+    // Use the production publication boundary, including its trusted generation/cursor.
+    const pending = new Set<Promise<void>>()
+    const send = (event: object) => {
+      const sent = globalThis.vivaAutomation!.publishEvent(event)
+      pending.add(sent)
+      void sent.finally(() => pending.delete(sent)).catch(() => {})
+    }
     send({ type: 'turn_started' })
     let steps = 0
     const step = () => {
@@ -31,9 +37,9 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
       answer: () => { mode = 'agent_message_chunk' },
       think: () => { mode = 'agent_thought_chunk' },
       step,
-      stop: () => { clearInterval(timer); send({ type: 'turn_end', stopReason: 'end_turn' }) },
+      stop: async () => { clearInterval(timer); send({ type: 'turn_end', stopReason: 'end_turn' }); await Promise.all(pending) },
     }
-  }, { conversationId: current.conversationId ?? null, sessionId: current.sessionId ?? null })
+  })
   const results = []
   let following = { readerKept: false, resumed: false }, filesRetained = false
   try {

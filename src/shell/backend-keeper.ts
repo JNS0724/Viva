@@ -1,4 +1,5 @@
 import { restartDelay } from '../shared/restart-delay.ts'
+import { emitDiagnostic, emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
 
 /**
  * Keeps the backend process running for the shell (docs/system-design.md §8): started once at launch,
@@ -49,10 +50,11 @@ export function createBackendKeeper<B extends { shutdown: () => Promise<void> }>
   }
 
   async function launch(restarted: boolean): Promise<B> {
-    const backend = await spawn((code, signal) => died(backend, code, signal))
+    const backend = await withOperation('startup', () => spawn((code, signal) => died(backend, code, signal)), { stage: 'connecting' })
     current = backend
     await onUp(backend, restarted)
     settle({ backend })
+    emitDiagnostic({ event: 'state.changed', operation: 'process', stage: 'ready', metrics: { attempt: crashes.length } })
     return backend
   }
 
@@ -63,17 +65,18 @@ export function createBackendKeeper<B extends { shutdown: () => Promise<void> }>
     crashes = [...crashes, at]
     const why = signal ?? `exit ${code}`
     const delay = restartDelay(crashes, at)
+    emitDiagnostic({ event: 'process.exit', operation: 'process', reason: 'process_exited', metrics: { statusCode: code ?? -1, attempt: crashes.length } })
     if (delay === null) {
       stopped = `the backend stopped: ${why}`
       settle({ error: new Error(stopped) })
       onGaveUp(why)
       return
     }
-    console.error(`[backend] ended (${why}); starting it again in ${delay / 1000}s`)
+    emitDiagnostic({ event: 'retry.scheduled', operation: 'startup', reason: 'process_exited', metrics: { attempt: crashes.length, retryDelayMs: delay } })
     schedule(() => {
       if (stopped !== null) return
       launch(true).catch((err: Error) => {
-        console.error('[backend] could not start again:', err.message)
+        emitDiagnosticFailure('startup', err, { stage: 'recovering' })
         died(null, null, null)
       })
     }, delay)

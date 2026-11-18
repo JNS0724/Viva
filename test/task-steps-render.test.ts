@@ -24,3 +24,16 @@ test('the earlier steps, asked for, are a disclosure too; another task or foldin
   assert.equal(reduce(all, { type: 'tasks_page_steps' }).tasks.page.allSteps, false)
   assert.equal(reduce(all, { type: 'tasks_page_open', taskId: null }).tasks.page.allSteps, false)
 })
+
+test('view activity opens the current task steps repeatedly without closing or resetting earlier steps', () => {
+  const opened = reduce(initialState, { type: 'tasks_page_open', taskId: null })
+  const expanded = reduce(opened, { type: 'tasks_page_steps', open: true })
+  assert.equal(expanded.tasks.page.steps, true)
+  assert.equal(reduce(expanded, { type: 'tasks_page_steps', open: true }), expanded)
+  const all = reduce(expanded, { type: 'tasks_page_all_steps' })
+  assert.equal(reduce(all, { type: 'tasks_page_steps', open: true }), all)
+  const collapsed = reduce(all, { type: 'tasks_page_steps' })
+  assert.equal(collapsed.tasks.page.steps, false)
+  assert.equal(collapsed.tasks.page.allSteps, false)
+  assert.equal(reduce(collapsed, { type: 'tasks_page_steps', open: true }).tasks.page.steps, true)
+})

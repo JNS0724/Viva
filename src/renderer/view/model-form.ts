@@ -1,7 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import type { ProviderForm } from '../model-actions.ts'
 import { shownDiscovered, type Discovery, type ModelDraft, type ModelRow } from '../model-state.ts'
-import { h, label } from './dom.ts'
+import { composedInput, h, label } from './dom.ts'
 import { icon } from './icons.ts'
 
 /**
@@ -91,7 +91,7 @@ function discoveredPanel(discovery: Discovery, version: string, handlers: Handle
       h('input', {
         class: 'field', name: 'model-discover-query', type: 'search', value: discovery.query, placeholder: t('models.discovery.search'),
         'aria-label': t('models.discovery.search'), autocomplete: 'off', spellcheck: 'false', 'data-version': version,
-        onInput: (event: Event) => handlers.searchDiscovered((event.currentTarget as HTMLInputElement).value),
+        ...composedInput((value) => handlers.searchDiscovered(value)),
       })),
     h('ul', { class: 'model-pick-list' }, shown.slice(0, MAX_SHOWN).map((model) => h('li', null,
       h('label', { class: 'model-pick-item' },

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
+import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { asBound, asDecide, asFast, type Decided } from '../shared/request-routing/channel.ts'
 import type { RequestRuntime } from './request-runtime.ts'
@@ -24,20 +26,26 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
   /** Resolves once the plugin bound the session; rejects when it did not answer in time (the routing plugin is not loaded). */
   function bind(sessionId: string): Promise<void> {
     const id = randomUUID()
-    return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { waiting.delete(id); reject(new Error(t('main.routing-channel.not.bound'))) }, timeoutMs)
+    return withOperation('task.route', () => new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiting.delete(id)
+        emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'unavailable', reason: 'timeout', identities: { requestId: id, sessionId } })
+        reject(new Error(t('main.routing-channel.not.bound')))
+      }, timeoutMs)
       const settle = () => { clearTimeout(timer); waiting.delete(id) }
       waiting.set(id, { resolve: () => { settle(); resolve() }, reject: (error) => { settle(); reject(error) } })
       send({ type: 'routing_bind', version: 1, id, sessionId })
-    })
+    }), { stage: 'connecting', identities: { requestId: id, sessionId } })
   }
 
   async function answer(id: string, decision: { requestId: string, sessionId: string, plan: unknown }) {
     let decided: Decided
     try {
-      decided = await handlers.decide(decision)
+      decided = await withOperation('task.route', () => handlers.decide(decision),
+        { identities: { requestId: decision.requestId, sessionId: decision.sessionId } })
     } catch (error) {
-      console.error('[routing] a decision could not be taken:', error instanceof Error ? error.message : String(error))
+      emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'failed', reason: safeDiagnosticReason(error),
+        identities: { requestId: decision.requestId, sessionId: decision.sessionId } })
       decided = { accepted: false, reason: t('main.routing-channel.not.taken') }
     }
     send({ type: 'routing_decided', version: 1, id, ...decided })
@@ -51,9 +59,11 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
     const fast = asFast(message)
     if (!fast) return
     try {
-      handlers.noteFast({ requestId: fast.requestId, sessionId: fast.sessionId, outcome: fast.outcome, reason: fast.reason, ms: fast.ms })
+      withOperation('task.route', () => handlers.noteFast({ requestId: fast.requestId, sessionId: fast.sessionId, outcome: fast.outcome, reason: fast.reason, ms: fast.ms }),
+        { stage: 'settled', identities: { requestId: fast.requestId, sessionId: fast.sessionId } })
     } catch (error) {
-      console.error('[routing] a fast-lane outcome could not be kept:', error instanceof Error ? error.message : String(error))
+      emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'failed', reason: safeDiagnosticReason(error),
+        identities: { requestId: fast.requestId, sessionId: fast.sessionId } })
     }
   }
 

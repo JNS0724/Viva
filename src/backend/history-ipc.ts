@@ -9,6 +9,7 @@ import { CARRY_TURNS, carriedRecords, type HistoryCarry } from './history-carry.
 import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
+import type { HistorySaveMark } from '../shared/renderer-sync.ts'
 
 /** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */
 export const UNDO_WINDOW_MS = 8000
@@ -45,6 +46,8 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   readNativeTrace?: ReadNativeTrace,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null },
+  validateSave?: (conversationId: string, mark?: HistorySaveMark) => void,
+  historySaved?: (conversationId: string, mark?: HistorySaveMark) => void,
   selectSession: SelectSession,
   chooseExportPath: (defaultName: string) => Promise<string | null>,
   schedule?: (fn: () => void, ms: number) => void,
@@ -75,9 +78,11 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     return view && { ...view, folds: db.foldsOf(view.id) }
   })
 
-  handle('history:save', (messages) => {
+  handle('history:save', (messages, mark) => {
+    deps.validateSave?.(current().id, mark)
     const { mode, model } = agentInfo()
     const saved = db.save({ ...current(), mode, model }, messages)
+    deps.historySaved?.(saved.id, mark)
     setCurrent(saved)
     return summaryOf(saved)
   })

@@ -1,5 +1,6 @@
 import { getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
+import { initialRewind } from '../rewind-state.ts'
 import { traceItems } from '../selectors.ts'
 import { isRecentUnread, pageGroups, pageTask, shownOnPage } from '../tasks-state.ts'
 import { h, keepingInput } from './dom.ts'
@@ -115,7 +116,7 @@ export function threadState(state: State, task: BackgroundTask): ThreadView {
     conversationId: null,
     restored: null,
     restoredTrace: state.restoredTrace,
-    rewind: state.rewind,
+    rewind: initialRewind,
     folds: [],
     proposals: [],
     tasks: { ...state.tasks, list: [] },
@@ -127,6 +128,7 @@ export function threadState(state: State, task: BackgroundTask): ThreadView {
 /** Its question is answered from here for the task, not for the conversation on screen. */
 const scopedHandlers = (handlers: Handlers, task: BackgroundTask): Handlers => ({
   ...handlers,
+  openDrawer: () => handlers.openTaskSteps(),
   pickOption: (id: string, label: string) => handlers.pickTaskOption(task.id, id, label),
   submitAnswer: () => handlers.submitTaskAnswer(task.id),
   skipQuestion: () => handlers.skipTaskQuestion(task.id),

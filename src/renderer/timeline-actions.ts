@@ -14,8 +14,8 @@ export function createTimelineActions({ api, getState, dispatch, scroll }: Pick<
   const anchor = () => getState().earlier.segments[0]?.id ?? getState().conversationId ?? 'current'
 
   async function loadEarlier() {
-    const { earlier } = getState()
-    if (earlier.loading || !earlier.hasMore) return
+    const { earlier, initialization } = getState()
+    if (initialization.status !== 'ready' || earlier.loading || !earlier.hasMore || reachedRecentEnd(earlier)) return
     dispatch({ type: 'earlier_loading' })
     try {
       const page = await api.earlierSegments(anchor())

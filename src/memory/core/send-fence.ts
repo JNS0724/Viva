@@ -1,3 +1,5 @@
+import { guardDiagnosticPort, NO_DIAGNOSTICS } from '../../diagnostics/contracts.ts'
+import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 /** Actual transport attempts, not model calls: retries acquire separate payload-bound permits. */
 export interface SendAdmission { current(): boolean; deadline: number | null }
 export class MemorySendDenied extends Error {
@@ -12,9 +14,11 @@ export interface MemorySendPermit {
   settled(): void
 }
 
-export function createMemorySendFence({ epoch, admit, now = Date.now }: {
-  epoch: string, admit(origin: { session: string, contextGeneration?: number } | { jobId: string }): SendAdmission | null, now?: () => number,
+export function createMemorySendFence({ epoch, admit, now = Date.now, diagnostics: providedDiagnostics = NO_DIAGNOSTICS }: {
+  epoch: string, admit(origin: { session: string, contextGeneration?: number } | { jobId: string }): SendAdmission | null, now?: () => number, diagnostics?: DiagnosticPort,
 }) {
+  const diagnostics = guardDiagnosticPort(providedDiagnostics)
+  let mutation = 0
   const attempts = new Map<string, { controller: AbortController, done: Promise<void>, finish(): void }>()
   let paused = false, closed = false
   let serial: Promise<unknown> = Promise.resolve()
@@ -23,6 +27,7 @@ export function createMemorySendFence({ epoch, admit, now = Date.now }: {
     const admission = admit(origin)
     if (!admission?.current() || admission.deadline !== null && admission.deadline <= now()) throw new MemorySendDenied()
     const controller = new AbortController()
+    const identities = { requestId: id, ownerEpoch: epoch, ...('session' in origin ? { sessionId: origin.session } : { jobId: origin.jobId }) }
     let resolve!: () => void
     const done = new Promise<void>(accept => { resolve = accept })
     const deadline = admission.deadline
@@ -36,8 +41,13 @@ export function createMemorySendFence({ epoch, admit, now = Date.now }: {
       expiry.unref()
     }
     expire()
-    const attempt = { controller, done, finish: () => { if (attempts.get(id) === attempt) { clearTimeout(expiry); attempts.delete(id); resolve() } } }
+    const attempt = { controller, done, finish: () => { if (attempts.get(id) === attempt) {
+      clearTimeout(expiry); attempts.delete(id)
+      diagnostics.emit({ event: 'wait.end', operation: 'memory.transport', stage: 'settled', identities, metrics: { pendingCount: attempts.size } })
+      resolve()
+    } } }
     attempts.set(id, attempt)
+    diagnostics.emit({ event: 'wait.begin', operation: 'memory.transport', stage: 'sending', identities, metrics: { pendingCount: attempts.size } })
     return { id, payload, signal: controller.signal,
       current: () => attempts.get(id) === attempt && !closed && !paused && !controller.signal.aborted && admission.current()
         && (admission.deadline === null || now() < admission.deadline),
@@ -46,17 +56,25 @@ export function createMemorySendFence({ epoch, admit, now = Date.now }: {
   }
   async function drain() {
     const pending = [...attempts.values()]
+    diagnostics.emit({ event: 'wait.begin', operation: 'memory.fence', stage: 'draining', identities: { ownerEpoch: epoch }, metrics: { pendingCount: pending.length } })
+    for (const id of attempts.keys()) diagnostics.emit({ event: 'operation.progress', operation: 'memory.fence', stage: 'waiting', identities: { requestId: id, ownerEpoch: epoch } })
     for (const attempt of pending) attempt.controller.abort(new MemorySendDenied('Memory changed before request body committed'))
     // Aborting is not acknowledgment: only the transport can resolve these promises.
     await Promise.all(pending.map(attempt => attempt.done))
+    diagnostics.emit({ event: 'wait.end', operation: 'memory.fence', stage: 'settled', identities: { ownerEpoch: epoch }, metrics: { pendingCount: attempts.size } })
   }
   function mutate<T>(work: () => Promise<T> | T): Promise<T> {
+    const operationId = `${epoch}:${++mutation}`
+    diagnostics.emit({ event: 'operation.start', operation: 'memory.fence', identities: { operationId }, metrics: { pendingCount: attempts.size } })
     const previous = serial
     // Synchronously close admission, including while queued behind another mutation.
     paused = true
     const operation = previous.catch(() => {}).then(async () => { await drain(); return work() })
     serial = operation
-    return operation.finally(() => { if (serial === operation && !closed) paused = false })
+    return operation.finally(() => {
+      diagnostics.emit({ event: 'operation.end', operation: 'memory.fence', identities: { operationId }, metrics: { pendingCount: attempts.size } })
+      if (serial === operation && !closed) paused = false
+    })
   }
   return { acquire, mutate, pending: () => attempts.size, blocked: () => paused || closed,
     async close() { closed = true; paused = true; await drain(); await serial.catch(() => {}) },

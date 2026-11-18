@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { initializationNotice } from './initialization.ts'
 import { feedCount, feedGroups } from '../feed-state.ts'
 import { isProfileEmpty } from '../personal-state.ts'
 import { catMood, greeting, setupView, statusView } from '../selectors.ts'
@@ -85,6 +86,6 @@ const wantsIntro = (memory: State['memory']) => memory.loaded && memory.onboardi
 /** Before the first message: the maid and a greeting, and a card only when something needs doing first. */
 export function renderHome(container: HTMLElement, state: State, handlers: Handlers, now: number) {
   const setup = setupView(state.info)
-  const card = setup ? setupCard(setup, handlers) : wantsIntro(state.memory) ? introCard(handlers) : todayCard(state, handlers, now)
+  const card = initializationNotice(state, handlers) ?? (setup ? setupCard(setup, handlers) : wantsIntro(state.memory) ? introCard(handlers) : todayCard(state, handlers, now))
   container.replaceChildren(h('div', { class: 'home-simple' }, hero(state, now), card))
 }

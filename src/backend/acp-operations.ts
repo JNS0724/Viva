@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { diagnosticPort } from '../diagnostics/node/context.ts'
+import { beginDiagnosticOperation } from '../diagnostics/operation.ts'
 import type { ClientSideConnection, PromptResponse } from '@agentclientprotocol/sdk'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 import type { createAssistantStream } from './assistant-stream.ts'
@@ -13,7 +15,26 @@ interface Operation {
   prompting: boolean
   context: ConversationContext | null
   stream?: Awaited<ReturnType<Streams['begin']>>
+  observation: ReturnType<typeof beginDiagnosticOperation>
+  firstResponse: boolean
 }
+// Observe only normalized output that is forwarded to the conversation, including a recovered final reply.
+function hasAssistantContent(update: unknown): boolean {
+  const field = (value: unknown, key: string): unknown => value && typeof value === 'object'
+    ? Object.getOwnPropertyDescriptor(value, key)?.value : undefined
+  if (field(update, 'sessionUpdate') !== 'viva_stream') return false
+  const hasText = (block: unknown, typeField: string) => {
+    const type = field(block, typeField)
+    const text = field(block, 'text')
+    return (type === 'text' || type === 'reasoning') && typeof text === 'string' && text.length > 0
+  }
+  const kind = field(update, 'kind')
+  if (kind === 'delta' || kind === 'block') return hasText(update, 'blockType')
+  if (kind !== 'settle') return false
+  const blocks = field(update, 'blocks')
+  return Array.isArray(blocks) && blocks.some(block => hasText(block, 'type'))
+}
+
 /** Owns native prompt identities and their streams, never TaskRuntime admission/status or process lifetime. */
 export function createAcpOperations({ connection, streams, cancelPermissions, streamUpdate, allowSession = () => true }: {
   connection: () => Pick<ClientSideConnection, 'prompt' | 'cancel'>
@@ -36,11 +57,16 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     onError: (error: unknown) => void
   }) {
     if (closed) return
-    const operation: Operation = { id: randomUUID(), released: false, prompting: false, context: context ? { ...context } : null, foreground: userTurn }
+    const id = randomUUID()
+    const operation: Operation = { id, released: false, prompting: false, context: context ? { ...context } : null, foreground: userTurn, firstResponse: false,
+      observation: beginDiagnosticOperation(diagnosticPort, 'conversation.send', { stage: 'queued',
+        identities: { operationId: id, sessionId, conversationId: context?.conversationId } }) }
     running.set(sessionId, operation)
+    let outcome: 'completed' | 'cancelled' = 'cancelled'
     try {
       if (!sessionId) throw new Error('no session is open')
       if (prepare) await prepare()
+      operation.observation.progress({ stage: 'injected' })
       if (!current(sessionId, operation)) return
       operation.stream = await streams.begin(sessionId)
       if (!current(sessionId, operation)) { streams.finish(operation.stream); return }
@@ -52,13 +78,16 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
         return
       }
       operation.prompting = true
+      operation.observation.progress({ stage: 'sending' })
       const sent = connection().prompt({ sessionId, prompt })
       onStart?.()
       const response = await sent
+      outcome = response.stopReason === 'cancelled' ? 'cancelled' : 'completed'
       if (!current(sessionId, operation)) return
       const finalReply = await streams.complete(operation.stream)
       if (current(sessionId, operation)) onEnd(response, finalReply)
     } catch (error) {
+      operation.observation.fail(error)
       if (!current(sessionId, operation)) return
       if (operation.stream) {
         try { await streams.complete(operation.stream) }
@@ -66,6 +95,8 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       }
       if (current(sessionId, operation)) onError(error)
     } finally {
+      const late = operation.prompting && operation.released
+      operation.observation.end(late ? 'late_completed' : outcome, { stage: 'settled', ...(late ? { reason: 'late' as const } : {}) })
       if (running.get(sessionId) === operation) running.delete(sessionId)
     }
   }
@@ -74,6 +105,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     const operation = running.get(sessionId)
     if (!operation || operation.released || operation.prompting) return false
     operation.released = true
+    operation.observation.progress({ stage: 'paused', reason: 'aborted' })
     if (operation.stream) streams.finish(operation.stream)
     onCancelled()
     return true
@@ -88,6 +120,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       cancel: () => connection().cancel({ sessionId }),
       stillRunning: () => current(sessionId, operation) && !closed,
       giveUp: () => {
+        operation.observation.progress({ stage: 'waiting', reason: 'timeout' })
         if (operation.stream) streams.finish(operation.stream)
         operation.released = true
         onForced()
@@ -113,14 +146,25 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     },
     forwardStream(id: string, update: unknown) {
       const operation = running.get(id)
-      if (operation && !operation.released) streamUpdate(id, update, operation.context)
+      if (operation && !operation.released) {
+        try {
+          if (!operation.firstResponse && hasAssistantContent(update)) {
+            operation.firstResponse = true
+            operation.observation.progress({ stage: 'first-response' })
+          }
+        } catch { /* Diagnostic inspection cannot intercept a stream update. */ }
+        streamUpdate(id, update, operation.context)
+      }
     },
     count: (include: (id: string) => boolean) => [...running].filter(([id, operation]) => id !== null && !operation.released && include(id)).length,
     dispose() {
       if (closed) return
       streams.close()
       closed = true
-      for (const operation of running.values()) operation.released = true
+      for (const operation of running.values()) {
+        operation.released = true
+        operation.observation.progress({ stage: 'closed', reason: 'process_exited' })
+      }
       running.clear()
     },
   }

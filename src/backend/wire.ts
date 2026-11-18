@@ -17,6 +17,9 @@ export const TOKEN_HEADER = 'authorization'
 export const bearer = (token: string): string => `Bearer ${token}`
 /** The order the shell made its calls in, from 1 (rpc-server.ts inOrder). */
 export const SEQ_HEADER = 'x-viva-seq'
+/** Shared optional-diagnostic budget; the original receiver body limit is unchanged. */
+/** Existing complete JSON body limit; history:save is the largest caller. */
+export const MAX_JSON_BYTES = 32 * 1024 * 1024
 
 /** What of the desktop the backend reads without waiting: kept in step by the shell (`POST /control/mirror`). */
 export interface Mirror {
@@ -67,7 +70,7 @@ export interface HostCall { id: number | null, method: HostMethod, args: unknown
  * `mark` on an answer from the backend: the last host call it had made when it answered. The shell runs the host calls
  * up to it first (backend-client.ts), so a page never has an answer before what the backend pushed ahead of it.
  */
-export type Answer = { ok: true, value: unknown, mark?: number } | { ok: false, error: string, mark?: number }
+export type Answer = { ok: true, value: unknown, mark?: number } | { ok: false, error: string, code?: 'timeout' | 'busy' | 'unavailable', mark?: number }
 
 /** Bytes in a JSON body: by id once uploaded (`$blob`), or inline in an answer (`$bytes`, base64). */
 type BlobRef = { $blob: string }

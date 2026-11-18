@@ -9,7 +9,10 @@ import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIden
   MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
 /** Trusted parent-process adapter protocol. This is not available to model tools. */
-export const MEMORY_HOST_PROTOCOL = 2
+export const MEMORY_HOST_PROTOCOL = 3
+/** Business lifetime metadata, never part of the optional diagnostic envelope. */
+export const memoryHostRead = z.strictObject({ readBatchId: z.uuid(), budgetMs: z.number().positive().max(10_000) })
+export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile'])
 export type MemoryProject = { kind: 'project', id: string }
 export type MemoryHistoryOccurrence = { segmentId: string, role: string, text: string, sourceId?: string | null, sessionId?: string | null }
 export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>

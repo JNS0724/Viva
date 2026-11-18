@@ -1,0 +1,49 @@
+# Complete non-package source acceptance. daily.yml and release.yml combine this with package.yml.
+name: full
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:source
+      - run: npm run smoke
+        env:
+          VIVA_SMOKE_RUN: full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - run: npm run smoke:perf
+        env:
+          VIVA_SMOKE_RUN: full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            smoke/full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/test-results
+            smoke/full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/report
+            smoke/full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/junit.xml
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            smoke/full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/test-results
+            smoke/full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/report
+            smoke/full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/junit.xml
