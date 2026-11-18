@@ -77,8 +77,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "4ad4d4b4d6245db22e5778ac46e3f76126bc30f85c3ded85408f08d172292617",
-      "zhHash": "17cbdadfb48600ba0d2f2ba2a897bcf385d81221a839ab8b3665dda6e0804043"
+      "enHash": "6f18b661071a5593b978667d09df1a70bf9d71bbe9d93d57444a4323b1ab1e02",
+      "zhHash": "799a0d60951770e3c3a707b17544d1c1f6d962ecadacf95add72ba225fb459db"
     },
     {
       "en": "docs/architecture-health.md",
@@ -89,8 +89,8 @@
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "e0d47f83db34cfe5d7ff807a540a88f7c2f849a1582209fdc324b6449c925dd4",
-      "zhHash": "387740a148e9b9d57c87bfbdcff7889cde60ac6d60feb6a717cca8d5cc17e966"
+      "enHash": "275007835cbc7242aa3c4d7f5334f3d0c9aec2e72153545b8e41736de11cb3e1",
+      "zhHash": "c490a048b4cf7aa526ca90ed321bf2db9b8acbd71e516a10884e452aa19e44f3"
     },
     {
       "en": "docs/agent-routing-feasibility.md",
@@ -107,8 +107,8 @@
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "e8f6ead296a2dc24557e1219b8bf6ae8fd2db17c12333d5d5b9fa3f03f24c15a",
-      "zhHash": "329c7851a80e8389b8e2594303b2af717408b813eae3abf28932ec0008a2e796"
+      "enHash": "2b8b756678c4db72a731e54bb065f3a453571c8183814a15d6fe51e711e1a7d2",
+      "zhHash": "04e76e0e35886d866d000473d4ef991b3dc8a425cc2def676751d83723ba796c"
     },
     {
       "en": "docs/logging-design.md",

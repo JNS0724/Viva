@@ -333,7 +333,7 @@ test('Viva IPC forwards a versioned management command and rejects caller-suppli
   assert.equal((await f.client.readFile(f.identity))?.enabled, false)
 })
 
-test('file profiles use current scoped, undisputed digest evidence rather than legacy facts', async t => {
+test('file profiles use scoped, enabled digests after retiring old Dream questions', async t => {
   const f = await fixture(t)
   const add = (sourceId: string, path: string, text: string) => {
     const source = f.store.readSource(sourceId)!
@@ -361,11 +361,12 @@ test('file profiles use current scoped, undisputed digest evidence rather than l
   assert.equal((await f.client.fileProfile(project)).user.length, 1)
 
   const source = f.store.readSource(projectSource)!, path = 'digest/personal/project-release.md'
-  f.documents.defer({ operationId: 'test-pending-profile', workspace: projectFile.workspace,
+  f.documents.defer({ operationId: 'dream:pre-upgrade-profile', workspace: projectFile.workspace,
     unit: { name: 'Project releases', bucket: 'personal', summary: projectText, paths: [path] },
     reason: 'The rollout environment is disputed.', sources: [{ id: source.id, token: memorySourceToken(source) }],
     reads: [f.documents.read(projectFile.workspace, path)!], files: [], readPolicies: [] })
-  assert.deepEqual((await f.client.fileProfile(project)).project, [])
+  await f.reopen()
+  assert.deepEqual((await f.client.fileProfile(project)).project, [{ identity: projectFile, text: projectText }])
   assert.equal((await f.client.fileProfile(project)).user.length, 1)
 })
 

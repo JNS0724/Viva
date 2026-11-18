@@ -9,7 +9,6 @@ function setup() {
   const store = openMemoryStore(':memory:')
   let valid = true
   let runtimeBusy = false
-  let provisional = true
   let activeProject: MemoryProject | undefined = { kind: 'project', id: 'project-a' }
   const projects = new Map<string, string>()
   const runtime: MemoryCoordinationRuntime = {
@@ -20,19 +19,17 @@ function setup() {
     sessionProject: session => projects.get(session),
     recordSessionProject: (session, project) => { projects.set(session, project) },
     projectAllows: (evidence, project) => !evidence.projects?.some(id => id !== project?.id),
-    provisionalReadsCurrent: () => provisional,
     computeAdmission: () => ({ current: () => valid, deadline: 250 }),
   }
   let owner: MemoryCoordinationRuntime | undefined = runtime
   const dispatch = createMemoryDispatch(store, () => valid)
   let dispatcher: MemoryCoordinationDispatch = dispatch
-  const coordinator = createMemoryCoordination({ runtime: () => owner, dispatch: () => dispatcher, now: () => 100 })
+  const coordinator = createMemoryCoordination({ runtime: () => owner, dispatch: () => dispatcher })
   return { store, dispatch, coordinator, runtime,
     project: () => activeProject,
     setProject: (project: MemoryProject | undefined) => { activeProject = project },
     setValid: (value: boolean) => { valid = value },
     setRuntimeBusy: (value: boolean) => { runtimeBusy = value },
-    setProvisional: (value: boolean) => { provisional = value },
     setOwner: (value: MemoryCoordinationRuntime | undefined) => { owner = value },
     setDispatch: (value: MemoryCoordinationDispatch) => { dispatcher = value },
   }
@@ -81,7 +78,7 @@ test('failed host preparation and failed writes release mutation ownership witho
   } finally { store.close() }
 })
 
-test('project binding and provisional dependencies constrain admission and outstanding leases', () => {
+test('project binding constrains admission and outstanding leases', () => {
   const fixture = setup()
   const { coordinator, dispatch, store } = fixture
   try {
@@ -93,8 +90,7 @@ test('project binding and provisional dependencies constrain admission and outst
     assert.equal(coordinator.stale('session', fixture.project()), true)
     assert.throws(dispatch.validateCommit, MemoryDispatchConflict)
     coordinator.endDispatch('request')
-    fixture.setProvisional(false)
-    assert.equal(coordinator.beginSession('next', 'new-session', fixture.project(), fixture.project), false)
+    assert.equal(coordinator.beginSession('next', 'session', fixture.project(), fixture.project), false)
   } finally { store.close() }
 })
 

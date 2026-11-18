@@ -112,6 +112,7 @@ export interface MemoryDocuments {
   workspaces(): string[]
   deleteFile(workspace: string, id: string, expectedUsageVersion: number): number
   registered(workspace: string): Array<DocumentReadRef & { workspace: string, path: string, sources: DocumentSourceRef[], state: 'active' | 'disabled' | 'forgotten' }>
+  settleInterruptedTagAttempts(): void
   recordTagAttempt(input: DocumentTagAttempt): void
   tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
   sourceRestrictions(workspace: string): DocumentSourceRef[]
@@ -141,6 +142,8 @@ export interface MemoryDocuments {
   supersessions(workspace: string, path: string, options?: { includeEvidence?: boolean }): DocumentSupersession[]
   defer(input: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork
   deferred(workspace: string, operationId: string): DeferredDocumentWork | null
+  retireClarifications(): void
+  retiredClarification(workspace: string, operationId: string): boolean
   pending(workspace: string): DeferredDocumentWork[]
   /** Canonical replies derived from this exact evidence, including resolved work. */
   dependentAnswerIds(sourceId: string, cut?: DocumentSourceCut): string[]

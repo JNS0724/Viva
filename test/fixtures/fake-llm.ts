@@ -205,17 +205,6 @@ function afterTool(request: Request, messages: readonly Message[], result: Part)
     return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: `配置结果：${resultText(result)}。${CITY_QUESTION.question}` }
   }
   if (use?.name === 'viva_mcp_add') return { text: `配置结果：${resultText(result)}` }
-  if (use?.name === 'memory_recall') {
-    const clarification = objectOf(memoryResult(result)?.clarification)
-    if (typeof clarification?.ref === 'string') return { tool: { name: 'memory_clarify', input: { ref: clarification.ref } } }
-  }
-  if (use?.name === 'memory_clarify') {
-    const reply = memoryResult(result), answer = objectOf(reply?.answer)
-    const first = Array.isArray(answer?.answers) ? objectOf(answer.answers[0]) : null
-    const selected = Array.isArray(first?.selected) ? first.selected[0] : null
-    const value = typeof first?.custom === 'string' ? first.custom : typeof selected === 'string' ? selected : null
-    return { text: reply?.status === 'answered' && value ? `这次采用：${value}` : '没有获得可用的澄清回答。' }
-  }
   const output = JSON.stringify(result.content)
   if (use?.name !== 'memory_remember') return { text: `查到了：${output}` }
   return { text: memoryResult(result)?.status === 'accepted' && typeof use.input?.text === 'string'

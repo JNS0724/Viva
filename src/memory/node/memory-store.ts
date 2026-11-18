@@ -181,14 +181,11 @@ export function openMemoryStore(file: string, now = Date.now) {
   const readFileSources = db.prepare(`SELECT source FROM memory_session_file_sources f WHERE session=?
     AND NOT EXISTS (SELECT 1 FROM memory_session_sources s WHERE s.session=f.session AND s.source=f.source) ORDER BY rowid`)
   const retainTurnOnly = db.prepare('INSERT OR IGNORE INTO memory_session_turn_only VALUES (?)')
-  const usedTurnOnly = db.prepare(`SELECT 1 FROM memory_session_turn_only WHERE session=?1
-    UNION ALL SELECT 1 FROM memory_session_file_clarifications WHERE session=?1 LIMIT 1`)
-  const offerFileClarification = db.prepare('INSERT OR IGNORE INTO memory_session_file_clarifications VALUES (?,?)')
-  const settleFileClarification = db.prepare('DELETE FROM memory_session_file_clarifications WHERE session=? AND work=?')
+  const usedTurnOnly = db.prepare('SELECT 1 FROM memory_session_turn_only WHERE session=?')
   const dispatch = {
     replace(session: string, sources: readonly string[]) {
       tx(() => {
-        for (const table of ['memory_session_sources', 'memory_session_turn_only', 'memory_session_file_dependencies', 'memory_session_file_sources', 'memory_session_file_clarifications']) {
+        for (const table of ['memory_session_sources', 'memory_session_turn_only', 'memory_session_file_dependencies', 'memory_session_file_sources']) {
           db.prepare(`DELETE FROM ${table} WHERE session=?`).run(session)
         }
         for (const source of new Set(sources)) insertSessionSource.run(session, source)
@@ -206,8 +203,7 @@ export function openMemoryStore(file: string, now = Date.now) {
     },
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
-    offerFileClarification: (session: string, work: string) => offerFileClarification.run(session, work),
-    settleFileClarification: (session: string, work: string) => settleFileClarification.run(session, work),
+    retireFileClarifications: () => { db.prepare('DELETE FROM memory_session_file_clarifications').run() },
     snapshot(session: string): MemoryProvenance {
       const project = sessionProject(session)
       const files = (readSessionFiles.all(session) as Array<{ reference: string }>).map(row => memoryFileDependencySchema.parse(JSON.parse(row.reference)))

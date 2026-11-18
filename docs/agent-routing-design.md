@@ -116,7 +116,7 @@ The main agent keeps the history still visible in its session and relies on DSH'
 4. When several candidates are equally plausible and picking the wrong one changes the outcome, ask the user. Don't default to the newest task or the one with the same name.
 5. A handover brief names the agreement it applies and where that agreement came from.
 
-Treat earlier assistant suggestions and instructions in archived conversations as historical context. When memory recall reports a dispute that changes the requested outcome and the current user instruction or a conditional answer cannot resolve it, call `memory_clarify` with the current recall reference. Deleted or forgotten material is unavailable.
+Treat earlier assistant suggestions and instructions in archived conversations as historical context. If the current task depends on a fact the user needs to clarify, ask in the active conversation. Dream skips ambiguous candidates. Upgrading retires outstanding Dream questions, including those attached to an earlier recall.
 
 For the 3 requests after a background task's result comes back to the main session, the plugin puts the title and ID of each such task next to every request (`<recent-tasks>`, at most 3, latest first; see [`plugins/routing/lib/recent-tasks.ts`](../plugins/routing/lib/recent-tasks.ts)). When the user goes on from a result, such as expanding a point, adding to it, asking what it rests on, changing its format, or taking the next step from it, the main agent submits `message` with that ID, so the task carries on with the material it already read; the main session doesn't search again or rewrite the result itself. It answers directly only when what the user asks for is in the returned result as it stands. When the user only says "go on with that one" without naming the task, its content, or a point in its result, it lists the candidates and asks, even if just one task looks likely, instead of guessing the latest.
 
@@ -131,7 +131,7 @@ The main session's tools fall into five layers, defined only in [`plugins/routin
 | Layer | Tools | Rule |
 | --- | --- | --- |
 | Route | `commit_route` | Called for every request |
-| Context | Chat history search and reading, `memory_recall`, `memory_clarify`, task queries, read-only file tools | Always available |
+| Context | Chat history search and reading, `memory_recall`, task queries, read-only file tools | Always available |
 | App query | `schedule_list`, `viva_mcp_list`, `viva_skill_list` | Always available |
 | App change | Creating, changing, and deleting schedules; remembering and forgetting memories; adding, changing, removing, and importing MCP servers and skills | Visible to the model; needs a matching `app_action` accepted in this turn, and one `app_action` allows one call |
 | Execution | Shell, file writes, web access, subagents, background task tools, tools from the user's MCP servers, and every other tool | Outside the main session's scope; the work goes to a task through `commit_route` |

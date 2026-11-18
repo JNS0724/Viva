@@ -15,6 +15,7 @@ import type { Locator, Page } from '@playwright/test'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
@@ -36,9 +37,9 @@ const workspace = path.join(temporary, 'workspace')
 const installed = path.join(temporary, 'installed')
 for (const dir of [output, home, workspace, installed]) mkdirSync(dir, { recursive: true })
 const marker = '周报每周五下班前提交，保留项目决定和依据。'
-const erased = '银杏编号被指定移出独立会话'
+const originalFact = '银杏编号由管理员保存'
 const kept = '白茶依然放在正方形桌上'
-const original = `${erased}，${kept}。`
+const original = `${originalFact}，${kept}。`
 const sessionsRoot = path.join(home, 'sessions')
 const storageRoot = path.join(home, 'storages')
 const redact = (text: string) => text.replace(/https?:\/\/[^\s\x1b]+/gu, value => {
@@ -95,18 +96,17 @@ async function prepareStandaloneForget() {
         return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
       } })
       const created = documents.commit({ operationId: randomUUID(), workspace, path: 'digest/wiki/standalone-erasure-probe.md',
-        expectedRevision: null, action: 'CREATE', markdown: erased, sources: [{ id: source.id, token: memorySourceToken(source),
-          spans: [{ start: 0, end: erased.length }] }], reads: [] })
+        expectedRevision: null, action: 'CREATE', markdown: originalFact, sources: [{ id: source.id, token: memorySourceToken(source),
+          spans: [{ start: 0, end: originalFact.length }] }], reads: [] })
       assert.ok(created?.documentId)
       const identity = { kind: 'digest' as const, workspace, id: created.documentId }
       const file = await owner.handleHost('readFile', { args: [identity] }) as HostMemoryApi['readFile']['output']
       assert.ok(file)
       const operationId = randomUUID()
       await owner.handleHost('forgetFile', { args: [{ operationId, identity, version: file.version }] })
-      const plan = store.db.prepare('SELECT payload FROM owner_file_native_erasures WHERE operation=?').get(operationId)
-      assert.ok(plan && JSON.parse(String(plan.payload)).originals.length, 'owner must authenticate the exact native original before shutdown')
-      assert.ok((await nativeMessages(source.session)).includes(original), 'the old physical native log still contains the target')
-      return { operationId, session: source.session }
+      assert.equal(await owner.handleHost('readFile', { args: [identity] }), null)
+      assert.equal(store.readSource(source.id)?.text, original)
+      return source.session
     } finally { store.close() }
   } finally { await owner.close() }
 }
@@ -241,7 +241,7 @@ try {
     assert.ok(id)
     assert.ok(collectMarkdown(dataRoot).some(file => readFileSync(file, 'utf8').includes(explicit)))
     assert.ok(!JSON.stringify(llm.requests).includes(explicit), 'the native command does not send its input to the model')
-    await send(page, `/memory-forget ${id}`, /Memory (?:is no longer used\. Copy cleanup is pending|copies have been erased)\./u)
+    await send(page, `/memory-forget ${id}`, /Memory file deleted\./u)
     await until(() => !collectMarkdown(dataRoot).some(file => readFileSync(file, 'utf8').includes(explicit)), 'native forget clears Markdown')
     assert.ok(!JSON.stringify(llm.requests).includes(explicit))
     await page.screenshot({ path: path.join(output, 'web-file-command-receipts.png'), fullPage: true })
@@ -269,31 +269,16 @@ try {
   const requestText = JSON.stringify(llm.requests)
   assert.ok(requestText.includes('memory_remember') && requestText.includes('memory_recall'), 'native tools reach the model')
   assert.ok(llm.requests.some(request => JSON.stringify(request).includes('<about-user>') && JSON.stringify(request).includes(marker)), 'saved memory reaches an injected model request')
-  await send(page, original, `收到：「${erased}`)
+  await send(page, original, `收到：「${originalFact}`)
   const beforeRestart = collectMarkdown(dataRoot).map(file => path.relative(dataRoot, file))
   await page.screenshot({ path: path.join(output, 'web-before-restart.png'), fullPage: true })
   await page.close()
   await stop(proc)
   proc = undefined
-  const forget = await prepareStandaloneForget()
+  const originalSession = await prepareStandaloneForget()
   page = await launch()
-  if (forget) {
-    await until(() => {
-      const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
-      try {
-        return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name='owner_native_original_completed'").get())
-          && Boolean(db.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(forget.operationId))
-      } finally { db.close() }
-    }, 'the packed provider commits its cold original receipt')
-    const persisted = await nativeMessages(forget.session)
-    assert.ok(!persisted.some(text => text.includes(erased)), 'the replacement provider opens only after physical originals are erased')
-    assert.ok(persisted.some(text => text === ' '.repeat(erased.length) + original.slice(erased.length)), 'the disjoint part of the same native message survives unchanged')
-  }
-  const postRestart = llm.requests.length
+  assert.ok((await nativeMessages(originalSession)).includes(original), 'file deletion preserves the native original across restart')
   await send(page, '查一下 周报', '查到了：')
-  assert.ok(!forget || llm.requests.slice(postRestart).every(request => !JSON.stringify(request).includes(erased)),
-    'the first restarted model requests receive no erased original')
-
   assert.ok((await page.locator('body').innerText()).includes(marker), 'memory survives ordinary Node DSH restart')
   await page.screenshot({ path: path.join(output, 'web-after-restart.png'), fullPage: true })
 
@@ -332,73 +317,35 @@ try {
     } finally { db.close() }
   }
   page = await launch()
-  let deferredId = ''
   const readDream = <T>(read: (db: DatabaseSync) => T): T => {
     const db = new DatabaseSync(path.join(dataRoot, 'memory.db'), { readOnly: true })
     try { return read(db) } finally { db.close() }
   }
-  await until(() => readDream(db => {
-    const row = db.prepare("SELECT operation FROM memory_document_deferred WHERE state='pending_clarification' AND payload LIKE ?")
-      .get(`%${venue.topic}%`)
-    deferredId = typeof row?.operation === 'string' ? row.operation : ''
-    return Boolean(deferredId)
-  }), 'real Extract and Integrate defer an ambiguous venue')
-  assert.deepEqual(venueModel.report().stages, ['extract', 'integrate:deferred'])
-  assert.equal(await page.getByPlaceholder('Type your answer', { exact: true }).count(), 0,
-    'the background dream never asks the user')
-  const queryStart = llm.requests.length
-  await send(page, '帮我确认窗口对齐就好', '收到：「帮我确认窗口对齐就好')
-  assert.equal(await page.getByPlaceholder('Type your answer', { exact: true }).count(), 0)
-  assert.ok(llm.requests.slice(queryStart).every(request => {
-    const input = request as { messages?: Array<{ role?: string, content?: unknown }> }
-    return !input.messages?.some(message => message.role === 'assistant' && Array.isArray(message.content)
-      && message.content.some((part: unknown) => part && typeof part === 'object' && 'type' in part && part.type === 'tool_use'
-        && 'name' in part && part.name === 'memory_clarify'))
-  }),
-    'an unrelated turn does not initiate a native clarification call')
-  await page.screenshot({ path: path.join(output, 'web-dream-deferred.png'), fullPage: true })
-  const questionEditor = page.locator('textarea,[contenteditable=true]').first()
-  await questionEditor.fill(`查一下 ${venue.topic}`)
-  await page.getByRole('button', { name: 'Send message', exact: true }).click()
-  const answer = page.getByPlaceholder('Type your answer', { exact: true })
-  await answer.waitFor({ state: 'visible', timeout: 30_000 })
-  writeFileSync(path.join(output, 'web-dream-question-aria.yml'), await page.locator('body').ariaSnapshot())
-  await page.screenshot({ path: path.join(output, 'web-dream-question.png'), fullPage: true })
-  await answer.fill(venue.answer)
-  await page.getByRole('button', { name: 'Submit', exact: true }).click()
-  await page.getByText(venue.completed, { exact: false }).last().waitFor({ state: 'visible', timeout: 30_000 })
-  await until(() => readDream(db => db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(deferredId)?.state === 'resolved'),
-    'the genuine Web answer resolves the original deferred work')
-  await until(() => collectMarkdown(dataRoot).some(file => file.endsWith(venue.target.split('/').join(path.sep))
-    && readFileSync(file, 'utf8').includes(venue.summary) && readFileSync(file, 'utf8').includes('memory_tags:')), 'the verified and tagged digest is committed')
+  const inputNotes = () => readDream(db => db.prepare('SELECT path,revision,processed FROM memory_daily_notes').all()
+    .filter(note => venueDaily().some(file => file.endsWith(String(note.path).split('/').join(path.sep)))))
+  await until(() => {
+    const notes = inputNotes()
+    return venueModel.report().stages.includes('tag') && notes.length > 0 && notes.every(note => note.revision === note.processed)
+  }, 'the skipped and accepted candidates reach the durable input checkpoint')
+  const [archive] = collectMarkdown(dataRoot).filter(file => file.endsWith(venue.target.split('/').join(path.sep)))
+  assert.ok(archive)
+  const digest = readFileSync(archive, 'utf8')
+  assert.ok(digest.includes(venue.summary) && digest.includes('memory_tags:'))
+  assert.equal(parseMemoryDocument(digest).metadata.description, venue.summary)
   const dream = venueModel.report()
-  assert.deepEqual(dream.stages, ['extract', 'integrate:deferred', 'integrate:resumed', 'verify', 'tag'],
-    'the same dormant work resumes without another Extract')
+  assert.deepEqual(dream.stages, ['extract', 'integrate:skip', 'integrate:create', 'tag'])
   assert.deepEqual(new Set(dream.tools), new Set(['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update']))
-  await until(() => readDream(db => {
-    const notes = db.prepare('SELECT path,revision,processed FROM memory_daily_notes').all()
-      .filter(note => venueDaily().some(file => file.endsWith(String(note.path).split('/').join(path.sep))))
-    return notes.length > 0 && notes.every(note => note.revision === note.processed)
-  }), 'the dream finalizes its durable input checkpoints after TAG publication')
-  const checkpoint = readDream(db => {
-    const receipt = db.prepare('SELECT receipt FROM memory_document_receipts WHERE operation=?').get(deferredId)
-    assert.ok(receipt, 'the original deferred operation owns the committed document receipt')
-    const saved = JSON.parse(String(receipt.receipt)) as { path: string }
-    assert.equal(saved.path, venue.target)
-    const notes = db.prepare('SELECT path,revision,processed FROM memory_daily_notes').all()
-      .filter(note => venueDaily().some(file => file.endsWith(String(note.path).split('/').join(path.sep))))
-    assert.ok(notes.length && notes.every(note => note.revision === note.processed), 'successful dream checkpoints all of its real daily inputs')
-    assert.equal(db.prepare('SELECT count(*) n FROM memory_document_answers WHERE deferred=?').get(deferredId)?.n, 1,
-      'the native Web answer is admitted once')
-    return { operationId: deferredId, notes }
-  })
-  await page.screenshot({ path: path.join(output, 'web-dream-resolved.png'), fullPage: true })
+  assert.equal(readDream(db => db.prepare("SELECT count(*) AS n FROM memory_document_deferred WHERE state IN ('pending_clarification','ready')").get()?.n), 0)
+  await send(page, `查一下 ${venue.topic}`, '查到了：')
+  assert.equal(await page.getByPlaceholder('Type your answer', { exact: true }).count(), 0)
+  const checkpoint = inputNotes()
+  await page.screenshot({ path: path.join(output, 'web-dream-completed.png'), fullPage: true })
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
     ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
-    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, coldPhysicalOriginals: Boolean(forget), restart: true,
-    dream: { stages: dream.stages, tools: dream.tools, canonicalSources: dream.canonicalSources.length, checkpoint },
-    nativeWebClarification: true, unrelatedTurnDoesNotAsk: true, modelRequests: llm.requests.length, pageErrors: errors }
+    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, fileDeletionPreservesChat: true, restart: true,
+    dream: { stages: dream.stages, tools: dream.tools, checkpoint },
+    relatedRecallDoesNotAsk: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
   passed = true

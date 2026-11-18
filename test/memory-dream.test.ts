@@ -61,14 +61,18 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
   const addSource = (text: string, props: Partial<MemorySource> = {}) => noteSource(store, {
     text, hash: memoryHash(text), length: text.length, at: now, timezone: 'UTC', ...props,
   })
-  const add = (text: string, title = 'Report', props: Partial<MemorySource> = {}) => {
+  const add = (text: string, title = 'Report', props: Partial<MemorySource> = {}, spans?: Array<{ start: number, end: number }>) => {
     const original = addSource(text, { session: randomUUID(), ...props })
     const key = notes.add(original.session!, '2026-11-16', [original], '')!
-    assert(notes.commit(key, notes.pending(key), { status: 'write', title, markdown: text }, 1, now, notes.snapshot([original.id]), undefined))
+    assert(notes.commit(key, notes.pending(key), { status: 'write', title, markdown: text }, 1, now, notes.snapshot([original.id]).map(ref => spans ? { ...ref, spans } : ref), undefined))
     return { source: original, key, note: notes.read(key)! }
   }
+  const seedDigest = (note: ReturnType<typeof add>['note'], name = 'Report') =>
+    documents.commit({ operationId: randomUUID(), workspace: note.workspace, path: `digest/personal/${name}.md`, action: 'CREATE', expectedRevision: null,
+      markdown: formatMemoryDocument({ metadata: { name, description: 'Original arrangement' }, body: 'Original arrangement.' }),
+      sources: notes.references(note.key), reads: [] })
   const run = async () => { jobs.run(); await effects.wake() }
-  return { store, notes, documents, requests, addSource, add, run, defaultModel,
+  return { store, notes, documents, requests, addSource, add, seedDigest, run, defaultModel,
     setFixture(options: Parameters<typeof dreamModelStep>[2]) { fixtureOptions = options },
     setModel(next: DreamCalculate) { model = next },
     beforeMutation(next: () => void) { beforeMutation = next }, afterCommit(next: (receipt: DocumentReceipt) => void) { afterCommit = next },
@@ -119,12 +123,88 @@ test('timeout on a later batch defers remaining batches and workspaces without l
   assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
 })
 
-for (const stage of ['integrate', 'verify', 'tag'] as const) {
+for (const reason of ['error', 'call-failed', 'timeout', 'max-tokens'] as const) {
+  test(`extract stops after one failed multi-note request for ${reason}`, async t => {
+    const h = harness(t)
+    h.add('One'); h.add('Two')
+    h.add('Another workspace', 'Three', { project: { kind: 'project', id: 'other' } })
+    h.setModel(async () => { throw new MemoryComputeError(reason) })
+    await h.run()
+    assert.equal(h.requests.length, 1)
+    assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 3)
+    h.restart()
+    h.setModel(async () => '{"units":[]}')
+    await h.retry()
+    assert.equal(h.requests.length, 3)
+    assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+  })
+}
+
+test('extract splits before the provider when the actual JSON exceeds the batch byte budget', async t => {
+  const budget = 600, h = harness(t, { budget })
+  const first = h.add('Plan', 'First'), second = h.add('Plan', 'Second')
+  assert.ok(Buffer.byteLength(first.note.document + second.note.document) <= budget)
+  const sizes: number[] = []
+  h.setModel(async request => {
+    const input = request.input as { notes: unknown[] }
+    assert.ok(Buffer.byteLength(JSON.stringify(input)) <= budget)
+    sizes.push(input.notes.length)
+    return '{"units":[]}'
+  })
+  await h.run()
+  assert.deepEqual(sizes, [1, 1])
+  assert.equal(h.notes.changed(first.note.day, first.note.day).length, 0)
+})
+
+test('a large single note still reaches the provider once with the truncated markdown', async t => {
+  const h = harness(t, { budget: 100 })
+  const entry = h.add('🌿'.repeat(61_000))
+  h.setModel(async request => {
+    const [note] = (request.input as { notes: Array<{ markdown: string }> }).notes
+    assert.ok(note!.markdown.endsWith('[truncated]'))
+    return '{"units":[]}'
+  })
+  await h.run()
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.notes.read(entry.key)?.processed, entry.note.revision)
+})
+
+test('explicit context overflow splits batches and checkpoints an oversized singleton until its revision changes', async t => {
+  const h = harness(t)
+  const bad = h.add('Oversized'); h.add('Second'); h.add('Third')
+  const sizes: number[] = []
+  h.setModel(async request => {
+    assert.equal(request.stage, 'extract')
+    const batch = (request.input as { notes: Array<{ path: string }> }).notes
+    sizes.push(batch.length)
+    if (batch.length > 1 || batch[0]!.path === bad.note.path) throw new MemoryComputeError('context-window-exceeded')
+    return '{"units":[]}'
+  })
+  await h.run()
+  assert.deepEqual(sizes, [3, 1, 2, 1, 1])
+  assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+  h.restart()
+  await h.retry()
+  await h.run()
+  assert.equal(h.requests.length, 5)
+  const extra = h.addSource('Revised note', { session: bad.source.session })
+  h.notes.add(bad.source.session!, bad.note.day, [extra], '')
+  const rows = h.notes.pending(bad.key)
+  h.notes.commit(bad.key, rows, { status: 'write', title: 'Revised', markdown: 'Now fits.' }, 2,
+    Date.now(), h.notes.snapshot([bad.source.id, extra.id]), h.notes.read(bad.key))
+  h.setModel(async () => '{"units":[]}')
+  await h.run()
+  assert.equal(h.requests.length, 6)
+  assert.equal(h.notes.read(bad.key)?.processed, h.notes.read(bad.key)?.revision)
+})
+
+for (const stage of ['integrate', 'verify'] as const) {
   test(`Dream pauses when ${stage} times out and resumes only pending units and tags after restart`, async t => {
     const events: DiagnosticEvent[] = []
     const h = harness(t, { diagnostics: { emit(event) { events.push(event); return undefined } } })
     const names = ['Alpha', 'Beta', 'Gamma']
     const inputs = names.map(name => h.add(`${name} report arrangement.`, name))
+    inputs.forEach(({ note }, i) => h.seedDigest(note, names[i]))
     let calls = 0
     h.setModel(async request => {
       if (request.stage === 'extract') {
@@ -138,24 +218,18 @@ for (const stage of ['integrate', 'verify', 'tag'] as const) {
     await h.run()
     const firstPass = h.requests.map(request => request.stage)
     const expected = ['extract', 'integrate', 'verify']
-    if (stage === 'tag') expected.push('integrate', 'verify', 'integrate', 'verify', 'tag', 'tag')
-    else { expected.push('integrate'); if (stage === 'verify') expected.push('verify') }
+    expected.push('integrate')
+    if (stage === 'verify') expected.push('verify')
     assert.deepEqual(firstPass, expected)
     assert.ok(events.some(event => event.stage === stage && event.reason === 'timeout'))
     const workspace = inputs[0]!.note.workspace
-    assert.equal(h.documents.list(workspace).length, stage === 'tag' ? 3 : 1)
+    assert.equal(h.documents.list(workspace).filter(doc => !doc.markdown.includes('Original arrangement.')).length, 1)
     assert.equal(h.notes.read(inputs[0]!.key)?.processed, inputs[0]!.note.revision)
-    if (stage === 'tag') {
-      const second = h.documents.read(workspace, 'digest/personal/Beta.md')!
-      const attempt = h.documents.tagAttempt(workspace, `tag:${memoryHash(JSON.stringify([workspace, second.id, second.revision]))}`)
-      assert.equal(attempt?.reason, 'timeout')
-    }
     h.restart()
     await h.retry()
     assert.equal(h.requests.filter(request => request.stage === 'extract').length, 1)
     const resumed = h.requests.slice(firstPass.length).map(request => request.stage)
-    if (stage === 'tag') assert.deepEqual(resumed, ['tag', 'tag'])
-    else assert.deepEqual(resumed, ['integrate', 'verify', 'integrate', 'verify', 'tag', 'tag', 'tag'])
+    assert.deepEqual(resumed, ['integrate', 'verify', 'integrate', 'verify', 'tag', 'tag', 'tag'])
     const documents = h.documents.list(workspace)
     assert.equal(documents.length, 3)
     assert.ok(documents.every(doc => doc.markdown.includes('memory_tags:')))
@@ -204,7 +278,8 @@ for (const failure of ['invalid-json', 'semantic-rejection', 'aborted'] as const
     const fence = createMemorySendFence({ epoch: 'owner', admit: () => ({ current: () => true, deadline: null }) })
     t.after(() => fence.close())
     const h = harness(t, { mutate: work => fence.mutate(work) })
-    h.add('The report is due Friday.')
+    const first = h.add('The report is due Friday.')
+    if (failure === 'semantic-rejection') h.seedDigest(first.note)
     h.setModel(request => {
       if (failure === 'invalid-json') return Promise.resolve('not JSON')
       if (failure === 'aborted') return Promise.reject(new MemoryComputeError('aborted'))
@@ -257,44 +332,37 @@ test('dream still fences foreground sends when a prepared document needs recover
   } finally { foreground.settled() }
 })
 
-test('four-stage dream combines daily files in one authorized workspace through real tools, verifies originals and checkpoints', async t => {
+test('a new digest combines original evidence and checkpoints without independent review', async t => {
   const h = harness(t)
   const first = h.add('The report is due each Friday.'), second = h.add('Include the reviewed totals in the report.')
   await h.run()
-  assert.deepEqual(h.requests.map(item => item.stage), ['extract', 'integrate', 'verify', 'tag'])
+  assert.deepEqual(h.requests.map(item => item.stage), ['extract', 'integrate', 'tag'])
   const docs = h.documents.list(first.note.workspace)
   assert.equal(docs.length, 1)
   assert.match(docs[0]!.markdown, /memory_tags:/u)
   assert.deepEqual(new Set(docs[0]!.sources.map(ref => ref.id)), new Set([first.source.id, second.source.id]))
-  assert(docs[0]!.sources.every(ref => ref.spans?.length))
-  const verify = h.requests.find(item => item.stage === 'verify')!
-  assert.deepEqual(new Set(verify.sourceIds()), new Set([first.source.id, second.source.id]))
+  assert.deepEqual(new Set(docs[0]!.sources.map(ref => ref.token)), new Set([...h.notes.references(first.key), ...h.notes.references(second.key)].map(ref => ref.token)))
+  assert.deepEqual(new Set(h.requests.find(item => item.stage === 'integrate')!.sourceIds()), new Set([first.source.id, second.source.id]))
   assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
   assert.equal(h.store.db.prepare("SELECT COUNT(*) n FROM effects WHERE kind='memory.extract'").get()?.n, 0)
 })
 
-test('unchanged ambiguous work is dormant across restart; an original answer resumes it without repeating Extract', async t => {
-  const h = harness(t), first = h.add('The report deadline is Friday, unless the review is delayed.')
-  h.setModel(request => request.stage === 'integrate' ? Promise.resolve('{"status":"deferred","reason":"Which review deadline applies?"}') : h.defaultModel(request))
-  await h.run()
-  const work = h.documents.pending(first.note.workspace)[0]!
-  assert.equal(work.status, 'pending_clarification')
-  assert.equal(h.notes.read(first.key)?.processed, 0)
-  h.restart(); const count = h.requests.length
-  await h.run()
-  assert.equal(h.requests.length, count, 'dormant work is not a technical retry')
-  const answer = h.addSource('Friday always applies to the weekly report.')
-  h.documents.answer({ operationId: randomUUID(), workspace: first.note.workspace, deferredId: work.operationId, source: h.sourceRef(answer), text: answer.text! })
-  h.setModel(h.defaultModel)
-  await h.run()
-  assert.deepEqual(h.requests.slice(count).map(item => item.stage), ['integrate', 'verify', 'tag'])
-  assert.equal(h.documents.pending(first.note.workspace).length, 0)
-  assert.equal(h.documents.list(first.note.workspace).length, 1)
-  assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
-})
-
+for (const response of [{ status: 'skip' }, { status: 'deferred', reason: 'Which deadline applies?' }]) {
+  test(`a ${response.status} candidate is checkpointed with no queued question or restart replay`, async t => {
+    const h = harness(t), first = h.add('The deadline may be Tuesday or Thursday.')
+    h.setModel(request => request.stage === 'integrate' ? Promise.resolve(JSON.stringify(response)) : h.defaultModel(request))
+    await h.run()
+    assert.deepEqual(h.documents.pending(first.note.workspace), [])
+    assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
+    const count = h.requests.length
+    h.restart(); await h.run()
+    assert.equal(h.requests.length, count)
+    assert.deepEqual(h.documents.list(first.note.workspace), [])
+  })
+}
 test('a rejected generated draft gets one precise repair with a fresh target and one recoverable commit', async t => {
   const h = harness(t), first = h.add('The report is due Friday.')
+  h.seedDigest(first.note)
   const reason = 'The generated draft adds an unsupported permanent confirmation rule.'
   let integrates = 0, verifies = 0, lost = true
   h.afterCommit(() => { if (lost) { lost = false; throw new Error('lost completion after repaired commit') } })
@@ -302,9 +370,9 @@ test('a rejected generated draft gets one precise repair with a fresh target and
     if (request.stage === 'integrate') {
       integrates++
       const input = request.input as { unit: { name: string }, repair?: { reason: string, rejected: { markdown: string } } }
-      if (integrates === 1) return h.defaultModel({ ...request, input: { ...input, unit: { ...input.unit, name: 'Rejected target' } } })
+      if (integrates === 1) return h.defaultModel(request)
       assert.equal(input.repair?.reason, reason)
-      assert.match(input.repair?.rejected.markdown ?? '', /Rejected target/u)
+      assert.match(input.repair?.rejected.markdown ?? '', /Recurring report arrangement/u)
     }
     if (request.stage === 'verify' && ++verifies === 1) return JSON.stringify({ verdict: 'rejected', reason })
     return h.defaultModel(request)
@@ -321,10 +389,11 @@ test('a rejected generated draft gets one precise repair with a fresh target and
 
 test('a contradictory verified classification is repaired as a draft defect without a user question', async t => {
   const h = harness(t), first = h.add('The report is due Friday.')
+  h.seedDigest(first.note)
   let verifies = 0
   h.setModel(async request => {
     const result = await h.defaultModel(request)
-    if (request.stage === 'verify' && ++verifies === 1) return JSON.stringify({ ...JSON.parse(result!), classification: 'same_abstraction' })
+    if (request.stage === 'verify' && ++verifies === 1) return JSON.stringify({ ...JSON.parse(result!), classification: 'unrelated' })
     if (request.stage === 'integrate' && verifies) assert.match((request.input as { repair: { reason: string } }).repair.reason, /classification contradicts/u)
     return result
   })
@@ -336,11 +405,12 @@ test('a contradictory verified classification is repaired as a draft defect with
 
 test('a second semantic rejection remains technical work after the bounded repair', async t => {
   const h = harness(t), first = h.add('The report is due Friday.')
+  const original = h.seedDigest(first.note)
   h.setModel(request => request.stage === 'verify' ? Promise.resolve('{"verdict":"rejected","reason":"The generated instruction is unsupported."}') : h.defaultModel(request))
   await h.run()
   assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 2)
   assert.equal(h.requests.filter(request => request.stage === 'verify').length, 2)
-  assert.equal(h.documents.list(first.note.workspace).length, 0)
+  assert.equal(h.documents.read(first.note.workspace, original.path)?.revision, original.revision)
   assert.equal(h.documents.pending(first.note.workspace).length, 0)
   assert.equal(h.notes.read(first.key)?.processed, 0)
   assert.ok(h.store.db.prepare("SELECT 1 FROM effects WHERE kind='memory.dream'").get())
@@ -348,13 +418,14 @@ test('a second semantic rejection remains technical work after the bounded repai
 
 test('a late rejected review cannot repair or commit a replaced effect generation', async t => {
   const h = harness(t), first = h.add('The report is due Friday.')
+  const original = h.seedDigest(first.note)
   h.setModel(async request => {
     if (request.stage === 'verify') { h.replaceGeneration(); return '{"verdict":"rejected","reason":"Old generated draft is unsupported."}' }
     return h.defaultModel(request)
   })
   await h.run()
   assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 1)
-  assert.equal(h.documents.list(first.note.workspace).length, 0)
+  assert.equal(h.documents.read(first.note.workspace, original.path)?.revision, original.revision)
   assert.equal(h.documents.pending(first.note.workspace).length, 0)
   h.setModel(h.defaultModel)
   await h.retry()
@@ -364,6 +435,7 @@ test('a late rejected review cannot repair or commit a replaced effect generatio
 
 test('a repair retains the first draft attempt file policy even when the second attempt does not read it', async t => {
   const h = harness(t), first = h.add('The report is due Friday.')
+  const original = h.seedDigest(first.note)
   const extra = h.addSource('An independent review checklist exists.')
   const doc = h.documents.commit({ operationId: 'independent-review', workspace: first.note.workspace, path: 'digest/personal/checklist.md',
     action: 'CREATE', expectedRevision: null, markdown: 'Independent checklist.', sources: [h.sourceRef(extra)], reads: [] })
@@ -383,20 +455,22 @@ test('a repair retains the first draft attempt file policy even when the second 
   })
   await h.run()
   assert.equal(integrates, 2); assert.equal(verifies, 1)
-  assert.equal(h.documents.read(first.note.workspace, 'digest/personal/Report.md'), null)
+  assert.equal(h.documents.read(first.note.workspace, original.path)?.revision, original.revision)
   assert.equal(h.documents.pending(first.note.workspace).length, 0)
   assert.equal(h.notes.read(first.key)?.processed, 0)
 })
 
 for (const point of ['intent', 'replace'] as const) test(`a repaired draft ${point} recovery retains a first-attempt-only daily physical fence`, async t => {
-  let interrupted = false
+  let armed = false, interrupted = false
   const h = harness(t, { checkpoint(at, path) {
-    if (!interrupted && at === point && (at === 'intent' || path === 'digest/personal/Report.md')) {
+    if (armed && !interrupted && at === point && (at === 'intent' || path === 'digest/personal/Report.md')) {
       interrupted = true
       throw new Error('prepared repaired-draft publication interrupted')
     }
   } })
   const first = h.add('The report is due Friday.'), extra = h.add('An independent checklist is available.', 'Checklist')
+  const original = h.seedDigest(first.note)
+  armed = true
   h.notes.markProcessed(extra.key, extra.note.revision)
   let integrates = 0, verifies = 0
   h.setModel(async request => {
@@ -416,39 +490,66 @@ for (const point of ['intent', 'replace'] as const) test(`a repaired draft ${poi
   h.documents.recover()
   assert.equal(h.documents.receipt(first.note.workspace, plan.data.receipt.operationId), null,
     'cold recovery must recheck every daily read that influenced either draft attempt')
-  assert.equal(h.documents.read(first.note.workspace, 'digest/personal/Report.md'), null)
-  assert.equal(existsSync(join(h.store.fileRoot, first.note.workspace, 'digest/personal/Report.md')), false)
+  assert.equal(h.documents.read(first.note.workspace, original.path)?.revision, original.revision)
+  assert.equal(existsSync(join(h.store.fileRoot, first.note.workspace, 'digest/personal/Report.md')), true)
   assert.ok(plan.data.files.some(file => file.path === extra.note.path && file.revision === extra.note.fileRevision))
 })
 
 test('a refused rejection reason never becomes another model request or user question', async t => {
   const h = harness(t), first = h.add('The report is due Friday.')
+  const original = h.seedDigest(first.note)
   h.setModel(request => request.stage === 'verify' ? Promise.resolve('{"verdict":"rejected","reason":"Use sk-abcdefghijklmnopqrstuv in the next draft."}') : h.defaultModel(request))
   await h.run()
   assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 1)
-  assert.equal(h.documents.list(first.note.workspace).length, 0)
+  assert.equal(h.documents.read(first.note.workspace, original.path)?.revision, original.revision)
   assert.equal(h.documents.pending(first.note.workspace).length, 0)
   assert.ok(h.requests.every(request => !JSON.stringify(request.input).includes('sk-abcdefghijklmnopqrstuv')))
 })
 
-test('an insufficient clarification creates a new dormant question and never loops on the old answer operation', async t => {
-  const h = harness(t), first = h.add('There is a conditional deadline.')
-  h.setModel(request => request.stage === 'integrate' ? Promise.resolve('{"status":"deferred","reason":"Which condition applies?"}') : h.defaultModel(request))
-  await h.run()
-  const old = h.documents.pending(first.note.workspace)[0]!
-  const answer = h.addSource('It depends on the reviewer.')
-  h.documents.answer({ operationId: randomUUID(), workspace: first.note.workspace, deferredId: old.operationId, source: h.sourceRef(answer), text: answer.text! })
-  await h.run()
-  const pending = h.documents.pending(first.note.workspace)
-  assert.equal(pending.length, 1)
-  assert.notEqual(pending[0]!.operationId, old.operationId)
-  assert.equal(pending[0]!.status, 'pending_clarification')
-  const count = h.requests.length
-  await h.run()
-  assert.equal(h.requests.length, count)
-  assert.equal(h.notes.read(first.key)?.processed, 0)
-})
+for (const state of ['pending', 'deferred'] as const) {
+  test(`a recovered ${state} plan leaves its legacy clarification unit closed`, async t => {
+    const h = harness(t), note = h.add('The deadline may be Tuesday.')
+    h.setModel(async request => {
+      if (request.stage === 'integrate') throw new MemoryComputeError('timeout')
+      return h.defaultModel(request)
+    })
+    await h.run()
+    const db = h.store.db
+    const plan = JSON.parse(String(db.prepare("SELECT payload FROM effects WHERE kind='memory.dream' AND key='daily'").get()!.payload)) as {
+      units: Array<{ workspace: string, operationId: string, state: string }>
+    }
+    const item = plan.units[0]!
+    item.state = state
+    db.prepare("UPDATE effects SET payload=? WHERE kind='memory.dream' AND key='daily'").run(JSON.stringify(plan))
+    if (state === 'pending') {
+      // Recovery of an already answered waiting unit can persist a pending plan entry.
+      db.prepare("INSERT INTO memory_document_deferred(operation,workspace,input,state,payload) VALUES(?,?,?,'expired',NULL)")
+        .run(item.operationId, item.workspace, 'old-fingerprint')
+    }
+    const requests = h.requests.length
+    h.restart(); await h.retry()
+    assert.equal(h.requests.length, requests)
+    assert.deepEqual(h.documents.list(note.note.workspace), [])
+    assert.equal(h.notes.read(note.key)?.processed, h.notes.read(note.key)?.revision)
+  })
+}
 
+test('an ambiguous candidate does not prevent an independent digest from the same batch', async t => {
+  const h = harness(t), first = h.add('The meeting may be Tuesday.', 'Unclear'), second = h.add('The report is due Friday.', 'Report')
+  h.setModel(async request => {
+    if (request.stage === 'extract') return JSON.stringify({ units: [
+      { name: 'Unclear', bucket: 'personal', summary: 'Resolve ambiguity.', paths: [first.note.path] },
+      { name: 'Report', bucket: 'personal', summary: 'Report schedule.', paths: [second.note.path] },
+    ] })
+    if (request.stage === 'integrate' && (request.input as { unit: { name: string } }).unit.name === 'Unclear') return '{"status":"skip"}'
+    return h.defaultModel(request)
+  })
+  await h.run()
+  assert.deepEqual(h.documents.pending(first.note.workspace), [])
+  assert.equal(h.documents.list(first.note.workspace).length, 1)
+  assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
+  assert.equal(h.notes.read(second.key)?.processed, h.notes.read(second.key)?.revision)
+})
 test('successful paths checkpoint independently while a failed unit remains durable and retries once', async t => {
   const h = harness(t), first = h.add('First report arrangement.', 'First'), second = h.add('Second report arrangement.', 'Second')
   let failed = true
@@ -489,27 +590,82 @@ test('a committed document survives a lost completion callback; restart replays 
   h.restart(); await h.retry()
   assert.equal(h.documents.list(first.note.workspace).length, 1)
   assert.equal(h.requests.filter(request => request.stage === 'integrate').length, 1)
-  assert.equal(h.requests.filter(request => request.stage === 'verify').length, 1)
+  assert.equal(h.requests.filter(request => request.stage === 'verify').length, 0)
   assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
 })
 
-test('Auto Tag failure is recorded separately, preserves the document and checkpoint, and is not retried', async t => {
-  const h = harness(t), first = h.add('Report on Friday.')
-  h.setModel(request => { if (request.stage === 'tag') throw new Error('tag model unavailable'); return h.defaultModel(request) })
+test('restart closes a tag interrupted after its durable attempt and before model IO', async t => {
+  const h = harness(t), input = h.add('Report on Friday.')
+  const record = h.documents.recordTagAttempt
+  h.documents.recordTagAttempt = attempt => {
+    record(attempt)
+    if (attempt.state === 'attempted') throw new Error('stopped before tag model IO')
+  }
   await h.run()
-  assert.equal(h.documents.list(first.note.workspace).length, 1)
-  const doc = h.documents.list(first.note.workspace)[0]!
-  const attempt = h.documents.tagAttempt(doc.workspace, `tag:${memoryHash(JSON.stringify([doc.workspace, doc.id, doc.revision]))}`)
-  assert.equal(attempt?.state, 'failed')
-  assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
+  const doc = h.documents.list(input.note.workspace)[0]!
+  const id = `tag:${memoryHash(JSON.stringify([doc.workspace, doc.id, doc.revision]))}`
+  assert.equal(h.documents.tagAttempt(doc.workspace, id)?.state, 'attempted')
+  h.documents.recordTagAttempt = record
+  h.restart()
+  await h.retry()
+  const closed = h.documents.tagAttempt(doc.workspace, id)
+  assert.equal(closed?.state, 'failed')
+  assert.equal(closed?.reason, 'interrupted')
+  assert.equal(h.requests.filter(request => request.stage === 'tag').length, 0)
+  assert.equal(h.notes.read(input.key)?.processed, input.note.revision)
+})
+
+test('a committed tag is published from its receipt after interruption without another model request', async t => {
+  const h = harness(t), input = h.add('Report on Friday.')
+  const published: DocumentReceipt[] = []
+  h.afterCommit(receipt => {
+    if (receipt.action === 'TAG') { published.push(receipt); throw new Error('tag publication stopped') }
+  })
   await h.run()
+  const receipt = published[0]!
+  assert.equal(h.documents.tagAttempt(input.note.workspace, receipt.operationId)?.state, 'completed')
+  assert.ok(h.documents.read(input.note.workspace, receipt.path)?.markdown.includes('memory_tags:'))
+  // Previous releases could report a callback failure as a failed tag despite this exact receipt.
+  h.store.db.prepare("UPDATE memory_document_tag_attempts SET state='failed', reason='failed' WHERE operation=?").run(receipt.operationId)
+  h.afterCommit(item => { if (item.action === 'TAG') published.push(item) })
+  h.restart()
+  await h.retry()
+  assert.deepEqual(published, [receipt, receipt])
+  assert.equal(h.documents.tagAttempt(input.note.workspace, receipt.operationId)?.state, 'completed')
   assert.equal(h.requests.filter(request => request.stage === 'tag').length, 1)
+  assert.equal(h.notes.read(input.key)?.processed, input.note.revision)
+})
+
+for (const reason of ['call-failed', 'timeout'] as const) test(`Auto Tag ${reason} preserves completed documents and checkpoints without retrying tags after restart`, async t => {
+  const h = harness(t), first = h.add('Report on Friday.', 'Report'), second = h.add('Plan on Monday.', 'Plan')
+  let calls = 0
+  h.setModel(async request => {
+    if (request.stage === 'extract') return JSON.stringify({ units: [first, second].map(({ note }) => ({
+      name: note.title, bucket: 'personal', summary: 'Recurring report arrangement', paths: [note.path],
+    })) })
+    if (request.stage === 'tag' && ++calls === 1) throw new MemoryComputeError(reason)
+    return h.defaultModel(request)
+  })
+  await h.run()
+  assert.equal(calls, 2)
+  const workspace = first.note.workspace
+  const doc = h.documents.read(workspace, 'digest/personal/Report.md')!
+  assert.ok(!doc.markdown.includes('memory_tags:'))
+  assert.ok(h.documents.read(workspace, 'digest/personal/Plan.md')?.markdown.includes('memory_tags:'))
+  const attempt = h.documents.tagAttempt(workspace, `tag:${memoryHash(JSON.stringify([workspace, doc.id, doc.revision]))}`)
+  assert.equal(attempt?.state, 'failed')
+  assert.equal(h.notes.changed(first.note.day, first.note.day).length, 0)
+  const completed = h.requests.length
+  h.restart()
+  await h.retry()
+  await h.run()
+  assert.equal(h.requests.length, completed)
 })
 
 test('the commit checks sources again after waiting for a mutation/send fence', async t => {
   const h = harness(t), first = h.add('Report on Friday.')
   let verified = false
-  h.setModel(async request => { const result = await h.defaultModel(request); if (request.stage === 'verify') verified = true; return result })
+  h.setModel(async request => { const result = await h.defaultModel(request); if (request.stage === 'integrate') verified = true; return result })
   h.beforeMutation(() => {
     if (verified) h.store.db.prepare('UPDATE memory_sources SET withdrawn=1 WHERE id=?').run(first.source.id)
   })
@@ -611,54 +767,12 @@ for (const action of ['CORROBORATE', 'REFINE', 'CORRECT'] as const) test(`${acti
   }
 })
 
-test('an explicit clarification answer resumes dormant work after its daily file leaves the automatic scan window', async t => {
-  const h = harness(t), first = h.add('Report deadline depends on the review.')
-  h.setModel(request => request.stage === 'integrate' ? Promise.resolve('{"status":"deferred","reason":"Which deadline applies?"}') : h.defaultModel(request))
-  await h.run()
-  const pending = h.documents.pending(first.note.workspace)[0]!
-  h.advance(8 * 86_400_000)
-  const answer = h.addSource('The report is due Friday.')
-  h.documents.answer({ operationId: randomUUID(), workspace: first.note.workspace, deferredId: pending.operationId,
-    source: h.sourceRef(answer), text: answer.text! })
-  h.setModel(h.defaultModel)
-  await h.run()
-  assert.equal(h.documents.list(first.note.workspace).length, 1)
-  assert.equal(h.documents.pending(first.note.workspace).length, 0)
-  assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
-})
 
-test('question succession and the persisted dream plan commit atomically across an interrupted second clarification', async t => {
-  const h = harness(t), first = h.add('Report deadline depends on review.')
-  h.setModel(request => request.stage === 'integrate' ? Promise.resolve('{"status":"deferred","reason":"Which deadline applies?"}') : h.defaultModel(request))
-  await h.run()
-  const old = h.documents.pending(first.note.workspace)[0]!
-  const answer = h.addSource('It depends on the reviewer.')
-  h.documents.answer({ operationId: randomUUID(), workspace: first.note.workspace, deferredId: old.operationId, source: h.sourceRef(answer), text: answer.text! })
-  const defer = h.documents.defer
-  h.documents.defer = (input, previous) => {
-    const result = defer(input, previous)
-    if (previous) throw new Error('interrupted between question write and plan write')
-    return result
-  }
-  await h.run()
-  const afterFailure = h.documents.pending(first.note.workspace)
-  assert.equal(afterFailure.length, 1)
-  assert.equal(afterFailure[0]?.operationId, old.operationId)
-  assert.equal(afterFailure[0]?.status, 'ready')
-  h.documents.defer = defer
-  h.restart(); await h.retry()
-  const pending = h.documents.pending(first.note.workspace)
-  assert.equal(pending.length, 1)
-  assert.notEqual(pending[0]?.operationId, old.operationId)
-  assert.equal(pending[0]?.status, 'pending_clarification')
-  const count = h.requests.length
-  await h.run()
-  assert.equal(h.requests.length, count)
-})
 
 test('a question containing refused material is not reintroduced during independent semantic review', async t => {
   const h = harness(t), secret = 'sk-abcdefghijklmnopqrstuv'
-  h.add('The report is due Friday.', 'Report', { author: 'answer', question: `Does ${secret} affect the report?` })
+  const first = h.add('The report is due Friday.', 'Report', { author: 'answer', question: `Does ${secret} affect the report?` })
+  h.seedDigest(first.note)
   await h.run()
   const verify = h.requests.find(request => request.stage === 'verify')!
   assert.ok(verify)
@@ -696,7 +810,7 @@ test('Extract presents replaced daily fragments together with current correction
   assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
 })
 
-test('question provenance is bound to the review request and retained with short-answer evidence', async t => {
+for (const substantive of [false, true]) test(`question provenance is retained for a ${substantive ? 'reviewed edit' : 'direct creation'} with short-answer evidence`, async t => {
   const h = harness(t)
   const context = h.addSource('Choose the deadline for the weekly report.')
   const answer = h.addSource('Friday', { author: 'answer', question: 'Which day is the weekly report due?', session: 'answer-session' })
@@ -704,12 +818,16 @@ test('question provenance is bound to the review request and retained with short
   assert(h.notes.commit(key, h.notes.pending(key), { status: 'write', title: 'Report', markdown: 'The weekly report is due Friday.' }, 1,
     Date.parse('2026-11-16T12:00:00Z'), h.notes.snapshot([answer.id]), undefined))
   const note = h.notes.read(key)!
+  if (substantive) h.seedDigest(note)
   h.setFixture({ summary: 'The weekly report is due Friday.', evidenceId: answer.id })
   await h.run()
-  const verify = h.requests.find(request => request.stage === 'verify')!
-  assert(verify.sourceIds().includes(context.id))
-  const input = verify.input as { canonicalSources: Array<{ sourceId: string, question: string | null }> }
-  assert.equal(input.canonicalSources.find(source => source.sourceId === answer.id)?.question, answer.question)
+  const verify = h.requests.find(request => request.stage === 'verify')
+  assert.equal(Boolean(verify), substantive)
+  if (verify) {
+    assert(verify.sourceIds().includes(context.id))
+    const input = verify.input as { canonicalSources: Array<{ sourceId: string, question: string | null }> }
+    assert.equal(input.canonicalSources.find(source => source.sourceId === answer.id)?.question, answer.question)
+  }
   const document = h.documents.list(note.workspace)[0]!
   assert.deepEqual(new Set(document.sources.map(ref => ref.id)), new Set([answer.id, context.id]))
   h.store.db.prepare('UPDATE memory_sources SET withdrawn=1 WHERE id=?').run(context.id)
@@ -754,12 +872,63 @@ test('a TAG receipt recovers its own expanded readset after interruption while a
   assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
 })
 
+test('a new draft records only its cited unit with exact spans, even when search saw a broader and an unrelated source', async t => {
+  const h = harness(t), text = 'Friday report. Private project.'
+  const spans = [{ start: 0, end: 'Friday report.'.length }]
+  const first = h.add(text, 'Report', {}, spans)
+  const unrelated = h.addSource('An unrelated Report reference.')
+  h.documents.commit({ operationId: randomUUID(), workspace: first.note.workspace, path: 'digest/personal/related.md', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Report background', description: 'Report reference' }, body: 'Unrelated.' }),
+    action: 'CREATE', sources: [h.sourceRef(unrelated), h.sourceRef(first.source)], reads: [] })
+  h.setFixture({ summary: 'Friday report.' })
+  await h.run()
+  assert(h.requests.find(request => request.stage === 'integrate')!.sourceIds().includes(unrelated.id))
+  assert.equal(h.requests.some(request => request.stage === 'verify'), false)
+  assert.deepEqual(h.documents.read(first.note.workspace, 'digest/personal/Report.md')?.sources, [{ ...h.sourceRef(first.source), spans }])
+})
+
+test('a pure added citation skips review but an addition to the existing conclusion mislabeled as corroboration is reviewed', async t => {
+  const h = harness(t), first = h.add('Report due Friday.')
+  h.setFixture({ summary: 'Report due Friday.' })
+  await h.run()
+  const second = h.add('I confirm the Friday deadline.')
+  h.setFixture({ summary: 'Report due Friday.', action: 'CORROBORATE' })
+  await h.run()
+  assert.equal(h.requests.filter(request => request.stage === 'verify').length, 0)
+  const supported = h.documents.read(first.note.workspace, 'digest/personal/Report.md')!
+  assert(supported.sources.some(ref => ref.id === second.source.id))
+  h.add('Actually the deadline has changed.')
+  h.setFixture({ summary: 'Report due Monday.', action: 'CORROBORATE' })
+  h.setModel(request => request.stage === 'verify' ? Promise.resolve('{"verdict":"rejected","reason":"The proposed replacement is unsupported."}') : h.defaultModel(request))
+  await h.run()
+  assert.equal(h.requests.filter(request => request.stage === 'verify').length, 2)
+  assert.equal(h.documents.read(first.note.workspace, supported.path)?.revision, supported.revision)
+})
+
+for (const action of ['CREATE', 'CORRECT'] as const) test(`a false ${action} label on a source-only update never changes existing applicability`, async t => {
+  const h = harness(t), first = h.add('Report due Friday.')
+  h.setFixture({ summary: 'Report due Friday.' })
+  await h.run()
+  const before = h.documents.list(first.note.workspace)[0]!
+  const next = h.add('Confirming Friday.')
+  h.setFixture({ summary: 'Report due Friday.', action })
+  await h.run()
+  assert.equal(h.requests.filter(request => request.stage === 'verify').length, 0)
+  const current = h.documents.read(first.note.workspace, before.path)!
+  assert.equal(current.revision, before.revision)
+  assert.deepEqual(current.corrections, [])
+  assert.equal(h.notes.read(next.key)?.processed, 0)
+})
+
 test('reading a narrow existing node after a broader daily source never narrows the accumulated evidence readset', async t => {
   const h = harness(t), text = 'Report Friday. Planning Monday.', first = h.add(text)
   const split = text.indexOf('Planning')
   h.documents.commit({ operationId: randomUUID(), workspace: first.note.workspace, path: 'digest/personal/Report.md', expectedRevision: null,
     markdown: formatMemoryDocument({ metadata: { name: 'Report', description: 'Report Friday' }, body: `Report Friday.\nSupported by [[${first.note.path}]].` }),
     action: 'CREATE', sources: [{ ...h.sourceRef(first.source), spans: [{ start: 0, end: split }] }], reads: [] })
+  h.documents.commit({ operationId: randomUUID(), workspace: first.note.workspace, path: 'digest/personal/Planning.md', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Planning', description: 'Planning' }, body: 'Planning is unsettled.' }),
+    action: 'CREATE', sources: [{ ...h.sourceRef(first.source), spans: [{ start: split, end: text.length }] }], reads: [] })
   h.setFixture({ name: 'Planning', summary: 'Planning Monday.', evidenceId: first.source.id })
   h.setModel(async request => {
     if (request.stage === 'integrate' && request.tools) {
@@ -836,51 +1005,4 @@ test('persisted extraction policy rejects a new transitive correction before ret
   chain.extend(); h.restart(); await h.retry()
   assert.deepEqual(h.requests.map(request => request.stage), ['extract', 'integrate'], 'stale unit is not sent again')
   assert.equal(h.notes.read(chain.first.key)?.processed, 0)
-})
-
-test('a pending clarification is retired when its transitive file policy changes', async t => {
-  const h = harness(t), chain = correctionChain(h)
-  h.setModel(async request => request.stage === 'extract' ? chain.units : '{"status":"deferred","reason":"Which location applies?"}')
-  await h.run()
-  const original = h.documents.pending(chain.first.note.workspace)[0]!
-  assert.equal(original.status, 'pending_clarification')
-  assert.ok(original.files[0]?.policyToken)
-  chain.extend(); h.restart(); await h.run(); await h.retry()
-  assert.equal(h.documents.deferred(original.workspace, original.operationId), null)
-  assert.equal(h.store.db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(original.operationId)?.state, 'expired')
-  assert.equal(h.requests.filter(request => request.stage === 'extract').length, 2)
-})
-
-test('clarification persists dynamic digest policy reads and retires an obsolete question even when its daily file is unchanged', async t => {
-  const h = harness(t), daily = h.add('Current home details are under review.')
-  const workspace = daily.note.workspace, sources = [h.sourceRef(daily.source)]
-  const originalPath = 'digest/personal/original.md', middlePath = 'digest/personal/middle.md'
-  h.documents.commit({ operationId: 'dynamic-original', workspace, path: originalPath, expectedRevision: null,
-    markdown: 'Original home.', action: 'CREATE', sources, reads: [] })
-  const old = h.documents.read(workspace, originalPath)!
-  const middle = h.documents.commit({ operationId: 'dynamic-middle', workspace, path: middlePath, expectedRevision: null,
-    markdown: 'Summary.', action: 'CREATE', sources, reads: [] })
-  h.documents.commit({ operationId: 'dynamic-correct-middle', workspace, path: middlePath, expectedRevision: middle.revision,
-    markdown: 'Intermediate home.', action: 'CORRECT', sources, reads: [old], corrections: [{ path: old.path,
-      revision: old.revision, startLine: 1, endLine: 1, text: old.markdown, condition: 'home', time: 'current' }] })
-  h.setModel(async request => {
-    if (request.stage === 'extract') return JSON.stringify({ units: [{ name: 'Home', bucket: 'personal', summary: 'Review home.', paths: [daily.note.path] }] })
-    assert.equal(request.stage, 'integrate')
-    await request.tools!.executeTool({ callId: 'read-dynamic', name: 'read', input: { path: originalPath } })
-    return '{"status":"deferred","reason":"Which home applies?"}'
-  })
-  await h.run()
-  const question = h.documents.pending(workspace)[0]!
-  assert.deepEqual(question.readPolicies?.map(file => file.path), [originalPath])
-  const currentMiddle = h.documents.read(workspace, middlePath)!, path = 'digest/personal/terminal.md'
-  const terminal = h.documents.commit({ operationId: 'dynamic-terminal', workspace, path, expectedRevision: null,
-    markdown: 'Summary.', action: 'CREATE', sources, reads: [] })
-  h.documents.commit({ operationId: 'dynamic-correct-terminal', workspace, path, expectedRevision: terminal.revision,
-    markdown: 'Terminal home.', action: 'CORRECT', sources, reads: [currentMiddle], corrections: [{ path: middlePath,
-      revision: currentMiddle.revision, startLine: 1, endLine: 1, text: currentMiddle.markdown, condition: 'home', time: 'current' }] })
-  h.restart(); await h.run()
-  assert.equal(h.documents.deferred(workspace, question.operationId), null)
-  assert.equal(h.store.db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(question.operationId)?.state, 'expired')
-  assert.equal(h.requests.filter(request => request.stage === 'extract').length, 2, 'a fresh unit is extracted from the changed policy')
-  assert.ok(h.documents.pending(workspace).every(work => work.operationId !== question.operationId))
 })

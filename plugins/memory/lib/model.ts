@@ -1,4 +1,4 @@
-import { BlockAssembler, createUserMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, BlockAssembler, createUserMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import { withOperation } from '../../../src/diagnostics/node/context.ts'
 import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
@@ -8,6 +8,11 @@ import { isDailyMemoryStage, memoryComputeFailure } from '../../../src/memory/co
 import { memorySource } from './source.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
 import type { MemoryComputeTools } from '../../../src/memory/contracts/compute.ts'
+
+export function memoryProviderFailure(code: unknown) {
+  if (code === CONTEXT_WINDOW_EXCEEDED_CODE) return new MemoryComputeError('context-window-exceeded')
+  if (code === 'TIMEOUT') return new MemoryComputeError('timeout')
+}
 
 /** Each job owns native message/reasoning replay; no state is shared across dream units. */
 export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: MemoryCompute, signal: AbortSignal,
@@ -41,7 +46,10 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
       return text
     }
     if (assembler.finish?.kind !== 'tool-calls' || !capability || !calls.length) {
-      if (assembler.finish?.kind === 'error' && assembler.finish.failure.code === 'TIMEOUT') throw new MemoryComputeError('timeout')
+      if (assembler.finish?.kind === 'error') {
+        const error = memoryProviderFailure(assembler.finish.failure.code)
+        if (error) throw error
+      }
       const parsed = memoryComputeFailure.safeParse(assembler.finish?.kind)
       throw new MemoryComputeError(parsed.success ? parsed.data : 'call-failed')
     }

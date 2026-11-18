@@ -617,9 +617,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           emitToRenderer({ type: 'memory_context', injected: [{ at: notice.at, pushed: notice.pushed }], context })
         }
       },
-      memoryClarificationQuestion: (session, turn, id, phase, sources) => memory.call('clarificationQuestion',
-        { args: sources ? [session, turn, id, phase, sources] : [session, turn, id, phase] }),
-      cancelMemoryClarification: (session, id) => memory.call('cancelFileClarification', { args: [session, id] }),
       allowGeneralQuestion: async (session, turn, cards, _waiting, phase) => turn ? memory.call('authorizeGeneralQuestion', { args: [session, turn, cards,
         session === sessions.current().sessionId ? sessions.current().id : historyDb.bySession(session)?.id ?? session,
         session === sessions.current().sessionId ? foregroundMemoryScope(currentMemoryProject()) : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
@@ -637,7 +634,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           const digest = createHash('sha256').update(JSON.stringify([requestOperation, answer.id])).digest('hex')
           const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
           const accepted = await memory.call('acceptQuestionAnswer', { operationId, text, session: entry.sessionId,
-            conversation, question: entry.sourceQuestion ?? question.question, requestId: entry.question.id, questionId: answer.id,
+            conversation, question: question.question, requestId: entry.question.id, questionId: answer.id,
             context: answerContext, project })
           answerSources[answer.id] = accepted.sourceId
         if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)

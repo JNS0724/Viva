@@ -7,8 +7,7 @@ import { completeMemoryModel } from '../plugins/memory/lib/model.ts'
 import { assertMemoryProviderSupported } from '../plugins/memory/lib/providers.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
-import { DREAM_INTEGRATE_SYSTEM, DREAM_VERIFY_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
-import { formatMemoryDocument } from '../src/memory/core/memory-document.ts'
+import { DREAM_INTEGRATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { createVenueModelFixture, venue } from './fixtures/memory-plugin-venue.ts'
 
 const job: MemoryCompute = { id: '1', sourceId: '2', generation: 1, stage: 'note', provider: 'test', model: 'model', system: 'system', input: 'source' }
@@ -17,7 +16,7 @@ for (const failed of ['frontmatter_read', 'frontmatter_update'] as const) {
   test(`packed Web acceptance cannot report a rejected ${failed} as exercised successfully`, () => {
     const fixture = createVenueModelFixture(), path = 'daily/2026-11-17/venue.md'
     const request = { system: DREAM_INTEGRATE_SYSTEM, messages: [{ role: 'user', content: [
-      { type: 'text', text: JSON.stringify({ unit: { paths: [path] }, clarification: { text: venue.answer } }) },
+      { type: 'text', text: JSON.stringify({ unit: { name: venue.archive, paths: [path] } }) },
     ] }] as Array<{ role: string, content: Array<{ type: string, text?: string, id?: string, name?: string, tool_use_id?: string, content?: string, is_error?: boolean }> }> }
     let rejected = false
     for (let index = 0; index < 6; index++) {
@@ -40,31 +39,26 @@ for (const failed of ['frontmatter_read', 'frontmatter_update'] as const) {
   })
 }
 
-test('packed Web acceptance rejects a verified body whose frontmatter update did not reach the draft', () => {
-  const fixture = createVenueModelFixture()
-  const canonicalSources = [...venue.facts.map((text, index) => ({ sourceId: `fact-${index}`, version: 1,
-    author: 'user', text, question: null as string | null, questionUnavailable: false })),
-  { sourceId: 'answer', version: 1, author: 'answer', text: venue.answer, question: `What should I use for ${venue.topic}?`, questionUnavailable: false }]
-  const request = { system: DREAM_VERIFY_SYSTEM, messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify({
-    action: 'CREATE', canonicalSources, proposed: formatMemoryDocument({ metadata: { name: venue.topic, description: 'The stale draft description' }, body: venue.summary }),
-  }) }] }] }
-  assert.throws(() => fixture.decide(request), /the frontmatter update must reach the verified draft/u)
-})
-for (const finish of ['stop', 'max-tokens', 'missing', 'timeout'] as const) test(`memory model requires explicit successful completion: ${finish}`, async () => {
+for (const finish of ['stop', 'max-tokens', 'missing', 'timeout', 'context-window-exceeded', 'auth', 'rate-limit'] as const) test(`memory model requires explicit successful completion: ${finish}`, async () => {
   const ctx = new Context()
   const llm = new LlmRuntime(ctx)
   class Adapter extends LlmAdapter {
     async *stream(): AsyncIterable<StreamChunk> {
       yield { type: 'text-delta', index: 0, text: 'partial or complete' }
-      if (finish === 'timeout') yield { type: 'finish', reason: { kind: 'error', failure: { code: 'TIMEOUT', message: 'Request timed out' } } }
-      else if (finish !== 'missing') yield { type: 'finish', reason: { kind: finish } }
+      if (finish === 'timeout' || finish === 'context-window-exceeded' || finish === 'auth' || finish === 'rate-limit') {
+        const code = { timeout: 'TIMEOUT', 'context-window-exceeded': 'CONTEXT_WINDOW_EXCEEDED', auth: 'AUTH', 'rate-limit': 'RATE_LIMIT' }[finish]
+        yield { type: 'finish', reason: { kind: 'error', failure: { code, message: 'Provider failure' } } }
+      } else if (finish !== 'missing') yield { type: 'finish', reason: { kind: finish } }
     }
   }
   const dispose = llm.registerAdapter(['test'], new Adapter())
   try {
     const result = completeMemoryModel(ctx, job, new AbortController().signal)
     if (finish === 'stop') assert.equal(await result, 'partial or complete')
-    else await assert.rejects(result, error => error instanceof MemoryComputeError && error.reason === (finish === 'missing' ? 'missing-finish' : finish))
+    else {
+      const expected = finish === 'missing' ? 'missing-finish' : finish === 'auth' || finish === 'rate-limit' ? 'error' : finish
+      await assert.rejects(result, error => error instanceof MemoryComputeError && error.reason === expected)
+    }
   } finally { dispose() }
 })
 

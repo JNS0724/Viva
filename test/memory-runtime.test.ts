@@ -4,7 +4,8 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { createEffects } from '../src/backend/effects.ts'
 import { memoryCompute } from '../src/memory/contracts/memory-contract.ts'
-import { DREAM_EXTRACT_SYSTEM, DREAM_VERIFY_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
+import { DREAM_EXTRACT_SYSTEM, DREAM_INTEGRATE_SYSTEM, DREAM_VERIFY_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
@@ -19,7 +20,7 @@ function deferred<T>() {
 }
 
 const origin = { conversation: 'first-conversation', session: 'first-session' }
-test('daily notes are recalled after five rounds and document dream verifies the selected original source', async t => {
+test('daily notes are recalled after five rounds and a new digest retains its cited daily evidence without a second model review', async t => {
   const { dir, defer } = scratch(t, 'viva-daily-memory-')
   let now = Date.parse('2026-11-03T12:00:00Z')
   const stages: string[] = []
@@ -38,10 +39,7 @@ test('daily notes are recalled after five rounds and document dream verifies the
         return JSON.stringify({ status: 'write', title: '周报安排', markdown: '周五提交周报。草稿尚未完成。' })
       }
       assert.equal(job.stage, 'dream')
-      if (job.system === DREAM_VERIFY_SYSTEM) {
-        const input = JSON.parse(job.input) as { canonicalSources: Array<{ text: string, sourceId: string }> }
-        assert.equal(input.canonicalSources.find(source => source.sourceId === ids[0])?.text, firstText)
-      }
+      assert.notEqual(job.system, DREAM_VERIFY_SYSTEM)
       return dreamModelStep(job, tools, { name: '周报安排', summary: '每周五提交周报', evidenceId: ids[0] })
     },
   })
@@ -60,14 +58,14 @@ test('daily notes are recalled after five rounds and document dream verifies the
   assert.match(recalled.notes[0].markdown, /草稿尚未完成/)
   now = Date.parse('2026-11-03T23:00:00Z')
   await memory.wake()
-  assert.deepEqual(stages, ['note', 'dream', 'dream', 'dream', 'dream'])
+  assert.deepEqual(stages, ['note', 'dream', 'dream', 'dream'])
   assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const document = store.db.prepare('SELECT sources FROM memory_documents').get()!
-  assert.deepEqual(JSON.parse(String(document.sources)).map((ref: { id: string }) => ref.id), [ids[0]])
+  assert.deepEqual(new Set(JSON.parse(String(document.sources)).map((ref: { id: string }) => ref.id)), new Set(ids))
   memory.withdraw({ ids: [ids[1]], conversation: origin.conversation, onlySources: true })
   const after = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '周报' }, origin))
   assert.deepEqual(after.notes, [])
-  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents WHERE forgotten=0').get()?.n, 1)
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents WHERE forgotten=0').get()?.n, 0)
 })
 
 test('daily recall searches past 64 newer notes and returns a match at the end without prefix clipping', async t => {
@@ -123,12 +121,12 @@ test('daily recall searches past 64 newer notes and returns a match at the end w
   assert.equal(limited.partial, true, 'whole-file evidence packets retain their response budget')
 })
 
-test('document consolidation waits for semantic evidence review before checkpointing and retries structural errors once', async t => {
+test('document consolidation waits for the draft before checkpointing and retries malformed extraction once', async t => {
   const { dir, defer } = scratch(t, 'viva-dream-checkpoint-')
   let now = Date.parse('2026-11-06T13:59:00Z')
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
-  const completeExtraction = deferred<string>()
-  const beganExtraction = deferred<void>()
+  const completeDraft = deferred<void>()
+  const beganDraft = deferred<void>()
   const fact = 'I submit the quarterly report on the first Friday'
   const id = randomUUID()
   let dreams = 0
@@ -144,11 +142,10 @@ test('document consolidation waits for semantic evidence review before checkpoin
         if (++dreams === 1) return '{"units": ['
         assert(input.retry)
       }
-      if (job.system === DREAM_VERIFY_SYSTEM) {
-        const input = JSON.parse(job.input) as { canonicalSources: Array<{ text: string }> }
-        assert.equal(input.canonicalSources[0]?.text, fact)
-        beganExtraction.resolve()
-        await completeExtraction.promise
+      assert.notEqual(job.system, DREAM_VERIFY_SYSTEM)
+      if (job.system === DREAM_INTEGRATE_SYSTEM) {
+        beganDraft.resolve()
+        await completeDraft.promise
       }
       return dreamModelStep(job, tools, { summary: fact })
     },
@@ -159,9 +156,9 @@ test('document consolidation waits for semantic evidence review before checkpoin
   await memory.wake()
   now = Date.parse('2026-11-06T15:00:00Z')
   const running = memory.wake()
-  await beganExtraction.promise
+  await beganDraft.promise
   assert.equal(store.db.prepare('SELECT processed FROM memory_daily_notes').get()?.processed, 0)
-  completeExtraction.resolve('{}')
+  completeDraft.resolve()
   await running
   assert.equal(dreams, 2)
   assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
@@ -170,7 +167,7 @@ test('document consolidation waits for semantic evidence review before checkpoin
   assert.equal(note.processed, note.revision)
 })
 
-test('consolidation groups the two-day window by byte budget, bisects transport failures and keeps oversized notes', async t => {
+test('consolidation groups the two-day window by byte budget, bisects explicit context overflows and keeps oversized notes', async t => {
   const { dir, defer } = scratch(t, 'viva-dream-batches-')
   let now = Date.parse('2026-11-04T15:01:00Z')
   const requests: string[][] = []
@@ -188,7 +185,7 @@ test('consolidation groups the two-day window by byte budget, bisects transport 
       assert.equal(job.stage, 'dream')
       const notes = input.notes as Array<{ title: string, markdown: string }>
       requests.push(notes.map(note => note.title))
-      if (notes.length > 1) throw new Error('fake transport overflow')
+      if (notes.length > 1) throw new MemoryComputeError('context-window-exceeded')
       if (notes[0]?.title === 'large note') {
         assert.equal([...notes[0].markdown.replace(/\n\n\[truncated\]$/u, '')].length, 60_000)
         assert.match(notes[0].markdown, /\[truncated\]$/u)

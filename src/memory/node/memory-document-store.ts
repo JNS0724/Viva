@@ -200,6 +200,8 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       if (!unchanged) db.prepare('INSERT INTO memory_document_revisions(operation,document,before,after,at) VALUES(?,?,?,?,?)')
         .run(data.receipt.operationId, data.receipt.documentId, data.before ? encode(data.before) : null, data.after ? encode(data.after) : null, now())
       db.prepare('INSERT INTO memory_document_receipts(operation,input,receipt) VALUES(?,?,?)').run(data.receipt.operationId, data.input, encode(data.receipt))
+      if (data.receipt.action === 'TAG') db.prepare("UPDATE memory_document_tag_attempts SET state='completed',reason=NULL WHERE workspace=? AND operation=?")
+        .run(data.workspace, data.receipt.operationId)
       db.prepare("UPDATE memory_document_deferred SET state='resolved',payload=NULL WHERE operation=? AND workspace=? AND state='ready'").run(data.receipt.operationId, data.workspace)
       if (!unchanged) onCommitted(data.receipt)
     },
@@ -936,6 +938,15 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const { reason, ...rest } = row
     return { ...rest, ...(reason ? { reason } : {}) }
   }
+  function settleInterruptedTagAttempts() {
+    transaction(db, () => {
+      // Older versions could record a failure after the document commit already succeeded.
+      db.prepare(`UPDATE memory_document_tag_attempts SET state='completed',reason=NULL WHERE state<>'completed'
+        AND EXISTS (SELECT 1 FROM memory_document_receipts r WHERE r.operation=memory_document_tag_attempts.operation
+          AND json_extract(r.receipt,'$.action')='TAG')`).run()
+      db.prepare("UPDATE memory_document_tag_attempts SET state='failed',reason=coalesce(reason,'interrupted') WHERE state='attempted'").run()
+    })
+  }
   function recordTagAttempt(input: DocumentTagAttempt) {
     workspace(input.workspace)
     digestPath.parse(input.path)
@@ -991,6 +1002,10 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   if (!deferRecovery) recover()
   return {
+    retireClarifications() {
+      db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE state IN ('pending_clarification','ready')").run()
+    },
+    retiredClarification: (scope, id) => Boolean(db.prepare("SELECT 1 FROM memory_document_deferred WHERE workspace=? AND operation=? AND state='expired'").get(scope, id)),
     reconcileRename, reconcileEdit, acceptedSnapshot,
     reconciliationState: (operationId, kind) => kind === 'edit' ? journal.state(operationId) : db.prepare('SELECT 1 FROM memory_document_renames WHERE operation=?').get(operationId) ? 'done' : undefined,
     aliases: scope => db.prepare('SELECT path,document AS id FROM memory_document_aliases WHERE workspace=?').all(scope)
@@ -1008,7 +1023,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
-    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
+    sourceRestrictions, settleInterruptedTagAttempts, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
     read, list, commit, deleteFile, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
   }
 }

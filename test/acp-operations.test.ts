@@ -216,21 +216,6 @@ test('an async owner admission arriving after cancellation cannot send the retir
   operations.dispose()
 })
 
-test('clarification tracks interjection sources on the report operation and retires them on cancel', async () => {
-  const done = deferred<PromptResponse>()
-  const operations = createAcpOperations({ streams: confirmedStreams(),
-    connection: () => ({ prompt: () => done.promise, cancel: async () => {} }), cancelPermissions() {}, streamUpdate() {} })
-  const report = operations.run({ sessionId: 's', prompt, onEnd() {}, onError: fail })
-  await flush()
-  assert.equal(operations.clarificationTurn('s'), null)
-  operations.recordInterjection('s', 'first'); operations.recordInterjection('s', 'second')
-  assert.deepEqual(operations.clarificationTurn('s'), { id: operations.turn('s'), sources: ['first', 'second'] })
-  operations.endUserTurn('s')
-  assert.equal(operations.clarificationTurn('s'), null)
-  done.resolve({ stopReason: 'cancelled' }); await report
-  assert.equal(operations.clarificationTurn('s'), null)
-})
-
 test('a report cancelled while final memory admission awaits never reaches the native prompt', async () => {
   const memory = deferred<boolean>(), started = deferred<void>()
   let held = true, sent = 0

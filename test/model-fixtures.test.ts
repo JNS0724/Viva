@@ -76,15 +76,6 @@ test('current accepted file receipts finish the tool turn without the removed fa
   assert.match(decide(result('memory_recall', { query: '图书馆' }, { notes: [{ id: randomUUID(), text }] })).text ?? '', /图书馆的无障碍/u)
 })
 
-test('file clarification follows its opaque ref and free text without a hardcoded relation', () => {
-  const ref = randomUUID(), answer = '图书馆此次采用北门入口。'
-  assert.deepEqual(decide(result('memory_recall', { query: '入口' }, { clarification: { ref } })).tool,
-    { name: 'memory_clarify', input: { ref } })
-  assert.equal(decide(result('memory_clarify', { ref }, { status: 'answered', answer: { answers: [{ id: randomUUID(), custom: answer, selected: [] }] } })).text,
-    `这次采用：${answer}`)
-  assert.equal(decide(result('memory_recall', { query: '入口' }, { conflicts: [{ id: 1, ref }] })).tool, undefined)
-})
-
 test('the shared fake no longer simulates removed extraction, review or predicate classification', () => {
   for (const system of ['记忆整理员', '记忆变更复核员', '从已核验的记忆和用户手填资料中，选择最多六条']) {
     const answer = decide({ system, messages: [human('{"user":"任意原文","proposals":[],"items":[]}')] })

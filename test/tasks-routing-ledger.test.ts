@@ -51,7 +51,7 @@ test('undecided requests are reminded at most twice, then left for the host to f
 
 test('the main agent\'s tools: route, context and app queries free; app changes need a grant each; the rest never', () => {
   assert.equal(layerOf('commit_route'), 'route')
-  for (const tool of ['memory_recall', 'memory_read', 'memory_node_search', 'memory_clarify']) {
+  for (const tool of ['memory_recall', 'memory_read', 'memory_node_search']) {
     assert.equal(layerOf(tool), 'context')
     assert.ok(MAIN_SCOPE.includes(tool))
   }

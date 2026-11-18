@@ -116,7 +116,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
-    validateDispatch: dispatch.validateCommit, fileClarificationDispatch: dispatch,
+    validateDispatch: dispatch.validateCommit,
     runDocumentMutation: work => fence.mutate(work),
     fileDependencies(session, files, sources) {
       const scope = toolReadScope.getStore()
@@ -202,7 +202,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (contextRecovery.pending(session) || removedSession(session) || nativeSurface.has(session)) return true
     // New native sessions have no old model context to recover, even after a global memory epoch change.
     if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) return false
-    if (runtime.staleSession(session) || dispatch.stale(session) || !runtime.provisionalReadsCurrent(session)) return true
+    if (runtime.staleSession(session) || dispatch.stale(session)) return true
     for (const row of db.prepare(`SELECT p.session FROM owner_session_parents p WHERE p.parent=?
       AND NOT EXISTS(SELECT 1 FROM owner_context_retired_children r WHERE r.parent=p.parent AND r.child=p.session)`).all(session)) {
       const child = String(row.session)
@@ -480,7 +480,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const active = sessionContext(input.sessionId).foregroundTurn
     const sameLiveTurn = Boolean(active && !input.inherited && (!saved || saved.owner_epoch === epoch
       && saved.origin_session === input.sessionId && saved.origin_turn === active))
-    const valid = evidence.turnOnly ? sameLiveTurn && runtime.provisionalReadsCurrent(input.sessionId) && !dispatch.stale(input.sessionId)
+    const valid = evidence.turnOnly ? sameLiveTurn && !dispatch.stale(input.sessionId)
       : dispatch.transferable(evidence)
     if (!coordination.allowsEvidence(evidence, sessionContext(input.sessionId).project) || !valid) throw new Error('Derived dependencies unavailable')
     const canonical = typeof old?.source === 'string' ? old.source : randomUUID()
@@ -492,22 +492,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!saved && input.contentDigest) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
       if (input.nativeUserSource && input.contentDigest && (!saved || contentIdentity)) nativeDerived.bind(input.messageId, input.nativeUserSource, input.nativeMessageDigest ? hash(input.nativeMessageDigest) : undefined)
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
-    })
-  }
-  function acceptFileClarification(input: { session: string; contextGeneration: number; questionId: string; text: string; requireShown: boolean },
-    stillCurrent: () => boolean) {
-    const start = sessionContext(input.session)
-    return runtime.answerFileClarification(input, () => sessionContext(input.session), () => {
-      const current = sessionContext(input.session)
-      return state === 'ready' && !hasPending() && stillCurrent() && contextRecovery.contextGeneration(input.session) === input.contextGeneration
-        && current.foregroundTurn === start.foregroundTurn && current.conversation === start.conversation
-        && !contextRecovery.pending(input.session) && coordination.allowsSession(input.session, current.project)
-    }, (sourceId, context) => {
-      db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,1)')
-        .run(input.session, sourceId, sourceId, context.conversation)
-      // The pinned Dream work owns this answer; normal turn ingestion must not
-      // run extraction or create independent daily evidence from the short reply.
-      dispatch.recordSource(input.session, sourceId)
     })
   }
   async function completeTurn(input: CompletedTurn) {
@@ -682,7 +666,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     state = 'ready'
     completeFileEffects()
     if (!hasPending()) await replayWrites()
-    runtime.resumeDocumentClarifications()
     void runtime.wake()
   }
   async function replayWrites() {
@@ -956,7 +939,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'getOperation': { completeFileEffects(); const item = operation(command.input.operationId); return item ? outcome(item) : null }
       case 'pendingHostEffects': completeFileEffects(); return pendingHostEffects()
       case 'nativeOutputEvidence': return nativeOutputs.outputEvidence(command.input.session, command.input.seq, command.input.digest)
-      case 'cancelFileClarification': return runtime.cancelFileClarification(...command.input.args)
+      case 'cancelFileClarification': return false
       case 'ackHostEffect': {
         const saved = db.prepare('SELECT payload FROM owner_host_effects WHERE id=?').get(command.input.effectId)
         if (!saved) throw new Error('Unknown host effect')
@@ -1020,15 +1003,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     switch (command.method) {
       case 'acceptQuestionAnswer': {
         const input = command.input, sourceId = input.operationId
-        if (input.questionId.startsWith(MEMORY_FILE_QUESTION_PREFIX)) {
-          const context = sessionContext(input.session), turn = context.foregroundTurn
-          const current = turn && runtime.clarificationQuestion(input.session, turn, input.questionId, 'check')
-          if (!current || current.question !== input.question || context.conversation !== input.conversation
-            || context.project?.id !== input.project?.id) throw new Error('Question is no longer authorized')
-          const accepted = await acceptFileClarification({ ...input, contextGeneration: contextRecovery.contextGeneration(input.session), requireShown: true }, () => true)
-          if (!accepted) throw new Error('Question is no longer authorized')
-          return accepted
-        }
+        if (input.questionId.startsWith(MEMORY_FILE_QUESTION_PREFIX)) throw new Error('Question is no longer authorized')
         const existing = store.readSource(sourceId)
         if (existing) {
           if (existing.erasure || existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
@@ -1038,10 +1013,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const context = sessionContext(input.session), turn = context.foregroundTurn
         if (!turn || context.conversation !== input.conversation || context.project?.id !== input.project?.id
           || !coordination.allowsSession(input.session, context.project)) throw new Error('Answer context is unavailable')
-        const clarification = runtime.clarificationQuestion(input.session, turn, input.questionId, 'check')
         const general = [...generalQuestions.values()].some(item => item.session === input.session && item.check()
           && item.cards.some(card => card.id === input.questionId && card.question === input.question))
-        if (!general && (!clarification || clarification.question !== input.question)) throw new Error('Question is no longer authorized')
+        if (!general) throw new Error('Question is no longer authorized')
         store.tx(() => {
           runtime.accept(input.text, { ...context, context: input.context }, sourceId,
             { question: input.question, requestId: input.requestId, questionId: input.questionId, custom: true },
@@ -1053,11 +1027,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         })
         return { sourceId }
       }
-      case 'clarificationQuestion': {
-        const [session, , id, phase, interjections] = command.input.args
-        const turn = sessionContext(session).foregroundTurn
-        return turn ? runtime.clarificationQuestion(session, turn, id, phase, interjections) : null
-      }
+      case 'clarificationQuestion': return null
       case 'authorizeGeneralQuestion': {
         const [session, hostTurn, cards, conversation, context, project, phase] = command.input.args
         const turn = sessionContext(session).foregroundTurn
@@ -1155,14 +1125,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     registerDerived: (input: DerivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId }, metrics: { count: input.sourceIds.length } }),
     sessionContext, handleHost,
-    recallOrigin(session: string) {
-      const origin = sessionContext(session)
-      const source = origin.foregroundTurn && db.prepare('SELECT source FROM owner_turn_sources WHERE session=? AND turn=? ORDER BY rowid DESC LIMIT 1')
-        .get(session, origin.foregroundTurn)?.source
-      return typeof source === 'string' && runtime.dispatchSourceCurrent(source) ? { ...origin, originalSource: source } : origin
-    },
-    acceptFileClarification: (...args: Parameters<typeof acceptFileClarification>) => observeDiagnosticAsync(options.diagnostics, 'memory.clarify', () => acceptFileClarification(...args),
-      { identities: { sessionId: args[0].session, requestId: args[0].questionId, generation: args[0].contextGeneration } }),
     rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {
       identities: { sessionId: args[0], requestId: args[1].operationId } }),
     forgetStandaloneFile: (...args: Parameters<typeof forgetStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.forget', () => forgetStandaloneFile(...args), {

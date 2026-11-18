@@ -22,7 +22,7 @@ import type { MemoryPluginConfig } from './config.ts'
 import { createMemoryTransport } from './transport.ts'
 import type { MemoryTransportOrigin } from './transport.ts'
 import { createSessionIngestion, retrievalQuestion } from './ingestion.ts'
-import { completeMemoryModel } from './model.ts'
+import { completeMemoryModel, memoryProviderFailure } from './model.ts'
 import { assertMemoryProviderSupported } from './providers.ts'
 import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
@@ -98,7 +98,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       return caller.run({ jobId: job.id }, () => completeMemoryModel(ctx, job, combined, tools)).catch(error => {
         if (error instanceof MemoryComputeError) throw error
         if (combined.aborted) throw new MemoryComputeError(combined.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted')
-        throw new MemoryComputeError('call-failed')
+        throw memoryProviderFailure(objectOf(error)?.code) ?? new MemoryComputeError('call-failed')
       })
     },
     quiesce: async () => {
@@ -212,7 +212,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     signal?.throwIfAborted()
     if (!owner.ready()) throw new Error('Memory owner is not ready')
     const session = String(agent.session.id)
-    const context = input.op === 'recall' || input.op === 'node_search' ? owner.recallOrigin(session) : owner.sessionContext(session)
+    const context = owner.sessionContext(session)
     const execution = caller.getStore()
     if (input.op === 'remember') {
       if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'
@@ -330,14 +330,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       contextGeneration: owner.contextGeneration(String(agent.session.id)), contentDigest: memoryOriginalContentDigest(message) })
     return { ...decision, messages: [...decision.messages, message] }
   }), { prepend: true })
-  registerMemoryTools(ctx, request, async (questionId, text, agent, signal) => {
-    const execution = caller.getStore()
-    if (!execution || !('agent' in execution) || execution.agent !== agent || signal?.aborted) return false
-    return Boolean(await owner.acceptFileClarification({ session: String(agent.session.id), contextGeneration: execution.contextGeneration,
-      questionId, text, requireShown: false }, () => !closing && !disposed.has(agent.session) && !signal?.aborted))
-  }, (questionId, agent) => {
-    owner.runtime.cancelFileClarification(String(agent.session.id), questionId)
-  })
+  registerMemoryTools(ctx, request)
 
   const receive = (raw: unknown) => {
     if (diagnosticsHub.receive(raw)) return
