@@ -2,7 +2,7 @@
 
 English | [简体中文](ci-full-acceptance.zh-CN.md)
 
-Date: 2026-11-18. Status: revised after static review, not implemented. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
+Date: 2026-11-18. Status: the safety net, conditional specialization gate, and package tier are implemented; PRs still run the complete suite and the fast collection is not enabled. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
 
 ## 1 Decisions
 

@@ -1,7 +1,6 @@
 # A release, made by pushing its tag (v0.4.0-beta.1): the version in package.json checked against the tag, the
-# installers built and smoked on both systems (package.yml, the same checks as before a release by hand), then the
-# GitHub release made from them, the notes from docs/releases/<tag>.md. A version with a dash (a beta) is marked
-# as a pre-release. Nothing is published when a step before it fails.
+# complete source acceptance and installers verified on both systems, then the GitHub release made from them.
+# A version with a dash is a beta and is marked as a pre-release. Nothing is published when a step before it fails.
 name: release
 
 on:
@@ -17,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: The tag names the version in package.json, and its notes are written
+      - name: The tag names the version in package.json and its notes are written
         run: |
           version=$(node -p "require('./package.json').version")
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
@@ -25,16 +24,22 @@ jobs:
             exit 1
           fi
           if [ ! -f "docs/releases/$GITHUB_REF_NAME.md" ]; then
-            echo "::error::docs/releases/$GITHUB_REF_NAME.md is missing: the release notes"
+            echo "::error::docs/releases/$GITHUB_REF_NAME.md is missing"
             exit 1
           fi
+
+  full:
+    needs: version
+    uses: ./.github/workflows/full.yml
 
   package:
     needs: version
     uses: ./.github/workflows/package.yml
+    with:
+      runKey: ${{ github.run_id }}
 
   publish:
-    needs: package
+    needs: [package, full]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -49,9 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$GITHUB_REF_NAME"
-          # v0.4.0-beta.1 → "Viva 0.4.0 beta 1", as the releases before were named.
-          title="Viva $(echo "${tag#v}" | sed -E 's/-([a-z]+)\.([0-9]+)$/ \1 \2/')"
+          tag="${GITHUB_REF_NAME}"
+          title="${tag} — $(echo "${tag#v}" | sed -E 's/-([a-z]+)\.([0-9]+)$/ \1 \2/')"
           prerelease=()
           if [[ "$tag" == *-* ]]; then prerelease=(--prerelease); fi
           ls -l assets

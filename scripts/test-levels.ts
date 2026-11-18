@@ -1,6 +1,7 @@
 // Explicit file-level costs. Mixed files use the more expensive level.
-// fast permits in-process DOM, SQLite and temporary files; integration uses real processes, sockets or packaging.
-// timing retains real long-duration deadlines. Keep these contracts in the full npm test collection.
+// fast permits in-process DOM, SQLite and temporary files; integration uses real processes or sockets.
+// timing retains real long-duration deadlines; package owns offline installation and artifact acceptance.
+// Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
     'memory-dream-tools',
@@ -260,7 +261,6 @@ export const testLevels = {
     'memory-document-store',
     'memory-dream-transport',
     'memory-boundaries',
-    'memory-package',
     'memory-transport',
     'memory-owner-lock',
     'app-plugins',
@@ -297,6 +297,9 @@ export const testLevels = {
     'tasks-plugin',
     'tasks-routing-dsh',
     'trace-plugin',
+  ],
+  package: [
+    'memory-package',
   ],
   timing: [
     'backend-wire-timing',

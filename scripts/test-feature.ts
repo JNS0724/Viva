@@ -102,7 +102,7 @@ export function runFeatures(args: readonly string[]): number {
     list = values.list ?? false
   } catch (error) {
     console.error(`[test:feature] ${error instanceof Error ? error.message : String(error)}`)
-    console.error(`Usage: npm run test:feature -- ${featureNames.join('|')} [more features] [--level fast|integration|timing] [--list]`)
+    console.error(`Usage: npm run test:feature -- ${featureNames.join('|')} [more features] [--level ${levelNames.join('|')}] [--list]`)
     console.error('       npm run test:fast -- [--list]')
     return 2
   }
