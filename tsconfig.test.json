@@ -7,5 +7,5 @@
     "checkJs": false
   },
   "include": ["test/**/*.ts", "scripts/live.ts", "scripts/build.ts", "scripts/build-memory-plugin.ts", "scripts/smoke-memory-plugin.ts", "scripts/live-memory.ts", "scripts/memory-semantic-evaluation.ts", "scripts/memory-semantic-cases.ts", "scripts/memory-embedding-check.ts", "scripts/memory-file-evaluation.ts", "scripts/memory-file-diagnosis.ts",
-    "scripts/memory-embedding-precision.ts", "scripts/benchmark-diagnostics.ts", "scripts/benchmark-memory-diagnostics.ts", "scripts/smoke-local-diagnostics.ts", "scripts/smoke-diagnostic-controls.ts", "scripts/smoke-diagnostics-settings.ts", "scripts/smoke-memory-availability.ts", "scripts/showcase.ts", "scripts/test-feature.ts", "scripts/prepare-memory-embedding.ts", "src/renderer/globals.d.ts"]
+    "scripts/memory-embedding-precision.ts", "scripts/benchmark-diagnostics.ts", "scripts/benchmark-memory-diagnostics.ts", "scripts/benchmark-diagnostic-flows.ts", "scripts/smoke-local-diagnostics.ts", "scripts/smoke-diagnostic-controls.ts", "scripts/smoke-diagnostics-settings.ts", "scripts/smoke-memory-availability.ts", "scripts/showcase.ts", "scripts/test-feature.ts", "scripts/prepare-memory-embedding.ts", "src/renderer/globals.d.ts"]
 }

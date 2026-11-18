@@ -73,7 +73,9 @@ export function createDiagnosticExporter({ quota, snapshots = async () => [], ti
           if (settled || exited) { await cleanup(); return }
           child.send(request)
         } catch (error) {
-          acquiring = false; reply = { status: 'failed', reason: safeDiagnosticReason(error) }
+          acquiring = false
+          const reason = safeDiagnosticReason(error)
+          reply = { status: reason === 'busy' ? 'busy' : 'failed', reason }
           state = 'cleanup_pending'; child.kill('SIGKILL')
           if (exited) await cleanup()
         }

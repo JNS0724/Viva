@@ -55,6 +55,8 @@ jobs:
         run: node scripts/smoke-diagnostics-settings.ts
       - name: Fixed-load default diagnostics latency gate
         run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/benchmark-memory-diagnostics.ts
+      - name: Conversation, task, schedule and local retrieval latency
+        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/benchmark-diagnostic-flows.ts
       - if: always()
         uses: actions/upload-artifact@v4
         with:

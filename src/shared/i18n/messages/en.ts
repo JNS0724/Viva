@@ -11,7 +11,7 @@ export const en = {
   "diagnostics.export.working": "Exporting…",
   "diagnostics.export.saved": "The diagnostic archive was saved locally.",
   "diagnostics.control.failed": "The diagnostic action failed. Please try again.",
-  "diagnostics.control.busy": "Another diagnostic action is still running. Please try again later.",
+  "diagnostics.control.busy": "The log folder is in use. Try again shortly or open the local log folder.",
   "diagnostics.clear.retry": "Retry clearing logs",
   "diagnostics.debug.help": "Turns off automatically after 15 minutes. The same content exclusions apply.",
   "diagnostics.debug.enabled": "Detailed logging is on temporarily.",

@@ -12,7 +12,7 @@ export const zhCN = {
   "diagnostics.export.working": "正在导出…",
   "diagnostics.export.saved": "诊断包已保存到本机。",
   "diagnostics.control.failed": "诊断操作未完成，请重试。",
-  "diagnostics.control.busy": "另一个诊断操作尚未结束，请稍后重试。",
+  "diagnostics.control.busy": "日志目录正在使用中。请稍后重试，或打开本地日志目录。",
   "diagnostics.clear.retry": "重试清空日志",
   "diagnostics.debug.help": "15 分钟后自动关闭，仍不记录正文和凭据。",
   "diagnostics.debug.enabled": "已临时开启详细日志。",

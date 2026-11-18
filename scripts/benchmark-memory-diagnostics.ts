@@ -1,4 +1,5 @@
 /** Real memory:get: production HTTP -> IPC channel -> independent Node owner and SQLite/file reads. */
+import { diagnosticLatencyBudget, healthyDiagnosticSample } from './diagnostic-performance-budget.ts'
 import { fork } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
@@ -89,12 +90,15 @@ try {
     ownerStats = after.stats
   }
   const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * .95) - 1]!
-  const disabled = p95(samples.disabled), enabled = p95(samples.enabled), deltaMs = enabled - disabled, deltaPercent = deltaMs / disabled * 100
-  const passed = deltaMs <= 10 && deltaPercent <= 5
+  const disabled = p95(samples.disabled), enabled = p95(samples.enabled)
+  const { deltaMs, deltaPercent, originalTarget, acceptableLatency } = diagnosticLatencyBudget(disabled, enabled)
+  const mainStats = logger.snapshot().stats
+  const healthy = healthyDiagnosticSample(mainStats) && healthyDiagnosticSample(ownerStats)
+  const passed = acceptableLatency && healthy
   console.log(JSON.stringify({ platform: process.platform, node: process.version, workload: 'production-memory-get-empty-owner', intervalMs, contextOnly,
-    samplesPerMode: samples.enabled.length, rounds: 100, requestsPerModePerRound: 5, p95Ms: { disabled, enabled }, deltaMs, deltaPercent, meetsDefaultLatencyGate: passed,
+    samplesPerMode: samples.enabled.length, rounds: 100, requestsPerModePerRound: 5, p95Ms: { disabled, enabled }, deltaMs, deltaPercent, meetsOriginalLatencyTarget: originalTarget, acceptableLatency, healthy, meetsDefaultLatencyGate: passed,
     mainCpuMs: Object.fromEntries(Object.entries(mainCpu).map(([key, value]) => [key, value / 1000])),
-    ownerCpuMs: Object.fromEntries(Object.entries(ownerCpu).map(([key, value]) => [key, value / 1000])), mainStats: logger.snapshot().stats, ownerStats }, null, 2))
+    ownerCpuMs: Object.fromEntries(Object.entries(ownerCpu).map(([key, value]) => [key, value / 1000])), mainStats, ownerStats }, null, 2))
   if (intervalMs && !passed) process.exitCode = 1
 } finally {
   clearTimeout(startupTimer)

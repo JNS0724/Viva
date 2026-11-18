@@ -97,6 +97,12 @@ function exportDiagnostics(): Promise<IpcResults['diagnostics:export']> {
   return exportingDiagnostics
 }
 const openDiagnosticsFolder = async () => { await shell.openPath(diagnosticsDirectory).catch(() => {}) }
+async function exportDiagnosticsFromMenu() {
+  const result = await exportDiagnostics()
+  if (result.status === 'busy') {
+    await dialog.showMessageBox({ type: 'info', title: t('diagnostics.export.title'), message: t('diagnostics.control.busy') })
+  }
+}
 async function clearDiagnostics() {
   const result = await diagnosticClearer.clear()
   emitDiagnostic({ event: 'diagnostics.cleared', operation: 'diagnostics.clear', outcome: result.status === 'cleared' ? 'completed' : 'failed',
@@ -124,7 +130,7 @@ function installDiagnosticsMenu() {
       const item = menu.getMenuItemById(id); if (item) item.label = t(key)
     }
   } else menu.append(new MenuItem({ id: 'viva-diagnostics', label: t('diagnostics.menu'), submenu: [
-    { id: 'viva-diagnostics-export', label: t('diagnostics.export'), click: () => { void exportDiagnostics() } },
+    { id: 'viva-diagnostics-export', label: t('diagnostics.export'), click: () => { void exportDiagnosticsFromMenu() } },
     { id: 'viva-diagnostics-open', label: t('diagnostics.open'), click: () => { void openDiagnosticsFolder() } },
     { id: 'viva-diagnostics-clear', label: t('diagnostics.clear'), click: () => { void clearDiagnosticsFromMenu() } },
     { id: 'viva-diagnostics-debug', label: t('diagnostics.debug'), click: () => debugDiagnostics(true) },
@@ -429,7 +435,7 @@ function showTray() {
     onOpen: showWindow,
     onQuit: () => app.quit(),
     onPending: openFeedPage,
-    onDiagnosticsExport: () => { void exportDiagnostics() },
+    onDiagnosticsExport: () => { void exportDiagnosticsFromMenu() },
     onDiagnosticsOpen: () => { void openDiagnosticsFolder() },
     onDiagnosticsClear: () => { void clearDiagnosticsFromMenu() },
     onDiagnosticsDebug: () => debugDiagnostics(true),

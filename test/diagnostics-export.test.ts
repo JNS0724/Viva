@@ -74,7 +74,7 @@ test('export reports a frozen live quota owner and can retry after the real lock
   paused = await pauseOwnedProcess(holder.pid!)
   const exporter = createDiagnosticExporter({ quota: new DiagnosticQuota(directory) })
   const start = performance.now()
-  assert.deepEqual(await exporter.exportBundle(destination), { status: 'failed', reason: 'busy' })
+  assert.deepEqual(await exporter.exportBundle(destination), { status: 'busy', reason: 'busy' })
   assert.ok(performance.now() - start < 5000)
   assert.equal(exporter.state(), 'idle')
   const files = await readdir(directory)

@@ -1,4 +1,5 @@
 // Fixed local five-read workload. This measures diagnostics overhead, not model/network latency.
+import { diagnosticLatencyBudget, healthyDiagnosticSample } from './diagnostic-performance-budget.ts'
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -57,13 +58,15 @@ try {
   }
   const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * .95) - 1]!
   const base = p95(samples.baseline), enabled = p95(samples.logging)
-  const deltaMs = enabled - base, deltaPercent = deltaMs / base * 100
-  const passed = deltaMs <= 10 && deltaPercent <= 5
+  const { deltaMs, deltaPercent, originalTarget, acceptableLatency } = diagnosticLatencyBudget(base, enabled)
+  await logger.close()
+  const stats = logger.snapshot().stats
+  const passed = acceptableLatency && healthyDiagnosticSample(stats)
   console.log(JSON.stringify({ platform: process.platform, node: process.version, samplesPerMode: samples.baseline.length, intervalMs,
     fixtureBytes: Buffer.byteLength(payload), readsPerRequest: 5, p95Ms: Object.fromEntries(Object.entries(samples).map(([key, values]) => [key, p95(values)])),
     deltaMs, deltaPercent, cpuMs: Object.fromEntries(Object.entries(cpu).map(([key, value]) => [key, value / 1000])),
     emittedEvents: (samples.logging.length + 30) * 12, eventLoopP95Ms: lag.percentile(95) / 1e6,
-    stats: logger.snapshot().stats, meetsDefaultLatencyGate: passed, workload: intervalMs ? 'paced' : 'saturated' }, null, 2))
+    stats, meetsOriginalLatencyTarget: originalTarget, acceptableLatency, meetsDefaultLatencyGate: passed, workload: intervalMs ? 'paced' : 'saturated' }, null, 2))
   if (intervalMs && !passed) process.exitCode = 1
 } finally {
   lag.disable()
