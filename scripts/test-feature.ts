@@ -89,15 +89,12 @@ export function runFeatures(args: readonly string[]): number {
   let files: string[]
   let label: string
   let list: boolean
-  let concurrency: number | undefined
   try {
     const { values, positionals: names } = parseArgs({
       args: [...args], allowPositionals: true,
-      options: { list: { type: 'boolean' }, all: { type: 'boolean' }, level: { type: 'string', multiple: true }, concurrency: { type: 'string' } },
+      options: { list: { type: 'boolean' }, all: { type: 'boolean' }, level: { type: 'string', multiple: true } },
     })
     if (values.all && names.length) throw new Error('Choose features or --all, not both.')
-    concurrency = values.concurrency === undefined ? undefined : Number(values.concurrency)
-    if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) throw new Error('Concurrency must be a positive integer.')
     const discovered = discoverTests(ROOT)
     auditTests(discovered)
     files = values.all ? selectAllTests(discovered, values.level) : selectTests(discovered, names, values.level)
@@ -105,7 +102,7 @@ export function runFeatures(args: readonly string[]): number {
     list = values.list ?? false
   } catch (error) {
     console.error(`[test:feature] ${error instanceof Error ? error.message : String(error)}`)
-    console.error(`Usage: npm run test:feature -- ${featureNames.join('|')} [more features] [--level ${levelNames.join('|')}] [--concurrency N] [--list]`)
+    console.error(`Usage: npm run test:feature -- ${featureNames.join('|')} [more features] [--level ${levelNames.join('|')}] [--list]`)
     console.error('       npm run test:fast -- [--list]')
     return 2
   }
@@ -117,7 +114,7 @@ export function runFeatures(args: readonly string[]): number {
   const electron: string = createRequire(import.meta.url)('electron')
   const started = performance.now()
   // An argument array, not a shell/glob command: spaces and Windows paths remain literal arguments.
-  const result = spawnSync(electron, ['--test', ...(concurrency === undefined ? [] : [`--test-concurrency=${concurrency}`]), ...files], {
+  const result = spawnSync(electron, ['--test', ...files], {
     cwd: ROOT, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'inherit',
   })
   console.log(`[test:feature] ${(performance.now() - started).toFixed(0)} ms`)

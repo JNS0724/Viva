@@ -52,7 +52,7 @@
 
 ### 4.2 条件专项必须进入同一聚合门禁
 
-新增可复用的 `memory.yml`，在 macOS 和 Windows 以 2 路测试文件并发运行完整记忆集合，避免真实 DSH/SQLite 进程过度竞争，支持 `workflow_dispatch` 与 `workflow_call`。`package.yml` 同样保留 `workflow_call`，用于相关 PR、每日和发布。
+新增可复用的 `memory.yml`，在 macOS 和 Windows 运行完整记忆集合，支持 `workflow_dispatch` 与 `workflow_call`。`package.yml` 同样保留 `workflow_call`，用于相关 PR、每日和发布。
 
 `check.yml` 的每个 PR 和 main push 都运行一个 `scope` job，计算 `memory-required` 和 `package-required`。只有这个 job 的 `actions/checkout@v5` 设置 `fetch-depth: 0`（或显式获取比较双方及其共同祖先），其他执行测试的 job 继续使用浅克隆。
 
