@@ -1115,8 +1115,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     }
     const sources = feedItemId ? [] : typeof operation === 'string' ? [operation] : [...operation]
     if (historyDb.promptPending(sources)) return Promise.reject(new Error(t('main.memory.change.pending')))
-    const interjectable = !pictures.length && !feedItemId && typeof operation === 'string'
-    if (interjectable && origin.sessionId) records.beforeUser(foregroundRequests.openingReports(), origin.sessionId, operation)
+    // Pictures are already visible and saved while they wait for a separate turn.
+    // A pending feed continuation is not saved; replay IDs may belong to earlier messages.
+    const userMessage = !feedItemId && typeof operation === 'string'
+    if (userMessage && origin.sessionId) records.beforeUser(foregroundRequests.openingReports(), origin.sessionId, operation)
+    const interjectable = userMessage && !pictures.length
     historyDb.reservePromptDelivery(sources)
     let nativeStarted = false, deliveryError: unknown
     let accepted = (_value: IpcResults['agent:prompt']) => {}, refused = (_error: unknown) => {}

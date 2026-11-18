@@ -281,6 +281,40 @@ test('a human prompt racing report busy delivery and its later steer both enter 
   } finally { history.close(); db.close() }
 })
 
+test('a picture submitted while a report is opening stays below the report and starts a separate native turn', { timeout: 45_000 }, async t => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const operation = randomUUID(), question = '看看这张图片'
+  let release = () => {}, reportWaiting = false, offset = 0
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let app: Awaited<ReturnType<typeof setup>> | undefined, incoming: Promise<IpcResults['agent:prompt']> | undefined
+  app = await setup(t, request => {
+    if (reportWaiting || !questionOf(request.messages).startsWith('【后台任务结束】')) return null
+    reportWaiting = true
+    return { text: '后台结果已整理好', waitFor: gate }
+  }, { image: true, onEvent(event) {
+    if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
+    offset = app.events.length
+    const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
+    app.call('history:save', [{ role: 'user', text: question, images: [image], sourceId: operation, receipt: null }])
+    incoming = app.call('agent:prompt', question, [image], operation)
+  } })
+  app.defer(release)
+  await app.ask('后台做：生成图片消息前的独立报告')
+  assert.ok(await eventually(() => reportWaiting && incoming !== undefined))
+  assert.ok(app.model.requests.every(raw => !JSON.stringify(raw).includes(png)))
+  release()
+  assert.notEqual((await incoming)?.accepted, false)
+  const after = app.events.slice(offset)
+  assert.deepEqual(after.filter(event => event.type === 'turn_end').map(event => event.stopReason), ['end_turn', 'end_turn'])
+  assert.ok(app.model.requests.some(raw => messageTexts(raw as Request).some(text => text.includes(question)) && JSON.stringify(raw).includes(png)))
+  assert.ok(after.some(event => event.type === 'report_delivered' && event.beforeSource === operation))
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  try {
+    assert.equal(history.prepare('SELECT seq FROM messages WHERE source_id=?').get(operation)?.seq, 0)
+    assert.deepEqual(history.prepare('SELECT after_seq FROM report_records').all().map(row => row.after_seq), [0])
+  } finally { history.close() }
+})
+
 test('a report arriving during a human turn enters that native turn as a task result', { timeout: 45_000 }, async t => {
   const brief = '生成稍后到达的独立报告', question = '先处理这个独立问题'
   let finishTask = () => {}, finishHuman = () => {}, taskWaiting = false, humanWaiting = false
