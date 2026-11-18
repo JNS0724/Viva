@@ -71,6 +71,8 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     return { profile, onboarding, cleanupPending, revision, habits: habits(),
       fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
   })
+  handle('memory:dream-status', client.dreamStatus)
+  handle('memory:run-dream', client.requestDream)
   handle('memory:list-files', client.listFiles)
   handle('memory:read-file', async (identity, restrictionId): Promise<IpcResults['memory:read-file']> => {
     const item = await client.readFile(identity, restrictionId)

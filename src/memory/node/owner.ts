@@ -1083,6 +1083,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
       case 'useHistory': return coordination.useHistory(...command.input.args)
+      case 'dreamStatus': return runtime.dreamStatus()
+      case 'requestDream': return runtime.requestDream()
       case 'listFiles': return runtime.listFiles(command.input.args[0])
       case 'readFile': return runtime.readFile(...command.input.args)
       case 'fileProfile': return runtime.fileProfile(...command.input.args)

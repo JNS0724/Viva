@@ -29,7 +29,8 @@ import type { DreamCalculate } from './memory-dream-jobs.ts'
 import { guardDiagnosticPort, NO_DIAGNOSTICS, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 import type { DiagnosticOutcome, DiagnosticReason } from '../../diagnostics/contracts.ts'
-import { createMemoryDreamJobs } from './memory-dream-jobs.ts'
+import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
+import { createMemoryDreamJobs, dreamHistory } from './memory-dream-jobs.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import { createMemoryFileManagement } from './memory-file-management.ts'
@@ -459,7 +460,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       }
     }
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
-    notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics,
+    store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics,
     settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: fileSourceAllowsUse,
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
@@ -1147,6 +1148,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     writeSourceFile,
     undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'undo' }, committed),
+    dreamStatus: (): MemoryDreamStatus => dream?.status() ?? { state: 'disabled', ...dreamHistory(store) },
+    requestDream: (): MemoryDreamStatus => dream?.request() ?? { state: 'disabled', ...dreamHistory(store) },
     runDocumentDream: () => { dream?.run(); return effects.wake() },
     readDocument: documents?.read,
     listDocuments: documents?.list,

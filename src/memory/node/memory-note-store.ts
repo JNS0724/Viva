@@ -605,7 +605,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       })
     },
     markProcessed(key: string, revision: number) {
-      db.prepare('UPDATE memory_daily_notes SET processed=? WHERE key=? AND revision=?').run(revision, key, revision)
+      return Number(db.prepare('UPDATE memory_daily_notes SET processed=? WHERE key=? AND revision=? AND processed<>revision').run(revision, key, revision).changes) > 0
     },
     withdraw: (sourceId: string) => removeEvidence(sourceId),
     eraseSource: (cut: DocumentSourceCut) => removeEvidence(cut.id, cut),

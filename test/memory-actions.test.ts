@@ -73,7 +73,9 @@ test('a failed reopen of About You offers an operable retry after a previous loa
   rejectLoad = true
   assert.equal(await actions.loadMemory(), false)
   assert.equal(state.memory.loaded, true, 'a previous capability load is cached')
+  dispatch({ type: 'memory_dream_status', status: { state: 'idle', lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null } })
   const failed = draw(state.memory, actions as Handlers)
+  assert.ok(failed.some(node => node.attrs['data-dream-state'] === 'idle'))
   assert.ok(failed.some(node => node.attrs.role === 'alert' && node.textContent.includes('Disconnected from owner')))
   assert.ok(!failed.some(node => node.textContent === '正在加载记忆…'))
   const retry = failed.find(node => node.tag === 'button' && node.textContent === '重新加载')
@@ -279,4 +281,34 @@ test('index rebuild runs once at a time and reports success and incomplete reset
   await retry
   assert.equal(state.memory.rebuildingIndexes, false)
   assert.equal(toasts.at(-1), '无法启动记忆索引重建，请重试。')
+})
+
+test('Dream ignores a stale status read after a manual request and coalesces rapid clicks', async t => {
+  const { draw } = profileDom(t)
+  let state = reduce(initialState, { type: 'memory_open' })
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  dispatch({ type: 'memory_loaded', data: { profile: {}, habits: { text: '', samples: 0 }, onboarding: 'done' } })
+  const idle = { state: 'idle' as const, lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null }
+  dispatch({ type: 'memory_dream_status', status: idle })
+  let resolveRead!: (value: typeof idle) => void, resolveStart!: () => void, starts = 0
+  const api = {
+    getDreamStatus: () => new Promise<typeof idle>(resolve => { resolveRead = resolve }),
+    async runDream() { starts++; await new Promise<void>(resolve => { resolveStart = resolve }); return { ...idle, state: 'running' as const } },
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
+  t.after(() => actions.watchDream(false))
+  actions.watchDream(true)
+  const submitted = actions.runDream()
+  await actions.runDream()
+  assert.equal(starts, 1)
+  resolveStart()
+  await submitted
+  resolveRead(idle)
+  await Promise.resolve()
+  assert.equal(state.memory.dream?.state, 'running')
+  const nodes = draw(state.memory, actions as Handlers)
+  assert.ok(nodes.some(node => node.attrs['data-dream-state'] === 'running'))
+  assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent.includes('正在整理')))
+  const unchanged = reduce(state, { type: 'memory_dream_status', status: state.memory.dream })
+  assert.equal(unchanged, state)
 })

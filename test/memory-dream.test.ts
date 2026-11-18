@@ -47,7 +47,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
   let model: DreamCalculate = defaultModel
   let beforeMutation = () => {}
   let afterCommit: (receipt: DocumentReceipt) => void = () => {}
-  const start = () => createMemoryDreamJobs({ notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
+  const start = () => createMemoryDreamJobs({ store, notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
     diagnostics: options.diagnostics,
     settings: { timezone: 'UTC', dreamUnits: options.units ?? 5, dreamBatchBytes: options.budget ?? 40_000 },
     readable, eligible: options.eligible ?? (() => true), source: id => store.readSource(id) ?? undefined,
@@ -73,6 +73,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
       sources: notes.references(note.key), reads: [] })
   const run = async () => { jobs.run(); await effects.wake() }
   return { store, notes, documents, requests, addSource, add, seedDigest, run, defaultModel,
+    status: () => jobs.status(), request: () => jobs.request(), settle: () => effects.wake(),
     setFixture(options: Parameters<typeof dreamModelStep>[2]) { fixtureOptions = options },
     setModel(next: DreamCalculate) { model = next },
     beforeMutation(next: () => void) { beforeMutation = next }, afterCommit(next: (receipt: DocumentReceipt) => void) { afterCommit = next },
@@ -83,6 +84,62 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
     sourceRef: (original: MemorySource) => ({ id: original.id, token: memorySourceToken(original) }),
   }
 }
+
+test('manual Dream acknowledges immediately, joins the scheduled job and keeps actual processing time across empty checks and restart', async t => {
+  const h = harness(t)
+  assert.deepEqual(h.status(), { state: 'idle', lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null })
+  h.add('The team files reports every Friday.')
+  let release!: () => void, entered!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  h.setModel(async request => {
+    if (request.stage === 'extract') { entered(); await gate }
+    return h.defaultModel(request)
+  })
+  assert.equal(h.request().state, 'queued')
+  assert.equal(h.request().state, 'queued')
+  await started
+  assert.equal(h.request().state, 'running')
+  release()
+  await h.settle()
+  const done = h.status()
+  assert.equal(done.state, 'idle')
+  assert.ok(done.lastProcessedAt)
+  assert.equal(done.lastCheckedAt, done.lastProcessedAt)
+  assert.equal(h.requests.filter(request => request.stage === 'extract').length, 1)
+  h.advance(60_000)
+  h.request()
+  await h.settle()
+  h.restart()
+  assert.deepEqual(h.status(), { state: 'idle', lastCheckResult: 'empty', lastCheckedAt: done.lastProcessedAt + 60_000, lastProcessedAt: done.lastProcessedAt })
+})
+
+test('an oversized singleton is recorded as skipped without moving the last processing time', async t => {
+  const h = harness(t)
+  h.add('A very large note.')
+  h.setModel(async () => { throw new MemoryComputeError('context-window-exceeded') })
+  h.request()
+  await h.settle()
+  h.restart()
+  assert.equal(h.status().lastCheckResult, 'size-limit')
+  assert.ok(h.status().lastCheckedAt)
+  assert.equal(h.status().lastProcessedAt, null)
+})
+
+test('a failed Dream stays retryable and leaves the last successful check untouched', async t => {
+  const h = harness(t)
+  h.add('Remember the report.')
+  h.setModel(async () => { throw new MemoryComputeError('timeout') })
+  h.request()
+  await h.settle()
+  assert.deepEqual(h.status(), { state: 'retry', lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null })
+  h.restart()
+  assert.equal(h.status().state, 'retry')
+  h.setModel(h.defaultModel)
+  assert.equal(h.request().state, 'queued')
+  await h.settle()
+  assert.ok(h.status().lastProcessedAt)
+})
 
 test('dream diagnostics distinguish invalid model output, provider failures and retries without changing recovery', async t => {
   const events: DiagnosticEvent[] = []
@@ -306,6 +363,7 @@ test('temporary recovery admission preserves the same pending dream until the ne
   const before = h.store.db.prepare("SELECT generation,due_at,attempts FROM effects WHERE kind='memory.dream'").get()
   assert.equal(before?.attempts, 0, 'waiting for admission is not a provider failure')
   assert.equal(h.notes.read(note.key)?.processed, 0)
+  assert.equal(h.status().state, 'waiting')
   ready = true
   await h.retry()
   assert.ok(h.requests.some(request => request.stage === 'extract'))
@@ -562,6 +620,9 @@ test('successful paths checkpoint independently while a failed unit remains dura
     return h.defaultModel(request)
   })
   await h.run()
+  assert.ok(h.status().lastProcessedAt)
+  assert.equal(h.status().lastCheckedAt, null)
+  assert.equal(h.status().state, 'retry')
   assert.equal(h.notes.read(first.key)?.processed, h.notes.read(first.key)?.revision)
   assert.equal(h.notes.read(second.key)?.processed, 0)
   failed = false; h.restart(); await h.retry()

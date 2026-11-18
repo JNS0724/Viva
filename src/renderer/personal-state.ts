@@ -1,3 +1,4 @@
+import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
 import type { MemoryFileProfile } from '../memory/contracts/file-management.ts'
 import type { ActionHandlers } from './action-types.ts'
 import { initialMemoryFiles } from './memory-file-state.ts'
@@ -16,6 +17,9 @@ export const initialMemory = Object.freeze({
   /** Pending jobs in owner storage. Host and native receipts are tracked separately. */
   cleanupPending: 0,
   rebuildingIndexes: false,
+  dream: null as MemoryDreamStatus | null,
+  dreamUnavailable: false,
+  requestingDream: false,
   fileProfile: null as MemoryFileProfile | null,
   onboarding: 'pending',
   habits: { text: '', samples: 0 },
@@ -90,6 +94,14 @@ export const PERSONAL_ACTIONS= {
   memory_failed: (state, { message }) => withMemory(state, { busy: false, error: message }),
   memory_profile_saved: (state, { profile }) => withMemory(state, { profile, editing: null, busy: false, error: null }),
   memory_summaries_stale: (state) => state.memory.fileProfile ? withMemory(state, { fileProfile: null }) : state,
+  memory_dream_status: (state, { status }) => {
+    const previous = state.memory.dream
+    if (!status) return state.memory.dreamUnavailable ? state : withMemory(state, { dreamUnavailable: true })
+    if (!state.memory.dreamUnavailable && previous?.state === status.state && previous.lastCheckResult === status.lastCheckResult && previous.lastCheckedAt === status.lastCheckedAt
+      && previous.lastProcessedAt === status.lastProcessedAt) return state
+    return withMemory(state, { dream: status, dreamUnavailable: false })
+  },
+  memory_dream_requesting: (state, { busy }) => withMemory(state, { requestingDream: busy }),
   memory_index_rebuild: (state, { busy }) => withMemory(state, { rebuildingIndexes: busy }),
   memory_onboarding: (state, { status }) => withMemory(state, { onboarding: status }),
   memory_docs_added: (state, { docs }) => withMemory(state, {

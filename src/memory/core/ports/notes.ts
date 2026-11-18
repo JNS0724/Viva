@@ -111,7 +111,7 @@ export interface MemoryNotes {
         markdown: string;
         filename?: string;
     }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options?: { rebuild?: boolean }): boolean;
-    markProcessed(key: string, revision: number): void;
+    markProcessed(key: string, revision: number): boolean;
     withdraw(sourceId: string): string[];
     eraseSource(cut: DocumentSourceCut): string[];
 }

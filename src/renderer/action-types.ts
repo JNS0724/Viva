@@ -137,6 +137,8 @@ export interface ActionPayloads extends ConversationPayloads {
   memory_failed: { message: string }
   memory_profile_saved: { profile: State['memory']['profile'] }
   memory_summaries_stale: {}
+  memory_dream_status: { status: State['memory']['dream'] }
+  memory_dream_requesting: { busy: boolean }
   memory_index_rebuild: { busy: boolean }
   memory_onboarding: { status: State['memory']['onboarding'] }
   memory_docs_added: { docs: State['memory']['docs'] }

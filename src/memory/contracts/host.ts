@@ -1,3 +1,4 @@
+import type { MemoryDreamStatus } from './dream-status.ts'
 import { z } from 'zod'
 import { memoryProvenanceSchema, type MemoryErasureEvidence } from './provenance.ts'
 import type { MemoryProvenance } from './records.ts'
@@ -28,6 +29,8 @@ export type SourceChangeInput = { operationId: string, conversation: string, ids
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
+  dreamStatus: Args<[], MemoryDreamStatus>
+  requestDream: Args<[], MemoryDreamStatus>
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
   readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
   setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
@@ -102,7 +105,7 @@ const empty = args(z.tuple([]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
-  profile: empty,
+  profile: empty, dreamStatus: empty, requestDream: empty,
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),

@@ -10,7 +10,8 @@ import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryIdentity } from './ports/runtime.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import type { MemoryNotes } from './ports/notes.ts'
-import type { MemorySource } from './ports/store.ts'
+import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
+import type { MemoryStore, MemorySource } from './ports/store.ts'
 import type { DocumentCorrection, DocumentReceipt, DocumentSourceRef, MemoryDocuments } from './ports/documents.ts'
 import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
@@ -28,7 +29,7 @@ export type DreamCalculate = (request: {
   sourceIds: () => readonly string[], current: () => boolean, tools?: MemoryComputeTools,
 }) => Promise<string | undefined>
 const sourceRefSchema = z.object({ id: z.string(), token: z.string(), spans: z.array(z.object({ start: z.int().nonnegative(), end: z.int().positive() })).optional() })
-const fileRefSchema = z.object({ key: z.string(), workspace: z.string(), path: z.string(), revision: z.string(), policyToken: z.string().min(1), checkpoint: z.int(), sources: z.array(sourceRefSchema), reads: z.array(z.object({ id: z.string(), revision: z.string(), usageVersion: z.int() })).default([]) })
+const fileRefSchema = z.object({ key: z.string(), workspace: z.string(), path: z.string(), revision: z.string(), policyToken: z.string().min(1), checkpoint: z.int(), oversized: z.literal(true).optional(), sources: z.array(sourceRefSchema), reads: z.array(z.object({ id: z.string(), revision: z.string(), usageVersion: z.int() })).default([]) })
 const planSchema = z.object({
   version: z.literal(1), files: z.array(fileRefSchema),
   units: z.array(z.object({ workspace: z.string(), operationId: z.string(), unit: dreamUnitSchema, state: z.enum(['pending', 'done', 'deferred']) })),
@@ -72,10 +73,20 @@ export function batchDreamNotes<T extends { day: string, document: string }>(not
   return batches
 }
 
+export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
+  const read = (key: string) => {
+    const value = store.meta(key)
+    return value === undefined ? null : Number(value)
+  }
+  const result = store.meta('dream.lastCheckResult')
+  const lastCheckResult: MemoryDreamStatus['lastCheckResult'] = result === 'empty' || result === 'processed' || result === 'size-limit' ? result : null
+  return { lastCheckResult, lastCheckedAt: read('dream.lastCheckedAt'), lastProcessedAt: read('dream.lastProcessedAt') }
+}
+
 /** Four-stage document jobs. Storage and provider message/reasoning state stay behind their respective ports. */
-export function createMemoryDreamJobs({ notes, documents, effects, identity, now, settings, readable, eligible, source, reference,
+export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
   calculate, transaction, mutate, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
-  notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
+  store: Pick<MemoryStore, 'meta' | 'setMeta'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
@@ -98,6 +109,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
   const schedule = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
+  let active = false
+  let waitingGeneration: number | null = null
+  const status = (): MemoryDreamStatus => {
+    const scheduled = effects.timing(DREAM, DAILY)
+    return {
+      state: active ? 'running' : scheduled?.generation === waitingGeneration ? 'waiting'
+        : scheduled && scheduled.dueAt <= now() ? 'queued' : scheduled?.attempts ? 'retry' : 'idle',
+      ...dreamHistory(store),
+    }
+  }
   const refOf = (note: Note, view = policy.read(note.workspace, note.path)): FileRef => {
     if (!view || view.applicability.state === 'unavailable') throw new MemoryDreamStaleError()
     return { key: note.key, workspace: note.workspace, path: note.path, revision: note.fileRevision,
@@ -140,15 +161,26 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   function persist(job: Effect, plan: DreamPlan) {
     if (!effects.amend(job, plan)) throw new MemoryDreamStaleError()
   }
+  function checkpointFiles(plan: DreamPlan, at: number) {
+    let advanced = false
+    for (const file of plan.files) {
+      const waiting = plan.units.some(item => item.workspace === file.workspace && item.unit.paths.includes(file.path) && item.state !== 'done')
+      if (!waiting && fileCurrent(file) && notes.markProcessed(file.key, file.checkpoint) && !file.oversized) advanced = true
+    }
+    if (advanced) store.setMeta('dream.lastProcessedAt', String(at))
+  }
   function complete(job: Effect, plan: DreamPlan): Outcome {
     if (!effects.holds(job)) return 'done'
     transaction(() => {
-      for (const file of plan.files) {
-        const waitingUnit = plan.units.some(item => item.workspace === file.workspace && item.unit.paths.includes(file.path) && item.state !== 'done')
-        if (!waitingUnit && fileCurrent(file)) notes.markProcessed(file.key, file.checkpoint)
-      }
+      const at = now()
+      checkpointFiles(plan, at)
       if (plan.retryExtraction) effects.amend(job, {})
-      else { effects.finishGeneration(job); schedule() }
+      else {
+        store.setMeta('dream.lastCheckedAt', String(at))
+        store.setMeta('dream.lastCheckResult', plan.files.some(file => file.oversized) ? 'size-limit' : plan.files.length ? 'processed' : 'empty')
+        effects.finishGeneration(job)
+        schedule()
+      }
     })
     return plan.retryExtraction ? 'retry' : 'done'
   }
@@ -186,8 +218,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         const current = () => effects.holds(job) && refs.every(fileCurrent) && extractedReadsCurrent(refs)
           && seen.every(snapshot => view.read(snapshot.path)?.policyToken === snapshot.policyToken)
         if (!current()) { progress(job, 'source_changed', 'extract'); plan.retryExtraction = true; return }
-        const rememberFiles = () => {
-          for (const file of refs) if (!plan.files.some(previous => previous.key === file.key)) plan.files.push(file)
+        const rememberFiles = (oversized = false) => {
+          for (const file of refs) if (!plan.files.some(previous => previous.key === file.key)) plan.files.push(oversized ? { ...file, oversized: true } : file)
         }
         const split = async () => {
           const middle = Math.floor(batch.length / 2)
@@ -220,7 +252,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
               progress(job, 'oversized', 'extract', attempt)
               if (batch.length > 1) await split()
               // Its persisted note revision is reconsidered when its content changes.
-              else rememberFiles()
+              else rememberFiles(true)
               return
             }
             if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'extract', attempt)
@@ -506,8 +538,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     else await tag(job, plan)
     if (retry || wait) {
       // Successful paths can checkpoint independently; the durable plan still retains failed units for retries.
-      for (const file of plan.files) if (fileCurrent(file) && !plan.units.some(item => item.workspace === file.workspace
-        && item.unit.paths.includes(file.path) && item.state !== 'done')) notes.markProcessed(file.key, file.checkpoint)
+      if (effects.holds(job)) transaction(() => checkpointFiles(plan, now()))
       return retry ? 'retry' : 'wait'
     }
     return complete(job, plan)
@@ -515,17 +546,30 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   effects.runs(DREAM, async jobs => {
     const outcomes = new Map<string, Outcome>()
     for (const job of jobs) {
+      active = true
+      waitingGeneration = null
       try {
         const outcome = await runJob(job)
+        if (outcome === 'wait') waitingGeneration = job.generation
         outcomes.set(job.key, outcome)
         progress(job, outcome === 'retry' ? 'retry' : outcome === 'wait' ? 'external_wake' : 'normal')
       } catch (error) { progress(job, safeDiagnosticReason(error)); outcomes.set(job.key, 'retry') }
+      finally { active = false }
     }
     return outcomes
   }, attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))
   documents.settleInterruptedTagAttempts()
   transaction(() => { if (!effects.get(DREAM, DAILY)) schedule() })
   return {
+    status,
+    request() {
+      const state = status().state
+      if (state !== 'running' && state !== 'queued') {
+        transaction(() => effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null))
+      }
+      if (state !== 'running') void effects.wake()
+      return status()
+    },
     run() {
       transaction(() => effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null))
       void effects.wake()

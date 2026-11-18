@@ -160,6 +160,17 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   const keptIntro = await run(win, `window.agent.getMemory().then(({ profile, onboarding }) => ({ role: profile.role?.value, onboarding }))`)
   expect(keptIntro.role === ROLE && keptIntro.onboarding === 'done', 'the intro role and completed onboarding should both be persisted', keptIntro)
 
+  await run(win, `document.getElementById('open-profile').click()`)
+  await run(win, `document.querySelector('.hub-nav[data-page="profile"]').click()`)
+  const runDream = 'button[name="memory-run-dream"]'
+  await until(win, `Boolean(document.querySelector('${runDream}:enabled'))`, 'Dream manual action available')
+  await run(win, `document.querySelector('${runDream}').click()`)
+  await until(win, `document.querySelector('[data-dream-state="idle"]')?.textContent.includes('无新日记')`, 'Dream completed its first empty check')
+  await run(win, `document.querySelector('${runDream}').scrollIntoView({ block: 'center' })`)
+  await until(win, `!document.querySelector('.toast')`, 'intro feedback dismissed before capturing the Dream controls')
+  await capture(win, outDir, 'memory-dream-status')
+  await closeProfile(win)
+
   const note = await writeDailyMemory(win, REPORT_MEMORY, REPORT_TITLE)
   await openDailyMemory(win, note.identity)
   const page = await run(win, `({

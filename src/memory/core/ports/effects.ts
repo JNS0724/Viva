@@ -15,6 +15,7 @@ export interface Effects {
     finish: (kind: string, key: string) => void;
     finishGeneration: (effect: Pick<Effect, "kind" | "key" | "generation">) => boolean;
     holds: (effect: Pick<Effect, "kind" | "key" | "generation">) => boolean;
+    timing(kind: string, key: string): { dueAt: number, attempts: number, generation: number } | undefined;
     get: (kind: string, key: string) => Effect | null;
     amend: (effect: Pick<Effect, "kind" | "key" | "generation">, payload: object) => boolean;
     cancelStarting: (kind: string, prefix: string) => void;

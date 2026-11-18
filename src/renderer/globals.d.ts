@@ -107,7 +107,8 @@ type IslandAct = (action: { kind: string, [field: string]: unknown }) => void
 type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
 /** The window's state: what state.ts's initialState can become. */
-type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info' | 'diagnostics'> & ConversationView & {
+type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info' | 'diagnostics' | 'memory'> & ConversationView & {
+  memory: Omit<Widened<typeof import('./personal-state.ts').initialMemory>, 'dream'> & { dream: import('../memory/contracts/dream-status.ts').MemoryDreamStatus | null }
   info: AgentInfo, diagnostics: import('./diagnostics-types.ts').DiagnosticsState
 }
 /**
@@ -224,6 +225,8 @@ interface AgentApi extends DraftApi {
   diagnosticsStatus: Invoke<'diagnostics:status'>
   clearDiagnostics: Invoke<'diagnostics:clear'>
   debugDiagnostics: Invoke<'diagnostics:debug'>
+  getDreamStatus: Invoke<'memory:dream-status'>
+  runDream: Invoke<'memory:run-dream'>
   listMemoryFiles: Invoke<'memory:list-files'>
   readMemoryFile: Invoke<'memory:read-file'>
   setMemoryFileEnabled: Invoke<'memory:set-file-enabled'>

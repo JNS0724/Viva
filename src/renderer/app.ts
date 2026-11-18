@@ -365,6 +365,7 @@ function watchReaderEdges() {
 let shownStars: unknown = null
 /** After each render: the stars of the segments on screen read back, and the stars shown in step with them. */
 afterRender = () => {
+  syncDreamVisibility()
   watchReaderEdges()
   reviewActions.refreshStars([
     ...state.earlier.segments.map((segment) => segment.id), String(state.conversationId ?? ''),
@@ -438,6 +439,11 @@ const conversationActions = createConversationActions({
 const { ask, answer, provideSecrets, sendAfterTurn } = conversationActions
 beforeSelection = conversationActions.clearAfterTurn
 
+function syncDreamVisibility() {
+  memoryActions.watchDream(document.visibilityState !== 'hidden' && state.memory.open && state.memory.view === 'profile'
+    && !state.memory.files.editor && !state.memory.files.selection)
+}
+document.addEventListener('visibilitychange', syncDreamVisibility)
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
 const rewindActions = createRewindActions({ api, getState: () => state, dispatch, showToast: historyActions.showToast, errorMessage, ask })
 const taskActions = createTaskActions({

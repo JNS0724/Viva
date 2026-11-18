@@ -29,6 +29,28 @@ export function introChanges(values: IntroValues) {
 /** The "关于你" page and the intro. */
 export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask, readBudgetMs = MEMORY_READ_BUDGET_MS }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'> & { readBudgetMs?: number }) {
   const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage })
+  // Status reads use a separate, lightweight owner call. Closing the list invalidates late replies.
+  let watchingDream = false, dreamRequest = 0
+  let dreamTimer: ReturnType<typeof setTimeout> | undefined
+  async function refreshDream(start = false) {
+    clearTimeout(dreamTimer)
+    const request = ++dreamRequest
+    try {
+      const status = await (start ? api.runDream() : api.getDreamStatus())
+      if (request === dreamRequest && watchingDream) dispatch({ type: 'memory_dream_status', status })
+    } catch {
+      if (request === dreamRequest && watchingDream) {
+        dispatch({ type: 'memory_dream_status', status: null })
+        if (start) showToast(t('dream.start.failed'))
+      }
+    } finally {
+      if (start) dispatch({ type: 'memory_dream_requesting', busy: false })
+      if (request === dreamRequest && watchingDream) {
+        const state = getState().memory.dream?.state
+        dreamTimer = setTimeout(() => { void refreshDream() }, state === 'queued' || state === 'running' ? 1000 : 10000)
+      }
+    }
+  }
   let memoryRequest = 0
   let active: { page: string, lifetime: ReturnType<typeof createRequestBudget>, promise: Promise<boolean> } | undefined
   const fail = (err: unknown) => dispatch({ type: 'memory_failed', message: errorMessage(err) })
@@ -74,6 +96,19 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
 
   return {
     ...files,
+    watchDream(visible: boolean) {
+      if (visible === watchingDream) return
+      watchingDream = visible
+      dreamRequest++
+      clearTimeout(dreamTimer)
+      if (visible) void refreshDream()
+    },
+    async runDream() {
+      const { dream, requestingDream, dreamUnavailable } = getState().memory
+      if (!watchingDream || requestingDream || dreamUnavailable || !dream || ['disabled', 'running', 'queued'].includes(dream.state)) return
+      dispatch({ type: 'memory_dream_requesting', busy: true })
+      await refreshDream(true)
+    },
     loadMemory,
     openProfile(view = 'profile') {
       files.cancelReads()
