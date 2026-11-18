@@ -44,7 +44,7 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
     const stream = at !== null && message.streamKey ? { streamKey: message.streamKey, ...(message.blocks ? { streamBlocks: message.blocks } : {}) } : {}
     return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
   }),
-  thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
+  thoughts: [], tools: {}, modelCalls: {}, timeline: [], permission: null, question: null, secret: null,
   turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null,
 })
 
@@ -319,11 +319,11 @@ export function taskActions() {
       const known = (id: string | null) => state.tasks.list.some((task) => task.id === id)
       const selected = [taskId, state.tasks.page.selected].find((id) => id && known(id)) ?? firstOnPage(state)
       // Opened again, its steps start folded; the task shown, if ended, is seen.
-      return markSeen(withTasks({ ...state, island: false }, { page: { open: true, selected, steps: false, allSteps: false } }), selected)
+      return markSeen(withTasks({ ...state, island: false, traceDetail: null }, { page: { open: true, selected, steps: false, allSteps: false } }), selected)
     },
     /** Left, the task it showed has been seen, also when the page picked it by itself (shownOnPage). */
-    tasks_page_close: (state) => withTasks(markSeen(state, state.tasks.page.open ? shownOnPage(state) : null), { page: { ...state.tasks.page, open: false } }),
-    tasks_page_select: (state, { taskId }) => markSeen(withTasks(state, { page: { ...state.tasks.page, selected: taskId, allSteps: false } }), taskId),
+    tasks_page_close: (state) => withTasks(markSeen({ ...state, traceDetail: null }, state.tasks.page.open ? shownOnPage(state) : null), { page: { ...state.tasks.page, open: false } }),
+    tasks_page_select: (state, { taskId }) => markSeen(withTasks({ ...state, traceDetail: null }, { page: { ...state.tasks.page, selected: taskId, allSteps: false } }), taskId),
     /** The tasks seen by the last launch, so a relaunch does not remind of them again. */
     tasks_seen_restored: (state, { ids }) => withTasks(state, {
       seen: [...new Set([...state.tasks.seen, ...(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [])])],

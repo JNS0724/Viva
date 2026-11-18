@@ -118,6 +118,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** Its own session gone: a new conversation in `dir` going on from its saved records. */
   continueFromRecords: (id, dir) => ipcRenderer.invoke('history:continue-from-records', id, dir),
   loadTrace: (id, until) => ipcRenderer.invoke('history:trace', id, until),
+  loadModelRequest: (conversationId, sessionId, turn, step) => ipcRenderer.invoke('history:model-request', conversationId, sessionId, turn, step),
   renameConversation: (id, title) => ipcRenderer.invoke('history:rename', id, title),
   pinConversation: (id, pinned) => ipcRenderer.invoke('history:pin', id, pinned),
   deleteConversation: (id) => ipcRenderer.invoke('history:delete', id),

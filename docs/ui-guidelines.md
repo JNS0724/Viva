@@ -104,6 +104,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
 - **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail.
 - **Drawer.** `--drawer-width` is 440px. At 1100px and narrower, it floats over the conversation. When a request is waiting in the conversation, the drawer offers **View request** to close it and focus the request.
+- **Activity details.** **View activity** under a conversation receipt opens the right drawer. Every node has a read-only detail view, with long content scrolling across the detail body. A model call exposes its actual prompt, message roles and raw JSON; credential values are never shown. The title-bar capsule no longer unfolds activity: ordinarily it opens the Background page, while a pending foreground request keeps its jump to the request card.
 - **Breakpoints.** 720px (pages go to one column), 760px (home cards stack), 1100px (the drawer floats). The minimum window size is 880×600.
 - **Layers (z-index):**
 
@@ -112,7 +113,7 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 | 1–10 | Inside a region: column grips 6, turn rail 9, dropdowns 10 |
 | 29–30 | Menus over content and their scrims, the drawer on narrow windows |
 | 32 | Hub pages (search · about you · settings · 后台 · 动态; 动态 without the sidebar) |
-| 35 | Title bar (the island unfolds over the conversation) |
+| 35 | Title bar |
 | 50 | Modal dialogs, `.overlay` |
 | 60 | Toasts, the working-directory sheet's scrim |
 | 61 | The first-time working-directory sheet |
@@ -204,7 +205,7 @@ Elevation (only for things that float):
 Motion:
 
 - Hover, opacity and small moves: 0.1–0.15s. Color, border and shadow: 0.3s.
-- The title-bar island resizes with `cubic-bezier(.3, 1.3, .5, 1)` over 0.5s. The desktop portrait has no geometry transition; neighbouring content switches directly, with immediate layout changes while dragging.
+- The desktop portrait has no geometry transition; neighbouring content switches directly, with immediate layout changes while dragging.
 - Looping animation only means "in progress", "waiting on you" or "a result not yet seen": spinners, pulse dots, breathing, the typing caret, her animations. Each has its own rhythm: a turning spinner is in progress; a quicker outward pulse waits on you; the slowest breathing in place, brightening and dimming, is a result not yet seen, and stops once seen. Where she may move is set in [Her character](#her-character).
 - `prefers-reduced-motion: reduce` turns off all animation and transitions globally. A new looping animation still gets its own reduce rule, with a still state where one is needed (for example, breathing rests at `opacity: .8`).
 

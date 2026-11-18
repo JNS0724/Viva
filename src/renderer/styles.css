@@ -680,6 +680,51 @@ html:not([data-platform="darwin"]) .titlebar {
   font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--ink-2); background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
 }
+.trace-node { width: 100%; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
+.trace-node:hover, .trace-node:focus-visible { background: var(--panel); }
+.trace-node .trace-detail { display: block; }
+/* Detail subpages for every process node (view/trace-detail.ts). */
+.trace-detail-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.trace-detail-head { display: flex; align-items: center; gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.trace-detail-head > .icon-btn { width: 36px; height: 36px; }
+.trace-detail-heading { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.trace-detail-heading > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.trace-detail-heading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-3); font: 11px var(--font-mono); }
+.trace-detail-heading > .trace-dimension { color: var(--ink-3); font: 500 12px var(--font-sans); }
+.trace-detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 13px 18px; border-bottom: 1px solid var(--line); color: var(--ink-3); font-size: 11px; }
+.trace-detail-status { margin-left: auto; color: var(--accent); font-size: 12px; }
+.trace-detail-status[data-tone="error"] { color: var(--error-ink); }
+.trace-detail-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 11px 18px; border-bottom: 1px solid var(--line); }
+.trace-detail-tools .icon-btn { width: 32px; height: 32px; border-radius: 8px; }
+.trace-detail-tools .btn-text { min-height: 32px; font-size: 12px; white-space: nowrap; }
+.trace-local { display: inline-flex; margin-left: auto; color: var(--ink-3); }
+.trace-local + .trace-copy { margin-left: 0; }
+.trace-copy.copied::before { content: '✓'; color: var(--accent); }
+.trace-detail-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.trace-detail-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.trace-structured { padding: 0 18px 20px; }
+.trace-model-overview { display: flex; justify-content: space-between; gap: 12px; padding: 14px 0 11px; color: var(--ink-3); font-size: 11px; }
+.trace-model-overview b { color: var(--ink-2); font-weight: 500; }
+.trace-detail-section, .trace-message { padding: 17px 0 19px; border-top: 1px solid var(--line); }
+.trace-detail-section:first-child, .trace-message:first-child { border-top: 0; }
+.trace-section-head, .trace-message-head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; }
+.trace-section-head { justify-content: space-between; color: var(--ink-3); font-size: 12px; }
+.trace-section-head b { color: var(--ink-2); font-weight: 500; }
+.trace-longtext { margin: 0; color: var(--ink-2); font: 13px/1.75 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.trace-role { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 6px; background: var(--raised); color: var(--ink-2); font-size: 12px; font-weight: 700; }
+.trace-role[data-role="system"] { color: var(--accent); }
+.trace-message-index { margin-left: auto; color: var(--ink-3); font: 11px var(--font-mono); }
+.trace-raw { padding: 18px; }
+.trace-detail-privacy { padding: 11px 18px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 11px; line-height: 1.6; }
+.trace-privacy-note { margin: 12px 0; padding: 12px; border: 1px dashed var(--line-2); border-radius: 10px; color: var(--ink-3); font-size: 12px; line-height: 1.7; }
+.trace-related { align-self: flex-start; margin: 4px 0 18px; font-size: 12px; }
+.trace-file-row { padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink-2); font: 12px var(--font-mono); overflow-wrap: anywhere; }
+.trace-memory-card, .trace-question { padding: 12px; margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.trace-memory-card b { font-size: 13px; }
+.trace-memory-card p, .trace-question p { margin: 7px 0 0; color: var(--ink-2); font-size: 12px; line-height: 1.7; }
+.trace-question ul { margin: 10px 0 0; padding-left: 20px; color: var(--ink-2); font-size: 12px; line-height: 1.7; }
+.trace-detail-view .empty { margin: 18px; }
+
 .list-row { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); font-size: 13px; min-width: 0; }
 .list-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty { border: 1px dashed var(--line-3); border-radius: 16px; padding: 26px 18px; text-align: center; color: var(--ink-3); font-size: 13px; line-height: 1.7; }
@@ -1148,7 +1193,7 @@ body:not(:has(.overlay)) .app:has(.hub[data-open="true"][data-page="profile"]) >
 /* Narrow windows: the open drawer floats over the conversation instead of squeezing it. */
 @media (max-width: 1100px) {
   .drawer[data-open="true"] {
-    position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: min(var(--drawer-width), 92vw);
+    position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; width: min(var(--drawer-width), 100vw) !important;
     box-shadow: -24px 0 60px rgba(0, 0, 0, .45);
   }
   .drawer-request:not([hidden]) {

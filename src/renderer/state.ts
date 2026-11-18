@@ -33,6 +33,7 @@ function removeRestoredTrace(state: State): State {
   return { ...state, restoredTraceData: null,
     thoughts: state.thoughts.filter(item => !thoughts.has(item)),
     tools: Object.fromEntries(Object.entries(state.tools).filter(([id, tool]) => restored.tools[id] !== tool)),
+    modelCalls: Object.fromEntries(Object.entries(state.modelCalls).filter(([id, model]) => restored.modelCalls[id] !== model)),
     timeline: state.timeline.filter(item => !timeline.has(item)),
   }
 }
@@ -62,6 +63,7 @@ export const initialState = Object.freeze({
   restoredTrace: null as 'loading' | 'loaded' | 'unavailable' | null,
   restoredTraceData: null as PayloadFor<'trace_restored'>['trace'],
   traceRevision: 0,
+  traceDetail: null as null | { key: string, conversationId: string, loading: boolean, request: import('../shared/trace.ts').ModelCallDetail | null, error: string | null },
   history: initialHistory,
   /** 回顾 on the 搜索 page: the timeline by day, filtered, a topic read in place, the stars (review-state.ts). */
   review: initialReview,
@@ -292,15 +294,16 @@ const ACTION_HANDLERS: ActionHandlers = {
       restoredTraceData: trace,
       thoughts: [...trace.thoughts, ...live.thoughts],
       tools: { ...trace.tools, ...live.tools },
+      modelCalls: { ...trace.modelCalls, ...live.modelCalls },
       timeline: [...trace.timeline, ...live.timeline],
     }
   },
   trace_invalidated: (state, { currentSession }) => {
     const live = removeRestoredTrace(state)
-    return { ...live, traceRevision: live.traceRevision + 1,
+    return { ...live, traceRevision: live.traceRevision + 1, traceDetail: null,
       rewind: live.rewind.confirm ? { ...live.rewind, confirm: null } : live.rewind,
       restoredTrace: live.restoredTrace === null && !currentSession ? null : 'unavailable',
-      ...(currentSession ? { thoughts: [], tools: {}, timeline: live.timeline.filter(item => item.kind !== 'thought' && item.kind !== 'tool' && item.kind !== 'memory') } : {}) }
+      ...(currentSession ? { thoughts: [], tools: {}, modelCalls: {}, timeline: live.timeline.filter(item => item.kind !== 'thought' && item.kind !== 'tool' && item.kind !== 'model' && item.kind !== 'memory') } : {}) }
   },
   generated_outputs_removed: (state, { copies }) => {
     const fresh = copies.filter(copy => !Object.hasOwn(state.erasedGeneratedKeys, copy.key))
@@ -334,9 +337,15 @@ const ACTION_HANDLERS: ActionHandlers = {
   settings_saved: (state, { view, notice }) => ({
     ...state, settings: { ...state.settings, ...view, loaded: true, busy: false, error: null, notice },
   }),
-  open_drawer: (state, { tab }) => ({ ...state, drawer: tab, island: false }),
-  close_drawer: (state) => ({ ...state, drawer: null }),
-  toggle_drawer: (state) => ({ ...state, drawer: state.drawer ? null : 'trace' }),
+  trace_detail_open: (state, { key, conversationId, loading }) => ({ ...state, traceDetail: { key, conversationId, loading, request: null, error: null } }),
+  trace_detail_loaded: (state, { key, conversationId, request }) => state.traceDetail?.key === key && state.traceDetail.conversationId === conversationId
+    ? { ...state, traceDetail: { ...state.traceDetail, loading: false, request, error: request?.request ? null : 'unavailable' } } : state,
+  trace_detail_failed: (state, { key, conversationId, message }) => state.traceDetail?.key === key && state.traceDetail.conversationId === conversationId
+    ? { ...state, traceDetail: { ...state.traceDetail, loading: false, error: message } } : state,
+  trace_detail_close: (state) => ({ ...state, traceDetail: null }),
+  open_drawer: (state, { tab }) => ({ ...state, drawer: tab, island: false, traceDetail: tab === 'trace' && state.drawer === 'trace' ? state.traceDetail : null }),
+  close_drawer: (state) => ({ ...state, drawer: null, traceDetail: null }),
+  toggle_drawer: (state) => ({ ...state, drawer: state.drawer ? null : 'trace', traceDetail: null }),
   toggle_island: (state) => ({ ...state, island: !state.island }),
   close_island: (state) => (state.island ? { ...state, island: false } : state),
   hub_close: (state) => closeHub(state, reduce),

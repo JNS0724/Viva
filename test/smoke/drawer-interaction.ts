@@ -141,6 +141,7 @@ export async function checkStreamingDrawer(session: SmokeApplication, info: Test
   expect(following).toEqual({ readerKept: true, resumed: true })
   expect(filesRetained, 'thinking updates preserve the file browser').toBe(true)
   await checkDrawerBoundaries(page, info)
+  await checkTraceDetail(page, info)
 }
 
 /** Exercise subpixel scroll writes and synchronous topic transitions in the real renderer. */
@@ -199,4 +200,71 @@ async function checkDrawerBoundaries(page: Page, info: TestInfo): Promise<void> 
   })
   await info.attach('drawer-scroll-boundaries', { body: JSON.stringify(boundaries), contentType: 'application/json' })
   for (const sample of boundaries) expect(Math.abs(sample.distance), sample.name).toBeLessThanOrEqual(2)
+}
+
+
+/** Read-only model and tool details in the production renderer, with no approval or debugging workbench. */
+async function checkTraceDetail(page: Page, info: TestInfo): Promise<void> {
+  await page.evaluate(async () => {
+    const { renderDrawer } = await import(new URL('./view/drawer.js', location.href).href) as typeof import('../../src/renderer/view/drawer.ts')
+    const { initialState, reduce } = await import(new URL('./state.js', location.href).href) as typeof import('../../src/renderer/state.ts')
+    const { modelCallId } = await import(new URL('../shared/trace.js', location.href).href) as typeof import('../../src/shared/trace.ts')
+    const container = document.createElement('aside')
+    container.id = 'trace-detail-review'
+    container.className = 'drawer'
+    Object.assign(container.style, { position: 'fixed', right: '0', top: '0', bottom: '0', zIndex: '1000' })
+    document.body.append(container)
+    const call = { sessionId: '11111111-2222-3333-4444-555555555555', turn: 1, step: 1, at: 1000, status: 'completed' as const,
+      provider: 'deepseek', model: 'deepseek-v4', attempts: 2, inputTokens: 1200, outputTokens: 80, durationMs: 3400 }
+    const id = modelCallId(call)
+    const longText = '完整提示词。'.repeat(2000)
+    const request = { provider: 'deepseek', model: 'deepseek-v4', config: {}, messages: [
+      { role: 'system', content: [{ type: 'text', text: '你是 Viva' }] },
+      { role: 'developer', content: [{ type: 'tool-addition', toolName: 'read' }] },
+      { role: 'user', content: [{ type: 'text', text: longText }] },
+    ], tools: [{ name: 'read' }] }
+    let state: State = { ...initialState, drawer: 'trace', conversationId: 'detail-review', modelCalls: { [id]: call },
+      tools: { read: { title: '读取需求', kind: 'read', status: 'completed', rawInput: { file_path: '/w/a.md' }, rawOutput: longText } },
+      timeline: [{ kind: 'model', ref: id, at: 1000 }, { kind: 'tool', ref: 'read', at: 1001 }] }
+    const handlers = new Proxy({
+      openTraceDetail(item: ReturnType<typeof import('../../src/renderer/selectors.ts').traceItems>[number]) {
+        state = reduce(state, { type: 'trace_detail_open', key: item.key, conversationId: 'detail-review', loading: false })
+        if (item.entry.kind === 'model') state = reduce(state, { type: 'trace_detail_loaded', key: item.key, conversationId: 'detail-review', request: { call, request } })
+        renderDrawer(container, state, handlers)
+      },
+      closeTraceDetail() { state = reduce(state, { type: 'trace_detail_close' }); renderDrawer(container, state, handlers) },
+      copyTraceText(text: string) { container.dataset.copied = text },
+      closeDrawer() {},
+    }, { get: (target, key) => Reflect.get(target, key) ?? (() => {}) }) as Handlers
+    renderDrawer(container, state, handlers)
+    container.querySelector<HTMLButtonElement>('[data-trace-key^="model-"]')!.click()
+    await new Promise(resolve => setTimeout(resolve, 120))
+  })
+  await page.locator('#trace-detail-review .trace-detail-view').waitFor()
+  const model = await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('#trace-detail-review')!
+    return { roles: [...root.querySelectorAll('.trace-role')].map(node => node.textContent),
+      longLength: root.querySelector('.trace-structured')!.textContent!.length,
+      readOnly: !root.querySelector('.trace-go-request, .trace-search, .trace-outline, .drawer-resize') }
+  })
+  expect(model.roles).toEqual(['系统', '环境更新', '用户'])
+  expect(model.longLength).toBeGreaterThan(10000)
+  await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains('trace-back')), {
+    message: 'the detail back button receives focus after the queued layout write',
+  }).toBe(true)
+  expect(model.readOnly).toBe(true)
+  await info.attach('trace-model-detail.png', { body: await page.screenshot(), contentType: 'image/png' })
+  const result = await page.evaluate(async () => {
+    const root = document.querySelector<HTMLElement>('#trace-detail-review')!
+    root.querySelector<HTMLButtonElement>('[data-detail-tab="json"]')!.click()
+    const raw = root.querySelector('.trace-raw')!.textContent!
+    root.querySelector<HTMLButtonElement>('.trace-copy')!.click()
+    root.querySelector<HTMLButtonElement>('.trace-back')!.click()
+    await new Promise(resolve => setTimeout(resolve, 120))
+    return { valid: JSON.parse(raw).messages[1].role === 'developer', copied: root.dataset.copied === raw,
+      returned: root.querySelectorAll('.trace-row').length === 2 }
+  })
+  expect(result).toEqual({ valid: true, copied: true, returned: true })
+  await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('data-trace-key')?.startsWith('model-') ?? false)).toBe(true)
+  await page.evaluate(() => document.querySelector('#trace-detail-review')?.remove())
 }

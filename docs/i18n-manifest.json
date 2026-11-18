@@ -71,14 +71,14 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "fc82f88847779e4b50d3e6b8af855660f62889dace88ae466a17b0b8b6f0f6f0",
-      "zhHash": "c1ae0927ecb54b7b9dcead1efabe182d3e2b72744ab678a455b3e3077542a9da"
+      "enHash": "c92794b2c7184533d7991d0c7c38aab2af5b7e38b6c49bc70b16ea95b0b8674f",
+      "zhHash": "706013fdce45fc34e1c85652867b6729a71522f687c550996550e2794cef62f1"
     },
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a5bcf31f0d89612585cbde07a215f218e57f6141fa7cd91fdc7d1064bb793300",
-      "zhHash": "b2388b19d7770173e97ad749ecef4011429b4afa93aa9a503cf0cf41c43999e5"
+      "enHash": "8085508b03b9a47b1428f670a4c84727a20d82a208d8ae6c6ed3910bd52e07c9",
+      "zhHash": "4506d28908877ad4b1b16c3f673156b282a049b8f4e62d3de16d68ae810d430b"
     },
     {
       "en": "docs/architecture-health.md",

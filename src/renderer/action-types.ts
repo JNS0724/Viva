@@ -55,7 +55,7 @@ export interface ActionPayloads extends ConversationPayloads {
   workdir_switched: { info: Info }
   topic_resumed: { info: Info, parentId: string, at?: number | null, carried?: number | null }
   topic_menu: { open: boolean }
-  trace_restored: { conversationId: string, available: boolean, trace: null | Pick<ConversationView, 'thoughts' | 'tools' | 'timeline'> }
+  trace_restored: { conversationId: string, available: boolean, trace: null | Pick<ConversationView, 'thoughts' | 'tools' | 'modelCalls' | 'timeline'> }
   trace_invalidated: { currentSession: boolean }
   reveal_tick: { dt: number }
   picker_toggle: {}
@@ -72,6 +72,10 @@ export interface ActionPayloads extends ConversationPayloads {
   images_confirm: { open: boolean }
   images_busy: {}
   images_done: { usage?: State['settings']['images'] }
+  trace_detail_open: { key: string, conversationId: string, loading: boolean }
+  trace_detail_loaded: { key: string, conversationId: string, request: import('../shared/trace.ts').ModelCallDetail | null }
+  trace_detail_failed: { key: string, conversationId: string, message: string }
+  trace_detail_close: {}
   open_drawer: { tab: string }
   close_drawer: {}
   toggle_drawer: {}

@@ -99,7 +99,7 @@ export const PERSONA = personaOf(['identity', 'recall', 'ask', 'remember', 'conf
 export const ROUTING_PERSONA = personaOf(['identity', 'route', 'recall', 'history', 'routeAnswer', 'routeTasks', 'routeApp', 'remember', 'config', 'schedule', 'ownership', 'reports', 'taskQuery', 'taskTruth'])
 
 /** The contract versions this app reads and writes. A plugin must provide exactly these. */
-export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: MEMORY_CONTRACT, trace: 1, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1 })
+export const CONTRACTS: Readonly<Record<string, number>> = Object.freeze({ memory: MEMORY_CONTRACT, trace: 2, questions: 1, config: 1, steer: 1, fork: 1, permission: 1, stream: 1, tasks: 2, history: 1, plugins: 1, mcp: 1 })
 /** The permission level new installs start with: dsh's own default, work freely inside the working directory. */
 export const DEFAULT_PERMISSION = 'workspace-write'
 /** The levels offered (dsh's preset names, viva-permission's LEVELS): 完全, 自动, 工作区修改, 仅可查看. */

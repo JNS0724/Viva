@@ -125,7 +125,7 @@ function renderThreadFollowing(dom: Dom, state: State, handlers: Handlers, now: 
 function renderDrawerIfChanged(container: HTMLElement, state: State, handlers: Handlers) {
   const inputs = state.drawer === 'files'
     ? [state.files, state.timeline, state.tools, state.info.cwd]
-    : [state.timeline, state.tools, state.thoughts, state.usage, state.restoredTrace]
+    : [state.timeline, state.tools, state.modelCalls, state.thoughts, state.usage, state.restoredTrace, state.traceDetail]
   inputs.unshift(localeRevision(), state.drawer, Boolean(state.permission || state.question || state.secret))
   if (inputs.length === renderedDrawerInputs.length && inputs.every((value, i) => value === renderedDrawerInputs[i])) return
   renderedDrawerInputs = inputs
@@ -156,7 +156,7 @@ function renderFeedIfChanged(dom: Dom, state: State, handlers: Handlers, now: nu
 
 /** The 后台 page depends on the tasks and on itself; a task at work changes it as it goes. */
 function renderTasksPageIfChanged(container: HTMLElement, state: State, handlers: Handlers, now: number) {
-  const inputs = [localeRevision(), state.tasks.list, state.tasks.page, state.tasks.listFolded]
+  const inputs = [localeRevision(), state.tasks.list, state.tasks.page, state.tasks.listFolded, state.traceDetail]
   if (inputs.every((value, i) => value === renderedTasksPage[i])) return
   renderedTasksPage = inputs
   renderTasksPage(container, state, handlers, now)

@@ -40,6 +40,7 @@ import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
 import { liveTasks } from './tasks-state.ts'
 import { createTimelineActions } from './timeline-actions.ts'
+import { createTraceActions } from './trace-actions.ts'
 import { hitTarget, timelinePlace } from './timeline-search.ts'
 import { createWorkDirActions } from './workdir-actions.ts'
 import { render, renderSendButton, renderStream, renderTick } from './view/render.ts'
@@ -480,6 +481,7 @@ const capabilityActions = createCapabilityActions({
   },
 })
 const filesActions = createFilesActions({ api, getState: () => state, dispatch, errorMessage })
+const traceActions = createTraceActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast })
 
 /** Emptying or moving the pictures folder; null back means the user picked no folder. */
 async function imagesChange(run: () => Promise<unknown>, done: string) {
@@ -749,6 +751,9 @@ const handlers = {
     dispatch({ type: 'open_drawer', tab })
     if (tab === 'files') filesActions.loadFiles()
   },
+  openTraceDetail: traceActions.open,
+  closeTraceDetail: traceActions.close,
+  copyTraceText: traceActions.copy,
   closeDrawer: () => dispatch({ type: 'close_drawer' }),
   jumpToRequest: jumpToCard,
   islandAction: (action: IslandAction) => ISLAND_ACTIONS[action?.kind ?? '']?.(action),

@@ -2,6 +2,7 @@ import type { ConversationState, ConversationUpdate, ConversationHandlers, Conve
 import { t } from '../shared/i18n/translate.ts'
 import { isSilentReply } from '../shared/task-report.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
+import { modelCallId } from '../shared/trace.ts'
 import { approvalTitle, optionName } from './approval.ts'
 import { assistantStream } from './assistant-stream.ts'
 import { QUESTION_ACTIONS } from './question-state.ts'
@@ -14,11 +15,11 @@ import { closeLast, closeStreams } from './streams.ts'
  * so a view with more to it (the window's state) keeps the rest; none reads or writes anything else.
  */
 export const initialConversation: Readonly<ConversationState> = Object.freeze({
-  phase: 'idle', messages: [], thoughts: [], tools: {}, timeline: [], permission: null, question: null,
+  phase: 'idle', messages: [], thoughts: [], tools: {}, modelCalls: {}, timeline: [], permission: null, question: null,
   secret: null, turn: null, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null, usage: null,
 })
 
-const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput'] as const
+const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput', 'rawOutput'] as const
 
 /** An update from the agent (ACP session/update), as the window gets it: its kind, and what each kind carries. */
 type AcpUpdate = ConversationUpdate
@@ -80,8 +81,19 @@ function onToolUpdate(view: ConversationView, update: Extract<AcpUpdate, { sessi
   }
 }
 
+function onModelCall(view: ConversationView, call: import('../shared/trace.ts').ModelCallSummary): ConversationView {
+  const id = modelCallId(call)
+  const exists = view.timeline.some(entry => entry.kind === 'model' && entry.ref === id)
+  return {
+    ...view,
+    modelCalls: { ...view.modelCalls, [id]: call },
+    timeline: exists ? view.timeline : [...view.timeline, { kind: 'model', ref: id, at: call.at }],
+  }
+}
+
 function updateConversation(view: ConversationView, update: AcpUpdate, at: number): ConversationView {
   switch (update.sessionUpdate) {
+    case 'viva_model_call': return onModelCall(view, update.call)
     case 'viva_stream': return assistantStream(view, update, at)
     case 'agent_message_chunk': return onMessageChunk(view, update)
     case 'agent_thought_chunk': return onThoughtChunk(view, update, at)
@@ -177,7 +189,10 @@ export const CONVERSATION_ACTIONS = {
         rawInput: toolCall?.rawInput ?? known?.rawInput ?? null,
         options: Array.isArray(options) ? options : [],
       },
-      timeline: [...view.timeline, { kind: 'permission', ref: requestId, at, title }],
+      timeline: [...view.timeline, { kind: 'permission', ref: requestId, at, title, request: {
+        requestId, title, kind: toolCall?.kind ?? known?.kind ?? 'other', toolCallId: toolCall?.toolCallId ?? null,
+        rawInput: toolCall?.rawInput ?? known?.rawInput ?? null, options: Array.isArray(options) ? options : [],
+      } }],
     }
   },
 

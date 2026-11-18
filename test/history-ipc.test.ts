@@ -22,10 +22,11 @@ type Replies = {
   'history:search': ReturnType<HistoryDb['search']>,
   'history:export': { saved: false } | { saved: true, file: string },
   'history:trace': Awaited<ReturnType<typeof import('../src/backend/dsh-log.ts').readSessionTrace>>,
+  'history:model-request': import('../src/shared/trace.ts').ModelCallDetail | null,
 }
 
 /** Wires the handlers to a real database and a fake agent; `call` invokes a channel like the renderer would. */
-function setup(t: TestContext, { exportPath = null }: { exportPath?: string | null } = {}) {
+function setup(t: TestContext, { exportPath = null, traceDb, readNativeTrace }: { exportPath?: string | null, traceDb?: Parameters<typeof registerHistoryIpc>[1]['traceDb'], readNativeTrace?: Parameters<typeof registerHistoryIpc>[1]['readNativeTrace'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'history-ipc-'))
   const db = openHistoryDb({ file: path.join(dir, 'history.db') })
   t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }) })
@@ -40,6 +41,7 @@ function setup(t: TestContext, { exportPath = null }: { exportPath?: string | nu
   registerHistoryIpc(ipc, {
     db,
     dshHome: path.join(dir, 'no-dsh'),
+    traceDb, readNativeTrace,
     current: () => conversation,
     setCurrent: (next) => { conversation = next },
     agentInfo: () => info,
@@ -129,4 +131,27 @@ test('export reads history again after the save dialog yields', async t => {
   const exported = fs.readFileSync(path.join(dir, 'forgotten.md'), 'utf8')
   assert.doesNotMatch(exported, /Erased while/)
   assert.match(exported, /Retained question/)
+})
+
+
+test('model detail IPC reads only a session belonging to the named conversation', async t => {
+  const { openTraceDb } = await import('../plugins/trace/lib/store.ts')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-ipc-'))
+  const trace = openTraceDb({ file: path.join(dir, 'trace.db') })
+  t.after(() => { trace.close(); fs.rmSync(dir, { recursive: true, force: true }) })
+  let allowed = true
+  const { db, call } = setup(t, { traceDb: () => trace, readNativeTrace: async (sessions, read) => read(allowed ? sessions : []) })
+  const sessionId = '11111111-2222-3333-4444-555555555555'
+  const owner = db.save(db.create({ sessionId }), [question('查看这次调用')])
+  const other = db.save(db.create({ sessionId: '99999999-2222-3333-4444-555555555555' }), [question('另一个话题')])
+  trace.recordCall({ sessionId, turn: 1, step: 1, at: 1, status: 'completed', provider: 'deepseek', model: 'v4', attempts: 1,
+    inputTokens: 10, outputTokens: 5, durationMs: 20 }, { provider: 'deepseek', model: 'v4', config: {}, messages: [{ role: 'user', content: '查看这次调用' }], tools: [] })
+
+  const detail = await call('history:model-request', owner.id, sessionId, 1, 1)
+  assert.equal(detail?.request?.model, 'v4')
+  allowed = false
+  assert.equal(await call('history:model-request', owner.id, sessionId, 1, 1), null)
+  allowed = true
+  assert.equal(await call('history:model-request', other.id, sessionId, 1, 1), null)
+  assert.equal(await call('history:model-request', owner.id, '99999999-2222-3333-4444-555555555555', 1, 1), null)
 })

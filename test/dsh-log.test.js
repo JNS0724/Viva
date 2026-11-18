@@ -45,8 +45,8 @@ test('parseSessionLog turns dsh events into the trace shape the drawer already s
     ['写入 out.md', 'edit', 'in_progress'],
   ])
   assert.deepEqual(tools[1].locations, [{ path: '/w/notes.md' }])
-  assert.equal(tools[0].rawInput.query, 'agent loop / ReAct')
-  assert.equal(JSON.stringify(tools[3]).includes('xxxx'), false, 'file contents are not carried into the trace')
+  assert.deepEqual(tools[0].rawInput.queries, ['agent loop', 'ReAct'])
+  assert.equal(JSON.stringify(tools[3]).includes('xxxx'), true, 'full file contents are available to the detail view')
   assert.ok(tools.every((t) => t.id.startsWith(`${SESSION}:`)))
 })
 
