@@ -2,6 +2,7 @@ import { test, expect } from './fixtures.ts'
 import { run } from './smoke-kit.ts'
 import { timelinePlace } from '../../src/renderer/timeline-search.ts'
 import { dailyMemory, fileDetail, REPORT_MEMORY, REPORT_TITLE } from './smoke-memory.ts'
+import { installedRecallScores } from './installed-recall-diagnostics.ts'
 import { installedDiagnostics } from './diagnostics-artifact.ts'
 
 test('installed artifact completes memory and restart acceptance', async ({ scenario }) => {
@@ -18,13 +19,17 @@ test('installed artifact completes memory and restart acceptance', async ({ scen
     const reopened = await run(app.window, `window.agent.resumeTopic(${JSON.stringify(place!.segmentId)})`)
     expect(reopened.ok).toBe(true)
     const offset = check.model!.requests.length
-    const query = '查一下 Weekly report is due to Zhang San every Friday by close of business.'
-    await run(app.window, `window.agent.prompt(${JSON.stringify(query)}, [], crypto.randomUUID())`)
-    expect(check.model!.requests.slice(offset).some(request => {
+    const query = 'Weekly report is due to Zhang San every Friday by close of business.'
+    await run(app.window, `window.agent.prompt(${JSON.stringify('查一下 ' + query)}, [], crypto.randomUUID())`)
+    const replies = check.model!.requests.slice(offset).map(request => {
       const { messages } = request as { messages?: unknown[] }
-      const toolResult = JSON.stringify(messages?.at(-1) ?? null)
-      return toolResult.includes('tool_result') && toolResult.includes(REPORT_MEMORY) && toolResult.includes('notes')
-    }), 'The installed ONNX runtime should send the grounded memory as a semantic tool result').toBe(true)
+      return JSON.stringify(messages?.at(-1) ?? null)
+    }).filter(reply => reply.includes('tool_result'))
+    const grounded = replies.some(reply => reply.includes(REPORT_MEMORY) && reply.includes('notes'))
+    if (!grounded) console.log('[smoke] installed recall', JSON.stringify({ toolReplies: replies.length,
+      empty: replies.some(reply => reply.includes('empty')), unavailable: replies.some(reply => reply.includes('unavailable')),
+      ...await installedRecallScores(app, note.identity.id, query) }))
+    expect(grounded, 'The installed ONNX runtime should send the grounded memory as a semantic tool result').toBe(true)
   })
   await test.step('installed diagnostics exports metadata and clears without restarting memory', async () => {
     await installedDiagnostics(check.current!, check.info.outputPath('diagnostics'), [REPORT_MEMORY, REPORT_TITLE])
