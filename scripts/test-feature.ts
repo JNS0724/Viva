@@ -1,4 +1,4 @@
-// Short local feedback for one responsibility. Full npm test, typecheck and platform smoke remain the merge gates.
+// Short local feedback for one responsibility. Daily CI runs the complete source collection.
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'

@@ -10,6 +10,9 @@ permissions:
   contents: read
 
 jobs:
+  diagnostics:
+    uses: ./.github/workflows/local-diagnostics.yml
+
   full:
     uses: ./.github/workflows/full.yml
 

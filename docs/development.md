@@ -105,7 +105,7 @@ Her character and asset rules are in [UI guidelines](ui-guidelines.md#her-charac
 
 ## Tests
 
-`npm test` runs all source unit, integration, timing, and package tests under Electron's Node. `npm run test:source` runs the complete non-package source collection for `full.yml` in daily and release acceptance; `package.yml` owns offline plugin installation. PR headless uses `npm run test:pr` for the fast, critical, and timing subset. `npm run typecheck` checks production and test TypeScript. Use Node.js 24, matching CI. Run the full suite before a PR.
+`npm test` runs the full source suite under Electron’s Node. For the PR subset, run `npm run test:pr`. It checks sending a message once, rejecting invalid input, and receiving a reply. Use Node.js 24 for `npm run typecheck` and builds.
 
 For local feedback, `npm run test:fast` selects every fast file. `npm run test:feature -- architecture --level fast` selects one feature's fast files. Features are `conversation`, `runtime`, `tasks`, `architecture`, `models`, `skills`, `capabilities`, `files`, `memory`, `rendering`, `storage`, `i18n`, `shell` and `tooling`. Multiple features are deduplicated. Omit `--level` to retain the feature's full coverage, or repeat it to combine levels. Add `--list` to inspect the exact files.
 
@@ -131,13 +131,13 @@ Run `npm run build` before an individual source suite. Relaunch and resume each 
 
 Retries are zero and workers are one per runner. Reports go to `smoke/report` (HTML), `smoke/junit.xml` and `smoke/test-results` (launch receipts/logs, assertions and failure diagnostics). `VIVA_SMOKE_RUN` adds a unique directory below `smoke/`, with letters, digits, underscores and hyphens allowed. Failure traces retain operations and screenshots. Public UI smoke also records DOM snapshots. Legacy integration disables snapshot-script injection into the deliberately scriptless search iframe. Neither real-model checks nor performance runs record traces. Profiles and credentials are never uploaded. Use `npx playwright show-trace <trace.zip>` for a retained trace.
 
-PR CI runs headless and one complete smoke job on each OS. Headless runs typecheck, the `test:pr` fast/critical/timing subset, and documentation checks. Related memory specialization, daily, and release runs retain extended integration. Smoke schedules one desktop runner, builds once through `presmoke`, and runs public UI plus all integration scenarios sequentially: fifteen tests in total. Each restart pair shares its own profile. Installed artifact acceptance keeps memory, schedules, and resume together on one profile.
+Each PR runs two independent checks, `check (macos-latest)` and `check (windows-latest)`. Each runs typecheck and the basic tests, then builds the native installer with `npm run dist:mac` or `npm run dist:win`. Each packaging command compiles the application through its npm pre-script.
 
 Memory prerequisites appear as named Playwright steps with JSON timing lines in stdout. The first broken prerequisite ends its dependent chain and retains diagnostics. Ordinary UI settling waits for fonts, finite running transitions and two paint frames after business readiness. The long-task scroll scenario uses its established timed observations and position budgets.
 
-CI report directories and artifact names include OS, lane, run ID and attempt. Playwright metadata records the revision, platform, Node version and lane. Final `check (macos-latest)` and `check (windows-latest)` results retain their existing names and require headless, smoke, scope, and every specialization selected by scope to succeed. An unrelated PR allows specialization to be skipped only after an explicit not-required decision; other failures, cancellations, skips, or missing required results fail both aggregate gates. Runner availability and dependency installation contribute to wall time, while extra jobs repeat setup work.
+Daily CI runs the full source suite, desktop smoke, performance tests, diagnostics, documentation checks and installed-app acceptance on both platforms. Release runs full source and package acceptance for the release commit.
 
-`scripts/verify-windows.ps1 -Package` installs into a unique temporary directory, drives the installed executable externally, verifies licenses, and uninstalls in finally. PR CI runs the complete source suite on macOS and Windows; package CI runs memory/restart on both installed artifacts. These checks do not replace physical UI, signing, upgrade or fast-scroll acceptance.
+`scripts/verify-windows.ps1 -Package` installs into a unique temporary directory, drives the installed executable, checks licenses and uninstalls during cleanup.
 
 `npm run live` remains opt-in: 26 real-model scenarios, three attempts each by default; `--set core`, `--only`, `--repeat`, `--app` and `--dry` remain available. The key is passed explicitly to the owned child, never logged. See [Live checks](live-check.md). Fake-model passes do not establish real-model behavior.
 
