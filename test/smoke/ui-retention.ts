@@ -155,7 +155,7 @@ async function checkRequestRegions(session: SmokeApplication, info: TestInfo): P
           }
           render = () => island!.update(view, { pinned: true })
           expected = kind === 'permission' ? '.isl-footer .isl-btn-primary'
-            : kind === 'question' ? '.isl-choices button:first-child' : '.isl-actions .isl-btn-line'
+            : kind === 'question' ? '.isl-choices button:first-child' : '.isl-head'
         }
         render()
         return '#retention-fixture ' + expected
@@ -200,14 +200,11 @@ async function checkRequestRegions(session: SmokeApplication, info: TestInfo): P
       // The island measures width and height in successive frames, then starts its finite opening transitions.
       await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
       if (kind === 'bar') {
-        const opening = await probe.evaluateHandle(probe => probe.openingAnimation())
-        try {
-          expect(await opening.evaluate(animation => Boolean(animation)), 'the panel has its opening animation').toBe(true)
-          await probe.evaluate(probe => probe.update(false))
-          expect(await opening.evaluate(animation => animation?.playState !== 'idle'), 'stream updates preserve the opening animation').toBe(true)
-          await probe.evaluate(probe => probe.reopen())
-          expect(await probe.evaluate(probe => probe.openingAnimation()?.playState)).toBe('running')
-        } finally { await opening.dispose() }
+        expect(await page.locator('#retention-fixture .isl-panel, #retention-fixture .isl-in').count()).toBe(0)
+        await probe.evaluate(probe => probe.update(false))
+        expect(await page.locator('#retention-fixture .isl-panel, #retention-fixture .isl-in').count()).toBe(0)
+        await probe.evaluate(probe => probe.reopen())
+        expect(await page.locator('#retention-fixture .isl-panel, #retention-fixture .isl-in').count()).toBe(0)
       }
       await settle(window)
       await target.click({ trial: true })
@@ -217,6 +214,7 @@ async function checkRequestRegions(session: SmokeApplication, info: TestInfo): P
       results.push({ kind, ...result })
       expect(result.same && result.connected && result.focused, kind).toBe(true)
       expect(result.calls, kind).toHaveLength(1)
+      if (kind === 'bar') expect(result.calls[0].kind, 'the title bar opens background tasks').toBe('tasks')
       if (kind === 'permission' || kind === 'question') {
         const count = result.calls.length
         await heldClick(page, target, () => probe.evaluate(probe => probe.update(true)), info)

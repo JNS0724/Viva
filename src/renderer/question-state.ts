@@ -38,7 +38,7 @@ export const QUESTION_ACTIONS = {
       ...closed,
       phase: 'asking',
       question: { questionId, questions, picks: {} },
-      timeline: [...closed.timeline, { kind: 'question', ref: questionId, at, title: askedText(questions) }],
+      timeline: [...closed.timeline, { kind: 'question', ref: questionId, at, title: askedText(questions), questions }],
     }
   },
 

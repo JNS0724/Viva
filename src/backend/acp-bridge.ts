@@ -1,6 +1,7 @@
 import type { SessionWaits } from '../shared/ipc-results.ts'
 import { diagnosticHub } from '../diagnostics/node/hub.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
+import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -13,7 +14,7 @@ import type { RequestPermissionRequest, SessionNotification, SessionConfigOption
 import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
-import { createSteerDesk, interjection } from './steer-channel.ts'
+import { createSteerDesk, interjection, NO_PLUGIN } from './steer-channel.ts'
 import { memoryProjectScope } from './memory-project.ts'
 import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
@@ -259,6 +260,17 @@ export function createAcpBridge({
     proc.on('message', (message) => {
       if (diagnostics?.receive(message)) return
       if (disposed) return
+      const traceMessage = objectOf(message)
+      if (traceMessage?.type === 'trace_model_call' && traceMessage.version === 1 && typeof traceMessage.sessionId === 'string') {
+        const id = traceMessage.sessionId
+        const update = { sessionUpdate: 'viva_model_call', call: traceMessage.call }
+        if (taskSessions.has(id)) emit({ type: 'task_update', taskId: id, update })
+        else if (id === sessionId) {
+          const context = operations.context(id) ?? contextFor(id)
+          if (!conversationContext || context) emit({ type: 'update', sessionId: id, update, ...scoped(context) })
+        }
+        return
+      }
       void questions.receive(message).catch(error => { console.error('[questions] owner authorization failed', error); questions.declineAll() })
       config?.receive(message)
       steering.receive(message)
@@ -638,14 +650,15 @@ export function createAcpBridge({
    * The user's words into the running turn of the conversation on screen, marked as said mid-turn, a request of their
    * own; one that reached no turn fails, since the window asks the words anew.
    */
-  async function steer(text: string, sourceId?: string, held: () => boolean = () => true, retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable') {
+  async function steer(text: string, sourceId?: string, held: () => boolean = () => true,
+    retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable', onDispatch?: () => void) {
     const retired = () => ({ ok: false as const, reason: retiredReason(), delivery: 'not-sent' as const })
     if (!held()) return retired()
-    if (!sessionId) return steering.steer(interjection(text))
+    if (!sessionId) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     const asked = sessionId
-    if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
+    if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     if (!held()) return retired()
-    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
+    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     const request = asRequest(text, asked, 'interjection', sourceId)
     const wrapped = interjection(request.text)
     const prefixLength = wrapped.length - request.text.length
@@ -657,8 +670,10 @@ export function createAcpBridge({
       if (!held()) { undelivered(); return retired() }
       if (asked !== sessionId || isSwitching() || disposed) { undelivered(); return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const } }
       dispatched = true
+      onDispatch?.()
       const result = await steering.steer(wire, asked, { fast: memory.ready() })
-      if (!result.ok) undelivered()
+      // A lost transport receipt leaves the request routable if the native inbox took it.
+      if (!result.ok && result.reason !== NO_PLUGIN) undelivered()
       return result
     } catch (error) {
       if (!dispatched) undelivered()

@@ -298,7 +298,17 @@ const NAMED_TOOLS: Readonly<Record<string, (tool: ToolCall) => { title: string, 
 type TimelineEntry = State['timeline'][number]
 
 /** What of a conversation its trace is drawn from: the order of what happened, the tools and the thoughts. */
-type TraceSource = Pick<ConversationView, 'timeline' | 'tools' | 'thoughts'>
+type TraceSource = Pick<ConversationView, 'timeline' | 'tools' | 'thoughts' | 'modelCalls'>
+const modelTone = { running: 'working', completed: 'done', failed: 'error' } as const
+const compactTokens = (value: number) => Intl.NumberFormat(getLocale(), { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+
+/** One model call's summary; the full request is read only when its detail is opened. */
+export function modelTrace(call: import('../shared/trace.ts').ModelCallSummary): TraceRow {
+  const input = call.inputTokens === null ? '' : t('selectors.model.input.tokens', { count: compactTokens(call.inputTokens) })
+  const output = call.outputTokens === null ? '' : t('selectors.model.output.tokens', { count: compactTokens(call.outputTokens) })
+  return { title: t('selectors.model.call'), detail: [call.model || call.provider, input, output].filter(Boolean).join(' · '), tone: modelTone[call.status] }
+}
+
 const thoughtIndexes = new WeakMap<TraceSource['thoughts'], Map<string, TraceSource['thoughts'][number]>>()
 function thoughtOf(state: TraceSource, id: string) {
   let index = thoughtIndexes.get(state.thoughts)
@@ -311,6 +321,10 @@ function thoughtOf(state: TraceSource, id: string) {
 }
 const TRACE_BUILDERS: { [K in TimelineEntry['kind']]: (state: TraceSource, entry: Extract<TimelineEntry, { kind: K }> extends never ? TimelineEntry & { kind: K } : Extract<TimelineEntry, { kind: K }>) => TraceRow | null | undefined } = {
   memory: (_state, entry) => memoryTrace(entry.injection),
+  model: (state, entry) => {
+    const call = state.modelCalls[entry.ref]
+    return call ? modelTrace(call) : null
+  },
   thought: (state, entry) => {
     const thought = thoughtOf(state, entry.ref)
     return thought && { title: t("selectors.thinking.2"), detail: truncate(thought.text, DETAIL_LIMIT), tone: 'think' }
@@ -338,11 +352,11 @@ const TRACE_BUILDERS: { [K in TimelineEntry['kind']]: (state: TraceSource, entry
 }
 
 /** Rows for the drawer's 过程 tab, oldest first. */
-export function traceItems(state: TraceSource): Array<TraceRow & { key: string, time: string }> {
+export function traceItems(state: TraceSource): Array<TraceRow & { key: string, time: string, entry: TimelineEntry }> {
   return state.timeline.flatMap((entry, index) => {
     const build = TRACE_BUILDERS[entry.kind] as (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined
     const item = build(state, entry)
-    return item ? [{ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item }] : []
+    return item ? [{ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), entry, ...item }] : []
   })
 }
 
@@ -353,7 +367,7 @@ export function traceTail(state: TraceSource, count: number): ReturnType<typeof 
     const entry = state.timeline[index]
     const build = TRACE_BUILDERS[entry.kind] as (state: TraceSource, entry: TimelineEntry) => TraceRow | null | undefined
     const item = build(state, entry)
-    if (item) rows.push({ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), ...item })
+    if (item) rows.push({ key: `${entry.kind}-${entry.ref}-${index}`, time: formatClock(entry.at), entry, ...item })
   }
   return rows.reverse()
 }

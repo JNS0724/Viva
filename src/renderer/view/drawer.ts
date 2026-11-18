@@ -6,6 +6,7 @@ import { h, label } from './dom.ts'
 import { icon } from './icons.ts'
 import { drawerScrollPlan, scrollSnapshot } from './scroll-follow.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
+import { renderTraceDetail, type TraceItem, type DetailHandlers } from './trace-detail.ts'
 
 let TABS = [
   { id: 'trace', name: t("drawer.activity") },
@@ -19,11 +20,36 @@ let RESTORED_TRACE_NOTES: Readonly<Record<string, string>> = {
   unavailable: t("drawer.earlier.activity.is.unavailable.dsh.logs.may"),
 }
 
-type TraceItem = ReturnType<typeof traceItems>[number]
 const traceRows = new WeakMap<HTMLElement, Map<string, { item: TraceItem, node: HTMLElement }>>()
 
-function traceView(state: State, body: HTMLElement): View[] {
+export function traceNode(item: TraceItem, handlers: Handlers): HTMLElement {
+  return h('li', { class: 'trace-row' },
+    h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
+    h('button', { class: 'trace-main trace-node', type: 'button', 'data-trace-key': item.key,
+      'aria-label': t('trace.open.node', { title: item.title }), onClick: () => handlers.openTraceDetail(item) },
+      h('span', { class: 'row-between' },
+        h('span', { class: 'trace-title', text: item.title }),
+        h('span', { class: 'trace-time', text: item.time })),
+      item.detail ? h('span', { class: 'trace-detail', text: item.detail }) : null))
+}
+
+const detailViews = new WeakMap<HTMLElement, { key: string, detail: State['traceDetail'], source: unknown, text: string, node: HTMLElement }>()
+function detailNode(body: HTMLElement, state: State, item: TraceItem, handlers: Handlers) {
+  const entry = item.entry
+  const source = entry.kind === 'model' ? state.modelCalls[entry.ref] : entry.kind === 'tool' ? state.tools[entry.ref]
+    : entry.kind === 'thought' ? state.thoughts.find(thought => thought.id === entry.ref) : entry
+  const text = `${item.title}\n${item.detail}`
+  const previous = detailViews.get(body)
+  if (previous && previous.key === item.key && previous.detail === state.traceDetail && previous.source === source && previous.text === text) return previous.node
+  const node = renderTraceDetail(state, item, handlers as DetailHandlers)
+  detailViews.set(body, { key: item.key, detail: state.traceDetail, source, text, node })
+  return node
+}
+
+function traceView(state: State, body: HTMLElement, handlers: Handlers): View[] {
   const items = traceItems(state)
+  const selected = state.traceDetail ? items.find(item => item.key === state.traceDetail!.key) : null
+  if (state.traceDetail && selected) return [detailNode(body, state, selected, handlers)]
   const usage = usageLabel(state.usage)
   const note = RESTORED_TRACE_NOTES[state.restoredTrace]
   const previous = traceRows.get(body)
@@ -32,13 +58,7 @@ function traceView(state: State, body: HTMLElement): View[] {
     const cached = previous?.get(item.key)
     const node = cached && cached.item.title === item.title && cached.item.detail === item.detail
       && cached.item.time === item.time && cached.item.tone === item.tone ? cached.node
-      : h('li', { class: 'trace-row' },
-        h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
-        h('div', { class: 'trace-main' },
-          h('div', { class: 'row-between' },
-            h('span', { class: 'trace-title', text: item.title }),
-            h('span', { class: 'trace-time', text: item.time })),
-          item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))
+      : traceNode(item, handlers)
     next.set(item.key, { item, node })
     return node
   })
@@ -61,6 +81,7 @@ type DrawerView = {
   request: HTMLElement, requestLabel: HTMLElement, requestButton: HTMLButtonElement,
   handlers: Handlers, scroll: ReturnType<typeof scrollSnapshot>,
   fileScroll: { tree: number, preview: { path: string | undefined, top: number } | null } | null,
+  detailKey: string | null,
 }
 const drawers = new WeakMap<HTMLElement, DrawerView>()
 
@@ -68,7 +89,7 @@ function createDrawer(container: HTMLElement, handlers: Handlers): DrawerView {
   const requestLabel = h('span')
   const requestButton = h('button', { class: 'btn btn-primary btn-small', type: 'button' })
   const view: DrawerView = {
-    handlers, scroll: null, fileScroll: null,
+    handlers, scroll: null, fileScroll: null, detailKey: null,
     request: h('div', { class: 'drawer-request', hidden: true }, requestLabel, requestButton),
     requestLabel, requestButton,
     body: h('div', { class: 'drawer-body', role: 'tabpanel' }),
@@ -135,8 +156,15 @@ export function renderDrawer(container: HTMLElement, state: State, handlers: Han
       preview: shown ? { path: shown.dataset.path, top: shown.scrollTop } : null,
     }
   }
-  const content = state.drawer === 'files' ? filesView(state, handlers) : traceView(state, view.body)
+  const content = state.drawer === 'files' ? filesView(state, handlers) : traceView(state, view.body, handlers)
   reconcileChildren(view.body, content.filter((node): node is Node | string => node !== null && node !== undefined && node !== false))
+  const nextDetailKey = state.traceDetail?.key ?? null
+  if (view.detailKey !== nextDetailKey) {
+    const returnKey = view.detailKey
+    view.detailKey = nextDetailKey
+    if (nextDetailKey) view.body.querySelector<HTMLButtonElement>('.trace-back')?.focus()
+    else if (returnKey) view.body.querySelector<HTMLButtonElement>(`[data-trace-key="${CSS.escape(returnKey)}"]`)?.focus()
+  }
   container.dataset.tab = state.drawer
   const tab = state.drawer
   queueLayout(view.body, () => {

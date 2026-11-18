@@ -190,6 +190,7 @@ interface AgentApi extends DraftApi {
   resumeCheck: Invoke<'history:resume-check'>
   continueFromRecords: Invoke<'history:continue-from-records'>
   loadTrace: Invoke<'history:trace'>
+  loadModelRequest: Invoke<'history:model-request'>
   renameConversation: Invoke<'history:rename'>
   pinConversation: Invoke<'history:pin'>
   deleteConversation: Invoke<'history:delete'>

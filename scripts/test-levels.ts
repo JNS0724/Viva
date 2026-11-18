@@ -168,6 +168,7 @@ export const testLevels = {
     'memory',
     'mcp-manager',
     'model-actions',
+    'model-call-state',
     'model-providers',
     'models-ipc',
     'module-boundaries',
@@ -262,6 +263,7 @@ export const testLevels = {
     'work-dir',
     'workdir-state',
     'workspace-files',
+    'trace-model-calls',
   ],
   integration: [
     'memory-availability',

@@ -1,5 +1,6 @@
 import type { SessionUpdate, ContentBlock } from '@agentclientprotocol/sdk'
 import type { QuestionAnswer } from '../shared/question-answer.ts'
+import type { ModelCallSummary } from '../shared/trace.ts'
 
 export interface StreamBlock { index: number, text: string }
 export interface StreamText { id: string, text: string, open?: boolean, at?: number, streamKey?: string, streamBlocks?: readonly StreamBlock[] }
@@ -28,14 +29,15 @@ export interface ConversationTool {
   status?: string
   rawInput?: unknown
   locations?: readonly { path: string, line?: number | null }[]
+  rawOutput?: unknown
   at?: number
 }
 export type DoneNotice = 'fresh' | 'still' | 'seen'
 export interface MemoryInjection { at: number, fixed?: string | null, pushed?: readonly { names: string[], text: string }[] }
 interface TraceBase { ref: string, at: number }
 export type ConversationTrace = TraceBase & (
-  | { kind: 'thought' } | { kind: 'tool' }
-  | { kind: 'permission', title: string } | { kind: 'question', title: string } | { kind: 'secret', title: string }
+  | { kind: 'thought' } | { kind: 'tool' } | { kind: 'model' }
+  | { kind: 'permission', title: string, request?: AskedPermission } | { kind: 'question', title: string, questions?: readonly QuestionItem[] } | { kind: 'secret', title: string, server?: string, names?: readonly string[] }
   | { kind: 'decision', title: string, allowed: boolean, choice: string }
   | { kind: 'answer', title: string, answered: boolean }
   | { kind: 'secret_answer', title: string, provided: boolean }
@@ -49,6 +51,7 @@ export interface ConversationState {
   messages: readonly ConversationMessage[]
   thoughts: readonly StreamText[]
   tools: Readonly<Record<string, ConversationTool>>
+  modelCalls: Readonly<Record<string, ModelCallSummary>>
   timeline: readonly ConversationTrace[]
   permission: AskedPermission | null
   question: AskedQuestion | null
@@ -72,9 +75,10 @@ export type VivaStreamUpdate = { sessionUpdate: 'viva_stream', key: string } & (
 type ChunkKind = 'agent_message_chunk' | 'agent_thought_chunk'
 type ToolKind = 'tool_call' | 'tool_call_update'
 /** View projection of ACP: ignored variants retain only their tag, never opaque payloads. */
-export type ConversationUpdate = VivaStreamUpdate
+export interface VivaModelCallUpdate { sessionUpdate: 'viva_model_call', call: ModelCallSummary }
+export type ConversationUpdate = VivaModelCallUpdate | VivaStreamUpdate
   | { [K in ChunkKind]: { sessionUpdate: K, content: { type: 'text', text: string } | { type: Exclude<ContentBlock['type'], 'text'> } } }[ChunkKind]
-  | { [K in ToolKind]: { sessionUpdate: K, toolCallId: string, title?: string | null, kind?: string | null, status?: string | null, locations?: readonly { path: string, line?: number | null }[] | null, rawInput?: unknown } }[ToolKind]
+  | { [K in ToolKind]: { sessionUpdate: K, toolCallId: string, title?: string | null, kind?: string | null, status?: string | null, locations?: readonly { path: string, line?: number | null }[] | null, rawInput?: unknown, rawOutput?: unknown } }[ToolKind]
   | { sessionUpdate: 'usage_update', used: number, size: number }
   | { [K in Exclude<SessionUpdate['sessionUpdate'], ChunkKind | ToolKind | 'usage_update'>]: { sessionUpdate: K } }[Exclude<SessionUpdate['sessionUpdate'], ChunkKind | ToolKind | 'usage_update'>]
 export interface PermissionRequest { requestId: string, toolCall: { toolCallId?: string, title?: string | null, kind?: string | null, rawInput?: unknown }, options: readonly PermissionOption[] }

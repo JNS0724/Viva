@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { keptArguments, stepsFrom } from '../plugins/trace/lib/steps.ts'
+import { stepsFrom } from '../plugins/trace/lib/steps.ts'
 import { openTraceDb } from '../plugins/trace/lib/store.ts'
 import { readSessionTrace } from '../src/backend/dsh-log.ts'
 import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness.js'
@@ -12,7 +12,7 @@ import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness
 /** The trace plugin: what it keeps from dsh's events, its store, and the app reading it instead of dsh's log. */
 const event = (type, seq, data) => ({ type, seq, time: 1000 + seq, data })
 
-test('steps keep thoughts and tool calls with their outcome, and only small arguments', () => {
+test('steps keep thoughts and tool calls with their outcome, and full arguments for the detail view', () => {
   const steps = stepsFrom([
     event('user/message', 1, { content: [{ type: 'text', text: '你好' }] }),
     event('assistant/message', 2, { message: { content: [{ type: 'reasoning', text: '先看看文件' }, { type: 'text', text: '好的' }] } }),
@@ -23,10 +23,9 @@ test('steps keep thoughts and tool calls with their outcome, and only small argu
   ])
   assert.deepEqual(steps, [
     { seq: 2, at: 1002, kind: 'thought', text: '先看看文件' },
-    { seq: 3, at: 1003, kind: 'tool', callId: 'c1', name: 'read', args: { file_path: 'a.md' }, status: 'completed' },
-    { seq: 4, at: 1004, kind: 'tool', callId: 'c2', name: 'write', args: { file_path: 'b.md' }, status: 'failed' },
+    { seq: 3, at: 1003, kind: 'tool', callId: 'c1', name: 'read', args: { file_path: 'a.md' }, status: 'completed', result: { content: undefined, error: undefined, meta: undefined } },
+    { seq: 4, at: 1004, kind: 'tool', callId: 'c2', name: 'write', args: { file_path: 'b.md', content: 'x'.repeat(5000) }, status: 'failed', result: { content: undefined, error: undefined, meta: undefined } },
   ])
-  assert.deepEqual(keptArguments('not json'), {})
 })
 
 test('the store keeps steps per session, updates a finished tool, and refuses a newer contract', (t) => {
@@ -41,7 +40,7 @@ test('the store keeps steps per session, updates a finished tool, and refuses a 
   db.close()
 
   const raw = new DatabaseSync(file)
-  raw.prepare("UPDATE meta SET value = '2' WHERE key = 'contract_version'").run()
+  raw.prepare("UPDATE meta SET value = '3' WHERE key = 'contract_version'").run()
   raw.close()
   assert.throws(() => openTraceDb({ file }), /更新的版本/)
 })
@@ -56,6 +55,11 @@ test('inside dsh the plugin records each turn, and the app reads it without dsh 
   const db = openTraceDb({ file: path.join(userData, 'trace.db') })
   defer(() => db.close())
   await eventually(() => db.hasSession(sessionId))
+  await eventually(() => db.callsOf(sessionId).length > 0)
+  const recordedCall = db.callsOf(sessionId)[0]
+  const recordedDetail = db.callOf(sessionId, recordedCall.turn, recordedCall.step)
+  assert.ok(recordedDetail && recordedDetail.request.messages.length > 0)
+  assert.ok(recordedDetail.request.provider.length > 0)
   // The main conversation routes the request first (commit_route), then looks it up.
   const steps = db.stepsOf(sessionId)
   assert.deepEqual(steps.map((step) => [step.kind, step.name, step.status]), [['tool', 'commit_route', 'completed'], ['tool', 'memory_recall', 'completed']])

@@ -60,12 +60,13 @@ test('a restored trace goes before anything the live session adds; a missing one
   const restoredTrace: NonNullable<Extract<Action, { type: 'trace_restored' }>['trace']> = {
     thoughts: [{ id: 'log-1', text: '旧的思考', open: false, at: 1 }],
     tools: { 's:c1': { id: 's:c1', title: '读取 a.md', kind: 'read', status: 'completed', locations: [], at: 2 } },
+    modelCalls: {},
     timeline: [{ kind: 'thought', ref: 'log-1', at: 1 }, { kind: 'tool', ref: 's:c1', at: 2 }],
   }
   const live = run([saved, { type: 'user_prompt', text: '新问题', at: NOW }, { type: 'acp_update', at: NOW, update: { sessionUpdate: 'tool_call', toolCallId: 'live', title: '新工具' } }])
 
   const merged = reduce(live, { type: 'trace_restored', conversationId: 'b', trace: restoredTrace, available: true })
-  const missing = reduce(live, { type: 'trace_restored', conversationId: 'b', trace: { thoughts: [], tools: {}, timeline: [] }, available: false })
+  const missing = reduce(live, { type: 'trace_restored', conversationId: 'b', trace: { thoughts: [], tools: {}, modelCalls: {}, timeline: [] }, available: false })
   const elsewhere = reduce(live, { type: 'trace_restored', conversationId: 'other', trace: restoredTrace, available: true })
 
   assert.deepEqual(merged.timeline.map((e) => e.ref), ['log-1', 's:c1', 'live'])

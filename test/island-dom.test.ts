@@ -58,3 +58,14 @@ test('the desktop portrait says the state by ring and sign; resting as the cat a
   assert.deepEqual([wearsSign('done', true), wearsSign('done', false), wearsSign('offline', true), wearsSign('working', true), wearsSign('rest', true)],
     [true, false, false, false, false], 'worn only with the portrait alone, and not where the ring says it already')
 })
+
+
+test('the title-bar capsule opens background work instead of presenting the activity timeline', async () => {
+  const { barBackgroundView } = await import('../src/renderer/view/island-dom.ts')
+  const working = { form: 'working', tone: 'working', mood: 'thinking', label: '正在工作', recent: [{ title: '读取', tone: 'done' }],
+    background: { count: 2, waiting: 1, items: [] } }
+  const view = barBackgroundView(working)
+  assert.deepEqual([view.form, view.label, view.detail, view.recent, view.tone], ['idle', '后台', '2 个进行中', [], 'waiting'])
+  assert.equal(barBackgroundView({ ...working, background: null }).detail, '暂无进行中')
+  assert.equal(barBackgroundView(asking), asking, 'a foreground request keeps its existing jump behavior')
+})
