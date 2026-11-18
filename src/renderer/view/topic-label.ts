@@ -26,7 +26,7 @@ export function renderTopicLabel(area: HTMLElement, state: State, handlers: Hand
   const percent = share === null ? null : Math.round(share * 100)
   const full = share !== null && share >= NEAR_FULL
   const chip = h('button', {
-    class: 'chip ctx-chip', type: 'button', 'data-tone': full ? 'full' : null, 'aria-expanded': String(state.topic.menu),
+    class: 'chip ctx-chip', type: 'button', 'data-tone': full ? 'full' : null, 'aria-haspopup': 'dialog', 'aria-expanded': String(state.topic.menu),
     title: t("topic-label.what.the.assistant.currently.remembers"), onClick: () => handlers.toggleTopicMenu(),
   },
   h('span', { text: full ? t("topic-label.almost.full.consider.a.new.topic") : t("topic-label.this.topic.messages", { count: count }) }),

@@ -14,6 +14,11 @@ export async function pipeline(task: string, model: string, settings: {
   if (config.fixture_behavior === 'replace-on-load') writeFileSync(path.join(model, 'onnx/model_quantized.onnx'), 'changed during pipeline initialization')
   if (config.fixture_behavior === 'wrong-ready') process.send?.({ type: 'ready', fingerprint: 'unverified-space', dimensions: config.hidden_size })
   if (config.fixture_behavior === 'result-before-ready') process.send?.({ type: 'result', id: 1, rows: [], fingerprint: 'unverified-space', dimensions: config.hidden_size })
+  if (config.fixture_behavior === 'diagnostic-noise') {
+    for (let index = 0; index < 20; index++) {
+      process.send?.({ type: 'diagnostic-worker', version: 999, id: 1, stage: 'ready', diagnostics: { secret: 'SECRET_DIAGNOSTIC_INPUT' } })
+    }
+  }
   process.on('message', (raw: unknown) => {
     if (!raw || typeof raw !== 'object') return
     const message = raw as { id?: unknown, inputs?: unknown }

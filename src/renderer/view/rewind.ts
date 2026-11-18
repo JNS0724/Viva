@@ -1,4 +1,4 @@
-import { onLocaleChange } from '../../shared/i18n/locale.ts'
+import { localeRevision, onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
 import { icon } from './icons.ts'
@@ -30,6 +30,8 @@ export function rewindBar(message: ThreadMessage, handlers: Handlers) {
  */
 let editor: ReturnType<typeof makeEditor> | null = null
 
+const editorHint = (later: number) => later ? t("rewind.this.message.and.the.next.will.be", { later }) : t("rewind.this.message.will.be.folded.away.not")
+
 function makeEditor(message: ThreadMessage, handlers: Handlers, later: number) {
   const field = h('textarea', { class: 'rewind-field', rows: 2, 'aria-label': t("rewind.edit.and.resend.2") })
   field.value = message.text
@@ -44,19 +46,27 @@ function makeEditor(message: ThreadMessage, handlers: Handlers, later: number) {
       handlers.cancelEdit()
     }
   })
+  const hint = h('span', { class: 'rewind-hint', text: editorHint(later) })
+  const cancel = h('button', { class: 'btn btn-text', type: 'button', text: t("extensions.cancel"), onClick: () => handlers.cancelEdit() })
+  const resend = h('button', { class: 'btn btn-accent rewind-send', type: 'button', text: t("rewind.resend"), onClick: send })
   const el = h('div', { class: 'rewind-editor' },
     field,
     h('div', { class: 'rewind-editor-row' },
       // The old words fold too: the path left behind starts with them.
-      h('span', { class: 'rewind-hint', text: later ? t("rewind.this.message.and.the.next.will.be", { later: later }) : t("rewind.this.message.will.be.folded.away.not") }),
-      h('button', { class: 'btn btn-text', type: 'button', text: t("extensions.cancel"), onClick: () => handlers.cancelEdit() }),
-      h('button', { class: 'btn btn-accent rewind-send', type: 'button', text: t("rewind.resend"), onClick: send })))
-  return { id: message.id, el, field, fresh: true }
+      hint, cancel, resend))
+  return { id: message.id, locale: localeRevision(), el, field, hint, cancel, resend, fresh: true }
 }
 
 /** @param later how many messages after it would fold */
 export function rewindEditor(message: ThreadMessage, handlers: Handlers, later: number) {
   if (!editor || editor.id !== message.id) editor = makeEditor(message, handlers, later)
+  else if (editor.locale !== localeRevision()) {
+    editor.locale = localeRevision()
+    editor.hint.textContent = editorHint(later)
+    editor.cancel.textContent = t("extensions.cancel")
+    editor.resend.textContent = t("rewind.resend")
+    editor.field.setAttribute('aria-label', t("rewind.edit.and.resend.2"))
+  }
   return editor.el
 }
 
@@ -80,6 +90,7 @@ const timesNote = (times: number) => (times > 1 ? t("rewind.edited.times", { tim
 /** What going back would not undo (timeline:rewind-effects), as the question shown asks it. */
 type Confirm = { id: string, text: string, effects: { files: ReadonlyArray<{ path: string, times: number }>, commands: readonly string[] } }
 let shownConfirm: Confirm | null = null
+let shownConfirmLocale = -1
 
 /**
  * Before going back over a part that wrote files or ran commands: what will not be undone, and that the agent
@@ -87,7 +98,8 @@ let shownConfirm: Confirm | null = null
  */
 export function renderRewindConfirm(root: HTMLElement, state: State, handlers: Handlers) {
   const asked: Confirm | null = state.rewind.confirm
-  if (asked === shownConfirm) return
+  if (asked === shownConfirm && shownConfirmLocale === localeRevision()) return
+  shownConfirmLocale = localeRevision()
   shownConfirm = asked
   if (!asked) return root.replaceChildren()
   const { files, commands } = asked.effects
@@ -143,7 +155,7 @@ function taskStrip(fold: Fold, { opened, handlers, messageView, tasks, records, 
     h('span', { class: 'fold-ico', 'aria-hidden': 'true' }, icon('external', 14)),
     h('span', { text: task ? t("rewind.continued.in.background") : t("rewind.previously.ran.in.background") }),
     task ? h('span', { class: 'fold-tag', title: task.words, text: `#${task.title}` }) : null,
-    h('span', { class: 'fold-status', text: `· ${status}` }),
+    h('span', { class: 'fold-status', text: status }),
     h('span', { class: 'fold-actions' },
       live ? null : h('button', { class: 'fold-act', type: 'button', 'aria-expanded': String(Boolean(opened)), text: opened ? t("rewind.collapse") : t("rewind.expand.to.view"), onClick: () => handlers.toggleFold(fold.id) })))
   return withBody(strip, fold, { opened: live ? undefined : opened, messageView, records, recordView })

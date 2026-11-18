@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { PROMPT_HEADS, formatElapsed } from './selectors.ts'
+import { userError } from './user-error.ts'
 
 /**
  * What a card of the desktop island says and offers (view/island-dom.ts draws it), as plain data. A card says each
@@ -82,8 +83,9 @@ function doneCard(view: IslandShown): DeskCard {
 }
 
 function errorCard(view: IslandShown): DeskCard {
+  const detail = view.detail ? (view.incomplete ? view.detail : userError(view.detail)) : ''
   return card(view.label, {
-    body: view.detail ? [{ kind: 'text', text: view.detail }] : [],
+    body: detail ? [{ kind: 'text', text: detail }] : [],
     actions: [{ text: t(view.incomplete ? 'desk-card.view.reply' : 'desk-card.view.in.viva'), role: 'blue', act: OPEN }, askMore()],
   })
 }

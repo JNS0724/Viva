@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { emitDiagnostic, withOperation } from '../../diagnostics/node/context.ts'
 
 export const SQLITE_BUSY_TIMEOUT_MS = 2000
 export const APP_DB_PRAGMAS = `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON; PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS};`
@@ -10,6 +11,9 @@ let savepoints = 0
  * that one: a write that throws is undone on its own, and the outer one commits or rolls back the whole.
  */
 export function transaction<T>(db: DatabaseSync, work: () => T): T {
+  return withOperation('storage', () => transact(db, work), { stage: 'checkpoint' })
+}
+function transact<T>(db: DatabaseSync, work: () => T): T {
   if (!db.isTransaction) {
     db.exec('BEGIN IMMEDIATE')
     try {
@@ -42,6 +46,8 @@ export function truncateMemoryJournal(db: DatabaseSync): boolean {
   db.exec('PRAGMA busy_timeout=0')
   try {
     const result = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
+    emitDiagnostic({ event: 'operation.progress', operation: 'storage', stage: result?.busy === 0 ? 'checkpoint' : 'waiting',
+      reason: result?.busy === 0 ? 'normal' : 'busy', metrics: { blocked: result?.busy !== 0 } })
     return result?.busy === 0 && result.log === result.checkpointed
   } finally { db.exec(`PRAGMA busy_timeout=${timeout}`) }
 }

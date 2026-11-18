@@ -37,10 +37,10 @@ export function createComposerDraftActions({ api, host, read, write }: {
   return {
     ready,
     snapshot: () => current,
-    expect(key: string) {
+    expect(key: string | null) {
       if (expected === key) return
       expected = key
-      if (current?.key !== key) return
+      if (!current || key !== null && current.key !== key) return
       applying = true
       try { write(current) } finally { applying = false }
     },

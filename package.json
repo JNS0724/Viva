@@ -59,9 +59,12 @@
     "@deepseek-ai/dsh-tool-ask-user": "0.2.2-rc.2",
     "highlight.js": "11.11.1",
     "marked": "18.0.14",
+    "pino": "10.4.0",
     "pnpm": "11.28.10",
     "smol-toml": "1.9.1",
+    "sonic-boom": "4.2.1",
     "yaml": "2.9.1",
+    "yazl": "3.3.1",
     "zod": "4.6.6"
   },
   "devDependencies": {
@@ -70,6 +73,7 @@
     "@modelcontextprotocol/server": "2.0.0",
     "@playwright/test": "1.64.1",
     "@types/node": "24.19.2",
+    "@types/yazl": "3.3.1",
     "cross-env": "7.0.3",
     "electron": "44.7.0",
     "electron-builder": "26.17.0",

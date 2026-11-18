@@ -1,4 +1,7 @@
 import { createOwnerContextRecovery } from './owner-context-recovery.ts'
+import type { DiagnosticOperation, DiagnosticPort } from '../../diagnostics/contracts.ts'
+import { guardDiagnosticPort } from '../../diagnostics/contracts.ts'
+import { observeDiagnosticAsync } from '../../diagnostics/operation.ts'
 import { removeAbandonedMemoryTemps } from './memory-file-store.ts'
 import { memoryProjectScope } from './project-scope.ts'
 import path from 'node:path'
@@ -41,6 +44,7 @@ export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number,
   assistant: string, completed: boolean, at: number, timezone: string }
 export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, nativeMessageDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
+  diagnostics?: DiagnosticPort
   root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
@@ -51,6 +55,19 @@ type StoredAlias = Omit<MemorySourceAlias, 'text' | 'wireText' | 'wireSpans'> & 
 type Session = { conversation: string, context: string | null, project: string | null }
 type Operation = { id: string, fingerprint: string, state: MemoryOperationOutcome['state'], payload: string | null, ticket: string | null }
 
+/** Protocol operations only. This classification has no role in facts, conflicts or admission. */
+function hostDiagnosticOperation(method: HostMemoryCommand['method']): DiagnosticOperation | undefined {
+  switch (method) {
+    case 'prepareSourceChange': case 'commitSourceChange': case 'pendingHostEffects': case 'ackHostEffect': case 'forgetFile': return 'memory.forget'
+    case 'createFile': case 'editFile': case 'setFileEnabled': case 'setProfile': case 'setOnboarding': case 'getOperation': return 'memory.write'
+    case 'undoFile': return 'memory.undo'
+    case 'cancelFileClarification': return 'memory.clarify'
+    case 'recoverContext': return 'memory.recover'
+    case 'rebuildIndexes': return 'memory.index'
+    case 'sourceAlias': case 'bindWireAlias': return 'memory.intake'
+  }
+}
+
 /** Single storage owner shared by every adapter. Host callers never receive its DB or runtime. */
 export function openMemoryOwner(options: Options) {
   const lock = lockMemoryRoot(options.root)
@@ -60,6 +77,7 @@ export function openMemoryOwner(options: Options) {
 }
 
 function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>, store: ReturnType<typeof openMemoryStore>) {
+  const diagnostics = guardDiagnosticPort(options.diagnostics)
   const db = store.db
   const boundHost = store.meta('owner.host')
   if (boundHost && boundHost !== options.hostNamespace) throw new Error('Memory root belongs to a different host binding')
@@ -92,7 +110,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const nativeToolReads = createNativeToolReads(db)
   const nativeSpills = createNativeSpills(db)
   const toolReadScope = new AsyncLocalStorage<NativeToolReadScope>()
-  const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route,
+  const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route, diagnostics: options.diagnostics,
     dailyNotes: options.dailyNotes ?? true,
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding) } : {}),
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
@@ -150,7 +168,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       ...(project ? { project: { kind: 'project' as const, id: project } } : {}) }
   }
   const hasPending = () => Boolean(db.prepare("SELECT 1 FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed') LIMIT 1").get())
-  const fence = createMemorySendFence({ epoch, admit(origin) {
+  const fence = createMemorySendFence({ epoch, diagnostics: options.diagnostics, admit(origin) {
     if (state !== 'ready' || replayingWrites || hasPending()) return null
     if ('jobId' in origin) return runtime.computeAdmission(origin.jobId)
     const session = origin.session, project = sessionContext(session).project
@@ -526,6 +544,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (!['intent', 'preparing'].includes(item.state)) return { ticket: item.ticket!, operation: outcome(item) }
     // Persist intent before denying reads or aborting a physical request. Recovery reinstates this hold.
     db.prepare("UPDATE owner_operations SET state='preparing' WHERE id=?").run(item.id)
+    diagnostics.emit({ event: 'state.changed', operation: 'memory.forget', stage: 'draining',
+      identities: { requestId: item.id, ownerEpoch: epoch }, metrics: { count: input.ids.length } })
     runtime.holdWithdrawal(input.conversation, input.onlySources ? input.ids : undefined)
     await fence.mutate(async () => { await options.quiesce(); db.prepare("UPDATE owner_operations SET state='prepared' WHERE id=?").run(item.id) })
     return { ticket: item.ticket!, operation: outcome(operation(item.id)!) }
@@ -624,7 +644,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     })
     if (notify) options.onHostEffects?.()
     if (state === 'ready' && !hasPending()) await replayWrites()
-    return outcome(operation(item.id)!)
+    const result = outcome(operation(item.id)!)
+    diagnostics.emit({ event: 'state.changed', operation: 'memory.forget', stage: result.cleanup === 'complete' ? 'complete' : 'waiting',
+      reason: result.cleanup === 'complete' ? 'normal' : 'cleanup_pending', identities: { requestId: item.id, ownerEpoch: epoch } })
+    return result
   }
   function completeFileEffects() {
     if (runtime.cleanupPending() !== 0) return false
@@ -635,6 +658,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (row.fingerprint !== hash(String(row.payload))) throw new Error('Host erasure receipt differs from its effect')
       if (nativeCleanup.complete(String(row.id))) {
         db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=?').run(row.id)
+        diagnostics.emit({ event: 'state.changed', operation: 'memory.forget', stage: 'complete',
+          identities: { requestId: String(row.id), ownerEpoch: epoch } })
         changed = true
       }
     }
@@ -768,6 +793,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
       }), plan.project, plan.context)
       if (notify) options.onHostEffects?.()
+      if (receipt) diagnostics.emit({ event: 'state.changed', operation: 'memory.write', stage: 'applied',
+        identities: { requestId: id, ownerEpoch: epoch, resourceId: receipt.identity.id, generation: receipt.contentRevision } })
       return receipt
     } catch (error) {
       if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
@@ -783,7 +810,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const request = command.input.args[0], id = request.operationId, fingerprint = hash(origin ? { command, project, context } : command)
     const previous = operation(id)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
-    if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    if (previous?.state === 'completed') {
+      diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'settled', reason: 'idempotent', identities: { requestId: id, ownerEpoch: epoch } })
+      return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    }
     if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
       ? { workspace: request.identity.workspace, usageVersion: request.version.usageVersion, sessions: fileSessions(request.identity, []) }
@@ -804,7 +834,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const request = command.input.args[0], id = request.operationId, fingerprint = hash(standaloneSession ? { command, standaloneSession } : command)
     const previous = operation(id)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
-    if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    if (previous?.state === 'completed') {
+      diagnostics.emit({ event: 'operation.progress', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
+        stage: 'settled', reason: 'idempotent', identities: { requestId: id, ownerEpoch: epoch } })
+      return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    }
     if (previous?.state === 'failed') {
       const failure = JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }
       throw new MemoryDomainError(failure.code)
@@ -840,6 +874,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
             db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
           }, () => { readers = currentFileReaders(request.identity.workspace) })
       if (notify) options.onHostEffects?.()
+      diagnostics.emit({ event: 'state.changed', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
+        stage: 'applied', identities: { requestId: id, ownerEpoch: epoch, resourceId: result.identity.id, generation: result.contentRevision } })
       return result
     } catch (error) {
       if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
@@ -882,8 +918,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const item = operation(operationId)
     return item?.state === 'completed' && outcome(item).cleanup === 'complete' ? 'complete' as const : 'pending' as const
   }
-  async function handleHost(method: unknown, input: unknown): Promise<unknown> {
+  function handleHost(method: unknown, input: unknown): Promise<unknown> {
+    try {
     const command = parseHostMemoryCommand(method, input)
+    const kind = hostDiagnosticOperation(command.method)
+    if (!kind) return executeHost(command)
+    const raw = 'args' in command.input ? command.input.args[0] : command.input
+    const requestId = raw !== null && typeof raw === 'object' && 'operationId' in raw && typeof raw.operationId === 'string'
+      ? raw.operationId : command.method === 'setProfile' ? command.input.args[1] : undefined
+    return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command), {
+      identities: { methodId: command.method, ownerEpoch: epoch, ...(requestId ? { requestId } : {}) },
+    })
+    } catch (error) { return Promise.reject(error) }
+  }
+  async function executeHost(command: HostMemoryCommand): Promise<unknown> {
     switch (command.method) {
       case 'prepareSourceChange': return prepare(command.input)
       case 'commitSourceChange': return commit(command.input)
@@ -902,10 +950,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           if (prior && prior.fingerprint !== fingerprint) throw new Error('Host erasure receipt differs from its effect')
           const inserted = db.prepare('INSERT OR IGNORE INTO owner_file_host_receipts VALUES (?,?)').run(effect.effectId, fingerprint)
           const completed = completeFileEffects()
+          diagnostics.emit({ event: 'operation.progress', operation: 'memory.forget', stage: 'checkpoint',
+            identities: { requestId: effect.causeOperationId, resourceId: effect.effectId }, metrics: { ok: true } })
           if (inserted.changes || completed) options.onProjectionChanged?.()
           return { accepted: true }
         }
         const acknowledged = db.prepare('UPDATE owner_host_effects SET acked=1 WHERE id=? AND acked=0').run(command.input.effectId)
+        diagnostics.emit({ event: 'operation.progress', operation: 'memory.forget', stage: 'checkpoint',
+          identities: { requestId: effect.causeOperationId, resourceId: effect.effectId }, metrics: { ok: true } })
         if (acknowledged.changes && effect.kind === 'erase-copies') options.onProjectionChanged?.()
         return { accepted: true }
       }
@@ -1073,8 +1125,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     throw new Error('Unsupported host operation')
   }
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
-    recover, receiveSource, completeTurn, registerDerived, sessionContext, handleHost, acceptFileClarification,
-    rememberStandaloneFile, forgetStandaloneFile, rememberNativeFile,
+    recover: () => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
+    receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => receiveSource(input), {
+      stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.contextGeneration ?? 0 }, metrics: { count: 1, ok: input.admitted } }),
+    completeTurn: (input: CompletedTurn) => observeDiagnosticAsync(options.diagnostics, 'memory.daily', () => completeTurn(input), {
+      stage: 'checkpoint', identities: { sessionId: input.sessionId, generation: input.turn }, metrics: { eventCursor: input.eventSeq, count: input.sourceIds.length, ok: input.completed } }),
+    registerDerived: (input: DerivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input), {
+      stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId }, metrics: { count: input.sourceIds.length } }),
+    sessionContext, handleHost,
+    acceptFileClarification: (...args: Parameters<typeof acceptFileClarification>) => observeDiagnosticAsync(options.diagnostics, 'memory.clarify', () => acceptFileClarification(...args),
+      { identities: { sessionId: args[0].session, requestId: args[0].questionId, generation: args[0].contextGeneration } }),
+    rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {
+      identities: { sessionId: args[0], requestId: args[1].operationId } }),
+    forgetStandaloneFile: (...args: Parameters<typeof forgetStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.forget', () => forgetStandaloneFile(...args), {
+      identities: { sessionId: args[0], resourceId: args[1], requestId: args[2] } }),
+    rememberNativeFile: (text: string) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberNativeFile(text), {
+      identities: { sessionId: toolReadScope.getStore()?.call.session ?? null, requestId: toolReadScope.getStore()?.call.id ?? null } }),
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
     nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,

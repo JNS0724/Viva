@@ -50,11 +50,26 @@ import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtur
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
 const oldFact = `记住：我的周报提交邮箱是 ${oldValue}`
 const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', import.meta.url)
+
+test('a newly selected native session registers its owner metadata once before selection commits', async t => {
+  const app = await setup(t, () => null)
+  let registrations = 0
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => {
+    if (event.event === 'wait.begin' && event.operation === 'memory.owner' && event.identities?.methodId === 'recordSession') registrations++
+    return undefined
+  }))
+  t.after(restore)
+  const selected = await app.newTopic()
+  assert.ok(selected.sessionId)
+  assert.equal(registrations, 1, 'a second post-selection registration can race owner recovery after native initialization already succeeded')
+})
 type ModelMessage = { role?: string, content?: string | { text?: string, type?: string }[] }
 type Request = { system?: unknown, messages: ModelMessage[] }
 type Task = IpcResults['task:finished'][number]
@@ -590,6 +605,53 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   } finally { db.close() }
 })
+
+for (const failure of ['invalid-json', 'http-error'] as const) {
+  // This scenario includes three native process launches and multiple real provider retry windows.
+  test(`real foreground sends remain usable while dream ${failure} repeatedly fails and recovers across restart`, { timeout: 120_000 }, async t => {
+    let dreamRequests = 0
+    const app = await setup(t, request => {
+      const system = JSON.stringify(request.system)
+      if (system.includes('整理最近完成的会话回合')) return { text: JSON.stringify({ status: 'write', title: '周报', markdown: '周报提交邮箱已记录。' }) }
+      if (system.includes('Extract reusable abstractions')) {
+        dreamRequests++
+        return failure === 'http-error' ? { httpError: 503 } : { text: 'not JSON' }
+      }
+      return null
+    }, { dailyNotes: true })
+    for (const text of [oldFact, '模板沿用上周', '新增客户反馈', '把进展放在开头', '周五提交']) await app.ask(text)
+    const read = <T>(query: (db: DatabaseSync) => T) => {
+      const db = openMemoryControlDb(join(app.directory, 'memory', 'memory.db'))
+      try { return query(db) } finally { db.close() }
+    }
+    assert.ok(await eventually(() => read(db => db.prepare('SELECT 1 FROM memory_daily_notes WHERE file_revision IS NOT NULL').get())))
+    await app.stopBackend()
+    read(db => { assert.equal(db.prepare("UPDATE effects SET due_at=0 WHERE kind='memory.dream'").run().changes, 1) })
+    await app.startBackend()
+    // A cold native session chooses its model on its first real turn. Recall accepted evidence
+    // before checking background failures, rather than counting an unavailable route as an HTTP failure.
+    await app.ask('查一下 周报提交邮箱')
+    assert.ok(await eventually(() => dreamRequests >= 2 && read(db => Number(db.prepare("SELECT attempts FROM effects WHERE kind='memory.dream'").get()?.attempts) >= 2), { timeoutMs: 25_000 }))
+    assert.ok(dreamRequests >= 2)
+    const first = '后台记忆整理失败时继续主对话'
+    const offset = app.model.requests.length
+    await app.ask(first)
+    assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => questionOf((raw as Request).messages) === first && JSON.stringify(raw).includes(oldValue))))
+    assert.ok(await app.call('memory:get'))
+    const attemptsBeforeRestart = dreamRequests
+    await app.stopBackend()
+    read(db => { assert.equal(db.prepare("UPDATE effects SET due_at=0 WHERE kind='memory.dream'").run().changes, 1) })
+    await app.startBackend()
+    await app.ask('查一下 周报提交邮箱')
+    assert.ok(await eventually(() => dreamRequests > attemptsBeforeRestart))
+    const resumed = '恢复 dream 重试后继续主对话'
+    const resumedOffset = app.model.requests.length
+    await app.ask(resumed)
+    assert.ok(await eventually(() => app.model.requests.slice(resumedOffset).some(raw => questionOf((raw as Request).messages) === resumed && JSON.stringify(raw).includes(oldValue))))
+    assert.ok(await app.call('memory:get'))
+    assert.equal(read(db => db.prepare("SELECT count(*) n FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed')").get()?.n), 0)
+  })
+}
 
 const STOP_AFTER_PTC_READ = `CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
   WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`

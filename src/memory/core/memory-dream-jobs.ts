@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { guardDiagnosticPort, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
+import type { DiagnosticPort, DiagnosticReason, DiagnosticStage } from '../../diagnostics/contracts.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import { MemoryComputeError } from '../contracts/compute.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
@@ -71,13 +73,20 @@ export function batchDreamNotes<T extends { day: string, document: string }>(not
 
 /** Four-stage document jobs. Storage and provider message/reasoning state stay behind their respective ports. */
 export function createMemoryDreamJobs({ notes, documents, effects, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate, committed = () => {}, allowsText = () => true }: {
+  calculate, transaction, mutate, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
   allowsText?: (text: string, source: MemorySource) => boolean,
+  diagnostics?: DiagnosticPort,
 }) {
+  const diagnostics = guardDiagnosticPort(diagnosticPort)
+  const progress = (job: Effect, reason: DiagnosticReason, stage?: DiagnosticStage, attempt?: number) => diagnostics.emit({
+    event: 'operation.progress', operation: 'memory.dream', reason, ...(stage ? { stage } : {}),
+    identities: { jobId: job.key, generation: job.generation },
+    ...(attempt === undefined ? {} : { metrics: { attempt } }),
+  })
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
   const schedule = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
@@ -140,15 +149,21 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     })
     return plan.retryExtraction ? 'retry' : 'done'
   }
-  async function extract(job: Effect): Promise<DreamPlan | undefined> {
+  async function extract(job: Effect): Promise<DreamPlan | 'wait' | undefined> {
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
     const plan: DreamPlan = { version: 1, files: [], units: [], tags: [], retryExtraction: false }
+    let waitingForAdmission = false
     const changed = notes.changed(from, today).filter(note => {
       const refs = notes.references(note.key)
-      return refsCurrent(refs) && !refs.some(ref => documentSourceRestricted(ref, documents.sourceRestrictions(note.workspace))) && refs.every(ref => { const original = source(ref.id); return original && eligible(original) })
-        && materialAllowed(note.document, refs)
+      if (!refsCurrent(refs) || refs.some(ref => documentSourceRestricted(ref, documents.sourceRestrictions(note.workspace))) || !materialAllowed(note.document, refs)) return false
+      const admitted = refs.every(ref => { const original = source(ref.id); return original && eligible(original) })
+      if (!admitted) waitingForAdmission = true
+      return admitted
     })
+    // Temporary recovery/turn admission is not an empty extraction. Keep the same durable job
+    // until the owner's next wake, rather than postponing unprocessed notes to tomorrow.
+    if (waitingForAdmission) return 'wait'
     const allNotes = notes.list(null, null)
     const workspaces = unique(allNotes.map(note => note.workspace))
     const extracted: Array<{ workspace: string, unit: DreamUnit }> = []
@@ -187,7 +202,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         const sources = allSources(refs.flatMap(ref => ref.sources))
         const current = () => effects.holds(job) && refs.every(fileCurrent) && extractedReadsCurrent(refs)
           && seen.every(snapshot => view.read(snapshot.path)?.policyToken === snapshot.policyToken)
-        if (!current()) { plan.retryExtraction = true; return }
+        if (!current()) { progress(job, 'source_changed', 'extract'); plan.retryExtraction = true; return }
         let units: DreamUnit[] | undefined
         let invalid = false
         for (let attempt = 0; attempt < 2 && !units; attempt++) {
@@ -201,10 +216,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
                   applicability: seen[index]!.applicability, replacements: seen[index]!.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })) }
               }), ...(invalid ? { retry: 'The prior JSON had an invalid shape, budget or source path. Correct it using only the supplied inputs.' } : {}) },
               sourceIds: () => sources.map(ref => ref.id), current })
-            if (result === undefined || !current()) { plan.retryExtraction = true; return }
+            if (result === undefined) { progress(job, 'unavailable', 'extract', attempt); plan.retryExtraction = true; return }
+            if (!current()) { progress(job, 'source_changed', 'extract', attempt); plan.retryExtraction = true; return }
             try { units = parseDreamUnits(parse(result), new Set(batch.map(note => note.path)), dreamUnits - count) }
-            catch { invalid = true }
+            catch { invalid = true; progress(job, 'validation_failed', 'extract', attempt) }
           } catch (error) {
+            progress(job, safeDiagnosticReason(error), 'extract', attempt)
             if (!current() || error instanceof MemoryComputeError && ['dispatch-denied', 'aborted'].includes(error.reason)) { plan.retryExtraction = true; return }
             if (batch.length > 1) {
               const middle = Math.floor(batch.length / 2)
@@ -275,6 +292,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       })
     const defer = (reason: string) => {
       if (!current()) throw new MemoryDreamStaleError()
+      progress(job, 'deferred', 'integrate')
       const previousOperationId = previous?.status === 'ready' ? item.operationId : undefined
       const previousState = item.state
       try {
@@ -305,12 +323,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       const raw = await calculate({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
         input: { unit: item.unit, ...(repair ? { repair } : {}), ...(previous?.answer ? { clarification: { text: project(projectDocumentSource(previous.answer.text, previous.answer.source, documents.sourceRestrictions(item.workspace))), sourceId: previous.answer.source.id } } : {}) },
         sourceIds: () => [...readSources.keys()], current, tools: { tools: tools.tools, executeTool: tools.executeTool } })
-      if (raw === undefined) return 'wait'
+      if (raw === undefined) { progress(job, 'external_wake', 'integrate'); return 'wait' }
       if (!current()) throw new MemoryDreamStaleError()
-      const output = parse(raw)
+      let output: unknown
+      try { output = parse(raw) }
+      catch (error) { progress(job, 'validation_failed', 'integrate', attempt); throw error }
       const deferred = deferredReply.safeParse(output)
       if (deferred.success) return defer(deferred.data.reason)
-      const draft = tools.finish(output)
+      let draft: ReturnType<typeof tools.finish>
+      try { draft = tools.finish(output) }
+      catch (error) { progress(job, 'validation_failed', 'integrate', attempt); throw error }
       // finish may add source reads; bind the expanded provenance before the independent review request.
       const canonicalSources: Array<{ sourceId: string, version: number, author: MemorySource['author'], text: string,
         question: string | null, questionUnavailable: boolean, at: number, timezone: string }> = []
@@ -344,13 +366,17 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
           proposed: draft.markdown, documents: toolReads().map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown, applicability: doc.applicability })),
           canonicalSources },
         sourceIds: () => [...readSources.keys()], current })
-      if (reviewed === undefined) return 'wait'
+      if (reviewed === undefined) { progress(job, 'external_wake', 'verify'); return 'wait' }
       if (!current()) throw new MemoryDreamStaleError()
-      const review = validateDreamReview({ value: parse(reviewed), action: draft.receipt.action, sources: refs(), source,
-        reads: toolReads(), unitSources: files.map(file => file.sources.map(ref => ref.id)),
-        restricted: ref => documentSourceRestricted(ref, documents.sourceRestrictions(item.workspace)) })
-      if (review.verdict === 'deferred') return defer(review.reason)
+      let review: ReturnType<typeof validateDreamReview>
+      try {
+        review = validateDreamReview({ value: parse(reviewed), action: draft.receipt.action, sources: refs(), source,
+          reads: toolReads(), unitSources: files.map(file => file.sources.map(ref => ref.id)),
+          restricted: ref => documentSourceRestricted(ref, documents.sourceRestrictions(item.workspace)) })
+      } catch (error) { progress(job, 'validation_failed', 'verify'); throw error }
+      if (review.verdict === 'deferred') { progress(job, 'deferred', 'verify'); return defer(review.reason) }
       if (review.verdict === 'rejected') {
+        progress(job, 'validation_failed', 'verify', attempt)
         if (attempt === 1 || !materialAllowed(review.reason, refs())) return 'retry'
         repair = { reason: review.reason, rejected: { action: draft.receipt.action, target_path: draft.path, markdown: draft.markdown } }
         continue
@@ -370,6 +396,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       })
       advanceOwnReads(plan, item.workspace, receipt)
       committed(receipt)
+      diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'applied',
+        identities: { requestId: item.operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
+        metrics: { count: evidence.length } })
       documents.resolve(item.workspace, item.operationId)
       if (receipt.revision) {
         const tag = plan.tags.find(tag => tag.workspace === item.workspace && tag.path === receipt.path)
@@ -401,8 +430,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       try {
         const result = await calculate({ job, stage: 'tag', system: DREAM_TAG_SYSTEM,
           input: { path: target.path, markdown: targetView.markdown }, sourceIds: () => target.sources.map(ref => ref.id), current })
-        if (result === undefined || !current()) { fail('unavailable'); continue }
-        const reply = tagReply.parse(parse(result))
+        if (result === undefined) { progress(job, 'unavailable', 'tag'); fail('unavailable'); continue }
+        if (!current()) { progress(job, 'source_changed', 'tag'); fail('unavailable'); continue }
+        let reply: ReturnType<typeof tagReply.parse>
+        try { reply = tagReply.parse(parse(result)) }
+        catch (error) { progress(job, 'validation_failed', 'tag'); throw error }
         const markdown = updateMemoryFrontmatter(target.markdown, { memory_tags: unique(reply.memory_tags) })
         if (!materialAllowed(markdown, target.sources)) { fail('rejected'); continue }
         if (markdown === target.markdown) { documents.recordTagAttempt({ ...attempt, state: 'completed' }); continue }
@@ -416,13 +448,20 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         committed(receipt)
         documents.recordTagAttempt({ ...attempt, state: 'completed' })
         persist(job, plan)
-      } catch { fail('failed') }
+      } catch (error) { progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'tag'); fail('failed') }
     }
   }
   async function runJob(job: Effect): Promise<Outcome> {
-    await mutate(() => { notes.recover(); documents.recover() })
+    if (notes.needsRecovery() || documents.needsRecovery()) await mutate(() => {
+      if (notes.needsRecovery()) notes.recover()
+      if (documents.needsRecovery()) documents.recover()
+    })
     let plan = planSchema.safeParse(job.payload).data
-    if (!plan) plan = await extract(job)
+    if (!plan) {
+      const extracted = await extract(job)
+      if (extracted === 'wait') return 'wait'
+      plan = extracted
+    }
     if (!plan) return 'done'
     // A journal receipt can precede the effect-plan write when the process stops. Only exact owned receipts
     // may advance these reads; unrelated later revisions never count as our continuation.
@@ -464,6 +503,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         else if (outcome === 'wait') wait = true
         else retry = true
       } catch (error) {
+        progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'integrate')
         if (!effects.holds(job)) return 'done'
         if (error instanceof MemoryDreamStaleError) { effects.amend(job, {}); return 'retry' }
         retry = true
@@ -482,8 +522,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   effects.runs(DREAM, async jobs => {
     const outcomes = new Map<string, Outcome>()
     for (const job of jobs) {
-      try { outcomes.set(job.key, await runJob(job)) }
-      catch { outcomes.set(job.key, 'retry') }
+      try {
+        const outcome = await runJob(job)
+        outcomes.set(job.key, outcome)
+        progress(job, outcome === 'retry' ? 'retry' : outcome === 'wait' ? 'external_wake' : 'normal')
+      } catch (error) { progress(job, safeDiagnosticReason(error)); outcomes.set(job.key, 'retry') }
     }
     return outcomes
   }, attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { beginDiagnosticOperation } from '../../diagnostics/operation.ts'
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryEmbedder } from '../contracts/embedding.ts'
 import type {
@@ -26,6 +27,9 @@ import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDepen
 import { availableDocumentSourceSpans, documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
 import { formatMemoryDocument, parseMemoryDocument, readMemoryLines } from './memory-document.ts'
 import type { DreamCalculate } from './memory-dream-jobs.ts'
+import { guardDiagnosticPort, NO_DIAGNOSTICS, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
+import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
+import type { DiagnosticOutcome, DiagnosticReason } from '../../diagnostics/contracts.ts'
 import { createMemoryDreamJobs } from './memory-dream-jobs.ts'
 import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
 import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
@@ -76,9 +80,10 @@ const sameScope = (a: MemoryScope, b: MemoryScope) => a.kind === b.kind && (a.ki
 const automaticSource = (source: MemorySource) => source.author === 'user' || source.author === 'answer'
 
 export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, quiesce, changed, injected, fileClarificationDispatch,
-  dailyNotes = false, fileDependencies,
+  dailyNotes = false, fileDependencies, diagnostics: providedDiagnostics = NO_DIAGNOSTICS,
   canCommit, validateDispatch, runDocumentMutation, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
   store: MemoryStore,
+  diagnostics?: DiagnosticPort,
   resources: MemoryRuntimeResources,
   presentation?: MemoryPresentation,
   compute: (request: MemoryCompute, signal?: AbortSignal, tools?: import('../contracts/compute.ts').MemoryComputeTools) => Promise<string> | null,
@@ -101,6 +106,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (typeof capability !== 'function') throw new TypeError('Memory safety ports must be provided')
   }
   const { effects, identity: { newId: randomUUID, hash: memoryHash } } = resources
+  const diagnostics = guardDiagnosticPort(providedDiagnostics)
   const archiveFileReads = fileDependencies ?? store.dispatch.files
   const clarificationDispatch = fileClarificationDispatch ?? store.dispatch
   const presentMessage = presentation.text ?? defaultMemoryText
@@ -124,7 +130,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const runningComputations = new Map<string, { ready: () => boolean, current: () => boolean, deadline: number | null }>()
 
   function publish(revision: number) {
-    try { changed({ revision }) } catch { console.error('[memory] could not publish committed revision') }
+    try { changed({ revision }) } catch (error) {
+      diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'checkpoint', reason: safeDiagnosticReason(error), metrics: { mark: revision } })
+    }
   }
 
   function createSource(text: string, origin: Origin, operation: string, author: MemorySource['author'], answer?: AnswerSource, captured?: { at: number, timezone: string }) {
@@ -179,12 +187,16 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         && contextSources.every(fileSourceCurrent)
     }
     runningComputations.set(id, { ready: () => !mutation && store.revision() === snapshotRevision && current(), current, deadline: null })
+    const observation = beginDiagnosticOperation(diagnostics, stage === 'dream' ? 'memory.dream' : 'memory.daily', { stage: 'extract',
+      identities: { requestId: id, jobId: job.key, generation: job.generation } })
     try {
       const result = compute({ id, sourceId: source.id, generation: job.generation, stage, ...model, system, input: JSON.stringify(input) })
-      if (!result) return
+      if (!result) { observation.end('failed', { reason: 'unavailable' }); return }
       const response = await result
-      return current() ? JSON.parse(response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as unknown : undefined
-    } finally { runningComputations.delete(id) }
+      if (!current()) { observation.end('cancelled', { reason: 'source_changed' }); return }
+      return JSON.parse(response.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')) as unknown
+    } catch (error) { observation.fail(error); throw error }
+    finally { observation.end(); runningComputations.delete(id) }
   }
 
   let documentStorageReady = false
@@ -212,7 +224,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       ,
     deferRecovery: true })
   const notes = createMemoryNoteJobs({
-    store, effects, now, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
+    store, effects, now, diagnostics, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: id => fileSourceCurrent(id),
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
     allowsDerived: ids => !documentSourcesRestricted(ids),
@@ -284,7 +296,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return alias ? documents?.registered(workspace).find(doc => doc.id === alias.id)?.path ?? null : null
   }
   const fileRetrieval = filePolicy && fileIndex ? createMemoryFileRetrieval({ index: fileIndex, policy: filePolicy,
-    workspaces: fileWorkspaces, hash: memoryHash, embedder, now, resolveAlias: resolveFileAlias }) : null
+    workspaces: fileWorkspaces, hash: memoryHash, embedder, now, resolveAlias: resolveFileAlias, diagnostics }) : null
   function retainFileReads(session: string, result: { files: MemoryFileDependency[], sourceIds: string[] }) {
     archiveFileReads(session, result.files, result.sourceIds)
   }
@@ -355,6 +367,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     turn.refs.set(ref, matched.reference)
     turn.pending.set(identity, matched.reference)
     clarificationDispatch.offerFileClarification(session, identity)
+    diagnostics.emit({ event: 'state.changed', operation: 'memory.clarify', stage: 'deferred',
+      identities: { sessionId: session, requestId: ref, jobId: matched.work.operationId } })
     // The approved question keeps its title on the host side. Model results only
     // expose a turn-scoped handle to the question about this retrieval.
     return { ref }
@@ -523,8 +537,21 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   notes?.refreshRestrictions()
   const calculateDocument: DreamCalculate = async request => {
       const model = route(), sources = request.sourceIds()
-      if (!model || !sources.length || !request.current()) return
+      if (!model || !sources.length) {
+        diagnostics.emit({ event: 'operation.progress', operation: 'memory.dream', stage: request.stage,
+          reason: !model ? 'not_ready' : 'source_changed', identities: { jobId: request.job.key, generation: request.job.generation } })
+        return
+      }
+      if (!request.current()) {
+        diagnostics.emit({ event: 'operation.progress', operation: 'memory.dream', stage: request.stage,
+          reason: 'source_changed', identities: { jobId: request.job.key, generation: request.job.generation } })
+        return
+      }
       const id = randomUUID(), snapshotRevision = store.revision()
+      const observation = beginDiagnosticOperation(diagnostics, 'memory.dream', {
+        stage: request.stage, identities: { operationId: id, jobId: request.job.key, generation: request.job.generation } })
+      let diagnosticOutcome: DiagnosticOutcome = 'cancelled'
+      let diagnosticReason: DiagnosticReason | undefined = 'denied'
       const current = () => !closed && request.current() && request.sourceIds().every(fileSourceAllowsUse)
       runningComputations.set(id, {
         ready: () => !mutation && store.revision() === snapshotRevision && current(),
@@ -535,11 +562,19 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           ...model, system: request.system, input: JSON.stringify(request.input) }, undefined, request.tools)
         if (!result) return
         const text = await result
-        return current() && store.revision() === snapshotRevision ? text : undefined
-      } finally { runningComputations.delete(id) }
+        const valid = current() && store.revision() === snapshotRevision
+        diagnosticOutcome = valid ? 'completed' : 'cancelled'; diagnosticReason = valid ? undefined : 'stale'
+        return valid ? text : undefined
+      } catch (error) {
+        diagnosticOutcome = 'failed'; diagnosticReason = safeDiagnosticReason(error)
+        throw error
+      } finally {
+        observation.end(diagnosticOutcome, diagnosticReason ? { reason: diagnosticReason } : {})
+        runningComputations.delete(id)
+      }
     }
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
-    notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx,
+    notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics,
     settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: fileSourceAllowsUse,
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
@@ -935,6 +970,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       // so the consumed pending reference can no longer stale its own reply.
       fileClarifications.track(session, turn).pending.delete(documentWorkKey(reference))
       acceptedFileAnswerTurns.add(session)
+      diagnostics.emit({ event: 'state.changed', operation: 'memory.clarify', stage: 'checkpoint',
+        identities: { sessionId: session, requestId: input.questionId, jobId: work.operationId } })
       return { sourceId: id }
     })
     return result

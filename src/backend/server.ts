@@ -1,4 +1,9 @@
 import { getLocale } from '../shared/i18n/locale.ts'
+import path from 'node:path'
+import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
+import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
+import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort } from '../diagnostics/node/context.ts'
+import pkg from '../../package.json' with { type: 'json' }
 import { imageResponse } from './image-protocol.ts'
 import { checkedIpc } from '../shared/ipc-contract.ts'
 import { createBackend } from './compose.ts'
@@ -30,15 +35,22 @@ function fail(message: string): void {
 }
 
 async function start(message: StartMessage) {
+  const diagnostics = createManagedDiagnostics({ directory: path.join(message.paths.userData, 'diagnostics'), component: 'backend', version: pkg.version })
+  installDiagnosticPort(diagnostics)
+  const hub = createDiagnosticHub({ component: 'backend', writers: [{ component: 'backend', writer: diagnostics }],
+    send: (message, settled) => { if (process.connected && process.send) process.send(message, settled); else settled(new Error('Diagnostic parent disconnected')) } })
+  const diagnosticMessage = (raw: unknown) => { hub.receive(raw) }
+  process.on('message', diagnosticMessage)
+  emitDiagnostic({ event: 'process.start', operation: 'startup', stage: 'start' })
   // Electron as Node is for this process only: what it starts (dsh, pnpm) is told so on its own where it needs it.
   delete process.env.ELECTRON_RUN_AS_NODE
   const secrets = createEnvelope({ key: message.dataKey ? Buffer.from(message.dataKey, 'base64') : null })
-  const remote = createRemoteHost({ start: message, secrets, onDropped: (n) => console.error(`[backend] no shell listened: host calls from ${n} on are being let go`) })
+  const remote = createRemoteHost({ start: message, secrets, onDropped: (n) => emitDiagnostic({ event: 'operation.progress', operation: 'host.catchup', reason: 'gap', metrics: { mark: n } }) })
   const channels = new Map<string, { kind: ChannelKind, listener: ChannelListener }>()
   const ipc = checkedIpc({
     handle: (channel, listener) => { channels.set(channel, { kind: 'handle', listener }) },
     on: (channel, listener) => { channels.set(channel, { kind: 'on', listener }) },
-  }, { onRefused: (_channel, problem) => console.error('[ipc] refused:', problem) })
+  }, { onRefused: channel => emitDiagnostic({ event: 'operation.progress', operation: 'ipc', reason: 'validation_failed', identities: { methodId: channel } }) })
   const backend = createBackend({ host: remote.host, ipc })
   backend.open()
 
@@ -49,7 +61,7 @@ async function start(message: StartMessage) {
     remote,
     since: backend.since,
     image: (url) => imageResponse(url, backend.images()),
-    onError: (where, err) => console.error(`[backend] ${where}:`, err),
+    onError: (where, err) => emitDiagnosticFailure('http', err, { identities: { methodId: where } }),
     controls: {
       'start-bridge': () => backend.startBridge(),
       signal: (input) => {
@@ -70,17 +82,19 @@ async function start(message: StartMessage) {
       'agent-pid': () => backend.agentPid(),
       since: (seq) => backend.since(Number(seq)),
       'automation.seed-feed': (item) => seedFeed(message.automation, backend, item),
+      'automation.publish-event': (event) => backend.publishAutomation(event),
       close: () => { closing ??= shutdown() },
     },
   })
 
   async function shutdown() {
+    emitDiagnostic({ event: 'process.exit', operation: 'shutdown', reason: 'normal' })
     backend.markQuitting()
     remote.abandon('the shell has gone')
     await backend.stop()
     backend.close()
     // The answer to `close` goes out before the server does.
-    setImmediate(() => { void server.close().finally(() => process.exit(0)) })
+    setImmediate(() => { hub.close(); process.off('message', diagnosticMessage); void server.close().then(() => diagnostics.close()).finally(() => process.exit(0)) })
   }
 
   const port = await server.listen()
@@ -104,7 +118,7 @@ process.once('message', (raw) => {
     return
   }
   start(parsed.data).catch((err: Error) => {
-    console.error('[backend] could not start:', err)
+    emitDiagnosticFailure('startup', err)
     fail(err?.message ?? String(err))
   })
 })

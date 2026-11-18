@@ -4,6 +4,13 @@
 // Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
+    'session-timing',
+    'renderer-initialization',
+    'diagnostics',
+    'diagnostics-actions',
+    'diagnostics-workflow',
+    'diagnostics-ipc',
+    'diagnostics-health',
     'memory-dream-tools',
     'memory-markdown',
     'memory-daily-usage',
@@ -183,6 +190,7 @@ export const testLevels = {
     'remove-tree',
     'renderer-css',
     'renderer-hotpaths',
+    'ui-polish',
     'report-records',
     'resume-actions',
     'resume-carry',
@@ -254,6 +262,10 @@ export const testLevels = {
     'workspace-files',
   ],
   integration: [
+    'memory-availability',
+    'diagnostics-export',
+    'diagnostics-process-pause',
+    'diagnostics-recovery',
     'memory-file-checkout',
     'model-fixtures',
     'memory-file-initialization',
@@ -302,6 +314,7 @@ export const testLevels = {
     'memory-package',
   ],
   timing: [
+    'diagnostics-sink',
     'backend-wire-timing',
   ],
 } as const

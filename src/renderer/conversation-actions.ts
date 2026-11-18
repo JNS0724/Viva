@@ -17,7 +17,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
   const steerLost = () => t("app.your.message.did.not.reach.the.assistant")
   const context = (): ConversationContext => ({ conversationId: getState().conversationId ?? getState().info.conversationId ?? null, sessionId: getState().info.sessionId ?? null })
   const belongsHere = (origin: ConversationContext) => sameContext(origin, context())
-  const selectionPending = () => getState().newTopicPending || getState().switching || getState().workDir.switching || getState().rewind.busy || getState().settings.busy
+  const selectionPending = () => getState().initialization.status !== 'ready' || getState().newTopicPending || getState().switching || getState().workDir.switching || getState().rewind.busy || getState().settings.busy
   const canReply = (origin: ConversationContext, epoch: number) => belongsHere(origin) && epoch === sendEpoch
     && !selectionPending()
   const promptFailed = (origin: ConversationContext, epoch: number) => (error: unknown) => {
@@ -186,6 +186,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
 
   /** The backend publishes the reply once the question and its answer are still valid. */
   function answer(answers: Answers) {
+    if (selectionPending()) return
     const question = getState().question
     if (!question) return
     const origin = context(), epoch = sendEpoch
@@ -196,6 +197,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
   }
 
   async function provideSecrets(values: Record<string, string> | null) {
+    if (selectionPending()) return
     const secret = getState().secret
     if (!secret) return
     const origin = context(), epoch = sendEpoch

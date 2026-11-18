@@ -66,6 +66,8 @@ test('an unfinished turn opens on its reply; a failure opens the window to see i
   assert.deepEqual(incomplete.body, [{ kind: 'text', text: '已达到本轮输出上限' }])
   const failed = deskCard({ ...base, form: 'error', tone: 'error', label: '出错', detail: 'socket hang up' }, { shortcut: '' })!
   assert.deepEqual(failed.actions.map(button => button.text), ['在 Viva 查看', '继续问'])
+  assert.equal(failed.body[0]?.kind, 'text')
+  if (failed.body[0]?.kind === 'text') assert.doesNotMatch(failed.body[0].text, /socket/)
 })
 
 test('not connected offers the settings; connecting offers nothing to do', () => {

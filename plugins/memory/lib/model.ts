@@ -1,4 +1,5 @@
 import { BlockAssembler, createUserMessage, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { withOperation } from '../../../src/diagnostics/node/context.ts'
 import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
@@ -56,7 +57,8 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
       let input: z.infer<ReturnType<typeof z.json>> | undefined
       try { input = z.json().parse(JSON.parse(call.arguments)) } catch { /* The model can repair its arguments. */ }
       if (names.has(call.name) && input !== undefined) {
-        const result = await capability.executeTool({ callId: call.id, name: call.name, input })
+        const result = await withOperation('tool', () => capability.executeTool({ callId: call.id, name: call.name, input }), {
+          identities: { requestId: call.id, methodId: call.name, jobId: job.id, generation: job.generation } })
         signal.throwIfAborted()
         if (result.callId !== call.id) throw new MemoryComputeError('call-failed')
         content = result.content

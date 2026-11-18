@@ -114,6 +114,7 @@ export interface MemoryDocuments {
   recordTagAttempt(input: DocumentTagAttempt): void
   tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
   sourceRestrictions(workspace: string): DocumentSourceRef[]
+  needsRecovery(): boolean
   recover(): void
   /** Recover one authorized management intent after host withdrawal recovery. */
   recoverManagement(operationId: string): 'cancelled' | undefined
