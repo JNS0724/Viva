@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fuseMemoryFileHits, selectMemoryFileHits, memoryFileChunkKey } from '../src/memory/core/memory-file-ranking.ts'
+import { relevantMemoryFileLanes, fuseMemoryFileHits, selectMemoryFileHits, memoryFileChunkKey } from '../src/memory/core/memory-file-ranking.ts'
 import type { MemoryFileHit } from '../src/memory/core/ports/file-index.ts'
 
 function hit(id: string, ordinal = 0, workspace = 'one', score = 100): MemoryFileHit {
@@ -78,4 +78,12 @@ test('selection is deterministic, immutable and fills spare slots with remaining
   assert.deepEqual(keys(selected), keys([lane[0]!, lane[2]!, lane[1]!, lane[3]!]))
   assert.deepEqual(selectMemoryFileHits(ranked, { limit: 10 }), selected)
   assert.equal(JSON.stringify(ranked), before)
+})
+
+test('semantic contrast admits a distinct near-threshold match only with a reference and an absolute floor', () => {
+  const eligible = (...scores: number[]) => relevantMemoryFileLanes('query', [], scores.map((score, i) => hit(String(i), 0, 'one', score))).vector.map(hit => hit.score)
+  assert.deepEqual(eligible(0.81), [])
+  assert.deepEqual(eligible(0.82, 0.81, 0.81, 0.80, 0.80), [])
+  assert.deepEqual(eligible(0.82, 0.80, 0.79, 0.78, 0.76), [0.82, 0.80, 0.79])
+  assert.deepEqual(eligible(0.76, 0.72, 0.70, 0.68, 0.61), [])
 })

@@ -241,7 +241,8 @@ export async function runMemoryFileEvaluation(modelRoot: string, runtimeRoot: st
       })) as Record<'lexical'|'vector'|'fused',{hit1:boolean,hit5:boolean,candidateRecall:boolean,allEvidenceHit5:boolean,top:HitSummary[],candidateIds:string[]}>
       const leaks=(query.forbidden ?? []).filter(label=>actualHits.some(hit=>hit.id===label.id || hit.text.includes(label.quote)
         || [...hit.inlinks.neighbors,...hit.outlinks.neighbors].some(neighbor=>ids.get(neighbor.id)===label.id)))
-      cases.push({id:query.id,kind:query.kind,group:query.group,text:query.text,evidence:query.evidence,forbidden:query.forbidden,
+      const semanticCandidates = vector.map(hit => ({ id: ids.get(hit.file.id), startLine: hit.startLine, endLine: hit.endLine, cosine: hit.score }))
+      cases.push({semanticCandidates,id:query.id,kind:query.kind,group:query.group,text:query.text,evidence:query.evidence,forbidden:query.forbidden,
         from:query.from,through:query.through,asOf:query.asOf,lanes:measures,serviceStatus:actual.status,reasons:actual.reasons,
         elapsedMs:queryTimes.at(-1)!,safetyLeaks:leaks,unauthorizedExposures:audited.unauthorized})
     }

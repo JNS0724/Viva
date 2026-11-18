@@ -27,7 +27,12 @@ export function relevantMemoryFileLanes(query: string, lexical: readonly MemoryF
     }
     return count >= required
   }
-  return { lexical: lexical.filter(matches), vector: vector.filter(hit => hit.score >= defaults.searchMinCosine) }
+  // A fixed reference rank within even the smallest candidate pool keeps the gate
+  // independent of the requested output limit. Small pools use only the absolute cutoff.
+  const fifthCosine = vector[4]?.score
+  const semantic = vector.filter(hit => hit.score >= defaults.searchMinCosine
+    || (fifthCosine !== undefined && hit.score >= defaults.searchContrastMinCosine && hit.score - fifthCosine >= defaults.searchCosineMargin))
+  return { lexical: lexical.filter(matches), vector: semantic }
 }
 
 /** Fixed weighted reciprocal ranks, including when only one lane is available. */

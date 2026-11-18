@@ -11,6 +11,8 @@ export const DAILY_MEMORY_DEFAULTS = Object.freeze({
   searchMaxLimit: 50,
   searchMinScore: 0,
   searchMinCosine: 0.83,
+  searchContrastMinCosine: 0.78,
+  searchCosineMargin: 0.03,
   searchMinTermCoverage: 0.35,
   searchCandidateMultiplier: 5,
   searchMaxCandidates: 200,
