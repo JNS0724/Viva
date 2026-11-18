@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createNodeDiagnostics } from '../src/diagnostics/node/logger.ts'
 import { diagnosticPort, installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import { NO_DIAGNOSTICS } from '../src/diagnostics/contracts.ts'
+import { createEventCore } from '../src/backend/event-core.ts'
 import { openAppDb } from '../src/backend/app-db.ts'
 import { openHistoryDb } from '../src/backend/history-db.ts'
 import { createTaskStore } from '../src/backend/task-store.ts'
@@ -26,12 +27,14 @@ const root = await mkdtemp(path.join(tmpdir(), 'viva-diagnostic-flows-'))
 const writer = createNodeDiagnostics({ directory: path.join(root, 'logs'), component: 'backend' })
 const app = openAppDb({ file: path.join(root, 'main.db') })
 const db = app.db, history = openHistoryDb({ db }), current = history.create({ sessionId: 'main', cwd: root })
-const tasks = createTaskRuntime({ db: history, store: createTaskStore({ db }), current: () => current, agentInfo: () => ({ mode: 'live' }),
+const events = createEventCore({ app, publish() {} })
+const tasks = createTaskRuntime({ db: history, store: createTaskStore({ db }), current: () => current,
+  apply: (kind, data, write) => events.apply(kind, data, write), agentInfo: () => ({ mode: 'live' }),
   agent: { startTask: () => ({ ok: true, taskId: randomUUID() }), promptTask() {}, closeTask() {}, cancelTask() {},
     steerTask: () => ({ ok: true }), resumeTask: () => ({ ok: true }) } })
 let now = Date.UTC(2026, 0, 1), delivered = () => {}
 const store = openScheduleStore({ db, now: () => now }), feed = openFeedStore({ db })
-const schedules = createScheduleRuns({ db, store, feed, now: () => now, later: () => null, cancel() {},
+const schedules = createScheduleRuns({ db, store, feed, apply: (kind, data, write) => events.apply(kind, data, write), now: () => now, later: () => null, cancel() {},
   run: async () => ({ ok: true, text: 'done' }), keep() {}, delivered: () => delivered() })
 const streams = createAssistantStream({ emit() {}, send(raw) {
   const { type, operation } = raw as { type: string, operation: string }
@@ -51,6 +54,9 @@ const docs: MemoryDocumentView[] = Array.from({ length: 32 }, (_, i) => {
 })
 const retrieval = createMemoryFileRetrieval({ index: openMemoryFileIndex({ db }), hash, workspaces: () => [workspace],
   policy: { list: () => docs, read: (_, name) => docs.find(doc => doc.path === name) ?? null }, diagnostics: diagnosticPort })
+type Mode = 'enabled' | 'disabled'
+let measuredMode: Mode | undefined
+const phaseTimes = { launch: { enabled: [] as number[], disabled: [] as number[] }, finish: { enabled: [] as number[], disabled: [] as number[] } }
 const flows = {
   async conversation() {
     let ended = false
@@ -59,10 +65,14 @@ const flows = {
     assert.ok(ended)
   },
   async task() {
+    const start = performance.now()
     const task = await tasks.agent.start('prepare summary')
+    const launched = performance.now()
+    if (measuredMode) phaseTimes.launch[measuredMode].push(launched - start)
     tasks.dsh.receive({ type: 'task_end', taskId: task.taskId, stopReason: 'end_turn' })
     assert.ok(tasks.window.finished().some(item => item.task.id === task.taskId && item.status === 'done'))
     await tasks.window.close(task.taskId)
+    if (measuredMode) phaseTimes.finish[measuredMode].push(performance.now() - launched)
   },
   async schedule() {
     const due = now + 60_000
@@ -79,13 +89,17 @@ const flows = {
     assert.ok(result.hits.length)
   },
 }
+const p95 = (samples: number[]) => samples.sort((a, b) => a - b)[Math.ceil(samples.length * .95) - 1]!
 const results = []
 try {
   await writer.ready
   for (const [name, work] of Object.entries(flows)) {
     const times = { disabled: [] as number[], enabled: [] as number[] }
-    for (let round = 0; round < 102; round++) {
+    // Disk-backed task start/end/close samples include checkpoint jitter; retain a larger tail.
+    const samplesPerMode = name === 'task' ? 300 : 100
+    for (let round = 0; round < samplesPerMode + 2; round++) {
       for (const enabled of round % 2 ? [true, false] : [false, true]) {
+        measuredMode = round < 2 ? undefined : enabled ? 'enabled' : 'disabled'
         const restore = installDiagnosticPort(enabled ? writer : NO_DIAGNOSTICS)
         try {
           const start = performance.now()
@@ -95,13 +109,14 @@ try {
         await delay(20)
       }
     }
-    const p95 = (samples: number[]) => samples.sort((a, b) => a - b)[Math.ceil(samples.length * .95) - 1]!
     const disabled = p95(times.disabled), enabled = p95(times.enabled)
-    results.push({ name, disabled, enabled, ...diagnosticLatencyBudget(disabled, enabled) })
+    results.push({ name, samplesPerMode, disabled, enabled, ...diagnosticLatencyBudget(disabled, enabled) })
   }
   assert.equal(await writer.close(), true)
+  const taskPhases = Object.fromEntries(Object.entries(phaseTimes).map(([phase, samples]) =>
+    [phase, { disabled: p95(samples.disabled), enabled: p95(samples.enabled) }]))
   const stats = writer.snapshot().stats
-  console.log(JSON.stringify({ platform: process.platform, samplesPerMode: 100, results, stats }, null, 2))
+  console.log(JSON.stringify({ platform: process.platform, results, taskPhases, stats }, null, 2))
   if (results.some(result => !result.acceptableLatency) || !healthyDiagnosticSample(stats)) process.exitCode = 1
 } finally {
   operations.dispose(); schedules.close(); tasks.dispose(); retrieval.close(); app.close()

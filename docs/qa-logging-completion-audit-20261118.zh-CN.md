@@ -71,3 +71,5 @@ HTTP 原先只编码 trace/span，漏掉 diagnosticRunId，导致有效接收端
 本机固定请求交错对照每模式 500 次，整页五项读取 P95 2.984 → 4.080 ms（+1.096 ms / +36.71%），零丢弃，两个进程结束时积压和活动数均为零。原相对目标仍记录失败。根据实际交互的小增量约定，CI 同时报原指标，以最多 2ms 作为约 1ms 成本的保守验收带，超过时仍检查原双指标。所有默认负载要求已写出日志、零丢弃及结算完成。
 
 另外四条路径每模式 100 次、交错执行。采用真实 ACP 操作、任务持久化、定时 SQLite 派发与本地全文检索；模型回复固定，不测云端延迟或用户主观感受。macOS 上主对话 +0.344ms，后台任务 +0.606ms，定时 +0.536ms，检索 −0.362ms。负增量只视为波动。没有排队或丢弃。证据为 /private/tmp/viva-l1c-bound-benchmark.json 和 /private/tmp/viva-flow-benchmark.json。已确认 b3b3123 原生 CI 唯一失败步骤为旧性能门槛，macOS 增加 1.757ms，Windows 增加 0.539ms。
+
+**收尾验证**。eaf8917 的全量测试 2245 项，2243 通过、2 跳过、0 失败，最终桌面构建 15/15；见 /private/tmp/viva-staged-final-full.log 和 /private/tmp/viva-staged-final-smoke.log。两平台的冻结/恢复、导出与设置专项也通过。其首版多主线基准在后台任务一项失败，Windows 增加 3.359ms，macOS 增加 17.548ms。复核发现夹具未连接生产组合层的 EventCore.apply，原本一次事务的多次写入在夹具中逐条提交。当前夹具改用真实事务并区分启动、结束及关闭，后台任务每模式 300 次。修正后本机主对话、后台、定时、检索 P95 分别增加 0.343、0.486、0.570、0.389ms，零丢弃，见 /private/tmp/viva-eventcore-flows.json。平台验收以该版本分支对应的诊断和 package 工作流结果为准。
