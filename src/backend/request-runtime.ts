@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { emitDiagnostic, emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
 import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { isTaskAction, parsePlan, type Receipt, type TaskAction } from '../shared/request-routing/protocol.ts'
@@ -61,6 +62,7 @@ export function createRequestRuntime({ store, apply, tasks, evidenceErased = () 
   }): string {
     const id = newId()
     apply('request.received', { requestId: id, kind }, () => store.add({ id, sessionId, conversationId, cwd, kind, sourceId, at: now() }))
+    emitDiagnostic({ event: 'state.changed', operation: 'task.route', stage: 'received', identities: { requestId: id, sessionId, conversationId } })
     return id
   }
 
@@ -103,6 +105,7 @@ export function createRequestRuntime({ store, apply, tasks, evidenceErased = () 
     const { plan } = parsed
     const accepted = apply('request.decided', { requestId, actions: plan.actions.map(action => action.kind) }, () => store.decide(requestId, plan, now(), evidence)).value
     if (!accepted) return { accepted: false, reason: refusal(store.get(requestId), requestId, sessionId) ?? `请求 ${requestId} 不能再提交` }
+    emitDiagnostic({ event: 'state.changed', operation: 'task.route', stage: 'claim', identities: { requestId, sessionId }, metrics: { count: plan.actions.length } })
     carrying.set(requestId, sessionId)
     // A start is named by its own title, or else by a goal it serves: the n-th start, the n-th goal delegated.
     const delegated = plan.goals.filter(goal => goal.disposition === 'delegate').map(goal => goal.goal)
@@ -114,13 +117,15 @@ export function createRequestRuntime({ store, apply, tasks, evidenceErased = () 
         if (!isTaskAction(action)) { receipts.push({ kind: action.kind, ok: true }); continue }
         const goal = action.kind === 'start' ? delegated[starts++] : undefined
         const title = action.kind === 'start' ? (action.title ?? goal ?? '') : ''
-        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await perform(request, action, title, evidence)
+        const receipt: Receipt = halted.has(requestId) ? { kind: action.kind, ok: false, error: NOT_SENT } : await withOperation('task.route',
+          () => perform(request, action, title, evidence), { stage: 'dispatch', identities: { requestId, sessionId, methodId: action.kind }, metrics: { count: idx } })
         if (erased()) return rejected()
         receipts.push(receipt)
         try {
           apply('request.acted', { requestId, idx, kind: action.kind, ok: receipt.ok }, () => store.settle(requestId, idx, receipt, now()))
+          emitDiagnostic({ event: 'state.changed', operation: 'task.route', stage: 'checkpoint', identities: { requestId, sessionId, methodId: action.kind }, metrics: { count: idx, ok: receipt.ok } })
         } catch (error) {
-          console.error('[requests] could not keep what became of an action; it stays unsettled:', errorText(error))
+          emitDiagnosticFailure('task.route', error, { stage: 'waiting', identities: { requestId, sessionId, methodId: action.kind }, metrics: { count: idx } })
         }
       }
       return { accepted: true, receipts }
@@ -164,6 +169,7 @@ export function createRequestRuntime({ store, apply, tasks, evidenceErased = () 
     for (const requestId of undecided) apply('request.failed', { requestId, reason: 'interrupted' }, () => store.fail(requestId, 'interrupted', now()))
     const unsettled = store.unsettled()
     if (unsettled) apply('request.uncertain', { actions: unsettled }, () => store.markUncertain(now()))
+    emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'recovering', metrics: { completedCount: undecided.length, pendingCount: unsettled } })
     return { failed: undecided.length, uncertain: unsettled }
   }
 

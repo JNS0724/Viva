@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { parseDiagnosticContext } from '../../diagnostics/contracts.ts'
 import { pathToFileURL } from 'node:url'
 import { objectOf } from '../contracts/unknown-value.ts'
 import { MEMORY_EMBEDDING_BATCH, MEMORY_EMBEDDING_MAX_CHARS } from '../contracts/embedding.ts'
@@ -50,11 +51,16 @@ process.on('message', async raw => {
   const message = objectOf(raw)
   if (!message || !Number.isSafeInteger(message.id) || running) return
   const id = message.id
+  const diagnostics = parseDiagnosticContext(message.diagnostics)
+  const observe = (stage: 'connecting' | 'ready' | 'vector') => {
+    try { process.send?.({ type: 'diagnostic-worker', version: 1, id, stage, ...(diagnostics ? { diagnostics } : {}) }) } catch { /* Independent of model loading/inference. */ }
+  }
   const inputs = checkedInput(message.inputs)
   if (!inputs || !modelRoot) { process.send?.({ type: 'result', id, rows: null }); return }
   running = true
   try {
     if (!extractor) {
+      observe('connecting')
       const identity = readMemoryEmbeddingDescriptor(modelRoot)
       if (identity.fingerprint !== message.fingerprint || identity.manifest.dimensions !== message.dimensions) throw new Error('Embedding descriptor differs from the parent identity')
       await verifyMemoryEmbeddingAssets(modelRoot, identity)
@@ -66,6 +72,7 @@ process.on('message', async raw => {
       await verifyMemoryEmbeddingAssets(modelRoot, identity)
       descriptor = identity
       extractor = loaded
+      observe('ready')
       process.send?.({ type: 'ready', fingerprint: identity.fingerprint, dimensions: identity.manifest.dimensions })
     }
     if (!descriptor || descriptor.fingerprint !== message.fingerprint || descriptor.manifest.dimensions !== message.dimensions) throw new Error('Embedding request changed identity')
@@ -80,6 +87,7 @@ process.on('message', async raw => {
     })
     const rows = Array.from<number[] | null>({ length: inputs.length }).fill(null)
     if (prompts.length) {
+      observe('vector')
       const { dims, data } = await model(prompts.map(({ prompt }) => prompt), { pooling, normalize: true })
       if (dims.length !== 2 || dims[0] !== prompts.length || dims[1] !== dimensions
         || !(data instanceof Float32Array) || data.length !== prompts.length * dimensions) {

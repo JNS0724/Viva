@@ -29,9 +29,19 @@ const read = <T extends z.ZodType>(schema: T): T => schema.describe(QUERY) as T
 
 /** Each channel's arguments after the event, as a tuple; a trailing `.optional()` may be left out. */
 export const IPC_ARGS = Object.freeze({
+  'diagnostics:invoke': z.tuple([z.object({ channel: z.string().max(128), args: z.array(z.unknown()).max(16), diagnostics: z.unknown().optional() })]),
+  'diagnostics:event': z.tuple([z.unknown()]),
+  'diagnostics:export': none,
+  'diagnostics:open-folder': none,
+  'diagnostics:status': read(none),
+  'diagnostics:binding': read(none),
+  'diagnostics:health': read(z.tuple([z.unknown()])),
+  'diagnostics:clear': none,
+  'diagnostics:debug': z.tuple([z.boolean()]),
   'language:get': read(none),
   'language:set': z.tuple([z.enum(['system', 'zh-CN', 'en'])]),
   'agent:info': read(none),
+  'agent:snapshot': read(z.tuple([z.strictObject({ budgetMs: z.number().positive().max(30_000) }).optional()])),
   'agent:waits': read(none),
   'agent:prompt': z.tuple([text, images.optional(), z.union([operationId, z.array(operationId).max(24)]).optional(), id.optional()]),
   'agent:steer': z.tuple([text, operationId.optional()]),
@@ -65,7 +75,8 @@ export const IPC_ARGS = Object.freeze({
   'models:discover': read(z.tuple([record, id.optional()])),
 
   'history:load': read(none),
-  'history:save': z.tuple([z.array(record).max(MAX_LIST)]),
+  'history:save': z.tuple([z.array(record).max(MAX_LIST), z.strictObject({ streamGeneration: z.string().min(1).max(128), eventCursor: count,
+    context: z.strictObject({ conversationId: id.nullable(), sessionId: id.nullable() }) }).optional()]),
   'history:list': read(z.tuple([count.optional()])),
   'history:search': read(z.tuple([text])),
   'history:resume-topic': z.tuple([id]),
@@ -103,7 +114,7 @@ export const IPC_ARGS = Object.freeze({
   'workdir:forget': z.tuple([path]),
   'workdir:reveal': none,
 
-  'memory:get': read(none),
+  'memory:get': read(z.tuple([z.strictObject({ budgetMs: z.number().positive().max(10_000) }).optional()])),
   'memory:list-files': read(z.tuple([memoryFileListRequest])),
   'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   'memory:set-file-enabled': z.tuple([memoryFileSetEnabledRequest]),

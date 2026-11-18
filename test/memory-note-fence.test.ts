@@ -13,7 +13,8 @@ import { createMemoryNoteJobs } from '../src/memory/core/memory-note-jobs.ts'
 import { openMemoryFileRestrictions } from '../src/memory/node/memory-file-restrictions.ts'
 import { createEffects } from '../src/memory/node/effects.ts'
 import { WRITE_NOTE } from '../src/memory/core/memory-notes.ts'
-import type { MemorySendPermit } from '../src/memory/core/send-fence.ts'
+import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 function aborted(signal:AbortSignal) {
   return signal.aborted ? Promise.resolve() : new Promise<void>((resolve,reject)=>{
@@ -75,6 +76,48 @@ test('intake does not recover an unrelated pending daily commit and fenced job r
   } finally {permit.settled();await fence.close()}
 })
 
+for (const failure of ['timeout', 'invalid-output', 'unavailable'] as const) {
+  test(`daily ${failure} retries and runner restart leave unrelated foreground sends admitted without prepared recovery`, async t => {
+    const { dir, defer } = scratch(t, 'memory-note-retry-fence-')
+    let now = 1000
+    const store = openMemoryStore(join(dir, 'memory.db'))
+    defer(() => store.close())
+    const source = noteSource(store), notes = openMemoryNotes(store, () => true)
+    const key = notes.add('session', '2026-11-14', [source], '')!
+    const events: DiagnosticEvent[] = []
+    const fence = createMemorySendFence({ epoch: 'test', admit: () => ({ current: () => true, deadline: null }) })
+    defer(() => fence.close())
+    let calculations = 0
+    let effects = createEffects({ db: store.db, now: () => now, later: () => null, cancel: () => {} })
+    defer(() => effects.close())
+    const start = () => createMemoryNoteJobs({ store, effects, now: () => now, openNotes: () => notes, readable: () => true,
+      eligible: () => true, allowsText: () => true, assistantContextCurrent: () => true, settings: { noteInterval: 1 },
+      mutate: write => fence.mutate(write), diagnostics: { emit(event) { events.push(event); return undefined } },
+      async calculate() {
+        calculations++
+        if (failure === 'timeout') throw new MemoryComputeError('timeout')
+        return failure === 'invalid-output' ? { status: 'SECRET_INVALID_RESULT' } : undefined
+      } })
+    start()
+    const permit = fence.acquire('held-foreground', { session: 'main' }, 'authorized foreground body')
+    permit.signal.addEventListener('abort', () => permit.settled(), { once: true })
+    try {
+      await effects.wake()
+      now += 60_000; await effects.wake()
+      effects.close()
+      effects = createEffects({ db: store.db, now: () => now, later: () => null, cancel: () => {} })
+      start(); now += 60_000; await effects.wake()
+      assert.ok(calculations >= 2)
+      assert.equal(permit.signal.aborted, false)
+      assert.equal(fence.blocked(), false)
+      assert.ok(effects.get(WRITE_NOTE, key), 'failed or deferred work stays durable')
+      const fresh = fence.acquire('fresh-foreground', { session: 'main' }, 'next authorized body')
+      fresh.settled()
+      assert.equal(JSON.stringify(events).includes('SECRET_INVALID_RESULT'), false)
+    } finally { permit.settled() }
+  })
+}
+
 test('normal daily commit callbacks roll back with metadata and run atomically during restart recovery',t=>{
   const {dir,defer}=scratch(t,'memory-note-commit-callback-'),store=openMemoryStore(join(dir,'memory.db'))
   defer(()=>store.close());store.db.exec('CREATE TABLE test_revisions(n INTEGER);INSERT INTO test_revisions VALUES(0)')
@@ -101,19 +144,13 @@ for (const changed of ['unchanged', 'projection-restored', 'generation-cancelled
     const before=notes.read(key)!
     const fence=createMemorySendFence({epoch:'test',admit:()=>({current:()=>true,deadline:null})})
     const effects=createEffects({db:store.db,now:()=>1000,later:()=>null,cancel:()=>{}});defer(()=>effects.close())
-    let projectionRestored=false,mutations=0
-    let announce!: (permit:MemorySendPermit)=>void
-    const acquired=new Promise<MemorySendPermit>(resolve=>{announce=resolve})
+    let projectionRestored=false
+    const permit=fence.acquire('held',{session:'test'},'accepted daily evidence')
     createMemoryNoteJobs({store,effects,now:()=>1000,openNotes:()=>notes,readable:()=>true,eligible:()=>true,allowsText:()=>true,
       projectSource:()=>({text:projectionRestored?source.text!:''}),assistantContextCurrent:()=>true,calculate:async()=>undefined,
-      async mutate(write){
-        const result=await fence.mutate(write)
-        // A new physical attempt starts after initial recovery releases its fence.
-        if (++mutations===1) announce(fence.acquire('held',{session:'test'},'accepted daily evidence'))
-        return result
-      },settings:{noteInterval:1}})
+      mutate:write=>fence.mutate(write),settings:{noteInterval:1}})
     effects.queue(WRITE_NOTE,key,{rebuild:true,flush:true})
-    const work=effects.wake(),permit=await acquired
+    const work=effects.wake()
     try {
       await Promise.race([aborted(permit.signal),work.then(()=>{throw new Error('rebuild completed without fencing its deletion')})])
       assert.equal(notes.read(key)?.fileRevision,before.fileRevision,'accepted file remains intact until physical transport settles')

@@ -1,4 +1,5 @@
 import type { SessionWaits } from '../shared/ipc-results.ts'
+import { diagnosticHub } from '../diagnostics/node/hub.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
@@ -249,9 +250,14 @@ export function createAcpBridge({
     const { command, args } = dshLaunch(dshBin, nodeBin, profile, overlay)
     const proc = spawnFn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] })
     child = proc
+    const diagnostics = diagnosticHub()?.attach('dsh', (message, settled) => {
+      if (proc.connected && proc.send) proc.send(message, settled)
+      else settled(new Error('Diagnostic child disconnected'))
+    })
     // A channel already closed (dsh failed to start) says so through 'exit'.
     if (launch) proc.send?.(launch, (err) => { if (err) console.error('[dsh] launch not sent:', err.message) })
     proc.on('message', (message) => {
+      if (diagnostics?.receive(message)) return
       if (disposed) return
       void questions.receive(message).catch(error => { console.error('[questions] owner authorization failed', error); questions.declineAll() })
       config?.receive(message)
@@ -270,6 +276,7 @@ export function createAcpBridge({
     })
     proc.on('error', (err) => emit({ type: 'error', message: launchError(err, { command, nodeBin, cwd }) }))
     proc.on('exit', (code, signal) => {
+      diagnostics?.close()
       fresh.dispose()
       operations.dispose()
       memory.close()

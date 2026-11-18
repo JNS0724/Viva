@@ -1,5 +1,6 @@
 import type { BrowserWindow as Win, Menu, Screen, WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { emitDiagnostic } from '../diagnostics/node/context.ts'
 import { DESK_SIZE, DRAG_SIZE, FIXED_DESK_HOST, deskLayout, dragBounds, keepInside, pointOf, readPlaces, settle, withPlace } from './desk-place.ts'
 import type { DeskPreviewDraft, DeskPreviewSurface } from '../shared/desk-preview.ts'
 
@@ -314,6 +315,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       loaded = false
       ignoring = true
       const opened: Win = openWindow({ BrowserWindow, preload, page })
+      emitDiagnostic({ event: 'state.changed', operation: 'island', stage: 'start' })
       win = opened
       shown = opened
       opened.webContents.on('did-finish-load', () => {
@@ -328,7 +330,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
         if (input && !drag && !preview) closeInput()
         settleStyles()
       })
-      opened.on('closed', () => forgetWindow(opened))
+      opened.on('closed', () => { emitDiagnostic({ event: 'state.changed', operation: 'island', stage: 'closed' }); forgetWindow(opened) })
       opened.webContents.on('render-process-gone', () => {
         forgetWindow(opened)
         if (!opened.isDestroyed()) opened.destroy()
@@ -337,6 +339,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     if (shown.isVisible()) return
     place(shown)
     shown.showInactive()
+    emitDiagnostic({ event: 'state.changed', operation: 'island', stage: 'ready' })
     settleStyles()
     clearInterval(pointerTimer)
     pointerTimer = setInterval(checkPointer, POINTER_MS)
@@ -355,6 +358,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     awaitingLayout = false
     const shown = live()
     if (!shown) return
+    emitDiagnostic({ event: 'state.changed', operation: 'island', stage: 'paused' })
     win = null
     if ([...imports.values()].some(held => held.window === shown)) {
       retired.add(shown)

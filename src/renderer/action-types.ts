@@ -34,7 +34,15 @@ export type MemoryFileEditor = {
 })
 /** Closed payload table: adding a UI operation requires naming its payload, never an open action dictionary. */
 export interface ActionPayloads extends ConversationPayloads {
+  diagnostics_loading: {}
+  diagnostics_loaded: { status: import('../shared/ipc-results.ts').IpcResults['diagnostics:status'] }
+  diagnostics_load_failed: {}
+  diagnostics_busy: { kind: import('./diagnostics-types.ts').DiagnosticControl }
+  diagnostics_done: { notice: import('./diagnostics-types.ts').DiagnosticNotice | null }
+  diagnostics_debug_expired: {}
   ready: { info: Info }
+  initialization_status: { status: 'loading' | 'ready' | 'failed', reason?: import('./initialization-actions.ts').InitializationFailure }
+  initialization_snapshot: { snapshot: import('../shared/renderer-sync.ts').RendererSnapshot }
   config_applied: { info: Partial<Info> }
   history_loaded: { conversationId?: string | null, messages: readonly SavedMessage[], records?: readonly unknown[], savedAt?: number, folds?: State['folds'], parentId?: string | null, createdAt?: number | null }
   conversation_saved: { id: string }

@@ -432,6 +432,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     }
     return keys
   }
+  const pendingCleanup = () => Number(db.prepare('SELECT (SELECT count(*) FROM memory_note_purges)+(SELECT count(*) FROM memory_note_erasures) AS n').get()?.n ?? 0)
   if (!options.deferRecovery) recover()
   return {
     allocations: () => db.prepare('SELECT key,day,workspace,path,revision,updated_at AS updatedAt FROM memory_daily_notes ORDER BY workspace,key').all() as unknown as DailyAllocation[],
@@ -447,8 +448,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       file_revision: String(row.file_revision), sources: references(String(row.key)),
       state: db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(String(row.key)) ? 'withdrawing' as const : 'active' as const,
     })),
+    needsRecovery: () => Boolean(db.prepare("SELECT 1 FROM memory_file_intents WHERE namespace='notes' AND plan IS NOT NULL LIMIT 1").get()) || pendingCleanup() > 0,
     recover, read, snapshot, references,
-    pendingCleanup: () => Number(db.prepare('SELECT (SELECT count(*) FROM memory_note_purges)+(SELECT count(*) FROM memory_note_erasures) AS n').get()?.n ?? 0),
+    pendingCleanup,
     rebuildRows: (key: string) => (db.prepare('SELECT * FROM memory_note_turns WHERE note=? ORDER BY rowid').all(key) as unknown as TurnRow[]).map(turn),
     jobState: (key: string, generation: number) => journal.state(`note:${memoryFileRevision(key)}:${generation}`),
     blocked: (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(key) || rawNote(key)?.file_revision && !read(key)),

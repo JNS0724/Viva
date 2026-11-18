@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { emitDiagnostic, emitDiagnosticFailure, withDetachedOperation, withOperation } from '../diagnostics/node/context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import { autoTitle, type StoredMessage } from './history-schema.ts'
@@ -162,6 +163,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     afterCommit = []
     for (const run of then) run()
     for (const snapshot of out) {
+      emitDiagnostic({ event: 'state.changed', operation: 'task',
+        stage: snapshot.waitingFor ? 'waiting' : snapshot.status === 'running' ? 'running' : snapshot.status === 'interrupted' ? 'recovering' : snapshot.status === 'error' ? 'failed' : 'complete',
+        identities: { taskId: snapshot.taskId, taskRunId: snapshot.runId },
+        ...(snapshot.status === 'error' ? { outcome: 'failed', reason: 'unknown_error' } as const : {}) })
       const opening = openings.get(snapshot.taskId)
       if (opening) openings = new Map([...openings].filter(([id]) => id !== snapshot.taskId))
       publish({ type: 'task_snapshot', taskId: snapshot.taskId, snapshot: { ...snapshot, taskSeq: seqOf(snapshot.taskId), ...(opening ? { opening } : {}) } })
@@ -208,7 +213,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
   const taskWords = createTaskWords({
     ...timers, persist,
-    onError: (err) => console.error('[tasks] could not save what the task said:', err.message),
+    onError: (err) => emitDiagnosticFailure('task', err, { stage: 'checkpoint' }),
   })
 
   function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
@@ -274,7 +279,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(null)
     if ('problem' in place) return { ok: false as const, problem: place.problem }
     try {
-      return await beginReserved(text, main, mode, model, place.counted, name, admit)
+      return await withDetachedOperation('task', () => beginReserved(text, main, mode, model, place.counted, name, admit), { stage: 'dispatch' })
     } finally {
       place.release()
     }
@@ -282,7 +287,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
 
   async function beginReserved(text: string, main: Conversation, mode: string | undefined, model: string | undefined,
     counted: () => void, name?: string, admit?: AdmitBrief): Promise<TaskStartResult> {
-    const started = await agent.startTask()
+    const started = await withOperation('task', () => agent.startTask(), { stage: 'connecting' })
     if (!started.ok || !started.taskId) {
       const reason = started.reason ?? 'missing'
       return { ok: false as const, problem: taskProblems()[reason] ?? t("main.task-ipc.could.not.start.in.background", { reason }) }
@@ -325,7 +330,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       return keep()
     } catch (err) {
       Promise.resolve(agent.closeTask(taskId)).catch((closing: unknown) =>
-        console.error('[tasks] could not let go of a task\'s session whose start was not kept:', closing instanceof Error ? closing.message : String(closing)))
+        emitDiagnosticFailure('task', closing, { stage: 'closed' }))
       throw err
     }
   }
@@ -417,7 +422,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await askReserved(taskId, text, kept, place.counted, admit)
+      return await withDetachedOperation('task', () => askReserved(taskId, text, kept, place.counted, admit), { stage: 'dispatch', identities: { taskId } })
     } finally {
       place.release()
     }
@@ -459,7 +464,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await resumeReserved(taskId, words, kept, place.counted, admit)
+      return await withDetachedOperation('task', () => resumeReserved(taskId, words, kept, place.counted, admit), { stage: 'recovering', identities: { taskId } })
     } finally {
       place.release()
     }
@@ -603,7 +608,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       })
     } catch (err) {
       const wait = END_RETRY_MS[Math.min(attempt, END_RETRY_MS.length - 1)]
-      console.error(`[tasks] could not keep how a task ended, trying again in ${wait / 1000}s:`, err instanceof Error ? err.message : String(err))
+      emitDiagnosticFailure('task', err, { stage: 'waiting', identities: { taskId, taskRunId: runId }, metrics: { retryDelayMs: wait } })
       pending.timer = later(() => {
         pending.timer = undefined
         // Only the same run: one asked again, taken up, or interrupted since is not ended by this.

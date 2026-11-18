@@ -1,4 +1,5 @@
 import { CRASH_WINDOW_MS, restartDelay } from '../shared/restart-delay.ts'
+import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
 
 export interface DshLifetime {
   /** Checked before routing an event from this particular instance. */
@@ -80,9 +81,11 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
     const at = now()
     crashes = [...crashes.filter(time => at - time < CRASH_WINDOW_MS), at]
     const delay = restartDelay(crashes, at)
+    emitDiagnostic({ event: 'process.exit', operation: 'process', reason: 'process_exited', identities: { generation: run.generation }, metrics: { attempt: crashes.length } })
     onCrash(exit, delay)
     cancelRestart()
     if (delay === null || quitting) return
+    emitDiagnostic({ event: 'retry.scheduled', operation: 'startup', reason: 'process_exited', identities: { generation: run.generation }, metrics: { attempt: crashes.length, retryDelayMs: delay } })
     const token = {}; restartToken = token
     cancelRestartTimer = schedule(() => {
       if (restartToken !== token) return
@@ -128,11 +131,13 @@ export function createDshLifecycle<Context, Instance extends DshProcess, Info>({
         run.instance = create(context, { isCurrent: () => isCurrent(run), onExit: exit => exited(run, exit) })
         if (!isCurrent(run)) { void release(run).catch(onRestartError); return null }
         const instance = run.instance
-        const connected = Promise.resolve().then<Info | typeof CANCELLED>(() => isCurrent(run) ? connect(instance, context) : CANCELLED)
+        const connected = Promise.resolve().then<Info | typeof CANCELLED>(() => isCurrent(run)
+          ? withOperation('startup', () => connect(instance, context), { stage: 'connecting', identities: { generation: ticket } }) : CANCELLED)
         const info = await Promise.race([connected, cancellation])
         if (info === CANCELLED || !isCurrent(run)) return null
         await onReady(info, context)
         if (!isCurrent(run)) return null
+        emitDiagnostic({ event: 'state.changed', operation: 'process', stage: 'ready', identities: { generation: ticket } })
         return info
       } catch (error) {
         if (!isCurrent(run)) return null

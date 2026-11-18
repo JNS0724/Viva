@@ -173,6 +173,8 @@ export function patchFor({ plugins, persona, models, imagesDir = null, pnpmComma
     for (const plugin of plugins) lines.push(`    - id: ${plugin.name}`, `      name: ${yamlString(pathToFileURL(pluginEntry(plugin.dir)).href)}`, ...configLines(plugin.config, '      '))
     for (const entry of plugins.flatMap((plugin) => plugin.stock ?? [])) lines.push(`    - id: ${entry.id}`, `      name: ${yamlString(entry.name)}`)
   }
+  // Client diagnostics stay local, including feedback. No OTLP backend is constructed.
+  lines.push('- id: session-telemetry-otel', "  name: '@deepseek-ai/dsh-session-telemetry-otel'", '  disabled: true')
   // The memory owner is the sole conversation/daily-note writer. Keep the service registered but inert.
   if (plugins.some(plugin => plugin.name === 'viva-memory')) lines.push('- id: session-log-deepseek', "  name: '@deepseek-ai/dsh-session-log-deepseek'", '  disabled: false', '  config:', '    enabled: false')
   if (dshHome && plugins.some(plugin => plugin.name === 'viva-memory')) {

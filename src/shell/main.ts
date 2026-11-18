@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain as electronIpcMain, Menu, MenuItem, nativeImage, Notification, powerMonitor, protocol, safeStorage, screen, shell, Tray } from 'electron'
 import type { FileOptions, FolderOptions, SaveOptions, ShellSettings } from '../backend/host.ts'
 import type { HostCall, HostMethod, Mirror } from '../backend/wire.ts'
 import { setLocale, type LanguageState } from '../shared/i18n/locale.ts'
@@ -23,6 +23,15 @@ import type { KeptImage } from '../backend/image-store.ts'
 import { createTray } from './tray.ts'
 import { installAutomationDriver } from './automation-driver.ts'
 import { devIcon, windowChrome, windowSize } from './window-options.ts'
+import { createManagedDiagnostics } from '../diagnostics/node/managed.ts'
+import { createDiagnosticHub } from '../diagnostics/node/hub.ts'
+import { createDiagnosticClearer } from '../diagnostics/node/clear.ts'
+import { emitDiagnostic, emitDiagnosticFailure, inDiagnosticContext, installDiagnosticPort, withOperation } from '../diagnostics/node/context.ts'
+import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
+import { createDiagnosticExporter } from '../diagnostics/node/export.ts'
+import { registerDiagnosticIpc } from './diagnostics-ipc.ts'
+import { createRendererHealth } from './renderer-health.ts'
+import type { IpcResults } from '../shared/ipc-results.ts'
 
 /**
  * The desktop shell (docs/system-design.md §2): the app's lifecycle, the window, the tray, the
@@ -40,6 +49,95 @@ if (profileDirectory) {
   const directory = path.resolve(profileDirectory)
   fs.mkdirSync(directory, { recursive: true })
   app.setPath('userData', directory)
+}
+
+const diagnosticsDirectory = path.join(app.getPath('userData'), 'diagnostics')
+const shellDiagnostics = createManagedDiagnostics({ directory: diagnosticsDirectory, component: 'shell', version: app.getVersion() })
+const rendererDiagnostics = createManagedDiagnostics({ directory: diagnosticsDirectory, component: 'renderer', version: app.getVersion() })
+let rendererIpcDrops = () => 0
+function rendererDiagnosticSnapshot() {
+  const snapshot = rendererDiagnostics.snapshot()
+  return { ...snapshot, stats: { ...snapshot.stats, droppedCount: snapshot.stats.droppedCount + rendererIpcDrops() } }
+}
+installDiagnosticPort(shellDiagnostics)
+const diagnosticsHub = createDiagnosticHub({ component: 'shell', writers: [
+  { component: 'shell', writer: shellDiagnostics }, { component: 'renderer', writer: rendererDiagnostics, snapshot: rendererDiagnosticSnapshot },
+], onBinding: runId => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('diagnostics:binding', runId) } })
+emitDiagnostic({ event: 'process.start', operation: 'startup' })
+const diagnosticExporter = createDiagnosticExporter({ quota: shellDiagnostics.quota, snapshots: () => diagnosticsHub.collect() })
+const diagnosticClearer = createDiagnosticClearer({ quota: shellDiagnostics.quota, hub: diagnosticsHub, idle: () => !exportingDiagnostics && diagnosticExporter.ensureIdle() })
+const forwardedDiagnosticChannels = new Set<string>()
+const rendererHealth = createRendererHealth({ snapshot: rendererDiagnosticSnapshot })
+let exportingDiagnostics: Promise<IpcResults['diagnostics:export']> | undefined
+
+function exportDiagnostics(): Promise<IpcResults['diagnostics:export']> {
+  if (exportingDiagnostics) return exportingDiagnostics
+  if (diagnosticClearer.pending()) return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
+  exportingDiagnostics = (async (): Promise<IpcResults['diagnostics:export']> => {
+    if (!await diagnosticExporter.ensureIdle()) return { status: 'busy', reason: 'cleanup_pending' }
+    const selected = await dialog.showSaveDialog({ title: t('diagnostics.export.title'),
+      defaultPath: path.join(app.getPath('downloads'), `Viva-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`),
+      filters: [{ name: t('diagnostics.archive'), extensions: ['zip'] }] })
+    if (selected.canceled || !selected.filePath) return { status: 'cancelled' }
+    const result = await inDiagnosticContext(undefined, async () => {
+      const started = performance.now()
+      emitDiagnostic({ event: 'operation.start', operation: 'diagnostics.export' })
+      try {
+        const result = await diagnosticExporter.exportBundle(selected.filePath)
+        emitDiagnostic({ event: 'operation.end', operation: 'diagnostics.export', outcome: result.status === 'saved' ? 'completed' : 'failed',
+          ...(result.reason ? { reason: safeDiagnosticReason({ code: result.reason }) } : {}), metrics: { durationMs: performance.now() - started } })
+        return result
+      } catch (error) {
+        emitDiagnostic({ event: 'operation.end', operation: 'diagnostics.export', outcome: 'failed', reason: safeDiagnosticReason(error), metrics: { durationMs: performance.now() - started } })
+        throw error
+      }
+    })
+    if (result.status === 'failed') dialog.showErrorBox(t('diagnostics.export.title'), t('diagnostics.export.failed'))
+    return result
+  })().catch((): IpcResults['diagnostics:export'] => ({ status: 'failed', reason: 'unknown_error' })).finally(() => { exportingDiagnostics = undefined })
+  return exportingDiagnostics
+}
+const openDiagnosticsFolder = async () => { await shell.openPath(diagnosticsDirectory).catch(() => {}) }
+async function exportDiagnosticsFromMenu() {
+  const result = await exportDiagnostics()
+  if (result.status === 'busy') {
+    await dialog.showMessageBox({ type: 'info', title: t('diagnostics.export.title'), message: t('diagnostics.control.busy') })
+  }
+}
+async function clearDiagnostics() {
+  const result = await diagnosticClearer.clear()
+  emitDiagnostic({ event: 'diagnostics.cleared', operation: 'diagnostics.clear', outcome: result.status === 'cleared' ? 'completed' : 'failed',
+    reason: result.status === 'cleared' ? 'normal' : 'cleanup_pending' })
+  return result
+}
+async function clearDiagnosticsFromMenu() {
+  const result = await clearDiagnostics()
+  await dialog.showMessageBox({ type: result.status === 'cleared' ? 'info' : 'warning', title: t('diagnostics.clear'),
+    message: t(result.status === 'cleared' ? 'diagnostics.clear.done' : 'diagnostics.clear.pending') })
+}
+const debugDiagnostics = (enabled: boolean) => diagnosticsHub.debug(enabled ? 15 * 60_000 : 0)
+
+function installDiagnosticsMenu() {
+  if (process.platform !== 'darwin') return
+  let menu = Menu.getApplicationMenu()
+  if (!menu) menu = Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }])
+  const existing = menu.getMenuItemById('viva-diagnostics')
+  if (existing) {
+    existing.label = t('diagnostics.menu')
+    const exported = menu.getMenuItemById('viva-diagnostics-export'), opened = menu.getMenuItemById('viva-diagnostics-open')
+    if (exported) exported.label = t('diagnostics.export')
+    if (opened) opened.label = t('diagnostics.open')
+    for (const [id, key] of [['viva-diagnostics-clear', 'diagnostics.clear'], ['viva-diagnostics-debug', 'diagnostics.debug'], ['viva-diagnostics-debug-stop', 'diagnostics.debug.stop']] as const) {
+      const item = menu.getMenuItemById(id); if (item) item.label = t(key)
+    }
+  } else menu.append(new MenuItem({ id: 'viva-diagnostics', label: t('diagnostics.menu'), submenu: [
+    { id: 'viva-diagnostics-export', label: t('diagnostics.export'), click: () => { void exportDiagnosticsFromMenu() } },
+    { id: 'viva-diagnostics-open', label: t('diagnostics.open'), click: () => { void openDiagnosticsFolder() } },
+    { id: 'viva-diagnostics-clear', label: t('diagnostics.clear'), click: () => { void clearDiagnosticsFromMenu() } },
+    { id: 'viva-diagnostics-debug', label: t('diagnostics.debug'), click: () => debugDiagnostics(true) },
+    { id: 'viva-diagnostics-debug-stop', label: t('diagnostics.debug.stop'), click: () => debugDiagnostics(false) },
+  ] }))
+  Menu.setApplicationMenu(menu)
 }
 
 /** Every channel the pages send on goes through the contract's check first (ipc-contract.ts). */
@@ -160,6 +258,7 @@ const folderOf = async (options: Electron.OpenDialogOptions) => {
 function followLanguage(state: LanguageState) {
   setLocale(state.locale)
   tray?.setPending(pendingFeed)
+  installDiagnosticsMenu()
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send('language:changed', state)
 }
 
@@ -203,7 +302,8 @@ const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
 function runHostCall(call: HostCall): unknown {
   const handler = Object.hasOwn(HOST, call.method) ? HOST[call.method] : undefined
   if (!handler) throw new Error(`no host call ${String(call.method)}`)
-  return handler(...call.args)
+  return call.method === 'window.send' ? handler(...call.args)
+    : withOperation('ipc', () => handler(...call.args), { identities: { requestId: call.n, methodId: call.method } })
 }
 
 /** The backend kept crashing: without it there is nothing the window can do. */
@@ -283,7 +383,10 @@ const keeper = createBackendKeeper<BackendProcess>({ spawn: startBackend, onUp: 
 function forwardChannels(started: BackendProcess) {
   for (const { channel, kind } of started.ready.channels) {
     const name = channel as Channel
-    if (kind === 'handle') ipcMain.handle(name, async (_event, ...args: unknown[]) => (await backendConnection()).rpc(channel, args))
+    if (kind === 'handle') {
+      forwardedDiagnosticChannels.add(channel)
+      ipcMain.handle(name, async (_event, ...args: unknown[]) => (await backendConnection()).rpc(channel, args))
+    }
     else ipcMain.on(name, (_event, ...args: unknown[]) => { backendConnection().then((connection) => connection.rpc(channel, args)).catch((err: Error) => console.error(`[ipc] ${channel}:`, err.message)) })
   }
 }
@@ -294,7 +397,7 @@ async function setShellPreference<K extends keyof ShellPreferences>(key: K, valu
   return (await backendConnection()).control('preferences-set', key, value)
 }
 
-const logged = (what: string) => (err: Error) => console.error(`[desk] ${what}:`, err.message)
+const logged = (what: string) => (err: Error) => emitDiagnosticFailure('window', err, { identities: { methodId: what } })
 
 /** The shortcut that opens the island's input, from any app; not in smoke runs, which share the machine. */
 function registerShortcut() {
@@ -333,6 +436,11 @@ function showTray() {
     onOpen: showWindow,
     onQuit: () => app.quit(),
     onPending: openFeedPage,
+    onDiagnosticsExport: () => { void exportDiagnosticsFromMenu() },
+    onDiagnosticsOpen: () => { void openDiagnosticsFolder() },
+    onDiagnosticsClear: () => { void clearDiagnosticsFromMenu() },
+    onDiagnosticsDebug: () => debugDiagnostics(true),
+    onDiagnosticsDebugStop: () => debugDiagnostics(false),
     pending: pendingFeed,
   })
 }
@@ -422,6 +530,7 @@ function useDevIcon() {
 }
 
 function createWindow() {
+  emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'start' })
   const icon = useDevIcon()
   const created = new BrowserWindow({
     ...windowSize(screen.getPrimaryDisplay().workAreaSize),
@@ -441,13 +550,15 @@ function createWindow() {
   win = created
   attachDeskIsland(created)
   created.once('ready-to-show', () => {
+    emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'ready' })
     if (!startedHidden || automationMode) return created.show()
     // Started with the computer: in the tray, the island on the desktop, until the user opens it.
     showTray()
     desk?.setAway(true)
   })
   // Coming back to the window is one of the user's gaps.
-  created.on('focus', () => tellBackend('signal', { kind: 'window.foreground' }))
+  created.on('focus', () => { emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'received' }); tellBackend('signal', { kind: 'window.foreground' }) })
+  created.on('closed', () => emitDiagnostic({ event: 'state.changed', operation: 'window', stage: 'closed' }))
   // The page never leaves index.html and never opens windows: links go to the browser (shell:open-link).
   created.webContents.on('will-navigate', (event) => event.preventDefault())
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -468,6 +579,17 @@ app.on('activate', () => showWindow())
 app.whenReady().then(async () => {
   // macOS needs its app menu for ⌘C / ⌘V; elsewhere the hidden title bar has no room for a menu bar.
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+  installDiagnosticsMenu()
+  const diagnosticIpc = registerDiagnosticIpc(ipcMain, { renderer: rendererDiagnostics, forwarded: () => forwardedDiagnosticChannels,
+    invoke: async (channel, args) => (await backendConnection()).rpc(channel, args),
+    exportBundle: exportDiagnostics, openFolder: openDiagnosticsFolder,
+    clear: clearDiagnostics, debug: debugDiagnostics, health: rendererHealth.receive,
+    status: () => ({ ...shellDiagnostics.snapshot().stats, exporting: Boolean(exportingDiagnostics) || diagnosticExporter.state() === 'exporting',
+      debugRemainingMs: shellDiagnostics.debugRemainingMs(), cleanupPending: diagnosticClearer.pending() }),
+  })
+  rendererIpcDrops = diagnosticIpc.droppedCount
+  // Windows has no visible application menu; keep its independent diagnostic entry available.
+  if (process.platform !== 'darwin') showTray()
   const started = await keeper.start()
   forwardChannels(started)
   shellPreferences = await started.connection.control<Preferences>('preferences-get')
@@ -484,6 +606,7 @@ app.whenReady().then(async () => {
     backendPid: () => keeper.running()?.pid ?? null,
     desk: () => desk,
     seedFeed: async (item) => (await backendConnection()).control<void>('automation.seed-feed', item),
+    publishEvent: async (event) => (await backendConnection()).control<void>('automation.publish-event', event),
   })
   // The computer back from sleep, or unlocked: reminders missed meanwhile go out, merged into one.
   const woke = () => tellBackend('signal', { kind: 'system.woke' })
@@ -505,7 +628,10 @@ app.on('before-quit', (event) => {
   quitting = true
   if (backendClosed) return
   event.preventDefault()
-  backendClosing ??= keeper.shutdown().finally(() => {
+  backendClosing ??= keeper.shutdown().finally(async () => {
+    emitDiagnostic({ event: 'process.exit', operation: 'shutdown', reason: 'normal' })
+    diagnosticsHub.close(); rendererHealth.close()
+    await Promise.allSettled([shellDiagnostics.close(), rendererDiagnostics.close()])
     backendClosed = true
     app.quit()
   })

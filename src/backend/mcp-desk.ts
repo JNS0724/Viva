@@ -1,4 +1,5 @@
 import { mcpToAppOf, type McpServerEntry, type McpServerState } from '../shared/mcp-channel.ts'
+import { emitDiagnostic } from '../diagnostics/node/context.ts'
 
 /**
  * The app's side of viva-mcp (plugins/mcp, shared/mcp-channel.ts): the user's MCP servers go to the plugin when it
@@ -41,6 +42,10 @@ export function createMcpDesk({ send, servers, onStatus }: {
     if (!message) return
     if (message.type === 'mcp_ready') return push()
     status = statusOf(message.servers)
+    emitDiagnostic({ event: 'state.changed', operation: 'mcp',
+      stage: status.connecting.length ? 'connecting' : status.active.length ? 'ready' : 'unavailable',
+      reason: status.dropped.length ? 'unavailable' : 'normal',
+      metrics: { completedCount: status.active.length, pendingCount: status.connecting.length, count: status.dropped.length } })
     onStatus(status)
   }
 
@@ -53,6 +58,7 @@ export function createMcpDesk({ send, servers, onStatus }: {
      * then the manager starts this one again with a fresh retry budget.
      */
     restart: (name: string) => {
+      emitDiagnostic({ event: 'retry.scheduled', operation: 'mcp', reason: 'external_wake', identities: { resourceId: name } })
       push()
       send({ type: 'mcp_restart', version: 1, name })
     },

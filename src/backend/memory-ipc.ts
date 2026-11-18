@@ -6,6 +6,8 @@ import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
 import type { MemoryFileMutationResult, MemoryFileWriteResult } from '../memory/contracts/file-management.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { IpcResults, MemoryFileSourceView } from '../shared/ipc-results.ts'
+import { emitDiagnostic } from '../diagnostics/node/context.ts'
+import { memoryReadContext } from './memory-read-context.ts'
 
 /** Where documents picked during the intro are copied, inside the workspace so the agent can read them. */
 export const DOCS_DIR_NAME = '我的资料'
@@ -60,11 +62,12 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   sourceLink?: (sourceId: string, segmentId?: string) => string | null,
 }) {
   const handle = handlerOf(ipcMain)
-  handle('memory:get', async () => {
-    const profile = await client.profile(), onboarding = await client.onboarding()
-    const cleanupPending = await client.cleanupPending(), revision = await client.revision()
+  handle('memory:get', async options => {
     const project = projectScope?.()
-    const fileProfile = await client.fileProfile(project)
+    const lifetime = memoryReadContext.getStore()
+    const { profile, onboarding, cleanupPending, revision, fileProfile } = await client.readPage(project,
+      lifetime ? { budgetMs: lifetime.remainingMs(), signal: lifetime.signal } : options)
+    emitDiagnostic({ event: 'operation.progress', operation: 'memory.get', stage: 'responded', metrics: { pendingCount: cleanupPending } })
     return { profile, onboarding, cleanupPending, revision, habits: habits(),
       fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
   })

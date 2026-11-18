@@ -22,11 +22,13 @@ import { createHistoryActions } from './history-actions.ts'
 import { mountHistorySearchFrame } from './history-search-frame.ts'
 import { createMemoryActions } from './memory-actions.ts'
 import { createModelActions } from './model-actions.ts'
+import { createDiagnosticsActions } from './diagnostics-actions.ts'
 import { createPluginActions } from './plugin-actions.ts'
 import { createCapabilityActions } from './capability-actions.ts'
 import { createImportFlowActions } from './import-flow-actions.ts'
 import { createNewTopicAction } from './new-topic-actions.ts'
 import { createAgentEvents } from './agent-events.ts'
+import { createInitializationActions } from './initialization-actions.ts'
 import type { AgentEvent } from './agent-event-types.ts'
 import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
@@ -149,7 +151,7 @@ function dispatch(action: Action) {
   publishIsland()
   doneNotice?.check()
   afterRender?.()
-  if (SAVE_AFTER.has(action.type ?? '')) saveHistory()
+  if (SAVE_AFTER.has(action.type ?? '')) queueMicrotask(saveHistory)
   agentEvents?.stateChanged()
 }
 
@@ -162,10 +164,12 @@ let composerError: string | null = null
 
 /** The desktop island (desk.js) shows the same view while the window is in the background; send it when it changes. */
 function publishIsland() {
-  const target = draftTarget(state)
-  composerDraft?.expect(target.key)
+  const pending = state.initialization.status !== 'ready'
+  const draft = composerDraft?.snapshot()
+  const target = pending && draft ? { ...draftTarget(state), key: draft.key } : draftTarget(state)
+  composerDraft?.expect(pending ? null : target.key)
   dom.input.readOnly = !composerDraft?.ready()
-  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: state.switching || state.newTopicPending,
+  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: pending || state.switching || state.newTopicPending,
     ...(inheritDraft ? { inheritDraft: true } : {}), ...(migrateDraft ? { migrateDraft: true } : {}) } })
   if (view === publishedIsland || !api?.islandView) return
   publishedIsland = view
@@ -237,10 +241,13 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
 }
 
 function saveHistory() {
-  if (!historyReady || state.messages.length === 0) return
+  if (!historyReady || state.initialization.status !== 'ready' || !agentEvents?.settled() || state.messages.length === 0) return
+  const mark = initialization.watermark()
+  if (!mark) return
   const sessionId = state.info.sessionId
   const topicStartedAt = state.topic.startedAt
-  api.saveHistory(historyMessages(state, { keys: true }))
+  api.saveHistory(historyMessages(state, { keys: true }), { ...mark,
+    context: { conversationId: state.conversationId ?? state.info.conversationId ?? null, sessionId: state.info.sessionId ?? null } })
     .then((summary) => {
       // A save from the topic just left must not attach its id to the new blank topic.
       if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
@@ -252,27 +259,11 @@ function saveHistory() {
 
 /** At launch: the permission level picked, shown by the input (the rest of settings is read when they open). */
 async function loadSettings() {
+  void diagnosticActions.refresh()
   try {
     dispatch({ type: 'settings_loaded', view: await api.getSettings() })
   } catch (err) {
     console.error('[settings] could not read them:', errorMessage(err))
-  }
-}
-
-async function loadHistory() {
-  try {
-    const saved = await api.loadHistory()
-    if (!saved) return
-    dispatch({
-      type: 'history_loaded', conversationId: saved.id, messages: saved.messages, records: saved.records ?? [], savedAt: saved.updatedAt, folds: saved.folds ?? [],
-      parentId: saved.parentId ?? null, createdAt: saved.createdAt ?? null,
-    })
-    dom.follower.jumpToLatest()
-    historyActions.loadTrace(saved.id)
-  } catch (err) {
-    console.error('[history] could not load the last conversation:', errorMessage(err))
-  } finally {
-    historyReady = true
   }
 }
 
@@ -478,6 +469,7 @@ doneNotice = createDoneNotice({
 })
 const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
+const diagnosticActions = createDiagnosticsActions({ api, getState: () => state, dispatch })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
 const importFlowActions = createImportFlowActions({ api, getState: () => state, dispatch, errorMessage })
 const capabilityActions = createCapabilityActions({
@@ -512,6 +504,7 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
 }
 
 const handlers = {
+  retryInitialization: () => { void initializeConversation() },
   ...historyActions,
   ...reviewActions,
   /** ⌘F and 回顾 in the sidebar: the field focused, and the timeline by day read again. */
@@ -558,7 +551,7 @@ const handlers = {
   submitTaskAnswer: (taskId: string) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
-    if (api && !composerDraft?.ready()) return
+    if (state.initialization.status !== 'ready' || api && !composerDraft?.ready()) return
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     const text = dom.input.value.trim()
@@ -610,6 +603,7 @@ const handlers = {
     else dispatch({ type: 'question_pick', id, label })
   },
   submitAnswer() {
+    if (state.initialization.status !== 'ready') return
     if (!state.question) return
     answer(answersFrom(state.question, dom.input.value))
     dom.input.value = ''
@@ -628,6 +622,7 @@ const handlers = {
     api.cancel().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
   respond(requestId: string, optionId: string | null) {
+    if (state.initialization.status !== 'ready') return
     dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
     api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
   },
@@ -675,6 +670,7 @@ const handlers = {
   },
   async openSettings() {
     dispatch({ type: 'settings_open' })
+    void diagnosticActions.refresh()
     modelActions.loadModels()
     try {
       dispatch({ type: 'settings_loaded', view: await api.getSettings() })
@@ -683,6 +679,11 @@ const handlers = {
     }
   },
   closeSettings: () => dispatch({ type: 'settings_close' }),
+  refreshDiagnostics: () => diagnosticActions.refresh(),
+  exportDiagnostics: () => diagnosticActions.export(),
+  clearDiagnostics: () => diagnosticActions.clear(),
+  debugDiagnostics: (enabled: boolean) => diagnosticActions.debug(enabled),
+  openDiagnosticsFolder: () => diagnosticActions.openFolder(),
   /** The page under the title bar: on the page asked for, or on the one last shown (hub-state.js). */
   openHubPage: (page: string) => HUB_OPENERS[page]?.(),
   openHub: () => {
@@ -995,8 +996,30 @@ agentEvents = createAgentEvents({
   filesChanged: filesActions.onFilesChanged,
   refreshFeed: feedActions.loadFeed,
   rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),
+  overflow: reason => initialization.invalidate(reason),
 })
 function handleEvent(event: AgentEvent) { agentEvents!.replay(event) }
+
+const initialization = createInitializationActions({
+  snapshot: options => api.getSnapshot(options),
+  pause: () => { historyReady = false; agentEvents!.pause() },
+  loading: () => dispatch({ type: 'initialization_status', status: 'loading' }),
+  failed: reason => dispatch({ type: 'initialization_status', status: 'failed', reason }),
+  install: snapshot => { dispatch({ type: 'initialization_snapshot', snapshot }); dom.follower.jumpToLatest() },
+  initialized: () => agentEvents!.initialize(),
+  deliver: value => agentEvents!.receive(value),
+  observe: event => api.reportDiagnostic(event),
+})
+async function initializeConversation() {
+  if (!await initialization.initialize() || !initialization.watermark()) return
+  historyReady = true
+  dispatch({ type: 'initialization_status', status: 'ready' })
+  if (!state.earlier.segments.length) void timelineActions.loadEarlier()
+  if (state.conversationId) void historyActions.loadTrace(state.conversationId)
+  capabilityActions.refreshCapabilities()
+  void api.waits().catch((error: unknown) => console.error('[app] waits unavailable:', errorMessage(error)))
+  saveHistory()
+}
 
 async function boot() {
   if (api) await initializeLanguage(api, () => { render(dom, state, handlers); publishIsland() })
@@ -1015,11 +1038,14 @@ async function boot() {
   for (const type of ['focus', 'blur']) window.addEventListener(type, () => doneNotice?.check())
   document.addEventListener('visibilitychange', () => doneNotice?.check())
   api.onFocusComposer?.(() => dom.input.focus())
-  api.onEvent(value => agentEvents!.receive(value))
-  await Promise.all([loadHistory(), memoryActions.loadMemory(), workDirActions.refresh(), loadSettings(), feedActions.loadFeed()])
+  api.onEvent(value => initialization.receive(value))
+  void memoryActions.loadMemory()
+  void workDirActions.refresh()
+  void loadSettings()
+  void feedActions.loadFeed()
   // The tasks the last launch kept: ended ones, and those it quit on.
-  await taskActions.loadKept()
-  await timelineActions.loadEarlier()
+  void taskActions.loadKept()
+  void initializeConversation()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
   void mountHistorySearchFrame(dom.historySearch).then((searchDocument) => {
@@ -1032,15 +1058,8 @@ async function boot() {
     }
   })
   setInterval(() => renderTick(dom, state, handlers), TICK_MS)
-  const info = await api.getInfo()
-  if (info?.mode && info.mode !== 'connecting') {
-    dispatch({ type: 'ready', info })
-    capabilityActions.refreshCapabilities()
-  }
-  agentEvents!.initialize()
   // Opened on a dsh at work (a reload): what the conversation waits on the user for, which the backend says on the
   // live channel, in its place among the pushes (waits-state.ts, system-design §12.1).
-  await api.waits().catch((err: unknown) => console.error('[app] could not ask what the conversation waits for:', err))
   dom.input.focus()
 }
 

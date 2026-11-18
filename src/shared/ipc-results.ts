@@ -60,12 +60,20 @@ export type KeptTask = ({ mark?: TaskMark }) & (
 export interface TaskOpening { words: string, task?: TaskSummary, hostSession?: string | null }
 
 export interface IpcResults {
+  'diagnostics:export': { status: 'saved' | 'cancelled' | 'failed' | 'busy'; reason?: string }
+  'diagnostics:open-folder': void
+  'diagnostics:binding': string | undefined
+  'diagnostics:health': string | undefined
+  'diagnostics:clear': { status: 'cleared' | 'cleanup_pending' | 'busy' }
+  'diagnostics:debug': void
+  'diagnostics:status': { state: 'initializing' | 'ready' | 'stalled' | 'unavailable' | 'closed'; droppedCount: number; queuedBytes: number; activeCount: number; exporting: boolean; debugRemainingMs: number; cleanupPending: boolean }
   'draft:get': import('./composer-draft.ts').DraftSnapshot
   'draft:append-image': void
   'draft:keep-images': void
   'island:begin-image-import': string | null
   'draft:append-files': void
   'agent:info': import('./agent-info.ts').AgentInfo
+  'agent:snapshot': import('./renderer-sync.ts').RendererSnapshot
   /** A negative receipt proves native dispatch never began; void preserves normal turn completion. */
   'agent:prompt': void | { accepted: false, message: string, sourceIds: readonly string[] }
   'agent:steer': import('./agent-info.ts').SteerResult

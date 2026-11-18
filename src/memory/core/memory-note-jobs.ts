@@ -1,4 +1,7 @@
 import type { MemoryRuntimeResources } from './ports/runtime.ts'
+import { beginDiagnosticOperation } from '../../diagnostics/operation.ts'
+import { guardDiagnosticPort, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
+import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
 import { NOTE_SYSTEM, WRITE_NOTE, noteReply } from './memory-notes.ts'
@@ -13,7 +16,7 @@ type Calculate = (job: Effect, source: MemorySource, stage: 'note' | 'dream', sy
   sources: string[], current: () => boolean) => Promise<unknown>
 
 /** Completed-turn daily capture. Document dream is independently orchestrated by memory-dream. */
-export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, capture = true, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), projectText = (_workspace, text) => text, assistantContextCurrent, calculate, mutate = async work => work() }:  {
+export function createMemoryNoteJobs({ store, effects, now, openNotes, settings, capture = true, readable, eligible, allowsText, allowsDerived = () => true, allowsReferences = () => true, projectSource = source => ({ text: source.text ?? '' }), projectText = (_workspace, text) => text, assistantContextCurrent, calculate, mutate = async work => work(), diagnostics: providedDiagnostics }:  {
   store: MemoryStore, effects: Effects, now: () => number, settings?: DailyMemorySettings, capture?: boolean,
   openNotes: MemoryRuntimeResources['openNotes'],
   readable: (id: string) => boolean,
@@ -27,8 +30,10 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   assistantContextCurrent: (context: MemoryProvenance) => boolean,
   calculate: Calculate,
   mutate?: <T>(write: () => T) => Promise<T>,
+  diagnostics?: DiagnosticPort,
 
 }) {
+  const diagnostics = guardDiagnosticPort(providedDiagnostics)
   const { timezone, noteInterval } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(noteInterval) || noteInterval < 1) throw new Error('invalid-note-interval')
   const notes = openNotes(readable, (key, generation) => effects.holds({ kind: WRITE_NOTE, key, generation }))
@@ -68,16 +73,22 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     const key = notes.add(session, day, sources, safeAssistant, ids[0]!, safeAssistant ? dependencies : [], assistant,
       { questionSources: dependencies, questionCurrent: contextCurrent })
     if (!key) return
+    let pendingCount = 0
     store.tx(() => {
       for (const group of notes.pendingGroups()) {
+        pendingCount += group.count
         if (group.session === session && (group.day !== day || group.count >= noteInterval)) schedule(group.note)
       }
     })
+    diagnostics.emit({ event: 'state.changed', operation: 'memory.daily', stage: 'received',
+      identities: { sessionId: session, jobId: key, methodId: timezone }, metrics: { count: sources.length, pendingCount, mark: Date.parse(`${day}T00:00:00Z`) } })
     wake()
   }
 
   async function write(job: Effect): Promise<Outcome> {
-    await mutate(() => notes.recover())
+    // Retrying computation is read-only until a real file intent or cleanup needs recovery.
+    // Entering the physical send fence without such work aborts unrelated foreground requests.
+    if (notes.needsRecovery()) await mutate(() => notes.recover())
     if (notes.jobState(job.key, job.generation) === 'done') {
       // The durable receipt/checkpoint may have committed just before the process died.
       // Remaining turns belong to a NEW operation, never reuse the completed generation.
@@ -216,7 +227,8 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       const remainder = notes.pending(job.key, noteInterval)
       if (remainder.length && (flush || remainder.length >= noteInterval)) schedule(job.key, flush)
     })
-    console.info('[memory] daily note', { outcome: reply.status, turns: rows.length, sources: sources.length })
+    diagnostics.emit({ event: 'operation.progress', operation: 'memory.daily', stage: 'checkpoint',
+      identities: { jobId: job.key, generation: job.generation }, metrics: { count: rows.length, completedCount: sources.length, ok: reply.status === 'write' } })
     wake()
     return 'done'
   }
@@ -224,10 +236,18 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   const run = (job: (effect: Effect) => Promise<Outcome>) => async (jobs: readonly Effect[]) => {
     const outcomes = new Map<string, Outcome>()
     for (const effect of jobs) {
+      const observation = beginDiagnosticOperation(diagnostics, 'memory.daily', {
+        stage: effect.attempts ? 'recovering' : 'running', identities: { jobId: effect.key, generation: effect.generation }, metrics: { attempt: effect.attempts } })
       try {
-        outcomes.set(effect.key, await job(effect))
-      } catch {
-        console.info('[memory] note job', { stage: effect.kind, outcome: 'retry' })
+        const outcome = await job(effect)
+        outcomes.set(effect.key, outcome)
+        observation.end(outcome === 'retry' ? 'failed' : 'completed', {
+          stage: outcome === 'wait' ? 'waiting' : outcome === 'retry' ? 'queued' : 'checkpoint',
+          reason: outcome === 'retry' ? 'retry' : outcome === 'wait' ? 'external_wake' : 'normal' })
+      } catch (error) {
+        observation.fail(error)
+        diagnostics.emit({ event: 'operation.progress', operation: 'memory.daily', stage: 'queued', reason: safeDiagnosticReason(error),
+          identities: { jobId: effect.key, generation: effect.generation }, metrics: { attempt: effect.attempts, retryDelayMs: Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** effect.attempts) } })
         outcomes.set(effect.key, 'retry')
       }
     }
@@ -235,7 +255,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   }
   const CLEAN = 'memory.note-cleanup'
   effects.runs(CLEAN, async jobs => {
-    await mutate(() => notes.recover())
+    if (notes.needsRecovery()) await mutate(() => notes.recover())
     return new Map(jobs.map(job => [job.key, notes.pendingCleanup() ? 'retry' as const : 'done' as const]))
   })
   effects.runs(WRITE_NOTE, run(write), attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))

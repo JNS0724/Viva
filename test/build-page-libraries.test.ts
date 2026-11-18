@@ -3,8 +3,37 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 import { copyPageLibraryPackages } from '../scripts/build.ts'
+import { buildRevision, writeBuildRevision } from '../scripts/build-revision.ts'
+import { scratch } from './fixtures/scratch.js'
+
+test('app and plugin build metadata use the actual checkout revision and generated output cannot contain injected code', t => {
+  const { dir: root } = scratch(t, 'viva-build-revision-')
+  const output = path.join(root, 'output')
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  git('init')
+  writeFileSync(path.join(root, '.gitignore'), 'output/\n')
+  writeFileSync(path.join(root, 'source.ts'), 'export const value = 1\n')
+  git('add', '.gitignore', 'source.ts')
+  git('-c', 'user.name=Build fixture', '-c', 'user.email=build-fixture@example.invalid', 'commit', '-m', 'Initial fixture')
+  const expected = git('rev-parse', '--verify', 'HEAD').trim()
+  assert.equal(buildRevision(root), expected)
+  writeBuildRevision(output, expected)
+  const entry = path.join(output, 'src/diagnostics/build-info.js')
+  assert.deepEqual(JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', `import { BUILD_COMMIT } from ${JSON.stringify(pathToFileURL(entry).href)}; console.log(JSON.stringify(BUILD_COMMIT));`],
+    { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })), expected)
+  const before = readFileSync(entry, 'utf8')
+  assert.throws(() => writeBuildRevision(output, 'SECRET_PATH\"; throw new Error(\"injected\")'))
+  assert.equal(readFileSync(entry, 'utf8'), before)
+  assert.equal(buildRevision(output), expected)
+  writeFileSync(path.join(root, 'source.ts'), 'SECRET_DIRTY_SOURCE')
+  assert.equal(buildRevision(root), 'unknown')
+  const archive = mkdtempSync(path.join(tmpdir(), 'viva-build-no-git-'))
+  t.after(() => rmSync(archive, { recursive: true, force: true }))
+  assert.equal(buildRevision(archive), 'unknown')
+})
 
 for (const name of ['shared-parser', '@example/shared-parser']) test(`built renderer file import and Node bare import both resolve ${name}`, t => {
   const root = mkdtempSync(path.join(tmpdir(), 'viva-build-package-'))
