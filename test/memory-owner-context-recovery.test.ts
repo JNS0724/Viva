@@ -156,7 +156,7 @@ test('consecutive same-session daily updates can recover, recall the new file an
       await owner.commitContextRecovery(bind(owner, ticket), () => true)
       assert.equal(owner.dispatch.snapshot(session).files, undefined)
     }
-    const result = JSON.parse(owner.runtime.handle({ op: 'recall', session, query: 'tea music novels' }, owner.sessionContext(session))) as { notes: { text: string }[] }
+    const result = JSON.parse(owner.runtime.handle({ op: 'recall', session, query: text }, owner.sessionContext(session))) as { notes: { text: string }[] }
     assert.equal(result.notes.length, 1)
     const permit = owner.acquireSend(randomUUID(), { session, contextGeneration: owner.contextGeneration(session) }, 'fresh note'); permit.settled()
     assert.equal(owner.dispatch.snapshot(session).files?.length, 1)

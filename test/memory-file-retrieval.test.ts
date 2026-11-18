@@ -36,6 +36,34 @@ function encoder() {
   return {embedder,calls}
 }
 
+test('file search requires semantic similarity or strong lexical evidence before assigning ranks', async t => {
+  const embedder: MemoryEmbedder = {
+    dimensions: 384, fingerprint: 'relevance-test', close() {},
+    async embedBatch(inputs) {
+      return inputs.map(input => {
+        const similarity = input.kind === 'passage' ? 1 : ({
+          'deadline for the weekly update': 0.90, '今天天气怎么样': 0, '今晚的星座是什么': 0.82,
+        }[input.text] ?? 0)
+        const vector = unit(0)
+        vector[0] = similarity
+        vector[1] = Math.sqrt(1 - similarity ** 2)
+        return vector
+      })
+    },
+  }
+  const { retrieval } = setup(t, [view('weekly', '今天确认了周报提交邮箱，代码是 RPT-52。')], embedder)
+  for (const query of ['今天天气怎么样', '今晚的星座是什么']) {
+    const result = await retrieval.search({ query, allows, contextKey: 'turn' })
+    assert.equal(result.status, 'empty')
+    assert.deepEqual([result.hits, result.files, result.sourceIds], [[], [], []])
+    assert.equal(retrieval.searchCached({ query, allows }).status, 'empty')
+  }
+  for (const query of ['deadline for the weekly update', '周报提交邮箱', 'please look up RPT-52']) {
+    assert.deepEqual((await retrieval.search({ query, allows })).hits.map(hit => hit.id), ['weekly'])
+  }
+  assert.equal(retrieval.searchCached({ query: '周报提交邮箱', allows }).hits.length, 1)
+})
+
 test('retrieval diagnostics identify lexical, vector, fusion and relations without copying query or evidence', async t => {
   const events: DiagnosticEvent[] = []
   const model = encoder()

@@ -40,3 +40,17 @@ const functionWords = new Set('a an and are as at be by for from in is it of on 
 export function memoryFileLexicalQuery(query: string): string {
   return query.replace(/(?<![\p{L}\p{M}\p{N}_./@-])[a-z]+(?![\p{L}\p{M}\p{N}_./@-])/giu, word => word !== word.toUpperCase() && functionWords.has(word.toLowerCase()) ? ' ' : word)
 }
+
+const wordSegmenter = new Intl.Segmenter('zh', { granularity: 'word' })
+
+/** FTS uses overlapping Han bigrams for discovery. Measure lexical coverage in words
+ * so a short subject such as 周报 still counts in 帮我写周报. Keep compound identifiers intact. */
+export function memoryRelevanceTerms(query: string): string[] {
+  const wordsInQuery = memoryFileLexicalQuery(query).normalize('NFKC').toLowerCase().match(words) ?? []
+  const terms = wordsInQuery.flatMap(part => {
+    if (!han.test(part)) return [part]
+    const segmented = [...wordSegmenter.segment(part)].map(word => word.segment).filter(word => word.length > 1)
+    return segmented.length ? segmented : [part]
+  })
+  return [...new Set(terms)]
+}

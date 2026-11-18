@@ -437,7 +437,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
   function fileContext(request: Extract<MemoryRequest, { op: 'context' }>, result: FileSearchResult | null, origin: Origin) {
     const packed = packContext({ profile: store.profile(), today: dateLine(new Date(now())), profileLabels: presentation.profileLabels?.() })
-    if (!result || !fileDependenciesCurrent(result.files)) return packed.text
+    if (!result?.hits.length || !fileDependenciesCurrent(result.files)) return packed.text
     const scope = origin.context ?? origin.scope
     const pending = matchingDeferredFiles(result.files, origin, scope)
     const packet = filePacket(request.session, result, origin, request.question, scope, pending)

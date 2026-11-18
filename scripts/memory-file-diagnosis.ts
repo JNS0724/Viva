@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createMemoryEmbedder } from '../src/memory/node/memory-embedder.ts'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey, memoryFileLexicalQuery } from '../src/memory/core/memory-file-retrieval.ts'
-import { fuseMemoryFileHits, selectMemoryFileHits } from '../src/memory/core/memory-file-ranking.ts'
+import { fuseMemoryFileHits, relevantMemoryFileLanes, selectMemoryFileHits } from '../src/memory/core/memory-file-ranking.ts'
 import { memoryFileEmbeddingPassages } from '../src/memory/core/memory-file-passages.ts'
 import { evaluationDocuments, evaluationQueries } from '../test/fixtures/memory-file-evaluation.ts'
 import { checkEvaluationFreeze, dataPolicy } from './memory-file-evaluation.ts'
@@ -59,7 +59,8 @@ try {
       const ranked = chunks.flatMap(chunk => { const score = scores.get(memoryFileChunkKey(chunk.ref)); return score === undefined ? [] : [{ ...chunk, score }] })
         .sort((a, b) => b.score - a.score || memoryFileChunkKey(a.ref).localeCompare(memoryFileChunkKey(b.ref)))
       const lexical = index.lexical(memoryFileLexicalQuery(variant.query), files, 25).hits
-      const fused = fuseMemoryFileHits(lexical, ranked.slice(0, 25))
+      const relevant = relevantMemoryFileLanes(variant.query, lexical, ranked.slice(0, 25))
+      const fused = fuseMemoryFileHits(relevant.lexical, relevant.vector)
       const selected = selectMemoryFileHits(fused, { limit: 5, minScore: 0 })
       const isEvidence = (chunk: { file: {id:string}, text:string }) => ids.get(chunk.file.id) === label.id && chunk.text.includes(label.quote)
       const rank = (rows: typeof ranked) => { const n = rows.findIndex(isEvidence); return n < 0 ? null : n + 1 }

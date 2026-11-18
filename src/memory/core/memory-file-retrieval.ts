@@ -12,7 +12,7 @@ import { memoryFileEmbeddingPassages, splitMemoryFileEmbeddingPassage } from './
 import type { MemoryFileEmbeddingPassage } from './memory-file-passages.ts'
 import { parseMemoryMarkdown } from './memory-markdown.ts'
 import { memoryDocumentLines, readMemoryLines } from './memory-document.ts'
-import { memoryFileChunkKey, fuseMemoryFileHits, selectMemoryFileHits } from './memory-file-ranking.ts'
+import { memoryFileChunkKey, fuseMemoryFileHits, relevantMemoryFileLanes, selectMemoryFileHits } from './memory-file-ranking.ts'
 export { memoryFileChunkKey, fuseMemoryFileHits, selectMemoryFileHits } from './memory-file-ranking.ts'
 
 export interface FileReadPolicy {
@@ -252,7 +252,8 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const { allowed, limit, candidates, lexical, reasons } = plan
     if (closed || request.signal?.aborted) return unavailable('cancelled')
     if (allowed.some(file => !current(file, request.allows))) return unavailable('file-changed')
-    const ranked = fuseMemoryFileHits(lexical.hits, vector).filter(hit => hit.score >= (request.minScore ?? defaults.searchMinScore))
+    const relevant = relevantMemoryFileLanes(request.query, lexical.hits, vector)
+    const ranked = fuseMemoryFileHits(relevant.lexical, relevant.vector).filter(hit => hit.score >= (request.minScore ?? defaults.searchMinScore))
     if (lexical.hits.length === candidates || vector.length === candidates) reasons.push('candidate-limit')
     const context = request.contextKey ? hash(JSON.stringify([request.contextKey, request.query, request.from, request.through, request.asOf,
       request.minScore, allowed.map(file => [file.workspace,file.id,file.revision,file.usageVersion,file.policyToken])])) : null

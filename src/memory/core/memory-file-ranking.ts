@@ -1,10 +1,33 @@
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
 import type { MemoryFileChunkRef, MemoryFileHit } from './ports/file-index.ts'
+import { lexicalTerms, memoryIdentifierTokens, memoryRelevanceTerms } from './search-tokens.ts'
 
 export const memoryFileChunkKey = (ref: MemoryFileChunkRef) => JSON.stringify([ref.workspace, ref.fileId, ref.ordinal, ref.revision, ref.usageVersion, ref.policyToken])
 export interface RankedMemoryFileHit extends MemoryFileHit {
   /** One-based positions in the deduplicated candidate lanes; never model confidence. */
   ranks: { lexical?: number, vector?: number }
+}
+
+/** Gate each lane on its original evidence. Reciprocal ranks alone always give the first hit a positive score. */
+export function relevantMemoryFileLanes(query: string, lexical: readonly MemoryFileHit[], vector: readonly MemoryFileHit[]) {
+  const terms = memoryRelevanceTerms(query)
+  const identifiers = memoryIdentifierTokens(query)
+  const queryLength = terms.reduce((length, term) => length + term.length, 0)
+  const required = Math.max(2, Math.ceil(terms.length * defaults.searchMinTermCoverage))
+  const matches = (hit: MemoryFileHit) => {
+    const indexed = lexicalTerms(hit.searchText, true)
+    if (identifiers.some(identifier => indexed.has(identifier))) return true
+    const text = hit.searchText.normalize('NFKC')
+    let count = 0
+    for (const term of terms) {
+      if (!indexed.has(term) && !(/^\p{Script=Han}+$/u.test(term) && text.includes(term))) continue
+      // One exact word can carry most of a short query (e.g. “where … conference … held”).
+      if (term.length > queryLength / 2) return true
+      count++
+    }
+    return count >= required
+  }
+  return { lexical: lexical.filter(matches), vector: vector.filter(hit => hit.score >= defaults.searchMinCosine) }
 }
 
 /** Fixed weighted reciprocal ranks, including when only one lane is available. */

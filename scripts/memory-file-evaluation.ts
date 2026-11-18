@@ -10,7 +10,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { createMemoryEmbedder } from '../src/memory/node/memory-embedder.ts'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey, memoryFileLexicalQuery } from '../src/memory/core/memory-file-retrieval.ts'
-import { fuseMemoryFileHits, selectMemoryFileHits } from '../src/memory/core/memory-file-ranking.ts'
+import { fuseMemoryFileHits, relevantMemoryFileLanes, selectMemoryFileHits } from '../src/memory/core/memory-file-ranking.ts'
 import { createMemoryDocumentReadPolicy } from '../src/memory/core/memory-document-read-policy.ts'
 import { formatMemoryDocument, memoryDocumentLines, parseMemoryDocument, readMemoryLines } from '../src/memory/core/memory-document.ts'
 import type { DocumentSnapshot, DocumentSupersession } from '../src/memory/core/ports/documents.ts'
@@ -211,7 +211,8 @@ export async function runMemoryFileEvaluation(modelRoot: string, runtimeRoot: st
       const vector=index.chunks(allowed).flatMap(chunk=>{
         const score=scores.get(memoryFileChunkKey(chunk.ref));return score===undefined?[]:[{...chunk,score}]
       }).sort((a,b)=>b.score-a.score || memoryFileChunkKey(a.ref).localeCompare(memoryFileChunkKey(b.ref))).slice(0,evaluationGates.candidatesPerLane)
-      const fused=fuseMemoryFileHits(lexical,vector).filter(hit=>hit.score>=evaluationGates.minScore)
+      const relevant = relevantMemoryFileLanes(query.text, lexical, vector)
+      const fused=fuseMemoryFileHits(relevant.lexical,relevant.vector).filter(hit=>hit.score>=evaluationGates.minScore)
       const started=performance.now()
       const actual=await retrieval.search({query:query.text,limit:evaluationGates.fixedLimit,minScore:evaluationGates.minScore,from:query.from,through:query.through,asOf:query.asOf,allows})
       queryTimes.push(performance.now()-started)
@@ -257,14 +258,23 @@ export async function runMemoryFileEvaluation(modelRoot: string, runtimeRoot: st
     })
     const safetyLeaks=cases.reduce((sum,item)=>sum+item.safetyLeaks.length+item.unauthorizedExposures.length,0)
     const hit5=answers.filter(item=>item.lanes.fused.hit5).length
-    const gate={answerEvidenceHit5:hit5/answers.length>=evaluationGates.answerEvidenceHit5,groups:groups.every(item=>item.passed),sourceSlices:sourceSliceErrors===0,safety:safetyLeaks===0}
+    // These probes are outside both frozen corpora. The absent cases above can still share a topic.
+    const unrelatedProbes = ['解释一下引力波是怎么产生的', '怎样证明根号二是无理数？', '白棋如何应对西西里防御？',
+      'How do I tune a violin?', 'What causes lunar eclipses?', 'How do coral polyps reproduce?']
+    const unrelatedWithHits: string[] = []
+    for (const query of unrelatedProbes) {
+      const result = await retrieval.search({ query, allows })
+      assert.ok(!result.reasons.some(reason => reason.startsWith('semantic-')), 'the Granite lane must run for unrelated probes')
+      if (result.status !== 'empty' || result.hits.length) unrelatedWithHits.push(query)
+    }
+    const gate={unrelatedEmpty:unrelatedWithHits.length === 0,answerEvidenceHit5:hit5/answers.length>=evaluationGates.answerEvidenceHit5,groups:groups.every(item=>item.passed),sourceSlices:sourceSliceErrors===0,safety:safetyLeaks===0}
     return {evaluationKind:dataset === 'validation' ? 'validation' : evaluationKind,fixture:verification
       ? { version: 1, frozenAt: '2026-11-16', sha256: verification.fileHash, hashKind: 'source-file-bytes', dataSha256: verification.dataHash, dataEncoding: verification.dataEncoding }
       : evaluationFreeze,dataHash,model:{fingerprint:embedder.fingerprint,dimensions:embedder.dimensions,offline:true,fileVectorSpace:index.vectorState().space},
       runtime:{node:process.version,platform:process.platform,arch:process.arch},configuration:evaluationGates,
       corpus:{documents:documents.length,accepted:index.files(scopes).length,chunks:index.chunks(index.files(scopes)).length,
         tailDocuments:documents.filter(document=>Buffer.byteLength(document.body)>10_000).length},
-      metrics,groups,gate,passed:Object.values(gate).every(Boolean),sourceSliceErrors,sliceFailures,safetyLeaks,
+      metrics,groups,unrelated:{total:unrelatedProbes.length,withHits:unrelatedWithHits},gate,passed:Object.values(gate).every(Boolean),sourceSliceErrors,sliceFailures,safetyLeaks,
       timings:{coldMs,indexMs,indexAttempts:attempts,queryP50Ms:percentile(queryTimes,0.5),queryP95Ms:percentile(queryTimes,0.95)},
       limitations:['This is real q8 retrieval, not real answer-generation evaluation.','No-answer candidate rate is not answerability or refusal accuracy.',
         'Trusted synthetic source-port fixtures feed the production read policy; storage/lifecycle correctness remains covered by integration tests.',
