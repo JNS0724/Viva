@@ -56,14 +56,15 @@
 
 新增可复用的 `memory.yml`，在 macOS 和 Windows 运行完整记忆集合，支持 `workflow_dispatch` 与 `workflow_call`。`package.yml` 同样保留 `workflow_call`，用于相关 PR、每日和发布。
 
-`check.yml` 的每个 PR 和 main push 都运行一个 `scope` job，计算 `memory-required` 和 `package-required`：
+`check.yml` 的每个 PR 和 main push 都运行一个 `scope` job，计算 `memory-required` 和 `package-required`。只有这个 job 的 `actions/checkout@v5` 设置 `fetch-depth: 0`（或显式获取比较双方及其共同祖先），其他执行测试的 job 继续使用浅克隆。
 
 - `pull_request`：比较 PR base 与 head 的 merge-base diff。
 - 推送到 main：比较事件的 `before` 与 `after`，覆盖合并后的提交。
+- 使用带重命名检测的 NUL 分隔记录，例如 `git diff --name-status -M -z <range>`；重命名同时匹配旧路径和新路径，删除匹配原路径。不能只取 `--name-only` 返回的新路径。
 - 已知事件缺少预期 SHA、Git diff 不可用或无法可靠计算范围时，明确进入保守回退，将两个专项都设为必需；不能默认成“不需要”。
 - 未知事件、判断脚本自身异常或输出非法仍使 `scope` 失败并阻断聚合。
 
-范围判断单元测试必须覆盖普通 PR、合并后的 main push、无法计算范围时运行全部专项，以及判断脚本异常被拦截。
+范围判断测试必须覆盖普通 PR、合并后的 main push、无法计算范围时运行全部专项、判断脚本异常被拦截，以及把 `plugins/trace/lib/store.ts` 移到 `archive/store.ts` 时仍得到 `memory-required=true`。另用一次真实浅/完整 checkout 对比验证文档 PR：scope 能取得比较历史，且两个专项均按预期跳过。
 
 ```yaml
 memory:
@@ -111,11 +112,12 @@ package:
 
 将职责拆成三个可复用入口，避免重复构建：
 
-- `full.yml`：依次执行 `npm ci`、`npm run typecheck`、完整 `npm test`、build、源码 smoke 和 performance，支持 `workflow_dispatch`、`workflow_call`。
+- 新增 `npm run test:source`，执行完整的非 package 源码测试集合；本地 `npm test` 仍包含 package，保持完整集合。
+- `full.yml`：依次执行 `npm ci`、`npm run typecheck`、`npm run test:source`、`npm run smoke` 和 performance，支持 `workflow_dispatch`、`workflow_call`。不再在 smoke 前显式执行 build，由现有 `presmoke` 完成本轮唯一一次源码构建。
 - `daily.yml`：每天同时调用 `full.yml` 与 `package.yml`，支持 `schedule`、`workflow_dispatch`。
 - `release.yml`：分别调用 `full.yml` 与 `package.yml`，`publish` 同时依赖两者，发布直接使用该次 `package` 上传的安装器。
 
-因此每日和发布都覆盖相同的完整产品集合；不会只跑源码而漏掉安装后应用，也不会在发布时重复构建另一份安装器。发布标签触发的 `full.yml` 必须检出本次发布提交并至少完成一次 typecheck；类型检查失败与测试失败一样阻止 `publish`。
+每日和发布的插件离线安装统一由 `package.yml` 执行，`full.yml` 的 `test:source` 不再重复 `memory-package.test.ts`；两个集合的并集仍覆盖完整产品验收。不会只跑源码而漏掉安装后应用，也不会重复构建安装器。发布标签触发的 `full.yml` 必须检出本次发布提交并至少完成一次 typecheck；类型检查失败与测试失败一样阻止 `publish`。前五次运行测量的 45 分钟预算必须基于这套去重后的最终工作量。
 
 `package.yml` 的并发组加入顶层调用的 run ID，例如 `package-${{ github.ref }}-${{ inputs.runKey || github.run_id }}`。`workflow_call` 的可选 `runKey` 由 check、daily、release 分别传入自己的 `github.run_id`，直接手动运行时回退到本次 run ID。PR 新提交的取消仍由上层 `check.yml` 并发组负责；手动打包与每日任务使用不同组，不得互相取消。验收时验证同一 main 分支上的手动打包和每日验收可以各自完成。
 
@@ -218,7 +220,9 @@ testCase({
 - 每日与发布在免费标准 runner 上执行 100% 承诺集合，包括安装后应用。
 - 无关 PR 不被迫等待专项；相关 PR 的专项失败或判断脚本异常都会被聚合门禁拦截。
 - 合并后的 main push 使用 before/after 计算范围；无法可靠计算时全部专项运行，不得误判为不需要。
+- 文件移出受监控目录时同时匹配重命名前后路径；真实文档 PR 验证 scope 具有所需 Git 历史且两个专项均跳过。
 - 只命中 package 的 PR 实际执行全部 `memory-package` 离线安装与导出场景。
+- 每日与发布只由 package 执行离线插件安装，源码 smoke 只经 `presmoke` 构建一次；本地 `npm test` 仍运行完整集合。
 - 混合文件在普通 PR、相关专项和完整运行中执行的场景 ID 均符合政策。
 - 同一 main 上的手动打包与每日验收使用不同并发组，可以各自完成。
 - 完整 job 在 45 分钟内完成；该预算是否足够仍由前五次双平台完整运行验证。

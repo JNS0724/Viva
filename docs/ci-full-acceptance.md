@@ -56,14 +56,15 @@ Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
 Add reusable `memory.yml` to run the complete memory collection on macOS and Windows, with `workflow_dispatch` and `workflow_call`. Keep `workflow_call` in `package.yml` for affected PRs, daily acceptance, and releases.
 
-A `scope` job in `check.yml` runs for every PR and main push and computes `memory-required` and `package-required`:
+A `scope` job in `check.yml` runs for every PR and main push and computes `memory-required` and `package-required`. Only this job sets `fetch-depth: 0` on `actions/checkout@v5` (or explicitly fetches both endpoints and their common ancestor); test-execution jobs remain shallow.
 
 - `pull_request`: compare the merge-base diff between the PR base and head.
 - Push to main: compare the event's `before` and `after`, covering the merged commit.
+- Use NUL-separated records with rename detection, such as `git diff --name-status -M -z <range>`; match both old and new paths for renames and the original path for deletions. Do not use only the new paths returned by `--name-only`.
 - If expected SHAs are missing for a known event, Git diff is unavailable, or the range cannot be computed reliably, enter an explicit conservative fallback that requires both specializations; never default to “not required.”
 - Unknown events, exceptions in the scope script itself, and invalid output still fail `scope` and block the aggregate.
 
-Scope unit tests cover an ordinary PR, a merged main push, running all specializations when a range is unavailable, and blocking a scope-script exception.
+Scope tests cover an ordinary PR, a merged main push, running all specializations when a range is unavailable, blocking a scope-script exception, and moving `plugins/trace/lib/store.ts` to `archive/store.ts` while retaining `memory-required=true`. Also compare real shallow/full checkouts through a documentation PR: scope must obtain the comparison history and both specializations must skip as intended.
 
 ```yaml
 memory:
@@ -111,11 +112,12 @@ Package jobs on both platforms explicitly run `npm run test:memory-plugin` after
 
 Use three reusable entry points without duplicate builds:
 
-- `full.yml`: runs `npm ci`, `npm run typecheck`, complete `npm test`, build, source smoke, and performance in order, with `workflow_dispatch` and `workflow_call`.
+- Add `npm run test:source` for the complete non-package source collection; local `npm test` continues to include package and therefore remains complete.
+- `full.yml`: runs `npm ci`, `npm run typecheck`, `npm run test:source`, `npm run smoke`, and performance in order, with `workflow_dispatch` and `workflow_call`. Remove the explicit build before smoke; the existing `presmoke` performs the only source build for that round.
 - `daily.yml`: calls both `full.yml` and `package.yml` every day, with `schedule` and `workflow_dispatch`.
 - `release.yml`: calls `full.yml` and `package.yml` separately; `publish` needs both and publishes the installers uploaded by that `package` invocation.
 
-Daily and release runs therefore cover the same complete product collection. Neither omits installed-application acceptance nor builds another copy of the installer at release time. A tag-triggered `full.yml` must check out the release commit and complete typecheck at least once; a typecheck failure blocks `publish` just like a test failure.
+Daily and release plugin offline installation belongs solely to `package.yml`; `test:source` in `full.yml` does not repeat `memory-package.test.ts`. Their union still covers complete product acceptance. Neither omits installed-application acceptance nor builds another copy of the installer. A tag-triggered `full.yml` must check out the release commit and complete typecheck at least once; a typecheck failure blocks `publish` just like a test failure. The first five runs must measure the 45-minute budget against this final deduplicated workload.
 
 Add the top-level caller's run ID to the `package.yml` concurrency group, for example `package-${{ github.ref }}-${{ inputs.runKey || github.run_id }}`. The optional `workflow_call` input `runKey` receives the caller's own `github.run_id` from check, daily, and release; direct manual runs fall back to their current run ID. Cancellation for a newer PR commit remains the responsibility of the upper-level `check.yml` concurrency group. Manual packaging and daily acceptance use different groups and cannot cancel each other. Verify that manual packaging and daily acceptance on the same main branch can both complete.
 
@@ -218,7 +220,9 @@ Remove obsolete implementations in independent PRs rather than mixing them into 
 - Daily and release runs execute 100% of the promised collection on free standard runners, including installed applications.
 - Unrelated PRs never wait for specialization; affected-PR specialization failures and scope-script exceptions block the aggregate gate.
 - A merged main push uses before/after for scope; an unavailable range runs every specialization instead of falsely reporting none.
+- Moving a file out of a watched directory matches both rename paths; a real documentation PR proves scope has the required Git history and skips both specializations.
 - A package-only PR actually executes every `memory-package` offline-install and export scenario.
+- Daily and release runs execute offline plugin installation only in package, and source smoke builds only once through `presmoke`; local `npm test` still runs the complete collection.
 - Mixed files execute exactly the policy-selected scenario IDs in ordinary PRs, affected specializations, and full runs.
 - Manual packaging and daily acceptance on the same main branch use different concurrency groups and can both complete.
 - Full jobs finish within 45 minutes; the first five dual-platform full runs must validate whether this budget is sufficient.
