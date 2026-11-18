@@ -243,7 +243,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     if (request.maxChars !== undefined && (!Number.isSafeInteger(request.maxChars) || request.maxChars < minimumBudget)) throw new Error('invalid-memory-file-output-budget')
     sync()
     const allowed = authorized(request.allows, request)
-    const candidates = Math.min(defaults.searchMaxCandidates, limit * defaults.searchCandidateMultiplier)
+    const candidates = Math.max(defaults.searchContrastReferenceRank, Math.min(defaults.searchMaxCandidates, limit * defaults.searchCandidateMultiplier))
     const lexical = index.lexical(memoryFileLexicalQuery(request.query), allowed, candidates)
     const reasons = lexical.mode === 'fallback' ? ['full-text-fallback'] : []
     return { allowed, limit, candidates, lexical, reasons }

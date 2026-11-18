@@ -83,7 +83,7 @@ test('selection is deterministic, immutable and fills spare slots with remaining
 test('semantic contrast admits a distinct near-threshold match only with a reference and an absolute floor', () => {
   const eligible = (...scores: number[]) => relevantMemoryFileLanes('query', [], scores.map((score, i) => hit(String(i), 0, 'one', score))).vector.map(hit => hit.score)
   assert.deepEqual(eligible(0.81), [])
-  assert.deepEqual(eligible(0.82, 0.81, 0.81, 0.80, 0.80), [])
-  assert.deepEqual(eligible(0.82, 0.805, 0.79, 0.78, 0.76), [0.82, 0.805])
-  assert.deepEqual(eligible(0.76, 0.72, 0.70, 0.68, 0.61), [])
+  assert.deepEqual(eligible(0.82, 0.81, 0.81, 0.80, 0.80, 0.799, 0.798, 0.797, 0.796, 0.795), [])
+  assert.deepEqual(eligible(0.82, 0.805, 0.79, 0.78, 0.775, 0.77, 0.76, 0.755, 0.75, 0.747), [0.82, 0.805])
+  assert.deepEqual(eligible(0.76, 0.72, 0.70, 0.68, 0.61, 0.60, 0.59, 0.58, 0.57, 0.56), [])
 })
