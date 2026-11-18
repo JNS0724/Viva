@@ -47,9 +47,8 @@ Functional timing is not a performance benchmark. Classify `backend-wire-timing`
 Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
 - `headless`: both macOS and Windows run typecheck, documentation checks, and `npm run test:pr`, covering the fast, critical, and timing file subset. Extended integration belongs to affected specializations, daily, and release; package scenarios run only in package specialization.
-- `core`: retain public UI smoke.
-- `integration`: retain current lanes and one worker per desktop runner; do not rearrange them in the same change.
-- Keep these jobs' `timeout-minutes` at 15.
+- `smoke`: schedule one desktop job per platform for complete `npm run smoke`, with one build through `presmoke` and all 15 source-smoke scenarios in sequence.
+- Keep `headless` and `smoke` `timeout-minutes` at 15.
 
 ### 4.2 Conditional specialization belongs to the same gate
 

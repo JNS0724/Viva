@@ -42,17 +42,16 @@ test('the real CI gate requires every job and rejects failure, cancellation, ski
   assert.ok(run({}).length)
 })
 
-test('CI runs complete headless checks, independent core and every integration lane on both OSes', () => {
-  assert.deepEqual(gate.needs, ['headless', 'core', 'integration', 'scope', 'memory', 'package'])
-  for (const name of ['headless', 'core', 'integration', 'check']) {
+test('CI runs the critical headless subset and one complete smoke job per OS', () => {
+  assert.deepEqual(gate.needs, ['headless', 'smoke', 'scope', 'memory', 'package'])
+  for (const name of ['headless', 'smoke', 'check']) {
     assert.deepEqual(jobs[name].strategy!.matrix.os, ['macos-latest', 'windows-latest'])
     assert.equal(jobs[name].strategy!['fail-fast'], false)
   }
-  assert.deepEqual(jobs.integration.strategy!.matrix.lane, Object.keys(integrationLanes))
   for (const command of ['npm run typecheck', 'npm run test:pr', 'npm run check:i18n']) assert.ok(commands(jobs.headless).includes(command))
-  assert.ok(commands(jobs.core).includes('npm run smoke:core'))
-  assert.ok(commands(jobs.integration).includes('npx playwright test -c test/smoke/playwright.config.ts --project=integration'))
-  for (const name of ['core', 'integration']) assert.ok(commands(jobs[name]).includes('npm run build'))
+  assert.ok(commands(jobs.smoke).includes('npm run smoke'))
+  assert.equal(commands(jobs.smoke).includes('npm run build'), false)
+  assert.equal(jobs.smoke['timeout-minutes'], 15)
   assert.equal(jobs.scope.steps![0].with!['fetch-depth'], 0)
   assert.equal(jobs.memory.if, "needs.scope.outputs.memory-required == 'true'")
   assert.equal(jobs.package.if, "needs.scope.outputs.package-required == 'true'")

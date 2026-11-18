@@ -44,7 +44,7 @@ jobs:
       - run: npm run test:pr
       - run: npm run check:i18n
 
-  core:
+  smoke:
     strategy:
       fail-fast: false
       matrix:
@@ -52,7 +52,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
-      VIVA_SMOKE_RUN: ${{ matrix.os }}-core-${{ github.run_id }}-${{ github.run_attempt }}
+      VIVA_SMOKE_RUN: ${{ matrix.os }}-smoke-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -60,37 +60,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - run: npm run smoke:core
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-${{ env.VIVA_SMOKE_RUN }}
-          path: |
-            smoke/${{ env.VIVA_SMOKE_RUN }}/test-results
-            smoke/${{ env.VIVA_SMOKE_RUN }}/report
-            smoke/${{ env.VIVA_SMOKE_RUN }}/junit.xml
-
-  integration:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-        lane: [interaction, memory]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      VIVA_SMOKE_LANE: ${{ matrix.lane }}
-      VIVA_SMOKE_RUN: ${{ matrix.os }}-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx playwright test -c test/smoke/playwright.config.ts --project=integration
+      - run: npm run smoke
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -116,7 +86,7 @@ jobs:
   # Matrix needs aggregate both OSes, so either platform failing closes both gates.
   check:
     if: always()
-    needs: [headless, core, integration, scope, memory, package]
+    needs: [headless, smoke, scope, memory, package]
     strategy:
       fail-fast: false
       matrix:
@@ -132,7 +102,7 @@ jobs:
         with:
           script: |
             const results = JSON.parse(process.env.CHECK_RESULTS)
-            const required = ['headless', 'core', 'integration', 'scope']
+            const required = ['headless', 'smoke', 'scope']
             const failed = required.filter(job => results[job]?.result !== 'success')
             for (const job of ['memory', 'package']) {
               const required = process.env[`${job.toUpperCase()}_REQUIRED`]

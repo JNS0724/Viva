@@ -47,9 +47,8 @@
 保留 `check.yml` 现有聚合状态名称和 `retries: 0`：
 
 - `headless`：macOS 与 Windows 都运行 typecheck、文档检查和 `npm run test:pr`，即 fast、critical、timing 文件子集。扩展 integration 由相关专项、每日和发布承接；package 场景只在 package 专项执行。
-- `core`：保持公共 UI 冒烟。
-- `integration`：保持当前 lane 和每个桌面 runner 单 worker，不与本方案同时重排。
-- 这些 job 的 `timeout-minutes` 保持 15。
+- `smoke`：每个平台只调度一个桌面 job，运行完整 `npm run smoke`，由 `presmoke` 构建一次，顺序执行全部 15 个源码冒烟场景。
+- `headless` 与 `smoke` 的 `timeout-minutes` 保持 15。
 
 ### 4.2 条件专项必须进入同一聚合门禁
 
