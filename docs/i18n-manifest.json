@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-17",
+  "reviewedOn": "2026-11-18",
   "pairs": [
     {
       "en": "README.md",
@@ -25,6 +25,12 @@
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
       "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
+    },
+    {
+      "en": "docs/ci-full-acceptance.md",
+      "zh": "docs/ci-full-acceptance.zh-CN.md",
+      "enHash": "61333db1866885e62d279f3a90527abc7d4912846e0ba030d7ef72ab0ace95be",
+      "zhHash": "2c7fd23ee33aa13b604c2415feb865a4d3e27bc2e28a407a82615a898b4cef95"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
