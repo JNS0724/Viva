@@ -1,5 +1,5 @@
 /** Local product boundaries with deterministic model replies; no provider latency is added to the baseline. */
-import { diagnosticLatencyBudget, healthyDiagnosticSample } from './diagnostic-performance-budget.ts'
+import { diagnosticLatencyBudget, healthyDiagnosticSample, reportInteractionReview } from './diagnostic-performance-budget.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -110,7 +110,9 @@ try {
       }
     }
     const disabled = p95(times.disabled), enabled = p95(times.enabled)
-    results.push({ name, samplesPerMode, disabled, enabled, ...diagnosticLatencyBudget(disabled, enabled) })
+    const budget = diagnosticLatencyBudget(disabled, enabled)
+    reportInteractionReview(name, budget)
+    results.push({ name, samplesPerMode, disabled, enabled, ...budget })
   }
   assert.equal(await writer.close(), true)
   const taskPhases = Object.fromEntries(Object.entries(phaseTimes).map(([phase, samples]) =>
