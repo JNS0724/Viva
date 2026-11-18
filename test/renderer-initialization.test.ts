@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
+import { DatabaseSync } from 'node:sqlite'
 import { createInitializationActions } from '../src/renderer/initialization-actions.ts'
 import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { createAgentEvents } from '../src/renderer/agent-events.ts'
@@ -16,6 +17,12 @@ const push = (cursor: number, text = String(cursor), generation = 'generation') 
   update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } })
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { resolve, promise } }
+
+function backendStream(t: TestContext, publish: Parameters<typeof createRendererStream>[0] = () => {}) {
+  const db = new DatabaseSync(':memory:')
+  t.after(() => db.close())
+  return createRendererStream(publish, db)
+}
 
 test('startup installs trusted snapshot then replay and only deltas beyond its cutoff, rejecting old same-conversation pushes', async t => {
   const required = deferred<RendererSnapshot>(), received: unknown[] = [], failures: string[] = []
@@ -119,9 +126,9 @@ test('hung required snapshots stop accumulation on count, bytes, age and deadlin
   }
 })
 
-test('backend publication snapshots use saved history cutoffs, bound replay storage and reject invented save watermarks', () => {
+test('backend publication snapshots use saved history cutoffs, bound replay storage and reject invented save watermarks', t => {
   const sent: Array<Record<string, unknown>> = []
-  const stream = createRendererStream(event => sent.push(event))
+  const stream = backendStream(t, event => sent.push(event))
   stream.send({ type: 'update', context, update: { text: 'one' } })
   const first = stream.snapshot(context.conversationId, context)
   stream.save(context.conversationId, { streamGeneration: first.streamGeneration, eventCursor: first.cutoverCursor })
@@ -211,12 +218,12 @@ test('snapshot identity, retired generations and missing publication cursors can
   }
 })
 
-test('withdrawn generated content is never available from the backend replay cache', () => {
-  const stream = createRendererStream(() => {})
+test('withdrawn generated content is never available from the backend replay cache', t => {
+  const stream = backendStream(t)
   stream.send({ type: 'update', context, update: { text: 'withdrawn thought' } })
   stream.send({ type: 'memory_changed', traceSessions: [context.sessionId] })
   assert.throws(() => stream.snapshot(context.conversationId, context), /gap/)
-  const reports = createRendererStream(() => {})
+  const reports = backendStream(t)
   reports.send({ type: 'report_delivered', context, reportId: 'withdrawn-report', text: 'withdrawn' })
   reports.send({ type: 'reports_removed', reportIds: ['withdrawn-report'] })
   assert.throws(() => reports.snapshot(context.conversationId, context), /gap/)
@@ -235,4 +242,105 @@ test('a withdrawal arriving before an older snapshot response prevents installat
     assert.equal(await pending, false)
     assert.deepEqual(installed, []); assert.deepEqual(failed, ['boundary'])
   }
+})
+
+test('a cutover inside a missing range cannot release the foreground', async t => {
+  for (const cutover of [2, 3, 4]) {
+    const required = deferred<RendererSnapshot>(), delivered: unknown[] = [], failures: string[] = []
+    const actions = createInitializationActions({ snapshot: () => required.promise, install() {}, deliver: event => delivered.push(event),
+      pause() {}, initialized() {}, loading() {}, failed: reason => failures.push(reason) })
+    t.after(actions.close)
+    const pending = actions.initialize()
+    actions.receive(push(1)); actions.receive(push(5))
+    required.resolve(snapshot(cutover))
+    assert.equal(await pending, cutover === 4)
+    assert.deepEqual(failures, cutover === 4 ? [] : ['gap'])
+    assert.deepEqual(delivered, cutover === 4 ? [push(5)] : [])
+    assert.equal(actions.watermark()?.eventCursor, cutover === 4 ? 5 : undefined)
+  }
+})
+
+test('an unfamiliar push only suspends the handoff; a fresh snapshot chooses the live owner', async t => {
+  for (const replacement of [false, true]) {
+    let view = snapshot(7)
+    const delivered: unknown[] = [], failures: string[] = []
+    const actions = createInitializationActions({ snapshot: async () => view, install() {}, deliver: event => delivered.push(event),
+      pause() {}, initialized() {}, loading() {}, failed: reason => failures.push(reason) })
+    t.after(actions.close)
+    assert.equal(await actions.initialize(), true)
+    actions.receive(push(1, 'unconfirmed', 'other'))
+    assert.deepEqual(failures, ['boundary'])
+    assert.equal(actions.watermark(), undefined)
+    const current = replacement ? 'other' : 'generation', obsolete = replacement ? 'generation' : 'other'
+    view = { ...snapshot(replacement ? 2 : 7), streamGeneration: current }
+    assert.equal(await actions.initialize(), true)
+    actions.receive(push(10, 'obsolete', obsolete))
+    const next = push(view.cutoverCursor + 1, 'live', current)
+    actions.receive(next)
+    assert.deepEqual(delivered, [next])
+    assert.deepEqual(failures, ['boundary'])
+    assert.equal(actions.watermark()?.streamGeneration, current)
+  }
+})
+
+test('replay loss is scoped to the segment and session-wide configuration only blocks its own session', t => {
+  const stream = backendStream(t), sibling = { ...context, conversationId: 'sibling' }, other = { conversationId: 'other', sessionId: 'other' }
+  for (let i = 0; i < 1025; i++) stream.send({ type: 'update', context })
+  assert.throws(() => stream.snapshot(context.conversationId, context), /gap/)
+  for (const target of [sibling, other]) assert.deepEqual(stream.snapshot(target.conversationId, target).replay, [])
+
+  stream.send({ type: 'config', context: { ...context, conversationId: null } })
+  for (let i = 0; i < 1024; i++) stream.send({ type: 'update', context: other })
+  assert.throws(() => stream.snapshot(sibling.conversationId, sibling), /gap/)
+  assert.equal(stream.snapshot(other.conversationId, other).replay.length, 1024)
+  const mark = stream.snapshot(other.conversationId, other)
+  stream.save(sibling.conversationId, { streamGeneration: mark.streamGeneration, eventCursor: mark.cutoverCursor })
+  assert.deepEqual(stream.snapshot(sibling.conversationId, sibling).replay, [])
+})
+
+test('withdrawals discard affected session or report copies without invalidating unrelated segments', t => {
+  for (const invalidation of [{ type: 'reports_removed', reportIds: ['withdrawn'] },
+    { type: 'memory_changed', traceSessions: [context.sessionId] }, { type: 'memory_changed', erasedOutputs: [{ session: context.sessionId, key: 'output' }] }]) {
+    const stream = backendStream(t), other = { conversationId: 'other', sessionId: 'other' }
+    stream.send({ type: 'report_delivered', context, reportId: 'withdrawn' })
+    stream.send({ type: 'report_delivered', context: other, reportId: 'keep' })
+    stream.send(invalidation)
+    assert.throws(() => stream.snapshot(context.conversationId, context), /gap/)
+    assert.equal(stream.snapshot(other.conversationId, other).replay.length, 1)
+  }
+})
+
+test('an old snapshot and an interleaved late old push cannot retire a live replacement', async t => {
+  let required = deferred<RendererSnapshot>()
+  const deliveries: unknown[] = []
+  const actions = createInitializationActions({ snapshot: () => required.promise, install() {}, deliver: event => deliveries.push(event),
+    pause() {}, initialized() {}, loading() {}, failed() {} })
+  t.after(actions.close)
+  const start = actions.initialize()
+  required.resolve(snapshot(4))
+  assert.equal(await start, true)
+  actions.receive(push(1, 'new owner', 'new'))
+  required = deferred<RendererSnapshot>()
+  const raced = actions.initialize()
+  actions.receive(push(2, 'new owner', 'new'))
+  actions.receive(push(5, 'late old'))
+  required.resolve(snapshot(5))
+  assert.equal(await raced, false)
+  required = deferred<RendererSnapshot>()
+  const fresh = actions.initialize()
+  required.resolve({ ...snapshot(2), streamGeneration: 'new' })
+  assert.equal(await fresh, true)
+  const next = push(3, 'live', 'new')
+  actions.receive(push(6, 'late old')); actions.receive(next)
+  assert.deepEqual(deliveries, [next])
+})
+
+test('an inactive saved segment still has its cutoff after other segments have been saved', t => {
+  const stream = backendStream(t)
+  stream.send({ type: 'update', context })
+  const first = stream.snapshot(context.conversationId, context)
+  const mark = { streamGeneration: first.streamGeneration, eventCursor: first.cutoverCursor }
+  stream.save(context.conversationId, mark)
+  for (let i = 0; i < 130; i++) stream.save('other-' + i, mark)
+  assert.deepEqual(stream.snapshot(context.conversationId, context).replay, [])
 })

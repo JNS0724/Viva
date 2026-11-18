@@ -7,6 +7,7 @@ export const testLevels = {
     'renderer-initialization',
     'diagnostics',
     'diagnostics-actions',
+    'diagnostics-workflow',
     'diagnostics-ipc',
     'diagnostics-health',
     'memory-dream-tools',

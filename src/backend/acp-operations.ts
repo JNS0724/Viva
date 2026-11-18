@@ -18,6 +18,23 @@ interface Operation {
   observation: ReturnType<typeof beginDiagnosticOperation>
   firstResponse: boolean
 }
+// Observe only normalized output that is forwarded to the conversation, including a recovered final reply.
+function hasAssistantContent(update: unknown): boolean {
+  const field = (value: unknown, key: string): unknown => value && typeof value === 'object'
+    ? Object.getOwnPropertyDescriptor(value, key)?.value : undefined
+  if (field(update, 'sessionUpdate') !== 'viva_stream') return false
+  const hasText = (block: unknown, typeField: string) => {
+    const type = field(block, typeField)
+    const text = field(block, 'text')
+    return (type === 'text' || type === 'reasoning') && typeof text === 'string' && text.length > 0
+  }
+  const kind = field(update, 'kind')
+  if (kind === 'delta' || kind === 'block') return hasText(update, 'blockType')
+  if (kind !== 'settle') return false
+  const blocks = field(update, 'blocks')
+  return Array.isArray(blocks) && blocks.some(block => hasText(block, 'type'))
+}
+
 /** Owns native prompt identities and their streams, never TaskRuntime admission/status or process lifetime. */
 export function createAcpOperations({ connection, streams, cancelPermissions, streamUpdate, allowSession = () => true }: {
   connection: () => Pick<ClientSideConnection, 'prompt' | 'cancel'>
@@ -45,6 +62,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       observation: beginDiagnosticOperation(diagnosticPort, 'conversation.send', { stage: 'queued',
         identities: { operationId: id, sessionId, conversationId: context?.conversationId } }) }
     running.set(sessionId, operation)
+    let outcome: 'completed' | 'cancelled' = 'cancelled'
     try {
       if (!sessionId) throw new Error('no session is open')
       if (prepare) await prepare()
@@ -64,6 +82,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       const sent = connection().prompt({ sessionId, prompt })
       onStart?.()
       const response = await sent
+      outcome = response.stopReason === 'cancelled' ? 'cancelled' : 'completed'
       if (!current(sessionId, operation)) return
       const finalReply = await streams.complete(operation.stream)
       if (current(sessionId, operation)) onEnd(response, finalReply)
@@ -76,8 +95,8 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       }
       if (current(sessionId, operation)) onError(error)
     } finally {
-      operation.observation.end(operation.released ? 'late_completed' : 'completed', { stage: 'settled',
-        ...(operation.released ? { reason: 'late' as const } : {}) })
+      const late = operation.prompting && operation.released
+      operation.observation.end(late ? 'late_completed' : outcome, { stage: 'settled', ...(late ? { reason: 'late' as const } : {}) })
       if (running.get(sessionId) === operation) running.delete(sessionId)
     }
   }
@@ -129,8 +148,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       const operation = running.get(id)
       if (operation && !operation.released) {
         try {
-          const marker = update && typeof update === 'object' ? Object.getOwnPropertyDescriptor(update, 'sessionUpdate')?.value : undefined
-          if (!operation.firstResponse && (marker === 'agent_message_chunk' || marker === 'agent_thought_chunk')) {
+          if (!operation.firstResponse && hasAssistantContent(update)) {
             operation.firstResponse = true
             operation.observation.progress({ stage: 'first-response' })
           }

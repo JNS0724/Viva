@@ -7,12 +7,12 @@ import { replaceDiagnosticIdentity } from './identity.ts'
 export type DiagnosticClearResult = { status: 'cleared' | 'cleanup_pending' | 'busy' }
 /** Actual I/O remains single-flight after a caller deadline. Retrying never allocates another hung job. */
 export function createDiagnosticClearer({ quota, hub, idle, timeoutMs = DIAGNOSTIC_LIMITS.snapshotMs }: {
-  quota: DiagnosticQuota, hub: Pick<DiagnosticHub, 'prepare' | 'resume'>, idle: () => boolean, timeoutMs?: number,
+  quota: DiagnosticQuota, hub: Pick<DiagnosticHub, 'prepare' | 'resume'>, idle: () => boolean | Promise<boolean>, timeoutMs?: number,
 }) {
   let actual: Promise<DiagnosticClearResult> | undefined
   let stage: { clearId: string, runId?: string } | undefined
   async function perform(): Promise<DiagnosticClearResult> {
-    if (!idle()) return { status: 'busy' }
+    if (!await idle()) return { status: 'busy' }
     if (!stage) { const state = await quota.clearState(); stage = { clearId: state.clearId ?? randomUUID() } }
     if (!stage.runId) {
       if (!await quota.beginClear(stage.clearId)) { stage = undefined; return { status: 'busy' } }

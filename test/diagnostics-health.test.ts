@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createDiagnosticHeartbeat, createDiagnosticHealthMonitor } from '../src/diagnostics/node/health.ts'
@@ -89,12 +89,23 @@ test('resume rejects a retired remote context before its replacement writer fini
   assert.equal(await writer.quota.clearClosed(), true)
   const after = await replaceDiagnosticIdentity(directory)
   assert.equal(await writer.quota.finishClear(token, after.runId), true)
-  assert.equal(await writer.resume(token, after.runId), true)
-  assert.equal(writer.identity(), undefined, 'exercise the actual replacement initialization window')
+  let entered!: () => void, release!: () => void
+  const waiting = new Promise<void>(resolve => { entered = resolve })
+  const held = new Promise<void>(resolve => { release = resolve })
+  const reserve = writer.quota.reserve.bind(writer.quota)
+  t.mock.method(writer.quota, 'reserve', async (...args: Parameters<DiagnosticQuota['reserve']>) => {
+    entered(); await held
+    return reserve(...args)
+  })
+  const resumed = writer.resume(token, after.runId)
+  await waiting
+  assert.equal(writer.snapshot().stats.state, 'initializing', 'the replacement has not acquired its file slot yet')
   writer.emit({ event: 'operation.start', operation: 'memory.get', metrics: { count: 111 } },
     { version: 1, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), diagnosticRunId: before.runId })
-  assert.equal(writer.snapshot().stats.activeCount, 0, 'the known new run must reject the retired message immediately')
-  await writer.ready
+  assert.equal(writer.snapshot().stats.activeCount, 0, 'the retired message cannot enter the replacement')
+  release()
+  assert.equal(await resumed, true)
+  assert.equal(writer.snapshot().stats.state, 'ready')
   writer.emit({ event: 'operation.progress', operation: 'memory.get', metrics: { count: 222 } },
     { version: 1, traceId: 'c'.repeat(32), spanId: 'd'.repeat(16), diagnosticRunId: after.runId })
   assert.equal(await writer.close(), true)
@@ -256,18 +267,71 @@ for (const kind of ['node', 'portable'] as const) test(`${kind} bound fields bec
   assert.ok(!text.includes('PRIVATE_'))
 })
 
-test('a hung clear remains single-flight beyond caller timeout and cannot report success early', async t => {
+test('a hung clear remains single-flight beyond caller timeout and cannot report success early', { timeout: 15_000 }, async t => {
   const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
   const quota = new DiagnosticQuota(directory)
-  let prepares = 0, release!: (value: boolean) => void
-  const clearer = createDiagnosticClearer({ quota, idle: () => true, timeoutMs: 15,
-    hub: { prepare() { prepares++; return new Promise<boolean>(resolve => { release = resolve }) }, resume: async () => true } })
-  assert.deepEqual(await clearer.clear(), { status: 'cleanup_pending' })
-  assert.deepEqual(await clearer.clear(), { status: 'cleanup_pending' })
-  assert.equal(prepares, 1)
-  release(true)
-  for (let i = 0; i < 100 && clearer.pending(); i++) await delay(5)
+  let prepares = 0, enter!: () => void, release!: (value: boolean) => void, resume!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve })
+  const held = new Promise<boolean>(resolve => { release = resolve })
+  const resumed = new Promise<void>(resolve => { resume = resolve })
+  const clearer = createDiagnosticClearer({ quota, idle: () => true, timeoutMs: 15, hub: {
+    prepare() { prepares++; enter(); return held },
+    async resume() { resume(); return true },
+  } })
+  const first = clearer.clear()
+  try {
+    await entered
+    assert.deepEqual(await first, { status: 'cleanup_pending' })
+    assert.deepEqual(await clearer.clear(), { status: 'cleanup_pending' })
+    assert.equal(prepares, 1)
+  } finally {
+    release(true)
+    await resumed
+    await new Promise<void>(resolve => setImmediate(resolve))
+  }
   assert.equal(clearer.pending(), false)
+})
+
+for (const phase of ['close', 'resume'] as const) test(`clear retries after a temporary inventory lock during writer ${phase}`, async t => {
+  const directory = await temporary(), lock = path.join(directory, 'inventory.lock')
+  const quota = new DiagnosticQuota(directory), writer = createManagedDiagnostics({ directory, component: 'backend', quota })
+  const hub = createDiagnosticHub({ component: 'backend', writers: [{ component: 'backend', writer }] })
+  t.after(async () => { await rm(lock, { force: true }); hub.close(); await writer.close(); await rm(directory, { recursive: true, force: true }) })
+  await writer.ready
+  const initialRun = writer.identity()!.diagnosticRunId
+  let injected = false
+  async function hold(at: typeof phase) {
+    if (!injected && at === phase) {
+      await writeFile(lock, JSON.stringify({ pid: process.pid, instance: quota.instance }), { flag: 'wx' })
+      injected = true
+    }
+  }
+  const clearer = createDiagnosticClearer({ quota, idle: () => true, hub: {
+    async prepare(token) { await hold('close'); return hub.prepare(token) },
+    async resume(token, runId) { await hold('resume'); return hub.resume(token, runId) },
+  } })
+  assert.deepEqual(await clearer.clear(), { status: 'cleanup_pending' })
+  assert.equal(injected, true)
+  const stalled = JSON.parse(await readFile(path.join(directory, 'inventory.json'), 'utf8'))
+  if (phase === 'close') {
+    assert.equal(writer.released(), false)
+    assert.equal(stalled.slots.length, 1)
+    assert.equal(stalled.slots[0].closed, false)
+  } else {
+    assert.equal(writer.snapshot().stats.state, 'unavailable')
+    assert.equal(stalled.slots.length, 0)
+    assert.notEqual(stalled.runId, initialRun)
+  }
+  await rm(lock)
+  assert.deepEqual(await clearer.clear(), { status: 'cleared' })
+  const runId = writer.identity()!.diagnosticRunId
+  assert.notEqual(runId, initialRun)
+  if (phase === 'resume') assert.equal(runId, stalled.runId)
+  assert.equal(writer.snapshot().stats.state, 'ready')
+  writer.emit({ event: 'state.changed', operation: 'diagnostics' })
+  assert.equal(await writer.close(), true)
+  const output = (await Promise.all((await readdir(directory)).filter(name => name.endsWith('.jsonl')).map(name => readFile(path.join(directory, name), 'utf8')))).join('')
+  assert.match(output, /"event":"state.changed"/)
 })
 
 test('resume retry preserves the new generation and does not delete newly written records', async t => {

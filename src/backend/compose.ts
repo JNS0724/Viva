@@ -139,7 +139,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The backend's database and its event core (app-db.ts, event-core.ts), opened first. */
   let appDb!: AppDb
   let core: EventCore | null = null
-  const rendererStream = createRendererStream(host.window.send)
+  let rendererStream: ReturnType<typeof createRendererStream>
   /** One change of the backend's state and its event (event-core.ts apply), for the stores' writes. */
   const applyChange: Apply = (kind, data, write) => {
     if (!core) throw new Error(`${kind} before the event core was opened`)
@@ -1653,6 +1653,7 @@ ${question}` : question
   /** Opens the stores and registers the backend's channels, before the window loads. */
   function open() {
     appDb = openAppDb({ file: path.join(userData, 'app.db') })
+    rendererStream = createRendererStream(host.window.send, appDb.db)
     core = createEventCore({ app: appDb, publish: rendererStream.send })
     settingsStore = createSettingsStore({
       file: path.join(userData, 'settings.json'), crypto: host.secrets,

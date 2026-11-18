@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { emitDiagnostic, withDetachedOperation } from '../../diagnostics/node/context.ts'
+import { emitDiagnostic, emitDiagnosticFailure, withDetachedOperation } from '../../diagnostics/node/context.ts'
 type Apply = <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
 
 /**
@@ -147,16 +147,19 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
       if (closed) return
       const run = runners.get(kind)
       if (!run) continue
-      let outcomes: ReadonlyMap<string, Outcome>
-      try {
-        outcomes = await withDetachedOperation('effects', () => run(effects), { identities: { methodId: kind }, metrics: { count: effects.length } })
-      } catch (err) {
+      await withDetachedOperation('effects', async () => {
+        let outcomes: ReadonlyMap<string, Outcome>
+        try {
+          outcomes = await run(effects)
+        } catch (err) {
+          if (closed) return
+          emitDiagnosticFailure('effects', err)
+          onError(err)
+          outcomes = new Map(effects.map(effect => [effect.key, 'retry' as const]))
+        }
         if (closed) return
-        onError(err)
-        outcomes = new Map(effects.map((effect) => [effect.key, 'retry' as const]))
-      }
-      if (closed) return
-      for (const effect of effects) settle(effect, outcomes.get(effect.key) ?? 'wait')
+        for (const effect of effects) settle(effect, outcomes.get(effect.key) ?? 'wait')
+      }, { identities: { methodId: kind }, metrics: { count: effects.length } })
     }
   }
 

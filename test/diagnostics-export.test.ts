@@ -15,6 +15,7 @@ import { diagnosticRecords, writeDiagnosticBundle } from '../src/diagnostics/nod
 import type { DiagnosticFileManifest } from '../src/diagnostics/node/bundle.ts'
 import { newDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
 import { DiagnosticQuota } from '../src/diagnostics/node/quota.ts'
+import { createDiagnosticClearer } from '../src/diagnostics/node/clear.ts'
 import { createDiagnosticExporter } from '../src/diagnostics/node/export.ts'
 import { createNodeDiagnostics } from '../src/diagnostics/node/logger.ts'
 import { diagnosticBinding, diagnosticContext, installDiagnosticPort, setDiagnosticBinding, withDetachedOperation, withOperation } from '../src/diagnostics/node/context.ts'
@@ -85,6 +86,32 @@ test('export reports a frozen live quota owner and can retry after the real lock
   await exit
   assert.deepEqual(await exporter.exportBundle(destination), { status: 'saved' })
   assert.ok(unzipStored(await readFile(destination)).has('manifest.json'))
+})
+
+test('a saved export with a temporarily blocked pin release can be retried or cleared in the same process', async t => {
+  const directory = await scratch(), lock = path.join(directory, 'inventory.lock')
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  class HeldReleaseQuota extends DiagnosticQuota {
+    override async pin(...args: Parameters<DiagnosticQuota['pin']>) {
+      const selected = await super.pin(...args)
+      await writeFile(lock, JSON.stringify({ pid: process.pid, instance: this.instance }), { flag: 'wx' })
+      return selected
+    }
+  }
+  const quota = new HeldReleaseQuota(directory), exporter = createDiagnosticExporter({ quota })
+  const first = path.join(directory, 'first.zip'), second = path.join(directory, 'second.zip')
+  assert.deepEqual(await exporter.exportBundle(first), { status: 'saved' })
+  assert.ok(unzipStored(await readFile(first)).has('manifest.json'))
+  assert.equal(exporter.state(), 'cleanup_pending')
+  assert.deepEqual(await exporter.exportBundle(second), { status: 'busy', reason: 'cleanup_pending' })
+  await rm(lock)
+  assert.deepEqual(await exporter.exportBundle(second), { status: 'saved' })
+  assert.ok(unzipStored(await readFile(second)).has('manifest.json'))
+  await rm(lock)
+  const clearer = createDiagnosticClearer({ quota, idle: exporter.ensureIdle, hub: { prepare: async () => true, resume: async () => true } })
+  assert.deepEqual(await clearer.clear(), { status: 'cleared' })
+  assert.equal(exporter.state(), 'idle')
+  assert.deepEqual(JSON.parse(await readFile(path.join(directory, 'inventory.json'), 'utf8')).pins, [])
 })
 
 test('real HTTP preserves the sender trace and immediate parent under a validated run binding', async t => {

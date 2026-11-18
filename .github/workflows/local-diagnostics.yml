@@ -11,10 +11,16 @@ on:
       - src/backend/**
       - src/shell/**
       - src/preload/**
+      - src/renderer/initialization-actions.ts
       - scripts/smoke-*diagnostic*.ts
       - scripts/smoke-memory-availability.ts
       - scripts/benchmark-memory-diagnostics.ts
+      - scripts/benchmark-diagnostic-flows.ts
+      - scripts/diagnostic-performance-budget.ts
       - test/diagnostics*.test.ts
+      - test/renderer-initialization.test.ts
+      - test/acp-operations.test.ts
+      - test/effects.test.ts
       - test/fixtures/diagnostic*.ts
       - .github/workflows/local-diagnostics.yml
   workflow_dispatch:
@@ -42,8 +48,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Process suspension, historical spans and real export
-        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/diagnostics-process-pause.test.ts test/diagnostics-recovery.test.ts test/diagnostics-export.test.ts
+      - name: Process suspension, clear recovery, historical spans and real export
+        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/diagnostics-process-pause.test.ts test/diagnostics-health.test.ts test/diagnostics-recovery.test.ts test/diagnostics-export.test.ts
+      - name: Conversation replay, prompt settlement and effect retries
+        run: npx cross-env ELECTRON_RUN_AS_NODE=1 electron --test test/renderer-initialization.test.ts test/acp-operations.test.ts test/effects.test.ts
       - run: npm run build
       - name: Owner deadlines and actual late settlement
         run: node scripts/smoke-memory-availability.ts

@@ -65,15 +65,16 @@ const diagnosticsHub = createDiagnosticHub({ component: 'shell', writers: [
 ], onBinding: runId => { for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('diagnostics:binding', runId) } })
 emitDiagnostic({ event: 'process.start', operation: 'startup' })
 const diagnosticExporter = createDiagnosticExporter({ quota: shellDiagnostics.quota, snapshots: () => diagnosticsHub.collect() })
-const diagnosticClearer = createDiagnosticClearer({ quota: shellDiagnostics.quota, hub: diagnosticsHub, idle: () => diagnosticExporter.state() === 'idle' && !exportingDiagnostics })
+const diagnosticClearer = createDiagnosticClearer({ quota: shellDiagnostics.quota, hub: diagnosticsHub, idle: () => !exportingDiagnostics && diagnosticExporter.ensureIdle() })
 const forwardedDiagnosticChannels = new Set<string>()
 const rendererHealth = createRendererHealth({ snapshot: rendererDiagnosticSnapshot })
 let exportingDiagnostics: Promise<IpcResults['diagnostics:export']> | undefined
 
 function exportDiagnostics(): Promise<IpcResults['diagnostics:export']> {
   if (exportingDiagnostics) return exportingDiagnostics
-  if (diagnosticExporter.state() !== 'idle' || diagnosticClearer.pending()) return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
+  if (diagnosticClearer.pending()) return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
   exportingDiagnostics = (async (): Promise<IpcResults['diagnostics:export']> => {
+    if (!await diagnosticExporter.ensureIdle()) return { status: 'busy', reason: 'cleanup_pending' }
     const selected = await dialog.showSaveDialog({ title: t('diagnostics.export.title'),
       defaultPath: path.join(app.getPath('downloads'), `Viva-diagnostics-${new Date().toISOString().slice(0, 10)}.zip`),
       filters: [{ name: t('diagnostics.archive'), extensions: ['zip'] }] })
@@ -583,7 +584,7 @@ app.whenReady().then(async () => {
     invoke: async (channel, args) => (await backendConnection()).rpc(channel, args),
     exportBundle: exportDiagnostics, openFolder: openDiagnosticsFolder,
     clear: clearDiagnostics, debug: debugDiagnostics, health: rendererHealth.receive,
-    status: () => ({ ...shellDiagnostics.snapshot().stats, exporting: Boolean(exportingDiagnostics) || diagnosticExporter.state() !== 'idle',
+    status: () => ({ ...shellDiagnostics.snapshot().stats, exporting: Boolean(exportingDiagnostics) || diagnosticExporter.state() === 'exporting',
       debugRemainingMs: shellDiagnostics.debugRemainingMs(), cleanupPending: diagnosticClearer.pending() }),
   })
   rendererIpcDrops = diagnosticIpc.droppedCount

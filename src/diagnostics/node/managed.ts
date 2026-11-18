@@ -6,10 +6,32 @@ import { loadDiagnosticIdentity } from './identity.ts'
 /** Stable local port: clear replaces only diagnostic writers and their caches, never business resources. */
 export function createManagedDiagnostics(options: Parameters<typeof createNodeDiagnostics>[0]) {
   let current = createNodeDiagnostics(options)
-  let paused = false, closed = false, clearId: string | undefined, resumed = ''
+  let paused = false, closed = false, clearId: string | undefined
   let expectedRunId: string | undefined
   let pausedDrops = 0
-  let preparing: Promise<boolean> | undefined
+  let replacement: NodeDiagnostics | undefined
+  let resuming: { token: string, runId: string, work: Promise<boolean> } | undefined
+  const writable = (runId: string) => current.identity()?.diagnosticRunId === runId && current.snapshot().stats.state === 'ready'
+  async function resumeWriter(token: string, runId: string) {
+    if (closed || paused && clearId !== token) return false
+    if (!paused) return writable(runId)
+    if (replacement && !writable(runId)) {
+      await replacement.close()
+      if (!replacement.released()) return false
+      replacement = undefined
+    }
+    if (!replacement) {
+      if (!current.released()) return false
+      const identity = await loadDiagnosticIdentity(options.directory)
+      if (closed || clearId !== token || identity.runId !== runId) return false
+      expectedRunId = runId
+      replacement = current = createNodeDiagnostics({ ...options, quota: current.quota })
+      await replacement.ready
+    }
+    if (closed || !writable(runId)) return false
+    replacement = undefined; pausedDrops = 0; clearId = undefined; paused = false
+    return true
+  }
   const stats = () => {
     const value = current.snapshot()
     return { ...value, stats: { ...value.stats, droppedCount: Math.min(Number.MAX_SAFE_INTEGER, value.stats.droppedCount + pausedDrops) } }
@@ -49,21 +71,14 @@ export function createManagedDiagnostics(options: Parameters<typeof createNodeDi
     async prepare(token) {
       if (closed || clearId && clearId !== token) return false
       clearId = token; paused = true
-      preparing ??= current.close()
-      await preparing
+      await current.close()
       return current.released()
     },
-    async resume(token, runId) {
-      if (closed) return false
-      if (!paused && current.identity()?.diagnosticRunId === runId) return true
-      if (resumed === `${token}:${runId}`) return true
-      if (clearId !== token || !paused || !current.released()) return false
-      const identity = await loadDiagnosticIdentity(options.directory)
-      if (identity.runId !== runId) return false
-      expectedRunId = runId
-      current = createNodeDiagnostics({ ...options, quota: current.quota })
-      pausedDrops = 0; preparing = undefined; clearId = undefined; resumed = `${token}:${runId}`; paused = false
-      return true
+    resume(token, runId) {
+      if (resuming) return resuming.token === token && resuming.runId === runId ? resuming.work : Promise.resolve(false)
+      const work = resumeWriter(token, runId).finally(() => { resuming = undefined })
+      resuming = { token, runId, work }
+      return work
     },
   }
   function managedBinding(operation: Parameters<NodeDiagnostics['bind']>[0], initial: NonNullable<ReturnType<NodeDiagnostics['bind']>>) {

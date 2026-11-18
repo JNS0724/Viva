@@ -46,6 +46,13 @@ export interface BoundNodeDiagnostics extends DiagnosticPort {
 type Captured = ReturnType<ReturnType<typeof createDiagnosticCapture>['capture']>
 const CLEARED_FIELDS = Object.freeze({ reason: 'continued_after_clear' as const, metrics: Object.freeze({ partial: true }) })
 
+async function boundedClose(work: Promise<boolean>) {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([work, new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), DIAGNOSTIC_LIMITS.shutdownMs) })])
+  } finally { clearTimeout(timeout) }
+}
+
 /** Pino encodes; SonicBoom writes. This adapter owns only policy and bounded accounting. */
 export function createNodeDiagnostics({ directory, component, version = 'unknown', componentVersion, fileBytes = DIAGNOSTIC_LIMITS.fileBytes,
   queueBytes = DIAGNOSTIC_LIMITS.queueBytes, quota = new DiagnosticQuota(directory, { fileBytes }),
@@ -68,7 +75,17 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
   const bindings = new Map<symbol, { operation: DiagnosticOperation; base: Captured; context: DiagnosticContext;
     continuation: BoundNodeDiagnostics['continuation']; stage?: CapturedDiagnosticEvent['stage'] }>()
   const capture = createDiagnosticCapture()
-  const cleanup = new Set<Promise<void>>()
+  // A closed OS handle still owns its reservation until the inventory acknowledges closure.
+  let closedSlot: DiagnosticSlot | undefined
+  let registering: Promise<boolean> | undefined
+  function registerClosure(slot: DiagnosticSlot): Promise<boolean> {
+    closedSlot = slot
+    registering ??= quota.close(slot).then(() => { closedSlot = undefined; return true }, () => {
+      reason = 'cleanup_pending'
+      return false
+    }).finally(() => { registering = undefined })
+    return registering
+  }
   let resolveReady!: () => void
   const ready = new Promise<void>(resolve => { resolveReady = resolve })
   const release = (bytes: number) => { reserved = Math.max(0, reserved - bytes) }
@@ -170,13 +187,14 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     } finally { loadingIdentity = false }
   }
   async function openNext() {
-    if (creating || closing && !draining) return
+    if (creating || current || closing && !draining) return
     creating = true
     let slot: DiagnosticSlot | undefined, descriptor: number | undefined
     try {
+      if (closedSlot && !await registerClosure(closedSlot)) { fail({ code: 'cleanup_pending' }); return }
       if (identity && !format) format = diagnosticRecordFormatter(identity, { component, instance, version, componentVersion })
       slot = await quota.reserve(component, identity?.runId)
-      if (closing && !draining) { await quota.close(slot); return }
+      if (closing && !draining) { await registerClosure(slot); return }
       // SonicBoom leaves its ready/periodic-flush lifecycle pending after an asynchronous open error.
       // Acquire exclusively first, so no stream/timer exists on failure and an existing link is never followed.
       const file = path.join(directory, slot.file)
@@ -223,16 +241,14 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
         release(destination.outstanding); destination.outstanding = 0
         destination.writes.length = 0
         if (current === destination) current = undefined
-        const task = quota.close(assignedSlot).then(() => { if (state === 'unavailable') retryWhenClosed() }, () => { reason = 'cleanup_pending' })
-        cleanup.add(task)
-        void task.finally(() => cleanup.delete(task))
+        void registerClosure(assignedSlot).then(() => { if (state === 'unavailable') retryWhenClosed() })
       })
     } catch (error) {
       if (descriptor !== undefined) {
         const fd = descriptor
         await new Promise<void>(resolve => close(fd, error => { if (error) cleanupUncertain = true; resolve() }))
       }
-      if (slot && !cleanupUncertain) await quota.close(slot).catch(() => { cleanupUncertain = true })
+      if (slot && !cleanupUncertain) await registerClosure(slot)
       fail(error)
       if (cleanupUncertain) reason = 'cleanup_pending'
     }
@@ -245,8 +261,9 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     const previous = current
     try {
       await new Promise<void>(resolve => { previous.stream.once('close', resolve); previous.stream.end() })
-      await Promise.all([...cleanup])
-      if (!closing || draining) await openNext()
+      await registering
+      if (closedSlot) fail({ code: 'cleanup_pending' })
+      else if (!closing || draining) await openNext()
     } catch (error) { fail(error) }
     finally { rotating = false }
   }
@@ -393,7 +410,7 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     snapshot: () => ({ stats: { state, queuedBytes: reserved, peakQueuedBytes, maxWriteDelayMs, droppedCount, writtenBytes, activeCount: active.size, untrackedCount, ...(reason ? { reason } : {}) },
       active: [...active.values()].map(entry => ({ operation: entry.event.operation, ...(entry.event.stage ? { stage: entry.event.stage } : {}), ageMs: performance.now() - entry.started })), previous: recovery.snapshot() }),
     identity: () => identity ? { diagnosticRunId: identity.runId, processInstanceId: instance } : undefined,
-    released: () => closing && !draining && !loadingIdentity && !creating && !rotating && !current && cleanup.size === 0 && !cleanupUncertain && recovery.settled(),
+    released: () => closing && !draining && !loadingIdentity && !creating && !rotating && !current && !closedSlot && !cleanupUncertain && recovery.settled(),
     setDebug(durationMs) {
       const duration = Number.isFinite(durationMs) ? Math.min(15 * 60_000, Math.max(0, durationMs)) : 0
       debugUntil = duration ? performance.now() + duration : 0
@@ -401,7 +418,11 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     },
     debugRemainingMs: () => Math.max(0, debugUntil - performance.now()),
     close() {
-      if (closePromise) return closePromise
+      if (closePromise) {
+        if (!closedSlot || registering || draining) return closePromise.then(() => runtime.released())
+        // The previous attempt closed the handle but could not update the directory inventory.
+        return boundedClose(registerClosure(closedSlot).then(() => runtime.released()))
+      }
       closePromise = (async () => {
         clearInterval(timer); clearTimeout(retry); clearTimeout(scheduled); scheduled = undefined; retry = undefined; resolveReady()
         // Stop admission, then drain across rotations under the same total shutdown deadline.
@@ -420,13 +441,11 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
             destination.stream.once('close', resolve)
             try { destination.stream.end() } catch (error) { reject(error) }
           })
-          await Promise.all([...cleanup])
+          await registering
           await recoveryClosed
-          return !loadingIdentity && !creating && !rotating && reason !== 'cleanup_pending'
+          return !loadingIdentity && !creating && !rotating && !closedSlot && !cleanupUncertain
         })().catch(() => false)
-        let timeout: ReturnType<typeof setTimeout> | undefined
-        const result = await Promise.race([completed, new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), DIAGNOSTIC_LIMITS.shutdownMs) })])
-        clearTimeout(timeout)
+        const result = await boundedClose(completed)
         draining = false; clearTimeout(scheduled); scheduled = undefined
         discardQueues(); active.clear(); explicit.clear(); bindings.clear(); boundSpans.clear(); capture.clear(); format = undefined; identity = undefined; state = 'closed'
         if (!result) { reason = 'cleanup_pending'; try { current?.stream.destroy() } catch { /* Quota remains charged. */ } }

@@ -12,6 +12,31 @@ export type DiagnosticExportResult = { status: 'saved' | 'failed' | 'busy'; reas
 export function createDiagnosticExporter({ quota, snapshots = async () => [], timeoutMs = DIAGNOSTIC_LIMITS.exportMs }: { quota: DiagnosticQuota; snapshots?: () => Promise<unknown>; timeoutMs?: number }) {
   let state: 'idle' | 'exporting' | 'cleanup_pending' = 'idle'
   let running: Promise<DiagnosticExportResult> | undefined
+  let cleanupFiles: { temporary: string, pin?: ExportPin } | undefined
+  let cleaning: Promise<boolean> | undefined
+  function releaseFiles(): Promise<boolean> {
+    const files = cleanupFiles
+    if (!files) return Promise.resolve(state === 'idle')
+    cleaning ??= (async () => {
+      try {
+        await unlink(files.temporary).catch(error => { if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error })
+        if (files.pin) await quota.release(files.pin)
+        cleanupFiles = undefined
+        state = 'idle'
+        return true
+      } catch { return false }
+    })().finally(() => { cleaning = undefined })
+    return cleaning
+  }
+  async function ensureIdle() {
+    if (state === 'idle') return true
+    // Never replace a live child, an unconfirmed acquisition, or an outstanding cleanup I/O.
+    if (!cleanupFiles || cleaning) return false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([releaseFiles(), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), DIAGNOSTIC_LIMITS.snapshotMs) })])
+    } finally { clearTimeout(timer) }
+  }
   let snapshotInFlight = false
   function boundedSnapshots(): Promise<unknown> {
     if (snapshotInFlight) return Promise.resolve([])
@@ -21,11 +46,9 @@ export function createDiagnosticExporter({ quota, snapshots = async () => [], ti
       void Promise.resolve().then(snapshots).then(value => { snapshotInFlight = false; clearTimeout(timer); resolve(value) }, () => { snapshotInFlight = false; clearTimeout(timer); resolve([]) })
     })
   }
-  function exportBundle(destination: string): Promise<DiagnosticExportResult> {
-    if (running) return running
-    if (state !== 'idle') return Promise.resolve({ status: 'busy', reason: 'cleanup_pending' })
+  function start(destination: string): Promise<DiagnosticExportResult> {
     state = 'exporting'
-    const task = new Promise<DiagnosticExportResult>(resolve => {
+    return new Promise<DiagnosticExportResult>(resolve => {
       const exportId = randomUUID()
       const temporary = `${destination}.${exportId}.partial`
       const entry = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? './export-worker.ts' : './export-worker.js', import.meta.url))
@@ -35,14 +58,13 @@ export function createDiagnosticExporter({ quota, snapshots = async () => [], ti
       let pin: ExportPin | undefined, acquiring = true, exited = false, settled = false
       let reply: DiagnosticExportResult = { status: 'failed', reason: 'unknown_error' }
       const finish = (result: DiagnosticExportResult) => { if (!settled) { settled = true; clearTimeout(deadline); resolve(result) } }
+      let handedOff = false
       const cleanup = async () => {
-        if (!exited || acquiring) return
-        try {
-          await unlink(temporary).catch(error => { if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error })
-          if (pin) await quota.release(pin)
-          state = 'idle'
-        }
-        catch { state = 'cleanup_pending' }
+        if (!exited || acquiring || handedOff) return
+        handedOff = true
+        state = 'cleanup_pending'
+        cleanupFiles = { temporary, pin }
+        await releaseFiles()
       }
       const deadline = setTimeout(() => {
         state = 'cleanup_pending'
@@ -81,8 +103,13 @@ export function createDiagnosticExporter({ quota, snapshots = async () => [], ti
         }
       })()
     })
+  }
+  function exportBundle(destination: string): Promise<DiagnosticExportResult> {
+    if (running) return running
+    const task = state === 'idle' ? start(destination) : ensureIdle().then((idle): DiagnosticExportResult | Promise<DiagnosticExportResult> =>
+      idle ? start(destination) : { status: 'busy', reason: 'cleanup_pending' })
     running = task.finally(() => { running = undefined })
     return running
   }
-  return { exportBundle, state: () => state }
+  return { exportBundle, ensureIdle, state: () => state }
 }
