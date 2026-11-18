@@ -84,6 +84,6 @@ test('semantic contrast admits a distinct near-threshold match only with a refer
   const eligible = (...scores: number[]) => relevantMemoryFileLanes('query', [], scores.map((score, i) => hit(String(i), 0, 'one', score))).vector.map(hit => hit.score)
   assert.deepEqual(eligible(0.81), [])
   assert.deepEqual(eligible(0.82, 0.81, 0.81, 0.80, 0.80), [])
-  assert.deepEqual(eligible(0.82, 0.80, 0.79, 0.78, 0.76), [0.82, 0.80, 0.79])
+  assert.deepEqual(eligible(0.82, 0.805, 0.79, 0.78, 0.76), [0.82, 0.805])
   assert.deepEqual(eligible(0.76, 0.72, 0.70, 0.68, 0.61), [])
 })
