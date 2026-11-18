@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       memory-required: ${{ steps.scope.outputs.memory-required }}
+      granite-required: ${{ steps.scope.outputs.granite-required }}
       package-required: ${{ steps.scope.outputs.package-required }}
     steps:
       - uses: actions/checkout@v5
@@ -75,6 +76,33 @@ jobs:
     needs: scope
     uses: ./.github/workflows/memory.yml
 
+  granite:
+    if: needs.scope.outputs.granite-required == 'true'
+    needs: scope
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      ASSETS: build/memory-embedding/prepared
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: prepare
+        run: npm run memory:prepare-embedding
+      - name: Granite retrieval regression
+        run: node scripts/memory-file-evaluation.ts "$ASSETS/model" "$ASSETS/runtime" granite-regression.json --regression
+      - name: Granite retrieval validation
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: node scripts/memory-file-evaluation.ts "$ASSETS/model" "$ASSETS/runtime" granite-validation.json --regression --data=validation
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: granite-retrieval-reports
+          path: granite-*.json
+
   package:
     if: needs.scope.outputs.package-required == 'true'
     needs: scope
@@ -86,7 +114,7 @@ jobs:
   # Matrix needs aggregate both OSes, so either platform failing closes both gates.
   check:
     if: always()
-    needs: [headless, smoke, scope, memory, package]
+    needs: [headless, smoke, scope, memory, granite, package]
     strategy:
       fail-fast: false
       matrix:
@@ -98,13 +126,14 @@ jobs:
         env:
           CHECK_RESULTS: ${{ toJSON(needs) }}
           MEMORY_REQUIRED: ${{ needs.scope.outputs.memory-required }}
+          GRANITE_REQUIRED: ${{ needs.scope.outputs.granite-required }}
           PACKAGE_REQUIRED: ${{ needs.scope.outputs.package-required }}
         with:
           script: |
             const results = JSON.parse(process.env.CHECK_RESULTS)
             const required = ['headless', 'smoke', 'scope']
             const failed = required.filter(job => results[job]?.result !== 'success')
-            for (const job of ['memory', 'package']) {
+            for (const job of ['memory', 'granite', 'package']) {
               const required = process.env[`${job.toUpperCase()}_REQUIRED`]
               const result = results[job]?.result
               if (required !== 'true' && required !== 'false') failed.push(`${job}:invalid-scope`)

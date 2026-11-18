@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { parse } from 'yaml'
 import { changedPaths, scopeForEvent, scopeForPaths } from '../scripts/ci-scope.ts'
-import { integrationLanes } from './smoke/suites.ts'
 
 type Step = { run?: string, uses?: string, if?: string, env?: Record<string, string>, with?: Record<string, unknown> }
 type Job = {
@@ -18,10 +17,10 @@ const script = String(gate.steps!.find(step => step.with?.script)!.with!.script)
 const commands = (job: Job) => (job.steps ?? []).flatMap(step => step.run ? [step.run] : [])
 
 test('the real CI gate requires every job and rejects failure, cancellation, skips and missing results', () => {
-  const run = (results: Record<string, { result: string }>, scope = { memory: 'true', package: 'true' }) => {
+  const run = (results: Record<string, { result: string }>, scope = { memory: 'true', granite: 'true', package: 'true' }) => {
     const failures: string[] = []
     new Function('process', 'core', script)({ env: {
-      CHECK_RESULTS: JSON.stringify(results), MEMORY_REQUIRED: scope.memory, PACKAGE_REQUIRED: scope.package,
+      CHECK_RESULTS: JSON.stringify(results), MEMORY_REQUIRED: scope.memory, GRANITE_REQUIRED: scope.granite, PACKAGE_REQUIRED: scope.package,
     } }, { setFailed: (message: string) => failures.push(message) })
     return failures
   }
@@ -36,14 +35,14 @@ test('the real CI gate requires every job and rejects failure, cancellation, ski
     delete missing[name]
     assert.match(run(missing).join(), new RegExp(name))
   }
-  assert.deepEqual(run({ ...success, memory: { result: 'skipped' }, package: { result: 'skipped' } }, { memory: 'false', package: 'false' }), [])
-  assert.match(run({ ...success, scope: { result: 'failure' } }, { memory: 'false', package: 'false' }).join(), /scope/)
-  assert.match(run(success, { memory: 'invalid', package: 'true' }).join(), /invalid-scope/)
+  assert.deepEqual(run({ ...success, memory: { result: 'skipped' }, granite: { result: 'skipped' }, package: { result: 'skipped' } }, { memory: 'false', granite: 'false', package: 'false' }), [])
+  assert.match(run({ ...success, scope: { result: 'failure' } }, { memory: 'false', granite: 'false', package: 'false' }).join(), /scope/)
+  assert.match(run(success, { memory: 'invalid', granite: 'true', package: 'true' }).join(), /invalid-scope/)
   assert.ok(run({}).length)
 })
 
 test('CI runs the critical headless subset and one complete smoke job per OS', () => {
-  assert.deepEqual(gate.needs, ['headless', 'smoke', 'scope', 'memory', 'package'])
+  assert.deepEqual(gate.needs, ['headless', 'smoke', 'scope', 'memory', 'granite', 'package'])
   for (const name of ['headless', 'smoke', 'check']) {
     assert.deepEqual(jobs[name].strategy!.matrix.os, ['macos-latest', 'windows-latest'])
     assert.equal(jobs[name].strategy!['fail-fast'], false)
@@ -90,7 +89,7 @@ test('scope matches both sides of a rename and retains the original watched dire
   assert.equal(scopeForPaths(paths).memory, true)
   assert.equal(scopeForPaths(['docs/only.md']).memory, false)
   assert.deepEqual(scopeForPaths(['build/memory-embedding/model.onnx']), {
-    memory: false, package: true, fallback: false, paths: ['build/memory-embedding/model.onnx'],
+    memory: false, granite: true, package: true, fallback: false, paths: ['build/memory-embedding/model.onnx'],
   })
 })
 
@@ -101,14 +100,34 @@ test('scope handles PRs, main pushes and unreliable comparisons without losing r
     assert.deepEqual(comparison, { base, head, mergeBase: true })
     return docs
   })
-  assert.deepEqual(pr, { memory: false, package: false, fallback: false, paths: ['docs/only.md'] })
+  assert.deepEqual(pr, { memory: false, granite: false, package: false, fallback: false, paths: ['docs/only.md'] })
   const push = scopeForEvent('push', { before, after }, comparison => {
     assert.deepEqual(comparison, { base: before, head: after, mergeBase: false })
     return 'M\0plugins/trace/lib/store.ts\0'
   })
   assert.equal(push.memory, true)
   const fallback = scopeForEvent('push', { before, after }, () => { throw new Error('missing history') })
-  assert.deepEqual(fallback, { memory: true, package: true, fallback: true, paths: [] })
+  assert.deepEqual(fallback, { memory: true, granite: true, package: true, fallback: true, paths: [] })
   assert.deepEqual(scopeForEvent('push', {}, () => docs).fallback, true)
   assert.throws(() => scopeForEvent('workflow_dispatch', {}, () => docs), /Unsupported scope event/)
+})
+
+test('memory host wiring and retrieval inputs select their specialized checks independently', () => {
+  for (const file of ['remote-memory-channel', 'compose', 'app-plugins', 'acp-bridge', 'dsh-lifecycle']) {
+    const result = scopeForPaths([`src/backend/${file}.ts`])
+    assert.equal(result.memory, true, file)
+    assert.equal(result.granite, false, file)
+  }
+  for (const file of ['src/memory/core/search-tokens.ts', 'src/memory/core/memory-file-ranking.ts',
+    'src/memory/contracts/memory-daily-defaults.ts', 'scripts/memory-embedding-recipe.ts',
+    'src/memory/node/memory-embedder-worker.ts', 'build/memory-embedding/package-lock.json',
+    'test/fixtures/memory-file-validation.freeze.json', 'scripts/memory-file-evaluation.ts']) {
+    assert.equal(scopeForPaths([file]).granite, true, file)
+  }
+  assert.equal(scopeForPaths(['src/memory/core/memory-dream-jobs.ts']).granite, false)
+  assert.equal(jobs.granite.if, "needs.scope.outputs.granite-required == 'true'")
+  assert.ok(commands(jobs.granite).includes('npm run memory:prepare-embedding'))
+  const evaluations = commands(jobs.granite).filter(command => command.startsWith('node scripts/memory-file-evaluation.ts '))
+  assert.equal(evaluations.length, 2)
+  assert.equal(evaluations.filter(command => command.includes('--data=validation')).length, 1)
 })

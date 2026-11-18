@@ -22,7 +22,7 @@
 
 ## 冒烟测试
 
-- 提 PR 时冒烟测试交给线上 CI，`check.yml` 在 macOS 和 Windows 各自独立运行 core 与两路 integration，合起来覆盖完整源码冒烟，最终 check 聚合所有结果。结果以 PR 当前提交的 CI 为准，本地不必先跑。
+- PR 以当前提交的 CI 为准。macOS 和 Windows 各跑一组 headless 检查和一个完整源码冒烟 job。记忆与打包专项按改动路径触发；检索、模型配方或评测数据变化时，另在 macOS 用发布配方的 Granite 模型运行两套离线检索评测。最终 check 要求所有被选中的 job 成功。常规 PR 本地无需先跑冒烟。
 - 重大架构变更（主进程与 dsh 的生命周期、IPC 或 preload、会话与存储、构建和打包、冒烟测试工程本身）在提 PR 前先本地 `npm run build` 并运行 `npm run smoke`。排查 CI 失败时，也在本地运行对应阶段（如 `npm run smoke:memory`）。
 - CI 失败不能靠重跑掩盖：先看上传的 trace、截图和日志，确认是偶发问题才重跑，并在 PR 里写明。
 
@@ -52,6 +52,6 @@ The Chinese and English sections describe the same rules.
 
 ### Smoke tests
 
-- For a PR, leave smoke tests to CI. On each of macOS and Windows, `check.yml` independently runs core and two integration lanes, covering the complete source suite, with final check gates aggregating every result. The CI result for the PR's current commit is what counts. You don't need to run it locally first.
+- Use the CI result for the current PR commit. macOS and Windows each run headless checks and one complete source smoke job. Changed paths select the memory and package jobs. Retrieval, embedding recipe or evaluation changes also run both offline retrieval suites on macOS with the release Granite model. The final check requires every selected job to pass. Routine PRs can leave smoke tests to CI.
 - For major architectural changes (the main process and dsh lifecycle, IPC or preload, sessions and storage, build and packaging, the smoke test project itself), run `npm run build` and `npm run smoke` locally before opening the PR. When investigating a CI failure, run the matching stage locally too (for example `npm run smoke:memory`).
 - Don't hide a CI failure by rerunning it. Read the uploaded trace, screenshots and logs first; rerun only after confirming it is intermittent, and say so in the PR.
