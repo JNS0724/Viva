@@ -29,8 +29,8 @@
     {
       "en": "docs/ci-full-acceptance.md",
       "zh": "docs/ci-full-acceptance.zh-CN.md",
-      "enHash": "61333db1866885e62d279f3a90527abc7d4912846e0ba030d7ef72ab0ace95be",
-      "zhHash": "2c7fd23ee33aa13b604c2415feb865a4d3e27bc2e28a407a82615a898b4cef95"
+      "enHash": "1265f4db859fc053995ef9c50f8fa42a864d1fdf0cfdc8b39391ac802113a2f5",
+      "zhHash": "4546916e3dd4609286a13230fe9001681dc45ce1c21af6974042069e43529bd8"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",

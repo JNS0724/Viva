@@ -2,14 +2,14 @@
 
 English | [简体中文](ci-full-acceptance.zh-CN.md)
 
-Date: 2026-11-18. Status: updated proposal, not implemented. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
+Date: 2026-11-18. Status: revised after static review, not implemented. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
 
 ## 1 Decisions
 
 - Use free standard GitHub-hosted runners for the public repository's daily and release acceptance.
 - Use `macos-latest` and `windows-latest`; do not introduce paid larger runners or self-hosted machines.
 - Give each full-acceptance job an independent **45-minute** budget. Keep `check.yml` PR jobs at 15 minutes rather than making them green by extending their timeout.
-- Run full acceptance through `schedule` and `workflow_dispatch`; releases invoke the same collection through `workflow_call`.
+- Cover source tests, source smoke, performance, and installed-application acceptance every day; releases reuse the same callable workflows and package artifacts.
 - Do not split test files within a runner, change temporary-directory lifecycles, or automatically rerun failures.
 - Clean up obsolete functionality only when its implementation has no production consumer; do not present that cleanup as CI acceleration.
 
@@ -34,8 +34,8 @@ Handle these separately:
 | `io` | SQLite, real files, journals, permissions, deletion, indexes, and WAL | PR on both platforms |
 | `process-critical` | Key DSH lifecycle, primary recovery, safety, and send barriers | PR on both platforms |
 | `process-extended` | Complete fault combinations, deep regressions, and less common recovery paths | Affected-PR specialization, daily, and release |
-| `package` | npm pack/install, installers, and installed-application acceptance | Affected PRs, manual, and release |
-| `perf` | Benchmarks whose primary purpose is performance figures or large-load measurement | Daily, manual, and release |
+| `package` | npm pack/install, installers, and installed-application acceptance | Affected PRs, daily, and release |
+| `perf` | Benchmarks whose primary purpose is performance figures or large-load measurement | Daily, release, and manual |
 
 Without selection environment variables, local `npm test` and `npm run smoke` still run complete collections.
 
@@ -43,81 +43,115 @@ Functional timing is not a performance benchmark. Classify `backend-wire-timing`
 
 ## 4 Workflow design
 
-### 4.1 PR `check.yml`
+### 4.1 Base PR checks
 
-Keep existing job and aggregate status names, and `retries: 0`:
+Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
 - `headless`: macOS runs typecheck, pure `unit`, and documentation checks; both macOS and Windows run `io` and `process-critical`.
 - `core`: retain public UI smoke.
 - `integration`: retain current lanes and one worker per desktop runner; do not rearrange them in the same change.
-- Keep `timeout-minutes` at 15.
+- Keep these jobs' `timeout-minutes` at 15.
 
-### 4.2 Memory specialization for affected PRs
+### 4.2 Conditional specialization belongs to the same gate
 
-Add `memory.yml` to run the complete memory collection when `src/memory/**`, `plugins/memory/**`, related host adapters, or their tests change:
+Add reusable `memory.yml` to run the complete memory collection on macOS and Windows, with `workflow_dispatch` and `workflow_call`. Keep `workflow_call` in `package.yml` for affected PRs, daily acceptance, and releases.
 
-- Run on both macOS and Windows.
-- Support `workflow_dispatch` and `workflow_call`.
-- Affected PRs must pass; the fast PR collection must not bypass it.
-- Use an independent duration budget without changing the 15-minute `check.yml` limit.
+A `scope` job in `check.yml` runs on every PR and computes `memory-required` and `package-required` from the actual PR base/head diff. Failure to evaluate, missing base/head, or invalid output fails the job rather than defaulting to “not required.”
 
-### 4.3 Package and performance acceptance
+```yaml
+memory:
+  if: needs.scope.outputs.memory-required == 'true'
+  needs: scope
+  uses: ./.github/workflows/memory.yml
 
-Extend the existing `package.yml` path coverage for memory sources, plugins, and build scripts, and run `npm run test:memory-plugin` there. Ordinary PRs retain lightweight manifest, export, and dependency-closure checks.
+package:
+  if: needs.scope.outputs.package-required == 'true'
+  needs: scope
+  uses: ./.github/workflows/package.yml
+```
 
-Playwright already has an independent `performance` project. Invoke `npm run smoke:perf` from the full workflow rather than adding another performance framework.
+The final aggregate reads `scope`, both conditional specializations, and every base job:
+
+| Scope evaluation | Specialized job | Aggregate outcome |
+| --- | --- | --- |
+| Failed or invalid output | Any | Fail |
+| Not required | Skipped because its condition was false | Allow |
+| Required | Success | Allow |
+| Required | Failure, cancellation, skip, or missing result | Fail |
+
+Do not also run conditional specializations as separate path-triggered PR workflows, which would duplicate execution or leave their results outside the aggregate. Branch protection requires only the existing aggregate statuses; unrelated PRs never wait for a specialized status that will not be created.
+
+Gate tests cover at least an unrelated PR passing, an affected PR being blocked by specialization failure, and scope-evaluation failure being blocked. `package` follows the same truth table.
+
+### 4.3 Specialized trigger coverage
+
+Memory scope cannot consist only of `src/memory/**` and `plugins/memory/**`. Include at least:
+
+- Cross-directory production dependencies such as `plugins/trace/**`; `memory-handoff.test.ts` directly uses the trace store.
+- Related `src/shared/**`, history, task, schedule, request, and provenance modules.
+- Memory tests, `test/fixtures/**`, and related smoke engineering.
+- `package.json`, `package-lock.json`, and build/test-selection scripts.
+- Workflows, scope-evaluation scripts, and policy manifests themselves.
+
+Each scenario or file's `watch` rules add its specific dependencies. The audit must include a case proving that changing only `plugins/trace/lib/store.ts` selects memory specialization. New cross-directory dependencies require corresponding watch updates; discovering an uncovered production dependency fails the audit instead of silently losing specialized acceptance.
+
+`package.yml` scope covers memory sources, plugins, build scripts, lockfiles, and installed-artifact acceptance engineering. Ordinary PRs retain lightweight manifest, export, and dependency-closure checks.
 
 ### 4.4 Daily and release full acceptance
 
-Add `full.yml`:
+Use three reusable entry points without duplicate builds:
+
+- `full.yml`: complete Node tests, source smoke, and performance, with `workflow_dispatch` and `workflow_call`.
+- `daily.yml`: calls both `full.yml` and `package.yml` every day, with `schedule` and `workflow_dispatch`.
+- `release.yml`: calls `full.yml` and `package.yml` separately; `publish` needs both and publishes the installers uploaded by that `package` invocation.
+
+Daily and release runs therefore cover the same complete product collection. Neither omits installed-application acceptance nor builds another copy of the installer at release time.
+
+The source and performance Playwright rounds in `full.yml` use different `VIVA_SMOKE_RUN` values:
 
 ```yaml
-on:
-  schedule:
-    # 19:17 UTC = 03:17 in Beijing; avoid minute zero and thirty
-    - cron: '17 19 * * *'
-  workflow_dispatch:
-  workflow_call:
+- run: npm run smoke
+  env:
+    VIVA_SMOKE_RUN: full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-jobs:
-  full:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-      - run: npm run smoke
-      - run: npm run smoke:perf
+- run: npm run smoke:perf
+  env:
+    VIVA_SMOKE_RUN: full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+- if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+    path: |
+      smoke/full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/test-results
+      smoke/full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/report
+      smoke/full-source-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/junit.xml
+
+- if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+    path: |
+      smoke/full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/test-results
+      smoke/full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/report
+      smoke/full-performance-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}/junit.xml
 ```
 
-In `release.yml`, `publish` must depend on both `package` and `full`. Failure, cancellation, or absence of required full acceptance blocks publication.
-
-Scheduled workflows can queue during busy periods, especially on macOS. Observe queueing and execution separately. The 45-minute budget limits job execution and does not eliminate platform queues.
+Source smoke retains traces, screenshots, and logs. Performance keeps its existing no-trace constraint and uploads only reports and results that actually exist. Both full jobs have a 45-minute budget. Scheduled runs may queue during busy periods; record queueing and execution separately.
 
 ## 5 Test policy and coverage reconciliation
 
-### File-level policy
+### 5.1 Pure file-level policy
 
 Turn `scripts/test-levels.ts` into explicit execution ownership while reusing JS/TS discovery, feature selection, and argument validation in `scripts/test-feature.ts`.
 
-Every file must be registered exactly once. Unregistered files, duplicate registrations, nonexistent paths, and empty intended selections fail. There is no default `unit`, and a new file cannot silently gain single-platform eligibility.
+Register every purely file-owned test exactly once. Unregistered files, duplicate registrations, nonexistent paths, and empty intended selections fail. There is no default `unit`, and a new file cannot silently gain single-platform eligibility.
 
 The existing `fast` tier includes SQLite and real files and cannot simply be renamed `unit`. Only reviewed pure-logic files may be deduplicated across platforms.
 
-### Scenario-level policy only for mixed heavy files
+### 5.2 Mixed files use two-stage selection
 
-Do not migrate every test to a new framework. Use a narrow wrapper only for heavy files that mix critical and extended scenarios:
+A mixed file is marked `selection: 'scenario'` rather than assigned one forced tier. Every scenario has a stable ID, title, tier, and watch rules:
 
 ```ts
 testCase({
@@ -128,43 +162,55 @@ testCase({
 }, options, fn)
 ```
 
-Rules:
+Selection order is mandatory:
 
-- IDs are stable and unique; titles remain available for log comparison.
+1. **File stage**: inspect every scenario in the file; if any scenario matches the current scope, pass the file to the test process.
+2. **Scenario stage**: after loading the file, `testCase` registers only scenario IDs in the current scope.
+
+Never exclude a mixed file through one file-level tier before scenario selection, or its critical scenarios will never load.
+
+Additional rules:
+
 - Unknown IDs, duplicate IDs, and title mismatches fail immediately.
 - Mixed files cannot bypass the wrapper to register scenarios.
-- Unselected scenarios are not registered and do not create misleading skipped results.
-- Local runs register every scenario by default.
+- Unselected scenarios are not registered and produce no misleading skipped results.
+- Local and full runs register every scenario by default.
 - Do not select scenarios through fuzzy name patterns.
 
-### Completeness requirements
+For acceptance, use one file containing both `process-critical` and `process-extended` scenarios. Assert the actual IDs executed by an ordinary PR, an affected specialization, and a full run. Unselected IDs must neither execute nor appear as skipped.
+
+### 5.3 Completeness requirements
 
 The audit must prove that:
 
 - Every discovered file and every mixed-file scenario has a valid owner.
-- A scenario moved to a specialized workflow exists in its new location and did not silently disappear.
-- Daily and release collections equal the complete collection.
-- A conditional workflow that did not trigger has an explicit reason; cancellation or skipping cannot masquerade as success.
-- Aggregate check continues to reject failure, cancellation, skips, and missing required results.
+- A scenario moved to a specialized workflow exists there and did not silently disappear.
+- The combined daily and release source, performance, and installed-application collections equal the promised complete product collection.
+- A conditional specialization may be skipped only when scope evaluation explicitly says it is not required.
+- Aggregate check rejects scope failures and every unexpected failure, cancellation, skip, or missing result.
+- The first source or performance failure has its own artifact; a later round cannot overwrite an earlier report.
 
 ## 6 Implementation order
 
-1. **Establish the safety net first**: add `full.yml`, release dependencies, and path-triggered memory specialization without changing the PR collection.
-2. **Register policy**: add file and scenario ownership audits and prove completeness through a full run.
-3. **Move specialized acceptance**: move genuine offline installation and performance measurement first, reconciling before/after inventories.
-4. **Enable the fast PR collection**: pure `unit` on one platform, critical `io/process` on both, and extended scenarios covered by specialization, daily, and release.
-5. **Observe and roll back**: retain `VIVA_TEST_SCOPE=full` to restore the complete PR collection immediately; do not roll back the safety net.
+1. **Establish the safety net first**: add `full.yml`, `daily.yml`, release dependencies, and complete installed-application acceptance without changing the PR collection.
+2. **Connect conditional gates**: enable `scope`, reusable specializations, and the aggregate truth table before assigning PR scenarios to specializations.
+3. **Register policy**: add file, scenario, and shared-dependency audits and prove completeness through a full run.
+4. **Move specialized acceptance**: move genuine offline installation and performance measurement, reconciling before/after inventories and artifacts.
+5. **Enable the fast PR collection**: pure `unit` on one platform, critical `io/process` on both, and extended scenarios covered by specialization, daily, and release.
+6. **Observe and roll back**: retain `VIVA_TEST_SCOPE=full` to restore the complete PR collection immediately; do not roll back the safety net.
 
 Remove obsolete implementations in independent PRs rather than mixing them into these stages.
 
 ## 7 Acceptance criteria
 
-- Daily and release runs execute 100% of the complete collection on free standard runners.
-- Full jobs finish within 45 minutes and produce diagnosable artifacts and logs.
+- Daily and release runs execute 100% of the promised collection on free standard runners, including installed applications.
+- Unrelated PRs never wait for specialization; affected-PR specialization failures and scope-evaluation failures block the aggregate gate.
+- Mixed files execute exactly the policy-selected scenario IDs in ordinary PRs, affected specializations, and full runs.
+- Full jobs finish within 45 minutes; the first five dual-platform full runs must validate whether this budget is sufficient.
+- Source and performance reports use separate directories and upload their actual diagnostics even after failure.
 - `check.yml` remains at 15 minutes, without hiding failures through reruns or cancellation.
-- An unregistered file or scenario always fails the audit.
+- Unregistered files, scenarios, or shared dependencies fail the audit.
 - Neither `package` nor `full` failure permits publication.
-- Observe at least the first five full runs, recording execution time, queueing, and per-scenario timeouts; do not claim stability from one run.
 - If the complete collection consistently approaches 45 minutes, investigate real work and resource anomalies rather than extending timeouts again or deleting useful coverage.
 
-The intended outcome is bounded PR feedback, complete specialized acceptance for affected changes, no missing scenarios in daily or release runs, and no additional runner expense for the public repository.
+The intended outcome is bounded PR feedback, merge-blocking specialized acceptance for affected changes, no missing source, performance, or installed-artifact coverage in daily and release runs, and no additional runner expense for the public repository.
