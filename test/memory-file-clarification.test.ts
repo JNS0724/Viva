@@ -263,7 +263,7 @@ async function resolveVenue(f: Awaited<ReturnType<typeof setup>>, reader: string
 }
 
 for (const withdrawal of ['forget-file', 'withdraw-chat-source'] as const) {
-  test(`dependent answers are erased after resolution and owner restart on ${withdrawal}`, async t => {
+  test(`resolved answers follow the deletion scope after owner restart on ${withdrawal}`, async t => {
     const f = await setup(t), reader = await f.newReader()
     const { answerId, reply } = await resolveVenue(f, reader)
     await f.reopen()
@@ -272,6 +272,13 @@ for (const withdrawal of ['forget-file', 'withdraw-chat-source'] as const) {
     const operationId = randomUUID()
     if (withdrawal === 'forget-file') {
       await f.owner.handleHost('forgetFile', { args: [{ operationId, identity: f.file.identity, version: f.file.version }] })
+      await f.reopen()
+      assert.equal(f.owner.runtime.readFile(f.file.identity), null)
+      assert.equal(f.owner.runtime.allowedHistory(history), true)
+      assert.equal(f.store.readSource(answerId)?.text, reply)
+      assert.ok(f.documents.read(f.workspace, 'digest/wiki/resolved-venue.md'))
+      assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
+      return
     } else {
       const { ticket } = await f.owner.handleHost('prepareSourceChange', { operationId, conversation: f.author, ids: [f.original], onlySources: true }) as { ticket: string }
       await f.owner.handleHost('commitSourceChange', { operationId, ticket })
@@ -414,8 +421,8 @@ test('a user can erase a derived digest while its clarification parent is tempor
   assert.equal(f.owner.runtime.dispatchSourceCurrent(answerId), false)
   const erased = await f.owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: digest.identity, version: digest.version }] }) as { action: string }
   assert.equal(erased.action, 'FORGET')
-  assert.equal(f.store.readSource(answerId)?.text?.trim(), '')
-  assert.equal(f.store.readSource(answerId)?.question, null)
+  assert.equal(f.store.readSource(answerId)?.text, 'The conference venue is the library.')
+  assert.match(f.store.readSource(answerId)?.question ?? '', /Conference venue/)
   const stopped = await f.owner.handleHost('readFile', { args: [f.file.identity] }) as MemoryFileDetail
   assert.ok(stopped.restrictions?.some(item => item.id === stop.restrictionId))
 })
@@ -487,10 +494,9 @@ Use the accessible entrance.`,
   const current = await f.owner.handleHost('readFile', { args: [f.file.identity] }) as MemoryFileDetail
   const operationId = randomUUID()
   await f.owner.handleHost('forgetFile', { args: [{ operationId, identity: f.file.identity, version: current.version }] })
-  const erased = f.store.readSource(written)
-  assert.ok(erased?.erasure)
-  assert.doesNotMatch(erased.text ?? '', /library|accessible entrance/)
-  assert.equal(await f.owner.handleHost('readFile', { args: [digest.identity] }), null)
+  assert.equal(f.store.readSource(written)?.erasure ?? null, null)
+  assert.match(f.store.readSource(written)?.text ?? '', /accessible entrance/)
+  assert.ok(await f.owner.handleHost('readFile', { args: [digest.identity] }))
   const kept = await f.owner.handleHost('readFile', { args: [created.identity] }) as MemoryFileDetail
   assert.match(kept.markdown, /library/)
   assert.equal(f.store.readSource(independent)?.text, reply)

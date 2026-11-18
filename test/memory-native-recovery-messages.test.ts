@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -104,7 +105,7 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
       assert.ok(detail)
       const id = randomUUID()
       operationIds.push(id)
-      await owner.handleHost('forgetFile', { args: [{ operationId: id, identity: target, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: id, identity: target, version: detail.version })
     } finally { await owner.close() }
   }
   const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storage'), hostNamespace: 'viva',

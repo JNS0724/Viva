@@ -77,8 +77,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "a5bcf31f0d89612585cbde07a215f218e57f6141fa7cd91fdc7d1064bb793300",
-      "zhHash": "b2388b19d7770173e97ad749ecef4011429b4afa93aa9a503cf0cf41c43999e5"
+      "enHash": "8117eb7037112d6a6872e03ddef65a9db9f1ecb4767cb90bbe0ccbdac1cffaa9",
+      "zhHash": "fae25655019d9fff84efe8063dfdb97b295a5a2f84dd6202dbc3a7efccb0442e"
     },
     {
       "en": "docs/architecture-health.md",
@@ -107,8 +107,8 @@
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "e04a439ef2228d915a316f923c4aa8426420360835105dc9470379408f1f1064",
-      "zhHash": "d57d0ed1539bc92b1830d8bc916abc3bea29e9b0b4c1ab312e7d859a6a59182a"
+      "enHash": "e8f6ead296a2dc24557e1219b8bf6ae8fd2db17c12333d5d5b9fa3f03f24c15a",
+      "zhHash": "329c7851a80e8389b8e2594303b2af717408b813eae3abf28932ec0008a2e796"
     },
     {
       "en": "docs/logging-design.md",

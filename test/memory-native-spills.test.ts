@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { link, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises'
@@ -113,7 +114,7 @@ test('native catalog acknowledgement waits for affected spill retirement after t
     owner.finishNativeSpill(spillId, saved.receipt)
     owner.finishNativeToolRead(call, { seq: 4, digest: 'd'.repeat(64) })
     const detail = memoryFileDetail.parse(await owner.handleHost('readFile', { args: [file.identity] }))
-    await owner.handleHost('forgetFile', { args: [{ operationId, identity: file.identity, version: detail.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: file.identity, version: detail.version })
   } finally { await owner.close() }
   const maintenance = openNativeOriginalMaintenance(memoryRoot, 'viva')
   assert.ok(maintenance)
@@ -202,7 +203,7 @@ test('spill read-back archives its exact source proof before use and rejects a l
       const delayed = ctx.fs.streamText(target)
       await started
       const detail = await owner.handleHost('readFile', { args: [created.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
-      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.identity, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(dir, 'memory', 'memory.db'), { operationId: randomUUID(), identity: created.identity, version: detail.version })
       release()
       await assert.rejects(delayed, /source changed/u)
     } finally {

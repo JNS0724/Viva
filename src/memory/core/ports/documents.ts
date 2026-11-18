@@ -110,10 +110,13 @@ export interface MemoryDocuments {
   reconcileRename(input: DocumentRename): boolean
   aliases(workspace: string): Array<{ path: string, id: string }>
   workspaces(): string[]
+  deleteFile(workspace: string, id: string, expectedUsageVersion: number): number
   registered(workspace: string): Array<DocumentReadRef & { workspace: string, path: string, sources: DocumentSourceRef[], state: 'active' | 'disabled' | 'forgotten' }>
   recordTagAttempt(input: DocumentTagAttempt): void
   tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
   sourceRestrictions(workspace: string): DocumentSourceRef[]
+  recoverDeletedFiles(): void
+  deletedFileCleanupPending(workspace: string, id: string): boolean
   checkpointCleanup(): void
   needsRecovery(): boolean
   recover(): void

@@ -79,7 +79,7 @@ test('an unchanged profile request behind a pending replacement runs after the r
   assert.equal(owner.runtime.profile().role?.value, 'editor')
 })
 
-test('owner diagnostics preserve durable write, replay, undo and pending erasure receipts without copying memory text', async t => {
+test('owner diagnostics preserve durable write, replay, undo and local deletion receipts without copying memory text', async t => {
   const events: DiagnosticEvent[] = []
   const { owner } = fixture(t, 'viva', { diagnostics: { emit(event) { events.push(event); return undefined } } })
   await owner.recover()
@@ -102,7 +102,8 @@ test('owner diagnostics preserve durable write, replay, undo and pending erasure
   const forget = { operationId: randomUUID(), identity: first.identity, version: restored.version }
   await owner.handleHost('forgetFile', { args: [forget] })
   assert.ok(events.some(event => event.operation === 'memory.forget' && event.stage === 'applied' && event.identities?.requestId === forget.operationId))
-  assert.equal((await owner.handleHost('getOperation', { operationId: forget.operationId }) as { cleanup: string }).cleanup, 'pending')
+  await owner.runtime.wake()
+  assert.equal((await owner.handleHost('getOperation', { operationId: forget.operationId }) as { cleanup: string }).cleanup, 'complete')
   assert.doesNotMatch(JSON.stringify(events), /PRIVATE_MEMORY_BODY|PRIVATE_MEMORY_TITLE|PRIVATE_REPLACEMENT_BODY/)
 })
 
@@ -266,22 +267,39 @@ test('failed revision validation is terminal and cannot poison owner recovery', 
   const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
   try { await next.recover(); assert.equal(next.ready(), true) } finally { await next.close() }
 })
-test('forget emits durable versioned host effects and ack never accepts a mismatched cause', async t => {
-  const { owner } = fixture(t, 'viva'); await owner.recover()
-  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
+test('whole-file deletion preserves the current chat and its authorized read across restart without host erasure', async t => {
+  const { owner, root, defer } = fixture(t, 'viva'); await owner.recover()
+  const text = '每周五提交周报。', reader = randomUUID()
+  owner.initializeSession({ sessionId: reader })
+  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
   const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
-  await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
-  const effects = await owner.handleHost('pendingHostEffects', {}) as Array<{ effectId: string, causeOperationId: string, revision: number }>
-  assert.equal(effects.length, 1)
-  assert.equal(effects[0]!.causeOperationId, operationId)
-  assert.equal((await owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'pending')
-  await assert.rejects(owner.handleHost('ackHostEffect', { ...effects[0], causeOperationId: randomUUID() }), /Unrecognized|conflicts/)
-  const { effectId, causeOperationId, revision } = effects[0]!
-  await owner.handleHost('ackHostEffect', { effectId, causeOperationId, revision })
-  await owner.handleHost('ackHostEffect', { effectId, causeOperationId, revision })
-  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), effects, 'the aggregate effect remains pending until the native replica receipt is durable')
-  assert.equal((await owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'pending', 'native replica receipt remains independent from the host acknowledgement')
-  await assert.rejects(owner.handleHost('ackHostEffect', { effectId, causeOperationId: randomUUID(), revision }), /conflicts/)
+  assert.match(owner.runtime.handle({ op: 'file_read', session: reader, id: detail.identity.id }, owner.sessionContext(reader)), /周报/)
+  const prior = await owner.handleHost('provenance', { args: [reader] }) as import('../src/memory/contracts/records.ts').MemoryProvenance
+  assert.ok(prior.files?.length)
+  const permit = owner.acquireSend(randomUUID(), { session: reader }, 'continue chat')
+  const command = { args: [{ operationId, identity: created.identity, version: detail.version }] }
+  try {
+    const receipt = await owner.handleHost('forgetFile', command)
+    assert.deepEqual(await owner.handleHost('forgetFile', command), receipt)
+    assert.equal(permit.current(), true)
+    assert.equal(permit.signal.aborted, false)
+    assert.equal(owner.runtime.readFile(created.identity), null)
+    assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
+  } finally { permit.settled() }
+  await owner.close()
+  const reopened = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => reopened.close()); await reopened.recover()
+  assert.deepEqual(await reopened.handleHost('authorizedProvenance', { session: reader, prior }), prior)
+  assert.equal(reopened.runtime.readFile(created.identity), null)
+  assert.doesNotMatch(reopened.runtime.handle({ op: 'file_read', session: reader, id: detail.identity.id }, reopened.sessionContext(reader)), /周报/)
+  const altered = { ...prior, files: prior.files!.map(file => ({ ...file, policyToken: 'different' })) }
+  assert.equal(await reopened.handleHost('authorizedProvenance', { session: reader, prior: altered }), null)
+  const withdrawal = randomUUID()
+  const { ticket } = await reopened.handleHost('prepareSourceChange', {
+    operationId: withdrawal, conversation: reader, ids: [detail.sources[0]!.sourceId], onlySources: true,
+  }) as { ticket: string }
+  await reopened.handleHost('commitSourceChange', { operationId: withdrawal, ticket })
+  assert.equal(await reopened.handleHost('authorizedProvenance', { session: reader, prior }), null)
 })
 test('project binding reaches the physical fence before any host source alias exists', async t => {
   const { owner } = fixture(t); await owner.recover()
@@ -356,15 +374,16 @@ test('memory rejection does not erase original-delivery admission and remains wi
   await owner.handleHost('commitSourceChange', { operationId, ticket })
   assert.throws(() => owner.acquireSend(randomUUID(), { session: input.sessionId }, 'body'))
 })
-test('an independent owner queues native cleanup without inventing a host consumer', async t => {
+test('an independent owner completes file deletion without a native or host cleanup participant', async t => {
   const { owner } = fixture(t); await owner.recover()
   const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
   const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
   await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
   assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
+  await owner.runtime.wake()
   const result = await owner.handleHost('getOperation', { operationId }) as { sendFence: string, cleanup: string }
   assert.equal(result.sendFence, 'complete')
-  assert.equal(result.cleanup, 'pending')
+  assert.equal(result.cleanup, 'complete')
 })
 test('a replacement owner cannot drop a persisted host binding to bypass cleanup', async t => {
   const { owner, root, defer } = fixture(t, 'viva'); await owner.recover(); await owner.close()

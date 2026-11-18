@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -125,7 +126,7 @@ for (const scenario of ['settled-fork', 'interrupted', 'output-overlap', 'child-
     }
     const detail = await owner.handleHost('readFile', { args: [created.identity] }) as HostMemoryApi['readFile']['output']
     assert.ok(detail)
-    await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.identity, version: detail.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.identity, version: detail.version })
     await owner.close()
     const prefix = childOnly ? inheritedPrefix : session.snapshotEvents(), inherited = SessionLogOffset(prefix.length), forkId = SessionId(randomUUID())
     const fork = Session.create(forkId, prefix, { ...session.header, id: forkId, isSeeded: true }, inherited)
@@ -223,7 +224,7 @@ test('an interrupted ordinary memory tool has a cold no-output receipt after the
   assert.match(owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.runtime.handle({ op: 'file_read', session: call.session, id: file.identity.id },
     owner.sessionContext(call.session))) ?? '', /Unsettled ordinary/u)
   const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
-  await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+  await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
   await owner.close()
   const ctx = new Context(), mounted = await ctx.plugin(jsonl, { root, compression: 'zstd' })
   try {

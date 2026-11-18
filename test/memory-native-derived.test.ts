@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -78,7 +79,7 @@ test('cold native derived erasure groups inbox replicas and retains independent 
       contentDigest: memoryOriginalContentDigest(noticeOnly) })
     const detail = await call('readFile', { args: [created.identity] })
     assert.ok(detail)
-    await call('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: created.identity, version: detail.version })
   }
   try {
     await owner.recover()
@@ -157,7 +158,7 @@ for (const unknownFailure of [false, true]) test(`cold recovery restores a flush
     finally { db.close() }
     const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
     assert.ok(detail)
-    await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
   } finally { await owner.close() }
 
   const parentPrefix = Session.fromRestore(parent.id, prefix.slice(0, floor), parent.header, SessionLogOffset(0), 'detached')
@@ -228,7 +229,7 @@ test('cold recovery restores a tool receipt flushed only in an inherited fork an
     } finally { db.close() }
     const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
     assert.ok(detail)
-    await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
   } finally { await owner.close() }
 
   const context = new Context(), mounted = await context.plugin(jsonl, { root, compression: 'zstd' })

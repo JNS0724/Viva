@@ -4,7 +4,7 @@ import { objectOf } from '../shared/unknown-value.ts'
 import { REPORT } from './task-reports.ts'
 
 /** A report keeps its originating proof when read into another conversation. */
-export function eraseMemoryReportCopies(db: DatabaseSync, effectId: string, matches: (memory: MemoryProvenance) => boolean): string[] {
+export function eraseMemoryReportCopies(db: DatabaseSync, matches: (memory: MemoryProvenance) => boolean): string[] {
   const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
   const hasQueue = Boolean(exists.get('effects')), hasRecords = Boolean(exists.get('report_records'))
   const hasProofs = Boolean(exists.get('memory_report_proofs'))
@@ -19,13 +19,10 @@ export function eraseMemoryReportCopies(db: DatabaseSync, effectId: string, matc
   if (hasProofs) for (const row of db.prepare('SELECT report_id,memory FROM memory_report_proofs').all()) {
     if (matchesProof(JSON.parse(String(row.memory)))) ids.add(String(row.report_id))
   }
-  db.exec('CREATE TABLE IF NOT EXISTS memory_erased_reports (effect TEXT NOT NULL, report TEXT NOT NULL, PRIMARY KEY(effect,report))')
-  const remember = db.prepare('INSERT OR IGNORE INTO memory_erased_reports VALUES (?,?)')
   for (const id of ids) {
-    remember.run(effectId, id)
     if (hasQueue) db.prepare('DELETE FROM effects WHERE kind=? AND key=?').run(REPORT, id)
     if (hasRecords) db.prepare('DELETE FROM report_records WHERE report_id=?').run(id)
     if (hasProofs) db.prepare('DELETE FROM memory_report_proofs WHERE report_id=?').run(id)
   }
-  return db.prepare('SELECT report FROM memory_erased_reports WHERE effect=?').all(effectId).map(row => String(row.report))
+  return [...ids]
 }

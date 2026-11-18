@@ -247,8 +247,7 @@ test('withdrawn generated content is never available from the backend replay cac
 })
 
 test('a withdrawal arriving before an older snapshot response prevents installation of that snapshot', async t => {
-  for (const event of [{ type: 'memory_changed', originalCuts: [{ sourceId: 's', length: 1, spans: [{ start: 0, end: 1 }] }] },
-    { type: 'memory_changed', traceSessions: [context.sessionId] }, { type: 'reports_removed', reportIds: ['report'] }]) {
+  for (const event of [{ type: 'memory_changed', traceSessions: [context.sessionId] }, { type: 'reports_removed', reportIds: ['report'] }]) {
     const required = deferred<RendererSnapshot>(), installed: RendererSnapshot[] = [], failed: string[] = []
     const actions = createInitializationActions({ snapshot: () => required.promise, install: value => installed.push(value), deliver() {},
       pause() {}, initialized() {}, loading() {}, failed: reason => failed.push(reason) })

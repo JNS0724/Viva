@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -96,7 +97,7 @@ for (const forked of [false, true]) {
       } finally { archive.close() }
       const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
       assert.ok(detail)
-      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
     } finally { await owner.close() }
     const maintenance = openNativeOriginalMaintenance(memoryRoot, 'viva')
     assert.ok(maintenance)

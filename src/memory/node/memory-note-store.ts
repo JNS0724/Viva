@@ -12,10 +12,12 @@ import { formatMemoryDocument, parseMemoryDocument, memoryDocumentLines, readMem
 import type { MemorySource, MemoryStore } from './memory-store.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
 
-export const dailyNoteKey = (session: string, day: string, workspace = '') => JSON.stringify([workspace, session, day])
+export const dailyNoteKey = (session: string, day: string, workspace = '', generation = 0) =>
+  JSON.stringify(generation ? [workspace, session, day, generation] : [workspace, session, day])
 function noteDay(key: string): string {
   const identity: unknown = JSON.parse(key)
-  if (!Array.isArray(identity) || identity.length !== 3 || typeof identity[2] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(identity[2])) throw new Error('invalid-note-identity')
+  if (!Array.isArray(identity) || typeof identity[2] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(identity[2])) throw new Error('invalid-note-identity')
+  if (identity.length !== 3 && (identity.length !== 4 || !Number.isSafeInteger(identity[3]) || identity[3] < 1)) throw new Error('invalid-note-identity')
   return identity[2]
 }
 const sessionPath = (session: string) => `session/dialog/${memoryFileRevision(session)}.jsonl`
@@ -69,6 +71,8 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   const db = store.db
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_note_erasures (source TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS memory_deleted_daily_notes (note TEXT PRIMARY KEY, base TEXT NOT NULL, public_id TEXT NOT NULL UNIQUE);
+    CREATE INDEX IF NOT EXISTS memory_deleted_daily_notes_base ON memory_deleted_daily_notes(base);
     CREATE TABLE IF NOT EXISTS memory_note_aliases (workspace TEXT NOT NULL,path TEXT NOT NULL,note TEXT NOT NULL,PRIMARY KEY(workspace,path));
     CREATE TABLE IF NOT EXISTS memory_note_turns (
       id TEXT PRIMARY KEY, note TEXT NOT NULL, session TEXT NOT NULL, day TEXT NOT NULL,
@@ -113,13 +117,14 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       .flatMap(value => JSON.parse(value) as SourceRef[]))].some(ref => documentSourceRestricted(ref, blocked))
   }
   const rawNote = (key: string) => db.prepare('SELECT *,updated_at AS updatedAt FROM memory_daily_notes WHERE key=?').get(key) as NoteRow | undefined
+  const deleted = (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_deleted_daily_notes WHERE note=?').get(key))
   const journal = openMemoryFileJournal<Data>({ db, root: store.fileRoot, checkpoint,
     projectErasure(data, path, before) {
       if (data.kind === 'restore' && path === data.path) return data.markdown
       if (data.kind === 'purge' && path === sessionPath(data.dialog.session)) return purgeDialog(before, data.dialog)
     },
     valid: data => (data.kind !== 'edit' || validExternalEdit(data)) && (data.kind !== 'rename' || validRename(data))
-      && (data.kind !== 'note' || (rawNote(data.key)?.revision ?? null) === data.expectedRevision
+      && (data.kind !== 'note' || !deleted(data.key) && (rawNote(data.key)?.revision ?? null) === data.expectedRevision
         && usePolicyToken(data.workspace) === data.policyToken && (!currentJob || currentJob(data.key, data.generation)))
       && (data.kind !== 'restore' || rawNote(data.key)?.file_revision === data.revision)
       && data.refs.every(validRef),
@@ -161,7 +166,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         db.prepare('INSERT OR REPLACE INTO memory_note_aliases VALUES(?,?,?)').run(data.workspace,data.from,data.key)
         onRenamed(data.input)
       } else if (data.kind === 'purge') {
-        db.prepare('INSERT OR IGNORE INTO memory_note_erasures VALUES(?)').run(`purge:${data.id}`)
+        const deletedNote = data.dialog.mode === 'file' && db.prepare(`SELECT d.public_id FROM memory_deleted_daily_notes d
+          JOIN memory_note_purges p ON p.note=d.note WHERE p.id=?`).get(data.id)
+        db.prepare('INSERT OR IGNORE INTO memory_note_erasures VALUES(?)').run(deletedNote ? `file:${deletedNote.public_id}` : `purge:${data.id}`)
         db.prepare('DELETE FROM memory_note_purges WHERE id=?').run(data.id)
       }
     },
@@ -298,7 +305,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       edit.index(noteDay(purge.note), undefined, !owner || owner.key === purge.note ? purge.path : undefined)
     }
     const directive: DialogPurge = { session: purge.session, turn: purge.turn, mode: purge.mode, source: purge.source }
-    const path = sessionPath(purge.session), before = edit.files.read(path)
+    const path = sessionPath(purge.session), before = purge.mode === 'file' ? null : edit.files.read(path)
     if (before) edit.put(path, purgeDialog(before.markdown, directive))
     const members = [...edit.edits.values()].map(change => change.path === path || change.path === purge.path ? fileErasure(change) : change)
     return { workspace: purge.workspace, changes: members, data: { kind: 'purge', refs: [], id: purge.id, dialog: directive } }
@@ -311,7 +318,11 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   }
   function recover() {
     journal.recover()
-    for (const purge of purges()) {
+    applyPurges(purges())
+    checkpointCleanup()
+  }
+  function applyPurges(rows: Purge[]) {
+    for (const purge of rows) {
       try {
         journal.commit(`purge:${purge.id}`, String(purge.id), () => {
           const plan = purgePlan(purge)
@@ -320,10 +331,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         })
       } catch (error) {
         // A quarantined file/plan is local to its note. Keep cleanup durable without blocking other workspaces.
-        if (!(error instanceof Error && ['memory-purge-version', 'memory-file-plan-busy', 'memory-file-plan-conflict'].includes(error.message))) throw error
+        if (!(error instanceof Error && ['memory-purge-version', 'memory-file-plan-busy', 'memory-file-plan-conflict', 'memory-index-pending'].includes(error.message))) throw error
       }
     }
-    checkpointCleanup()
   }
   function checkpointCleanup() {
     if (db.prepare('SELECT 1 FROM memory_note_erasures LIMIT 1').get() && truncateMemoryJournal(db)) db.exec('DELETE FROM memory_note_erasures')
@@ -447,13 +457,29 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     }
     return keys
   }
+  function deleteFile(workspace: string, key: string, expectedUsageVersion: number) {
+    return store.tx(() => {
+      const row = rawNote(key)
+      if (!row || row.workspace !== workspace || row.revision !== expectedUsageVersion || !journal.visible(workspace, row.path)) throw new Error('memory-file-version')
+      const [, session] = JSON.parse(key) as [string, string, string, number?]
+      const publicId = `daily:${memoryFileRevision(key)}`
+      db.prepare('INSERT INTO memory_deleted_daily_notes(note,base,public_id) VALUES(?,?,?)').run(key, dailyNoteKey(session, row.day, workspace), publicId)
+      db.prepare("INSERT INTO memory_note_purges(workspace,note,path,expected_revision,session,turn,mode) VALUES(?,?,?,?,?,'','file')")
+        .run(workspace, key, row.file_revision ? row.path : null, row.file_revision, session)
+      db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(key)
+      db.prepare('DELETE FROM memory_note_aliases WHERE note=?').run(key)
+      db.prepare('DELETE FROM memory_daily_notes WHERE key=?').run(key)
+      useRestrictions.removeTarget({ kind: 'daily', workspace, key })
+      return row.revision + 1
+    })
+  }
   const pendingCleanup = () => Number(db.prepare('SELECT (SELECT count(*) FROM memory_note_purges)+(SELECT count(*) FROM memory_note_erasures) AS n').get()?.n ?? 0)
   if (!options.deferRecovery) recover()
   return {
     allocations: () => db.prepare('SELECT key,day,workspace,path,revision,updated_at AS updatedAt FROM memory_daily_notes ORDER BY workspace,key').all() as unknown as DailyAllocation[],
     advanceUseVersion: (key: string, revision: number, at: number) => db.prepare('UPDATE memory_daily_notes SET revision=revision+1,updated_at=? WHERE key=? AND revision=?')
       .run(at, key, revision).changes === 1,
-    usePolicyToken,
+    usePolicyToken, deleteFile,
     reconcileRename, reconcileEdit,
     reconciliationState: (operationId: string, kind: 'edit' | 'rename') => journal.state(`${kind === 'edit' ? 'external-edit' : 'rename'}:${operationId}`),
     aliases: () => db.prepare('SELECT workspace,path,note AS id FROM memory_note_aliases').all().map(row => ({workspace:String(row.workspace),path:String(row.path),id:String(row.id)})),
@@ -463,11 +489,16 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       file_revision: String(row.file_revision), sources: references(String(row.key)),
       state: db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(String(row.key)) ? 'withdrawing' as const : 'active' as const,
     })),
-    needsRecovery: () => journal.needsRecovery() || purges().some(purgeReady),
+    needsRecovery: () => journal.needsRecovery(data => data.kind !== 'purge' || data.dialog.mode !== 'file')
+      || purges().some(row => row.mode !== 'file' && purgeReady(row)),
+    recoverDeletedFiles: () => applyPurges(purges().filter(row => row.mode === 'file')),
+    deletedFileCleanupPending: (workspace: string, id: string) => Boolean(db.prepare(`SELECT 1 FROM memory_deleted_daily_notes d
+      WHERE public_id=? AND json_extract(d.note,'$[0]')=? AND (EXISTS (SELECT 1 FROM memory_note_purges p WHERE p.note=d.note AND p.mode='file')
+      OR EXISTS (SELECT 1 FROM memory_note_erasures WHERE source=?))`).get(id, workspace, `file:${id}`)),
     checkpointCleanup,
     recover, read, snapshot, references,
     pendingCleanup,
-    rebuildRows: (key: string) => (db.prepare('SELECT * FROM memory_note_turns WHERE note=? ORDER BY rowid').all(key) as unknown as TurnRow[]).map(turn),
+    rebuildRows: (key: string) => deleted(key) ? [] : (db.prepare('SELECT * FROM memory_note_turns WHERE note=? ORDER BY rowid').all(key) as unknown as TurnRow[]).map(turn),
     jobState: (key: string, generation: number) => journal.state(`note:${memoryFileRevision(key)}:${generation}`),
     blocked: (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(key) || rawNote(key)?.file_revision && !read(key)),
     contextSources(session: string, source: MemorySource) {
@@ -479,7 +510,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       // Recovery may change accepted daily versions. It belongs to the fenced job lifecycle, not intake.
       const workspace = workspaceOf(sources[0]!)
       if (sources.some(source => workspaceOf(source) !== workspace || source.session !== session)) throw new Error('memory-turn-scope')
-      const key = dailyNoteKey(session, day, workspace)
+      const base = dailyNoteKey(session, day, workspace)
+      const generation = Number(db.prepare('SELECT count(*) AS n FROM memory_deleted_daily_notes WHERE base=?').get(base)!.n)
+      const key = generation ? dailyNoteKey(session, day, workspace, generation) : base
       const userRefs = snapshot(sources.map(source => source.id))
       const assistantRefs = assistant ? snapshot([...sources.map(source => source.id), ...assistantSources]) : []
       const answers = sources.filter(source => source.author === 'answer')
@@ -511,12 +544,12 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       return (db.prepare('SELECT key FROM memory_daily_notes WHERE file_revision IS NOT NULL AND day BETWEEN ? AND ? AND revision>processed ORDER BY day,key')
         .all(from, through) as Array<{ key: string }>).flatMap(row => read(row.key) ?? [])
     },
-    pendingGroups: () => db.prepare('SELECT note,session,day,COUNT(*) AS count FROM memory_note_turns WHERE written=0 GROUP BY note,session,day')
+    pendingGroups: () => db.prepare('SELECT note,session,day,COUNT(*) AS count FROM memory_note_turns WHERE written=0 AND note NOT IN (SELECT note FROM memory_deleted_daily_notes) GROUP BY note,session,day')
       .all() as Array<{ note: string, session: string, day: string, count: number }>,
-    pending: (key: string, limit: number = defaults.noteInterval) => (db.prepare('SELECT * FROM memory_note_turns WHERE note=? AND written=0 ORDER BY rowid LIMIT ?')
+    pending: (key: string, limit: number = defaults.noteInterval) => deleted(key) ? [] : (db.prepare('SELECT * FROM memory_note_turns WHERE note=? AND written=0 ORDER BY rowid LIMIT ?')
       .all(key, limit) as unknown as TurnRow[]).map(turn),
     previous(_key: string, id: string) {
-      const row = db.prepare('SELECT * FROM memory_note_turns WHERE workspace=(SELECT workspace FROM memory_note_turns WHERE id=?) AND session=(SELECT session FROM memory_note_turns WHERE id=?) AND rowid<(SELECT rowid FROM memory_note_turns WHERE id=?) ORDER BY rowid DESC LIMIT 1')
+      const row = db.prepare('SELECT * FROM memory_note_turns WHERE workspace=(SELECT workspace FROM memory_note_turns WHERE id=?) AND session=(SELECT session FROM memory_note_turns WHERE id=?) AND rowid<(SELECT rowid FROM memory_note_turns WHERE id=?) AND note NOT IN (SELECT note FROM memory_deleted_daily_notes) ORDER BY rowid DESC LIMIT 1')
         .get(id, id, id) as TurnRow | undefined
       return row && turn(row)
     },
@@ -534,6 +567,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     },
     commit(key: string, rows: Array<{ id: string }>, reply: { status: 'skip' } | { status: 'write', title: string, markdown: string, filename?: string },
       generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options: { rebuild?: boolean } = {}) {
+      if (deleted(key)) return false
       const first = db.prepare('SELECT * FROM memory_note_turns WHERE id=?').get(rows[0]!.id) as unknown as TurnRow
       const id = `note:${memoryFileRevision(key)}:${generation}`
       const input = memoryFileRevision(JSON.stringify([key, rows.map(row => row.id), refs, expected?.fileRevision, expected?.revision, options.rebuild ?? false]))

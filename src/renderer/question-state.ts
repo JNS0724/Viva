@@ -58,15 +58,6 @@ export const QUESTION_ACTIONS = {
     const parts = sourceIds && Object.keys(sourceIds).length ? questions.map(question => ({
       text: answerText([question], answers), asked: question.question, sourceId: Object.hasOwn(sourceIds, question.id) ? sourceIds[question.id] : undefined,
     })) : [{ text, asked: askedText(questions), sourceId }]
-    // The process drawer joins multiple replies with question labels. Retain the
-    // offsets of each original so an erasure only changes its own answer.
-    let offset = 0
-    const sourceRanges = parts.flatMap((part, index) => {
-      if (parts.length > 1) offset += (questions[index]!.header || questions[index]!.question).length + 1
-      const start = offset, end = start + part.text.length
-      offset = end + 1
-      return part.sourceId ? [{ sourceId: part.sourceId, start, end }] : []
-    })
     const replies = parts.map((part, index) => ({ id: `m${state.messages.length + index}`, role: 'user', text: part.text, asked: part.asked,
       ...(part.sourceId ? { sourceId: part.sourceId } : {}), open: false, receipt: null }))
     return {
@@ -74,7 +65,7 @@ export const QUESTION_ACTIONS = {
       phase: 'working',
       question: null,
       messages: [...state.messages, ...replies],
-      timeline: [...state.timeline, { kind: 'answer', ref: questionId, at, title: text, answered: true, ...(sourceRanges.length ? { sourceRanges } : {}) }],
+      timeline: [...state.timeline, { kind: 'answer', ref: questionId, at, title: text, answered: true }],
     }
   },
 

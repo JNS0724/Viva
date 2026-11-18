@@ -90,7 +90,7 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     const result = await fileWrite(client.forgetFile(request))
     if (result.status === 'rejected') return result
     const operation = await client.fileOperation(request.operationId)
-    // A mutation receipt proves withdrawal, not completion of every stored copy.
+    // File removal commits before its physical projection and index cleanup finish.
     return { ...result, cleanup: operation?.state === 'completed' && operation.cleanup === 'complete' ? 'complete' : 'pending' }
   })
   handle('memory:set-profile', (changes, operation) => client.setProfile(changes, operation))

@@ -31,6 +31,68 @@ function setup(t: TestContext) {
   return { dir, store, notes, source, key, commit }
 }
 
+test('deleting a daily file survives interrupted cleanup and preserves dialog, source and sibling files', t => {
+  const { store, notes, source, key, commit } = setup(t)
+  assert.ok(commit())
+  const note = notes.read(key)!
+  const sibling = noteSource(store, { session: 'sibling', text: 'Independent meeting note.' })
+  const siblingKey = notes.add('sibling', note.day, [sibling], '')!
+  assert.ok(notes.commit(siblingKey, notes.pending(siblingKey), { status: 'write', title: note.title, markdown: 'Independent note.' },
+    1, Date.now(), notes.snapshot([sibling.id]), undefined))
+  const kept = notes.read(siblingKey)!
+  const workspaceRoot = join(store.fileRoot, note.workspace)
+  const dialog = join(workspaceRoot, 'session/dialog', memoryFileRevision('session') + '.jsonl')
+  const originalDialog = readFileSync(dialog, 'utf8')
+  const originalSource = store.readSource(source.id)
+  assert.throws(() => notes.deleteFile(note.workspace, key, note.revision + 1), /version/)
+  assert.equal(notes.deleteFile(note.workspace, key, note.revision), note.revision + 1)
+  assert.equal(notes.read(key), undefined)
+  assert.equal(notes.needsRecovery(), false)
+  const id = `daily:${memoryFileRevision(key)}`
+  assert.equal(notes.deletedFileCleanupPending(note.workspace, id), true)
+  assert.equal(notes.deletedFileCleanupPending(note.workspace, `daily:${memoryFileRevision(siblingKey)}`), false)
+  assert.deepEqual(notes.rebuildRows(key), [])
+  assert.throws(() => openMemoryNotes(store, () => true, (point, path) => {
+    if (point === 'replace' && path === note.path) throw new Error('stop after deleting card')
+  }), /stop after deleting card/)
+  const recovered = openMemoryNotes(store, () => true)
+  assert.equal(existsSync(join(workspaceRoot, note.path)), false)
+  assert.equal(recovered.deletedFileCleanupPending(note.workspace, id), false)
+  assert.equal(readFileSync(dialog, 'utf8'), originalDialog)
+  assert.deepEqual(store.readSource(source.id), originalSource)
+  assert.deepEqual(recovered.read(siblingKey), kept)
+  const index = readFileSync(join(workspaceRoot, `daily/${note.day}.md`), 'utf8')
+  assert.ok(index.includes(kept.path))
+  assert.equal(index.includes(note.path), false)
+  assert.equal(recovered.add('session', note.day, [source], '先检查版本'), null)
+  assert.equal(recovered.commit(key, [{ id: source.id }], { status: 'write', title: 'stale', markdown: 'stale' },
+    2, Date.now(), notes.snapshot([source.id]), undefined), false)
+  const next = noteSource(store, { text: 'A new turn.' })
+  const newKey = recovered.add('session', note.day, [next], '')!
+  assert.notEqual(newKey, key)
+  assert.deepEqual(recovered.rebuildRows(newKey).map(row => row.sourceIds), [[next.id]])
+  assert.equal(recovered.previous(newKey, next.id), undefined)
+  assert.ok(recovered.commit(newKey, recovered.pending(newKey), { status: 'write', title: 'New', markdown: 'A new turn.' },
+    1, Date.now(), notes.snapshot([next.id]), undefined))
+  assert.notEqual(recovered.read(newKey)!.path, note.path)
+})
+
+test('existing three-part daily identities keep their path and turn history when opening the deletion ledger', t => {
+  const { store, notes, key, source, commit } = setup(t)
+  assert.ok(commit())
+  const saved = notes.read(key)!
+  assert.deepEqual(JSON.parse(key), [saved.workspace, 'session', saved.day])
+  store.db.exec('DROP TABLE memory_deleted_daily_notes')
+  const restored = openMemoryNotes(store, () => true)
+  assert.deepEqual(restored.read(key), saved)
+  assert.deepEqual(restored.rebuildRows(key).flatMap(row => row.sourceIds), [source.id])
+  const next = noteSource(store, { text: 'A subsequent update.' })
+  assert.equal(restored.add('session', saved.day, [next], ''), key)
+  assert.equal(restored.deleteFile(saved.workspace, key, saved.revision), saved.revision + 1)
+  restored.recoverDeletedFiles()
+  assert.equal(restored.pendingGroups().length, 0)
+  assert.equal(existsSync(join(store.fileRoot, saved.workspace, saved.path)), false)
+})
 test('session JSONL owns role-separated source versions; request replay is idempotent and rejects changed input', t => {
   const { store, notes, source, key } = setup(t)
   assert.equal(notes.add('session', '2026-11-14', [source], '先检查版本'), null)

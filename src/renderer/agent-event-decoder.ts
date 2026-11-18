@@ -175,25 +175,14 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'memory_changed') {
     const traceSessions = item.traceSessions === undefined ? undefined : texts(item.traceSessions)
     const erasedFeedIds = item.erasedFeedIds === undefined ? undefined : texts(item.erasedFeedIds)
-    const originalCuts = item.originalCuts === undefined ? undefined : list(item.originalCuts, value => {
-      const cut = objectOf(value)
-      if (!string(cut?.sourceId) || !cut.sourceId || !natural(cut.length)) return null
-      const length = cut.length
-      const spans = list(cut.spans, raw => {
-        const span = objectOf(raw)
-        return natural(span?.start) && natural(span?.end) && span.start < span.end && span.end <= length
-          ? { start: span.start, end: span.end } : null
-      })
-      return spans?.length ? { sourceId: cut.sourceId, length, spans } : null
-    })
     const erasedOutputs = item.erasedOutputs === undefined ? undefined : list(item.erasedOutputs, value => {
       const output = objectOf(value)
       return string(output?.session) && Boolean(output.session) && string(output.key) && Boolean(output.key)
         ? { session: output.session, key: output.key } : null
     })
-    return originalCuts !== null && traceSessions !== null && erasedOutputs !== null && erasedFeedIds !== null
+    return traceSessions !== null && erasedOutputs !== null && erasedFeedIds !== null
       ? { type, ...(traceSessions ? { traceSessions } : {}), ...(erasedOutputs ? { erasedOutputs } : {}),
-          ...(erasedFeedIds ? { erasedFeedIds } : {}), ...(originalCuts ? { originalCuts } : {}),
+          ...(erasedFeedIds ? { erasedFeedIds } : {}),
           ...(string(item.failure) ? { failure: item.failure } : {}) } : null
   }
   if (type === 'reports_removed') { const reportIds = texts(item.reportIds); return reportIds ? { type, reportIds } : null }
@@ -210,12 +199,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'task_update') { const update = decodeUpdate(item.update); return task && update ? { type, ...task, update } : null }
   if (type === 'task_permission_closed') return task && string(item.requestId) ? { type, ...task, requestId: item.requestId } : null
   if (type === 'task_question') { const questions = decodeQuestions(item.questions); return task && string(item.questionId) && questions ? { type, ...task, questionId: item.questionId, questions } : null }
-  if (type === 'task_question_closed') {
-    if (!task || !string(item.questionId)) return null
-    if (item.answers === undefined && item.sourceIds === undefined) return { type, ...task, questionId: item.questionId }
-    const answers = decodeAnswers(item.answers)
-    return answers && sourceMap(item.sourceIds) ? { type, ...task, questionId: item.questionId, answers, sourceIds: item.sourceIds } : null
-  }
+  if (type === 'task_question_closed') return task && string(item.questionId) ? { type, ...task, questionId: item.questionId } : null
   if (type === 'task_steered') return task && string(item.text) ? { type, ...task, text: item.text } : null
   if (type === 'task_end') return task && optional(item.stopReason, string) && optional(item.message, nullableText) ? { type, ...task, stopReason: item.stopReason, message: item.message } : null
   // Every remaining foreground payload must prove its original history segment and runtime session.

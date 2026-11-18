@@ -89,7 +89,6 @@ export interface ActionPayloads extends ConversationPayloads {
   history_results: { query: string, results: State['history']['results'] }
   history_results_invalidated: {}
   reports_removed: { reportIds: readonly string[] }
-  original_history_erased: { cuts: readonly import('../memory/contracts/text-spans.ts').OriginalHistoryCut[] }
   generated_outputs_removed: { copies: readonly { session: string, key: string }[] }
   toast_show: { toast: NonNullable<State['toast']> }
   toast_hide: { key: number }
@@ -238,7 +237,7 @@ export interface TaskPayloads {
   task_permission_request: TaskStream & ConversationPayloads['permission_request']
   task_permission_closed: TaskStream & ConversationPayloads['permission_closed']
   task_question: TaskStream & ConversationPayloads['question_request']
-  task_question_closed: TaskStream & ConversationPayloads['question_closed'] & Partial<Pick<ConversationPayloads['question_answered'], 'answers' | 'sourceIds'>>
+  task_question_closed: TaskStream & ConversationPayloads['question_closed']
   task_steer: TaskStream & ConversationPayloads['user_steer']
   task_end: TaskStream & ConversationPayloads['turn_end'] & { message?: string | null }
   task_question_pick: { taskId: string } & ConversationPayloads['question_pick']

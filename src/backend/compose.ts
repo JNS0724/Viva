@@ -173,6 +173,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let taskStore: ReturnType<typeof createTaskStore> | null = null
   /** The background tasks, their one writer (task-runtime.ts); set once the history is open. */
   let taskRuntime: TaskRuntime | null = null
+  const taskAnswerSources = new Map<string, Record<string, string>>()
   const historyPurgeTimers = new Set<ReturnType<typeof setTimeout>>()
   /** The main conversation's requests and their decisions (request-runtime.ts); set once the history is open. */
   let requests!: RequestRuntime
@@ -639,6 +640,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
             conversation, question: entry.sourceQuestion ?? question.question, requestId: entry.question.id, questionId: answer.id,
             context: answerContext, project })
           answerSources[answer.id] = accepted.sourceId
+        if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
         }
         return { sourceIds: answerSources }
       },
@@ -1060,7 +1062,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:answer', async (_event, questionId, answers, operation) => {
       if (memoryBusy()) return false
       const id = assertText(questionId, 'questionId', 200)
-      return await dsh.current?.answerQuestion(id, answers, operation) ?? false
+      // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
+      const keep = taskRuntime?.dsh.holdQuestion(id) ?? null
+      try {
+        const accepted = await dsh.current?.answerQuestion(id, answers, operation) ?? false
+        if (accepted) keep?.(answers, taskAnswerSources.get(id))
+        return accepted
+      } finally { taskAnswerSources.delete(id) }
     })
     // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.
     ipcMain.handle('agent:secrets', (_event, requestId, values) => {
@@ -1582,10 +1590,6 @@ ${question}` : question
       invalidateFileHistory: sessions.discardStaleCarry,
       eraseTaskBodies: taskStore.eraseMemoryBodies,
       invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
-      originalRangesRemoved: ranges => {
-        taskRuntime?.eraseOriginals()
-        emitToRenderer({ type: 'memory_changed', originalCuts: ranges.map(({ sourceId, length, spans }) => ({ sourceId, length, spans })) })
-      },
       generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
       feedCopiesRemoved: erasedFeedIds => emitToRenderer({ type: 'memory_changed', erasedFeedIds }),
       eraseRoutedMemory: matches => requests.eraseMemory(matches),

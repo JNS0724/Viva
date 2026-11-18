@@ -19,7 +19,6 @@ interface Asked { taskId: string, questions: Array<{ id: string, question: strin
 export interface TaskWordsDeps {
   /** What the task has said, from its own words on, into its segment. */
   persist: (taskId: string, messages: SavedMessage[]) => void
-  projectOriginal?: (source: string, text: string) => string | undefined
   later?: (run: () => void, ms: number) => unknown
   cancel?: (timer: unknown) => void
   everyMs?: number
@@ -49,7 +48,7 @@ function askedOf(event: AgentEvent): Asked | null {
   return { taskId: text(event.taskId), questions }
 }
 
-export function createTaskWords({ persist, projectOriginal, later = setTimeout, cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+export function createTaskWords({ persist, later = setTimeout, cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
   everyMs = SAVE_EVERY_MS, onError = () => {} }: TaskWordsDeps) {
   /** taskId → what it has said; only tasks this launch holds. */
   const transcripts = new Map<string, Transcript>()
@@ -57,18 +56,6 @@ export function createTaskWords({ persist, projectOriginal, later = setTimeout, 
   const timers = new Map<string, unknown>()
   /** questionId → the task that asked it, while it waits. */
   const questions = new Map<string, Asked>()
-
-  function project(transcript: Transcript) {
-    const projected = transcript.map(message => {
-      if (!message.sourceId || message.role !== 'user') return message
-      const text = projectOriginal?.(message.sourceId, message.text)
-      return text === undefined || text === message.text ? message : { ...message, text }
-    })
-    return projected.some((message, i) => message !== transcript[i]) ? projected : transcript
-  }
-  function eraseOriginals() {
-    for (const [taskId, transcript] of transcripts) transcripts.set(taskId, project(transcript))
-  }
 
   /** What the task said so far, into its segment; a save along the way that fails is logged, one that `must` throws. */
   function save(taskId: string, must = false) {
@@ -98,7 +85,7 @@ export function createTaskWords({ persist, projectOriginal, later = setTimeout, 
 
   /** A task this launch holds, from what it had said (none for a new one). */
   function track(taskId: string, before: ReadonlyArray<{ role?: unknown, text?: unknown, key?: unknown, sourceId?: unknown }> = []) {
-    transcripts.set(taskId, project(fromSaved(before)))
+    transcripts.set(taskId, fromSaved(before))
   }
 
   /** The user said something to the task: its first words, words into its turn, its next question. */
@@ -120,14 +107,7 @@ export function createTaskWords({ persist, projectOriginal, later = setTimeout, 
       const asked = askedOf(event)
       if (asked && text(event.questionId)) questions.set(text(event.questionId), asked)
     }
-    if (event.type === 'task_question_closed') {
-      const id = text(event.questionId)
-      if (questions.get(id)?.taskId === taskId && Array.isArray(event.answers) && event.sourceIds && typeof event.sourceIds === 'object') {
-        const sources = Object.fromEntries(Object.entries(event.sourceIds).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
-        holdQuestion(id)?.(event.answers, sources)
-      }
-      questions.delete(id)
-    }
+    if (event.type === 'task_question_closed') questions.delete(text(event.questionId))
     const transcript = transcripts.get(taskId)
     if (!transcript) return
     if (event.type === 'task_update') change(taskId, updated(transcript, event.update))
@@ -143,7 +123,7 @@ export function createTaskWords({ persist, projectOriginal, later = setTimeout, 
     const waiting = timers.has(taskId)
     return () => {
       if (transcript === undefined) transcripts.delete(taskId)
-      else transcripts.set(taskId, project(transcript))
+      else transcripts.set(taskId, transcript)
       if (waiting) soon(taskId)
     }
   }
@@ -158,7 +138,7 @@ export function createTaskWords({ persist, projectOriginal, later = setTimeout, 
     return (raw, sourceIds) => {
       questions.delete(questionId)
       const transcript = transcripts.get(asked.taskId)
-      if (transcript) change(asked.taskId, project(answered(transcript, asked.questions, answersOf(raw), sourceIds)))
+      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw), sourceIds))
     }
   }
 
@@ -187,6 +167,6 @@ export function createTaskWords({ persist, projectOriginal, later = setTimeout, 
     })) : null
   }
 
-  return { track, eraseOriginals, userSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
+  return { track, userSaid, receive, answer, holdQuestion, flush, drop, current, checkpoint, has: (taskId: string) => transcripts.has(taskId) }
 }
 export type TaskWords = ReturnType<typeof createTaskWords>

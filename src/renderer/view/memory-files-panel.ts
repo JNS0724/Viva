@@ -72,7 +72,7 @@ function detailsOf(detail: MemoryFileDetailView, busy: boolean, handlers: Handle
       !id && detail.actions.undo ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
         text: t('profile-panel.memory.changes.undo'), onClick: () => handlers.undoManagedMemory(detail) }) : null,
       canForgetMemoryFile(detail) ? h('button', { class: 'link-btn', name: 'memory-file-forget', 'data-tone': 'danger', type: 'button', disabled: busy,
-        text: t(id ? 'memory-files.forget.range' : 'memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null),
+        text: t('memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null),
     snapshot ? h('p', { class: 'help', text: t('memory-files.restore.range.help') }) :
       restrictions.length ? h('div', { class: 'profile-section' },
         h('h5', { class: 'profile-heading', text: t('memory-files.stopped.ranges') }),
@@ -220,7 +220,7 @@ function forgetView(files: State['memory']['files'], handlers: Handlers) {
   if (!forget) return null
   if (forget.phase !== 'confirm') return h('div', { class: 'profile-section', 'data-memory-file-forget-status': forget.phase },
     h('p', { class: forget.error ? 'form-error' : 'help', role: forget.error ? 'alert' : 'status',
-      text: forget.error ?? t(forget.phase === 'complete' ? 'memory-files.forget.complete' : 'memory-files.forget.pending') }),
+      text: forget.error ?? t(forget.phase === 'unconfirmed' ? 'extensions.working' : forget.phase === 'complete' ? 'memory-files.forget.complete' : 'memory-files.forget.pending') }),
     forget.phase === 'unconfirmed' || forget.phase === 'pending' ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-file-forget-retry', disabled: writing,
         text: t(writing ? 'extensions.working' : 'memory-files.forget.check'),
@@ -243,7 +243,7 @@ function forgetView(files: State['memory']['files'], handlers: Handlers) {
   h('h4', { class: 'profile-heading memory-text', id: 'memory-file-forget-title',
     text: t('memory-files.forget.confirm', { title: forget.title || t('memory-files.untitled') }) }),
   h('p', { class: 'help', id: 'memory-file-forget-description',
-    text: t(forget.request.restrictionId ? 'memory-files.forget.range.help' : 'memory-files.forget.help') }),
+    text: t('memory-files.forget.help') }),
   h('div', { class: 'memory-actions' },
     h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-file-forget-cancel', disabled: writing,
       text: t('extensions.cancel'), onClick: () => handlers.cancelManagedMemoryForget(forget.id) }),

@@ -271,14 +271,13 @@ export async function closeHub(win: SmokeWindow) {
 
 export const escape = (win: SmokeWindow) => run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 
-export type LiveMemoryFile = MemoryFileDetailView & { restrictionId?: string }
 const sameVersion = (a: MemoryManagedFileVersion, b: MemoryManagedFileVersion) =>
   a.contentRevision === b.contentRevision && a.usageVersion === b.usageVersion && a.policyToken === b.policyToken
 
 /** Search authorized file bodies. The management query searches titles only. */
-export async function memoryFilesWith(win: SmokeWindow, words: string, includeStopped = false): Promise<LiveMemoryFile[]> {
+export async function memoryFilesWith(win: SmokeWindow, words: string, includeStopped = false): Promise<MemoryFileDetailView[]> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const matches: LiveMemoryFile[] = []
+    const matches: MemoryFileDetailView[] = []
     let cursor: NonNullable<MemoryFileListResult['nextCursor']> | undefined
     let stale = false
     do {
@@ -294,11 +293,12 @@ export async function memoryFilesWith(win: SmokeWindow, words: string, includeSt
         }
         if (!sameVersion(item.version, detail.version)) { stale = true; break }
         if (detail.markdown.includes(words)) matches.push(detail)
-        if (includeStopped) for (const restriction of detail.restrictions ?? []) {
+        else if (includeStopped) for (const restriction of detail.restrictions ?? []) {
           const stopped: MemoryFileDetailView | null = await run(win,
             `window.agent.readMemoryFile(${JSON.stringify(item.identity)}, ${JSON.stringify(restriction.id)})`)
           if (stopped?.stoppedSnapshot?.restrictionId === restriction.id && stopped.stoppedSnapshot.markdown?.includes(words)) {
-            matches.push({ ...stopped, version: restriction.version, restrictionId: restriction.id })
+            matches.push(detail)
+            break
           }
         }
       }
@@ -310,13 +310,12 @@ export async function memoryFilesWith(win: SmokeWindow, words: string, includeSt
   throw new Error('Memory file snapshot kept changing while reading live acceptance evidence')
 }
 
-/** Forget matching file evidence in this isolated live profile. Pending replicas await cold maintenance. */
+/** Delete matching whole files in this isolated live profile. */
 export async function forgetMemories(win: SmokeWindow, words: string) {
   for (let attempt = 0; attempt < 100; attempt++) {
     const [file] = await memoryFilesWith(win, words, true)
     if (!file) return
-    const request = { operationId: crypto.randomUUID(), identity: file.identity, version: file.version,
-      ...(file.restrictionId ? { restrictionId: file.restrictionId } : {}) }
+    const request = { operationId: crypto.randomUUID(), identity: file.identity, version: file.version }
     const invoke = () => run(win, `window.agent.forgetMemoryFile(${JSON.stringify(request)})`)
     // Lost transport replies retain the approved operation and exact evidence version.
     const result: { status: 'applied', receipt: unknown } | { status: 'rejected', code: string } = await invoke().catch(() => invoke())
@@ -324,7 +323,7 @@ export async function forgetMemories(win: SmokeWindow, words: string) {
       const receipt = memoryFileMutationResult.parse(result.receipt)
       if (receipt.action !== 'FORGET' || receipt.operationId !== request.operationId || receipt.identity.id !== file.identity.id
         || receipt.identity.workspace !== file.identity.workspace || receipt.identity.kind !== file.identity.kind
-        || receipt.restrictionId !== request.restrictionId) throw new Error('Live cleanup received a different file erasure receipt')
+        || receipt.restrictionId !== undefined) throw new Error('Live cleanup received a different file deletion receipt')
     }
     if (result.status === 'rejected' && result.code !== 'revision.conflict' && result.code !== 'not.found') {
       throw new Error(`Live memory cleanup was rejected: ${result.code}`)

@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { ChildProcess } from 'node:child_process'
@@ -863,7 +864,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.receipt.identity, version: detail.version })
     } finally { await owner.close() }
     const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
       isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
@@ -943,7 +944,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.receipt.identity, version: detail.version })
     } finally { await owner.close() }
     for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
       isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
@@ -1058,7 +1059,7 @@ test('a real DSH tool read archives and erases native results even when the next
   const operationId = randomUUID()
   try {
     await owner.recover()
-    await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.receipt.identity, version: file.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: created.receipt.identity, version: file.version })
   } finally { await owner.close() }
 
   openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
@@ -1309,7 +1310,7 @@ test('cold Viva startup erases native originals and settled output in root and u
       const first = makeDigest('native-erasure', erased), secondDigest = makeDigest('native-erasure-2', second)
       for (const [identity, id] of [[first, operationId], [secondDigest, nextOperation]] as const) {
         const detail = await owner.handleHost('readFile', { args: [identity] }) as MemoryFileDetail
-        await owner.handleHost('forgetFile', { args: [{ operationId: id, identity, version: detail.version }] })
+        await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: id, identity, version: detail.version })
       }
     } finally { store.close() }
   } finally { await owner.close() }
@@ -1784,6 +1785,38 @@ test('source-backed project files, exact recall and chat history remain in their
     return text.includes(firstMarker) || text.includes(rawHistoryText)
   })
   assert.deepEqual(leaked.map(request => JSON.stringify(request.messages.at(-1))), [])
+})
+
+test('deleting a memory file preserves the original chat and the task and report that read it after restart', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null)
+  const sourceId = await app.ask(oldFact)
+  await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
+  const file = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
+  assert.ok(file)
+  const brief = '核对我的周报提交邮箱'
+  await app.ask(`后台做：${brief}`)
+  const task = await eventually(() => app.tasks().find(item => item.endedAt && item.task.title === brief))
+  assert.ok(task)
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  t.after(() => history.close())
+  const reports = () => history.prepare(`SELECT r.report_id,r.text FROM report_records r JOIN memory_report_proofs p
+    ON p.report_id=r.report_id WHERE p.memory LIKE ? ORDER BY r.report_id`).all('%' + file.identity.id + '%')
+  assert.ok(await eventually(() => reports().length > 0), 'the saved report carries this file as evidence')
+  const before = reports()
+  const result = await app.call<Promise<IpcResults['memory:forget-file']>>('memory:forget-file', {
+    operationId: randomUUID(), identity: file.identity, version: file.version,
+  })
+  assert.equal(result.status, 'applied')
+  await app.stopBackend()
+  await app.startBackend()
+  assert.equal(await app.call('memory:read-file', file.identity), null)
+  assert.equal(history.prepare('SELECT text FROM messages WHERE source_id=?').get(sourceId)?.text, oldFact)
+  assert.deepEqual(reports(), before)
+  const retained = app.tasks().find(item => item.task.id === task.task.id)
+  const transcript = (item: Task) => item.messages?.map(({ role, text }) => ({ role, text }))
+  assert.ok(retained)
+  assert.deepEqual(transcript(retained), transcript(task))
+  await app.ask('请继续处理本轮对话')
 })
 
 test('an explicit save completes in a foreground session that already received file evidence', { timeout: 30_000 }, async t => {

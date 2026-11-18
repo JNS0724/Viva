@@ -492,6 +492,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await until(win, button('查看停用片段 1'), 'the archived selection')
   await run(win, `(${button('查看停用片段 1')}).click()`)
   await until(win, button('恢复使用这段内容'), 'the exact archived range can be resumed')
+  expect(!await run(win, button('删除记忆文件')), 'a stopped range only offers restore')
   await capture(win, outDir, 'memory-stopped')
   await closeProfile(win)
 
@@ -507,6 +508,18 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await closeProfile(win)
   const after = await askUsingMemory(win, hooks, '周报提交约定。')
   expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
+
+  const originals = `window.agent.searchTimeline(${JSON.stringify(REPORT_MEMORY)}).then(hits => hits.filter(hit => hit.role === 'user').map(hit => hit.messageId))`
+  const before: string[] = await run(win, originals)
+  expect(before.length > 0, 'the original user message is indexed before file deletion')
+  await openDailyMemory(win, note.identity)
+  await run(win, `(${button('删除记忆文件')}).click()`)
+  await capture(win, outDir, 'memory-file-delete')
+  await run(win, `document.querySelector('[name="memory-file-forget-confirm"]').click()`)
+  await until(win, `${fileDetail(note.identity)}.then(file => file === null)`, 'the confirmed daily file disappears')
+  const remaining: string[] = await run(win, originals)
+  expect(before.every(id => remaining.includes(id)), 'the original user messages remain searchable after file deletion')
+  await closeProfile(win)
 
   await newTopic(win)
   const withdrawn = await writeDailyMemory(win, WITHDRAWN, WITHDRAWN_TITLE)

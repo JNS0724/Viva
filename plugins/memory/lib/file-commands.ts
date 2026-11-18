@@ -43,7 +43,7 @@ export function registerMemoryFileCommands(commands: Pick<CommandRuntime, 'regis
       } catch (error) { return failed(error) }
     },
   }), commands.register({
-    name: 'memory-forget', description: 'Forget a saved memory by its exact ID.',
+    name: 'memory-forget', description: 'Delete a saved memory file by its exact ID.',
     input: { hint: 'Memory ID' }, recordInput: false,
     async handler(invocation) {
       const { agent, signal, rawInput, commandId } = invocation
@@ -54,7 +54,7 @@ export function registerMemoryFileCommands(commands: Pick<CommandRuntime, 'regis
       try {
         if (!validSession(invocation) || !await prepare(agent, signal) || signal.aborted) return unavailable
         const cleanup = await owner.forgetStandaloneFile(String(agent.session.id), id, operationOf(commandId))
-        return { kind: 'success', text: cleanup === 'complete' ? 'Memory copies have been erased.' : 'Memory is no longer used. Copy cleanup is pending.' }
+        return { kind: 'success', text: cleanup === 'complete' ? 'Memory file deleted.' : 'Memory file deleted. File cleanup is pending.' }
       } catch (error) { return failed(error) }
     },
   })]

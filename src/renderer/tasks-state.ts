@@ -34,7 +34,7 @@ export const initialTasks = Object.freeze({
  * A task from the last launch starts from what it had said; the rest of its view begins afresh: at work
  * when taken up again (`at`), at rest when it had ended (no `at`).
  */
-type SavedMessage = { role: string, text: string, sourceId?: string, receipt?: Receipt | null, open?: boolean, streamKey?: string, blocks?: ReadonlyArray<{ index: number, text: string }> }
+type SavedMessage = { role: string, text: string, receipt?: Receipt | null, open?: boolean, streamKey?: string, blocks?: ReadonlyArray<{ index: number, text: string }> }
 const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = null): ConversationView => ({
   messages: messages.map((message, i): ThreadMessage => {
     // Open: the answer a task at work was still writing when the window opened (a reload), which goes on from here.
@@ -42,7 +42,7 @@ const savedView = (messages: ReadonlyArray<SavedMessage>, at: number | null = nu
     // starting another: more of it (with its blocks, until it settles), or the turn's fallback withdrawing it.
     const open = at !== null && message.open === true
     const stream = at !== null && message.streamKey ? { streamKey: message.streamKey, ...(message.blocks ? { streamBlocks: message.blocks } : {}) } : {}
-    return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...(message.sourceId ? { sourceId: message.sourceId } : {}), ...stream }
+    return { id: `r${i}`, role: message.role, text: message.text, shown: message.text.length, open, receipt: message.receipt ?? null, ...stream }
   }),
   thoughts: [], tools: {}, timeline: [], permission: null, question: null, secret: null,
   turn: at === null ? null : { startedAt: at, tools: 0, thoughts: 0 }, phase: at === null ? 'idle' : 'working', usage: null, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null,
@@ -282,9 +282,7 @@ export function taskActions() {
     task_question: (state, action) => takePiece(state, action, (taken) =>
       inView(taken, action.taskId, { type: 'question_request', questionId: action.questionId, questions: action.questions, at: action.at })),
     task_question_closed: (state, action) => takePiece(state, action, (taken) =>
-      inView(taken, action.taskId, action.answers
-        ? { type: 'question_answered', questionId: action.questionId, answers: action.answers, sourceIds: action.sourceIds, at: action.at }
-        : { type: 'question_closed', questionId: action.questionId, at: action.at })),
+      inView(taken, action.taskId, { type: 'question_closed', questionId: action.questionId, at: action.at })),
     task_permission_closed: (state, action) => takePiece(state, action, (taken) =>
       inView(taken, action.taskId, { type: 'permission_closed', requestId: action.requestId, at: action.at })),
 

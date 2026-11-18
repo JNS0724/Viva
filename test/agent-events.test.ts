@@ -1,13 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { createAgentEvents } from '../src/renderer/agent-events.ts'
 import { decodeAgentEvent, decodeInfo, EVENT_TAGS, type EventIssue } from '../src/renderer/agent-event-decoder.ts'
 import { createEventActions } from '../src/renderer/agent-event-actions.ts'
 import type { AgentEvent } from '../src/renderer/agent-event-types.ts'
 import { createTaskActions } from '../src/renderer/task-actions.ts'
-import { traceItems } from '../src/renderer/selectors.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { createPermissionBroker } from '../src/backend/permission-broker.ts'
 import { createTaskRuntime } from '../src/backend/task-runtime.ts'
@@ -95,46 +93,6 @@ test('a generated copy notice clears current and archived bodies and rejects lat
   assert.deepEqual(h.issues, [])
 })
 
-test('permanent source cuts mask current, archived and late history snapshots without changing independent words', async () => {
-  const h = harness()
-  h.events.receive({ type: 'ready', info }); h.events.initialize()
-  await flush()
-  const cuts = { type: 'memory_changed', originalCuts: [{ sourceId: 'original', length: 11, spans: [{ start: 5, end: 11 }] }] }
-  const say = (sourceId: string) => h.dispatch({ type: 'user_prompt', text: 'keep secret', at: 1, sourceId })
-  say('original'); say('independent')
-  h.dispatch({ type: 'new_session', info })
-  say('original')
-  h.events.receive(cuts)
-  assert.equal(h.state().messages[0].text, 'keep       ')
-  assert.deepEqual(h.state().earlier.segments[0].messages.map((row: SegmentMessage) => row.text), ['keep       ', 'keep secret'])
-  h.dispatch({ type: 'fold_opened', id: 'fold', messages: [{ seq: 0, role: 'user', sourceId: 'original', text: '选项、keep secret' }] })
-  assert.equal(h.state().rewind.open.fold[0].text, '选项、keep       ')
-  h.events.receive({ ...cuts, originalCuts: [{ sourceId: 'original', length: 11, spans: [{ start: 1, end: 2 }] }] })
-  assert.equal(h.state().messages[0].text, 'k ep       ')
-  assert.equal(decodeAgentEvent({ ...cuts, originalCuts: [{ sourceId: 'original', length: 1, spans: [{ start: 0, end: 2 }] }] }), null)
-})
-
-test('original answer cuts project the process drawer before and after a buffered multi-question reply', async () => {
-  for (const buffered of [false, true]) {
-    const h = harness()
-    h.events.receive({ type: 'ready', info })
-    if (!buffered) { h.events.initialize(); await flush() }
-    const questions = [
-      { id: 'first', header: 'One', question: 'First?', options: [{ label: 'choice' }] },
-      { id: 'second', question: 'Second?', options: [] },
-    ]
-    h.events.receive({ type: 'question', context, questionId: 'pair', questions })
-    h.events.receive({ type: 'question_answered', context, questionId: 'pair', sourceIds: { first: 'original', second: 'other' },
-      answers: [{ id: 'first', selected: ['choice'], custom: 'keep secret' }, { id: 'second', selected: [], custom: 'keep secret' }] })
-    if (!buffered) assert.equal(traceItems(h.state()).at(-1)?.detail, 'One：choice、keep secret\nSecond?：keep secret')
-    h.events.receive({ type: 'memory_changed', originalCuts: [{ sourceId: 'original', length: 11, spans: [{ start: 5, end: 11 }] }] })
-    if (buffered) { h.events.initialize(); await flush() }
-    assert.deepEqual(h.state().messages.map(message => message.text), ['choice、keep       ', 'keep secret'])
-    assert.equal(traceItems(h.state()).at(-1)?.detail, 'One：choice、keep       \nSecond?：keep secret')
-    assert.deepEqual(h.issues, [])
-  }
-})
-
 test('an erased settlement still waiting for selection cannot enter the live view', async () => {
   const h = harness()
   h.events.receive({ type: 'ready', info })
@@ -161,40 +119,6 @@ test('SDK null permission fields and broker waits retain their known tool fallba
   assert.deepEqual(h.state().permission?.rawInput, { path: '/w/notes.md' })
   broker.cancelAll()
   assert.deepEqual(h.issues, [])
-})
-
-test('forgetting a custom task answer projects live words, drawer and late snapshots while retaining the task', async () => {
-  const h = harness(), db = openHistoryDb({ file: ':memory:' }), storage = new DatabaseSync(':memory:')
-  const current = db.create({ sessionId: 's', cwd: '/w' })
-  const runtime = createTaskRuntime({
-    db, store: createTaskStore({ db: storage }), current: () => current, agentInfo: () => info,
-    newRunId: () => 'run', timers: { later: run => run, cancel: () => {} }, publish: event => h.events.receive(event),
-    agent: { startTask: async () => ({ ok: true, taskId: 'task' }), promptTask: () => {}, steerTask: () => ({ ok: true }), resumeTask: () => ({ ok: true }), cancelTask: () => {}, closeTask: () => {} },
-  })
-  const original = 'keep secret', projected = 'keep       '
-  const hash = (text: string) => createHash('sha256').update(text).digest('hex')
-  const cut = { sourceId: 'original', revision: 1, length: original.length, hash: hash(original), afterHash: hash(projected), spans: [{ start: 5, end: 11 }] }
-  try {
-    h.events.receive({ type: 'ready', info }); h.events.initialize()
-    await runtime.agent.start('keep task')
-    const questions = [{ id: 'private', question: 'A?', options: [] }, { id: 'other', question: 'B?', options: [] }]
-    const answers = questions.map(({ id }) => ({ id, selected: [], custom: original }))
-    runtime.dsh.receive({ type: 'task_question', taskId: 'task', questionId: 'q', questions })
-    runtime.dsh.receive({ type: 'task_question_closed', taskId: 'task', questionId: 'q', answers, sourceIds: { private: 'original', other: 'independent' } })
-    const stale = await runtime.window.finished()
-    assert.deepEqual(stale[0]?.messages.map(m => m.text), ['keep task', original, original])
-    runtime.dsh.flush()
-    db.eraseFileRanges([cut])
-    runtime.eraseOriginals()
-    h.events.receive({ type: 'memory_changed', originalCuts: [cut] })
-    const task = () => h.state().tasks.list[0]!
-    assert.deepEqual(task().view.messages.map(m => m.text), ['keep task', projected, original])
-    assert.equal(traceItems(task().view).at(-1)?.detail, 'A?：' + projected + '\nB?：' + original)
-    assert.deepEqual((await runtime.window.finished())[0]?.messages.map(m => m.text), ['keep task', projected, original])
-    h.dispatch({ type: 'tasks_restored', list: stale })
-    assert.deepEqual(task().view.messages.map(m => m.text), ['keep task', projected, original])
-    assert.deepEqual(h.issues, [])
-  } finally { runtime.dsh.gone(); runtime.dsh.flush(); db.close(); storage.close() }
 })
 
 test('real runtime snapshots and pieces hand off through loadKept, with taskSeq independent of global seq', async () => {

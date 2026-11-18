@@ -419,7 +419,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 
   function filePacket(session: string, result: FileSearchResult, origin: Origin, query: string, scope?: MemoryScope,
     pending = matchingDeferredFiles(result.files, origin, scope)) {
-    if (!fileDependenciesCurrent(result.files)) return textOf({ status: 'unavailable' })
+    if (!fileDependenciesCurrent(result.files, [], false)) return textOf({ status: 'unavailable' })
     retainProjectedFileReads(session, result, pending)
     const { files: _dependencies, sourceIds: _sources, hits, ...status } = result
     if (pending.size) {
@@ -438,7 +438,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
   function fileContext(request: Extract<MemoryRequest, { op: 'context' }>, result: FileSearchResult | null, origin: Origin) {
     const packed = packContext({ profile: store.profile(), today: dateLine(new Date(now())), profileLabels: presentation.profileLabels?.() })
-    if (!result?.hits.length || !fileDependenciesCurrent(result.files)) return packed.text
+    if (!result?.hits.length || !fileDependenciesCurrent(result.files, [], false)) return packed.text
     const scope = origin.context ?? origin.scope
     const pending = matchingDeferredFiles(result.files, origin, scope)
     const packet = filePacket(request.session, result, origin, request.question, scope, pending)
@@ -464,14 +464,35 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       ...(request.asOf ? { asOf: interval.to! - 1 } : {}),
       allows: (view: MemoryDocumentView) => fileAllowsOrigin(view, origin, scope) }
   }
-  function fileDependenciesCurrent(refs: readonly MemoryFileDependency[], sourceIds: readonly string[] = []): boolean {
+  // A local file deletion leaves previously consumed projections usable. Only the exact
+  // readable snapshot at deletion can qualify, and later source withdrawals or restrictions still win.
+  function deletedReadKey(ref: MemoryFileDependency) {
+    return 'deleted-file-read:' + memoryHash(JSON.stringify([ref.workspace, ref.id, ref.path, ref.revision, ref.usageVersion,
+      ref.policyToken, ref.sourceRanges.map(range => [range.sourceId, range.spans?.map(span => [span.start, span.end])])]))
+  }
+  function currentReadProof(ref: MemoryFileDependency) {
+    const sources: DocumentSourceRef[] = []
+    for (const range of ref.sourceRanges) {
+      const source = canonicalSource(range.sourceId)
+      if (!source || !fileSourceAllowsUse(source.id)) return null
+      sources.push({ id: source.id, token: resources.sourceToken(source), spans: range.spans })
+    }
+    return documentReferencesRestricted(sources) ? null : memoryHash(JSON.stringify(sources.map(source => source.token)))
+  }
+  function fileDependenciesCurrent(refs: readonly MemoryFileDependency[], sourceIds: readonly string[] = [], priorRead = true): boolean {
     const unverified = new Set(sourceIds)
     for (const ref of refs) {
       if (!ref.sourceRanges?.length) return false
       const view = filePolicy?.read(ref.workspace, ref.path)
-      if (view?.id !== ref.id || view.revision !== ref.revision || view.usageVersion !== ref.usageVersion || view.policyToken !== ref.policyToken) return false
-      if (ref.sourceRanges && JSON.stringify(ref.sourceRanges) !== JSON.stringify(fileDependency(view).sourceRanges)) return false
-      for (const source of view.sourceTokens) unverified.delete(source.id)
+      if (view?.id === ref.id) {
+        if (view.revision !== ref.revision || view.usageVersion !== ref.usageVersion || view.policyToken !== ref.policyToken
+          || JSON.stringify(ref.sourceRanges) !== JSON.stringify(fileDependency(view).sourceRanges)) return false
+        for (const source of view.sourceTokens) unverified.delete(source.id)
+      } else {
+        const proof = priorRead && store.meta(deletedReadKey(ref))
+        if (!proof || currentReadProof(ref) !== proof) return false
+        for (const range of ref.sourceRanges) unverified.delete(range.sourceId)
+      }
     }
     return unverified.size === 0
   }
@@ -601,6 +622,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   effects.runs(DOCUMENT_CLEANUP, async jobs => {
     // Recovery may also finish a prepared revision, so it shares the physical send fence.
     const revision = store.revision(), pending = documents?.pendingCleanup()
+    notes?.storage.recoverDeletedFiles()
+    documents?.recoverDeletedFiles()
     if (notes?.storage.needsRecovery() || documents?.needsRecovery()) await runDocumentMutation(() => {
       if (notes?.storage.needsRecovery()) notes.storage.recover()
       if (documents?.needsRecovery()) documents.recover()
@@ -1245,7 +1268,34 @@ ${node.description}`, origin, scope))
     return result
   }
 
-  async function forgetManagedFile(input: MemoryFileForgetRequest,
+  function forgetManagedFile(input: MemoryFileForgetRequest, committed: (result: MemoryFileMutationResult) => void) {
+    if (closed || !documents || !fileManagement || !notes) throw domainError('not.found')
+    const result = store.tx(() => {
+      const view = fileManagement.deletionTarget(input, managementAllows)
+      const readable = filePolicy?.read(view.workspace, view.path)
+      if (readable?.id === view.id) {
+        const ref = fileDependency(readable), proof = currentReadProof(ref)
+        if (proof) store.setMeta(deletedReadKey(ref), proof)
+      }
+      const usageVersion = view.daily
+        ? notes.storage.deleteFile(view.workspace, view.daily.allocation.key, view.daily.allocation.revision)
+        : documents.deleteFile(view.workspace, view.id, view.usageVersion)
+      store.nextRevision()
+      // Deleting the last daily file also removes its workspace from catalog discovery.
+      const indexed = fileIndex?.snapshot(view.workspace, view.id)
+      if (indexed) fileIndex?.remove(indexed)
+      effects.queue(DOCUMENT_CLEANUP, view.id, null)
+      const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
+        action: 'FORGET', contentRevision: view.revision, usageVersion }
+      committed(result)
+      return result
+    })
+    publish(store.revision())
+    void effects.wake()
+    return result
+  }
+
+  async function resumeFileRangeErasure(input: MemoryFileForgetRequest,
     committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[]) => void,
     beforeErasure?: () => void): Promise<MemoryFileMutationResult> {
     if (!documents || !fileManagement || !notes) throw domainError('not.found')
@@ -1369,7 +1419,7 @@ ${node.description}`, origin, scope))
     },
     setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted) =>
       mutateManagedFile({ ...input, action: 'setEnabled' }, committed),
-    forgetFile: forgetManagedFile,
+    forgetFile: forgetManagedFile, resumeFileRangeErasure,
     manualFileWorkspace,
     writeManagedFile,
     explicitFileSource,
@@ -1425,15 +1475,18 @@ ${node.description}`, origin, scope))
     dispatchSourceCurrent,
     replaySource: (id: string, text: string) => replaySources([id], text),
     replaySources,
+    deletedFileCleanupPending(identity: MemoryFileForgetRequest['identity']) {
+      return identity.kind === 'daily' ? notes?.storage.deletedFileCleanupPending(identity.workspace, identity.id) === true
+        : documents?.deletedFileCleanupPending(identity.workspace, identity.id) === true
+    },
     cleanupPending: () => (notes?.storage.pendingCleanup() ?? 0) + (documents?.pendingCleanup() ?? 0) + (fileIndex?.pendingCleanup() ?? 0),
     projectAllows(evidence: Pick<MemoryProvenance, 'files' | 'sources' | 'projects'>, project?: Origin['project']) {
       const allowed = (scope?: MemoryScope | null) => scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
       return (evidence.projects ?? []).every(id => id === project?.id)
         && evidence.sources.every(id => allowed(store.readSource(id)?.project))
         && (evidence.files ?? []).every(ref => {
-          const view = filePolicy?.read(ref.workspace, ref.path)
-          return Boolean(view && fileDependenciesCurrent([ref]) && view.sourceTokens.every(sourceRef => {
-            const source = store.readSource(sourceRef.id)
+          return Boolean(fileDependenciesCurrent([ref]) && ref.sourceRanges.every(range => {
+            const source = store.readSource(range.sourceId)
             return source && allowed(source.scope) && allowed(source.context) && allowed(source.project)
           }))
         })

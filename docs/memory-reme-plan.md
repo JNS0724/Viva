@@ -2,6 +2,8 @@
 
 [简体中文](memory-reme-plan.zh-CN.md)
 
+**Current file deletion behavior (2026-11-19).** Deleting a memory removes the selected daily or digest file and its search index entries. Original chats and other files or host records survive, including records that used the deleted file. The erasure milestones below document an earlier implementation. Previously confirmed requests still recover under the original semantics. See [the current system design](system-design.md).
+
 Status: 2026-11-17. Development and local acceptance for all six phases are complete. The implementation freeze is `f1746d919c25770927722dca7d619ba72a1e2cfa`. Both platforms pass full tests, types, i18n, build, complete source smoke and actual application-artifact checks. Dual-platform PR CI has not run, and R5b PR/release acceptance remains pending. Section 18 retains the executing versions and conclusions of the fixed Chinese real-model processing run and independent-copy cold recovery. Local artifacts have no release signing.
 
 The six-phase order and four deferred items remain unchanged. Evidence, authorization, forgetting and send barriers remain requirements. The old engine has no users. Old data is not migrated and compatibility paths are removed. No ReMe service is used, and the comparison branch is unchanged.

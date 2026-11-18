@@ -37,7 +37,7 @@ export type ConversationTrace = TraceBase & (
   | { kind: 'thought' } | { kind: 'tool' }
   | { kind: 'permission', title: string } | { kind: 'question', title: string } | { kind: 'secret', title: string }
   | { kind: 'decision', title: string, allowed: boolean, choice: string }
-  | { kind: 'answer', title: string, answered: boolean, sourceRanges?: readonly { sourceId: string, start: number, end: number }[] }
+  | { kind: 'answer', title: string, answered: boolean }
   | { kind: 'secret_answer', title: string, provided: boolean }
   | { kind: 'memory', injection: MemoryInjection }
 )

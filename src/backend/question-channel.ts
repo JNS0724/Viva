@@ -194,9 +194,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
       if (!await validQuestion(entry) || pending.get(questionId) !== entry) return false
       pending.delete(questionId)
       send({ type: 'answer', id: questionId, answers: checked })
-      if (entry.taskId) {
-        emit({ type: 'task_question_closed', taskId: entry.taskId, questionId, answers: checked, sourceIds: sourceIds ?? {} })
-      } else if (!entry.context) closed(questionId, entry.taskId, entry.context)
+      if (entry.taskId || !entry.context) closed(questionId, entry.taskId, entry.context)
       else emit({ type: 'question_answered', questionId, answers: checked, ...(sourceId ? { sourceId } : {}), ...(sourceIds ? { sourceIds } : {}), context: entry.context })
       return true
     } finally { answering.delete(questionId) }

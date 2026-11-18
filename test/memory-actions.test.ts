@@ -163,6 +163,7 @@ test('file permanent forget buttons map through explicit confirmation and keep I
   const id = state.memory.files.forget!.id
   let nodes = draw(state.memory, handlers)
   const confirm = nodes.find(node => node.attrs['data-memory-file-forget'] === String(id))!
+  assert.ok(nodes.some(node => node.attrs.id === 'memory-file-forget-description' && node.textContent.includes('原聊天、已有的汇报和任务')))
   let suppressed = 0
   const key = (value: Partial<KeyboardEvent>) => confirm.listeners.keydown({ ...value,
     preventDefault() { suppressed++ }, stopPropagation() {} })
@@ -184,7 +185,7 @@ test('file permanent forget buttons map through explicit confirmation and keep I
   assert.equal(state.memory.files.forget?.phase, 'pending')
   assert.equal(state.memory.fileProfile, null)
   nodes = draw(state.memory, handlers)
-  assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent.includes('仍有副本待清理')))
+  assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent.includes('清理仍在进行中')))
   assert.ok(!nodes.some(node => node.textContent.includes('Private body') || node.textContent.includes('无法撤销。') && node.attrs.role === 'status'))
   assert.ok(!nodes.some(node => node.attrs.name === 'memory-file-forget-confirm'))
 })

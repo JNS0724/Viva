@@ -25,6 +25,52 @@ function fixture(t: { after(fn: () => void): void }) {
   return { root, db, sources, create, input }
 }
 
+test('local digest deletion recovers its exact file without changing another digest over the same evidence', t => {
+  const f = fixture(t), documents = f.create()
+  const removed = documents.commit(f.input)
+  const siblingPath = 'digest/wiki/home.md'
+  const sibling = documents.commit({ ...f.input, operationId: 'create-sibling', path: siblingPath, markdown: `Independent note linking to [[${path}]].` })
+  const siblingBefore = documents.read(workspace, siblingPath)
+  assert.throws(() => documents.deleteFile(workspace, removed.documentId, removed.usageVersion + 1), /version/)
+  assert.equal(documents.deleteFile(workspace, removed.documentId, removed.usageVersion), removed.usageVersion + 1)
+  assert.equal(documents.read(workspace, path, { includeDisabled: true }), null)
+  assert.equal(documents.needsRecovery(), false)
+  assert.equal(documents.deletedFileCleanupPending(workspace, removed.documentId), true)
+  assert.equal(documents.deletedFileCleanupPending(workspace, sibling.documentId), false)
+  assert.throws(() => f.create((point, changed) => {
+    if (point === 'replace' && changed === path) throw new Error('interrupted local deletion')
+  }), /interrupted local deletion/)
+  const recovered = f.create()
+  assert.equal(existsSync(join(f.root, workspace, path)), false)
+  assert.equal(recovered.pendingCleanup(), 0)
+  assert.equal(recovered.deletedFileCleanupPending(workspace, removed.documentId), false)
+  assert.deepEqual(recovered.read(workspace, siblingPath), siblingBefore)
+  assert.equal(readFileSync(join(f.root, workspace, siblingPath), 'utf8'), siblingBefore!.markdown)
+  assert.deepEqual(recovered.sourceRestrictions(workspace), [])
+  assert.equal(recovered.locatorRetired(workspace, path), false)
+  assert.deepEqual(recovered.receipt(workspace, sibling.operationId), sibling)
+  assert.equal(recovered.undoCandidate(workspace, removed.documentId), null)
+  assert.throws(() => recovered.commit({ ...f.input, operationId: 'stale-create' }), /unavailable/)
+})
+
+test('locally deleting a correction preserves its body-free supersession on the original document', t => {
+  const f = fixture(t), documents = f.create()
+  const original = documents.commit({ ...f.input, markdown: 'Old location' })
+  const replacement = documents.commit({ ...f.input, operationId: 'candidate', path: 'digest/wiki/new.md', markdown: 'Checking' })
+  const corrected = documents.commit({ ...f.input, path: replacement.path, operationId: 'correct', action: 'CORRECT',
+    expectedRevision: replacement.revision, markdown: 'New location', corrections: [{
+      path, revision: original.revision!, startLine: 1, endLine: 1, text: 'Old location', condition: 'During work', time: 'Now',
+    }] })
+  documents.deleteFile(workspace, corrected.documentId, corrected.usageVersion)
+  documents.recoverDeletedFiles()
+  const relations = documents.supersessions(workspace, path)
+  assert.equal(relations.length, 1)
+  assert.equal(relations[0]!.documentId, corrected.documentId)
+  assert.equal(relations[0]!.text, '')
+  assert.equal(documents.read(workspace, path)?.markdown, 'Old location')
+  assert.equal(documents.read(workspace, replacement.path), null)
+})
+
 test('document commits persist identity and history; repeat receipts do not add revisions', t => {
   const f = fixture(t), documents = f.create()
   const saved = documents.commit(f.input)

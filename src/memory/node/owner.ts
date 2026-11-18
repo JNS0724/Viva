@@ -217,11 +217,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
 
   const operation = (id: string) => db.prepare('SELECT * FROM owner_operations WHERE id=?').get(id) as Operation | undefined
+  function cleanupComplete(item: Operation) {
+    if (item.state !== 'completed') return false
+    const receipt = item.payload ? JSON.parse(item.payload) as { fileOnly?: boolean, result?: MemoryFileMutationResult } : null
+    if (receipt?.fileOnly && receipt.result) return !runtime.deletedFileCleanupPending(receipt.result.identity)
+    return runtime.cleanupPending() === 0 && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
+      && nativeCleanup.complete(item.id)
+  }
   const outcome = (item: Operation): MemoryOperationOutcome => ({ operationId: item.id, state: item.state,
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
-    cleanup: item.state === 'completed' && runtime.cleanupPending() === 0
-      && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
-      && nativeCleanup.complete(item.id) ? 'complete' : 'pending' })
+    cleanup: cleanupComplete(item) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
   function reconcileChildren(session: string, visited = new Set<string>()) {
@@ -727,7 +732,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return fence.mutate(write)
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
-  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string }
+  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string, fileOnly?: true }
   function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
     const sourceIds = new Set(sources.map(ref => ref.sourceId))
     return (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id }) => {
@@ -854,7 +859,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const sources = pending?.sources ?? (command.method === 'forgetFile' || request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
     const sessions = pending?.sessions ?? (command.method === 'forgetFile' ? [] : fileSessions(request.identity, sources))
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint,
-      JSON.stringify({ command, sources, sessions, standaloneSession } satisfies FileWritePayload))
+      JSON.stringify({ command, sources, sessions, standaloneSession, ...(command.method === 'forgetFile' && { fileOnly: true }) } satisfies FileWritePayload))
     let notify = false
     const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
       store.tx(() => {
@@ -871,15 +876,21 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
       })
     }
+    // The result and its file tombstone commit together. Older intent rows predate file-only deletion.
+    const fileOnly = !pending || pending.fileOnly === true
+    const finishForget = (result: MemoryFileMutationResult) => {
+      db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession, ...(fileOnly && { fileOnly: true }) }), id)
+    }
     let readers: FileReaders | undefined
     try {
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
-          : await runtime.forgetFile(command.input.args[0], (result, cuts) => {
+          : !fileOnly ? await runtime.resumeFileRangeErasure(command.input.args[0], (result, cuts) => {
             notify = recordRangeErasure(id, cuts, readers)
-            db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
+            finishForget(result)
           }, () => { readers = currentFileReaders(request.identity.workspace) })
+          : runtime.forgetFile(command.input.args[0], finishForget)
       if (notify) options.onHostEffects?.()
       diagnostics.emit({ event: 'state.changed', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
         stage: 'applied', identities: { requestId: id, ownerEpoch: epoch, resourceId: result.identity.id, generation: result.contentRevision } })
