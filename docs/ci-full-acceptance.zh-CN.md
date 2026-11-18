@@ -2,7 +2,7 @@
 
 [English](ci-full-acceptance.md) | 简体中文
 
-日期：2026-11-18。状态：安全网、条件专项门禁和 package 分层已实施；PR 仍运行完整测试，快速集合尚未启用。本文取代此前以同机文件分片、临时目录改造和付费执行机为方向的建议。
+日期：2026-11-18。状态：安全网、条件专项门禁和 package 分层已实施；PR 仍保留完整覆盖，快速集合尚未启用。本文取代此前以同机文件分片、临时目录改造和付费执行机为方向的建议。
 
 ## 1 当前决定
 
@@ -47,7 +47,7 @@
 
 保留 `check.yml` 现有聚合状态名称和 `retries: 0`：
 
-- `headless`：macOS 运行 typecheck、纯 `unit` 和文档检查；macOS 与 Windows 都运行 `io` 和 `process-critical`。
+- `headless`：当前完整覆盖阶段在 `package-required=false` 时运行完整 `npm test`，为 true 时运行 `test:source`，由 package 专项承接全部 4 个离线安装场景，避免重复执行。快速集合启用后，macOS 运行 typecheck、纯 `unit` 和文档检查；macOS 与 Windows 都运行 `io` 和 `process-critical`。
 - `core`：保持公共 UI 冒烟。
 - `integration`：保持当前 lane 和每个桌面 runner 单 worker，不与本方案同时重排。
 - 这些 job 的 `timeout-minutes` 保持 15。

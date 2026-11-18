@@ -27,6 +27,7 @@ jobs:
         run: node scripts/ci-scope.ts
 
   headless:
+    needs: scope
     strategy:
       fail-fast: false
       matrix:
@@ -41,7 +42,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - if: needs.scope.outputs.package-required == 'false'
+        run: npm test
+      - if: needs.scope.outputs.package-required == 'true'
+        run: npm run test:source
       - run: npm run check:i18n
 
   core:

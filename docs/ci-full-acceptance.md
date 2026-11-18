@@ -2,7 +2,7 @@
 
 English | [简体中文](ci-full-acceptance.zh-CN.md)
 
-Date: 2026-11-18. Status: the safety net, conditional specialization gate, and package tier are implemented; PRs still run the complete suite and the fast collection is not enabled. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
+Date: 2026-11-18. Status: the safety net, conditional specialization gate, and package tier are implemented; PRs retain complete coverage and the fast collection is not enabled. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
 
 ## 1 Decisions
 
@@ -47,7 +47,7 @@ Functional timing is not a performance benchmark. Classify `backend-wire-timing`
 
 Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
-- `headless`: macOS runs typecheck, pure `unit`, and documentation checks; both macOS and Windows run `io` and `process-critical`.
+- `headless`: in the current complete-coverage phase, run full `npm test` when `package-required=false` and `test:source` when true, with package covering all four offline-install scenarios without duplication. Once the fast collection is enabled, macOS runs typecheck, pure `unit`, and documentation checks; both macOS and Windows run `io` and `process-critical`.
 - `core`: retain public UI smoke.
 - `integration`: retain current lanes and one worker per desktop runner; do not rearrange them in the same change.
 - Keep these jobs' `timeout-minutes` at 15.

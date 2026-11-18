@@ -49,7 +49,10 @@ test('CI runs complete headless checks, independent core and every integration l
     assert.equal(jobs[name].strategy!['fail-fast'], false)
   }
   assert.deepEqual(jobs.integration.strategy!.matrix.lane, Object.keys(integrationLanes))
-  for (const command of ['npm run typecheck', 'npm test', 'npm run check:i18n']) assert.ok(commands(jobs.headless).includes(command))
+  for (const command of ['npm run typecheck', 'npm test', 'npm run test:source', 'npm run check:i18n']) assert.ok(commands(jobs.headless).includes(command))
+  assert.equal(jobs.headless.needs, 'scope')
+  assert.equal(jobs.headless.steps!.find(step => step.run === 'npm test')!.if, "needs.scope.outputs.package-required == 'false'")
+  assert.equal(jobs.headless.steps!.find(step => step.run === 'npm run test:source')!.if, "needs.scope.outputs.package-required == 'true'")
   assert.ok(commands(jobs.core).includes('npm run smoke:core'))
   assert.ok(commands(jobs.integration).includes('npx playwright test -c test/smoke/playwright.config.ts --project=integration'))
   for (const name of ['core', 'integration']) assert.ok(commands(jobs[name]).includes('npm run build'))
