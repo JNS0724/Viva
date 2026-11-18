@@ -56,7 +56,14 @@ Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
 Add reusable `memory.yml` to run the complete memory collection on macOS and Windows, with `workflow_dispatch` and `workflow_call`. Keep `workflow_call` in `package.yml` for affected PRs, daily acceptance, and releases.
 
-A `scope` job in `check.yml` runs on every PR and computes `memory-required` and `package-required` from the actual PR base/head diff. Failure to evaluate, missing base/head, or invalid output fails the job rather than defaulting to “not required.”
+A `scope` job in `check.yml` runs for every PR and main push and computes `memory-required` and `package-required`:
+
+- `pull_request`: compare the merge-base diff between the PR base and head.
+- Push to main: compare the event's `before` and `after`, covering the merged commit.
+- If expected SHAs are missing for a known event, Git diff is unavailable, or the range cannot be computed reliably, enter an explicit conservative fallback that requires both specializations; never default to “not required.”
+- Unknown events, exceptions in the scope script itself, and invalid output still fail `scope` and block the aggregate.
+
+Scope unit tests cover an ordinary PR, a merged main push, running all specializations when a range is unavailable, and blocking a scope-script exception.
 
 ```yaml
 memory:
@@ -74,14 +81,15 @@ The final aggregate reads `scope`, both conditional specializations, and every b
 
 | Scope evaluation | Specialized job | Aggregate outcome |
 | --- | --- | --- |
-| Failed or invalid output | Any | Fail |
+| Scope-script exception or invalid output | Any | Fail |
+| Range unavailable | Run both specializations | Judge both specialized results |
 | Not required | Skipped because its condition was false | Allow |
 | Required | Success | Allow |
 | Required | Failure, cancellation, skip, or missing result | Fail |
 
 Do not also run conditional specializations as separate path-triggered PR workflows, which would duplicate execution or leave their results outside the aggregate. Branch protection requires only the existing aggregate statuses; unrelated PRs never wait for a specialized status that will not be created.
 
-Gate tests cover at least an unrelated PR passing, an affected PR being blocked by specialization failure, and scope-evaluation failure being blocked. `package` follows the same truth table.
+Gate tests cover at least an unrelated PR passing, an affected PR being blocked by specialization failure, a merged main push using before/after, an unavailable range running every specialization, and a scope-script exception being blocked. `package` follows the same truth table.
 
 ### 4.3 Specialized trigger coverage
 
@@ -97,15 +105,19 @@ Each scenario or file's `watch` rules add its specific dependencies. The audit m
 
 `package.yml` scope covers memory sources, plugins, build scripts, lockfiles, and installed-artifact acceptance engineering. Ordinary PRs retain lightweight manifest, export, and dependency-closure checks.
 
+Package jobs on both platforms explicitly run `npm run test:memory-plugin` after `npm ci` and before building the application installer. This executes the `memory-package.test.ts` scenarios for plugin npm pack, offline installation, exported APIs, and error boundaries. Gate acceptance includes a PR example that selects only package and asserts that every `memory-package` scenario actually ran, rather than merely checking that the workflow was called.
+
 ### 4.4 Daily and release full acceptance
 
 Use three reusable entry points without duplicate builds:
 
-- `full.yml`: complete Node tests, source smoke, and performance, with `workflow_dispatch` and `workflow_call`.
+- `full.yml`: runs `npm ci`, `npm run typecheck`, complete `npm test`, build, source smoke, and performance in order, with `workflow_dispatch` and `workflow_call`.
 - `daily.yml`: calls both `full.yml` and `package.yml` every day, with `schedule` and `workflow_dispatch`.
 - `release.yml`: calls `full.yml` and `package.yml` separately; `publish` needs both and publishes the installers uploaded by that `package` invocation.
 
-Daily and release runs therefore cover the same complete product collection. Neither omits installed-application acceptance nor builds another copy of the installer at release time.
+Daily and release runs therefore cover the same complete product collection. Neither omits installed-application acceptance nor builds another copy of the installer at release time. A tag-triggered `full.yml` must check out the release commit and complete typecheck at least once; a typecheck failure blocks `publish` just like a test failure.
+
+Add the top-level caller's run ID to the `package.yml` concurrency group, for example `package-${{ github.ref }}-${{ inputs.runKey || github.run_id }}`. The optional `workflow_call` input `runKey` receives the caller's own `github.run_id` from check, daily, and release; direct manual runs fall back to their current run ID. Cancellation for a newer PR commit remains the responsibility of the upper-level `check.yml` concurrency group. Manual packaging and daily acceptance use different groups and cannot cancel each other. Verify that manual packaging and daily acceptance on the same main branch can both complete.
 
 The source and performance Playwright rounds in `full.yml` use different `VIVA_SMOKE_RUN` values:
 
@@ -204,13 +216,16 @@ Remove obsolete implementations in independent PRs rather than mixing them into 
 ## 7 Acceptance criteria
 
 - Daily and release runs execute 100% of the promised collection on free standard runners, including installed applications.
-- Unrelated PRs never wait for specialization; affected-PR specialization failures and scope-evaluation failures block the aggregate gate.
+- Unrelated PRs never wait for specialization; affected-PR specialization failures and scope-script exceptions block the aggregate gate.
+- A merged main push uses before/after for scope; an unavailable range runs every specialization instead of falsely reporting none.
+- A package-only PR actually executes every `memory-package` offline-install and export scenario.
 - Mixed files execute exactly the policy-selected scenario IDs in ordinary PRs, affected specializations, and full runs.
+- Manual packaging and daily acceptance on the same main branch use different concurrency groups and can both complete.
 - Full jobs finish within 45 minutes; the first five dual-platform full runs must validate whether this budget is sufficient.
 - Source and performance reports use separate directories and upload their actual diagnostics even after failure.
 - `check.yml` remains at 15 minutes, without hiding failures through reruns or cancellation.
 - Unregistered files, scenarios, or shared dependencies fail the audit.
-- Neither `package` nor `full` failure permits publication.
+- The release commit completes typecheck at least once in `full.yml`; neither `package` nor `full` failure permits publication.
 - If the complete collection consistently approaches 45 minutes, investigate real work and resource anomalies rather than extending timeouts again or deleting useful coverage.
 
 The intended outcome is bounded PR feedback, merge-blocking specialized acceptance for affected changes, no missing source, performance, or installed-artifact coverage in daily and release runs, and no additional runner expense for the public repository.
