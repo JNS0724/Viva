@@ -209,11 +209,14 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return 'retry'
     const output = reply.status === 'write' ? [reply.title, reply.markdown, reply.filename ?? ''] : []
     if (output.some(text => project(text) !== text) || output.length && sources.some(source => !allowsText(output.join('\n'), source))) return 'retry'
-    if (!await mutate(() => {
+    const commit = () => {
       if (!current() || !effects.holds(job) || sources.some(source => !eligible(source))) return false
       if (output.some(text => project(text) !== text)) return false
       return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })
-    })) {
+    }
+    // An ordinary skip only checkpoints turns. A rebuild can remove the previously accepted file.
+    const checkpointOnly = reply.status === 'skip' && !rebuilding && !notes.jobState(job.key, job.generation)
+    if (!(checkpointOnly ? commit() : await mutate(commit))) {
       // Rebuilds can replay already checkpointed turns, including on an empty
       // allocation. An ordinary pending-turn job would lose that work.
       if (rebuilding) return 'retry'
@@ -256,6 +259,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   const CLEAN = 'memory.note-cleanup'
   effects.runs(CLEAN, async jobs => {
     if (notes.needsRecovery()) await mutate(() => notes.recover())
+    notes.checkpointCleanup()
     return new Map(jobs.map(job => [job.key, notes.pendingCleanup() ? 'retry' as const : 'done' as const]))
   })
   effects.runs(WRITE_NOTE, run(write), attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))

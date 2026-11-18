@@ -37,7 +37,7 @@ export type ConversationTrace = TraceBase & (
   | { kind: 'thought' } | { kind: 'tool' }
   | { kind: 'permission', title: string } | { kind: 'question', title: string } | { kind: 'secret', title: string }
   | { kind: 'decision', title: string, allowed: boolean, choice: string }
-  | { kind: 'answer', title: string, answered: boolean }
+  | { kind: 'answer', title: string, answered: boolean, sourceRanges?: readonly { sourceId: string, start: number, end: number }[] }
   | { kind: 'secret_answer', title: string, provided: boolean }
   | { kind: 'memory', injection: MemoryInjection }
 )
@@ -111,7 +111,7 @@ export interface ConversationPayloads {
   done_seen: {}
   error: { message: string }
   memory_context: { injected: readonly MemoryInjection[] }
-  report_delivered: { conversationId: string | null, sessionId: string | null, reportId: string, text: string, at: number }
+  report_delivered: { conversationId: string | null, sessionId: string | null, reportId: string, text: string, at: number, beforeSource?: string }
 }
 export type ConversationAction = { [K in keyof ConversationPayloads]: { type: K } & ConversationPayloads[K] }[keyof ConversationPayloads]
 export type ConversationHandlers = { [K in keyof ConversationPayloads]?: (view: ConversationState, action: ConversationPayloads[K] & { type?: K }) => ConversationState }

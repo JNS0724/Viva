@@ -261,7 +261,8 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? ORDER BY seq`),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
-      VALUES (?, ?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?), ?, ?)`),
+      VALUES (?, ?, COALESCE((SELECT MIN(seq) FROM messages WHERE conversation_id = ? AND source_id = ?),
+        (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)), ?, ?)`),
     reportProof: db.prepare('SELECT memory FROM memory_report_proofs WHERE report_id=?'),
     putReportProof: db.prepare('INSERT INTO memory_report_proofs VALUES (?,?)'),
     hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
@@ -417,11 +418,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
    * now. False when it is kept already.
    */
-  function addRecord({ conversationId, reportId, at, text, memory }: { conversationId: string, reportId: string, at: number, text: string, memory?: MemoryProvenance }): boolean {
+  function addRecord({ conversationId, reportId, at, text, beforeSource, memory }: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, memory?: MemoryProvenance }): boolean {
     const id = assertId(conversationId)
     return transaction(() => {
       if (memory && !recordReportProof(reportId, memory)) return false
-      return Number(sql.addRecord.run(reportId, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
+      return Number(sql.addRecord.run(reportId, id, id, beforeSource ?? null, id, Math.max(0, Math.trunc(at)), text).changes) > 0
     })
   }
 
@@ -722,7 +723,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
     addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
-    evidenceErased: memoryRanges.affects,
+    evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
     create, save, get, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

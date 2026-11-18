@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
@@ -35,6 +36,94 @@ function encoder() {
   const embedder: MemoryEmbedder={dimensions:384,fingerprint:'test-space',close(){},async embedBatch(inputs){calls.push([...inputs]);return inputs.map(item=>unit(item.text.includes('needle')?0:1))}}
   return {embedder,calls}
 }
+
+test('automatic context returns lexical evidence before cold passage encoding and gates weak hot candidates', async t => {
+  let unblock!: () => void, complete!: () => void
+  const gate = new Promise<void>(resolve => { unblock = resolve })
+  const published = new Promise<void>(resolve => { complete = resolve })
+  const { embedder, calls } = encoder()
+  const run = embedder.embedBatch
+  embedder.embedBatch = async (inputs, signal) => {
+    if (inputs[0]?.kind === 'passage') await gate
+    if (inputs[0]?.kind === 'query' && inputs[0].text === '今天天气怎么样') return [unit(1)]
+    return run(inputs, signal)
+  }
+  const { retrieval, index } = setup(t, [view('weekly', '今天已提交周报 needle')], embedder)
+  t.after(unblock)
+  const finish = index.finishVectors
+  index.finishVectors = (...args) => { const result = finish(...args); complete(); return result }
+  const search = (query: string) => retrieval.search({ query, limit: 1, automatic: true, allows })
+  const cold = await search('周报')
+  assert.equal(cold.hits.length, 1)
+  assert.equal(retrieval.searchCached({ query: '帮我写周报', automatic: true, allows }).hits[0]?.id, 'weekly')
+  assert.equal(calls.length, 0)
+  unblock()
+  // A referenced turn lets the deferred index preparation run in the test process.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await published
+  assert.equal(index.vectorState().active, true)
+  const unrelated = await search('今天天气怎么样')
+  assert.equal(unrelated.status, 'empty')
+  assert.deepEqual(unrelated.files, [])
+  assert.deepEqual(unrelated.sourceIds, [])
+  const strong = await search('needle-equivalent')
+  assert.equal(strong.hits[0]?.id, 'weekly')
+})
+
+test('slow hot query falls back to lexical evidence and its late vector cannot enter the completed turn', async t => {
+  const { embedder } = encoder()
+  const run = embedder.embedBatch
+  let finish!: () => void, querySignal: AbortSignal | undefined
+  const gate = new Promise<void>(resolve => { finish = resolve })
+  embedder.embedBatch = async (inputs, signal) => {
+    if (inputs[0]?.kind === 'query') { querySignal = signal; await gate }
+    return run(inputs, signal)
+  }
+  const { retrieval } = setup(t, [view('a', 'needle'), view('b', 'other')], embedder)
+  retrieval.sync()
+  assert.ok(await retrieval.prepareVectors())
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const pending = retrieval.search({ query: 'needle', automatic: true, allows })
+    assert.ok(querySignal)
+    t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticQueryTimeoutMs)
+    const result = await pending
+    assert.deepEqual(result.hits.map(hit => hit.id), ['a'])
+    assert.equal(querySignal.aborted, false)
+    assert.ok(result.reasons.includes('semantic-unavailable'))
+  } finally { finish() }
+})
+
+test('a new file in a hot index is embedded after the timed-out query releases the single worker', async t => {
+  const { embedder } = encoder()
+  const run = embedder.embedBatch
+  let release!: () => void, busy = false, collisions = 0
+  const query = new Promise<void>(resolve => { release = resolve })
+  embedder.embedBatch = async (inputs, signal) => {
+    if (busy) { collisions++; return null }
+    busy = true
+    try {
+      if (inputs[0]?.kind === 'query') await query
+      return await run(inputs, signal)
+    } finally { busy = false }
+  }
+  const { retrieval, views, index } = setup(t, [view('old', 'old note')], embedder)
+  retrieval.sync()
+  assert.ok(await retrieval.prepareVectors())
+  views.set('new', view('new', 'needle'))
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const pending = retrieval.search({ automatic: true, query: 'needle', allows })
+    t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticQueryTimeoutMs)
+    assert.equal((await pending).hits[0]?.id, 'new')
+    assert.equal(collisions, 0)
+    release()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    t.mock.timers.tick(1)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(index.missingVectors(index.vectorState().generation), [])
+  } finally { release() }
+})
 
 test('retrieval diagnostics identify lexical, vector, fusion and relations without copying query or evidence', async t => {
   const events: DiagnosticEvent[] = []

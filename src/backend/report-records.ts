@@ -2,7 +2,7 @@ import type { Apply } from './journal.ts'
 import type { Effect } from './effects.ts'
 import type { Conversation } from './history-db.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
-import { recordedNote, type ReportPayload } from './task-reports.ts'
+import { REPORT, recordedNote, type ReportPayload } from './task-reports.ts'
 import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
@@ -24,13 +24,14 @@ export interface RecordHistory {
   /** Whether a conversation is stored (a blank topic is not, till its first save). */
   get: (id: string) => unknown
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
-  addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, memory?: MemoryProvenance }) => boolean
+  addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, memory?: MemoryProvenance }) => boolean
   evidenceErased: (memory: MemoryProvenance) => boolean
   recordReportProof: (reportId: string, memory: MemoryProvenance) => boolean
 }
 
 /** What of the effects queue is used here. */
 export interface RecordEffects {
+  get: (kind: string, key: string) => Effect | null
   holds: (effect: Effect) => boolean
   finishGeneration: (effect: Effect) => boolean
   amend: <P extends object>(effect: Effect<P>, payload: P) => boolean
@@ -40,7 +41,7 @@ export interface RecordEffects {
  * A record for the window to draw where it came (state.ts report_delivered): for that conversation, or, before its
  * first save (the window knows no id for it yet), for the topic on that session.
  */
-export interface RecordShown { type: 'report_delivered', conversationId: string, sessionId: string, reportId: string, text: string, at: number, context: ConversationContext }
+export interface RecordShown { type: 'report_delivered', conversationId: string, sessionId: string, reportId: string, text: string, at: number, beforeSource?: string, context: ConversationContext }
 
 export interface ReportRecordsDeps {
   history: () => RecordHistory | null
@@ -67,7 +68,19 @@ export function createReportRecords({ history, effects, apply, current, show, no
 
   function drawOn(target: Conversation, effect: Effect<ReportPayload>, at: number) {
     const context = { conversationId: target.id, sessionId: effect.payload.deliveredTo as string }
-    show({ type: 'report_delivered', conversationId: target.id, sessionId: context.sessionId, reportId: effect.key, text: recordedNote(effect.payload), at, context })
+    show({ type: 'report_delivered', conversationId: target.id, sessionId: context.sessionId, reportId: effect.key, text: recordedNote(effect.payload), at, ...(effect.payload.beforeSource && { beforeSource: effect.payload.beforeSource }), context })
+  }
+
+  // The user message may already be saved when the native read receipt arrives after restart.
+  function beforeUser(reportIds: readonly string[], session: string, source: string) {
+    const queue = effects()
+    if (!queue) return
+    for (const id of reportIds) {
+      const queued = queue.get(REPORT, id) as Effect<ReportPayload> | null
+      if (queued?.payload.deliveredTo === session && queued.payload.via === 'turn' && !queued.payload.beforeSource) {
+        queue.amend(queued, { ...queued.payload, beforeSource: source })
+      }
+    }
   }
 
   /** Written in the session it went to: that conversation on screen, its record is drawn now, where it came. */
@@ -92,8 +105,11 @@ export function createReportRecords({ history, effects, apply, current, show, no
     const queue = effects()
     const store = history()
     if (!queue || !store) throw new Error('the history is not open for a report\'s record')
+    // A pending status request can carry an older snapshot across beforeUser.
+    const latest = queue.get(effect.kind, effect.key) as Effect<ReportPayload> | null
+    if (!latest || latest.generation !== effect.generation) return
+    if (latest.payload.deliveredTo) effect = latest
     const target = targetOf(effect)
-    if (!queue.holds(effect)) return
     if (!target) {
       apply('effect.done', { kind: effect.kind, key: effect.key }, () => queue.finishGeneration(effect))
       return
@@ -105,11 +121,11 @@ export function createReportRecords({ history, effects, apply, current, show, no
       if (memory && store.evidenceErased(memory)) return false
       // A blank topic on screen is stored with it, so the record has a conversation to come back with after a restart.
       if (!store.get(target.id)) store.save(target, [], { keepEmpty: true })
-      store.addRecord({ conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload), memory })
+      store.addRecord({ conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload), beforeSource: effect.payload.beforeSource, memory })
       return true
     }).value
     if (kept && target.id === current().id) drawOn(target, effect, at)
   }
 
-  return { written, read }
+  return { beforeUser, written, read }
 }

@@ -27,6 +27,7 @@ export type AgentEvent =
   | ({ type: 'error', message: string, context?: ConversationContext })
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
   | { type: 'memory_changed', failure?: string, traceSessions?: readonly string[],
+      originalCuts?: readonly import('../memory/contracts/text-spans.ts').OriginalHistoryCut[],
       erasedOutputs?: readonly { session: string, key: string }[], erasedFeedIds?: readonly string[] }
   | { type: 'files_changed', path: string }
   | { type: 'feed_changed' | 'schedules_changed' }
@@ -35,6 +36,6 @@ export type AgentEvent =
   | ({ type: 'task_update' } & Position & Payload<'acp_update'>)
   | ({ type: 'task_permission_closed' } & Position & Payload<'permission_closed'>)
   | ({ type: 'task_question' } & Position & Payload<'question_request'>)
-  | ({ type: 'task_question_closed' } & Position & Payload<'question_closed'>)
+  | ({ type: 'task_question_closed' } & Position & Payload<'question_closed'> & Partial<Pick<Payload<'question_answered'>, 'answers' | 'sourceIds'>>)
   | ({ type: 'task_steered', text: string } & Position)
   | ({ type: 'task_end', stopReason?: string, message?: string | null } & Position)

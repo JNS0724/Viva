@@ -212,7 +212,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     db.save(found.conversation, [...found.messages.slice(0, task.keep), ...messages])
   }
   const taskWords = createTaskWords({
-    ...timers, persist,
+    ...timers, persist, projectOriginal: db.projectOriginal,
     onError: (err) => emitDiagnosticFailure('task', err, { stage: 'checkpoint' }),
   })
 
@@ -680,7 +680,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
 
   return {
-    revokeMemorySessions,
+    revokeMemorySessions, eraseOriginals: taskWords.eraseOriginals,
     dispose() {
       disposed = true
       for (const [taskId, pending] of pendingEnds) {

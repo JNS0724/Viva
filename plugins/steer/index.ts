@@ -88,7 +88,10 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
   })
   ctx.on('agent/inbox/claimed', ({ agent, message }) => reports.taken(String(agent.id), message as ReportMessage))
   ctx.on('agent/inbox/discarded', ({ agent, message }) => reports.discarded(String(agent.id), message as ReportMessage))
-  ctx.on('agent/status', ({ agent, status }) => { if (status === 'idle') reports.idle(String(agent.id)) })
+  ctx.on('agent/status', ({ agent, status }) => {
+    if (status === 'idle') reports.idle(String(agent.id))
+    else if (status === 'running') port.send?.({ type: 'steer_turn_running', sessionId: String(agent.id) })
+  })
 
   const channel = createSteerChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, steer, log, reports)
   // The channel must not keep dsh running once its input closes.

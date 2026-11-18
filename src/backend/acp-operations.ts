@@ -12,6 +12,7 @@ interface Operation {
   id: string
   released: boolean
   foreground: boolean
+  interjections?: Set<string>
   prompting: boolean
   context: ConversationContext | null
   stream?: Awaited<ReturnType<Streams['begin']>>
@@ -140,9 +141,22 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       const operation = running.get(id)
       return operation?.foreground && !operation.released ? operation.id : undefined
     },
+    recordInterjection(session: string, source: string) {
+      const operation = running.get(session)
+      if (operation && !operation.released && !operation.foreground) (operation.interjections ??= new Set()).add(source)
+    },
+    clarificationTurn(session: string) {
+      const operation = running.get(session)
+      if (!operation || operation.released) return null
+      if (operation.foreground) return { id: operation.id }
+      return operation.interjections?.size ? { id: operation.id, sources: [...operation.interjections] } : null
+    },
     endUserTurn(id: string) {
       const operation = running.get(id)
-      if (operation) operation.foreground = false
+      if (operation) {
+        operation.foreground = false
+        operation.interjections?.clear()
+      }
     },
     forwardStream(id: string, update: unknown) {
       const operation = running.get(id)

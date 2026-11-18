@@ -22,17 +22,17 @@ test('a synchronous human reservation excludes a report throughout asynchronous 
   const requests = createForegroundRequests(), gate = admissionGate()
   let entered = false
   const prompt = requests.human(() => true, async () => { entered = true; await gate.promise })
-  assert.equal(requests.reserveReport(), null, 'the human owns the start before its first await')
+  assert.equal(requests.reserveReport(['r']), null, 'the human owns the start before its first await')
   await Promise.resolve(); await Promise.resolve()
-  assert.equal(requests.reserveReport(), null)
+  assert.equal(requests.reserveReport(['r']), null)
   gate.release(); await prompt
   assert.equal(entered, true)
-  const report = requests.reserveReport()
+  const report = requests.reserveReport(['r'])
   assert.ok(report); report.finish()
 })
 
 test('human requests waiting on a report keep arrival order and cannot be overtaken by another report', async () => {
-  const requests = createForegroundRequests(), report = requests.reserveReport()!, gate = admissionGate()
+  const requests = createForegroundRequests(), report = requests.reserveReport(['r'])!, gate = admissionGate()
   const started: number[] = []
   const first = requests.human(() => true, async held => { assert.ok(held()); started.push(1); await gate.promise })
   const next = requests.human(() => true, async held => { assert.ok(held()); started.push(2) })
@@ -41,21 +41,21 @@ test('human requests waiting on a report keep arrival order and cannot be overta
   report.finish()
   await report.done; await Promise.resolve(); await Promise.resolve()
   assert.deepEqual(started, [1])
-  assert.equal(requests.reserveReport(), null)
+  assert.equal(requests.reserveReport(['r']), null)
   gate.release(); await Promise.all([first, next])
   assert.deepEqual(started, [1, 2])
   assert.equal(requests.busy(), false)
 })
 
 test('cancelled or reselected queued prompts cannot cross a bridge generation', async () => {
-  const requests = createForegroundRequests(), report = requests.reserveReport()!
+  const requests = createForegroundRequests(), report = requests.reserveReport(['r'])!
   let sent = false
   const old = requests.human(() => true, async () => { sent = true })
   const refused = assert.rejects(old, ForegroundRequestRetired)
   requests.invalidate()
   await refused
   assert.equal(sent, false)
-  const fresh = requests.reserveReport()!
+  const fresh = requests.reserveReport(['r'])!
   report.finish()
   assert.equal(fresh.current(), true, 'a late old report cannot release its replacement')
   let selected = true
@@ -65,6 +65,41 @@ test('cancelled or reselected queued prompts cannot cross a bridge generation', 
   await changedRejected
   assert.equal(sent, false)
   assert.equal(requests.busy(), false)
+})
+
+test('user interjections enter a running report in arrival order as each is acknowledged', async () => {
+  const requests = createForegroundRequests(), report = requests.reserveReport(['r'])!, ack = admissionGate()
+  const entered: number[] = []
+  const send = (n: number) => requests.human(() => true, async () => assert.fail('unexpected new turn'), async held => {
+    assert.ok(held())
+    entered.push(n)
+    await ack.promise
+    return { result: undefined }
+  })
+  const first = send(1), next = send(2)
+  await Promise.resolve()
+  assert.deepEqual(entered, [])
+  requests.reportWritten('r')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(entered, [1])
+  ack.release()
+  await Promise.all([first, next])
+  assert.deepEqual(entered, [1, 2])
+  assert.ok(report.current())
+  report.finish()
+})
+
+test('an idle steer receipt starts one human turn after the report releases its claim', async () => {
+  const requests = createForegroundRequests(), report = requests.reserveReport(['r'])!, attempted = admissionGate()
+  const starts: string[] = []
+  requests.reportWritten('r')
+  const delivered = requests.human(() => true, async () => { starts.push('prompt') }, async () => {
+    starts.push('steer'); attempted.release(); return null
+  })
+  await attempted.promise
+  assert.deepEqual(starts, ['steer'])
+  report.finish(); await delivered
+  assert.deepEqual(starts, ['steer', 'prompt'])
 })
 
 /**
@@ -86,7 +121,7 @@ type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
   steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true,
-  eligible = (_taskId: string, _session: string): boolean => true } = {}) {
+  eligible = (_taskId: string, _session: string): boolean => true, opening = (_id: string): boolean => false } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
   const asked: Array<[string, string, string]> = []
@@ -99,7 +134,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     session: () => world.session,
     superseded: (taskId) => world.atWork.has(taskId),
     holds: (effect) => !world.released.has(effect.key),
-    eligible,
+    eligible, opening,
     status: async (session, reportId, token) => { asked.push([session, reportId, token]); whileAsking(reportId); return known[`${session} ${reportId}`] ?? known[reportId] ?? 'none' },
     deliver: async (session, reportId, _token, text) => { delivered.push([session, reportId, text]); return steered },
     report: (note) => { turns.push(note); return true },
@@ -112,6 +147,15 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
   const outcomes = async (effects: Effect[]) => Object.fromEntries(await run(effects)) as Record<string, Outcome>
   return { outcomes, turns, delivered, world, asked, kept, reads }
 }
+
+test('a second pass cannot steer an opening report into its own turn before the native write', async () => {
+  const { outcomes, delivered, turns, kept } = setup({ state: 'busy', opening: id => id === t1.key })
+  const result = await outcomes([t1])
+  assert.equal(result[t1.key], 'wait')
+  assert.deepEqual(delivered, [])
+  assert.deepEqual(turns, [])
+  assert.ok(kept.every(payload => !payload.via))
+})
 
 test('report diagnostics follow committed reads and durable retry identity without logging the secret token or note', async t => {
   const events: DiagnosticEvent[] = []
@@ -337,6 +381,16 @@ const delivered = (conversationId: string, at = 12, sessionId = 's1') => ({ type
 type WindowState = ReturnType<typeof reduce>
 const layout = (state: WindowState) => [...recordsAt(state, 0).map(() => 'record'),
   ...state.messages.flatMap((message, i) => [message.role, ...recordsAt(state, i + 1).map(() => 'record')])]
+
+test('a report opening the turn stays above an optimistic user message when its receipt arrives later', () => {
+  const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [], savedAt: 1 })
+  const turn = reduce(start, { type: 'agent_turn_started', by: 'task', at: 10 })
+  const asking = reduce(turn, { type: 'user_steer', text: '顺便说一下原因', sourceId: 'u' })
+  const receipt = { ...delivered('c1'), text: recordedNote(t1.payload as ReportPayload), beforeSource: 'u' }
+  assert.deepEqual(layout(reduce(asking, receipt)), ['record', 'user'])
+  const early = reduce(asking, { ...receipt, beforeSource: undefined })
+  assert.deepEqual(layout(reduce(early, receipt)), ['record', 'user'])
+})
 
 test('in the window: a delivered report is a record where it came; what the agent says next comes below it; once only', () => {
   const start = reduce(initialState, { type: 'history_loaded', conversationId: 'c1', messages: [{ role: 'user', text: '看看 README' }], savedAt: 1 })

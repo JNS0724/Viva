@@ -54,7 +54,7 @@ async function setup(t: TestContext) {
     return reader
   }
   function recall(session: string, query: string) {
-    return JSON.parse(owner.runtime.handle({ op: 'recall', session, query }, owner.sessionContext(session))) as {
+    return JSON.parse(owner.runtime.handle({ op: 'recall', session, query }, owner.recallOrigin(session))) as {
       notes: Array<{ pendingClarification?: boolean; markdown?: string }>, clarification?: { ref: string },
     }
   }
@@ -144,6 +144,29 @@ test('only relevant file retrieval issues a scoped clarification and its genuine
   assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'ready')
   await assert.rejects(f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, question.question, reply)))
   assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_answers').get()?.n, 1)
+})
+
+test('an opening report can clarify only a recall bound to a consumed user interjection', async t => {
+  const f = await setup(t)
+  for (const useOldRef of [true, false]) {
+    const session = randomUUID(), source = randomUUID()
+    await f.owner.handleHost('sourceAlias', { operationId: source, sourceId: source, session, conversation: session,
+      text: 'Which conference venue?', context: { kind: 'user' } })
+    const occurrence = { sessionId: session, at: Date.now(), timezone: 'UTC', turn: 1, admitted: true, inherited: false }
+    await f.owner.receiveSource({ ...occurrence, step: 1, messageId: randomUUID(), text: 'Derived report', derived: true })
+    const old = f.recall(session, topic).clarification
+    assert.ok(old)
+    await f.owner.receiveSource({ ...occurrence, step: 2, messageId: source, text: 'Which conference venue?' })
+    const retrieved = f.recall(session, 'planned conference venue')
+    const fresh = retrieved.clarification
+    assert.ok(fresh, JSON.stringify({ retrieved, origin: f.owner.recallOrigin(session) }))
+    assert.notEqual(old.ref, fresh.ref)
+    const issued = f.issue(session, useOldRef ? old.ref : fresh.ref)
+    assert.equal(issued.status, 'ready-file')
+    const show = (sources: string[]) => f.owner.handleHost('clarificationQuestion', { args: [session, 'host-turn', issued.question.id, 'show', sources] })
+    assert.equal(await show([randomUUID()]), null, 'an unrelated source cannot show this card')
+    assert.equal(Boolean(await show([source])), !useOldRef, 'the original report recall stays ineligible')
+  }
 })
 
 test('forgetting the selected evidence invalidates the waiting question and leaves no source from late answers', async t => {

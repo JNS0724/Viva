@@ -1,5 +1,7 @@
 export type TextSpan = { start: number, end: number }
 
+export type OriginalHistoryCut = { sourceId: string, length: number, spans: readonly TextSpan[] }
+
 export function mergeTextSpans(spans: readonly TextSpan[]): TextSpan[] {
   const result: TextSpan[] = []
   for (const span of [...spans].sort((a, b) => a.start - b.start || a.end - b.end)) {

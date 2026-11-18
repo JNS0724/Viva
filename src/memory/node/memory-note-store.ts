@@ -281,36 +281,51 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     }
     return { files, edits, put, index, indexKeys }
   }
+  type Purge = DialogPurge & { id: number, note: string, workspace: string, path: string | null, expected_revision: string | null }
+  const purges = () => db.prepare('SELECT * FROM memory_note_purges ORDER BY id').all() as Purge[]
+  function purgePlan(purge: Purge): FilePlan<Data> | null {
+    const edit = changes(purge.workspace)
+    if (purge.path) {
+      const owner = db.prepare('SELECT key FROM memory_daily_notes WHERE workspace=? AND path=?').get(purge.workspace,purge.path)
+      // Registration owns this managed path until erasure completes. Changed bytes do not
+      // transfer ownership; only a different registered logical identity protects a new file.
+      if (!owner || owner.key === purge.note) {
+        const observed = edit.files.read(purge.path)
+        if (observed && purge.expected_revision && observed.revision !== purge.expected_revision) return null
+        edit.put(purge.path, null)
+      }
+      // External rename changes a pathname, never the session/day identity that owns the index.
+      edit.index(noteDay(purge.note), undefined, !owner || owner.key === purge.note ? purge.path : undefined)
+    }
+    const directive: DialogPurge = { session: purge.session, turn: purge.turn, mode: purge.mode, source: purge.source }
+    const path = sessionPath(purge.session), before = edit.files.read(path)
+    if (before) edit.put(path, purgeDialog(before.markdown, directive))
+    const members = [...edit.edits.values()].map(change => change.path === path || change.path === purge.path ? fileErasure(change) : change)
+    return { workspace: purge.workspace, changes: members, data: { kind: 'purge', refs: [], id: purge.id, dialog: directive } }
+  }
+  function purgeReady(purge: Purge) {
+    // A prepared purge is checked against its own durable plan by journal.needsRecovery().
+    if (journal.state(`purge:${purge.id}`)) return false
+    const plan = purgePlan(purge)
+    return plan && plan.changes.every(change => journal.visible(plan.workspace, change.path))
+  }
   function recover() {
     journal.recover()
-    type Purge = DialogPurge & { id: number, note: string, workspace: string, path: string | null, expected_revision: string | null }
-    for (const purge of db.prepare('SELECT * FROM memory_note_purges ORDER BY id').all() as Purge[]) {
+    for (const purge of purges()) {
       try {
         journal.commit(`purge:${purge.id}`, String(purge.id), () => {
-          const edit = changes(purge.workspace)
-          if (purge.path) {
-            const owner = db.prepare('SELECT key FROM memory_daily_notes WHERE workspace=? AND path=?').get(purge.workspace,purge.path)
-            // Registration owns this managed path until erasure completes. Changed bytes do not
-            // transfer ownership; only a different registered logical identity protects a new file.
-            if (!owner || owner.key === purge.note) {
-              const observed = edit.files.read(purge.path)
-              if (observed && purge.expected_revision && observed.revision !== purge.expected_revision) throw new Error('memory-purge-version')
-              edit.put(purge.path, null)
-            }
-            // External rename changes a pathname, never the session/day identity that owns the index.
-            edit.index(noteDay(purge.note), undefined, !owner || owner.key === purge.note ? purge.path : undefined)
-          }
-          const directive: DialogPurge = { session: purge.session, turn: purge.turn, mode: purge.mode, source: purge.source }
-          const path = sessionPath(purge.session), before = edit.files.read(path)
-          if (before) edit.put(path, purgeDialog(before.markdown, directive))
-          const members = [...edit.edits.values()].map(change => change.path === path || change.path === purge.path ? fileErasure(change) : change)
-          return { workspace: purge.workspace, changes: members, data: { kind: 'purge', refs: [], id: purge.id, dialog: directive } }
+          const plan = purgePlan(purge)
+          if (!plan) throw new Error('memory-purge-version')
+          return plan
         })
       } catch (error) {
         // A quarantined file/plan is local to its note. Keep cleanup durable without blocking other workspaces.
         if (!(error instanceof Error && ['memory-purge-version', 'memory-file-plan-busy', 'memory-file-plan-conflict'].includes(error.message))) throw error
       }
     }
+    checkpointCleanup()
+  }
+  function checkpointCleanup() {
     if (db.prepare('SELECT 1 FROM memory_note_erasures LIMIT 1').get() && truncateMemoryJournal(db)) db.exec('DELETE FROM memory_note_erasures')
   }
   function removeEvidence(sourceId: string, cut?: DocumentSourceCut) {
@@ -448,7 +463,8 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       file_revision: String(row.file_revision), sources: references(String(row.key)),
       state: db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(String(row.key)) ? 'withdrawing' as const : 'active' as const,
     })),
-    needsRecovery: () => Boolean(db.prepare("SELECT 1 FROM memory_file_intents WHERE namespace='notes' AND plan IS NOT NULL LIMIT 1").get()) || pendingCleanup() > 0,
+    needsRecovery: () => journal.needsRecovery() || purges().some(purgeReady),
+    checkpointCleanup,
     recover, read, snapshot, references,
     pendingCleanup,
     rebuildRows: (key: string) => (db.prepare('SELECT * FROM memory_note_turns WHERE note=? ORDER BY rowid').all(key) as unknown as TurnRow[]).map(turn),

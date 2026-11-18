@@ -46,6 +46,7 @@ const DAILY = 'daily'
 const DAY_MS = 86_400_000
 const unique = <T>(values: readonly T[]) => [...new Set(values)]
 const parse = (text: string) => JSON.parse(text) as unknown
+const isModelTimeout = (error: unknown) => error instanceof MemoryComputeError && error.reason === 'timeout'
 
 /** ReMe day grouping and UTF-8 budget. Oversized single files remain standalone, never silently disappear. */
 export function batchDreamNotes<T extends { day: string, document: string }>(notes: readonly T[], budget: number): T[][] {
@@ -87,6 +88,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     identities: { jobId: job.key, generation: job.generation },
     ...(attempt === undefined ? {} : { metrics: { attempt } }),
   })
+  async function calculateStage(request: Parameters<DreamCalculate>[0]) {
+    try { return await calculate(request) }
+    catch (error) {
+      if (isModelTimeout(error)) progress(request.job, 'timeout', request.stage)
+      throw error
+    }
+  }
   const { timezone, dreamTime, scanDays, dreamUnits, dreamBatchBytes } = { ...defaults, ...settings }
   if (!Number.isSafeInteger(scanDays) || scanDays < 1 || !Number.isSafeInteger(dreamUnits) || dreamUnits < 1) throw new Error('invalid-dream-settings')
   const schedule = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
@@ -149,7 +157,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     })
     return plan.retryExtraction ? 'retry' : 'done'
   }
-  async function extract(job: Effect): Promise<DreamPlan | 'wait' | undefined> {
+  async function extract(job: Effect): Promise<DreamPlan | 'wait' | 'retry' | undefined> {
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
     const plan: DreamPlan = { version: 1, files: [], units: [], tags: [], retryExtraction: false }
@@ -167,8 +175,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     const allNotes = notes.list(null, null)
     const workspaces = unique(allNotes.map(note => note.workspace))
     const extracted: Array<{ workspace: string, unit: DreamUnit }> = []
-    let count = 0
+    let count = 0, timedOut = false
     for (const workspace of workspaces) {
+      if (timedOut) break
       const pending = documents.pending(workspace).filter(work => {
         if (work.status === 'resolved' || work.status === 'expired') return false
         if (deferredPoliciesCurrent(work)) return true
@@ -192,7 +201,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       const candidates = scoped.filter(note => !dormant.some(work => work.files.some(ref => ref.path === note.path && ref.revision === note.fileRevision))
         && scopedDocuments(workspace).read(note.path)?.applicability?.state !== 'unavailable')
       const consume = async (batch: Note[]): Promise<void> => {
-        if (count >= dreamUnits || !effects.holds(job)) return
+        if (timedOut || count >= dreamUnits || !effects.holds(job)) return
         const view = scopedDocuments(workspace)
         const snapshots = batch.map(note => view.read(note.path))
         if (snapshots.some(snapshot => !snapshot || snapshot.applicability?.state === 'unavailable')) return
@@ -207,7 +216,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         let invalid = false
         for (let attempt = 0; attempt < 2 && !units; attempt++) {
           try {
-            const result = await calculate({ job, stage: 'extract', system: DREAM_EXTRACT_SYSTEM,
+            const result = await calculateStage({ job, stage: 'extract', system: DREAM_EXTRACT_SYSTEM,
               input: { maxUnits: dreamUnits - count, notes: batch.map((note, index) => {
                 const snapshot = seen[index]!
                 const name = parseMemoryDocument(snapshot.markdown).metadata.name
@@ -221,8 +230,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
             try { units = parseDreamUnits(parse(result), new Set(batch.map(note => note.path)), dreamUnits - count) }
             catch { invalid = true; progress(job, 'validation_failed', 'extract', attempt) }
           } catch (error) {
-            progress(job, safeDiagnosticReason(error), 'extract', attempt)
-            if (!current() || error instanceof MemoryComputeError && ['dispatch-denied', 'aborted'].includes(error.reason)) { plan.retryExtraction = true; return }
+            timedOut = isModelTimeout(error)
+            if (!timedOut) progress(job, safeDiagnosticReason(error), 'extract', attempt)
+            if (timedOut || !current() || error instanceof MemoryComputeError && ['dispatch-denied', 'aborted'].includes(error.reason)) { plan.retryExtraction = true; return }
             if (batch.length > 1) {
               const middle = Math.floor(batch.length / 2)
               await consume(batch.slice(0, middle)); await consume(batch.slice(middle))
@@ -243,6 +253,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       plan.units.push({ workspace, operationId, unit, state: 'pending' })
     }
     persist(job, plan)
+    // Retain earlier successful batches and let other maintenance run before the next model call.
+    if (timedOut && plan.files.length) return 'retry'
     return plan
   }
   async function integrate(job: Effect, plan: DreamPlan, item: PlannedUnit): Promise<'done' | 'deferred' | 'retry' | 'wait'> {
@@ -320,7 +332,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
       const tools = newTools()
       toolAttempts.push(tools)
       const project = (text: string) => documents.projectErasedLocators?.(item.workspace, text) ?? text
-      const raw = await calculate({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
+      const raw = await calculateStage({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
         input: { unit: item.unit, ...(repair ? { repair } : {}), ...(previous?.answer ? { clarification: { text: project(projectDocumentSource(previous.answer.text, previous.answer.source, documents.sourceRestrictions(item.workspace))), sourceId: previous.answer.source.id } } : {}) },
         sourceIds: () => [...readSources.keys()], current, tools: { tools: tools.tools, executeTool: tools.executeTool } })
       if (raw === undefined) { progress(job, 'external_wake', 'integrate'); return 'wait' }
@@ -360,7 +372,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
           questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed, at: original.at, timezone: original.timezone })
       }
       if (!materialAllowed(draft.markdown, refs()) || !current()) throw new MemoryDreamStaleError()
-      const reviewed = await calculate({ job, stage: 'verify', system: DREAM_VERIFY_SYSTEM,
+      const reviewed = await calculateStage({ job, stage: 'verify', system: DREAM_VERIFY_SYSTEM,
         input: { unit: item.unit, action: draft.receipt.action, note: draft.receipt.note, target_path: draft.path,
           before: draft.before && { path: draft.before.path, revision: draft.before.revision, markdown: draft.before.markdown },
           proposed: draft.markdown, documents: toolReads().map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown, applicability: doc.applicability })),
@@ -412,14 +424,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
   async function tag(job: Effect, plan: DreamPlan) {
     for (const item of plan.tags) {
       if (item.attempted || !effects.holds(job)) continue
-      // Attempt is durable before model IO. Auto Tag is best-effort and never turns a completed integration into a retry loop.
-      item.attempted = true; persist(job, plan)
+      // The attempt ledger below is durable before model IO, including across a plan replay.
+      item.attempted = true
       const target = documents.read(item.workspace, item.path)
       const targetView = policy.read(item.workspace, item.path)
       if (!targetView || targetView.applicability.state !== 'current') continue
       if (!target || target.revision !== item.revision || !refsCurrent(target.sources)) continue
       const operationId = `tag:${identity.hash(JSON.stringify([item.workspace, target.id, target.revision]))}`
-      if (documents.tagAttempt(item.workspace, operationId)) continue
+      const prior = documents.tagAttempt(item.workspace, operationId)
+      if (prior && (prior.state !== 'attempted' || prior.reason !== 'timeout')) continue
       const attempt = { workspace: item.workspace, operationId, path: item.path, revision: target.revision }
       documents.recordTagAttempt({ ...attempt, state: 'attempted' })
       const fail = (reason: string) => documents.recordTagAttempt({ ...attempt, state: 'failed', reason })
@@ -428,7 +441,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         && documents.read(item.workspace, item.path)?.revision === target.revision
         && documents.read(item.workspace, item.path)?.usageVersion === target.usageVersion
       try {
-        const result = await calculate({ job, stage: 'tag', system: DREAM_TAG_SYSTEM,
+        const result = await calculateStage({ job, stage: 'tag', system: DREAM_TAG_SYSTEM,
           input: { path: target.path, markdown: targetView.markdown }, sourceIds: () => target.sources.map(ref => ref.id), current })
         if (result === undefined) { progress(job, 'unavailable', 'tag'); fail('unavailable'); continue }
         if (!current()) { progress(job, 'source_changed', 'tag'); fail('unavailable'); continue }
@@ -448,7 +461,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         committed(receipt)
         documents.recordTagAttempt({ ...attempt, state: 'completed' })
         persist(job, plan)
-      } catch (error) { progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'tag'); fail('failed') }
+      } catch (error) {
+        if (isModelTimeout(error)) {
+          item.attempted = false
+          transaction(() => {
+            documents.recordTagAttempt({ ...attempt, state: 'attempted', reason: 'timeout' })
+            if (effects.holds(job)) persist(job, plan)
+          })
+          return 'retry'
+        }
+        progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'tag')
+        fail('failed')
+      }
     }
   }
   async function runJob(job: Effect): Promise<Outcome> {
@@ -459,7 +483,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
     let plan = planSchema.safeParse(job.payload).data
     if (!plan) {
       const extracted = await extract(job)
-      if (extracted === 'wait') return 'wait'
+      if (extracted === 'wait' || extracted === 'retry') return extracted
       plan = extracted
     }
     if (!plan) return 'done'
@@ -489,7 +513,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         return 'retry'
       }
     }
-    let retry = false, wait = false
+    let retry = false, wait = false, unitTimedOut = false
     for (const item of plan.units) {
       if (item.state === 'deferred') {
         const pending = documents.deferred(item.workspace, item.operationId)
@@ -503,13 +527,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, identity, now
         else if (outcome === 'wait') wait = true
         else retry = true
       } catch (error) {
-        progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'integrate')
         if (!effects.holds(job)) return 'done'
+        if (isModelTimeout(error)) { unitTimedOut = true; break }
+        progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'integrate')
         if (error instanceof MemoryDreamStaleError) { effects.amend(job, {}); return 'retry' }
         retry = true
       }
     }
-    await tag(job, plan)
+    if (unitTimedOut || await tag(job, plan) === 'retry') retry = true
     if (retry || wait) {
       // Successful paths can checkpoint independently; the durable plan still retains failed units for retries.
       for (const file of plan.files) if (fileCurrent(file) && !plan.units.some(item => item.workspace === file.workspace

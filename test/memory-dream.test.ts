@@ -98,6 +98,71 @@ test('dream diagnostics distinguish invalid model output, provider failures and 
   assert.equal(JSON.stringify(events).includes('SECRET_INVALID_JSON'), false)
 })
 
+test('timeout on a later batch defers remaining batches and workspaces without losing the successful extraction', async t => {
+  const h = harness(t, { budget: 1 })
+  h.add('One'); h.add('Two'); h.add('Three')
+  h.add('Another workspace', 'Independent', { project: { kind: 'project', id: 'other' } })
+  let calls = 0
+  const notes: string[] = []
+  h.setModel(async request => {
+    assert.equal(request.stage, 'extract')
+    const batch = request.input as { notes: Array<{ path: string }> }
+    notes.push(...batch.notes.map(note => note.path))
+    if (++calls === 2) throw new MemoryComputeError('timeout')
+    return '{"units":[]}'
+  })
+  await h.run()
+  assert.equal(calls, 2)
+  await h.retry(); await h.retry()
+  assert.equal(calls, 5)
+  assert.equal(new Set(notes).size, 4)
+  assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+})
+
+for (const stage of ['integrate', 'verify', 'tag'] as const) {
+  test(`Dream pauses when ${stage} times out and resumes only pending units and tags after restart`, async t => {
+    const events: DiagnosticEvent[] = []
+    const h = harness(t, { diagnostics: { emit(event) { events.push(event); return undefined } } })
+    const names = ['Alpha', 'Beta', 'Gamma']
+    const inputs = names.map(name => h.add(`${name} report arrangement.`, name))
+    let calls = 0
+    h.setModel(async request => {
+      if (request.stage === 'extract') {
+        return JSON.stringify({ units: inputs.map(({ note }, i) => ({
+          name: names[i], summary: 'Recurring report arrangement', bucket: 'personal', paths: [note.path],
+        })) })
+      }
+      if (request.stage === stage && ++calls === 2) throw new MemoryComputeError('timeout')
+      return h.defaultModel(request)
+    })
+    await h.run()
+    const firstPass = h.requests.map(request => request.stage)
+    const expected = ['extract', 'integrate', 'verify']
+    if (stage === 'tag') expected.push('integrate', 'verify', 'integrate', 'verify', 'tag', 'tag')
+    else { expected.push('integrate'); if (stage === 'verify') expected.push('verify') }
+    assert.deepEqual(firstPass, expected)
+    assert.ok(events.some(event => event.stage === stage && event.reason === 'timeout'))
+    const workspace = inputs[0]!.note.workspace
+    assert.equal(h.documents.list(workspace).length, stage === 'tag' ? 3 : 1)
+    assert.equal(h.notes.read(inputs[0]!.key)?.processed, inputs[0]!.note.revision)
+    if (stage === 'tag') {
+      const second = h.documents.read(workspace, 'digest/personal/Beta.md')!
+      const attempt = h.documents.tagAttempt(workspace, `tag:${memoryHash(JSON.stringify([workspace, second.id, second.revision]))}`)
+      assert.equal(attempt?.reason, 'timeout')
+    }
+    h.restart()
+    await h.retry()
+    assert.equal(h.requests.filter(request => request.stage === 'extract').length, 1)
+    const resumed = h.requests.slice(firstPass.length).map(request => request.stage)
+    if (stage === 'tag') assert.deepEqual(resumed, ['tag', 'tag'])
+    else assert.deepEqual(resumed, ['integrate', 'verify', 'integrate', 'verify', 'tag', 'tag', 'tag'])
+    const documents = h.documents.list(workspace)
+    assert.equal(documents.length, 3)
+    assert.ok(documents.every(doc => doc.markdown.includes('memory_tags:')))
+    assert.ok(inputs.every(({ key, note }) => h.notes.read(key)?.processed === note.revision))
+  })
+}
+
 test('a failing diagnostic port cannot interrupt dream publication', async t => {
   const h = harness(t, { diagnostics: { emit() { throw new Error('broken diagnostic sink') } } })
   const first = h.add('The report is due Friday.')

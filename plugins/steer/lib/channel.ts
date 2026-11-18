@@ -25,6 +25,8 @@ export const REASONS = Object.freeze({
 })
 const MAX_ID_CHARS = 128
 const MAX_TEXT_CHARS = 20_000
+// A user message on the wire also includes quoted request markers, routing and memory receipts.
+const MAX_STEER_WIRE_CHARS = MAX_TEXT_CHARS * 2
 
 /** Why the words did not reach the turn. */
 export type SteerReason = (typeof REASONS)[keyof typeof REASONS]
@@ -69,7 +71,7 @@ export function createSteerChannel(
     if (message?.type !== 'steer') return
     if (!isText(message.id, MAX_ID_CHARS)) return log('ignored a steer without an id')
     const reply = (reason: SteerReason | null) => port.send({ type: 'steer_result', id: message.id, ok: !reason, ...(reason ? { reason } : {}) })
-    if (!isText(message.sessionId, MAX_ID_CHARS) || !isText(message.text, MAX_TEXT_CHARS)) return reply(REASONS.failed)
+    if (!isText(message.sessionId, MAX_ID_CHARS) || !isText(message.text, MAX_STEER_WIRE_CHARS)) return reply(REASONS.failed)
     let reason: SteerReason | null
     try {
       reason = steer(message.sessionId, message.text)

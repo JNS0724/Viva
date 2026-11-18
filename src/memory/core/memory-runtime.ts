@@ -60,7 +60,7 @@ const FILE_PROFILE_ITEMS = 6
 const FILE_PROFILE_ITEM_CHARS = 500
 const USER = { kind: 'user' } as const
 type FileProfileScope = { kind: 'user' } | { kind: 'project', id: string }
-type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, project?: Extract<FileProfileScope, { kind: 'project' }>, foregroundTurn?: string, turn?: string }
+type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, project?: Extract<FileProfileScope, { kind: 'project' }>, foregroundTurn?: string, turn?: string, originalSource?: string }
 interface FileClarificationReference {
   workspace: string
   operationId: string
@@ -363,7 +363,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (!matched) return undefined
     const turn = fileClarifications.track(session, foregroundTurn)
     const identity = documentWorkKey(matched.reference)
-    const ref = [...turn.refs].find(([, value]) => value.workspace === matched.reference.workspace && value.operationId === matched.reference.operationId)?.[0] ?? randomUUID()
+    const ref = [...turn.refs].find(([, value]) => value.workspace === matched.reference.workspace && value.operationId === matched.reference.operationId
+      && value.origin.originalSource === origin.originalSource)?.[0] ?? randomUUID()
     turn.refs.set(ref, matched.reference)
     turn.pending.set(identity, matched.reference)
     clarificationDispatch.offerFileClarification(session, identity)
@@ -437,7 +438,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
   function fileContext(request: Extract<MemoryRequest, { op: 'context' }>, result: FileSearchResult | null, origin: Origin) {
     const packed = packContext({ profile: store.profile(), today: dateLine(new Date(now())), profileLabels: presentation.profileLabels?.() })
-    if (!result || !fileDependenciesCurrent(result.files)) return packed.text
+    if (!result?.hits.length || !fileDependenciesCurrent(result.files)) return packed.text
     const scope = origin.context ?? origin.scope
     const pending = matchingDeferredFiles(result.files, origin, scope)
     const packet = filePacket(request.session, result, origin, request.question, scope, pending)
@@ -600,12 +601,15 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   effects.runs(DOCUMENT_CLEANUP, async jobs => {
     // Recovery may also finish a prepared revision, so it shares the physical send fence.
     const revision = store.revision(), pending = documents?.pendingCleanup()
-    await runDocumentMutation(() => {
-      notes?.storage.recover()
-      documents?.recover()
+    if (notes?.storage.needsRecovery() || documents?.needsRecovery()) await runDocumentMutation(() => {
+      if (notes?.storage.needsRecovery()) notes.storage.recover()
+      if (documents?.needsRecovery()) documents.recover()
       if (store.revision() !== revision) syncFileIndex()
-      fileIndex?.recover()
     })
+    // WAL truncation only removes residual bytes after logical invalidation has committed.
+    notes?.storage.checkpointCleanup()
+    documents?.checkpointCleanup()
+    fileIndex?.recover()
     if (store.revision() !== revision || documents?.pendingCleanup() !== pending) publish(store.revision())
     return new Map(jobs.map(job => [job.key, notes?.storage.pendingCleanup() || documents?.hasPendingCleanup(job.key) || fileIndex?.pendingCleanup() ? 'retry' as const : 'done' as const]))
   })
@@ -925,9 +929,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       && source.question && source.text && dispatchSourceCurrent(id) && sourceAllowsOrigin(source, origin, reference.scope) ? source : null
   }
 
-  function clarificationQuestion(session: string, foregroundTurn: string, id: string, phase: 'show' | 'check') {
+  function clarificationQuestion(session: string, foregroundTurn: string, id: string, phase: 'show' | 'check', interjections?: readonly string[]) {
     if (mutation || !id.startsWith(MEMORY_FILE_QUESTION_PREFIX)) return null
     return fileClarifications.question(session, foregroundTurn, id, phase, (questionId, reference) => {
+      // For an opening report only a recall after its particular user input was read can ask.
+      const source = reference.origin.originalSource
+      if (interjections && (!source || !interjections.includes(source) || !dispatchSourceCurrent(source))) return null
       const answered = phase === 'check' ? committedFileAnswer(questionId, reference) : null
       return answered?.question ? { id: questionId, question: answered.question, options: [] } : fileQuestion(questionId, reference)
     })
@@ -1029,7 +1036,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (fileRetrieval && request.op === 'context') {
       if (mutation || closed || signal?.aborted || !stillCurrent()) return ''
       if (!request.question.trim() || looksSecret(request.question)) return fileContext(request, null, origin)
-      return fileRetrieval.search({ query: request.question, limit: 3, maxChars: MAX_RECALL_CHARS - 128, signal,
+      return fileRetrieval.search({ query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128, signal,
         allows: view => fileAllowsOrigin(view, origin) }).then(result => {
         if (mutation || closed || signal?.aborted || !stillCurrent()) return ''
         return fileContext(request, result, origin)
@@ -1040,7 +1047,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 
   function rebuildIndexes() {
     const files = fileRetrieval?.reindex()
-    if (files) void fileRetrieval?.prepareVectors().catch(() => {})
+    if (files) {
+      if (fileIndex?.pendingCleanup()) {
+        effects.queue(DOCUMENT_CLEANUP, 'index', null)
+        void effects.wake()
+      }
+      void fileRetrieval?.prepareVectors().catch(() => {})
+    }
     return { fullText: Boolean(files), semantic: Boolean(files), ...(files ? { files } : {}) }
   }
 
@@ -1086,7 +1099,7 @@ ${node.description}`, origin, scope))
     }
     if (request.op === 'context') {
       const result = request.question.trim() && !looksSecret(request.question)
-        ? fileRetrieval?.searchCached({ query: request.question, limit: 3, maxChars: MAX_RECALL_CHARS - 128, allows: view => fileAllowsOrigin(view, origin, scope) }) : null
+        ? fileRetrieval?.searchCached({ query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128, allows: view => fileAllowsOrigin(view, origin, scope) }) : null
       return fileContext(request, result ?? null, origin)
     }
     return textOf({ status: 'rejected', reason: 'no-explicit-user-source' })

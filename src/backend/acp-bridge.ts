@@ -13,7 +13,7 @@ import type { RequestPermissionRequest, SessionNotification, SessionConfigOption
 import { dshLaunch } from './config.ts'
 import { createPermissionBroker } from './permission-broker.ts'
 import { createConfigDesk } from './config-channel.ts'
-import { createSteerDesk, interjection } from './steer-channel.ts'
+import { createSteerDesk, interjection, NO_PLUGIN } from './steer-channel.ts'
 import { memoryProjectScope } from './memory-project.ts'
 import { createRemoteMemoryChannel } from './remote-memory-channel.ts'
 import { createRoutingDesk, type RoutingHandlers } from './routing-channel.ts'
@@ -105,7 +105,7 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
-  memoryClarificationQuestion?: (session: string, turn: string, id: string, phase: 'show' | 'check') =>
+  memoryClarificationQuestion?: (session: string, turn: string, id: string, phase: 'show' | 'check', sources?: readonly string[]) =>
     ReturnType<NonNullable<Parameters<typeof createQuestionDesk>[0]['memoryClarificationQuestion']>>,
   cancelMemoryClarification?: Parameters<typeof createQuestionDesk>[0]['cancelMemoryClarification'],
   allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') =>
@@ -171,15 +171,19 @@ export function createAcpBridge({
       return typeof result === 'object' ? result.then(bound) : bound(result)
     },
     memoryClarificationQuestion: async (session, id, phase) => {
-      const turn = operations.userTurn(session)
-      return turn && session === sessionId && await allowSession(session) ? memoryClarificationQuestion?.(session, turn, id, phase) ?? null : null
+      const turn = operations.clarificationTurn(session)
+      return turn && session === sessionId && await allowSession(session) && operations.turn(session) === turn.id
+        ? memoryClarificationQuestion?.(session, turn.id, id, phase, turn.sources) ?? null : null
     },
   })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions, conversationContext: requestContext }) : null
   // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
   // Background tasks' results go the same way, at most once; the plugin says when one is read or lost.
-  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
+  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event),
+    onRunning: session => {
+      if (session === sessionId && operations.userTurn(session)) emit({ type: 'human_turn_running', sessionId: session })
+    } })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
   // The plugins page, through dsh's plugin manager (viva-plugins).
@@ -638,14 +642,15 @@ export function createAcpBridge({
    * The user's words into the running turn of the conversation on screen, marked as said mid-turn, a request of their
    * own; one that reached no turn fails, since the window asks the words anew.
    */
-  async function steer(text: string, sourceId?: string, held: () => boolean = () => true, retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable') {
+  async function steer(text: string, sourceId?: string, held: () => boolean = () => true,
+    retiredReason: () => 'idle' | 'unavailable' = () => 'unavailable', onDispatch?: () => void) {
     const retired = () => ({ ok: false as const, reason: retiredReason(), delivery: 'not-sent' as const })
     if (!held()) return retired()
-    if (!sessionId) return steering.steer(interjection(text))
+    if (!sessionId) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     const asked = sessionId
-    if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable' }
+    if (!await allowSession(asked)) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     if (!held()) return retired()
-    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable' }
+    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
     const request = asRequest(text, asked, 'interjection', sourceId)
     const wrapped = interjection(request.text)
     const prefixLength = wrapped.length - request.text.length
@@ -657,8 +662,11 @@ export function createAcpBridge({
       if (!held()) { undelivered(); return retired() }
       if (asked !== sessionId || isSwitching() || disposed) { undelivered(); return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const } }
       dispatched = true
+      if (sourceId) operations.recordInterjection(asked, sourceId)
+      onDispatch?.()
       const result = await steering.steer(wire, asked, { fast: memory.ready() })
-      if (!result.ok) undelivered()
+      // A lost transport receipt leaves the request routable if the native inbox took it.
+      if (!result.ok && result.reason !== NO_PLUGIN) undelivered()
       return result
     } catch (error) {
       if (!dispatched) undelivered()

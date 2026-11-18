@@ -64,6 +64,8 @@ export interface ReportPayload {
   via?: 'steer' | 'turn'
   /** When its record came (ms): drawn as the note was written, written so when read (report-records.ts). */
   recordedAt?: number
+  /** First user message following the opening report, if it raced the report receipt. */
+  beforeSource?: string
 }
 /** The start of what a task was asked, as much as a report keeps and its note gives. */
 export const REQUEST_CHARS = 1000
@@ -109,6 +111,8 @@ export interface TaskReportsDeps {
   superseded: (taskId: string, runId: string, memory?: MemoryProvenance) => boolean | Promise<boolean>
   /** Whether the effect is still queued at the generation this pass took (effects.ts holds). */
   holds?: (effect: Effect) => boolean
+  /** A locally submitted opening prompt can be absent from the native catalog until its first message is written. */
+  opening?: (reportId: string) => boolean
   /** The main conversation now: free for a turn, running one (a report goes into it), or not to be reached. */
   conversation: () => 'idle' | 'busy' | 'away' | Promise<'idle' | 'busy' | 'away'>
   /** Whether a report's context can be used in the receiving session. */
@@ -118,7 +122,7 @@ export interface TaskReportsDeps {
   /** A report into that session's running turn, unless it is there already (acp-bridge.ts deliverReport). */
   deliver: (session: string, reportId: string, token: string, text: string, taskId: string, held: () => boolean, memory?: MemoryProvenance) => Promise<ReportState>
   /** Opens a turn with the note in the main conversation; false when it could not be opened now. */
-  report: (note: string, reports: readonly Pick<ReportPayload, 'taskId' | 'memory'>[], held: () => boolean) => boolean | Promise<boolean>
+  report: (note: string, reports: ReadonlyArray<Pick<ReportPayload, 'taskId' | 'memory'> & { reportId: string }>, held: () => boolean) => boolean | Promise<boolean>
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
   /**
@@ -144,7 +148,7 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * again, to the main conversation as it is now. A report queued before tokens (#84) has one made and kept before it
  * is first sent, so every later try knows it by the same token.
  */
-export function createTaskReports({ currentConversation, session, superseded, holds = () => true, conversation, eligible = () => true, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
+export function createTaskReports({ currentConversation, session, superseded, holds = () => true, opening = () => false, conversation, eligible = () => true, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
   return (effects: readonly Effect[]) => withOperation('task.report', async () => {
     const outcomes = new Map<string, Outcome>()
     const here = currentConversation()
@@ -205,7 +209,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       // queued before `deliveredTo` was kept says so now).
       else if (now === 'read') outcomes.set(effect.key, readOutcome(effect.payload.deliveredTo ? effect : { ...effect, payload: { ...effect.payload, deliveredTo: where } }))
       // Lost where it went (or never sent): to the main conversation as it is now.
-      else if (now === 'none') unsent.push(effect)
+      else if (now === 'none' && !opening(effect.key)) unsent.push(effect)
       else outcomes.set(effect.key, now === 'failed' ? 'retry' : 'wait')
     }
     const forTurn: Array<Effect<ReportPayload>> = []
@@ -213,7 +217,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       if (!await still(effect) || !await eligible(effect.payload.taskId, bound, effect.payload.memory) || !await still(effect)) { outcomes.set(effect.key, 'wait'); continue }
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
-      const sending = await still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer' }) : null
+      const sending = await still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer', beforeSource: undefined }) : null
       const sent = sending ? await withOperation('task.report', () => deliver(bound, sending.key, sending.payload.token as string,
         noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId, () => held(sending), sending.payload.memory),
         { ...fields(sending), stage: 'sending', identities: { ...fields(sending).identities, sessionId: bound } }) : 'unavailable'
@@ -225,12 +229,12 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     if (await conversation() === 'idle') {
       const opening: Array<Effect<ReportPayload>> = []
       for (const effect of forTurn) if (await still(effect) && await eligible(effect.payload.taskId, bound, effect.payload.memory) && await still(effect)) {
-        const saved = kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn' })
+        const saved = kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn', beforeSource: undefined })
         if (saved) opening.push(saved)
       }
       const ready = opening.filter(held)
       if (ready.length) await withOperation('task.report', () => report(noteFor(ready.map(endedOf)),
-        ready.map(({ payload: { taskId, memory } }) => ({ taskId, memory })), () => ready.every(held)),
+        ready.map(({ key: reportId, payload: { taskId, memory } }) => ({ reportId, taskId, memory })), () => ready.every(held)),
         { stage: 'sending', identities: { sessionId: bound }, metrics: { count: ready.length } })
     }
     for (const effect of forTurn) outcomes.set(effect.key, 'wait')

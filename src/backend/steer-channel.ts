@@ -37,8 +37,9 @@ export interface SteerDesk {
   closeAll: () => void
 }
 
-export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS, onReport = () => {} }: {
+export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS, onReport = () => {}, onRunning = () => {} }: {
   send: (message: object) => void, sessionId: () => string | null, timeoutMs?: number,
+  onRunning?: (session: string) => void,
   /** The plugin said a report was read (written and flushed), or lost, in that session. */
   onReport?: (event: { type: 'report_written' | 'report_read' | 'report_dropped', reportId: string, sessionId: string }) => void,
 }): SteerDesk {
@@ -85,6 +86,7 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
   }
 
   function receive(message: any): void {
+    if (message?.type === 'steer_turn_running' && typeof message.sessionId === 'string') return onRunning(message.sessionId)
     if (message?.type === 'report_result' && typeof message.id === 'string') {
       return settleReport(message.id, REPORT_STATES.has(message.status) ? message.status : NO_PLUGIN)
     }
@@ -93,7 +95,10 @@ export function createSteerDesk({ send, sessionId, timeoutMs = STEER_TIMEOUT_MS,
       return onReport({ type: message.type, reportId: message.reportId, sessionId: message.sessionId })
     }
     if (message?.type !== 'steer_result' || typeof message.id !== 'string' || typeof message.ok !== 'boolean') return
-    settle(message.id, message.ok ? { ok: true } : { ok: false, reason: typeof message.reason === 'string' ? message.reason : NO_PLUGIN })
+    if (message.ok) return settle(message.id, { ok: true })
+    // The plugin never touched a native inbox when there was no agent for this session.
+    const reason = typeof message.reason === 'string' ? message.reason : NO_PLUGIN
+    settle(message.id, { ok: false, reason, ...(reason === 'missing' ? { delivery: 'not-sent' as const } : {}) })
   }
 
   function closeAll(): void {

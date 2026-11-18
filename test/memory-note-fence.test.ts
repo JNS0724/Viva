@@ -53,6 +53,29 @@ test('a live physical send permit must settle before an ordinary daily update ca
   } finally { permit.settled() }
 })
 
+test('a daily skip checkpoints pending turns while an unrelated native send remains admitted', async t => {
+  const { dir, defer } = scratch(t, 'memory-note-skip-')
+  const store = openMemoryStore(join(dir, 'memory.db'))
+  defer(() => store.close())
+  const source = noteSource(store), notes = openMemoryNotes(store, () => true)
+  const key = notes.add('session', '2026-11-14', [source], '')!
+  const fence = createMemorySendFence({ epoch: 'owner', admit: () => ({ current: () => true, deadline: null }) })
+  const effects = createEffects({ db: store.db, now: () => 1000, later: () => null, cancel: () => {} })
+  defer(() => effects.close())
+  createMemoryNoteJobs({ store, effects, now: () => 1000, openNotes: () => notes, readable: () => true,
+    eligible: () => true, allowsText: () => true, assistantContextCurrent: () => true,
+    calculate: async () => ({ status: 'skip' }), mutate: work => fence.mutate(work), settings: { noteInterval: 1 } })
+  const permit = fence.acquire('human', { session: 'independent' }, 'pending body')
+  permit.signal.addEventListener('abort', permit.settled, { once: true })
+  try {
+    await effects.wake()
+    assert.equal(notes.pending(key).length, 0)
+    assert.equal(notes.read(key), undefined)
+    assert.equal(store.readSource(source.id)?.outcome, 'note-skipped')
+    assert.ok(permit.current())
+  } finally { permit.settled(); await fence.close() }
+})
+
 test('intake does not recover an unrelated pending daily commit and fenced job recovery waits for settled transport',async t=>{
   const {dir,defer}=scratch(t,'memory-note-recover-fence-'),store=openMemoryStore(join(dir,'memory.db'))
   defer(()=>store.close())

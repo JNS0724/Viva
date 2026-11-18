@@ -31,5 +31,5 @@ export function invalidatesConversationSnapshot(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
   const event = value as Record<string, unknown>
   return event.type === 'reports_removed' || event.type === 'memory_changed'
-    && (event.traceSessions !== undefined || event.erasedOutputs !== undefined || event.erasedFeedIds !== undefined)
+    && (event.originalCuts !== undefined || event.traceSessions !== undefined || event.erasedOutputs !== undefined || event.erasedFeedIds !== undefined)
 }

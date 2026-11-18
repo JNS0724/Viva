@@ -17,7 +17,7 @@ export function affectedTraceSessions(effect: MemoryHostEffect) {
   return effect.kind === 'erase-copies' ? effect.sessions ?? [] : []
 }
 /** Host-owned copy erasure. The owner supplies identities; this adapter never infers memory semantics. */
-export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, invalidateFileHistory = () => {}, feedCopiesRemoved = () => {}, fileCopiesDurable = () => {} }: {
+export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFileHistory, invalidate, invalidateScheduled = () => {}, eraseRoutedMemory = () => {}, reportsRemoved = () => {}, originalRangesRemoved = () => {}, traceInvalidated = () => {}, eraseTaskBodies = () => [], invalidateTaskBodies = () => {}, generatedCopiesRemoved = () => {}, invalidateFileHistory = () => {}, feedCopiesRemoved = () => {}, fileCopiesDurable = () => {} }: {
   db: DatabaseSync, call: HostMemoryCaller, apply: Apply,
   eraseHistory(sources: readonly string[], sessions: readonly string[], briefs?: readonly { session: string, text: string }[]): void,
   eraseFileHistory(ranges: readonly MemoryHostErasureRange[]): readonly GeneratedHistoryScope[] | void,
@@ -30,6 +30,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   fileCopiesDurable?(effect: Extract<MemoryHostEffect, { kind: 'erase-file-copies' }>): void | Promise<void>,
   invalidateScheduled?(matches: (memory: MemoryProvenance) => boolean, changed: boolean): void,
   eraseRoutedMemory?(matches: (memory: MemoryProvenance) => boolean): void,
+  originalRangesRemoved?(ranges: readonly MemoryHostErasureRange[]): void
   reportsRemoved?(reportIds: readonly string[]): void,
   traceInvalidated?(sessions: readonly string[]): void,
   invalidate(effect: MemoryHostEffect): void | Promise<void>,
@@ -66,6 +67,8 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
   let running: Promise<void> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
   let closed = false
+  const notifiedReports = new Set<string>()
+  const notifiedOriginals = new Set<string>()
   const notifiedTraces = new Set<string>()
   const notifiedGeneratedCopies = new Set<string>()
   const notifiedFeedCopies = new Set<string>()
@@ -93,7 +96,7 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
               const outputs = eraseFileHistory(effect.ranges) ?? []
               const tasks = eraseTaskBodies(effect.effectId, matches, outputs)
               eraseRoutedMemory(matches)
-              return { scheduled: eraseScheduledMemoryCopies(db, matches, effect.effectId), reports: eraseMemoryReportCopies(db, matches), outputs, tasks }
+              return { scheduled: eraseScheduledMemoryCopies(db, matches, effect.effectId), reports: eraseMemoryReportCopies(db, effect.effectId, matches), outputs, tasks }
             })
             invalidateFileHistory()
             invalidateScheduled(matches, scheduled.changed)
@@ -102,7 +105,15 @@ export function createMemoryHostEffects({ db, call, apply, eraseHistory, eraseFi
               feedCopiesRemoved(feedIds)
               for (const id of feedIds) notifiedFeedCopies.add(id)
             }
-            if (reports.length) reportsRemoved(reports)
+            const freshReports = reports.filter(id => !notifiedReports.has(id))
+            if (freshReports.length) {
+              reportsRemoved(freshReports)
+              for (const id of freshReports) notifiedReports.add(id)
+            }
+            if (!notifiedOriginals.has(effect.effectId)) {
+              originalRangesRemoved(effect.ranges)
+              notifiedOriginals.add(effect.effectId)
+            }
             const fresh = outputs.filter(copy => !notifiedGeneratedCopies.has(copy.key))
             if (fresh.length) {
               generatedCopiesRemoved(fresh)

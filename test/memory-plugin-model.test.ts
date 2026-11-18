@@ -50,13 +50,14 @@ test('packed Web acceptance rejects a verified body whose frontmatter update did
   }) }] }] }
   assert.throws(() => fixture.decide(request), /the frontmatter update must reach the verified draft/u)
 })
-for (const finish of ['stop', 'max-tokens', 'missing'] as const) test(`memory model requires explicit successful completion: ${finish}`, async () => {
+for (const finish of ['stop', 'max-tokens', 'missing', 'timeout'] as const) test(`memory model requires explicit successful completion: ${finish}`, async () => {
   const ctx = new Context()
   const llm = new LlmRuntime(ctx)
   class Adapter extends LlmAdapter {
     async *stream(): AsyncIterable<StreamChunk> {
       yield { type: 'text-delta', index: 0, text: 'partial or complete' }
-      if (finish !== 'missing') yield { type: 'finish', reason: { kind: finish } }
+      if (finish === 'timeout') yield { type: 'finish', reason: { kind: 'error', failure: { code: 'TIMEOUT', message: 'Request timed out' } } }
+      else if (finish !== 'missing') yield { type: 'finish', reason: { kind: finish } }
     }
   }
   const dispose = llm.registerAdapter(['test'], new Adapter())

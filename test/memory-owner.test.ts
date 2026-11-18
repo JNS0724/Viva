@@ -21,6 +21,64 @@ const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>
   admitted: true, inherited: false, ...overrides,
 })
 
+test('host preferences, a derived index rebuild and its WAL cleanup preserve a foreground send', async t => {
+  const { owner, root, defer } = fixture(t)
+  await owner.recover()
+  await owner.runtime.wake()
+  const session = randomUUID()
+  owner.initializeSession({ sessionId: session })
+  const db = new DatabaseSync(join(root, 'memory.db'))
+  defer(() => db.close())
+  const permit = owner.acquireSend(randomUUID(), { session }, 'foreground')
+  permit.signal.addEventListener('abort', permit.settled, { once: true })
+  try {
+    assert.equal(await owner.handleHost('setOnboarding', { args: ['skipped'] }), 'skipped')
+    assert.ok(await owner.handleHost('rebuildIndexes', { args: [] }))
+    await owner.runtime.wake()
+    assert.equal(db.prepare("SELECT 1 FROM memory_file_index_meta WHERE key='erase-pending'").get(), undefined)
+    assert.equal(permit.current(), true)
+  } finally { permit.settled() }
+})
+
+test('completed and unchanged profile writes keep a foreground permit and preserve the current profile', async t => {
+  const { owner } = fixture(t)
+  await owner.recover()
+  const first = randomUUID(), equal = randomUUID()
+  const set = (role: string, id: string = randomUUID()) => owner.handleHost('setProfile', { args: [{ role }, id] })
+  await set('editor', first)
+  const current = await set('designer')
+  const session = randomUUID()
+  owner.initializeSession({ sessionId: session })
+  const permit = owner.acquireSend(randomUUID(), { session }, 'designer')
+  permit.signal.addEventListener('abort', permit.settled, { once: true })
+  try {
+    const revision = owner.runtime.revision()
+    assert.deepEqual(await set('editor', first), current)
+    assert.deepEqual(await set('designer', equal), current)
+    assert.equal((await owner.handleHost('getOperation', { operationId: equal }) as { state: string }).state, 'completed')
+    await assert.rejects(set('another value', first), { code: 'operation.conflict' })
+    assert.equal(owner.runtime.revision(), revision)
+    assert.ok(permit.current())
+  } finally { permit.settled() }
+})
+
+test('an unchanged profile request behind a pending replacement runs after the replacement', async t => {
+  const { owner } = fixture(t)
+  await owner.recover()
+  const set = (role: string) => owner.handleHost('setProfile', { args: [{ role }, randomUUID()] })
+  await set('editor')
+  const session = randomUUID()
+  owner.initializeSession({ sessionId: session })
+  const permit = owner.acquireSend(randomUUID(), { session }, 'editor')
+  const aborted = new Promise<void>(resolve => permit.signal.addEventListener('abort', () => resolve(), { once: true }))
+  const replacement = set('designer')
+  await aborted
+  const restore = set('editor')
+  permit.settled()
+  await Promise.all([replacement, restore])
+  assert.equal(owner.runtime.profile().role?.value, 'editor')
+})
+
 test('owner diagnostics preserve durable write, replay, undo and pending erasure receipts without copying memory text', async t => {
   const events: DiagnosticEvent[] = []
   const { owner } = fixture(t, 'viva', { diagnostics: { emit(event) { events.push(event); return undefined } } })

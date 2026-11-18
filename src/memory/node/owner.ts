@@ -705,8 +705,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const previous = operation(id), fingerprint = hash(command)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'failed') throw new Error('Memory operation previously failed')
+    if (previous?.state === 'completed') return runtime.profile()
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command }))
-    return fence.mutate(async () => {
+    const write = async () => {
       try {
         const result = await runtime.setProfile(fields, id)
         db.prepare("UPDATE owner_operations SET state='completed',payload=NULL WHERE id=?").run(id)
@@ -717,7 +718,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         throw error
       }
-    })
+    }
+    // A queued mutation can still change a value that currently matches.
+    if (!fence.blocked()) {
+      const profile = runtime.profile()
+      if (Object.entries(fields).every(([key, value]) => (profile[key]?.value ?? '') === value)) return write()
+    }
+    return fence.mutate(write)
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
   type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string }
@@ -1035,7 +1042,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         })
         return { sourceId }
       }
-      case 'clarificationQuestion': { const [session, , id, phase] = command.input.args; const turn = sessionContext(session).foregroundTurn; return turn ? runtime.clarificationQuestion(session, turn, id, phase) : null }
+      case 'clarificationQuestion': {
+        const [session, , id, phase, interjections] = command.input.args
+        const turn = sessionContext(session).foregroundTurn
+        return turn ? runtime.clarificationQuestion(session, turn, id, phase, interjections) : null
+      }
       case 'authorizeGeneralQuestion': {
         const [session, hostTurn, cards, conversation, context, project, phase] = command.input.args
         const turn = sessionContext(session).foregroundTurn
@@ -1099,8 +1110,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'setFileEnabled':
       case 'forgetFile':
       case 'undoFile': return durableFileWrite(command)
-      case 'setOnboarding': return fence.mutate(() => runtime.setOnboarding(...command.input.args))
-      case 'rebuildIndexes': return fence.mutate(() => runtime.rebuildIndexes(...command.input.args))
+      case 'setOnboarding': return runtime.setOnboarding(...command.input.args)
+      case 'rebuildIndexes': return runtime.rebuildIndexes(...command.input.args)
       case 'setProfile': return durableProfileWrite(command)
       case 'provenance': return dispatch.snapshot(...command.input.args)
       case 'authorizedProvenance': {
@@ -1133,6 +1144,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     registerDerived: (input: DerivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId }, metrics: { count: input.sourceIds.length } }),
     sessionContext, handleHost,
+    recallOrigin(session: string) {
+      const origin = sessionContext(session)
+      const source = origin.foregroundTurn && db.prepare('SELECT source FROM owner_turn_sources WHERE session=? AND turn=? ORDER BY rowid DESC LIMIT 1')
+        .get(session, origin.foregroundTurn)?.source
+      return typeof source === 'string' && runtime.dispatchSourceCurrent(source) ? { ...origin, originalSource: source } : origin
+    },
     acceptFileClarification: (...args: Parameters<typeof acceptFileClarification>) => observeDiagnosticAsync(options.diagnostics, 'memory.clarify', () => acceptFileClarification(...args),
       { identities: { sessionId: args[0].session, requestId: args[0].questionId, generation: args[0].contextGeneration } }),
     rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {

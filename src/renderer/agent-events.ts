@@ -66,6 +66,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
       const event = decodeAgentEvent(value, rejected)
       if (!event) return
       if (event.type === 'memory_changed') {
+        if (event.originalCuts?.length) dispatch({ type: 'original_history_erased', cuts: event.originalCuts })
         if (event.erasedOutputs?.length) dispatch({ type: 'generated_outputs_removed', copies: event.erasedOutputs })
         if (event.traceSessions?.length) {
           const sessions = new Set(event.traceSessions)

@@ -41,6 +41,7 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
       return text
     }
     if (assembler.finish?.kind !== 'tool-calls' || !capability || !calls.length) {
+      if (assembler.finish?.kind === 'error' && assembler.finish.failure.code === 'TIMEOUT') throw new MemoryComputeError('timeout')
       const parsed = memoryComputeFailure.safeParse(assembler.finish?.kind)
       throw new MemoryComputeError(parsed.success ? parsed.data : 'call-failed')
     }

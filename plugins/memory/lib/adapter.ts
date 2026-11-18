@@ -211,7 +211,8 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     await ingestion.synchronize(agent.session)
     signal?.throwIfAborted()
     if (!owner.ready()) throw new Error('Memory owner is not ready')
-    const context = owner.sessionContext(String(agent.session.id))
+    const session = String(agent.session.id)
+    const context = input.op === 'recall' || input.op === 'node_search' ? owner.recallOrigin(session) : owner.sessionContext(session)
     const execution = caller.getStore()
     if (input.op === 'remember') {
       if (!execution || !('agent' in execution) || execution.agent !== agent || !execution.toolRead) return '{"status":"unavailable"}'

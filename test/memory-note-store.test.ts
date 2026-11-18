@@ -174,6 +174,11 @@ test('a third hash on recovery is preserved and the entire unfinished plan stays
   assert(paths.every(path => !journal.visible(workspace, path)))
   assert.throws(() => journal.commit('other', 'other', () => ({ workspace, data: null,
     changes: [{ path: paths[1]!, before: null, after: 'another' }] })), /busy/u)
+  assert.equal(journal.needsRecovery(), false, 'unchanged external bytes keep the plan quarantined')
+  files.remove(paths[0]!, files.read(paths[0]!)!.revision)
+  assert.equal(journal.needsRecovery(), true)
+  journal.recover()
+  assert.equal(files.read(paths[1]!)?.markdown, 'planned')
 })
 
 test('invalidated source rolls back partially replaced files and does not checkpoint its turns', async t => {

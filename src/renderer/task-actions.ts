@@ -128,7 +128,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   function answerTask(taskId: string, answers: QuestionAnswer[]) {
     const question = questionOf(taskId)
     if (!question) return
-    dispatch({ type: 'task_question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
+    // A custom answer is displayed with the source identity the host assigned on acceptance.
+    if (!answers.some(answer => answer.custom)) dispatch({ type: 'task_question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
     api.answerQuestion(question.questionId, answers)
       .then((accepted: boolean) => accepted || showToast(t("app.this.question.has.ended.your.answer.was")))
       .catch((err: unknown) => showToast(errorMessage(err)))

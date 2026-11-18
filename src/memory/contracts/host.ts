@@ -70,7 +70,7 @@ export interface HostMemoryApi {
   replaySources: Args<[sources: readonly string[], text: string, project?: MemoryProject], boolean>
   bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string, wireSpans?: TextSpan[]], { wireText: string }>
   cancelFileClarification: Args<[session: string, questionId: string], boolean>
-  clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check'], HostMemoryQuestion | null>
+  clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check', interjections?: readonly string[]], HostMemoryQuestion | null>
   authorizeGeneralQuestion: Args<[session: string, turn: string, cards: readonly HostQuestionCard[], conversation: string | null, context: MemoryScope, project?: MemoryProject, phase?: 'show' | 'check'], boolean>
   acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, question: string, requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
   sourceAlias: { input: MemorySourceAlias, output: { sourceId: string } }
@@ -124,7 +124,7 @@ export const hostMemoryInputSchemas = {
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),
   bindWireAlias: args(z.tuple([key, text, text, key.optional(), wireSpans])),
   cancelFileClarification: args(z.tuple([key, key])),
-  clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check'])])),
+  clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check']), z.array(key).optional()])),
   authorizeGeneralQuestion: args(z.tuple([key, key, z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })), key.nullable(), scope, project.optional(), z.enum(['show', 'check']).optional()])),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, question: text, requestId: key, questionId: key, context: scope, project: project.optional() }),
   sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), wireSpans, context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),

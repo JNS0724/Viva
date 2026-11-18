@@ -404,9 +404,18 @@ test('saved reports retain proof across conversations and erase only the exact a
     assert.equal(method, 'pendingHostEffects')
     return [erasure] as HostMemoryApi[typeof method]['output']
   }
-  const host = createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+  let failAfterCommit = true
+  const openHost = () => createMemoryHostEffects({ db, call, eraseHistory: history.eraseMemoryCopies, eraseFileHistory: history.eraseFileRanges,
+    invalidateFileHistory: () => {
+      if (failAfterCommit) { failAfterCommit = false; throw new Error('synthetic interrupted notification') }
+    },
     reportsRemoved: ids => removed.push(...ids), invalidate() {}, apply })
+  let host = openHost()
   try {
+    await assert.rejects(host.recover(), /interrupted notification/)
+    assert.equal(removed.length, 0)
+    assert.equal(history.hasRecord(caught.key), false)
+    host.close(); host = openHost()
     await host.recover()
     await host.recover()
     assert.deepEqual(history.recordsOf(moved.id).map(row => row.reportId), [id('independent')])

@@ -24,7 +24,7 @@ import { initialTopic } from './topics.ts'
 import { initialExtensions, initialMemory, PERSONAL_ACTIONS } from './personal-state.ts'
 import { MEMORY_FILE_ACTIONS } from './memory-file-state.ts'
 import { initialDiagnostics, DIAGNOSTICS_ACTIONS } from './diagnostics-state.ts'
-import { hideErasedHistoryCopies } from './generated-history-state.ts'
+import { accumulateOriginalCuts, hideErasedHistoryCopies } from './generated-history-state.ts'
 
 function removeRestoredTrace(state: State): State {
   const restored = state.restoredTraceData
@@ -50,6 +50,7 @@ export const initialState = Object.freeze({
   /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
   records: [] as readonly ReportRecord[],
   erasedReportIds: [] as readonly string[],
+  originalHistoryCuts: Object.freeze({}) as Readonly<Record<string, import('../memory/contracts/text-spans.ts').OriginalHistoryCut>>,
   erasedGeneratedKeys: Object.freeze({}) as Readonly<Record<string, string>>,
   drawer: null as string | null,
   island: false,
@@ -252,6 +253,7 @@ const ACTION_HANDLERS: ActionHandlers = {
     history: state.history,
     erasedReportIds: state.erasedReportIds,
     erasedGeneratedKeys: state.erasedGeneratedKeys,
+    originalHistoryCuts: state.originalHistoryCuts,
     earlier: withCurrentKept(state),
     workDir: state.workDir,
     // Background tasks go on whatever the conversation on screen does.
@@ -302,6 +304,7 @@ const ACTION_HANDLERS: ActionHandlers = {
       restoredTrace: live.restoredTrace === null && !currentSession ? null : 'unavailable',
       ...(currentSession ? { thoughts: [], tools: {}, timeline: live.timeline.filter(item => item.kind !== 'thought' && item.kind !== 'tool' && item.kind !== 'memory') } : {}) }
   },
+  original_history_erased: (state, { cuts }) => ({ ...state, originalHistoryCuts: accumulateOriginalCuts(state.originalHistoryCuts, cuts) }),
   generated_outputs_removed: (state, { copies }) => {
     const fresh = copies.filter(copy => !Object.hasOwn(state.erasedGeneratedKeys, copy.key))
     return fresh.length ? { ...state, erasedGeneratedKeys: { ...state.erasedGeneratedKeys,
