@@ -23,4 +23,4 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run test:feature -- memory --level fast --level integration --level timing
+      - run: npm run test:feature -- memory --level fast --level integration --level critical --level timing

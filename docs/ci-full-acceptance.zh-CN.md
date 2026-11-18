@@ -2,7 +2,7 @@
 
 [English](ci-full-acceptance.md) | 简体中文
 
-日期：2026-11-18。状态：安全网、条件专项门禁和 package 分层已实施；PR 仍保留完整覆盖，快速集合尚未启用。本文取代此前以同机文件分片、临时目录改造和付费执行机为方向的建议。
+日期：2026-11-18。状态：安全网、条件专项门禁和文件级 PR 关键子集已实施；纯 unit 平台去重和混合文件场景级拆分尚未启用。本文取代此前以同机文件分片、临时目录改造和付费执行机为方向的建议。
 
 ## 1 当前决定
 
@@ -30,10 +30,9 @@
 
 | 归属 | 内容 | 执行时机 |
 | --- | --- | --- |
-| `unit` | 纯函数、reducer、schema、无外部进程的纯状态/DOM 逻辑 | PR 单平台 |
-| `io` | SQLite、真实文件、journal、权限、删除、索引和 WAL | PR 双平台 |
-| `process-critical` | 关键 DSH 生命周期、主要恢复、安全和发送屏障 | PR 双平台 |
-| `process-extended` | 完整故障组合、深度回归和较少见恢复路径 | 相关 PR 专项、每日、发布 |
+| `fast` | 纯逻辑以及已审定的 SQLite、真实文件、journal 和权限测试 | PR 双平台；未来纯 unit 子集再单平台 |
+| `critical` | 关键 DSH 生命周期、主要恢复、安全、路由和发送屏障 | PR 双平台 |
+| `integration` | 完整故障组合、深度回归和较少见恢复路径 | 相关 PR 专项、每日、发布 |
 | `package` | npm pack/install、安装包和安装后应用验收 | 相关 PR、每日、发布 |
 | `perf` | 以性能数值或大型负载测量为主要目的的基准 | 每日、发布、手动 |
 
@@ -47,7 +46,7 @@
 
 保留 `check.yml` 现有聚合状态名称和 `retries: 0`：
 
-- `headless`：当前完整覆盖阶段在 `package-required=false` 时运行完整 `npm test`，为 true 时运行 `test:source`，由 package 专项承接全部 4 个离线安装场景，避免重复执行。快速集合启用后，macOS 运行 typecheck、纯 `unit` 和文档检查；macOS 与 Windows 都运行 `io` 和 `process-critical`。
+- `headless`：macOS 与 Windows 都运行 typecheck、文档检查和 `npm run test:pr`，即 fast、critical、timing 文件子集。扩展 integration 由相关专项、每日和发布承接；package 场景只在 package 专项执行。
 - `core`：保持公共 UI 冒烟。
 - `integration`：保持当前 lane 和每个桌面 runner 单 worker，不与本方案同时重排。
 - 这些 job 的 `timeout-minutes` 保持 15。

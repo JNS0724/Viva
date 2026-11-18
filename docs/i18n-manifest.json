@@ -11,8 +11,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "a1c18eb9419b0ea84bba8e7536a1d8faecd0c7fd3631d0fefb8896d6de03701b",
-      "zhHash": "3e21443b67ee9d4ed8861e188e1717d2014ddd6cbee491d58eee0124d0d90516"
+      "enHash": "c07c262a6d391f6421b06f8c88340bf1c02756a933d26220c5abb69519387c10",
+      "zhHash": "eec9f1371d2a11c1ffaba083d8c5baf9bab9d85f2913447a8cf2679da9a0ffd3"
     },
     {
       "en": "docs/features.md",
@@ -29,8 +29,8 @@
     {
       "en": "docs/ci-full-acceptance.md",
       "zh": "docs/ci-full-acceptance.zh-CN.md",
-      "enHash": "c9d4842695467103aac8df3e516141e73516ed0a1348c9a07b12fa84a2b81097",
-      "zhHash": "5ea6c1cfe7e6517a135fdaeb0eceb5c9959740f7453a1df8d8b056f8df47595a"
+      "enHash": "b8d2914ad7a36d47bd9b5247c8ac40c562845fadfc799ea27278cd337b46b4b6",
+      "zhHash": "721e7e9a38c3cece23d76bcc064750db0a2b2dcd3e3c5942f9dc751631018686"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",

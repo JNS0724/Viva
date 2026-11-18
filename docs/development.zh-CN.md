@@ -115,11 +115,11 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 ## 测试
 
-`npm test` 用 Electron 自带的 Node 运行全部源码单元、集成、计时和 package 测试。`npm run test:source` 运行完整的非 package 源码集合，供每日与发布的 `full.yml` 使用；离线插件安装由 `package.yml` 统一执行。`npm run typecheck` 检查产品和测试 TypeScript。与 CI 一样使用 Node.js 24，提 PR 前跑完整测试。
+`npm test` 用 Electron 自带的 Node 运行全部源码单元、集成、计时和 package 测试。`npm run test:source` 运行完整的非 package 源码集合，供每日与发布的 `full.yml` 使用；离线插件安装由 `package.yml` 统一执行。PR headless 使用 `npm run test:pr` 运行 fast、critical 和 timing 子集。`npm run typecheck` 检查产品和测试 TypeScript。与 CI 一样使用 Node.js 24，提 PR 前跑完整测试。
 
 本地快速反馈用 `npm run test:fast` 选择全部 fast 文件，用 `npm run test:feature -- architecture --level fast` 选择一个功能的 fast 文件。功能名包括 `conversation`、`runtime`、`tasks`、`architecture`、`models`、`skills`、`capabilities`、`files`、`memory`、`rendering`、`storage`、`i18n`、`shell` 和 `tooling`。多个功能自动去重。省略 `--level` 保留该功能全部层级，也可以重复该参数组合层级。加 `--list` 查看准确文件清单。
 
-成本在 `scripts/test-levels.ts` 中显式登记。`fast` 允许进程内 DOM、SQLite 和临时文件，`integration` 覆盖真实子进程和套接字，`timing` 保留长时间真实期限，包括 RPC 空闲连接与缺序等待合同；`package` 登记离线安装与产物验收。混合文件按较高成本归类。局部选择同时加入 IPC、窗口 API 和模块边界共享契约。未知功能、未知层级和空的目标集合均失败。发现与归属审计覆盖嵌套目录中的 `.test.js` 和 `.test.ts`，新增文件需要登记功能与成本。每日与发布的归属和门禁见 [CI 完整验收方案](ci-full-acceptance.zh-CN.md)。
+成本在 `scripts/test-levels.ts` 中显式登记。`fast` 允许进程内 DOM、SQLite 和临时文件，`critical` 保留关键进程、安全和路由契约，`integration` 覆盖扩展的真实子进程和套接字，`timing` 保留长时间真实期限，包括 RPC 空闲连接与缺序等待合同；`package` 登记离线安装与产物验收。混合文件按较高成本归类。局部选择同时加入 IPC、窗口 API 和模块边界共享契约。未知功能、未知层级和空的目标集合均失败。发现与归属审计覆盖嵌套目录中的 `.test.js` 和 `.test.ts`，新增文件需要登记功能与成本。每日与发布的归属和门禁见 [CI 完整验收方案](ci-full-acceptance.zh-CN.md)。
 
 `test/smoke/` 中的外部 Playwright runner 管理启动、独立资料目录、假服务、就绪条件、断言、诊断和退出。产品不导入场景，也不按外部路径加载测试文件。显式 `--enable-smoke-test-driver` 必须同时提供 `--user-data-dir`，只为原有集成场景暴露有限的主进程控制面；公共 UI 冒烟使用正常界面控件。子进程仅接收最小系统环境，不继承模型密钥或 Node 注入参数；本地假模型通过正式设置表单接入。
 

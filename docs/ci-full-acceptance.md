@@ -2,7 +2,7 @@
 
 English | [简体中文](ci-full-acceptance.zh-CN.md)
 
-Date: 2026-11-18. Status: the safety net, conditional specialization gate, and package tier are implemented; PRs retain complete coverage and the fast collection is not enabled. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
+Date: 2026-11-18. Status: the safety net, conditional specialization gate, and file-level critical PR subset are implemented; pure-unit platform deduplication and scenario-level splitting of mixed files are not enabled. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
 
 ## 1 Decisions
 
@@ -30,10 +30,9 @@ Handle these separately:
 
 | Ownership | Contents | When it runs |
 | --- | --- | --- |
-| `unit` | Pure functions, reducers, schemas, and pure state/DOM logic without external processes | PR on one platform |
-| `io` | SQLite, real files, journals, permissions, deletion, indexes, and WAL | PR on both platforms |
-| `process-critical` | Key DSH lifecycle, primary recovery, safety, and send barriers | PR on both platforms |
-| `process-extended` | Complete fault combinations, deep regressions, and less common recovery paths | Affected-PR specialization, daily, and release |
+| `fast` | Pure logic plus reviewed SQLite, real-file, journal, and permission tests | PR on both platforms; a future pure-unit subset may run on one |
+| `critical` | Key DSH lifecycle, primary recovery, safety, routing, and send barriers | PR on both platforms |
+| `integration` | Complete fault combinations, deep regressions, and less common recovery paths | Affected-PR specialization, daily, and release |
 | `package` | npm pack/install, installers, and installed-application acceptance | Affected PRs, daily, and release |
 | `perf` | Benchmarks whose primary purpose is performance figures or large-load measurement | Daily, release, and manual |
 
@@ -47,7 +46,7 @@ Functional timing is not a performance benchmark. Classify `backend-wire-timing`
 
 Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
-- `headless`: in the current complete-coverage phase, run full `npm test` when `package-required=false` and `test:source` when true, with package covering all four offline-install scenarios without duplication. Once the fast collection is enabled, macOS runs typecheck, pure `unit`, and documentation checks; both macOS and Windows run `io` and `process-critical`.
+- `headless`: both macOS and Windows run typecheck, documentation checks, and `npm run test:pr`, covering the fast, critical, and timing file subset. Extended integration belongs to affected specializations, daily, and release; package scenarios run only in package specialization.
 - `core`: retain public UI smoke.
 - `integration`: retain current lanes and one worker per desktop runner; do not rearrange them in the same change.
 - Keep these jobs' `timeout-minutes` at 15.
