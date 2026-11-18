@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import { createInitializationActions } from '../src/renderer/initialization-actions.ts'
+import { createTimelineActions } from '../src/renderer/timeline-actions.ts'
 import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { createAgentEvents } from '../src/renderer/agent-events.ts'
 import { createConversationActions } from '../src/renderer/conversation-actions.ts'
@@ -16,6 +17,22 @@ const snapshot = (cursor = 0, replay: unknown[] = []): RendererSnapshot => ({ st
 const push = (cursor: number, text = String(cursor), generation = 'generation') => ({ type: 'update', context, streamGeneration: generation, eventCursor: cursor,
   update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } })
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test('startup and a scroll cannot load past the recent timeline boundary', async () => {
+  let state: State = reduce(initialState, { type: 'initialization_status', status: 'loading' })
+  let reads = 0
+  const actions = createTimelineActions({ getState: () => state, dispatch: action => { state = reduce(state, action) },
+    scroll: Object.assign(Object.create(null) as HTMLElement, { scrollTop: 0, scrollHeight: 100 }),
+    api: { earlierSegments: async () => { reads++; return { segments: [{ id: 'older', createdAt: 1, messages: [] }], hasMore: true } } } })
+  actions.onScroll()
+  assert.equal(reads, 0)
+  state = reduce(state, { type: 'initialization_status', status: 'ready' })
+  await actions.loadEarlier()
+  actions.onScroll()
+  await actions.loadEarlier()
+  assert.equal(reads, 1)
+  assert.equal(state.earlier.hasMore, true)
+})
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { resolve, promise } }
 
 function backendStream(t: TestContext, publish: Parameters<typeof createRendererStream>[0] = () => {}) {

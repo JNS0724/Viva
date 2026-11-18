@@ -607,7 +607,8 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
 })
 
 for (const failure of ['invalid-json', 'http-error'] as const) {
-  test(`real foreground sends remain usable while dream ${failure} repeatedly fails and recovers across restart`, { timeout: 60_000 }, async t => {
+  // This scenario includes three native process launches and multiple real provider retry windows.
+  test(`real foreground sends remain usable while dream ${failure} repeatedly fails and recovers across restart`, { timeout: 120_000 }, async t => {
     let dreamRequests = 0
     const app = await setup(t, request => {
       const system = JSON.stringify(request.system)

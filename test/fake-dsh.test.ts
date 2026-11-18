@@ -66,10 +66,13 @@ test('fake dsh plays the full script through the real bridge and honours an allo
 
   assert.deepEqual([info.mode, info.model, info.effort, info.resumed], ['live', 'Fake Flash', 'high', false])
   assert.match(info.sessionId!, /^fake-session-/)
-  assert.deepEqual(collapse(events.map(kindOf)), [
-    'reasoning', 'settle', 'tool_call', 'tool_call_update', 'tool_call', 'tool_call_update',
-    'text', 'settle', 'tool_call', 'permission', 'tool_call_update', 'text', 'settle', 'turn_end',
+  // The plugin IPC stream and the ACP notification pipe each preserve order independently.
+  const isStream = (event: CapturedEvent) => updateOf(event).sessionUpdate === 'viva_stream'
+  assert.deepEqual(collapse(events.filter(isStream).map(kindOf)), ['reasoning', 'settle', 'text', 'settle', 'text', 'settle'])
+  assert.deepEqual(events.filter(event => !isStream(event)).map(kindOf), [
+    'tool_call', 'tool_call_update', 'tool_call', 'tool_call_update', 'tool_call', 'permission', 'tool_call_update', 'turn_end',
   ])
+  assert.equal(events.at(-1)?.type, 'turn_end', 'both channels finish before the turn is reported as complete')
   assert.ok(texts(events, 'text').length > 10, 'text arrives in many pieces')
   assert.equal(events.some((e) => kindOf(e) === 'agent_message_chunk'), false, 'never ACP\'s copy of it')
   assert.equal(lastToolStatus(events), 'completed')

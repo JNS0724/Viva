@@ -7,10 +7,11 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 import { copyPageLibraryPackages } from '../scripts/build.ts'
 import { buildRevision, writeBuildRevision } from '../scripts/build-revision.ts'
+import { scratch } from './fixtures/scratch.js'
 
 test('app and plugin build metadata use the actual checkout revision and generated output cannot contain injected code', t => {
-  const root = mkdtempSync(path.join(tmpdir(), 'viva-build-revision-')), output = path.join(root, 'output')
-  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const { dir: root } = scratch(t, 'viva-build-revision-')
+  const output = path.join(root, 'output')
   const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   git('init')
   writeFileSync(path.join(root, '.gitignore'), 'output/\n')

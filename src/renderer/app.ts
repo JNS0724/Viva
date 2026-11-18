@@ -1014,6 +1014,7 @@ async function initializeConversation() {
   if (!await initialization.initialize() || !initialization.watermark()) return
   historyReady = true
   dispatch({ type: 'initialization_status', status: 'ready' })
+  if (!state.earlier.segments.length) void timelineActions.loadEarlier()
   if (state.conversationId) void historyActions.loadTrace(state.conversationId)
   capabilityActions.refreshCapabilities()
   void api.waits().catch((error: unknown) => console.error('[app] waits unavailable:', errorMessage(error)))
@@ -1044,7 +1045,7 @@ async function boot() {
   void feedActions.loadFeed()
   // The tasks the last launch kept: ended ones, and those it quit on.
   void taskActions.loadKept()
-  void initializeConversation().then(() => timelineActions.loadEarlier())
+  void initializeConversation()
   dom.follower.jumpToLatest()
   dom.scroll.addEventListener('scroll', () => timelineActions.onScroll(), { passive: true })
   void mountHistorySearchFrame(dom.historySearch).then((searchDocument) => {

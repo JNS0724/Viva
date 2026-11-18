@@ -95,8 +95,8 @@ try {
   await writer.ready
   for (const [name, work] of Object.entries(flows)) {
     const times = { disabled: [] as number[], enabled: [] as number[] }
-    // Disk-backed task start/end/close samples include checkpoint jitter; retain a larger tail.
-    const samplesPerMode = name === 'task' ? 300 : 100
+    // Task and schedule samples span multiple durable transactions. Retain 15 tail samples in each mode.
+    const samplesPerMode = name === 'task' || name === 'schedule' ? 300 : 100
     for (let round = 0; round < samplesPerMode + 2; round++) {
       for (const enabled of round % 2 ? [true, false] : [false, true]) {
         measuredMode = round < 2 ? undefined : enabled ? 'enabled' : 'disabled'

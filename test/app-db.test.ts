@@ -1,7 +1,6 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
+import { scratch } from './fixtures/scratch.js'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
@@ -14,13 +13,10 @@ import { openScheduleStore } from '../src/backend/schedule-store.ts'
 
 /** A fresh folder with the app database open in it; closed before the folder goes (Windows keeps an open file). */
 function appDbIn(t: TestContext) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-app-db-'))
+  const { dir, defer } = scratch(t, 'viva-app-db-')
   const app = openAppDb({ file: path.join(dir, 'app.db') })
-  t.after(() => {
-    app.close()
-    fs.rmSync(dir, { recursive: true, force: true })
-  })
-  return { dir, app }
+  defer(() => app.close())
+  return { dir, app, defer }
 }
 
 test('the app database starts with its tables, and the schedules and 动态 open on it beside the events', (t) => {
@@ -36,9 +32,9 @@ test('the app database starts with its tables, and the schedules and 动态 open
 })
 
 test('storage diagnostics classify actual SQLite contention and rollback without copying SQL or changing thrown objects', t => {
-  const { dir, app } = appDbIn(t)
+  const { dir, app, defer } = appDbIn(t)
   const other = new DatabaseSync(path.join(dir, 'app.db'))
-  t.after(() => other.close())
+  defer(() => other.close())
   other.exec('PRAGMA busy_timeout=0')
   const events: DiagnosticEvent[] = []
   const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
