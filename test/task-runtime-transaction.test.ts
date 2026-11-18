@@ -13,6 +13,7 @@ import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
 import type { TaskSnapshot } from '../src/backend/task-registry.ts'
 import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 /**
@@ -100,7 +101,7 @@ function setup(t: TestContext, { uncancelled = false, captureReportMemory, mainM
 
 test('a task\'s end that cannot be kept leaves nothing, in the database or in memory, and is kept on a later try', async (t) => {
   const events: DiagnosticEvent[] = []
-  t.after(installDiagnosticPort({ emit(event) { events.push(event); return undefined } }))
+  t.after(installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined })))
   const { start, tasks, failing, snapshots, reported, runDue, status, kept, ended } = setup(t)
   const { task } = await start('整理发布说明')
   tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('写好了。') })

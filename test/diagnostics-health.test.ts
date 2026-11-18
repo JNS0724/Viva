@@ -9,17 +9,75 @@ import { parseDiagnosticHealth } from '../src/diagnostics/health.ts'
 import { createDiagnosticChild, createDiagnosticPeer } from '../src/diagnostics/node/peer.ts'
 import type { DiagnosticControlResult } from '../src/diagnostics/node/peer.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+import { beginDiagnosticOperation } from '../src/diagnostics/operation.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import { createManagedDiagnostics } from '../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../src/diagnostics/node/hub.ts'
 import { createDiagnosticClearer } from '../src/diagnostics/node/clear.ts'
 import { DiagnosticQuota } from '../src/diagnostics/node/quota.ts'
 import { diagnosticAlias, loadDiagnosticIdentity, replaceDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
-import { diagnosticBinding, diagnosticContext, emitDiagnostic, installDiagnosticPort, setDiagnosticBinding, withOperation } from '../src/diagnostics/node/context.ts'
+import { continueDiagnosticContext, diagnosticBinding, diagnosticContext, emitDiagnostic, installDiagnosticPort, newDiagnosticContext, setDiagnosticBinding, withOperation } from '../src/diagnostics/node/context.ts'
 
 const source = { snapshot: () => ({ stats: { state: 'unavailable' as const, queuedBytes: 0, peakQueuedBytes: 0, maxWriteDelayMs: 0, droppedCount: 2, writtenBytes: 0, activeCount: 1, untrackedCount: 0 },
   active: [{ operation: 'memory.dream', stage: 'recovering', ageMs: 24_000 }] }) }
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 const temporary = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostic-health-'))
+
+test('startup context views share one fresh continuation after a run change', t => {
+  const previous = diagnosticBinding()
+  t.after(() => setDiagnosticBinding(previous))
+  setDiagnosticBinding(undefined)
+  const original = newDiagnosticContext(), first = randomUUID(), second = randomUUID()
+  const view = continueDiagnosticContext(original, first)
+  const next = continueDiagnosticContext(original, second)
+  assert.notEqual(next.traceId, original.traceId)
+  assert.equal(continueDiagnosticContext(view, second), next)
+})
+
+test('a silent scope created before writer readiness cannot reuse its persisted trace after clear', async t => {
+  const previous = diagnosticBinding()
+  setDiagnosticBinding(undefined)
+  const directory = await temporary(), writer = createManagedDiagnostics({ directory, component: 'backend' })
+  const restore = installDiagnosticPort(writer), hub = createDiagnosticHub({ component: 'backend', writers: [{ component: 'backend', writer }] })
+  t.after(async () => { hub.close(); restore(); setDiagnosticBinding(previous); await writer.close(); await rm(directory, { recursive: true, force: true }) })
+  let release!: () => void, trace = ''
+  const running = withOperation('memory.get', () => {
+    trace = diagnosticContext()!.traceId
+    return new Promise<void>(resolve => { release = resolve })
+  })
+  await writer.ready
+  // No business continuation asks for its context between first binding and the clear.
+  const before = await loadDiagnosticIdentity(directory)
+  assert.equal(before.runId, diagnosticBinding())
+  assert.deepEqual(await createDiagnosticClearer({ quota: writer.quota, hub, idle: () => true }).clear(), { status: 'cleared' })
+  const after = await loadDiagnosticIdentity(directory)
+  release(); await running
+  assert.equal(await writer.close(), true)
+  const text = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  assert.ok(text.includes('continued_after_clear'))
+  assert.equal(text.includes(diagnosticAlias(after, trace)), false)
+})
+
+test('a completed managed scope stays retired across clear, including an end while paused', async t => {
+  const directory = await temporary()
+  const writer = createManagedDiagnostics({ directory, component: 'backend' })
+  t.after(async () => { await writer.close(); await rm(directory, { recursive: true, force: true }) })
+  await writer.ready
+  const before = writer.bind('memory.get', {})!, during = writer.bind('memory.get', {})!
+  for (const scope of [before, during]) scope.emit({ event: 'operation.start', operation: 'memory.get' })
+  before.emit({ event: 'operation.end', operation: 'memory.get' })
+  const token = randomUUID()
+  assert.equal(await writer.quota.beginClear(token), true)
+  assert.equal(await writer.prepare(token), true)
+  during.emit({ event: 'operation.end', operation: 'memory.get' })
+  assert.equal(await writer.quota.clearClosed(), true)
+  const next = await replaceDiagnosticIdentity(directory)
+  assert.equal(await writer.quota.finishClear(token, next.runId), true)
+  assert.equal(await writer.resume(token, next.runId), true)
+  await writer.ready
+  for (const scope of [before, during]) scope.emit({ event: 'operation.progress', operation: 'memory.get' })
+  assert.equal(writer.snapshot().stats.activeCount, 0)
+})
 
 test('resume rejects a retired remote context before its replacement writer finishes initialization', async t => {
   const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
@@ -157,6 +215,47 @@ test('clear waits for every component, rotates aliases, preserves ongoing work a
   assert.equal(lines.includes(diagnosticAlias(after, trace!)), false, 'the old trace must not be rebound through a new salt')
 })
 
+for (const kind of ['node', 'portable'] as const) test(`${kind} bound fields become an explicit partial continuation after clear without reusing aliases`, async t => {
+  const directory = await temporary()
+  const writer = createManagedDiagnostics({ directory, component: 'backend' })
+  const restore = installDiagnosticPort(writer)
+  const hub = createDiagnosticHub({ component: 'backend', writers: [{ component: 'backend', writer }] })
+  t.after(async () => { hub.close(); restore(); await writer.close(); await rm(directory, { recursive: true, force: true }) })
+  await writer.ready
+  const before = await loadDiagnosticIdentity(directory), secret = 'PRIVATE_CLEARED_BOUND_RESOURCE'
+  const fields = { stage: 'extract' as const, identities: { operationId: 'PRIVATE_CLEARED_BOUND_OPERATION', resourceId: secret } }
+  let release!: () => void
+  const observation = kind === 'portable' ? beginDiagnosticOperation(writer, 'memory.dream', fields) : undefined
+  const running = kind === 'node' ? withOperation('memory.dream', () => new Promise<void>(resolve => { release = resolve }), fields) : undefined
+  assert.equal(writer.snapshot().stats.activeCount, 1)
+  const clearer = createDiagnosticClearer({ quota: writer.quota, hub, idle: () => true })
+  assert.deepEqual(await clearer.clear(), { status: 'cleared' })
+  const after = await loadDiagnosticIdentity(directory)
+  if (observation) {
+    observation.progress({ stage: 'verify' })
+    assert.equal(writer.snapshot().stats.activeCount, 1)
+    observation.end()
+  } else { release(); await running }
+  assert.equal(writer.snapshot().stats.activeCount, 0)
+  await writer.ready
+  withOperation('memory.dream', () => 42, fields)
+  assert.equal(await writer.close(), true)
+  const text = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8')))).join('')
+  const records = text.trim().split('\n').map(line => JSON.parse(line) as { event: string, operation: string, reason?: string, stage?: string,
+    metrics?: { partial?: boolean }, identities?: { resourceId?: string, operationId?: string } })
+  const ends = records.filter(record => record.event === 'operation.end' && record.operation === 'memory.dream')
+  assert.equal(ends.length, 2)
+  assert.equal(ends[0]!.reason, 'continued_after_clear')
+  assert.equal(ends[0]!.metrics?.partial, true)
+  assert.equal(ends[0]!.identities?.resourceId, undefined)
+  assert.equal(ends[0]!.identities?.operationId, undefined)
+  if (observation) assert.equal(ends[0]!.stage, 'verify')
+  assert.equal(ends[1]!.identities?.resourceId, diagnosticAlias(after, secret))
+  assert.ok(!text.includes(diagnosticAlias(before, secret)))
+  assert.ok(!text.includes(diagnosticAlias(after, diagnosticAlias(before, secret))))
+  assert.ok(!text.includes('PRIVATE_'))
+})
+
 test('a hung clear remains single-flight beyond caller timeout and cannot report success early', async t => {
   const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
   const quota = new DiagnosticQuota(directory)
@@ -205,7 +304,7 @@ test('an operation first bound during startup receives a fresh trace after clear
   const contexts: Array<{ trace?: string, run?: string }> = []
   t.after(() => setDiagnosticBinding(previous))
   setDiagnosticBinding(undefined)
-  t.after(installDiagnosticPort({ emit(_event, context) { contexts.push({ trace: context?.traceId, run: context?.diagnosticRunId }); return undefined } }))
+  t.after(installDiagnosticPort(recordingDiagnosticPort((_event, context) => { contexts.push({ trace: context?.traceId, run: context?.diagnosticRunId }); return undefined })))
   withOperation('memory.get', () => {
     setDiagnosticBinding(run)
     emitDiagnostic({ event: 'operation.progress', operation: 'memory.get' }, diagnosticContext())

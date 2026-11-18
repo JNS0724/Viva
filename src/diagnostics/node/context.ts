@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes } from 'node:crypto'
 import { types } from 'node:util'
-import { DIAGNOSTIC_VERSION, NO_DIAGNOSTICS, parseDiagnosticContext, safeDiagnosticReason } from '../contracts.ts'
+import { bindDiagnosticPort, DIAGNOSTIC_VERSION, NO_DIAGNOSTICS, parseDiagnosticContext, safeDiagnosticReason } from '../contracts.ts'
 import type { DiagnosticContext, DiagnosticEvent, DiagnosticFields, DiagnosticOperation, DiagnosticPort } from '../contracts.ts'
 
 const context = new AsyncLocalStorage<DiagnosticContext>()
@@ -28,16 +28,27 @@ export function setDiagnosticBinding(runId: string | undefined) {
   binding = runId && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(runId) ? runId : undefined
 }
 export function diagnosticBinding() { return binding }
-function localContext(value: DiagnosticContext): DiagnosticContext {
-  if (!binding || value.diagnosticRunId === binding) return value
+function localContext(value: DiagnosticContext, runId = binding): DiagnosticContext {
+  if (!runId) return value
   const cached = rebound.get(value)
-  if (cached?.runId === binding) return cached.context
-  const next = value.diagnosticRunId || cached ? newDiagnosticContext() : immutable({ ...value, diagnosticRunId: binding })
-  rebound.set(value, { runId: binding, context: next })
+  if (cached?.runId === runId) return cached.context
+  if (!cached && value.diagnosticRunId === runId) return value
+  const next = value.diagnosticRunId || cached
+    ? immutable({ version: DIAGNOSTIC_VERSION, traceId: randomId(16), spanId: randomId(8), diagnosticRunId: runId })
+    : immutable({ ...value, diagnosticRunId: runId })
+  const lineage = cached ?? { runId, context: next }
+  lineage.runId = runId; lineage.context = next
+  rebound.set(value, lineage); rebound.set(next, lineage)
   if (value.diagnosticRunId || cached) {
     try { port.emit({ event: 'state.changed', operation: 'diagnostics', reason: 'continued_after_clear' }, next) } catch { failures++ }
   }
   return next
+}
+/** Local bound continuations can follow an acknowledged writer replacement before the hub callback runs. */
+export function continueDiagnosticContext(value: DiagnosticContext, runId?: string) {
+  const snapshot = snapshotDiagnosticContext(value)
+  if (!snapshot || runId !== undefined && !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(runId)) return newDiagnosticContext()
+  return localContext(snapshot, runId)
 }
 function remoteParent(incoming: DiagnosticContext | undefined) {
   const snapshot = snapshotDiagnosticContext(incoming)
@@ -78,10 +89,16 @@ export function emitDiagnostic(event: DiagnosticEvent, current?: DiagnosticConte
   try { const snapshot = snapshotDiagnosticContext(current); port.emit(event, snapshot ? localContext(snapshot) : undefined) } catch { failures = Math.min(Number.MAX_SAFE_INTEGER, failures + 1) }
   return undefined
 }
-export const diagnosticPort: DiagnosticPort = Object.freeze({ emit: emitDiagnostic })
+export const diagnosticPort: DiagnosticPort = Object.freeze({ emit: emitDiagnostic,
+  bind(operation: DiagnosticOperation, fields: DiagnosticFields, supplied?: DiagnosticContext) { return bindDiagnosticPort(port, operation, fields, supplied) },
+})
 /** Classify once at an existing failure boundary; never serialize an Error or its message. */
 export function emitDiagnosticFailure(operation: DiagnosticOperation, error: unknown, fields: DiagnosticFields = {}): undefined {
-  return emitDiagnostic({ ...fields, event: 'operation.progress', operation, stage: fields.stage ?? 'failed', reason: safeDiagnosticReason(error) })
+  if (port === NO_DIAGNOSTICS) return undefined
+  try {
+    const { stage, outcome, identities, metrics } = fields
+    return emitDiagnostic({ event: 'operation.progress', operation, stage: stage ?? 'failed', outcome, identities, metrics, reason: safeDiagnosticReason(error) })
+  } catch { failures = Math.min(Number.MAX_SAFE_INTEGER, failures + 1); return undefined }
 }
 export function inDiagnosticContext<T>(incoming: DiagnosticContext | undefined, work: () => T): T {
   incoming = remoteParent(incoming)
@@ -95,21 +112,39 @@ export function withOperation<T>(operation: DiagnosticOperation, work: () => T, 
   if (port === NO_DIAGNOSTICS) return work()
   return runOperation(operation, work, fields, context.getStore())
 }
+export function withDetachedOperation<T>(operation: DiagnosticOperation, work: () => T, fields: DiagnosticFields = {}): T {
+  if (port === NO_DIAGNOSTICS) return work()
+  return runOperation(operation, work, fields, undefined, true)
+}
 /** Receiving a remote parent needs one child scope, rather than two nested ALS scopes. */
 export function withRemoteOperation<T>(incoming: DiagnosticContext | undefined, operation: DiagnosticOperation, work: () => T, fields: DiagnosticFields = {}): T {
   incoming = remoteParent(incoming)
   if (port === NO_DIAGNOSTICS) return inDiagnosticContext(incoming, work)
   return runOperation(operation, work, fields, incoming)
 }
-function runOperation<T>(operation: DiagnosticOperation, work: () => T, fields: DiagnosticFields, parent: DiagnosticContext | undefined): T {
+function runOperation<T>(operation: DiagnosticOperation, work: () => T, fields: DiagnosticFields, parent: DiagnosticContext | undefined, detached = false): T {
   let current: DiagnosticContext
-  try { current = newDiagnosticContext(parent) } catch { failures++; return work() }
+  try {
+    current = newDiagnosticContext(parent)
+    const trigger = detached ? diagnosticContext() : undefined
+    if (trigger) {
+      const links = Object.freeze([Object.freeze({ traceId: trigger.traceId, spanId: trigger.spanId })])
+      current = immutable({ ...current, links })
+    }
+  } catch { failures++; return work() }
+  let scoped = bindDiagnosticPort(port, operation, fields, current)
+  fields = {}
+  if (scoped === NO_DIAGNOSTICS) return context.run(current, work)
   const started = performance.now()
   return context.run(current, () => {
-    emitDiagnostic({ ...fields, event: 'operation.start', operation }, current)
-    const end = (error?: unknown, failed = false) => emitDiagnostic({ ...fields, event: 'operation.end', operation,
-      outcome: failed ? safeDiagnosticReason(error) === 'aborted' ? 'cancelled' : safeDiagnosticReason(error) === 'timeout' ? 'timed_out' : 'failed' : 'completed',
-      ...(failed ? { reason: safeDiagnosticReason(error) } : {}), metrics: { ...fields.metrics, durationMs: performance.now() - started } }, current)
+    scoped.emit({ event: 'operation.start', operation })
+    const end = (error?: unknown, failed = false) => {
+      const reason = failed ? safeDiagnosticReason(error) : undefined
+      scoped.emit({ event: 'operation.end', operation,
+        outcome: failed ? reason === 'aborted' ? 'cancelled' : reason === 'timeout' ? 'timed_out' : 'failed' : 'completed',
+        ...(reason ? { reason } : {}), metrics: { durationMs: performance.now() - started } })
+      scoped = NO_DIAGNOSTICS
+    }
     try {
       const result = work()
       if (result instanceof Promise || types.isPromise(result)) return result.then(value => { end(); return value }, (error: unknown) => { end(error, true); throw error }) as T

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
+import { emitDiagnostic, withDetachedOperation } from '../diagnostics/node/context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { transaction } from './app-db.ts'
 import { RETRY_MS as HOLD_MS } from './effects.ts'
@@ -247,7 +247,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
 
   /** false: dsh is not there. */
   async function runOne(item: Run): Promise<boolean> {
-    return withOperation('schedule', async () => {
+    return withDetachedOperation('schedule', async () => {
       if (dropIfSuperseded(item)) return true
       const startedAtWake = wakes
       const outcome = await outcomeOf(item)
@@ -267,7 +267,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
       return true
     }, { stage: item.attempts ? 'recovering' : 'dispatch',
       identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision,
-        operationId: JSON.stringify([item.key, item.scheduleRevision, item.attempts]) }, metrics: { attempt: item.attempts } })
+        operationId: JSON.stringify([item.key, item.scheduleRevision]) }, metrics: { attempt: item.attempts } })
   }
 
   async function pump(): Promise<void> {

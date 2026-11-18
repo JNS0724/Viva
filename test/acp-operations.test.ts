@@ -6,6 +6,7 @@ import { createAssistantStream } from '../src/backend/assistant-stream.ts'
 import { STOP_GRACE_MS } from '../src/backend/stop-in-time.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void
@@ -28,7 +29,7 @@ function confirmedStreams() {
 
 test('cancel deadline revokes one operation, and its late response/finally cannot end a newer operation of the same session', async t => {
   const events: DiagnosticEvent[] = []
-  t.after(installDiagnosticPort({ emit(event) { events.push(event); return undefined } }))
+  t.after(installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined })))
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const first = deferred<PromptResponse>(), second = deferred<PromptResponse>(), ended: string[] = [], cancelled: string[] = []
   let requested = 0, forced = 0
@@ -56,7 +57,7 @@ test('cancel deadline revokes one operation, and its late response/finally canno
 
 test('prompt diagnostics record only the first response and preserve updates, results and errors with a broken sink', async t => {
   const events: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
   t.after(restore)
   const result = deferred<PromptResponse>(), updates: unknown[] = [], errors: unknown[] = []
   const streams = confirmedStreams()

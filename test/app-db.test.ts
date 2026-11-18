@@ -6,6 +6,7 @@ import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 import { openFeedStore } from '../src/backend/feed-store.ts'
 import { createScheduleRuns } from '../src/backend/schedule-runs.ts'
@@ -40,7 +41,7 @@ test('storage diagnostics classify actual SQLite contention and rollback without
   t.after(() => other.close())
   other.exec('PRAGMA busy_timeout=0')
   const events: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
   t.after(restore)
   app.db.exec('BEGIN IMMEDIATE')
   try {

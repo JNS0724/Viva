@@ -4,10 +4,11 @@ import type { SessionTiming } from '../src/backend/session-timing.ts'
 import { sessionTiming } from '../src/backend/session-timing.ts'
 import { installDiagnosticPort, withOperation } from '../src/diagnostics/node/context.ts'
 import type { DiagnosticContext, DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 test('session timing records start before the native wait, inherits its parent, and preserves existing samples', async t => {
   const records: Array<{ event: DiagnosticEvent, context?: DiagnosticContext }> = []
-  t.after(installDiagnosticPort({ emit(event, context) { records.push({ event, context }); return undefined } }))
+  t.after(installDiagnosticPort(recordingDiagnosticPort((event, context) => { records.push({ event, context }); return undefined })))
   const samples: SessionTiming[] = []
   const measure = sessionTiming(sample => samples.push(sample))
   let release!: (value: number) => void

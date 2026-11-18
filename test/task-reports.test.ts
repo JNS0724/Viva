@@ -9,6 +9,7 @@ import { recordsAt } from '../src/renderer/report-state.ts'
 import { isSilentReply, reportRecordOf, shownNote, SILENT_REPLY } from '../src/shared/task-report.ts'
 import { createForegroundRequests, ForegroundRequestRetired } from '../src/backend/foreground-requests.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 const admissionGate = () => {
@@ -114,7 +115,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
 
 test('report diagnostics follow committed reads and durable retry identity without logging the secret token or note', async t => {
   const events: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
   t.after(restore)
   const report = effect({ ...payload('diagnostic-task', 'SECRET_REPORT_TITLE', 'c1', 'SECRET_REPORT_OUTPUT'), token: 'SECRET_REPORT_TOKEN' })
   const known = { [report.key]: 'read' as const }

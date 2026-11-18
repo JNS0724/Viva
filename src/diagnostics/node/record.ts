@@ -1,6 +1,6 @@
-import { COMPONENTS, EVENTS, ID_KEYS, METRIC_KEYS, OPERATIONS, REASONS, STAGES } from '../contracts.ts'
+import { COMPONENTS, EVENTS, ID_KEYS, METRIC_KEYS, OPERATIONS, REASONS, STAGES, parseDiagnosticLinks } from '../contracts.ts'
 import { BUILD_COMMIT } from '../build-info.ts'
-import type { DiagnosticEvent, DiagnosticFields, DiagnosticContext, DiagnosticComponent } from '../contracts.ts'
+import type { DiagnosticEvent, DiagnosticFields, DiagnosticContext, DiagnosticComponent, DiagnosticLink } from '../contracts.ts'
 import { diagnosticAlias, newDiagnosticIdentity } from './identity.ts'
 import type { DiagnosticIdentity } from './identity.ts'
 
@@ -13,11 +13,11 @@ declare const validated: unique symbol
 const captured = Symbol('captured diagnostic event')
 export type ValidatedDiagnosticEvent = DiagnosticEvent & { readonly [validated]: true }
 export type CapturedDiagnosticEvent = DiagnosticEvent & { readonly [captured]: true }
-export function safeDiagnosticEvent(raw: unknown): ValidatedDiagnosticEvent | undefined {
+export function safeDiagnosticEvent(raw: unknown, header?: Pick<DiagnosticEvent, 'event' | 'operation'>): ValidatedDiagnosticEvent | undefined {
   try {
     if (!object(raw)) return
     // Read each envelope field once: a getter must not change a validated name before it is copied.
-    const event = raw.event, operation = raw.operation
+    const event = header ? header.event : raw.event, operation = header ? header.operation : raw.operation
     if (!member(EVENTS, event) || !member(OPERATIONS, operation)) return
     const result: DiagnosticEvent = { event, operation }
     const debug = raw.debug, stage = raw.stage, reason = raw.reason, outcome = raw.outcome
@@ -45,11 +45,11 @@ export function safeDiagnosticEvent(raw: unknown): ValidatedDiagnosticEvent | un
 export function createDiagnosticCapture() {
   let correlation: DiagnosticIdentity | undefined
   return {
-    capture(event: ValidatedDiagnosticEvent, identity: DiagnosticIdentity | undefined) {
+    capture(event: ValidatedDiagnosticEvent, identity: DiagnosticIdentity | undefined, mode: 'explicit' | 'bound' = 'explicit') {
       const { identities: input, ...metadata } = event
       const operationId = input?.operationId
       // This private key also matches an early start with a terminal after the disk salt is ready.
-      const key = operationId === undefined || operationId === null ? undefined : `${event.operation}:${diagnosticAlias(correlation ??= newDiagnosticIdentity(), operationId)}`
+      const key = mode === 'bound' || operationId === undefined || operationId === null ? undefined : `${event.operation}:${diagnosticAlias(correlation ??= newDiagnosticIdentity(), operationId)}`
       let identities: DiagnosticFields['identities']
       if (identity && input) for (const name of ID_KEYS) {
         const value = input[name]
@@ -66,6 +66,7 @@ export function createDiagnosticCapture() {
   }
 }
 export interface StoredDiagnostic extends DiagnosticEvent {
+  links?: readonly DiagnosticLink[]
   level?: 20 | 30 | 40 | 50
   schemaVersion: 1; time: string; sequence: number; component: DiagnosticComponent
   processInstanceId: string; diagnosticRunId: string; traceId: string; spanId: string; parentSpanId?: string
@@ -89,7 +90,7 @@ export function storedDiagnosticReference(raw: unknown): StoredDiagnosticReferen
       traceId: traceId as string, spanId: spanId as string, processInstanceId: processInstanceId as string, diagnosticRunId: diagnosticRunId as string }
   } catch { return undefined }
 }
-type Aliases = Pick<StoredDiagnostic, 'traceId' | 'spanId' | 'parentSpanId' | 'processInstanceId' | 'diagnosticRunId'>
+type Aliases = Pick<StoredDiagnostic, 'links' | 'traceId' | 'spanId' | 'parentSpanId' | 'processInstanceId' | 'diagnosticRunId'>
 /** Both caches have fixed capacities; completed promises cannot grow diagnostic metadata indefinitely. */
 export function diagnosticRecordFormatter(identity: DiagnosticIdentity, base: { component: DiagnosticComponent; instance: string; version: string; componentVersion?: string }) {
   const contexts = new Map<DiagnosticContext, Aliases>()
@@ -109,6 +110,7 @@ export function diagnosticRecordFormatter(identity: DiagnosticIdentity, base: { 
     let aliases = contexts.get(context)
     if (!aliases) {
       aliases = { diagnosticRunId, processInstanceId, traceId: contextAlias(context.traceId), spanId: contextAlias(context.spanId),
+        ...(context.links ? { links: context.links.map(link => ({ traceId: contextAlias(link.traceId), spanId: contextAlias(link.spanId) })) } : {}),
         ...(context.parentSpanId ? { parentSpanId: contextAlias(context.parentSpanId) } : {}) }
       if (contexts.size >= 128) contexts.delete(contexts.keys().next().value!)
       contexts.set(context, aliases)
@@ -133,7 +135,10 @@ export function sanitizeStoredDiagnostic(raw: unknown, exportIdentity: Diagnosti
       if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value)) return
       identities[key as keyof typeof identities] = diagnosticAlias(exportIdentity, value)
     }
-    return { ...event, ...(event.identities ? { identities } : {}), schemaVersion: 1, time: raw.time, sequence: Number(raw.sequence), component: raw.component,
+    const links = raw.links === undefined ? undefined : parseDiagnosticLinks(raw.links, true)
+    if (raw.links !== undefined && !links) return
+    return { ...event, ...(links ? { links: links.map(link => ({ traceId: diagnosticAlias(exportIdentity, link.traceId), spanId: diagnosticAlias(exportIdentity, link.spanId) })) } : {}),
+      ...(event.identities ? { identities } : {}), schemaVersion: 1, time: raw.time, sequence: Number(raw.sequence), component: raw.component,
       ...(raw.level === 20 || raw.level === 30 || raw.level === 40 || raw.level === 50 ? { level: raw.level } : {}),
       appVersion: version(raw.appVersion), componentVersion: version(raw.componentVersion),
       buildCommit: typeof raw.buildCommit === 'string' && /^[a-f0-9]{7,40}$/.test(raw.buildCommit) ? raw.buildCommit : 'unknown',

@@ -14,12 +14,13 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { memoryRecoveryCandidates, memorySessionSurfaceHash, planMemoryContextRecovery } from '../plugins/memory/lib/context-recovery.ts'
 import { emitDiagnostic, installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 test('failed owner initialization releases its diagnostic file and restores the previous port', async t => {
   const root = mkdtempSync(join(tmpdir(), 'memory-diagnostic-startup-'))
   const first = openMemoryOwner({ root, route: () => null, compute: () => null, quiesce: async () => {} })
   const captured: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort({ emit(event) { captured.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { captured.push(event); return undefined }))
   const cleanups: Array<() => unknown> = []
   const scope = { logger: { exporter() {} }, on() {}, effect(execute: () => () => unknown) { const cleanup = execute(); cleanups.push(cleanup); return cleanup } } as unknown as Context
   t.after(async () => { restore(); await first.close(); rmSync(root, { recursive: true, force: true }) })

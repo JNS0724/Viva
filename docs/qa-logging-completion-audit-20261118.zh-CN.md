@@ -2,6 +2,13 @@
 
 工作区 `/private/tmp/viva-local-diagnostics`，分支 `codex/local-diagnostics`。此记录按方案核对实际实现，不把既有测试通过等同全部阶段完成。原工作区和 ReMe 不变。
 
+## 剩余开发顺序与退出条件
+
+1. **L1b 结项**。当前业务实现已通过真实 owner、DSH 重试和持久化恢复回归，全量 2242 项中 2240 通过、2 跳过。当前桌面构建跑完 15 项及 owner 暂停/恢复专项后结项。以后只有读取预算、真实执行结算、启动同步或 dream 隔离发生变化或出现新复现，才重开对应检查。
+2. **L1c 故障与性能**。覆盖在清空前或清空期间结束的操作、导出固定文件范围时配额锁由暂停进程持有。用同机固定负载测默认开销，根据热点修复，保留 5% 和 10ms 双门槛、事件证据和丢弃数。
+3. **L2 后台关联**。后台任务、定时执行分别建立根 trace，连接实际触发方；逻辑操作在各次尝试中使用稳定身份，重启按持久化身份关联，清空换代移除旧链接。验证实际写盘和导出后的引用一致。
+4. **L3 发布验收**。最终源码跑类型、全量测试和完整冒烟，汇总前台、任务、定时与检索的负载数据，验证同一提交的 macOS 与 Windows 安装包及故障诊断。发布以该提交的实际结果为准。
+
 ## 本批补齐的遗漏
 
 - 活动表满时新增 `untrackedCount`，保留已跟踪 span。旧 `0401ca0` logger 的隔离复现为 2048 → 2047：未跟踪子操作的终态删除了父项。现在未知显式操作建立独立诊断上下文，终态只结算匹配的操作，新增回归通过。证据为 `/private/tmp/viva-l3-old-untracked-parent-repro.json`。
@@ -32,14 +39,29 @@ context 的字段单次读取、校验后冻结。Node 的弱键映射只保存�
 
 最终构建的 macOS 故障专项通过：owner 暂停后两次读取为 10002.7ms、10004.9ms，满额 2.7ms busy；实际恢复后新读取、页面手动重试、草稿和附件均保留。Backend 沉默被独立心跳识别，清空先在 2003.8ms 返回 cleanup_pending，恢复后轮换盐，业务 PID 不变且 memory:get 正常。Backend 与 Renderer 都暂停时，原生菜单仍导出 59691 字节 ZIP。日志为 `/private/tmp/viva-log-ingress-verified-{owner,controls,export}-smoke.log`，没有把这些就绪后故障用例冒充启动 I/O 挂起用例。后者的新缺口仍明确保留在下方清单。
 
+## 字段绑定与身份 I/O 生命周期跟进
+
+本批继续在独立工作区推进，没有修改另一 agent 的测试工程或 ReMe。初始启动及失败重试的身份读取都纳入实际未结算 I/O：prepare 超时返回 false，released 保持 false，resume 不接受换代；实际读取结束后，同一个清空身份可恢复，迟到数据不能再绑定关闭的 writer，也不能创建新日志目的端。修复前两条回归均为 `true !== false`，见 `/private/tmp/viva-log-identity-lifetime-repro.log`；修复后 sink 专项 7/7 通过。没有通过强制取消 Promise 或释放业务屏障换取成功。
+
+可移植端口增加可选 bind 能力，Node 负责字段校验、别名化和有界绑定表，Core 只持有绑定后的端口。Node withOperation、Core observation 和梦境计算均不再把初始 fields 留在长生命周期闭包中。最多 2048 项，包含未开始的绑定；终态和清空都集中移除身份数据，旧 handle 不可复活。emit-only 端口仍可记录直接事件，但不能隐式缓存环绕字段；缺失/失败绑定降级为空观察，保留原业务 Promise。测试录制端口显式实现绑定能力，没有在生产端加入不安全的原文字段 fallback。
+
+GC 夹具在已结束的同步栈中创建输入，再保持观察挂起并主动收集。e23c2e4 的 Node、可移植、async 三条路径都保留调用方的额外对象图，分别见 `/private/tmp/viva-log-binding-gc-old-{node,portable,async}.log`；当前三条路径均允许收集，并能正常完成业务和生命周期。最初夹具把对象创建放在 async 函数中，会被该函数保存的临时寄存器干扰；现已消除该夹具自身保留源，仍对旧版复现失败。
+
+清空后的续接不会保留原文以便重算，也不会二次 HMAC 旧别名；只用固定标量状态及新 trace，明确标记 partial/continued_after_clear。新提交的身份仍按当前盐正常别名化。另修复字段 getter 失败时的终态回收、失败辅助函数隔离，以及未拥有父 span 的终态误写成父终态的历史问题；相应旧行为证据为 `/private/tmp/viva-log-failure-field-getter-old-proof.json` 和 `/private/tmp/viva-log-bound-parent-terminal-repro.log`。
+
+HTTP 原先只编码 trace/span，漏掉 diagnosticRunId，导致有效接收端丢弃关联；现在保留 run，仍省略发送 span 的 parent。修复前证据为 `/private/tmp/viva-log-http-run-binding-repro.log`。新回归覆盖实际 loopback HTTP 的根 trace、即时父 span 及无 epoch_changed 丢弃，并验证新增字段的实际字节上限和业务原编码回退。绑定、清空、GC、dream 可用性和检索定向 161 项通过，类型检查通过。首轮全量为 2240 项、2232 通过、2 跳过、6 失败（167.4 秒），证据为 `/private/tmp/viva-log-binding-full-tests.log`；失败均为旧测试录制端口缺少新增 bind 能力，丢失生命周期元数据或产生额外缺失能力报告。已将这些测试端口接入显式录制适配器，保留原业务断言，并分别完成定向验证；没有给生产端恢复原文字段缓存 fallback。
+
+随后补充启动时未绑定 run 的上下文回归：同一上下文的不同视图在换代后必须共享一个新根；启动前创建且从未读过当前上下文的静默 scope 也不能在清空后复用旧 trace。修复前两项均失败，见 `/private/tmp/viva-log-silent-startup-context-repro.log`；现用弱键共享换代记录，并在 writer 身份就绪时登记原 scope 的所属代次。最新诊断、会话计时及定时恢复专项 103/103，类型检查通过，见 `/private/tmp/viva-log-binding-final-regressions.log` 与 `/private/tmp/viva-log-binding-verified-typecheck.log`。本批全量 2242 项、2240 通过、2 跳过、0 失败（180.4 秒），见 /private/tmp/viva-log-binding-verified-full-tests.log。L1b 结项构建的桌面冒烟 15/15。真实 owner 两次超时分别为 10003.9ms、10006.2ms，满额后 3.1ms 返回 busy。恢复后重新加载成功，草稿和附件保留。日志为 /private/tmp/viva-l1b-exit-desktop.log 和 /private/tmp/viva-l1b-exit-owner.log。
+
 ## 当前验证与未完成项
 
 - 本批第一轮全量 2215 项，2213 通过、2 跳过；发现并补充迟到 close 与历史上下文冲突后，最终全量 2217 项，2215 通过、2 跳过、0 失败（169.2 秒）。类型检查和构建通过，当前产物完整桌面冒烟 15/15（4.6 分钟）；独立插件构建包含 149 个模块，离线封装及普通 Node 测试 4/4 通过。心跳冒烟现只接受 operation=process 的超时，避免把启动检查的诊断超时误当作进程失联证据。
 
 当前产物的真实 owner 暂停验证通过：10005.9ms、10004.2ms 超时，3.1ms 返回满额 busy，恢复后新读取/手动重试、草稿及附件均正常。Backend 沉默检测及清空恢复通过：2003.2ms 返回 cleanup_pending，实际恢复后盐轮换，业务进程 PID 不变，memory:get 正常。日志分别为 `/private/tmp/viva-l3-recovery-owner-smoke.log`、`/private/tmp/viva-l3-recovery-controls-smoke.log`；冻结 Backend/Renderer 的原生导出另见 `/private/tmp/viva-l3-recovery-export-smoke.log`。
 - 原有日志性能门槛没有改动。当前双平台 CI 仍因 5% 门槛失败；固定对象布局的仓库外探针也未改善完整负载，未并入生产。
-- 第 4 节的后台/定时任务独立根 trace 与触发 links 尚需补齐。现有持久化 operationId/task 身份关联已实现，但 `DiagnosticContext` 还没有 links，`withOperation` 仍沿用父 trace，不能以现有身份关联替代该项。
-- 第 11 节的 Node 活动/待写/显式操作缓存入口已经别名化；长生命周期 `withOperation` 和可移植 observation 闭包仍会持有初始 fields，需要继续通过有界字段绑定消除可能的身份原文引用。原始业务身份和协议保持既有职责，不能以丢弃全部关联替代该项。
-- 独立探针新确认一条实际生命周期缺口：暂停 identity.json 读取后，close 返回 false，但 released 已为 true；放行迟到读取后，state=closed 的 writer 又恢复 identity。证据 `/private/tmp/viva-log-initialization-close-proof.json`，探针为 `/private/tmp/viva-log-initialization-close-probe.ts`。下一批需要将初始化及重试身份 I/O 计入真实结算，超时不能释放、关闭后不能重新绑定；继续归入既有 L1c，不新增阶段。
+- 第 4 节的后台任务派发、继续/恢复和定时执行使用独立根 trace，根记录保留触发链接，子 span 继承新 trace。定时操作的逻辑 ID 跨 retry 不变，attempt 单独计数。实际 JSONL/ZIP 关联及定时重启回归已通过。
+- L1c 已复现清空后迟到进度错误恢复两个已结束操作，修复后活动数为零。真实配额事务持锁进程被冻结时，导出会在有界等待后返回 busy，未生成 ZIP；恢复后再次导出成功。该边界仍限制冻结期间的导出可用性。
+- 第 11 节的缓存入口与环绕字段绑定已经实现，定向 GC 及清空回归通过；当前源码仍需本批完整集成与发布复核，原始业务身份、协议和回执没有改变。
+- 先前身份读取未结算时误报 released、迟到恢复 identity 的探针缺口已在启动和重试两路修复，原始失败证据仍保留为 `/private/tmp/viva-log-initialization-close-proof.json`。完整平台复核仍属于既有 L1c，不新增阶段。
 
 以上继续归入已有 L1/L2/L3，不新增开发阶段。性能、后台关联和缓存边界尚未全部验收，因此整个日志方案保持未完成。

@@ -46,7 +46,9 @@ export const METRIC_KEYS = ['count', 'attempt', 'retryDelayMs', 'durationMs', 'p
   'ok', 'blocked', 'late', 'stale', 'partial'] as const
 export type DiagnosticMetric = typeof METRIC_KEYS[number]
 export type DiagnosticOutcome = 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'late_completed'
+export interface DiagnosticLink { readonly traceId: string; readonly spanId: string }
 export interface DiagnosticContext {
+  readonly links?: readonly DiagnosticLink[]
   readonly version: typeof DIAGNOSTIC_VERSION
   readonly traceId: string
   readonly spanId: string
@@ -65,25 +67,65 @@ export interface DiagnosticEvent extends DiagnosticFields {
   operation: DiagnosticOperation
   debug?: true
 }
-export interface DiagnosticPort { emit(event: DiagnosticEvent, context?: DiagnosticContext): undefined }
+export interface DiagnosticPort {
+  emit(event: DiagnosticEvent, context?: DiagnosticContext): undefined
+  /** The port owns scoped metadata policy. Event-only ports need not retain lifecycle fields. */
+  bind?(operation: DiagnosticOperation, fields: DiagnosticFields, context?: DiagnosticContext): DiagnosticPort | undefined
+}
 export const NO_DIAGNOSTICS: DiagnosticPort = Object.freeze({ emit: (_event: DiagnosticEvent) => undefined })
 export function guardDiagnosticPort(port: DiagnosticPort = NO_DIAGNOSTICS): DiagnosticPort {
   if (port === NO_DIAGNOSTICS) return port
-  return { emit(event, context) { try { port.emit(event, context) } catch { /* Diagnostics cannot change a business outcome. */ }; return undefined } }
+  return {
+    emit(event, context) { try { port.emit(event, context) } catch { /* Diagnostics cannot change a business outcome. */ }; return undefined },
+    bind(operation, fields, context) { return bindDiagnosticPort(port, operation, fields, context) },
+  }
+}
+/** Unsupported or failed binding drops diagnostics, never business work or arbitrary fields into a closure. */
+export function bindDiagnosticPort(port: DiagnosticPort | undefined, operation: DiagnosticOperation, fields: DiagnosticFields, context?: DiagnosticContext): DiagnosticPort {
+  if (!port || port === NO_DIAGNOSTICS) return NO_DIAGNOSTICS
+  try {
+    const bind = port.bind
+    if (typeof bind !== 'function') {
+      port.emit({ event: 'context.dropped', operation: 'diagnostics', reason: 'not_ready' }, context)
+      return NO_DIAGNOSTICS
+    }
+    const bound = bind.call(port, operation, fields, context)
+    return bound && typeof bound.emit === 'function' ? guardDiagnosticPort(bound) : NO_DIAGNOSTICS
+  } catch { return NO_DIAGNOSTICS }
 }
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+const traceIdPattern = /^[a-f0-9]{32}$/
+const spanIdPattern = /^[a-f0-9]{16}$/
+/** Wire spans are 64-bit IDs. On disk both IDs are 128-bit aliases. */
+export function parseDiagnosticLinks(value: unknown, stored = false): readonly DiagnosticLink[] | undefined {
+  if (!Array.isArray(value)) return
+  const count = value.length
+  if (!Number.isInteger(count) || count < 1 || count > 4) return
+  const result: DiagnosticLink[] = []
+  const spanPattern = stored ? traceIdPattern : spanIdPattern
+  for (let index = 0; index < count; index++) {
+    const link: unknown = value[index]
+    if (!record(link) || Object.keys(link).some(key => key !== 'traceId' && key !== 'spanId')) return
+    const traceId = link.traceId, spanId = link.spanId
+    if (typeof traceId !== 'string' || !traceIdPattern.test(traceId) || typeof spanId !== 'string' || !spanPattern.test(spanId)) return
+    result.push(Object.freeze({ traceId, spanId }))
+  }
+  return Object.freeze(result)
+}
 /** No parser error or rejected value may escape into either business or logs. */
 export function parseDiagnosticContext(value: unknown): DiagnosticContext | undefined {
   try {
-    if (!record(value) || Object.keys(value).some(key => !['version', 'traceId', 'spanId', 'parentSpanId', 'diagnosticRunId'].includes(key))) return
+    if (!record(value) || Object.keys(value).some(key => !['version', 'traceId', 'spanId', 'parentSpanId', 'diagnosticRunId', 'links'].includes(key))) return
     const version = value.version, traceId = value.traceId, spanId = value.spanId,
       parentSpanId = value.parentSpanId, diagnosticRunId = value.diagnosticRunId
+    const rawLinks = value.links, links = rawLinks === undefined ? undefined : parseDiagnosticLinks(rawLinks)
+    if (rawLinks !== undefined && !links) return
     if (version !== DIAGNOSTIC_VERSION || typeof traceId !== 'string' || !/^[a-f0-9]{32}$/.test(traceId)
       || typeof spanId !== 'string' || !/^[a-f0-9]{16}$/.test(spanId)
       || parentSpanId !== undefined && (typeof parentSpanId !== 'string' || !/^[a-f0-9]{16}$/.test(parentSpanId))
       || diagnosticRunId !== undefined && (typeof diagnosticRunId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(diagnosticRunId))) return
-    return Object.freeze({ version: DIAGNOSTIC_VERSION, traceId, spanId,
+    return Object.freeze({ version: DIAGNOSTIC_VERSION, traceId, spanId, ...(links ? { links } : {}),
       ...(parentSpanId ? { parentSpanId } : {}), ...(diagnosticRunId ? { diagnosticRunId } : {}) })
   } catch { return undefined }
 }

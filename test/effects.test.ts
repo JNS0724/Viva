@@ -6,6 +6,7 @@ import path from 'node:path'
 import { openAppDb, transaction } from '../src/backend/app-db.ts'
 import { createEffects, RETRY_MS, type Effect, type Outcome } from '../src/backend/effects.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 
 /**
@@ -41,7 +42,7 @@ test('effect retry diagnostics follow the committed generation and cannot announ
   const { app } = setup(t)
   let now = 1000, refusing = true
   const events: DiagnosticEvent[] = []
-  t.after(installDiagnosticPort({ emit(event) { events.push(event); return undefined } }))
+  t.after(installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined })))
   const effects = createEffects({ db: app.db, now: () => now, later: () => null, cancel: () => {},
     apply: (_kind, _data, work) => { if (refusing) throw new Error('SECRET_STORAGE_ERROR'); return { value: transaction(app.db, work) } } })
   t.after(() => effects.close())

@@ -5,8 +5,8 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { open, close } from 'node:fs'
 import { DIAGNOSTIC_LIMITS, safeDiagnosticReason } from '../contracts.ts'
-import type { DiagnosticComponent, DiagnosticContext, DiagnosticPort } from '../contracts.ts'
-import { diagnosticContext, newDiagnosticContext, snapshotDiagnosticContext } from './context.ts'
+import type { DiagnosticComponent, DiagnosticContext, DiagnosticFields, DiagnosticOperation, DiagnosticPort } from '../contracts.ts'
+import { continueDiagnosticContext, diagnosticContext, newDiagnosticContext, snapshotDiagnosticContext } from './context.ts'
 import { loadDiagnosticIdentity } from './identity.ts'
 import type { DiagnosticIdentity } from './identity.ts'
 import { createDiagnosticCapture, diagnosticRecordFormatter, safeDiagnosticEvent } from './record.ts'
@@ -21,12 +21,13 @@ type State = 'initializing' | 'ready' | 'stalled' | 'unavailable' | 'closed'
 const SonicBoom = SonicBoomModule.default
 interface Pending { event: CapturedDiagnosticEvent; context: DiagnosticContext; time: string; sequence: number; admittedAt: number }
 interface Encoded { line: string; admittedAt: number }
-interface Active { event: CapturedDiagnosticEvent; context: DiagnosticContext; key?: string; started: number; warnedAt: number }
+interface Active { event: CapturedDiagnosticEvent; context: DiagnosticContext; key?: string; owner?: symbol; started: number; warnedAt: number }
 // Before encoding, cover UTF-16 identity storage, field containers and the transient JSON string.
 // After encoding, only the actual UTF-8 destination bytes remain charged.
 const PENDING_CHARGE = DIAGNOSTIC_LIMITS.eventBytes * 4
 export interface DiagnosticStats { state: State; queuedBytes: number; peakQueuedBytes: number; maxWriteDelayMs: number; droppedCount: number; writtenBytes: number; activeCount: number; untrackedCount: number; reason?: string }
 export interface NodeDiagnostics extends DiagnosticPort {
+  bind(operation: DiagnosticOperation, fields: DiagnosticFields, context?: DiagnosticContext): BoundNodeDiagnostics | undefined
   readonly ready: Promise<void>
   readonly quota: DiagnosticQuota
   readonly directory: string
@@ -37,6 +38,13 @@ export interface NodeDiagnostics extends DiagnosticPort {
   debugRemainingMs(): number
   close(): Promise<boolean>
 }
+export interface BoundNodeDiagnostics extends DiagnosticPort {
+  readonly ended: boolean
+  readonly context: DiagnosticContext
+  readonly continuation: Readonly<Omit<DiagnosticFields, 'identities'>>
+}
+type Captured = ReturnType<ReturnType<typeof createDiagnosticCapture>['capture']>
+const CLEARED_FIELDS = Object.freeze({ reason: 'continued_after_clear' as const, metrics: Object.freeze({ partial: true }) })
 
 /** Pino encodes; SonicBoom writes. This adapter owns only policy and bounded accounting. */
 export function createNodeDiagnostics({ directory, component, version = 'unknown', componentVersion, fileBytes = DIAGNOSTIC_LIMITS.fileBytes,
@@ -52,10 +60,13 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
   let format: ReturnType<typeof diagnosticRecordFormatter> | undefined
   let creating = false, scheduled: ReturnType<typeof setTimeout> | undefined, encodingReserve = 0, reason: string | undefined
   let retry: ReturnType<typeof setTimeout> | undefined, failureCount = 0
-  let cleanupUncertain = false
+  let cleanupUncertain = false, loadingIdentity = false
   const pending: Pending[] = [], encoded: Encoded[] = []
   const active = new Map<string, Active>()
   const explicit = new Map<string, DiagnosticContext>()
+  const boundSpans = new Set<string>()
+  const bindings = new Map<symbol, { operation: DiagnosticOperation; base: Captured; context: DiagnosticContext;
+    continuation: BoundNodeDiagnostics['continuation']; stage?: CapturedDiagnosticEvent['stage'] }>()
   const capture = createDiagnosticCapture()
   const cleanup = new Set<Promise<void>>()
   let resolveReady!: () => void
@@ -68,17 +79,17 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
   }
   const fail = (error: unknown) => {
     reason = safeDiagnosticReason(error); state = closing ? 'closed' : 'unavailable'
-    if (reason === 'epoch_changed') { identity = undefined; format = undefined; active.clear(); explicit.clear(); capture.clear() }
+    if (reason === 'epoch_changed') { identity = undefined; format = undefined; active.clear(); explicit.clear(); bindings.clear(); boundSpans.clear(); capture.clear() }
     discardQueues()
     resolveReady()
     retryWhenClosed()
   }
   function retryWhenClosed() {
-    if (closing || current || retry || cleanupUncertain) return
+    if (closing || current || retry || loadingIdentity || cleanupUncertain) return
     retry = setTimeout(() => {
       retry = undefined
       if (closing) return
-      void (async () => { if (!identity) bindIdentity(await loadDiagnosticIdentity(directory)); await openNext() })().catch(fail)
+      void (async () => { if (!identity && !await readIdentity()) return; await openNext() })().catch(fail)
     }, Math.min(60_000, 1000 * 2 ** Math.min(failureCount++, 6)))
     retry.unref()
   }
@@ -144,6 +155,19 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
       active.delete(spanId)
       if (entry.key) explicit.delete(entry.key)
     }
+    for (const [owner, entry] of bindings) {
+      if (entry.context.diagnosticRunId && entry.context.diagnosticRunId !== value.runId) releaseBinding(owner)
+      else if (!entry.context.diagnosticRunId) continueDiagnosticContext(entry.context, value.runId)
+    }
+  }
+  async function readIdentity() {
+    loadingIdentity = true
+    try {
+      const value = await loadDiagnosticIdentity(directory)
+      if (closing && !draining) return false
+      bindIdentity(value)
+      return true
+    } finally { loadingIdentity = false }
   }
   async function openNext() {
     if (creating || closing && !draining) return
@@ -254,54 +278,122 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
       reason: value.reason ?? (value.incompleteCount ? 'incomplete' : 'unavailable'),
       metrics: { count: value.incompleteCount, remainingCount: value.omittedCount, partial: value.status !== 'complete' } })
   } })
+  function admit(metadata: Captured, suppliedContext?: DiagnosticContext, owner?: symbol) {
+    if (closing) { droppedCount++; return }
+    let event = metadata.event
+    if (event.debug && performance.now() >= debugUntil) return
+    if (metadata.partial) droppedCount++
+    const received = snapshotDiagnosticContext(suppliedContext)
+    if (suppliedContext && !received) {
+      droppedCount++
+      event = { ...event, reason: event.reason ?? 'invalid_context', metrics: { ...event.metrics, partial: true } }
+    }
+    let context = received ?? diagnosticContext() ?? newDiagnosticContext()
+    if (context.diagnosticRunId && identity && context.diagnosticRunId !== identity.runId) { droppedCount++; return }
+    const key = owner ? undefined : metadata.key
+    if (!owner) {
+      if (key && explicit.has(key)) context = explicit.get(key)!
+      else if (key && active.has(context.spanId)) context = newDiagnosticContext(context)
+      else if (active.get(context.spanId)?.owner && (event.event === 'operation.start' || event.event === 'operation.end')) context = newDiagnosticContext(context)
+      if (key && event.event === 'operation.start' && active.size < DIAGNOSTIC_LIMITS.activeSpans) explicit.set(key, context)
+    }
+    if (event.event === 'operation.start') {
+      const existing = active.get(context.spanId)
+      if (active.size < DIAGNOSTIC_LIMITS.activeSpans && (!existing || existing.owner === owner)) active.set(context.spanId,
+        { event, context, key, owner, started: performance.now(), warnedAt: 0 })
+      else untrackedCount = Math.min(Number.MAX_SAFE_INTEGER, untrackedCount + 1)
+    }
+    if (event.event === 'operation.progress' || event.event === 'wait.begin') {
+      const entry = active.get(context.spanId)
+      if (entry) entry.event = { ...entry.event, ...(event.stage ? { stage: event.stage } : {}),
+        ...(event.reason ? { reason: event.reason } : {}), identities: { ...entry.event.identities, ...event.identities }, metrics: { ...entry.event.metrics, ...event.metrics } }
+    }
+    if (event.event === 'operation.end') {
+      const candidate = active.get(context.spanId)
+      const entry = candidate?.event.operation === event.operation && candidate.owner === owner
+        && candidate.key === key ? candidate : undefined
+      if (entry?.event.stage && !event.stage) event = { ...event, stage: entry.event.stage }
+      if (entry && event.metrics?.durationMs === undefined) event = { ...event, metrics: { ...event.metrics, durationMs: performance.now() - entry.started } }
+      if (entry) active.delete(context.spanId)
+      if (key) explicit.delete(key)
+    }
+    enqueue(event, context)
+  }
+  // A separate activation owns only captured metadata; raw bind arguments cannot enter the returned closure.
+  function boundPort(operation: DiagnosticOperation, base: Captured, context: DiagnosticContext): BoundNodeDiagnostics {
+    const owner = Symbol('diagnostic scope')
+    const { stage, outcome } = base.event
+    const continuation = Object.freeze({ ...(stage ? { stage } : {}), ...(outcome ? { outcome } : {}),
+      reason: 'continued_after_clear' as const, metrics: Object.freeze({ ...base.event.metrics, partial: true }) })
+    bindings.set(owner, { operation, base, context, continuation, stage })
+    boundSpans.add(context.spanId)
+    return boundHandle(owner, context)
+  }
+  function releaseBinding(owner: symbol) {
+    const entry = bindings.get(owner)
+    if (entry) boundSpans.delete(entry.context.spanId)
+    bindings.delete(owner)
+  }
+  // Handles retain an opaque token, not a copy of bound identities. Clear/end evicts their data centrally.
+  function boundHandle(owner: symbol, context: DiagnosticContext): BoundNodeDiagnostics {
+    let ended = false
+    return Object.freeze({ context, get ended() { return ended }, get continuation() { return bindings.get(owner)?.continuation ?? CLEARED_FIELDS },
+      emit(raw: Parameters<DiagnosticPort['emit']>[0]) {
+        try {
+          const bound = bindings.get(owner)
+          if (closing || !bound) { droppedCount++; return undefined }
+          const validated = safeDiagnosticEvent(raw)
+          if (!validated || validated.operation !== bound.operation) { droppedCount++; return undefined }
+          const base = bound.base
+          const delta = capture.capture(validated, identity, 'bound')
+          if (delta.event.stage) bound.stage = delta.event.stage
+          const identities = base.event.identities || delta.event.identities ? { ...base.event.identities, ...delta.event.identities } : undefined
+          const metrics = base.event.metrics || delta.event.metrics ? { ...base.event.metrics, ...delta.event.metrics } : undefined
+          const event = { ...base.event, ...delta.event, ...(identities ? { identities } : {}), ...(metrics ? { metrics } : {}) }
+          if (event.event === 'operation.end' && !delta.event.stage) {
+            const latest = active.get(context.spanId)?.event.stage ?? bound.stage
+            if (latest) event.stage = latest
+          }
+          try {
+            admit({ event, key: undefined, partial: base.partial || delta.partial }, context, owner)
+          } finally {
+            if (validated.event === 'operation.end') { ended = true; releaseBinding(owner) }
+          }
+        } catch { droppedCount++ }
+        return undefined
+      },
+    })
+  }
   const runtime: NodeDiagnostics = {
     ready, quota, directory,
+    bind(operation, fields, supplied) {
+      try {
+        if (closing) { droppedCount++; return }
+        if (active.size >= DIAGNOSTIC_LIMITS.activeSpans || bindings.size >= DIAGNOSTIC_LIMITS.activeSpans) { untrackedCount++; return }
+        const validated = safeDiagnosticEvent(fields, { event: 'operation.progress', operation })
+        if (!validated) { droppedCount++; return }
+        let context = supplied ? snapshotDiagnosticContext(supplied) : newDiagnosticContext(diagnosticContext())
+        if (!context || context.diagnosticRunId && identity && context.diagnosticRunId !== identity.runId) { droppedCount++; return }
+        if (active.has(context.spanId) || boundSpans.has(context.spanId)) context = newDiagnosticContext(context)
+        if (active.has(context.spanId) || boundSpans.has(context.spanId)) { untrackedCount++; return }
+        if (identity && !context.diagnosticRunId) continueDiagnosticContext(context, identity.runId)
+        return boundPort(operation, capture.capture(validated, identity, 'bound'), context)
+      } catch { droppedCount++; return }
+    },
     emit(raw, suppliedContext) {
       try {
       if (closing) { droppedCount++; return undefined }
       const validated = safeDiagnosticEvent(raw)
       if (!validated) { droppedCount++; return undefined }
       if (validated.debug && performance.now() >= debugUntil) return undefined
-      const metadata = capture.capture(validated, identity)
-      let event = metadata.event
-      if (metadata.partial) droppedCount++
-      const received = snapshotDiagnosticContext(suppliedContext)
-      if (suppliedContext && !received) {
-        droppedCount++
-        event = { ...event, reason: event.reason ?? 'invalid_context', metrics: { ...event.metrics, partial: true } }
-      }
-      let context = received ?? diagnosticContext() ?? newDiagnosticContext()
-      if (context.diagnosticRunId && identity && context.diagnosticRunId !== identity.runId) { droppedCount++; return undefined }
-      const key = metadata.key
-      if (key && explicit.has(key)) context = explicit.get(key)!
-      else if (key && active.has(context.spanId)) context = newDiagnosticContext(context)
-      if (key && event.event === 'operation.start' && active.size < DIAGNOSTIC_LIMITS.activeSpans) explicit.set(key, context)
-      if (event.event === 'operation.start') {
-        if (active.size < DIAGNOSTIC_LIMITS.activeSpans) active.set(context.spanId, { event, context, key, started: performance.now(), warnedAt: 0 })
-        else untrackedCount = Math.min(Number.MAX_SAFE_INTEGER, untrackedCount + 1)
-      }
-      if (event.event === 'operation.progress' || event.event === 'wait.begin') {
-        const entry = active.get(context.spanId)
-        if (entry) entry.event = { ...entry.event, ...(event.stage ? { stage: event.stage } : {}),
-          ...(event.reason ? { reason: event.reason } : {}), identities: { ...entry.event.identities, ...event.identities }, metrics: { ...entry.event.metrics, ...event.metrics } }
-      }
-      if (event.event === 'operation.end') {
-        const candidate = active.get(context.spanId)
-        const entry = candidate?.event.operation === event.operation
-          && candidate.key === key ? candidate : undefined
-        if (entry?.event.stage && !event.stage) event = { ...event, stage: entry.event.stage }
-        if (entry && event.metrics?.durationMs === undefined) event = { ...event, metrics: { ...event.metrics, durationMs: performance.now() - entry.started } }
-        if (entry) active.delete(context.spanId)
-        if (key) explicit.delete(key)
-      }
-      enqueue(event, context)
+      admit(capture.capture(validated, identity), suppliedContext)
       } catch { droppedCount++ }
       return undefined
     },
     snapshot: () => ({ stats: { state, queuedBytes: reserved, peakQueuedBytes, maxWriteDelayMs, droppedCount, writtenBytes, activeCount: active.size, untrackedCount, ...(reason ? { reason } : {}) },
       active: [...active.values()].map(entry => ({ operation: entry.event.operation, ...(entry.event.stage ? { stage: entry.event.stage } : {}), ageMs: performance.now() - entry.started })), previous: recovery.snapshot() }),
     identity: () => identity ? { diagnosticRunId: identity.runId, processInstanceId: instance } : undefined,
-    released: () => closing && !creating && !rotating && !current && cleanup.size === 0 && !cleanupUncertain && recovery.settled(),
+    released: () => closing && !draining && !loadingIdentity && !creating && !rotating && !current && cleanup.size === 0 && !cleanupUncertain && recovery.settled(),
     setDebug(durationMs) {
       const duration = Number.isFinite(durationMs) ? Math.min(15 * 60_000, Math.max(0, durationMs)) : 0
       debugUntil = duration ? performance.now() + duration : 0
@@ -317,10 +409,10 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
         const recoveryClosed = recovery.close()
         const completed = (async () => {
           await initialization
-          while (draining && (pending.length || encoded.length || creating || rotating)) {
+          while (draining && (loadingIdentity || pending.length || encoded.length || creating || rotating)) {
             if (state === 'ready') pump()
-            if (state === 'unavailable' || state === 'stalled' || state === 'closed') break
-            if (pending.length || encoded.length || creating || rotating) await new Promise(resolve => setTimeout(resolve, 1))
+            if (!loadingIdentity && (state === 'unavailable' || state === 'stalled' || state === 'closed')) break
+            if (loadingIdentity || pending.length || encoded.length || creating || rotating) await new Promise(resolve => setTimeout(resolve, 1))
           }
           draining = false
           const destination = current
@@ -330,13 +422,13 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
           })
           await Promise.all([...cleanup])
           await recoveryClosed
-          return !creating && !rotating && reason !== 'cleanup_pending'
+          return !loadingIdentity && !creating && !rotating && reason !== 'cleanup_pending'
         })().catch(() => false)
         let timeout: ReturnType<typeof setTimeout> | undefined
         const result = await Promise.race([completed, new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), DIAGNOSTIC_LIMITS.shutdownMs) })])
         clearTimeout(timeout)
         draining = false; clearTimeout(scheduled); scheduled = undefined
-        discardQueues(); active.clear(); explicit.clear(); capture.clear(); format = undefined; identity = undefined; state = 'closed'
+        discardQueues(); active.clear(); explicit.clear(); bindings.clear(); boundSpans.clear(); capture.clear(); format = undefined; identity = undefined; state = 'closed'
         if (!result) { reason = 'cleanup_pending'; try { current?.stream.destroy() } catch { /* Quota remains charged. */ } }
         return result
       })()
@@ -344,6 +436,6 @@ export function createNodeDiagnostics({ directory, component, version = 'unknown
     },
   }
   // Neither directory I/O nor sink readiness is a business prerequisite.
-  const initialization = loadDiagnosticIdentity(directory).then(value => { bindIdentity(value); lastProgress = performance.now(); return openNext() }).catch(fail)
+  const initialization = readIdentity().then(loaded => { if (loaded) { lastProgress = performance.now(); return openNext() } }).catch(fail)
   return runtime
 }

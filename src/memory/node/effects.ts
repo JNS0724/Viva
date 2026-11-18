@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { emitDiagnostic, withOperation } from '../../diagnostics/node/context.ts'
+import { emitDiagnostic, withDetachedOperation } from '../../diagnostics/node/context.ts'
 type Apply = <T>(kind: string, data: Record<string, unknown>, write: () => T) => { value: T }
 
 /**
@@ -149,7 +149,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
       if (!run) continue
       let outcomes: ReadonlyMap<string, Outcome>
       try {
-        outcomes = await withOperation('effects', () => run(effects), { identities: { methodId: kind }, metrics: { count: effects.length } })
+        outcomes = await withDetachedOperation('effects', () => run(effects), { identities: { methodId: kind }, metrics: { count: effects.length } })
       } catch (err) {
         if (closed) return
         onError(err)

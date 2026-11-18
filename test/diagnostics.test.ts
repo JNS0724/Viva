@@ -6,9 +6,11 @@ import path from 'node:path'
 import { runInNewContext } from 'node:vm'
 import crypto from 'node:crypto'
 import { syncBuiltinESMExports } from 'node:module'
-import { DIAGNOSTIC_LIMITS, parseDiagnosticContext, separateDiagnosticEnvelope, safeDiagnosticReason } from '../src/diagnostics/contracts.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
+import { bindDiagnosticPort, DIAGNOSTIC_LIMITS, NO_DIAGNOSTICS, parseDiagnosticContext, separateDiagnosticEnvelope, safeDiagnosticReason } from '../src/diagnostics/contracts.ts'
 import type { DiagnosticComponent, DiagnosticEvent } from '../src/diagnostics/contracts.ts'
-import { diagnosticContext, emitDiagnostic, inDiagnosticContext, installDiagnosticPort, withOperation } from '../src/diagnostics/node/context.ts'
+import { diagnosticContext, diagnosticPort, emitDiagnostic, emitDiagnosticFailure, inDiagnosticContext, installDiagnosticPort, withOperation } from '../src/diagnostics/node/context.ts'
+import { beginDiagnosticOperation, observeDiagnosticAsync, observeDiagnosticSync } from '../src/diagnostics/operation.ts'
 import { encodeDiagnosticEnvelope } from '../src/diagnostics/node/envelope.ts'
 import { createNodeDiagnostics } from '../src/diagnostics/node/logger.ts'
 import { DiagnosticQuota } from '../src/diagnostics/node/quota.ts'
@@ -18,6 +20,112 @@ import { loadDiagnosticIdentity, newDiagnosticIdentity, diagnosticAlias, replace
 const context = { version: 1 as const, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
 const temporary = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostics-test-'))
 const encodedBytes = (value: ReturnType<typeof encodeDiagnosticEnvelope>) => Buffer.isBuffer(value.body) ? value.body : Buffer.concat(value.body)
+
+test('bound fields are captured once, retain one alias across events, and release their lifecycle entry', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const writer = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => writer.close())
+  await writer.ready
+  const identity = await loadDiagnosticIdentity(directory), secret = 'PRIVATE_BOUND_MODEL'
+  let reads = 0
+  const fields = { get identities() { reads++; return { resourceId: secret } }, metrics: { count: 7 } }
+  const hmac = t.mock.method(crypto, 'createHmac'); syncBuiltinESMExports()
+  try {
+    const before = hmac.mock.callCount()
+    const bound = writer.bind('model', fields)
+    assert.ok(bound)
+    const afterBinding = hmac.mock.callCount()
+    assert.equal(afterBinding - before, 1)
+    bound.emit({ event: 'operation.start', operation: 'model' })
+    bound.emit({ event: 'operation.progress', operation: 'model', stage: 'running' })
+    bound.emit({ event: 'operation.end', operation: 'model', outcome: 'completed' })
+    assert.equal(hmac.mock.callCount(), afterBinding, 'base aliases must not be HMACed again on progress/end')
+    assert.equal(reads, 1)
+    assert.equal(writer.snapshot().stats.activeCount, 0)
+  } finally { hmac.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(await writer.close(), true)
+  const records = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8'))))
+    .join('').trim().split('\n').map(line => JSON.parse(line) as { identities: { resourceId: string }, metrics: { count: number } })
+  assert.equal(records.length, 3)
+  assert.ok(records.every(record => record.identities.resourceId === diagnosticAlias(identity, secret) && record.metrics.count === 7))
+})
+
+test('unstarted bindings are bounded; terminal events free capacity and retired handles cannot resurrect it', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const writer = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => writer.close())
+  await writer.ready
+  let first: ReturnType<typeof writer.bind>
+  for (let count = 0; count < DIAGNOSTIC_LIMITS.activeSpans; count++) {
+    const bound = writer.bind('model', {})
+    assert.ok(bound)
+    first ??= bound
+  }
+  assert.equal(writer.bind('model', {}), undefined)
+  assert.equal(writer.snapshot().stats.untrackedCount, 1)
+  first!.emit({ event: 'operation.start', operation: 'model' })
+  first!.emit({ event: 'operation.end', operation: 'model' })
+  assert.ok(writer.bind('model', {}))
+  first!.emit({ event: 'operation.start', operation: 'model' })
+  assert.equal(writer.snapshot().stats.activeCount, 0)
+  assert.equal(await writer.close(), true)
+})
+
+test('unowned terminals cannot close a bound parent in either live tracking or persisted history', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const writer = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => writer.close())
+  await writer.ready
+  const parent = writer.bind('memory.get', {})!
+  parent.emit({ event: 'operation.start', operation: 'memory.get' })
+  writer.emit({ event: 'operation.end', operation: 'memory.get' }, parent.context)
+  assert.equal(writer.snapshot().stats.activeCount, 1)
+  parent.emit({ event: 'operation.end', operation: 'memory.get' })
+  assert.equal(writer.snapshot().stats.activeCount, 0)
+  assert.equal(await writer.close(), true)
+  const records = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8'))))
+    .join('').trim().split('\n').map(line => JSON.parse(line) as { spanId: string })
+  assert.notEqual(records[1]!.spanId, records[0]!.spanId, 'an unknown terminal must not masquerade as the parent in recovery')
+  assert.equal(records[2]!.spanId, records[0]!.spanId)
+})
+
+test('disabled, unsupported and failing field binding preserve the original promise and do not read metadata', async () => {
+  const business = Promise.resolve({ value: 42 })
+  let reads = 0
+  const fields = Object.defineProperty({}, 'identities', { get() { reads++; throw new Error('PRIVATE_METADATA_ACCESSOR') } })
+  const events: DiagnosticEvent[] = []
+  const unsupported = { emit(event: DiagnosticEvent) { events.push(event); return undefined } }
+  assert.equal(observeDiagnosticAsync(unsupported, 'model', () => business, fields), business)
+  assert.equal(reads, 0)
+  assert.equal(events[0]?.event, 'context.dropped')
+  const broken = Object.defineProperty({ emit: () => undefined }, 'bind', { get() { throw new Error('PRIVATE_BINDER_ERROR') } })
+  assert.equal(observeDiagnosticAsync(broken, 'model', () => business, fields), business)
+  assert.equal(observeDiagnosticSync(broken, 'model', () => 42, fields), 42)
+  const restore = installDiagnosticPort(NO_DIAGNOSTICS)
+  try {
+    assert.equal(observeDiagnosticAsync(diagnosticPort, 'model', () => business, fields), business)
+    assert.equal(bindDiagnosticPort(NO_DIAGNOSTICS, 'model', fields), NO_DIAGNOSTICS)
+  } finally { restore() }
+  assert.equal(reads, 0)
+})
+
+test('throwing bound metadata getters never mask synchronous results or the original business error', async t => {
+  const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
+  const writer = createNodeDiagnostics({ directory, component: 'backend' }); t.after(() => writer.close())
+  await writer.ready
+  const restore = installDiagnosticPort(writer)
+  try {
+    const fields = Object.defineProperty({}, 'identities', { get() { throw new Error('PRIVATE_FIELDS') } })
+    assert.equal(withOperation('model', () => 42, fields), 42)
+    const failure = new Error('original business failure')
+    await assert.rejects(withOperation('model', () => Promise.reject(failure), fields), error => error === failure)
+    assert.doesNotThrow(() => emitDiagnosticFailure('model', failure, fields))
+    const badStage = Object.defineProperty({}, 'stage', { get() { throw new Error('PRIVATE_FAILURE_STAGE') } })
+    assert.doesNotThrow(() => emitDiagnosticFailure('model', failure, badStage))
+    const observation = beginDiagnosticOperation(writer, 'model')
+    const details = Object.defineProperty({}, 'metrics', { get() { throw new Error('PRIVATE_PROGRESS') } })
+    assert.doesNotThrow(() => observation.progress(details))
+    assert.doesNotThrow(() => observation.end('completed', details))
+    assert.equal(writer.snapshot().stats.activeCount, 0)
+  } finally { restore(); await writer.close() }
+})
 
 test('identity text is aliased synchronously before writer admission and is not hashed twice on disk', async t => {
   const directory = await temporary(); t.after(() => rm(directory, { recursive: true, force: true }))
@@ -50,6 +158,7 @@ test('opaque-looking model names and resource identities are not retained as raw
       identities: { resourceId: 'abcdef0123456789' } }, context)
     assert.equal(hmac.mock.callCount() - before, 2, 'identity format does not prove a resource name is content-free')
   } finally { hmac.mock.restore(); syncBuiltinESMExports() }
+  assert.equal(await logger.close(), true)
 })
 
 test('context getters are captured once and cannot replace validated opaque identifiers', () => {
@@ -195,10 +304,20 @@ test('diagnostic encoding preserves the exact business buffer at byte limits and
   assert.equal(zeroCopy.body[0].byteOffset, large.byteOffset)
 })
 
+test('HTTP propagation keeps the run binding while omitting the sender span parent', () => {
+  const run = crypto.randomUUID(), body = Buffer.from('{"args":[]}')
+  const incoming = { ...context, parentSpanId: 'c'.repeat(16), diagnosticRunId: run }
+  const full = encodeDiagnosticEnvelope(body, incoming, 1000)
+  assert.deepEqual(JSON.parse(encodedBytes(full).toString()), { args: [], diagnostics: { ...context, diagnosticRunId: run } })
+  const exact = body.length + full.diagnosticBytes
+  assert.equal(encodeDiagnosticEnvelope(body, incoming, exact).dropped, false)
+  assert.equal(encodeDiagnosticEnvelope(body, incoming, exact - 1).body, body)
+})
+
 test('around-call diagnostics preserves synchronous values, this, errors and asynchronous cancellation', async () => {
   const events: DiagnosticEvent[] = []
   const contexts: Array<ReturnType<typeof diagnosticContext>> = []
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); contexts.push(diagnosticContext()); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); contexts.push(diagnosticContext()); return undefined }))
   try {
     const error = new Error('DO_NOT_LOG_THIS')
     const receiver = { value: 42, run() { return this.value } }
@@ -215,7 +334,7 @@ test('around-call diagnostics preserves synchronous values, this, errors and asy
 })
 
 test('concurrent operations keep their async context and nested operations share only their parent trace', async () => {
-  const restore = installDiagnosticPort({ emit: () => undefined })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(() => undefined))
   try {
     await inDiagnosticContext(context, async () => {
       const results = await Promise.all([1, 2].map(value => withOperation('task', async () => {
@@ -234,7 +353,7 @@ test('concurrent operations keep their async context and nested operations share
 
 test('a native Promise from another realm is observed at settlement and preserves its rejection', async () => {
   const events: DiagnosticEvent[] = [], failure = new Error('CROSS_REALM_ERROR')
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
   try {
     const pending = runInNewContext('Promise.reject(failure)', { failure }) as Promise<never>
     const result = withOperation('tool', () => pending)

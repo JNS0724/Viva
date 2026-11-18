@@ -1,4 +1,7 @@
 import test from 'node:test'
+import { fork } from 'node:child_process'
+import { once } from 'node:events'
+import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
 import { spawnBackend } from '../src/shell/backend-client.ts'
 import { START, TOKEN } from './fixtures/backend-wire.ts'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +17,9 @@ import { newDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
 import { DiagnosticQuota } from '../src/diagnostics/node/quota.ts'
 import { createDiagnosticExporter } from '../src/diagnostics/node/export.ts'
 import { createNodeDiagnostics } from '../src/diagnostics/node/logger.ts'
-import { installDiagnosticPort, withOperation } from '../src/diagnostics/node/context.ts'
+import { diagnosticBinding, diagnosticContext, installDiagnosticPort, setDiagnosticBinding, withDetachedOperation, withOperation } from '../src/diagnostics/node/context.ts'
+import { diagnosticAlias, loadDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
+import { backendWith } from './fixtures/backend-wire.ts'
 import { checkedIpc } from '../src/shared/ipc-contract.ts'
 import type { RawIpc } from '../src/shared/ipc-contract.ts'
 import { createRemoteMemoryChannel } from '../src/backend/remote-memory-channel.ts'
@@ -28,6 +33,84 @@ const fixture = (sequence: number) => ({ schemaVersion: 1, time: '2026-11-17T00:
 const report = (): DiagnosticFileManifest => ({ entry: 'backend-1.jsonl', rawCutoffBytes: 0, sourceBytesRead: 0,
   exportedThroughByte: 0, trailingBytesOmitted: 0, partial_trailing_record: false, outputBytes: 0, invalid_record: 0 })
 const scratch = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostic-export-'))
+
+test('background roots preserve their trigger link in both the local history and the exported archive', async t => {
+  const directory = await scratch(), writer = createNodeDiagnostics({ directory, component: 'backend' })
+  const restore = installDiagnosticPort(writer)
+  t.after(async () => { restore(); await writer.close(); await rm(directory, { recursive: true, force: true }) })
+  await writer.ready
+  withOperation('conversation', () => withDetachedOperation('task', () => withOperation('storage', () => 42)))
+  await writer.close()
+  const file = (await readdir(directory)).find(name => name.endsWith('.jsonl'))!
+  const local = await readFile(path.join(directory, file))
+  const destination = path.join(directory, 'export.zip')
+  await writeDiagnosticBundle({ directory, destination, files: [{ file, cutoff: local.length }] })
+  const zip = unzipStored(await readFile(destination))
+  const exported = zip.get('backend-1.jsonl')!
+  function check(bytes: Buffer) {
+    const rows = bytes.toString().trim().split('\n').map(line => JSON.parse(line) as {
+      event: string, operation: string, traceId: string, spanId: string, parentSpanId?: string, links?: unknown
+    })
+    const start = (op: string) => rows.find(row => row.event === 'operation.start' && row.operation === op)!
+    const trigger = start('conversation'), task = start('task'), storage = start('storage')
+    assert.notEqual(task.traceId, trigger.traceId)
+    assert.equal(task.parentSpanId, undefined)
+    assert.deepEqual(task.links, [{ traceId: trigger.traceId, spanId: trigger.spanId }])
+    assert.equal(storage.traceId, task.traceId)
+    assert.equal(storage.parentSpanId, task.spanId)
+    return trigger.traceId
+  }
+  assert.notEqual(check(local), check(exported))
+})
+
+test('export reports a frozen live quota owner and can retry after the real lock releases', { timeout: 20_000 }, async t => {
+  const directory = await scratch(), destination = path.join(directory, 'result.zip')
+  const holder = fork(fileURLToPath(new URL('./fixtures/diagnostic-quota-holder.ts', import.meta.url)), [directory],
+    { execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  const exit = once(holder, 'exit')
+  let paused: Awaited<ReturnType<typeof pauseOwnedProcess>> | undefined
+  t.after(async () => { await paused?.resume(); if (holder.exitCode === null) holder.kill(); await exit; await rm(directory, { recursive: true, force: true }) })
+  assert.equal((await once(holder, 'message'))[0], 'locked')
+  paused = await pauseOwnedProcess(holder.pid!)
+  const exporter = createDiagnosticExporter({ quota: new DiagnosticQuota(directory) })
+  const start = performance.now()
+  assert.deepEqual(await exporter.exportBundle(destination), { status: 'failed', reason: 'busy' })
+  assert.ok(performance.now() - start < 5000)
+  assert.equal(exporter.state(), 'idle')
+  const files = await readdir(directory)
+  assert.ok(files.includes('inventory.lock'))
+  assert.ok(!files.some(file => file.endsWith('.partial') || file.endsWith('.zip')))
+  await paused.resume(); paused = undefined
+  holder.send('release')
+  await exit
+  assert.deepEqual(await exporter.exportBundle(destination), { status: 'saved' })
+  assert.ok(unzipStored(await readFile(destination)).has('manifest.json'))
+})
+
+test('real HTTP preserves the sender trace and immediate parent under a validated run binding', async t => {
+  const directory = await scratch()
+  const writer = createNodeDiagnostics({ directory, component: 'backend' })
+  const restore = installDiagnosticPort(writer), previous = diagnosticBinding()
+  t.after(async () => { restore(); setDiagnosticBinding(previous); await writer.close(); await rm(directory, { recursive: true, force: true }) })
+  await writer.ready
+  const identity = await loadDiagnosticIdentity(directory)
+  setDiagnosticBinding(identity.runId)
+  let received: ReturnType<typeof diagnosticContext>
+  const { connection } = await backendWith(t, { 'probe:causal': () => { received = diagnosticContext(); return 42 } })
+  let root: ReturnType<typeof diagnosticContext>
+  assert.equal(await withOperation('conversation', () => { root = diagnosticContext(); return connection.rpc('probe:causal', []) }), 42)
+  assert.ok(root && received)
+  assert.equal(received.traceId, root.traceId)
+  assert.equal(received.diagnosticRunId, identity.runId)
+  assert.notEqual(received.parentSpanId, root.spanId, 'the HTTP client owns an intervening child span')
+  assert.equal(await writer.close(), true)
+  const records = (await Promise.all((await readdir(directory)).filter(file => file.endsWith('.jsonl')).map(file => readFile(path.join(directory, file), 'utf8'))))
+    .join('').trim().split('\n').map(line => JSON.parse(line) as { event: string, traceId: string, spanId: string, parentSpanId?: string, reason?: string })
+  const parent = records.find(record => record.event === 'operation.start' && record.spanId === diagnosticAlias(identity, received!.parentSpanId!))
+  assert.equal(parent?.traceId, diagnosticAlias(identity, root.traceId))
+  assert.equal(parent?.parentSpanId, diagnosticAlias(identity, root.spanId))
+  assert.equal(records.some(record => record.event === 'context.dropped' && record.reason === 'epoch_changed'), false)
+})
 
 test('backend startup explicitly separates early health messages from its ready handshake', { timeout: 10_000 }, async t => {
   let unexpected = false

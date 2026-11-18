@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { emitDiagnostic, emitDiagnosticFailure, withOperation } from '../diagnostics/node/context.ts'
+import { emitDiagnostic, emitDiagnosticFailure, withDetachedOperation, withOperation } from '../diagnostics/node/context.ts'
 import { t } from '../shared/i18n/translate.ts'
 import type { Conversation } from './history-db.ts'
 import { autoTitle, type StoredMessage } from './history-schema.ts'
@@ -279,7 +279,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(null)
     if ('problem' in place) return { ok: false as const, problem: place.problem }
     try {
-      return await beginReserved(text, main, mode, model, place.counted, name, admit)
+      return await withDetachedOperation('task', () => beginReserved(text, main, mode, model, place.counted, name, admit), { stage: 'dispatch' })
     } finally {
       place.release()
     }
@@ -422,7 +422,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await askReserved(taskId, text, kept, place.counted, admit)
+      return await withDetachedOperation('task', () => askReserved(taskId, text, kept, place.counted, admit), { stage: 'dispatch', identities: { taskId } })
     } finally {
       place.release()
     }
@@ -464,7 +464,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const place = reserveRun(taskId)
     if ('problem' in place) return { ok: false, problem: place.problem }
     try {
-      return await resumeReserved(taskId, words, kept, place.counted, admit)
+      return await withDetachedOperation('task', () => resumeReserved(taskId, words, kept, place.counted, admit), { stage: 'recovering', identities: { taskId } })
     } finally {
       place.release()
     }

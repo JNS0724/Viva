@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { transaction } from '../src/backend/app-db.ts'
@@ -21,7 +22,7 @@ const ONCE = { kind: 'at', at: '2026-11-06T11:00:00+08:00' } as const
 
 test('schedule retry diagnostics are published only after the durable retry and keep their identity across restart', async t => {
   const events: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
   t.after(restore)
   const app = setup([{ ok: false, problem: 'SECRET_SCHEDULE_FAILURE' }, { ok: true, text: 'SECRET_SCHEDULE_RESULT' }])
   app.store.create({ title: 'SECRET_SCHEDULE_TITLE', prompt: 'SECRET_SCHEDULE_PROMPT', cwd: '/PRIVATE_PATH', rule: ONCE })
@@ -42,6 +43,10 @@ test('schedule retry diagnostics are published only after the durable retry and 
   assert.equal(app.feed.list()[0]?.body, 'SECRET_SCHEDULE_RESULT')
   assert.ok(events.some(event => event.operation === 'schedule' && event.event === 'operation.start' && event.stage === 'recovering'
     && event.identities?.jobId === retry.identities?.jobId && event.identities?.generation === retry.identities?.generation))
+  const starts = events.filter(event => event.operation === 'schedule' && event.event === 'operation.start')
+  assert.ok(starts.some(event => event.metrics?.attempt === 0) && starts.some(event => event.metrics?.attempt === 1))
+  assert.ok(starts[0]!.identities?.operationId)
+  assert.equal(new Set(starts.map(event => event.identities?.operationId)).size, 1)
   assert.doesNotMatch(JSON.stringify(events), /SECRET_SCHEDULE|PRIVATE_PATH/)
 })
 

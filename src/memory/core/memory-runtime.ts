@@ -548,10 +548,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         return
       }
       const id = randomUUID(), snapshotRevision = store.revision()
-      const diagnosticFields = { stage: request.stage, identities: { operationId: id, jobId: request.job.key, generation: request.job.generation } }
+      const observation = beginDiagnosticOperation(diagnostics, 'memory.dream', {
+        stage: request.stage, identities: { operationId: id, jobId: request.job.key, generation: request.job.generation } })
       let diagnosticOutcome: DiagnosticOutcome = 'cancelled'
       let diagnosticReason: DiagnosticReason | undefined = 'denied'
-      diagnostics.emit({ event: 'operation.start', operation: 'memory.dream', ...diagnosticFields })
       const current = () => !closed && request.current() && request.sourceIds().every(fileSourceAllowsUse)
       runningComputations.set(id, {
         ready: () => !mutation && store.revision() === snapshotRevision && current(),
@@ -569,8 +569,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         diagnosticOutcome = 'failed'; diagnosticReason = safeDiagnosticReason(error)
         throw error
       } finally {
-        diagnostics.emit({ event: 'operation.end', operation: 'memory.dream', ...diagnosticFields, outcome: diagnosticOutcome,
-          ...(diagnosticReason ? { reason: diagnosticReason } : {}) })
+        observation.end(diagnosticOutcome, diagnosticReason ? { reason: diagnosticReason } : {})
         runningComputations.delete(id)
       }
     }

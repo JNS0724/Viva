@@ -51,6 +51,7 @@ import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
@@ -60,10 +61,10 @@ const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', 
 test('a newly selected native session registers its owner metadata once before selection commits', async t => {
   const app = await setup(t, () => null)
   let registrations = 0
-  const restore = installDiagnosticPort({ emit(event) {
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => {
     if (event.event === 'wait.begin' && event.operation === 'memory.owner' && event.identities?.methodId === 'recordSession') registrations++
     return undefined
-  } })
+  }))
   t.after(restore)
   const selected = await app.newTopic()
   assert.ok(selected.sessionId)

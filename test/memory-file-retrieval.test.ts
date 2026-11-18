@@ -8,6 +8,7 @@ import type { MemoryDocumentView } from '../src/memory/core/memory-document-read
 import type { MemoryEmbedder, MemoryEmbeddingInput } from '../src/memory/contracts/embedding.ts'
 import type { MemoryFileHit } from '../src/memory/core/ports/file-index.ts'
 import type { DiagnosticEvent, DiagnosticPort } from '../src/diagnostics/contracts.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const workspace = hash('workspace')
@@ -38,9 +39,8 @@ function encoder() {
 test('retrieval diagnostics identify lexical, vector, fusion and relations without copying query or evidence', async t => {
   const events: DiagnosticEvent[] = []
   const model = encoder()
-  const f = setup(t, [view('private-document', 'needle PRIVATE_BODY_CANARY')], model.embedder, {
-    emit(event) { events.push(event); return undefined },
-  })
+  const f = setup(t, [view('private-document', 'needle PRIVATE_BODY_CANARY')], model.embedder,
+    recordingDiagnosticPort(event => { events.push(event); return undefined }))
   const result = await f.retrieval.search({ query: 'needle PRIVATE_QUERY_CANARY', allows })
   assert.ok(result.hits.length)
   assert.deepEqual(events.filter(event => event.event === 'operation.progress' && event.operation === 'memory.recall').map(event => event.stage), ['lexical', 'vector', 'fusion', 'relations'])

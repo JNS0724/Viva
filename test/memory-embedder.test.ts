@@ -4,6 +4,7 @@ import { fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { once } from 'node:events'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
 import { embeddingFixture } from './fixtures/memory-embedding-assets.ts'
@@ -43,7 +44,7 @@ test('aborting a pending embedding retires that worker and lets a new request ru
 
 test('worker load and inference emit bounded metadata while malformed diagnostic replies cannot retire valid business work', async t => {
   const events: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort({ emit(event) { events.push(event); return undefined } })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined }))
   t.after(restore)
   const { embedder } = await embeddingFixture(t, { behavior: 'diagnostic-noise' })
   const vectors = await embedder.embedBatch([{ kind: 'query', text: 'SECRET_EMBEDDING_QUERY' }])

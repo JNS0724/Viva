@@ -9,9 +9,10 @@ import { decodeValue, encodeValue, type HostCall, SEQ_HEADER, sseReader } from '
 import { connect } from '../src/shell/backend-client.ts'
 import { backendWith, post, START, TOKEN } from './fixtures/backend-wire.ts'
 import { diagnosticContext, inDiagnosticContext, installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 
 test('diagnostic JSON chunks retain a large RPC body and its context through the real HTTP receiver', async t => {
-  const restore = installDiagnosticPort({ emit: () => undefined })
+  const restore = installDiagnosticPort(recordingDiagnosticPort(() => undefined))
   t.after(restore)
   const context = { version: 1 as const, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
   const body = '深圳🙂\\"'.repeat(20_000)

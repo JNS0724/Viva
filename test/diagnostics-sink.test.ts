@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import promises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -8,8 +12,57 @@ import { createManagedDiagnostics } from '../src/diagnostics/node/managed.ts'
 import { createNodeDiagnostics } from '../src/diagnostics/node/logger.ts'
 import { DIAGNOSTIC_LIMITS } from '../src/diagnostics/contracts.ts'
 import { eventually } from './fixtures/eventually.ts'
+import { loadDiagnosticIdentity } from '../src/diagnostics/node/identity.ts'
 
 const scratch = () => mkdtemp(path.join(tmpdir(), 'viva-diagnostic-sink-'))
+test('pending Node and portable scopes let caller metadata graphs be garbage-collected', () => {
+  const child = spawnSync(process.execPath, ['--expose-gc', fileURLToPath(new URL('./fixtures/diagnostic-binding-gc.ts', import.meta.url))],
+    { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, encoding: 'utf8', timeout: 10_000 })
+  assert.equal(child.status, 0, child.stderr)
+  assert.deepEqual(JSON.parse(child.stdout), { mode: 'both', collected: true, activeCount: 0 })
+})
+
+for (const phase of ['startup', 'retry'] as const) test(`pending ${phase} identity I/O retains clear capacity and cannot rebind a closed writer`, { timeout: 15_000 }, async () => {
+  const directory = await scratch()
+  const identity = await loadDiagnosticIdentity(directory)
+  const original = promises.readFile
+  const descriptor = Object.getOwnPropertyDescriptor(promises, 'readFile')!
+  const releases: Array<() => Promise<void>> = []
+  let entered!: () => void, reads = 0
+  const held = new Promise<void>(resolve => { entered = resolve })
+  const restore = () => { Object.defineProperty(promises, 'readFile', descriptor); syncBuiltinESMExports() }
+  Object.defineProperty(promises, 'readFile', { ...descriptor, value: (...args: Parameters<typeof original>) => {
+    if (args[0] !== path.join(directory, 'identity.json')) return original(...args)
+    reads++
+    if (phase === 'retry' && reads === 1) return Promise.reject(Object.assign(new Error('synthetic identity read failure'), { code: 'EIO' }))
+    entered()
+    return new Promise<Awaited<ReturnType<typeof original>>>((resolve, reject) => {
+      releases.push(() => original(...args).then(resolve, reject))
+    })
+  } })
+  syncBuiltinESMExports()
+  const writer = createManagedDiagnostics({ directory, component: 'backend' })
+  const release = async () => { restore(); await Promise.all(releases.splice(0).map(finish => finish())) }
+  try {
+    await held
+    const token = '20ffbf34-204d-4da2-a626-b78dcfd1e1a9'
+    assert.equal(await writer.prepare(token), false, 'a caller deadline is not an identity I/O acknowledgment')
+    assert.equal(writer.released(), false)
+    assert.equal(await writer.resume(token, identity.runId), false)
+    assert.equal(reads, phase === 'retry' ? 2 : 1, 'only one identity attempt may remain in flight')
+    await release()
+    assert.ok(await eventually(writer.released, { timeoutMs: 1000, intervalMs: 5 }))
+    assert.equal(writer.identity(), undefined, 'late identity data must not restore a closed writer binding')
+    assert.equal(writer.snapshot().stats.state, 'closed')
+    assert.equal(await writer.prepare(token), true, 'the same clear can recover after actual I/O settlement')
+    assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.jsonl')), [])
+  } finally {
+    await release(); await writer.close()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 for (const code of ['ENOSPC', 'EAGAIN', 'EACCES']) test(`asynchronous ${code} writes fail closed for diagnostics and preserve business results`, async t => {
   const directory = await scratch(); t.after(() => rm(directory, { recursive: true, force: true }))
   const writer = createNodeDiagnostics({ directory, component: 'backend' })
