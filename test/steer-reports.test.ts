@@ -2,13 +2,24 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createSteerChannel } from '../plugins/steer/lib/channel.ts'
 import { createReportDesk, REPORT_SOURCE, TOKEN_MARK, type ReportAgent, type ReportMessage } from '../plugins/steer/lib/reports.ts'
-import { createSteerDesk, NO_PLUGIN } from '../src/backend/steer-channel.ts'
+import { interjection, createSteerDesk, NO_PLUGIN } from '../src/backend/steer-channel.ts'
 
 /**
  * Background tasks' results through viva-steer (plugins/steer/lib/reports.ts, system-design §11.5): known only by
  * what no one else writes (the source steered in, or a token the app gave that session), read once written and
  * flushed, lost when a turn drops them; and the app's side of the channel.
  */
+
+test('steering accepts a full length user message inside its native request envelope', () => {
+  const original = '甲'.repeat(20_000)
+  const wire = interjection(`【请求 ID：request-1】\n用户原话：${original}\n\n<memory-delivery id="delivery-1" />`)
+  let receive: (message: unknown) => void = () => {}
+  const received: string[] = []
+  createSteerChannel({ send: () => {}, on: (_: string, fn: typeof receive) => { receive = fn }, off: () => {} },
+    (_session, text) => { received.push(text); return null }, () => {})
+  receive({ type: 'steer', id: 'request', sessionId: 's', text: wire })
+  assert.deepEqual(received, [wire])
+})
 
 const T1 = 'a'.repeat(32)
 const T2 = 'b'.repeat(32)

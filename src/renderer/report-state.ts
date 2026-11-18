@@ -52,10 +52,16 @@ export const REPORT_ACTIONS= {
    * closes, so what it says next comes below the record. The same report twice is one record; one for a
    * conversation not on screen is not drawn here (the backend keeps it there).
    */
-  report_delivered: (state, { conversationId, sessionId, reportId, text, at }) => {
-    if (!isRecordFor(state, conversationId, sessionId) || state.erasedReportIds.includes(reportId) || state.records.some((record) => record.reportId === reportId)) return state
+  report_delivered: (state, { conversationId, sessionId, reportId, text, at, beforeSource }) => {
+    if (!isRecordFor(state, conversationId, sessionId) || state.erasedReportIds.includes(reportId)) return state
+    const index = beforeSource ? state.messages.findIndex(message => message.sourceId === beforeSource) : -1
+    const previous = state.records.find(record => record.reportId === reportId)
+    if (previous) {
+      if (index < 0 || index >= previous.after) return state
+      return { ...state, records: state.records.map(record => record === previous ? { ...previous, after: index } : record) }
+    }
     const closed = closeStreams(state)
-    const record = recordOf({ reportId, at, text, after: closed.messages.length })
+    const record = recordOf({ reportId, at, text, after: index >= 0 ? index : closed.messages.length })
     return record ? { ...closed, records: [...closed.records, record] } : state
   },
   reports_removed: (state, { reportIds }) => {

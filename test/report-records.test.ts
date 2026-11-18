@@ -217,3 +217,28 @@ test('late task acknowledgements cannot record or draw an erased or replaced rep
   records.read(replacement)
   assert.match(history.recordsOf(world.current.id)[0].text, /Current report text/)
 })
+
+test('a recovered read keeps an opening report above the first user interjection saved after writing', t => {
+  const { app, history, records, world, queue } = setup(t)
+  const sent = queue('s-new', { via: 'turn' })
+  records.written(sent)
+  const first = 'd43ff10a-9afe-456f-b1a9-f0838b68007e'
+  records.beforeUser([ID], 's-old', 'wrong-session')
+  records.beforeUser([ID], 's-new', first)
+  records.beforeUser([ID], 's-new', 'later-input')
+  history.save(world.current, [{ role: 'user', text: '换个话题' }, { role: 'user', text: '插话', sourceId: first }])
+
+  // A new connection and consumer have no live report ticket or earlier IPC receipts.
+  const reopened = openAppDb({ file: String(app.db.prepare('PRAGMA database_list').get()!.file) })
+  try {
+    const core = createEventCore({ app: reopened, publish: () => {} })
+    const recoveredHistory = openHistoryDb({ db: reopened.db })
+    const recoveredEffects = createEffects({ db: reopened.db, apply: core.apply })
+    const recovered = createReportRecords({ history: () => recoveredHistory, effects: () => recoveredEffects,
+      apply: core.apply, current: () => world.current, show: () => {} })
+    const queued = recoveredEffects.get(REPORT, ID) as Effect<ReportPayload>
+    assert.equal(queued.payload.beforeSource, first)
+    recovered.read(queued)
+    assert.deepEqual(recoveredHistory.recordsOf(world.current.id).map(({ after }) => after), [1])
+  } finally { reopened.close() }
+})

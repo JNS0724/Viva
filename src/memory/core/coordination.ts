@@ -16,7 +16,6 @@ export interface MemoryCoordinationRuntime {
   sessionProject(session: string): string | undefined
   recordSessionProject(session: string, project: string): void
   projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject): boolean
-  provisionalReadsCurrent(session: string, at?: number): boolean
   computeAdmission(job: string): { current(): boolean, deadline: number | null } | null
 }
 
@@ -46,10 +45,9 @@ export class MemoryCoordinationError extends Error {
  * renderer or DSH state enters this module. P2's physical payload fence extends the dispatch port;
  * this extraction deliberately retains the currently shipped lease/rollback protocol.
  */
-export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: {
+export function createMemoryCoordination({ runtime, dispatch }: {
   runtime: () => MemoryCoordinationRuntime | undefined,
   dispatch: () => MemoryCoordinationDispatch | undefined,
-  now?: () => number,
 }) {
   let transition = false
   const blocked = new Set<string>()
@@ -73,7 +71,7 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
     if (!session) return false
     const owner = runtime()
     return !owner || owner.staleSession(session) || projectChanged(session, project)
-      || Boolean(dispatch()?.stale(session)) || !owner.provisionalReadsCurrent(session)
+      || Boolean(dispatch()?.stale(session))
   }
   function allowsSession(session: string, project?: MemoryProject) {
     return !busy() && !stale(session, project) && allowsEvidence(dispatch()?.snapshot(session), project)
@@ -93,12 +91,11 @@ export function createMemoryCoordination({ runtime, dispatch, now = Date.now }: 
   function beginSession(id: string, session: string, project: MemoryProject | undefined, currentProject: () => MemoryProject | undefined) {
     const owner = runtime()
     const leases = dispatch()
-    const at = now()
-    if (acquired.has(id) || !owner || !leases || blocked.has(session) || owner.staleSession(session) || !owner.provisionalReadsCurrent(session, at)) return false
+    if (acquired.has(id) || !owner || !leases || blocked.has(session) || owner.staleSession(session)) return false
     const admission = leases.admission(session)
     if (!admission.allowed || !allowsEvidence(admission.evidence, project) || !bindProject(session, project)) return false
     leases.acquireSession(id, session, admission, () => runtime() === owner && dispatch() === leases
-      && !owner.staleSession(session) && owner.provisionalReadsCurrent(session, at)
+      && !owner.staleSession(session)
       && !projectChanged(session, currentProject()) && allowsEvidence(admission.evidence, currentProject()))
     acquired.set(id, leases)
     return { allowed: true as const, evidence: admission.evidence, deadline: admission.deadline }

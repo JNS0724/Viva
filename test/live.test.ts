@@ -107,7 +107,29 @@ test('live file discovery reads full paginated bodies and ignores stopped or sup
   assert.deepEqual((await memoryFilesWith(win, 'NEEDLE', true)).map(item => item.identity.id), ['disabled', 'old', 'current'])
 })
 
-test('live file cleanup replays an unconfirmed operation and never labels a pending replica as fully erased', async t => {
+test('a match in a stopped snapshot identifies its whole file at the current version', async () => {
+  const { forgetMemories } = await import('./smoke/live-kit.ts')
+  const identity = { kind: 'daily' as const, workspace: 'workspace', id: 'daily' }
+  const version = { contentRevision: 'current', usageVersion: 2, policyToken: 'current-token' }
+  const archived = { contentRevision: 'old', usageVersion: 1, policyToken: 'old-token' }
+  const file: import('../src/shared/ipc-results.ts').MemoryFileDetailView = { identity, title: 'Day', path: 'daily/day.md', version,
+    enabled: true, hasProjection: true, applicability: 'current', actions: { setEnabled: true, edit: false, forget: true, undo: null },
+    markdown: 'Current body', sources: [], restrictions: [{ id: 'stopped', version: archived }] }
+  const requests: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest[] = []
+  const { markdown: _body, sources: _sources, restrictions: _restrictions, ...summary } = file
+  const win = memoryWindow({
+    listMemoryFiles: async () => ({ status: 'ok', snapshot: 'snapshot', items: requests.length ? [] : [summary], nextCursor: null }),
+    readMemoryFile: async (_id: unknown, range?: string) => range ? { ...file, stoppedSnapshot: { restrictionId: range, markdown: 'NEEDLE', sources: [] } } : file,
+    async forgetMemoryFile(request: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest) {
+      requests.push(request)
+      return { status: 'applied', cleanup: 'complete', receipt: { operationId: request.operationId, identity, action: 'FORGET', contentRevision: 'current', usageVersion: 3 } }
+    },
+  })
+  await forgetMemories(win, 'NEEDLE')
+  assert.deepEqual(structuredClone(requests), [{ operationId: requests[0]!.operationId, identity, version }])
+})
+
+test('live file cleanup retries the same operation after a lost reply and preserves host history', async t => {
   const { randomUUID } = await import('node:crypto')
   const { scratch } = await import('./fixtures/scratch.js')
   const { openMemoryOwner } = await import('../src/memory/node/owner.ts')
@@ -130,7 +152,8 @@ test('live file cleanup replays an unconfirmed operation and never labels a pend
       requests.push(request)
       const receipt = await owner.handleHost('forgetFile', { args: [request] })
       if (requests.length === 1) throw new Error('Owner committed; the response was lost')
-      return { status: 'applied', receipt, cleanup: 'pending' }
+      const outcome = memoryOperationOutcome.parse(await owner.handleHost('getOperation', { operationId: request.operationId }))
+      return { status: 'applied', receipt, cleanup: outcome.cleanup }
     },
   })
   assert.equal((await memoryFilesWith(win, 'NEEDLE')).length, 1)
@@ -140,7 +163,8 @@ test('live file cleanup replays an unconfirmed operation and never labels a pend
   assert.equal((await memoryFilesWith(win, 'NEEDLE', true)).length, 0)
   assert.equal(owner.runtime.readFile(created.identity), null)
   const outcome = memoryOperationOutcome.parse(await owner.handleHost('getOperation', { operationId: requests[0]!.operationId }))
-  assert.equal(outcome?.cleanup, 'pending', 'logical withdrawal is separate from physical replica completion')
+  assert.equal(outcome.state, 'completed')
+  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
 })
 
 test('the offline runtime benchmark uses source-backed files, file profile and project-scoped retrieval', async () => {

@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { ChildProcess } from 'node:child_process'
@@ -225,57 +226,196 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
     wake: () => backend?.signal({ kind: 'system.woke' }) }
 }
 
-test('a human prompt racing report busy delivery is sent once before its later steer', { timeout: 45_000 }, async t => {
+function messageTexts(request: Request) {
+  return request.messages.flatMap(message => typeof message.content === 'string' ? [message.content]
+    : (message.content ?? []).flatMap(part => part.text ? [part.text] : []))
+}
+
+test('a human prompt racing report busy delivery and its later steer both enter the same native turn once', { timeout: 45_000 }, async t => {
   const question = '报告刚启动时到达的新用户请求', later = '紧随新请求到达的补充'
   const operation = randomUUID(), laterOperation = randomUUID()
-  let release = () => {}, firstModel = false
-  const paused = new Promise<void>(resolve => { release = resolve })
+  let release = () => {}, reportWaiting = false
+  const gate = new Promise<void>(resolve => { release = resolve })
   let app: Awaited<ReturnType<typeof setup>> | undefined
-  let incoming: Promise<unknown> | undefined, retry: Promise<unknown> | undefined, steered: Promise<unknown> | undefined
+  let incoming: Promise<IpcResults['agent:prompt']> | undefined, retry: typeof incoming
+  let offset = 0
   app = await setup(t, request => {
-    if (firstModel || questionOf(request.messages) !== question) return null
-    const id = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
-      : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).find(entry => entry.words.startsWith(question))?.id
-    if (!id) return null
-    firstModel = true
-    return { tool: { name: 'commit_route', input: { requestId: id, goals: [{ goal: question, disposition: 'answer' }],
-      actions: [{ kind: 'reply', scope: question }] } }, waitFor: paused }
+    if (reportWaiting || !questionOf(request.messages).startsWith('【后台任务结束】')) return null
+    reportWaiting = true
+    return { text: '后台结果已整理好', waitFor: gate }
   }, { onEvent(event) {
     if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
-    // The backend reserved the report, but the renderer has not received its
-    // busy notification yet. Send through the actual IPC handler at this seam.
-    try { incoming = Promise.resolve(app.call('agent:prompt', question, [], operation)) }
-    catch (error) { incoming = Promise.reject(error) }
-    void incoming.catch(() => {})
-    try { retry = Promise.resolve(app.call('agent:prompt', question, [], operation)) }
-    catch (error) { retry = Promise.reject(error) }
-    void retry.catch(() => {})
-    try { steered = Promise.resolve(app.call('agent:steer', later, laterOperation)) }
-    catch (error) { steered = Promise.reject(error) }
-    void steered.catch(() => {})
+    offset = app.events.length
+    app.call('history:save', [{ role: 'user', text: question, sourceId: operation, receipt: null }])
+    incoming = app.call('agent:prompt', question, [], operation)
+    retry = app.call('agent:prompt', question, [], operation)
   } })
   app.defer(release)
   await app.ask('后台做：生成一份独立的报告')
-  assert.ok(await eventually(() => Boolean(incoming)))
-  assert.ok(await eventually(() => firstModel))
-  const duringDispatch = app.call<Promise<unknown>>('agent:prompt', question, [], operation)
+  assert.ok(await eventually(() => reportWaiting && incoming !== undefined))
+  assert.notEqual((await incoming)?.accepted, false)
+  assert.notEqual((await retry)?.accepted, false)
+  assert.deepEqual(await app.call('agent:steer', later, laterOperation), { ok: true, delivery: 'sent' })
+  await app.call('agent:prompt', question, [], operation)
   await assert.rejects(async () => app!.call('agent:prompt', '同一操作不能改成其他原文', [], operation))
+  assert.ok(!app.events.slice(offset).some(event => event.type === 'turn_end'))
   release()
-  await incoming
-  await retry
-  await duringDispatch
-  assert.deepEqual(await steered, { ok: true, delivery: 'sent' })
-  const prompts = app.model.requests.map(request => questionOf((request as Request).messages))
-  const first = prompts.findIndex(text => text === question), second = prompts.findIndex(text => text === later)
-  assert.ok(first >= 0 && second > first, JSON.stringify(prompts))
+  assert.ok(await eventually(() => app!.events.slice(offset).some(event => event.type === 'turn_end')))
+  const after = app.events.slice(offset)
+  assert.deepEqual(after.filter(event => event.type === 'turn_end').map(event => event.stopReason), ['end_turn'])
+  assert.equal(new Set(after.filter(event => event.type === 'report_delivered').map(event => event.reportId)).size, 1)
+  const messages = app.model.requests.map(raw => messageTexts(raw as Request)).findLast(texts =>
+    texts.some(text => text.includes('【插话】') && requestsIn(text).some(entry => entry.words.startsWith(later))))
+  assert.ok(messages)
+  const interjections = messages.flatMap(text => text.includes('【插话】') ? requestsIn(text).map(entry => entry.words) : [])
+  assert.deepEqual(interjections.flatMap(words => [question, later].filter(start => words.startsWith(start))), [question, later])
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    for (const id of [operation, laterOperation]) assert.equal(db.prepare('SELECT count(*) n FROM memory_sources WHERE id=?').get(id)?.n, 1)
-  } finally { db.close() }
+    assert.equal(history.prepare('SELECT count(*) n FROM report_records').get()?.n, 1)
+    assert.equal(history.prepare('SELECT after_seq FROM report_records').get()?.after_seq, 0)
+    for (const id of [operation, laterOperation]) {
+      assert.equal(db.prepare('SELECT count(*) n FROM memory_sources WHERE id=?').get(id)?.n, 1)
+      assert.equal(history.prepare('SELECT count(*) n FROM routing_request_sources WHERE source=?').get(id)?.n, 1)
+    }
+  } finally { history.close(); db.close() }
+})
+
+test('a picture submitted while a report is opening stays below the report and starts a separate native turn', { timeout: 45_000 }, async t => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const operation = randomUUID(), question = '看看这张图片'
+  let release = () => {}, reportWaiting = false, offset = 0
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let app: Awaited<ReturnType<typeof setup>> | undefined, incoming: Promise<IpcResults['agent:prompt']> | undefined
+  app = await setup(t, request => {
+    if (reportWaiting || !questionOf(request.messages).startsWith('【后台任务结束】')) return null
+    reportWaiting = true
+    return { text: '后台结果已整理好', waitFor: gate }
+  }, { image: true, onEvent(event) {
+    if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
+    offset = app.events.length
+    const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
+    app.call('history:save', [{ role: 'user', text: question, images: [image], sourceId: operation, receipt: null }])
+    incoming = app.call('agent:prompt', question, [image], operation)
+  } })
+  app.defer(release)
+  await app.ask('后台做：生成图片消息前的独立报告')
+  assert.ok(await eventually(() => reportWaiting && incoming !== undefined))
+  assert.ok(app.model.requests.every(raw => !JSON.stringify(raw).includes(png)))
+  release()
+  assert.notEqual((await incoming)?.accepted, false)
+  const after = app.events.slice(offset)
+  assert.deepEqual(after.filter(event => event.type === 'turn_end').map(event => event.stopReason), ['end_turn', 'end_turn'])
+  assert.ok(app.model.requests.some(raw => messageTexts(raw as Request).some(text => text.includes(question)) && JSON.stringify(raw).includes(png)))
+  assert.ok(after.some(event => event.type === 'report_delivered' && event.beforeSource === operation))
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try {
-    for (const id of [operation, laterOperation]) assert.equal(history.prepare('SELECT count(*) n FROM routing_request_sources WHERE source=?').get(id)?.n, 1)
+    assert.equal(history.prepare('SELECT seq FROM messages WHERE source_id=?').get(operation)?.seq, 0)
+    assert.deepEqual(history.prepare('SELECT after_seq FROM report_records').all().map(row => row.after_seq), [0])
   } finally { history.close() }
+})
+
+test('a report arriving during a human turn enters that native turn as a task result', { timeout: 45_000 }, async t => {
+  const brief = '生成稍后到达的独立报告', question = '先处理这个独立问题'
+  let finishTask = () => {}, finishHuman = () => {}, taskWaiting = false, humanWaiting = false
+  let promptOnWire = false, reportSawIdle = false, reportSteered = false, admitPrompt = () => {}
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.stdin) {
+      const pipe = this.stdin, write = pipe.write
+      t.mock.method(pipe, 'write', function(chunk: unknown, ...rest: unknown[]) {
+        const wire = chunk instanceof Uint8Array ? Buffer.from(chunk).toString() : String(chunk)
+        if (!promptOnWire && wire.includes('session/prompt') && wire.includes(question)) {
+          promptOnWire = true
+          admitPrompt = () => { Reflect.apply(write, pipe, [chunk, ...rest]) }
+          return true
+        }
+        return Reflect.apply(write, pipe, [chunk, ...rest])
+      })
+    }
+    if (event === 'message') {
+      const reply = args[0] as { type?: string, status?: string } | undefined
+      if (reply?.type === 'report_result' && promptOnWire) {
+        if (reply.status === 'idle') reportSawIdle = true
+        if (reply.status === 'steered') reportSteered = true
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args])
+  })
+  const taskGate = new Promise<void>(resolve => { finishTask = resolve })
+  const humanGate = new Promise<void>(resolve => { finishHuman = resolve })
+  const app = await setup(t, request => {
+    const words = questionOf(request.messages)
+    if (!taskWaiting && words === brief) {
+      taskWaiting = true
+      return { text: '已核对三条记录', waitFor: taskGate }
+    }
+    if (!humanWaiting && words === question) {
+      const id = messageTexts(request).flatMap(requestsIn).find(entry => entry.words.startsWith(question))?.id
+      if (!id) return null
+      humanWaiting = true
+      return { tool: { name: 'commit_route', input: { requestId: id, goals: [{ goal: question, disposition: 'answer' }],
+        actions: [{ kind: 'reply', scope: question }] } }, waitFor: humanGate }
+    }
+    return null
+  })
+  app.defer(() => { if (promptOnWire && !humanWaiting) admitPrompt(); finishTask(); finishHuman() })
+  await app.ask(`后台做：${brief}`)
+  assert.ok(await eventually(() => taskWaiting))
+  const offset = app.events.length
+  const answer = app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', question, [], randomUUID())
+  assert.ok(await eventually(() => promptOnWire), 'the host submitted the prompt before native admission')
+  finishTask()
+  assert.ok(await eventually(() => reportSawIdle), 'the report found no running native turn yet')
+  admitPrompt()
+  assert.ok(await eventually(() => humanWaiting && reportSteered), 'the actual native start wakes the report before the reply')
+  finishHuman(); await answer
+  const after = app.events.slice(offset)
+  const records = after.filter(event => event.type === 'report_delivered')
+  assert.equal(new Set(records.map(event => event.reportId)).size, 1)
+  assert.ok(String(records[0]?.text).includes('它在你这一轮工作时到达'))
+  assert.ok(String(records[0]?.text).includes('已核对三条记录'))
+  assert.ok(!after.some(event => event.type === 'turn_started' && event.by === 'task'))
+})
+
+test('a missing native report agent keeps its user interjection retryable after restart', { timeout: 45_000 }, async t => {
+  const question = '等待原生会话恢复的用户插话', source = randomUUID()
+  const emit = ChildProcess.prototype.emit
+  let refused = false, waiting = false, release = () => {}
+  const gate = new Promise<void>(resolve => { release = resolve })
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', (message: unknown, ...rest: unknown[]) => {
+        const request = message as { type?: string, id?: string, text?: string }
+        if (request.type === 'steer' && request.text?.includes(question) && !refused) {
+          refused = true
+          this.emit('message', { type: 'steer_result', id: request.id, ok: false, reason: 'missing' })
+          return true
+        }
+        return Reflect.apply(send, this, [message, ...rest])
+      })
+    }
+    return Reflect.apply(emit, this, [event, ...args])
+  })
+  const app = await setup(t, request => {
+    if (waiting || !questionOf(request.messages).startsWith('【后台任务结束】')) return null
+    waiting = true
+    return { text: '已完成', waitFor: gate }
+  })
+  app.defer(release)
+  await app.ask('后台做：汇报一个已完成的结果')
+  assert.ok(await eventually(() => waiting))
+  const result = await app.call<Promise<IpcResults['agent:steer']>>('agent:steer', question, source)
+  assert.equal(result.ok, false)
+  assert.equal(result.delivery, 'not-sent')
+  release()
+  assert.ok(await eventually(() => app.events.at(-1)?.type === 'turn_end' || app.events.findLast(event =>
+    event.type === 'turn_started' || event.type === 'turn_end')?.type === 'turn_end'))
+  await app.stopBackend(); await app.startBackend()
+  const receipt = await app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', question, [], source)
+  assert.notEqual(receipt?.accepted, false)
+  assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === question))
 })
 
 test('cancelling a report rejects its queued human before any native source is delivered', { timeout: 45_000 }, async t => {
@@ -349,7 +489,7 @@ test('an early admitted Updates prompt retains the queue until its native turn s
   assert.ok(app.model.requests.some(request => questionOf((request as Request).messages) === later))
 })
 
-test('a lost host start receipt remains unknown after cancellation rather than becoming not-sent', { timeout: 45_000 }, async t => {
+for (const duringReport of [false, true]) test(`a lost host receipt stays unknown after cancellation (${duringReport ? 'report interjection' : 'human prompt'})`, { timeout: 45_000 }, async t => {
   const question = '已经进入原生请求但宿主回执写失败', operation = randomUUID()
   const prepare = DatabaseSync.prototype.prepare
   t.mock.method(DatabaseSync.prototype, 'prepare', function(this: DatabaseSync, sql: string) {
@@ -364,22 +504,28 @@ test('a lost host start receipt remains unknown after cancellation rather than b
       return typeof value === 'function' ? value.bind(target) : value
     } })
   })
-  let app: Awaited<ReturnType<typeof setup>> | undefined, incoming: Promise<unknown> | undefined
   let release = () => {}, held = false
   const gate = new Promise<void>(resolve => { release = resolve })
-  app = await setup(t, request => {
-    if (!held && questionOf(request.messages) === question) { held = true; return { text: '等待这次请求结束', waitFor: gate } }
+  const app = await setup(t, request => {
+    const words = questionOf(request.messages)
+    if (!held && (duringReport ? words.startsWith('【后台任务结束】') : words === question)) { held = true; return { text: '等待这次请求结束', waitFor: gate } }
     return null
-  }, { onEvent(event) {
-    if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
-    incoming = app.call<Promise<unknown>>('agent:prompt', question, [], operation)
-    void incoming.catch(() => {})
-  } })
+  })
   app.defer(release)
-  await app.ask('后台做：启动回执故障验证')
-  assert.ok(await eventually(() => held))
-  const rejected = assert.rejects(incoming!, /Synthetic delivery receipt failure/)
-  await app.call('agent:cancel'); release(); await rejected
+  if (duringReport) {
+    await app.ask('后台做：启动回执故障验证')
+    assert.ok(await eventually(() => held))
+    const receipt = await app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', question, [], operation)
+    assert.equal(receipt?.accepted, false)
+    assert.deepEqual(receipt?.sourceIds, [])
+    assert.match(receipt?.message ?? '', /Synthetic delivery receipt failure/)
+    await app.call('agent:cancel'); release()
+  } else {
+    const incoming = app.call<Promise<unknown>>('agent:prompt', question, [], operation)
+    const rejected = assert.rejects(incoming, /Synthetic delivery receipt failure/)
+    assert.ok(await eventually(() => held))
+    await app.call('agent:cancel'); release(); await rejected
+  }
   const db = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try { assert.equal(db.prepare('SELECT state FROM prompt_deliveries WHERE source=?').get(operation)?.state, 'pending') }
   finally { db.close() }
@@ -413,7 +559,7 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
     return null
   }, { onEvent(event) {
     if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
-    incoming = app.call<Promise<unknown>>('agent:prompt', question, [], operation)
+    incoming = app.call<Promise<unknown>>('agent:prompt', question, [], [operation])
     void incoming.catch(() => {})
   } })
   app.defer(release)
@@ -422,7 +568,7 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
   const rejected = assert.rejects(incoming!, /Synthetic retirement receipt failure/)
   const offset = app.events.length
   const cancelling = app.call<Promise<void>>('agent:cancel')
-  assert.throws(() => app!.call('agent:prompt', question, [], [operation]), /finish|等待|结束/i,
+  assert.throws(() => app!.call('agent:prompt', question, [], [randomUUID()]), /finish|等待|结束/i,
     'retired scheduling ownership cannot let a replay start over a still-cancelling native turn')
   await cancelling; release(); await rejected
   assert.ok(await eventually(() => app!.events.slice(offset).some(event => event.type === 'turn_end' && event.stopReason === 'cancelled')))
@@ -752,7 +898,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.receipt.identity, version: detail.version })
     } finally { await owner.close() }
     const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
       isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
@@ -832,7 +978,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: created.receipt.identity, version: detail.version }] })
+      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.receipt.identity, version: detail.version })
     } finally { await owner.close() }
     for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
       isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
@@ -947,7 +1093,7 @@ test('a real DSH tool read archives and erases native results even when the next
   const operationId = randomUUID()
   try {
     await owner.recover()
-    await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.receipt.identity, version: file.version }] })
+    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: created.receipt.identity, version: file.version })
   } finally { await owner.close() }
 
   openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
@@ -1198,7 +1344,7 @@ test('cold Viva startup erases native originals and settled output in root and u
       const first = makeDigest('native-erasure', erased), secondDigest = makeDigest('native-erasure-2', second)
       for (const [identity, id] of [[first, operationId], [secondDigest, nextOperation]] as const) {
         const detail = await owner.handleHost('readFile', { args: [identity] }) as MemoryFileDetail
-        await owner.handleHost('forgetFile', { args: [{ operationId: id, identity, version: detail.version }] })
+        await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: id, identity, version: detail.version })
       }
     } finally { store.close() }
   } finally { await owner.close() }
@@ -1521,7 +1667,7 @@ test('source-backed project files, exact recall and chat history remain in their
   const history = '查上回说过的项目构建标记'
   const imageHistory = '找之前的图像转录结果'
   const rawHistoryText = '图像转录合成标记 alpha-amber-39'
-  const backgroundBrief = '在后台核对当前项目资料'
+  const backgroundBrief = '在后台核对当前项目的构建标记'
   const scheduleTitle = '甲项目定时汇总'
   const listSchedules = '查看当前项目的定时任务'
   const updateSchedule = '修改指定的定时任务'
@@ -1673,6 +1819,38 @@ test('source-backed project files, exact recall and chat history remain in their
     return text.includes(firstMarker) || text.includes(rawHistoryText)
   })
   assert.deepEqual(leaked.map(request => JSON.stringify(request.messages.at(-1))), [])
+})
+
+test('deleting a memory file preserves the original chat and the task and report that read it after restart', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null)
+  const sourceId = await app.ask(oldFact)
+  await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
+  const file = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
+  assert.ok(file)
+  const brief = '核对我的周报提交邮箱'
+  await app.ask(`后台做：${brief}`)
+  const task = await eventually(() => app.tasks().find(item => item.endedAt && item.task.title === brief))
+  assert.ok(task)
+  const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
+  t.after(() => history.close())
+  const reports = () => history.prepare(`SELECT r.report_id,r.text FROM report_records r JOIN memory_report_proofs p
+    ON p.report_id=r.report_id WHERE p.memory LIKE ? ORDER BY r.report_id`).all('%' + file.identity.id + '%')
+  assert.ok(await eventually(() => reports().length > 0), 'the saved report carries this file as evidence')
+  const before = reports()
+  const result = await app.call<Promise<IpcResults['memory:forget-file']>>('memory:forget-file', {
+    operationId: randomUUID(), identity: file.identity, version: file.version,
+  })
+  assert.equal(result.status, 'applied')
+  await app.stopBackend()
+  await app.startBackend()
+  assert.equal(await app.call('memory:read-file', file.identity), null)
+  assert.equal(history.prepare('SELECT text FROM messages WHERE source_id=?').get(sourceId)?.text, oldFact)
+  assert.deepEqual(reports(), before)
+  const retained = app.tasks().find(item => item.task.id === task.task.id)
+  const transcript = (item: Task) => item.messages?.map(({ role, text }) => ({ role, text }))
+  assert.ok(retained)
+  assert.deepEqual(transcript(retained), transcript(task))
+  await app.ask('请继续处理本轮对话')
 })
 
 test('an explicit save completes in a foreground session that already received file evidence', { timeout: 30_000 }, async t => {
@@ -2219,90 +2397,48 @@ test('the real DSH send surface removes a stopped original and still delivers a 
   assert.notEqual(continued.sessionId, first.sessionId)
 })
 
-for (const outcome of ['answer', 'stop'] as const) {
-  test(`real DSH recall asks through the foreground Viva card and handles ${outcome}`, { timeout: 45_000 }, async t => {
-    const topic = '会场安排', earlier = '会场安排原先是北厅，南厅尚未确认。', query = '这次会场安排是什么？', reply = '这次确定使用图书馆礼堂。'
-    let resolveWork: (() => void) | undefined
-    const app = await setup(t, request => {
-      if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
-        return { text: JSON.stringify({ status: 'write', title: topic, markdown: earlier }) }
-      }
-      if (questionOf(request.messages) !== query && lastWords(request.messages) !== query) return null
-      const recalled = modelToolResults(request, 'memory_recall')
-      if (!recalled.length) return { tool: { name: 'memory_recall', input: { query: topic } } }
-      const result = recalled.at(-1)
-      const ref = typeof result === 'string' ? (JSON.parse(result) as { clarification?: { ref: string } }).clarification?.ref : undefined
-      if (ref && !modelToolResults(request, 'memory_clarify').length) return { tool: { name: 'memory_clarify', input: { ref } } }
-      if (resolveWork && modelToolResults(request, 'memory_clarify').some(answer => JSON.stringify(answer).includes(reply))) {
-        const resolve = resolveWork
-        resolveWork = undefined
-        resolve()
-        return { tool: { name: 'memory_recall', input: { query: '图书馆礼堂' } } }
-      }
-      return null
-    }, { dailyNotes: true })
-    const sourceId = randomUUID()
-    await app.call('agent:prompt', earlier, [], sourceId)
-    for (const prompt of ['准备下一次见面。', '先检查交通。', '还是要确认人数。', '我再同步日程。']) await app.ask(prompt)
-    const memory = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
-    const workId = `dream:${randomUUID()}`
-    try {
-      const summary = await eventually(async () => (await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'daily' })).items[0])
-      assert.ok(summary)
-      const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', summary.identity)
-      const original = memory.readSource(sourceId)!
-      const documents = openMemoryDocuments({ db: memory.db, root: memory.fileRoot, deferRecovery: true, source(id) {
-        const row = memory.readSource(id)
-        return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
-      } })
-      const originalRef = { id: original.id, token: memorySourceToken(original) }
-      const seeded = documents.commit({ operationId: randomUUID(), workspace: file.identity.workspace, path: 'digest/wiki/follow-up-venue.md',
-        action: 'CREATE', expectedRevision: null, markdown: earlier, sources: [originalRef], reads: [] })
-      const digest = documents.read(file.identity.workspace, seeded.path)!
-      documents.defer({ operationId: workId, workspace: file.identity.workspace, unit: { name: topic, bucket: 'personal', summary: '确认本次会场安排', paths: [file.path] },
-        reason: '会场尚有不确定性', sources: [originalRef], reads: [{ id: digest.id, revision: digest.revision, usageVersion: digest.usageVersion }], readPolicies: [],
-        files: [{ path: file.path, revision: file.version.contentRevision, policyToken: file.version.policyToken }],
-      })
-      const offset = app.events.length, asked = app.ask(query)
-      const card = await eventually(() => app.events.slice(offset).find(event => event.type === 'question'))
-      assert.ok(card && 'questionId' in card && typeof card.questionId === 'string' && 'questions' in card && Array.isArray(card.questions),
-        JSON.stringify({ eventTypes: app.events.slice(offset).map(event => event.type), recall: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_recall')) }))
-      const question = card.questions[0] as { id: string; question: string; options: unknown[] }
-      assert.match(question.id, /^memory-clarify:file:/)
-      assert.match(question.question, /这次关于「会场安排」/)
-      assert.deepEqual(question.options, [])
-      const answer = () => app.call('agent:answer', card.questionId, [{ id: question.id, selected: [], custom: reply }], randomUUID())
-      if (outcome === 'stop') {
-        await app.call('agent:cancel')
-        await asked
-        assert.equal(await answer(), false)
-        assert.equal(documents.deferred(file.identity.workspace, workId)?.status, 'pending_clarification')
-        assert.equal(memory.readSource(question.id.slice('memory-clarify:file:'.length)), null)
-        return
-      }
-      resolveWork = () => {
-        // Consume the ready payload at the provider boundary to exercise the fast
-        // resolution race with a real subsequent memory tool and physical send.
-        const evidence = documents.deferred(file.identity.workspace, workId)?.answer?.source
-        assert.ok(evidence)
-        const line = file.markdown.split(/\r?\n/u).findIndex(value => value === earlier) + 1
-        assert.ok(line > 0)
-        documents.commit({ operationId: workId, workspace: file.identity.workspace, path: digest.path,
-          action: 'CORRECT', expectedRevision: digest.revision, markdown: reply, sources: [originalRef, evidence], reads: [digest],
-          corrections: [{ path: file.path, revision: file.version.contentRevision, startLine: line, endLine: line, text: earlier, condition: '本次会场', time: '当前' }] })
-        documents.resolve(file.identity.workspace, workId)
-      }
-      assert.equal(await answer(), true)
-      await asked
-      const receipts = memory.db.prepare('SELECT operation FROM memory_document_answers WHERE deferred=?').all(workId)
-      assert.deepEqual(receipts.map(row => row.operation), [question.id.slice('memory-clarify:file:'.length)])
-      assert.equal(documents.deferred(file.identity.workspace, workId), null)
-      assert.ok(documents.receipt(file.identity.workspace, workId))
-      const recalled = app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_recall'))
-      assert.doesNotMatch(JSON.stringify(recalled), /北厅|南厅/)
-      assert.ok(recalled.some(result => JSON.stringify(result).includes(reply)), 'the real provider receives a subsequent recall after resolution')
-      const answers = app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_clarify'))
-      assert.match(JSON.stringify(answers), /status.*answered.*图书馆礼堂/)
-    } finally { memory.close() }
-  })
-}
+test('upgrading retires an old Dream question before related recall in a real foreground turn', { timeout: 45_000 }, async t => {
+  const topic = '会场安排', earlier = '会场安排原先是北厅，南厅尚未确认。', query = '查一下会场安排'
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
+      return { text: JSON.stringify({ status: 'write', title: topic, markdown: earlier }) }
+    }
+    if (questionOf(request.messages) !== query && lastWords(request.messages) !== query) return null
+    const result = modelToolResults(request, 'memory_recall').at(-1)
+    if (!result) return { tool: { name: 'memory_recall', input: { query: topic } } }
+    return { text: '已查看已有的会场记录。' }
+  }, { dailyNotes: true })
+  const sourceId = randomUUID()
+  await app.call('agent:prompt', earlier, [], sourceId)
+  for (const prompt of ['准备下一次见面。', '先检查交通。', '还是要确认人数。', '我再同步日程。']) await app.ask(prompt)
+  const memory = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
+  const workId = `dream:${randomUUID()}`
+  try {
+    const summary = await eventually(async () => (await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'daily' })).items[0])
+    assert.ok(summary)
+    const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', summary.identity)
+    const original = memory.readSource(sourceId)!
+    const documents = openMemoryDocuments({ db: memory.db, root: memory.fileRoot, deferRecovery: true, source(id) {
+      const row = memory.readSource(id)
+      return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
+    } })
+    const originalRef = { id: original.id, token: memorySourceToken(original) }
+    const seeded = documents.commit({ operationId: randomUUID(), workspace: file.identity.workspace, path: 'digest/wiki/follow-up-venue.md',
+      action: 'CREATE', expectedRevision: null, markdown: earlier, sources: [originalRef], reads: [] })
+    const digest = documents.read(file.identity.workspace, seeded.path)!
+    documents.defer({ operationId: workId, workspace: file.identity.workspace, unit: { name: topic, bucket: 'personal', summary: '确认本次会场安排', paths: [file.path] },
+      reason: '会场尚有不确定性', sources: [originalRef], reads: [{ id: digest.id, revision: digest.revision, usageVersion: digest.usageVersion }], readPolicies: [],
+      files: [{ path: file.path, revision: file.version.contentRevision, policyToken: file.version.policyToken }],
+    })
+    await app.stopBackend()
+    await app.startBackend()
+    const offset = app.events.length, from = app.model.requests.length
+    await app.ask(query)
+    const answers = app.model.requests.slice(from).flatMap(raw => modelToolResults(raw as Request, 'memory_recall'))
+    assert.ok(answers.length > 0)
+    assert.doesNotMatch(JSON.stringify(answers), /"clarification"|pending_clarification|memory-clarify:file:/)
+    assert.ok(!app.events.slice(offset).some(event => event.type === 'question'))
+    assert.ok(!documents.pending(file.identity.workspace).some(work => work.operationId === workId
+      && (work.status === 'pending_clarification' || work.status === 'ready')))
+  } finally { memory.close() }
+})

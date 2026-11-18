@@ -83,7 +83,7 @@ test('daily restrictions survive empty projection and restart and can be lifted 
   const empty = await f.detail(initial.identity)
   assert.equal(empty.hasProjection, false)
   assert.equal(empty.markdown, '')
-  assert.equal(empty.actions.forget, false)
+  assert.equal(empty.actions.forget, true)
   assert.equal(empty.path, initial.path)
   assert.equal(f.owner.runtime.dispatchSourceCurrent(first.messageId), false)
   const dayIndex = join(f.store.fileRoot, initial.identity.workspace, `daily/${f.day}.md`)
@@ -94,7 +94,7 @@ test('daily restrictions survive empty projection and restart and can be lifted 
   assert.deepEqual((await f.detail(initial.identity)).restrictions, [earlier])
   const retained = await f.owner.handleHost('readFile', { args: [initial.identity, earlier.id] }) as MemoryFileDetail
   assert.equal(retained.stoppedSnapshot?.markdown, initial.markdown)
-  assert.equal(retained.actions.forget, true)
+  assert.equal(retained.actions.forget, false)
   assert.equal(await f.owner.handleHost('readFile', { args: [initial.identity, randomUUID()] }), null)
 
   await retireStoppedOriginal(f, first)
@@ -374,7 +374,7 @@ test('a daily correction quotation is erased from the independent digest and its
   assert.doesNotMatch(packet, /Confidential original detail/)
 })
 
-test('forgetting a selected stopped snapshot uses its evidence while preserving the active projection', async t => {
+test('file deletion rejects stopped snapshots and preserves both the current file and the prior restriction', async t => {
   const f = await fixture(t), a = await f.add('Private earlier evidence for Tuesday.'), first = await f.find()
   const stopped = await f.set(stopInput(first))
   await f.owner.runtime.wake()
@@ -383,12 +383,11 @@ test('forgetting a selected stopped snapshot uses its evidence while preserving 
   const scope = current.restrictions!.find(restriction => restriction.id === stopped.restrictionId)!
   const forget = (request: object) => f.owner.handleHost('forgetFile', { args: [request] })
   const input = { operationId: randomUUID(), identity: current.identity, restrictionId: scope.id, version: scope.version }
-  await assert.rejects(forget({ ...input, operationId: randomUUID(), version: current.version }), { code: 'revision.conflict' })
-  const action = await forget(input) as { action: string }
-  assert.equal(action.action, 'FORGET')
+  await assert.rejects(forget({ ...input, operationId: randomUUID(), version: current.version }), { code: 'invalid.text' })
+  await assert.rejects(forget(input), { code: 'invalid.text' })
   await f.reopen()
   const remaining = await f.find()
-  assert.deepEqual(remaining.restrictions, [])
+  assert.deepEqual(remaining.restrictions, current.restrictions)
   assert.equal(remaining.path, current.path)
   assert.match(remaining.markdown, /Independent lavender note/)
   assert.doesNotMatch(remaining.markdown, /Private earlier evidence/)
@@ -435,11 +434,38 @@ test('a changed stopped daily snapshot cannot advertise permanent forget or auth
   await f.owner.runtime.wake()
   const restriction = (await f.find()).restrictions!.find(item => item.id === stopped.restrictionId)!
   const read = () => f.owner.handleHost('readFile', { args: [before.identity, restriction.id] }) as Promise<MemoryFileDetail>
-  assert.equal((await read()).actions.forget, true)
+  assert.equal((await read()).actions.forget, false)
   f.store.db.prepare('UPDATE memory_file_use_restrictions SET snapshot=snapshot || ? WHERE id=?').run('\nchanged externally', restriction.id)
   const changed = await read()
   assert.equal(changed.actions.forget, false)
   assert.equal(changed.stoppedSnapshot?.markdown, null)
   await assert.rejects(f.owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: before.identity,
-    restrictionId: restriction.id, version: restriction.version }] }), { code: 'revision.conflict' })
+    restrictionId: restriction.id, version: restriction.version }] }), { code: 'invalid.text' })
+})
+
+
+test('deleting the only daily file retires its search passages and vectors while preserving the source', async t => {
+  const f = await fixture(t), original = await f.add('A single indexed daily entry.'), file = await f.find()
+  const db = f.store.db
+  const reader = randomUUID()
+  f.owner.runtime.handle({ op: 'recall', session: reader, query: 'single indexed daily entry' }, { session: reader, conversation: reader })
+  const node = () => db.prepare('SELECT id FROM memory_file_index_nodes WHERE workspace=? AND id=?').get(file.identity.workspace, file.identity.id)
+  const chunks = () => db.prepare('SELECT payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').all(file.identity.workspace, file.identity.id)
+  const vectors = () => db.prepare("SELECT ref FROM memory_file_index_vectors WHERE json_extract(ref,'$[0]')=? AND json_extract(ref,'$[1]')=?").all(file.identity.workspace, file.identity.id)
+  assert.ok(node())
+  const parts = chunks()
+  assert.ok(parts.length)
+  // The fixture uses a local model for notes only. Seed one vector for a genuine indexed passage.
+  const { ref } = JSON.parse(String(parts[0]!.payload)) as { ref: { workspace: string, fileId: string, ordinal: number, revision: string, usageVersion: number, policyToken: string } }
+  const key = JSON.stringify([ref.workspace, ref.fileId, ref.ordinal, ref.revision, ref.usageVersion, ref.policyToken])
+  db.prepare('INSERT INTO memory_file_index_vectors(generation,ref,passage,vector) VALUES(?,?,?,?)').run(0, key, 0, new Uint8Array(new Float32Array([1]).buffer))
+  assert.ok(vectors().length)
+
+  await f.owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: file.version }] })
+  assert.equal(node(), undefined)
+  assert.deepEqual(chunks(), [])
+  assert.deepEqual(vectors(), [])
+  await f.reopen()
+  assert.equal(f.owner.runtime.readFile(file.identity), null)
+  assert.equal(f.store.readSource(original.messageId)?.text, original.content)
 })

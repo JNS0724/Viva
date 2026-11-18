@@ -617,8 +617,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           emitToRenderer({ type: 'memory_context', injected: [{ at: notice.at, pushed: notice.pushed }], context })
         }
       },
-      memoryClarificationQuestion: (session, turn, id, phase) => memory.call('clarificationQuestion', { args: [session, turn, id, phase] }),
-      cancelMemoryClarification: (session, id) => memory.call('cancelFileClarification', { args: [session, id] }),
       allowGeneralQuestion: async (session, turn, cards, _waiting, phase) => turn ? memory.call('authorizeGeneralQuestion', { args: [session, turn, cards,
         session === sessions.current().sessionId ? sessions.current().id : historyDb.bySession(session)?.id ?? session,
         session === sessions.current().sessionId ? foregroundMemoryScope(currentMemoryProject()) : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
@@ -636,11 +634,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           const digest = createHash('sha256').update(JSON.stringify([requestOperation, answer.id])).digest('hex')
           const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
           const accepted = await memory.call('acceptQuestionAnswer', { operationId, text, session: entry.sessionId,
-            conversation, question: entry.sourceQuestion ?? question.question, requestId: entry.question.id, questionId: answer.id,
+            conversation, question: question.question, requestId: entry.question.id, questionId: answer.id,
             context: answerContext, project })
           answerSources[answer.id] = accepted.sourceId
-        }
         if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
+        }
         return { sourceIds: answerSources }
       },
       historySearch: async (query, range, session) => (!memoryBusy() && dsh.current?.memory.ready() && historyDb
@@ -686,11 +684,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         // A task's result written (shown where it came), read (kept, then done) or lost (sent again), as said by the
         // session it was delivered to; said of another session, it is not this report's. Read but its record not kept
         // (the database busy): a pass now, which puts it off to try again.
+        // ACP prompt submission can precede native inbox admission, especially for images.
+        if (event.type === 'human_turn_running') return wakeEffects()
         if (event.type === 'report_written' || event.type === 'report_read' || event.type === 'report_dropped') {
           const reportId = String(event.reportId)
           const queued = effects?.get(REPORT, reportId) as Effect<ReportPayload> | null | undefined
           if (!queued || queued.payload.deliveredTo !== event.sessionId) return undefined
           if (event.type === 'report_dropped') return wakeEffects()
+          foregroundRequests.reportWritten(reportId)
           try {
             return event.type === 'report_written' ? records.written(queued) : records.read(queued)
           } catch (err) {
@@ -809,6 +810,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       || sessions.isChanging() || dsh.current.isSwitching() || dsh.isQuitting() ? 'away' : turn.active ? 'busy' : 'idle'),
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
+    opening: id => foregroundRequests.openingReports().includes(id),
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
     deliver: async (session, reportId, token, text, taskId, held, evidence) => {
       if (!await allowMemorySession(session) || !await eligibleTaskReport(taskId, session, evidence)) return 'unavailable'
@@ -840,7 +842,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
       if (dsh.current !== agent || !sameContext(context, sessions.context()) || sessions.isChanging()
         || agent.isSwitching() || turn.active || !held()) return false
-      const claim = foregroundRequests.reserveReport()
+      const claim = foregroundRequests.reserveReport(reports.map(item => item.reportId))
       if (!claim) return false
       turn = { active: true, startedAt: Date.now() }
       emitToRenderer({ type: 'turn_started', by: 'task', context })
@@ -1004,7 +1006,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
       // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
       if (agent.isSwitching()) throw new Error(switchingMessage())
-      const retrying = operation !== undefined && pendingHumanPrompts.has(JSON.stringify(operation))
+      const retrying = operation !== undefined && (pendingHumanPrompts.has(JSON.stringify(operation))
+        || typeof operation === 'string' && !feedItemId && !pictures.length && historyDb.promptDelivery(operation) === 'sent')
       // Following questions already shown while a turn ended register together
       // in FIFO order. A first delivery needs the host's definite not-sent receipt;
       // canonical replay arrays still undergo the owner's exact source checks.
@@ -1016,9 +1019,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:steer', async (_event, text, operation) => {
       const words = assertText(text, 'steer', MAX_PROMPT_CHARS)
       const deliveryId = operation ?? randomUUID()
-      if (foregroundRequests.deferred()) {
+      if (foregroundRequests.deferred() || pendingHumanPrompts.has(JSON.stringify(deliveryId)) || historyDb.promptDelivery(deliveryId) === 'sent') {
         const result = await sendHumanPrompt(words, [], deliveryId)
-        return result?.accepted === false ? { ok: false, reason: 'unavailable', delivery: !closed ? historyDb.promptDelivery(deliveryId) ?? 'pending' as const
+        return result?.accepted === false ? { ok: false, reason: 'unavailable', message: result.message, delivery: !closed ? historyDb.promptDelivery(deliveryId) ?? 'pending' as const
           : result.sourceIds.includes(deliveryId) ? 'not-sent' as const : 'pending' as const }
           : { ok: true, delivery: 'sent' as const }
       }
@@ -1028,24 +1031,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const selected = () => generation() && dsh.current === agent
         && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
-      // A normally finished turn asks the renderer to resend as a new question;
-      // cancellation or a replacement selection must never do so.
-      const retiredReason = (): 'idle' | 'unavailable' => selected() ? 'idle' : 'unavailable'
-      if (memoryBusy()) {
-        historyDb.settlePromptDelivery([deliveryId], false)
-        return { ok: false, reason: 'unavailable', delivery: historyDb.promptDelivery(deliveryId) }
-      }
-      let sourceId: string
-      try { sourceId = await aliasMemory(words, deliveryId, origin) }
-      catch (error) {
-        if (!closed) historyDb.settlePromptDelivery([deliveryId], false)
-        return { ok: false, reason: 'unavailable', delivery: closed ? 'pending' as const : historyDb.promptDelivery(deliveryId),
-          message: error instanceof Error ? error.message : String(error) }
-      }
-      const result = !held() ? { ok: false, reason: retiredReason(), delivery: 'not-sent' as const }
-        : await agent.steer(words, sourceId, held, retiredReason)
-      if (!closed && (result.ok || result.reason === 'idle' || result.delivery === 'not-sent')) historyDb.settlePromptDelivery([deliveryId], result.ok)
-      return { ...result, delivery: closed ? result.delivery ?? (result.ok ? 'sent' as const : 'pending' as const) : historyDb.promptDelivery(deliveryId) }
+      return deliverHumanSteer(words, deliveryId, agent, origin, held, selected)
     })
     ipcMain.handle('agent:cancel', () => { retireForegroundRequests(); return dsh.current?.cancel() })
     ipcMain.handle('agent:new-session', async () => {
@@ -1089,6 +1075,30 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
+  async function deliverHumanSteer(words: string, deliveryId: string, agent: Bridge, origin: ReturnType<typeof sessions.context>,
+    held: () => boolean, selected: () => boolean, onDispatch?: () => void): Promise<IpcResults['agent:steer']> {
+    // A normally finished turn asks the renderer to resend as a new question;
+    // cancellation or a replacement selection must never do so.
+    const retiredReason = (): 'idle' | 'unavailable' => selected() ? 'idle' : 'unavailable'
+    if (memoryBusy()) {
+      historyDb.settlePromptDelivery([deliveryId], false)
+      return { ok: false, reason: 'unavailable', delivery: historyDb.promptDelivery(deliveryId) }
+    }
+    let dispatched = false
+    try {
+      const sourceId = await aliasMemory(words, deliveryId, origin)
+      const result = !held() ? { ok: false, reason: retiredReason(), delivery: 'not-sent' as const }
+        : await agent.steer(words, sourceId, held, retiredReason, () => { dispatched = true; onDispatch?.() })
+      if (!closed && (result.ok || result.reason === 'idle' || result.delivery === 'not-sent')) historyDb.settlePromptDelivery([deliveryId], result.ok)
+      return { ...result, delivery: closed ? result.delivery ?? (result.ok ? 'sent' as const : 'pending' as const) : historyDb.promptDelivery(deliveryId) }
+    }
+    catch (error) {
+      if (!dispatched && !closed) historyDb.settlePromptDelivery([deliveryId], false)
+      return { ok: false, reason: 'unavailable', delivery: closed ? 'pending' as const : historyDb.promptDelivery(deliveryId),
+        message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   /** A retained prompt keeps its original selection and operation through a report turn. */
   function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string): Promise<IpcResults['agent:prompt']> {
     const agent = requireBridge()
@@ -1099,15 +1109,25 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const prior = pendingHumanPrompts.get(key)
     if (prior) return prior.fingerprint === fingerprint ? prior.promise
       : Promise.reject(new Error(t('main.memory.context.stale')))
+    if (!feedItemId && !pictures.length && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'sent') {
+      // The native steer may have acknowledged while this report is still running.
+      return aliasMemory(question, operation, origin).then(() => undefined)
+    }
     const sources = feedItemId ? [] : typeof operation === 'string' ? [operation] : [...operation]
     if (historyDb.promptPending(sources)) return Promise.reject(new Error(t('main.memory.change.pending')))
+    // Pictures are already visible and saved while they wait for a separate turn.
+    // A pending feed continuation is not saved; replay IDs may belong to earlier messages.
+    const userMessage = !feedItemId && typeof operation === 'string'
+    if (userMessage && origin.sessionId) records.beforeUser(foregroundRequests.openingReports(), origin.sessionId, operation)
+    const interjectable = userMessage && !pictures.length
     historyDb.reservePromptDelivery(sources)
     let nativeStarted = false, deliveryError: unknown
     let accepted = (_value: IpcResults['agent:prompt']) => {}, refused = (_error: unknown) => {}
     // Feed IPC acknowledges native admission early; the scheduling lease below
     // must still hold until that native turn actually settles.
     const admitted = feedItemId ? new Promise<IpcResults['agent:prompt']>((resolve, reject) => { accepted = resolve; refused = reject }) : null
-    const selected = () => dsh.current === agent && !sessions.isChanging() && !agent.isSwitching()
+    const generation = foregroundRequests.lease()
+    const selected = () => generation() && dsh.current === agent && !sessions.isChanging() && !agent.isSwitching()
       && !dsh.isQuitting() && sameContext(origin, sessions.context())
     const lifetime = foregroundRequests.human(selected, async current => {
       const own = { started: false, completed: [] as Promise<void>[], delivered() {
@@ -1138,7 +1158,17 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         throw error
       }
       finally { if (humanAdmission === own) humanAdmission = null }
-    }).catch((error: unknown) => {
+    }, interjectable ? async held => {
+      const result = await deliverHumanSteer(question, operation, agent, origin, held, selected, () => { nativeStarted = true })
+      if (result.ok) return { result: undefined }
+      if (result.delivery === 'not-sent') nativeStarted = false
+      if (result.reason === 'idle' && result.delivery === 'not-sent' && selected()) {
+        historyDb.reservePromptDelivery(sources)
+        return null
+      }
+      return { result: { accepted: false as const, sourceIds: result.delivery === 'not-sent' ? sources : [],
+        message: result.message ?? t(result.delivery === 'pending' ? 'app.message.delivery.unknown' : 'app.your.message.did.not.reach.the.assistant') } }
+    } : undefined).catch((error: unknown) => {
       if (error instanceof ForegroundRequestRetired && !feedItemId && !nativeStarted) {
         if (!closed) historyDb.settlePromptDelivery(sources, false)
         return { accepted: false as const, sourceIds: closed ? sources.filter(id => knownUnsentPrompts.has(id)) : historyDb.promptUndelivered(sources),

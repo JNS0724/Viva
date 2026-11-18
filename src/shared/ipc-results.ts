@@ -1,3 +1,4 @@
+import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
 import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult } from '../memory/contracts/file-management.ts'
 
 export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
@@ -92,6 +93,8 @@ export interface IpcResults {
   'history:model-request': import('./trace.ts').ModelCallDetail | null
   'task:close': void
   'task:stop': void
+  'memory:dream-status': MemoryDreamStatus
+  'memory:run-dream': MemoryDreamStatus
   'memory:list-files': MemoryFileListResult
   'memory:read-file': MemoryFileDetailView | null
   'memory:set-file-enabled': MemoryFileMutationResult

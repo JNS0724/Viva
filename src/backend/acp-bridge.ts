@@ -85,7 +85,7 @@ export function createAcpBridge({
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
   launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, recordOutputs, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
-  memoryClarificationQuestion, cancelMemoryClarification, allowGeneralQuestion, taskSourceAlias,
+  allowGeneralQuestion, taskSourceAlias,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -106,9 +106,6 @@ export function createAcpBridge({
   prewarmSessions?: boolean,
   onTiming?: (sample: SessionTiming) => void,
   conversationContext?: (sessionId: string) => ConversationContext | null,
-  memoryClarificationQuestion?: (session: string, turn: string, id: string, phase: 'show' | 'check') =>
-    ReturnType<NonNullable<Parameters<typeof createQuestionDesk>[0]['memoryClarificationQuestion']>>,
-  cancelMemoryClarification?: Parameters<typeof createQuestionDesk>[0]['cancelMemoryClarification'],
   allowGeneralQuestion?: (session: string, turn: string | undefined, questions: readonly import('./question-channel.ts').Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') =>
     import('./question-channel.ts').QuestionAdmission | Promise<import('./question-channel.ts').QuestionAdmission>,
   allowSession?: (id: string, memoryReady: boolean, task: boolean, cwd?: string) => boolean | Promise<boolean>,
@@ -159,7 +156,7 @@ export function createAcpBridge({
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.context(id) : undefined
-  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer, cancelMemoryClarification,
+  const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
     allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
@@ -171,16 +168,15 @@ export function createAcpBridge({
         : () => stillWaiting() && (typeof allowed !== 'function' || allowed())
       return typeof result === 'object' ? result.then(bound) : bound(result)
     },
-    memoryClarificationQuestion: async (session, id, phase) => {
-      const turn = operations.userTurn(session)
-      return turn && session === sessionId && await allowSession(session) ? memoryClarificationQuestion?.(session, turn, id, phase) ?? null : null
-    },
   })
   // MCP servers and skills set up from the conversation (the viva-config plugin); the app performs them.
   const config = configActions ? createConfigDesk({ send: toPlugins, emit, sessionId: () => sessionId, actions: configActions, conversationContext: requestContext }) : null
   // What the user says while a turn runs goes to that turn (the viva-steer plugin), not to a new prompt.
   // Background tasks' results go the same way, at most once; the plugin says when one is read or lost.
-  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event) })
+  const steering = createSteerDesk({ send: toPlugins, sessionId: () => sessionId, onReport: (event) => emit(event),
+    onRunning: session => {
+      if (session === sessionId && operations.userTurn(session)) emit({ type: 'human_turn_running', sessionId: session })
+    } })
   // Going back to an earlier point, or on in another directory (the viva-fork plugin, prototype).
   const forking = createForkDesk({ send: toPlugins, sessionId: () => sessionId })
   // The plugins page, through dsh's plugin manager (viva-plugins).

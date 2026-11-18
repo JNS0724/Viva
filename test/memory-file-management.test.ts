@@ -131,15 +131,16 @@ test('management filters apply before paging and input rejects asserted authoriz
 })
 
 
-test('permanent forget is offered only for accepted source-backed files', () => {
+test('deletion relies on the accepted file identity and version, independently of source ranges', () => {
   const f = fixture()
   assert.equal(f.service.detail(f.identity, allow)?.actions.forget, true)
   assert.equal(f.service.list({ kind: 'digest' }, allow).items[0]?.actions.forget, true)
   f.doc.enabled = false
   assert.equal(f.service.detail(f.identity, allow)?.actions.forget, true)
   f.doc.sources = []
-  assert.equal(f.service.detail(f.identity, allow)?.actions.forget, false)
+  assert.equal(f.service.detail(f.identity, allow)?.actions.forget, true)
   const detail = f.service.detail(f.identity, allow)!
+  assert.equal(f.service.deletionTarget({ operationId: randomUUID(), identity: f.identity, version: detail.version }, allow).id, f.identity.id)
   assert.throws(() => f.service.forgetEvidence({ operationId: randomUUID(), identity: f.identity, version: detail.version }, allow),
     { code: 'revision.conflict' })
 })

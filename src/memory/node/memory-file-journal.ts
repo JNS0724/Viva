@@ -56,6 +56,18 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     if (!before?.endsWith(change.append)) return undefined
     return change.beforeRevision === null ? null : before.slice(0, -change.append.length)
   }
+  function versionsMatch(plan: FilePlan<T>) {
+    const store = files(plan.workspace)
+    return plan.changes.every(change => {
+      const actual = store.read(change.path)?.revision ?? null
+      return actual === beforeRevision(change) || actual === afterRevision(change)
+    })
+  }
+  // A conflict retains its reservation. It only needs another fenced replay when the files permit it.
+  function needsRecovery(includes = (_data: T) => true) {
+    return pending().some(intent => includes(intent.plan.data) && (intent.state !== 'conflict' ||
+      versionsMatch(intent.plan) && (!intent.plan.changes.some(change => 'erase' in change) || valid(intent.plan.data))))
+  }
   function apply(intent: Intent<T>) {
     if (db.isTransaction) throw new Error('memory-file-commit-inside-transaction')
     const store = files(intent.plan.workspace)
@@ -68,11 +80,7 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
       throw new Error('memory-file-plan-conflict')
     }
     // Preflight the ENTIRE plan, before writing any member. A third hash is never overwritten.
-    const conflicts = intent.plan.changes.some(change => {
-      const actual = store.read(change.path)?.revision ?? null
-      return actual !== beforeRevision(change) && actual !== afterRevision(change)
-    })
-    if (conflicts) return conflict()
+    if (!versionsMatch(intent.plan)) return conflict()
     const accepted = valid(intent.plan.data)
     // Once erasure begins there is no authorized reversible before-image.
     if (!accepted && intent.plan.changes.some(change => 'erase' in change)) return conflict()
@@ -142,5 +150,5 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
     return !db.prepare('SELECT 1 FROM memory_file_reservations WHERE workspace=? AND path=?').get(workspace, path) && !pending(true).some(item => item.plan.workspace === workspace && item.plan.changes.some(change => change.path === path))
   }
   const state = (id: string) => (db.prepare('SELECT state FROM memory_file_intents WHERE id=?').get(operationKey(id)) as { state: string } | undefined)?.state
-  return { files, commit, recover, visible, state }
+  return { files, commit, recover, needsRecovery, visible, state }
 }

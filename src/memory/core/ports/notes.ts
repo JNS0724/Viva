@@ -28,6 +28,7 @@ export interface DailyAllocation {
 }
 export interface MemoryNotes {
     allocations(): DailyAllocation[];
+    deleteFile(workspace: string, key: string, expectedUsageVersion: number): number;
     advanceUseVersion(key: string, revision: number, at: number): boolean;
     usePolicyToken(workspace: string): string;
     pendingCleanup(): number;
@@ -36,6 +37,9 @@ export interface MemoryNotes {
     reconcileRename(input: import('./documents.ts').DocumentRename): boolean;
     aliases(): Array<{ workspace: string, path: string, id: string }>;
     registered(): Array<NoteRow & { sources: DocumentSourceRef[], state: 'active' | 'withdrawing' }>;
+    recoverDeletedFiles(): void;
+    deletedFileCleanupPending(workspace: string, id: string): boolean;
+    checkpointCleanup(): void;
     needsRecovery(): boolean;
     recover: () => void;
     read: (key: string) => Note | undefined;
@@ -107,7 +111,7 @@ export interface MemoryNotes {
         markdown: string;
         filename?: string;
     }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options?: { rebuild?: boolean }): boolean;
-    markProcessed(key: string, revision: number): void;
+    markProcessed(key: string, revision: number): boolean;
     withdraw(sourceId: string): string[];
     eraseSource(cut: DocumentSourceCut): string[];
 }

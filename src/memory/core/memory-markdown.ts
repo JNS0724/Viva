@@ -94,6 +94,9 @@ const parser = new Marked({ gfm: true, extensions: [{
     return undefined
   },
 }] })
+/** Top-level tokens partition the normalized Markdown body, including its whitespace. */
+export function lexMemoryMarkdownBody(body: string) { return parser.lexer(body) }
+
 const encoder = new TextEncoder()
 const bytes = (value: string) => encoder.encode(value).byteLength
 
@@ -152,7 +155,7 @@ export function parseMemoryMarkdown(markdown: string, { maxBytes = DAILY_MEMORY_
   const lineStarts = memoryDocumentLines(markdown).map(line => line.startOffset)
   const bodyStart = lineStarts[document.bodyStartLine - 1] ?? markdown.length
   const body = normalized(markdown, bodyStart)
-  const tokens = parser.lexer(body.text)
+  const tokens = lexMemoryMarkdownBody(body.text)
   const chunks: MemoryMarkdownChunk[] = []
   const links: MemoryMarkdownLink[] = []
   const headings: Array<{ depth: number, text: string }> = []

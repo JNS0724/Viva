@@ -115,7 +115,7 @@ export interface ConversationPayloads {
   done_seen: {}
   error: { message: string }
   memory_context: { injected: readonly MemoryInjection[] }
-  report_delivered: { conversationId: string | null, sessionId: string | null, reportId: string, text: string, at: number }
+  report_delivered: { conversationId: string | null, sessionId: string | null, reportId: string, text: string, at: number, beforeSource?: string }
 }
 export type ConversationAction = { [K in keyof ConversationPayloads]: { type: K } & ConversationPayloads[K] }[keyof ConversationPayloads]
 export type ConversationHandlers = { [K in keyof ConversationPayloads]?: (view: ConversationState, action: ConversationPayloads[K] & { type?: K }) => ConversationState }

@@ -1,4 +1,5 @@
 import { MAX_MESSAGE_CHARS } from '../../shared/text-limits.ts'
+import { getLocale } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import type { MemoryFileSummary } from '../../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView, MemoryFileSourceView } from '../../shared/ipc-results.ts'
@@ -72,7 +73,7 @@ function detailsOf(detail: MemoryFileDetailView, busy: boolean, handlers: Handle
       !id && detail.actions.undo ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
         text: t('profile-panel.memory.changes.undo'), onClick: () => handlers.undoManagedMemory(detail) }) : null,
       canForgetMemoryFile(detail) ? h('button', { class: 'link-btn', name: 'memory-file-forget', 'data-tone': 'danger', type: 'button', disabled: busy,
-        text: t(id ? 'memory-files.forget.range' : 'memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null),
+        text: t('memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null),
     snapshot ? h('p', { class: 'help', text: t('memory-files.restore.range.help') }) :
       restrictions.length ? h('div', { class: 'profile-section' },
         h('h5', { class: 'profile-heading', text: t('memory-files.stopped.ranges') }),
@@ -201,15 +202,44 @@ function editorView(files: State['memory']['files'], editor: MemoryFileEditor, h
   return form
 }
 
+export function memoryLoadError(memory: State['memory'], handlers: Handlers) {
+  return memory.loadError ? h('div', { class: 'profile-section' },
+    h('p', { class: 'form-error', role: 'alert', text: memory.loadError }),
+    h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
+      text: t('memory-files.retry'), onClick: handlers.loadMemory }))) : null
+}
+
+function dreamRow(memory: State['memory'], handlers: Handlers) {
+  const { dream, dreamUnavailable, requestingDream } = memory
+  const phase = dreamUnavailable ? 'unavailable' : requestingDream ? 'queued' : dream?.state ?? 'loading'
+  const time = (at: number) => new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(at)
+  const history = dream ? [
+    dream.lastProcessedAt === null ? t('dream.no.history') : t('dream.last.processed', { time: time(dream.lastProcessedAt) }),
+    dream.lastCheckedAt !== null && (dream.lastCheckResult === 'empty' || dream.lastCheckResult === 'size-limit')
+      ? t(dream.lastCheckResult === 'empty' ? 'dream.last.empty' : 'dream.last.oversized', { time: time(dream.lastCheckedAt) }) : null,
+  ].filter(Boolean).join(' · ') : ''
+  return h('div', { class: 'memory-item', 'data-dream-state': phase },
+    h('div', { class: 'memory-copy' },
+      h('strong', { class: 'memory-text', text: t('dream.title') }),
+      h('p', { class: 'memory-meta', role: 'status', text: [t(`dream.state.${phase}`), history].filter(Boolean).join(' · ') })),
+    h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-run-dream',
+      disabled: !dream || dreamUnavailable || ['disabled', 'running', 'queued'].includes(phase),
+      text: t('dream.run'), onClick: handlers.runDream }))
+}
+
 export function memoryFilesSection(memory: State['memory'], handlers: Handlers) {
   const { files } = memory
   return h('section', { class: 'profile-section', 'aria-labelledby': 'memory-files-title' },
     h('h3', { class: 'profile-heading', id: 'memory-files-title', text: t('memory-files.title') }),
-    files.editor ? editorView(files, files.editor, handlers) : files.selection ? detailView(files, handlers) : listView(files, handlers),
+    !files.editor && !files.selection ? dreamRow(memory, handlers) : null,
+    memoryLoadError(memory, handlers),
+    files.editor ? editorView(files, files.editor, handlers) : memory.loadError ? null
+      : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
+      : files.selection ? detailView(files, handlers) : listView(files, handlers),
     forgetView(files, handlers),
     memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',
       text: t('memory-files.storage.cleanup.pending', { count: memory.cleanupPending }) }) : null,
-    !files.editor ? h('div', { class: 'memory-actions' },
+    !files.editor && memory.loaded && !memory.loadError ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-rebuild-indexes', disabled: memory.rebuildingIndexes,
         text: t(memory.rebuildingIndexes ? 'profile-panel.memory.index.rebuilding' : 'profile-panel.memory.index.rebuild'),
         onClick: handlers.rebuildMemoryIndexes })) : null)
@@ -220,7 +250,7 @@ function forgetView(files: State['memory']['files'], handlers: Handlers) {
   if (!forget) return null
   if (forget.phase !== 'confirm') return h('div', { class: 'profile-section', 'data-memory-file-forget-status': forget.phase },
     h('p', { class: forget.error ? 'form-error' : 'help', role: forget.error ? 'alert' : 'status',
-      text: forget.error ?? t(forget.phase === 'complete' ? 'memory-files.forget.complete' : 'memory-files.forget.pending') }),
+      text: forget.error ?? t(forget.phase === 'unconfirmed' ? 'extensions.working' : forget.phase === 'complete' ? 'memory-files.forget.complete' : 'memory-files.forget.pending') }),
     forget.phase === 'unconfirmed' || forget.phase === 'pending' ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-file-forget-retry', disabled: writing,
         text: t(writing ? 'extensions.working' : 'memory-files.forget.check'),
@@ -243,7 +273,7 @@ function forgetView(files: State['memory']['files'], handlers: Handlers) {
   h('h4', { class: 'profile-heading memory-text', id: 'memory-file-forget-title',
     text: t('memory-files.forget.confirm', { title: forget.title || t('memory-files.untitled') }) }),
   h('p', { class: 'help', id: 'memory-file-forget-description',
-    text: t(forget.request.restrictionId ? 'memory-files.forget.range.help' : 'memory-files.forget.help') }),
+    text: t('memory-files.forget.help') }),
   h('div', { class: 'memory-actions' },
     h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-file-forget-cancel', disabled: writing,
       text: t('extensions.cancel'), onClick: () => handlers.cancelManagedMemoryForget(forget.id) }),

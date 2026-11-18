@@ -44,8 +44,7 @@ export function canEditMemoryFile(detail: MemoryFileDetailView | null): detail i
   return Boolean(detail?.actions.edit && detail.editor && !detail.stoppedSnapshot)
 }
 export const canForgetMemoryFile = (detail: MemoryFileDetailView | null): detail is MemoryFileDetailView =>
-  Boolean(detail?.actions.forget && (!detail.stoppedSnapshot || detail.identity.kind === 'daily'
-    && detail.restrictions?.some(item => item.id === detail.stoppedSnapshot?.restrictionId)))
+  Boolean(detail?.actions.forget && !detail.stoppedSnapshot)
 
 export const memoryFilePageOpen = (memory: State['memory']): boolean => memory.open && memory.view === 'profile'
 
@@ -85,8 +84,7 @@ export const MEMORY_FILE_ACTIONS = {
     const selected = selection && sameMemoryFile(selection.identity, forget.request.identity)
     return withFiles(state, { forget: { ...forget, title: undefined, phase: 'unconfirmed', error: undefined },
       ...(selected ? { selection: null, detail: null, detailError: null, editor: null } : {}),
-      // Shared evidence can retire other titles too; discard the pre-erasure list until it is read again.
-      loading: false, loaded: false, nextCursor: null, items: [] })
+      loading: false, items: state.memory.files.items.filter(item => !sameMemoryFile(item.identity, forget.request.identity)) })
   },
   memory_file_forgotten: (state, { id, cleanup }) => {
     const { forget, selection } = state.memory.files

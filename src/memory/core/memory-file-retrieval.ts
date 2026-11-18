@@ -7,7 +7,7 @@ import type { MemoryFileDependency } from '../contracts/records.ts'
 import { fileDependency, type MemoryDocumentView } from './memory-document-read-policy.ts'
 import type { MemoryFileIndex, MemoryFileIdentity, MemoryFileSnapshot, MemoryFileHit, MemoryFileChunkRef } from './ports/file-index.ts'
 import { dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
-import { memoryFileLexicalQuery } from './search-tokens.ts'
+import { memoryFileLexicalQuery, memoryIdentifierTokens, memorySearchTokens } from './search-tokens.ts'
 import { memoryFileEmbeddingPassages, splitMemoryFileEmbeddingPassage } from './memory-file-passages.ts'
 import type { MemoryFileEmbeddingPassage } from './memory-file-passages.ts'
 import { parseMemoryMarkdown } from './memory-markdown.ts'
@@ -47,6 +47,8 @@ export interface FileSearchResult extends FileReadSet {
 export interface FileSearchRequest {
   query: string, limit?: number, minScore?: number, from?: string, through?: string, asOf?: number
   contextKey?: string, maxChars?: number, allows: Allows, signal?: AbortSignal
+  /** Automatic context must yield quickly and may omit weak evidence. */
+  automatic?: boolean
 }
 const identityKey = (file: {workspace: string, id: string}) => JSON.stringify([file.workspace, file.id])
 const sameVersion = (a: MemoryFileIdentity, b: MemoryDocumentView) => a.id === b.id && a.path === b.path
@@ -61,6 +63,8 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
 }) {
   let closed = false
   let preparing = false
+  let vectorCheckPending = true
+  let scheduledPreparation: ReturnType<typeof setTimeout> | undefined
   const controllers = new Set<AbortController>()
   const returned = new Map<string, Set<string>>()
   const space = () => ({ fingerprint: `${embedder!.fingerprint}:file-passages-context-v2`, dimensions: embedder!.dimensions })
@@ -98,6 +102,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       } catch { /* Malformed/external material remains quarantined; prior projections are removed below. */ }
     }
     for (const file of index.files(scopes)) if (!visible.has(identityKey(file)) && index.remove(file)) removed++
+    if (accepted || removed) vectorCheckPending = true
     return { accepted, removed }
   }
   function authorized(allows: Allows, request?: Pick<FileSearchRequest, 'from' | 'through' | 'asOf'>) {
@@ -215,6 +220,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       }
       if (closed || run.controller.signal.aborted || files.some(file => !current(file))) return false
       complete = index.finishVectors(generation, expected)
+      vectorCheckPending = !complete
       return complete
     } catch (error) { observation.fail(error); return false }
     finally {
@@ -223,6 +229,30 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         metrics: { completedCount: staged, ok: complete } })
       run.done(); preparing = false
     }
+  }
+  async function automaticQuery(query: string, signal?: AbortSignal) {
+    const run = scopedController(signal)
+    // Let an already-started worker finish warming up after the foreground budget
+    // expires. Cancellation, shutdown and the normal inference deadline still apply.
+    const encoded = encode([{ kind: 'query', text: query }], run.controller.signal).finally(() => {
+      run.done()
+      // The worker accepts one batch at a time, even after the caller's timeout.
+      if (vectorCheckPending) prepareAfterSearch()
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([encoded, new Promise<null>(resolve => {
+        timer = setTimeout(() => resolve(null), defaults.automaticQueryTimeoutMs)
+      })])
+    } finally { clearTimeout(timer) }
+  }
+  function prepareAfterSearch() {
+    if (closed || preparing || scheduledPreparation !== undefined) return
+    scheduledPreparation = setTimeout(() => {
+      scheduledPreparation = undefined
+      void prepareVectors()
+    }, 0)
+    scheduledPreparation.unref?.()
   }
   function unavailable(reason: string): FileSearchResult { return { status:'unavailable', hits:[], files:[], sourceIds:[], reasons:[reason], partial:true } }
   function checkedLimit(limit?: number) {
@@ -252,7 +282,22 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const { allowed, limit, candidates, lexical, reasons } = plan
     if (closed || request.signal?.aborted) return unavailable('cancelled')
     if (allowed.some(file => !current(file, request.allows))) return unavailable('file-changed')
-    const ranked = fuseMemoryFileHits(lexical.hits, vector).filter(hit => hit.score >= (request.minScore ?? defaults.searchMinScore))
+    // A reciprocal rank is positive even for orthogonal vectors. For unsolicited
+    // context, qualify candidates on their original evidence before fusing ranks.
+    let lexicalHits = lexical.hits
+    if (request.automatic) {
+      // A short Chinese request can have a single content term after its polite lead-in.
+      const subject = request.query.trim().replace(/^(?:请(?:帮我)?|帮我)(?:写|整理|查找|查询|查看|总结|起草)?\s*/u, '')
+      const terms = new Set(memorySearchTokens(memoryFileLexicalQuery(subject), false))
+      const identifiers = memoryIdentifierTokens(request.query)
+      lexicalHits = lexicalHits.filter(hit => {
+        const present = new Set(memorySearchTokens(hit.searchText, true))
+        return identifiers.some(id => present.has(id))
+          || terms.size > 0 && [...terms].filter(term => present.has(term)).length >= Math.min(terms.size, Math.max(2, Math.ceil(terms.size / 3)))
+      })
+      vector = vector.filter(hit => hit.score >= defaults.automaticMinCosine)
+    }
+    const ranked = fuseMemoryFileHits(lexicalHits, vector).filter(hit => hit.score >= (request.minScore ?? defaults.searchMinScore))
     if (lexical.hits.length === candidates || vector.length === candidates) reasons.push('candidate-limit')
     const context = request.contextKey ? hash(JSON.stringify([request.contextKey, request.query, request.from, request.through, request.asOf,
       request.minScore, allowed.map(file => [file.workspace,file.id,file.revision,file.usageVersion,file.policyToken])])) : null
@@ -325,11 +370,17 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         observation.progress({ stage: 'vector', metrics: { count: allowed.length } })
         const run = scopedController(request.signal)
         try {
-          const generation = index.beginVectors(space())
-          const needsPreparation = !index.vectorState().active || index.missingVectors(generation).length > 0
-          const ready = !needsPreparation || await prepareVectors(run.controller.signal)
+          const state = index.vectorState()
+          const target = space()
+          // Automatic input only inspects the published generation. Checking every
+          // stored vector or switching spaces is index maintenance.
+          const needsPreparation = !state.active || state.space?.fingerprint !== target.fingerprint
+            || state.space.dimensions !== target.dimensions || !request.automatic && index.missingVectors(state.generation).length > 0
+          if (request.automatic && needsPreparation) prepareAfterSearch()
+          const ready = !needsPreparation || !request.automatic && await prepareVectors(run.controller.signal)
           if (ready && !run.controller.signal.aborted && index.vectorState().active) {
-            const output = await encode([{kind:'query',text:request.query}], run.controller.signal)
+            const output = request.automatic ? await automaticQuery(request.query, request.signal)
+              : await encode([{kind:'query',text:request.query}], run.controller.signal)
             if (output?.[0] && !run.controller.signal.aborted) {
               const hits = index.vector(output[0], space(), allowed, candidates)
               if (hits) vector = hits
@@ -415,6 +466,6 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     reindex:()=>observeDiagnosticSync(diagnostics, 'memory.index', () => {
       if (closed) throw new Error('memory-file-retrieval-closed'); return index.reindex()
     }, { stage: 'rebuild' }),
-    close(){closed=true;controllers.forEach(controller=>controller.abort());returned.clear()},
+    close(){closed=true;clearTimeout(scheduledPreparation);controllers.forEach(controller=>controller.abort());returned.clear()},
   }
 }

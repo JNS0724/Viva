@@ -41,11 +41,16 @@ const DROP = `(() => {
   document.querySelector('.isl').dispatchEvent(new DragEvent('drop', { dataTransfer: window.smokeDrag.files, bubbles: true, cancelable: true }))
 })()`
 
-const typeAndSend = (text: string) => `(() => {
+const readyToSteer = `field?.closest('.isl')?.dataset.form === 'input' && field.checkVisibility()
+  && !field.disabled && !field.readOnly && field.placeholder.includes('下一步会读到')`
+
+const typeAndSend = (text: string, requireSteering = false) => `(() => {
   const field = document.querySelector('.isl-field')
+  ${requireSteering ? `if (!(${readyToSteer})) return false` : ''}
   field.value = ${JSON.stringify(text)}
   field.dispatchEvent(new Event('input', { bubbles: true }))
   field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+  return true
 })()`
 
 const ASKED_IN_THREAD = `(() => {
@@ -55,8 +60,8 @@ const ASKED_IN_THREAD = `(() => {
 
 /** While the agent is on the turn the input takes words for that turn. */
 const STEERING = `(() => {
-  const field = document.querySelector('.isl')?.dataset.form === 'input' && document.querySelector('.isl-field')
-  return field && !field.disabled && field.placeholder.includes('下一步会读到') && field.placeholder
+  const field = document.querySelector('.isl-field')
+  return ${readyToSteer} && field.placeholder
 })()`
 
 const STEERED_IN_THREAD = `(() => {
@@ -127,7 +132,12 @@ export async function checkDeskAsk(win: SmokeWindow, outDir: string, desk: Smoke
     const steering = await until(page, STEERING, 'the island input taking words for the turn while the agent works')
     await wait(UI_WAIT_MS)
     await capture(page, outDir, 'desk-steer')
-    await run(page, typeAndSend(STEER))
+    // A native blur can collapse the editor while the screenshot is taken.
+    const sendSteer = typeAndSend(STEER, true)
+    if (!await run(page, sendSteer)) {
+      await desk.openInput()
+      await until(page, sendSteer, 'sending the island interjection from its visible editor')
+    }
     await until(win, STEERED_IN_THREAD, 'the words said on the island in the thread, into the running turn')
     await desk.closeInput()
     await finishTurn(win)

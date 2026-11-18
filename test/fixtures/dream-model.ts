@@ -29,7 +29,7 @@ export async function dreamModelStep(job: MemoryCompute, tools?: MemoryComputeTo
     for (const path of unit.paths) await execute('read', { path })
     const paths = [...new Set([...(previous ? memoryDocumentLinks(previous.markdown) : []), ...unit.paths])]
     const markdown = formatMemoryDocument({ metadata: { ...previous ? parseMemoryDocument(previous.markdown).metadata : {}, name: unit.name, description: unit.summary },
-      body: `${unit.summary}\n\n## Sources\n${paths.map(path => `The arrangement is supported by [[${path}]].`).join('\n')}` })
+      body: `${unit.summary}\n\n## Sources\n${paths.map(path => `Source: [[${path}]]`).join('\n')}` })
     await execute('write', { path, markdown })
     return JSON.stringify({ action: options.action ?? (existing ? 'CORROBORATE' : 'CREATE'), target_path: path, note: unit.summary })
   }

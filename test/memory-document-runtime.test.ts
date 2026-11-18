@@ -208,6 +208,10 @@ test('file mode shares digest recall, original line reads, node search, injectio
   const nodes = JSON.parse(f.memory.handle({ op: 'node_search', session: origin.session, query: '青岚' }, origin))
   assert.equal(nodes.status, 'ok')
   assert(JSON.stringify(nodes).includes(receipt.documentId))
+  const unrelated = { op: 'context' as const, session: origin.session, turn: 1, question: '今天天气怎么样' }
+  for (const empty of [f.memory.handle(unrelated, origin), await f.memory.handleModelRequest(unrelated, origin, () => true)]) {
+    assert.doesNotMatch(empty, /File memory evidence|账单核对/u)
+  }
   const context = await f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 1, question: '账单核对' }, origin, () => true)
   assert(context.includes('账单核对'))
   assert(f.fileReads.length > 0)

@@ -88,8 +88,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
   const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null
     && view.enabled && view.currentMarkdown !== null && view.applicability.state === 'current'
   function forgetSupported(view: ManagedView): boolean {
-    if (view.kind === 'digest') return Boolean(view.backing?.sources.length)
-    return Boolean(view.daily?.hasProjection && daily?.references(view.daily.allocation.key).length)
+    return view.kind === 'digest' ? view.backing !== null : Boolean(view.daily)
   }
   function summary(view: ManagedView): MemoryFileSummary {
     const metadata = parseMemoryDocument(view.markdown).metadata
@@ -128,8 +127,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
       && daily.sources(record.sources, snapshot) !== null
     const projected = verified ? documents.projectErasedLocators?.(record.workspace, snapshot) ?? snapshot : null
     const markdown = projected !== null && daily.sources(record.sources, projected) ? projected : null
-    const forget = Boolean(view.daily && markdown !== null)
-    return { ...item, actions: { ...item.actions, forget }, stoppedSnapshot: { restrictionId, markdown, sources } }
+    return { ...item, actions: { ...item.actions, forget: false }, stoppedSnapshot: { restrictionId, markdown, sources } }
   }
   function list(input: MemoryFileListRequest, allows: Allows): MemoryFileListResult {
     const request = memoryFileListRequest.parse(input), query = (request.query ?? '').trim().normalize('NFKC').toLowerCase()
@@ -164,6 +162,16 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
     if (command.action === 'undo' && (!undo || undo.changeId !== command.changeId)) throw failure('revision.conflict')
     return { view, undo, restriction: selected?.record }
   }
+  function deletionTarget(command: MemoryFileForgetRequest, allows: Allows) {
+    if (command.restrictionId !== undefined) throw failure('invalid.text')
+    const view = resolve(command.identity, allows)
+    if (!view || !forgetSupported(view)) throw failure('not.found')
+    const expected = command.version, current = versionOf(view)
+    if (current.contentRevision !== expected.contentRevision || current.usageVersion !== expected.usageVersion
+      || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
+    return view
+  }
+  // Persisted range erasures accepted by earlier releases retain their original scope.
   function forgetEvidence(command: MemoryFileForgetRequest, allows: Allows): { refs: DocumentSourceRef[], dailyKey?: string } {
     const view = resolve(command.identity, allows)
     if (!view) throw failure('not.found')
@@ -191,5 +199,5 @@ export function createMemoryFileManagement({ policy, documents, workspaces, hash
       || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
     return view.backing
   }
-  return { list, detail, resolve, validate, forgetEvidence, editTarget }
+  return { list, detail, resolve, validate, deletionTarget, forgetEvidence, editTarget }
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { z } from 'zod'
-import { createMemoryDreamTools, memoryDocumentLinks, memoryDreamToolDefinitions, MemoryDreamStaleError, searchMemoryNodes } from '../src/memory/core/memory-dream-tools.ts'
+import { dreamChangesConclusion, createMemoryDreamTools, memoryDocumentLinks, memoryDreamToolDefinitions, MemoryDreamStaleError, searchMemoryNodes } from '../src/memory/core/memory-dream-tools.ts'
 import type { DreamDocumentSnapshot } from '../src/memory/core/memory-dream-tools.ts'
 import type { MemoryToolInvocation } from '../src/memory/contracts/service.ts'
 import { formatMemoryDocument, parseMemoryDocument } from '../src/memory/core/memory-document.ts'
@@ -270,4 +270,19 @@ test('dream evidence reads use the shared original line map for lone CR files', 
   const result = await call('read', { path: daily, start_line: line, end_line: line })
   assert.equal(result.state, 'completed')
   assert.equal(JSON.parse(result.content).markdown, lines[line - 1])
+})
+
+test('only citation additions preserve the actual conclusion and its section', () => {
+  const before = `## Care\nAvoid an allergen.\n## Sources\nThe deadline does not apply to the request in [[${oldDaily}]].`
+  const fenced = before + '\n```text\ncode\n```\n## Deadline\nFriday.'
+  assert.equal(dreamChangesConclusion(fenced, fenced.replace('```\n## Deadline', '``` [[' + daily + ']]\n## Deadline'), [daily]), true)
+  const indented = 'The rule follows.\n    Friday.'
+  assert.equal(dreamChangesConclusion(indented, indented.replace('\n', '\n\n'), [daily]), true)
+  assert.equal(dreamChangesConclusion(before, before + `\nThe deadline does not apply to the request in [[${daily}]].`, [daily]), true)
+  assert.equal(dreamChangesConclusion(before, before.replace('Avoid an allergen.', '## Sources\nAvoid an allergen.'), [daily]), true)
+  assert.equal(dreamChangesConclusion(before, before + `\n- [[${daily}]]`, [daily]), false)
+  assert.equal(dreamChangesConclusion(before, before.replace('Avoid an allergen.', `Avoid an allergen. [[${daily}]]`), [daily]), false)
+  assert.equal(dreamChangesConclusion('Avoid an allergen.', `Avoid an allergen.\n\n## Sources\n[[${daily}]]`, [daily]), false)
+  assert.equal(dreamChangesConclusion(before, before.replace('Avoid an allergen.', 'Allow an allergen.'), [daily]), true)
+  assert.equal(dreamChangesConclusion('---\nname: Care\ndescription: Avoid\n---\nFact', '---\ndescription: Avoid\nname: "Care"\n---\n\nFact\n', []), false)
 })

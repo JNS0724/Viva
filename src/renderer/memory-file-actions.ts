@@ -149,12 +149,9 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       || !['confirm', 'unconfirmed', 'pending'].includes(forget.phase)) return false
     const { request } = forget
     if (forget.phase === 'confirm') {
-      const restriction = detail?.restrictions?.find(item => item.id === request.restrictionId)
-      const version = request.restrictionId ? restriction?.version : detail?.version
-      if (!canForgetMemoryFile(detail) || !selection || !sameMemoryFile(detail.identity, request.identity)
-        || selection.restrictionId !== request.restrictionId || !version
-        || version.contentRevision !== request.version.contentRevision || version.usageVersion !== request.version.usageVersion
-        || version.policyToken !== request.version.policyToken) return false
+      if (!canForgetMemoryFile(detail) || !selection || selection.restrictionId || !sameMemoryFile(detail.identity, request.identity)
+        || detail.version.contentRevision !== request.version.contentRevision || detail.version.usageVersion !== request.version.usageVersion
+        || detail.version.policyToken !== request.version.policyToken) return false
     }
     cancelReads()
     dispatch({ type: 'memory_summaries_stale' })
@@ -173,8 +170,8 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       }
       const { receipt, cleanup } = result
       if (receipt.operationId !== request.operationId || receipt.action !== 'FORGET'
-        || !sameMemoryFile(receipt.identity, request.identity) || receipt.restrictionId !== request.restrictionId) {
-        throw new Error('Unexpected memory erasure receipt')
+        || !sameMemoryFile(receipt.identity, request.identity) || receipt.restrictionId !== undefined) {
+        throw new Error('Unexpected memory file deletion receipt')
       }
       if (current()) dispatch({ type: 'memory_file_forgotten', id, cleanup })
       refresh = true
@@ -196,13 +193,9 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     askManagedMemoryForget(target: MemoryFileDetailView) {
       const { detail, selection, writing, editor, forget } = state()
       if (!active() || writing || editor || forget?.phase === 'unconfirmed' || detail !== target || !selection
-        || !canForgetMemoryFile(target) || target.stoppedSnapshot?.restrictionId !== selection.restrictionId) return
-      const restrictionId = selection.restrictionId
-      const version = restrictionId ? target.restrictions?.find(item => item.id === restrictionId)?.version : target.version
-      if (!version) return
+        || !canForgetMemoryFile(target) || selection.restrictionId) return
       dispatch({ type: 'memory_file_forget', forget: { id: ++forgetId, phase: 'confirm', title: target.title,
-        request: { operationId: globalThis.crypto.randomUUID(), identity: target.identity, version,
-          ...(restrictionId ? { restrictionId } : {}) } } })
+        request: { operationId: globalThis.crypto.randomUUID(), identity: target.identity, version: target.version } } })
     },
     cancelManagedMemoryForget(id: number) {
       if (active() && !state().writing && state().forget?.id === id && state().forget?.phase === 'confirm') {

@@ -7,8 +7,6 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import { createQuestionDesk } from '../src/backend/question-channel.ts'
-import { registerMemoryTools } from '../plugins/memory/lib/tools.ts'
 import { MEMORY_FILE_QUESTION_PREFIX, memoryClarificationResult, type MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import type { MemoryFileDetail, MemoryFileListResult, MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
@@ -61,23 +59,7 @@ async function setup(t: TestContext) {
   function issue(session: string, ref: string) {
     return memoryClarificationResult.parse(JSON.parse(owner.runtime.handle({ op: 'clarify', session, ref }, owner.sessionContext(session))))
   }
-  function desk(session: string) {
-    const events: Array<{ type: string; [field: string]: unknown }> = [], sent: object[] = []
-    const questions = createQuestionDesk({ sessionId: () => session, emit: event => events.push(event), send: reply => sent.push(reply),
-      conversationContext: id => ({ conversationId: id, sessionId: id }),
-      cancelMemoryClarification: (id, questionId) => owner.handleHost('cancelFileClarification', { args: [id, questionId] }),
-      memoryClarificationQuestion: (id, questionId, phase) => owner.handleHost('clarificationQuestion', { args: [id, '1', questionId, phase] }) as Promise<HostMemoryApi['clarificationQuestion']['output']>,
-      onAnswer: async (entry, [answer]) => {
-        if (!answer?.custom) return
-        const question = entry.question.questions[0]
-        const accepted = await owner.handleHost('acceptQuestionAnswer', answerInput(session,
-          { id: question.id, question: entry.sourceQuestion ?? question.question }, answer.custom)) as { sourceId: string }
-        return { sourceIds: { [answer.id]: accepted.sourceId } }
-      },
-    })
-    return { questions, events, sent }
-  }
-  return { get owner() { return owner }, store, documents, file, workspace, workId, author, original, newReader, recall, issue, desk,
+  return { get owner() { return owner }, store, documents, file, workspace, workId, author, original, newReader, recall, issue,
     async reopen() { await owner.close(); owner = openMemoryOwner(options); await owner.recover() },
   }
 }
@@ -86,161 +68,58 @@ const answerInput = (session: string, question: { id: string; question: string }
   text, question: question.question, requestId: 'the-window-card', questionId: question.id, context: { kind: 'user' },
 })
 
-test('only relevant file retrieval issues a scoped clarification and its genuine free text resumes the same work once', async t => {
-  const f = await setup(t), reader = await f.newReader(), foreign = await f.newReader()
-  const unrelated = f.recall(reader, 'Unrelated tea')
-  assert.ok(unrelated.notes.length)
-  assert.equal(unrelated.clarification, undefined)
-  const paraphrase = f.recall(reader, 'Where will the conference be held?')
-  assert.ok(paraphrase.notes.some(hit => hit.pendingClarification))
-  const result = f.recall(reader, topic)
-  assert.ok(result.clarification)
-  assert.deepEqual(Object.keys(result.clarification), ['ref'])
-  assert.ok(result.notes.every(note => !('topic' in note)))
-  assert.ok(result.notes.some(hit => hit.pendingClarification))
-  assert.doesNotMatch(JSON.stringify(result), /old hall|auditorium/)
-  const sourceRead = f.owner.runtime.handle({ op: 'file_read', session: reader, id: f.file.identity.id, evidence: true }, f.owner.sessionContext(reader))
-  assert.doesNotMatch(sourceRead, /old hall|auditorium/)
-  assert.match(sourceRead, /pendingClarification/)
-  assert.equal(f.issue(foreign, result.clarification.ref).status, 'rejected')
-  const task = { ...f.owner.sessionContext(foreign), context: { kind: 'task' as const, id: foreign } }
-  const taskRecall = JSON.parse(f.owner.runtime.handle({ op: 'recall', session: foreign, query: topic }, task)) as { clarification?: unknown }
-  assert.equal(taskRecall.clarification, undefined)
-  assert.deepEqual(JSON.parse(f.owner.runtime.handle({ op: 'clarify', session: foreign, ref: result.clarification.ref }, task)),
-    { status: 'rejected', reason: 'foreground-only' })
-  assert.equal(f.owner.runtime.authorizeGeneralQuestion({ ...f.owner.sessionContext(reader), session: reader, turn: '1' },
-    [{ question: 'Which conference venue?', options: [] }]), false)
-  const unrelatedQuestion = await f.owner.runtime.authorizeGeneralQuestion({ ...f.owner.sessionContext(reader), session: reader, turn: '1' },
-    [{ question: 'Do you prefer herbal tea?', options: [] }])
-  assert.equal(typeof unrelatedQuestion, 'function')
-  const unresolved = f.owner.dispatch.snapshot(reader)
-  assert.equal(unresolved.turnOnly, true)
-  assert.equal(await f.owner.handleHost('authorizedProvenance', { session: reader, prior: unresolved }), null)
-  const question = f.issue(reader, result.clarification.ref)
-  assert.equal(question.status, 'ready-file')
-  assert.match(question.question.id, /^memory-clarify:file:/)
-  assert.deepEqual(question.question.options, [])
-  const { questions, events } = f.desk(reader)
-  await questions.receive({ type: 'question', id: 'the-window-card', sessionId: reader, questions: [{ ...question.question, question: 'fabricated wording' }] })
-  assert.deepEqual(events.map(event => event.type), ['question'])
-  assert.doesNotMatch(JSON.stringify(events), /fabricated wording/)
-  assert.match(JSON.stringify(events), /Conference venue/)
-  const reply = 'The approved venue is the library.'
-  assert.equal(await questions.answer('the-window-card', [{ id: question.question.id, selected: [], custom: reply }]), true)
-  const answer = await f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, question.question, reply)) as { sourceId: string }
-  assert.equal(answer.sourceId, question.question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length))
-  assert.deepEqual(await f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: question.question.id, text: reply, requireShown: false }, () => true), answer,
-    'native completion after Viva intake reuses the same source and deferred response')
-  await assert.rejects(f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, question.question, 'Conflicting retry.')))
-  assert.equal(f.store.readSource(answer.sourceId)?.outcome, 'document-clarification')
-  const confirmed = f.owner.dispatch.snapshot(reader)
-  assert.equal(confirmed.turnOnly, false)
-  assert.ok(confirmed.sources.includes(answer.sourceId))
-  assert.deepEqual(await f.owner.handleHost('authorizedProvenance', { session: reader, prior: confirmed }), confirmed)
-  assert.equal(f.documents.deferred(f.workspace, f.workId)?.answer?.source.id, answer.sourceId)
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_answers').get()?.n, 1)
-  assert.equal(f.store.db.prepare('SELECT 1 FROM owner_answer_sources WHERE source=?').get(answer.sourceId), undefined)
-  await f.reopen()
-  assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'ready')
-  await assert.rejects(f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, question.question, reply)))
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_answers').get()?.n, 1)
-})
+for (const previous of ['pending', 'shown', 'answered'] as const) {
+  test(`upgrading retires a ${previous} Dream clarification without blocking direct foreground questions`, async t => {
+    const f = await setup(t), reader = await f.newReader()
+    // Seed the pre-upgrade state through the legacy receipt APIs, including a live card where applicable.
+    const oldQuestion = MEMORY_FILE_QUESTION_PREFIX + randomUUID()
+    if (previous !== 'pending') f.store.db.prepare('INSERT INTO memory_session_file_clarifications VALUES (?,?)').run(reader, JSON.stringify([f.workspace, f.workId]))
+    if (previous === 'answered') seedAnswer(f, reader, f.workId, 1, oldQuestion)
+    const answer = f.documents.deferred(f.workspace, f.workId)?.answer
+    await f.reopen()
+    assert.deepEqual(f.documents.pending(f.workspace), [])
+    assert.equal(f.store.db.prepare('SELECT state FROM memory_document_deferred WHERE operation=?').get(f.workId)?.state, 'expired')
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_session_file_clarifications').get()?.n, 0)
+    const session = await f.newReader()
+    const result = f.recall(session, topic)
+    assert.equal(result.clarification, undefined)
+    assert.ok(result.notes.every(hit => !hit.pendingClarification))
+    assert.equal(f.issue(reader, randomUUID()).status, 'rejected')
+    assert.equal(await f.owner.handleHost('clarificationQuestion', { args: [reader, '1', oldQuestion, 'check'] }), null)
+    await assert.rejects(f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, { id: oldQuestion, question: topic }, 'Late reply')), /no longer authorized/)
+    if (answer) assert.equal(f.store.readSource(answer.source.id)?.text, 'The conference venue is the library.')
+    const front = await f.owner.runtime.authorizeGeneralQuestion({ ...f.owner.sessionContext(session), session, turn: '1' },
+      [{ question: 'Which venue should I book for your current request?', options: [] }])
+    assert.ok(front)
+  })
+}
 
-test('forgetting the selected evidence invalidates the waiting question and leaves no source from late answers', async t => {
-  const f = await setup(t), reader = await f.newReader()
-  const ref = f.recall(reader, topic).clarification?.ref
-  assert.ok(ref)
-  const result = f.issue(reader, ref)
-  assert.equal(result.status, 'ready-file')
-  const { questions, events, sent } = f.desk(reader)
-  await questions.receive({ type: 'question', id: 'the-window-card', sessionId: reader, questions: [result.question] })
-  assert.deepEqual(events.map(event => event.type), ['question'])
-  await f.owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: f.file.identity, version: f.file.version }] })
-  const reply = 'The library.'
-  assert.equal(await questions.answer('the-window-card', [{ id: result.question.id, selected: [], custom: reply }]), false)
-  assert.deepEqual(sent, [{ type: 'decline', id: 'the-window-card' }])
-  const native = () => f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: result.question.id, text: reply, requireShown: false }, () => true)
-  assert.equal(await native(), null)
-  assert.equal(f.store.readSource(result.question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length)), null)
-  assert.equal(f.documents.deferred(f.workspace, f.workId), null)
-  await f.reopen()
-  assert.equal(await native(), null)
-  await assert.rejects(f.owner.handleHost('acceptQuestionAnswer', answerInput(reader, result.question, reply)))
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_answers').get()?.n, 0)
-})
-
-test('trusted native answers recheck cancellation after the physical send fence drains', async t => {
-  const f = await setup(t), reader = await f.newReader()
-  const match = f.recall(reader, topic).clarification
-  assert.ok(match)
-  const result = f.issue(reader, match.ref)
-  assert.equal(result.status, 'ready-file')
-  const permit = f.owner.acquireSend(randomUUID(), { session: reader }, 'Waiting provider request')
-  const invalid = new AbortController()
-  const native = f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: result.question.id,
-    text: 'Late answer', requireShown: false }, () => !invalid.signal.aborted)
-  try {
-    if (!permit.signal.aborted) await new Promise<void>(resolve => permit.signal.addEventListener('abort', () => resolve(), { once: true }))
-    invalid.abort()
-  } finally { permit.settled() }
-  assert.equal(await native, null)
-  assert.equal(f.store.readSource(result.question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length)), null)
-  assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'pending_clarification')
-
-  // A reply from the live caller can still complete the exact durable work. It does not need Viva's show handshake.
-  assert.deepEqual(await f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: result.question.id,
-    text: 'The correct venue is the library.', requireShown: false }, () => true),
-  { sourceId: result.question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length) })
-  assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'ready')
-})
-
-test('stopping the Viva question while its reply drains a send cancels the owner ticket', async t => {
-  const f = await setup(t), reader = await f.newReader()
-  const ref = f.recall(reader, topic).clarification?.ref
-  assert.ok(ref)
-  const result = f.issue(reader, ref)
-  assert.equal(result.status, 'ready-file')
-  const { questions, sent } = f.desk(reader)
-  await questions.receive({ type: 'question', id: 'the-window-card', sessionId: reader, questions: [result.question] })
-  const permit = f.owner.acquireSend(randomUUID(), { session: reader }, 'Waiting provider request')
-  const reply = 'Late answer in the stopped turn'
-  const replying = questions.answer('the-window-card', [{ id: result.question.id, selected: [], custom: reply }])
-  try {
-    if (!permit.signal.aborted) await new Promise<void>(resolve => permit.signal.addEventListener('abort', () => resolve(), { once: true }))
-    questions.declineAll()
-  } finally { permit.settled() }
-  assert.equal(await replying, false)
-  assert.deepEqual(sent, [{ type: 'decline', id: 'the-window-card' }])
-  assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'pending_clarification')
-  assert.equal(f.store.readSource(result.question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length)), null)
-  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_answers').get()?.n, 0)
-  assert.equal(await f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: result.question.id, text: reply, requireShown: false }, () => true), null)
-})
-
-async function resolveVenue(f: Awaited<ReturnType<typeof setup>>, reader: string, workId = f.workId, step = 1) {
-  const ref = f.recall(reader, topic).clarification?.ref
-  assert.ok(ref)
-  const result = f.issue(reader, ref)
-  assert.equal(result.status, 'ready-file')
+// Reproduce an answer recorded by an older owner, without giving the live model a way to reopen a question.
+function seedAnswer(f: Awaited<ReturnType<typeof setup>>, reader: string, workId: string, step: number,
+  questionId = MEMORY_FILE_QUESTION_PREFIX + randomUUID()) {
   const reply = step === 1 ? 'The conference venue is the library.' : 'The second conference is in the annex.'
-  const answer = await f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: result.question.id, text: reply, requireShown: false }, () => true)
-  assert.ok(answer)
+  const id = questionId.slice(MEMORY_FILE_QUESTION_PREFIX.length)
+  f.owner.runtime.accept(reply, f.owner.sessionContext(reader), id, { question: 'Which Conference venue?', questionId, requestId: workId, custom: true })
+  const source = f.store.readSource(id)!
+  f.documents.answer({ operationId: id, workspace: f.workspace, deferredId: workId, source: { id, token: memorySourceToken(source) }, text: reply })
+  f.store.outcome(id, 'document-clarification')
+  f.store.db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES(?,?,?,?,1)').run(reader, id, id, reader)
+  f.owner.dispatch.recordSource(reader, id)
+  return { reply, answerId: id }
+}
+async function resolveVenue(f: Awaited<ReturnType<typeof setup>>, reader: string, workId = f.workId, step = 1) {
+  const { reply, answerId } = seedAnswer(f, reader, workId, step)
   const evidence = f.documents.deferred(f.workspace, workId)?.answer?.source
   assert.ok(evidence)
   f.documents.commit({ operationId: workId, workspace: f.workspace, path: step === 1 ? 'digest/wiki/resolved-venue.md' : 'digest/wiki/second-venue.md', expectedRevision: null,
     action: 'CREATE', markdown: reply, sources: [evidence], reads: [] })
   f.documents.resolve(f.workspace, workId)
   assert.equal(f.documents.deferred(f.workspace, workId), null)
-  // Fast Dream work can consume its payload before the bridge retries the reply.
-  const repeat = (text: string) => f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId: result.question.id, text, requireShown: false }, () => true)
-  assert.deepEqual(await repeat(reply), answer)
-  assert.equal(await repeat('A conflicting retry'), null)
-  f.owner.acquireSend(randomUUID(), { session: reader }, 'Continuation after the consumed clarification').settled()
-  return { reply, answerId: answer.sourceId }
+  return { reply, answerId }
 }
 
 for (const withdrawal of ['forget-file', 'withdraw-chat-source'] as const) {
-  test(`dependent answers are erased after resolution and owner restart on ${withdrawal}`, async t => {
+  test(`resolved answers follow the deletion scope after owner restart on ${withdrawal}`, async t => {
     const f = await setup(t), reader = await f.newReader()
     const { answerId, reply } = await resolveVenue(f, reader)
     await f.reopen()
@@ -249,6 +128,13 @@ for (const withdrawal of ['forget-file', 'withdraw-chat-source'] as const) {
     const operationId = randomUUID()
     if (withdrawal === 'forget-file') {
       await f.owner.handleHost('forgetFile', { args: [{ operationId, identity: f.file.identity, version: f.file.version }] })
+      await f.reopen()
+      assert.equal(f.owner.runtime.readFile(f.file.identity), null)
+      assert.equal(f.owner.runtime.allowedHistory(history), true)
+      assert.equal(f.store.readSource(answerId)?.text, reply)
+      assert.ok(f.documents.read(f.workspace, 'digest/wiki/resolved-venue.md'))
+      assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
+      return
     } else {
       const { ticket } = await f.owner.handleHost('prepareSourceChange', { operationId, conversation: f.author, ids: [f.original], onlySources: true }) as { ticket: string }
       await f.owner.handleHost('commitSourceChange', { operationId, ticket })
@@ -293,51 +179,6 @@ test('withdrawing an independently proven, disjoint source range preserves the a
   assert.equal(f.store.readSource(answerId)?.text, reply)
   assert.equal(f.owner.runtime.allowedHistory({ segmentId: reader, role: 'user', sourceId: answerId, text: reply }), true)
   assert.ok(f.documents.read(f.workspace, 'digest/wiki/resolved-venue.md'))
-})
-
-test('current deferred digest participants are withheld across recall, injection, file and node reads and links', async t => {
-  const f = await setup(t), reader = await f.newReader()
-  const pending = f.documents.deferred(f.workspace, f.workId)!
-  const secret = 'The conference venue is old hall.'
-  const digest = f.documents.commit({ operationId: randomUUID(), workspace: f.workspace, path: 'digest/wiki/conference-old-hall.md',
-    expectedRevision: null, action: 'CREATE', markdown: '---\nname: Conference venue old hall\ndescription: Old hall confirmed\n---\n' + secret, sources: pending.sources, reads: [] })
-  const start = disputed.indexOf('Unrelated tea')
-  const independentText = 'Conference refreshments are tea on Monday.'
-  const independent = f.documents.commit({ operationId: randomUUID(), workspace: f.workspace, path: 'digest/wiki/refreshments.md',
-    expectedRevision: null, action: 'CREATE', markdown: `# Conference refreshments\n\n${independentText} [[${digest.path}|old hall]]`,
-    sources: [{ ...pending.sources[0]!, spans: [{ start, end: disputed.length }] }], reads: [] })
-  const snapshot = await f.owner.handleHost('readFile', { args: [{ kind: 'digest', workspace: f.workspace, id: digest.documentId }] }) as MemoryFileDetail
-  const { status: _status, answer: _answer, ...data } = pending
-  f.documents.expire(f.workspace, f.workId)
-  f.documents.defer({ ...data, operationId: 'dream:' + randomUUID(),
-    unit: { ...data.unit, name: 'Conference venue ALBATROSS side room' },
-    reads: [{ id: snapshot.identity.id, revision: snapshot.version.contentRevision, usageVersion: snapshot.version.usageVersion }],
-    readPolicies: [{ path: snapshot.path, policyToken: snapshot.version.policyToken }] })
-  const assertSafe = (packet: string) => assert.doesNotMatch(packet, /old hall|old-hall|auditorium|ALBATROSS/i)
-  const recall = f.recall(reader, topic)
-  assert.ok(recall.clarification)
-  assert.ok(recall.notes.some(hit => hit.pendingClarification))
-  assertSafe(JSON.stringify(recall))
-  const origin = f.owner.sessionContext(reader)
-  const direct = f.owner.runtime.handle({ op: 'file_read', session: reader, id: digest.documentId, evidence: true }, origin)
-  assertSafe(direct)
-  assert.match(direct, /pendingClarification/)
-  const nodes = f.owner.runtime.handle({ op: 'node_search', session: reader, query: 'Conference venue' }, origin)
-  assertSafe(nodes)
-  assert.match(nodes, /pendingClarification/)
-  const independentRecall = f.recall(reader, 'Conference refreshments')
-  assertSafe(JSON.stringify(independentRecall))
-  assert.ok(independentRecall.notes.some(note => note.markdown?.includes(independentText)))
-  assert.equal(independentRecall.clarification, undefined)
-  const linkedDirect = f.owner.runtime.handle({ op: 'file_read', session: reader, id: independent.documentId, evidence: true }, origin)
-  assertSafe(linkedDirect)
-  assert.match(linkedDirect, /Conference refreshments are tea/)
-  const context = f.owner.runtime.handle({ op: 'context', session: reader, turn: 1, question: topic }, origin)
-  assertSafe(context)
-  assert.match(context, /pendingClarification/)
-  const sentFiles = f.owner.dispatch.snapshot(reader).files ?? []
-  assert.ok(sentFiles.some(file => file.id === independent.documentId))
-  assert.ok(sentFiles.every(file => file.id !== digest.documentId && file.id !== f.file.identity.id))
 })
 
 test('stopping selected evidence hides direct and transitive answers and restoring it reopens their evidence', async t => {
@@ -391,54 +232,10 @@ test('a user can erase a derived digest while its clarification parent is tempor
   assert.equal(f.owner.runtime.dispatchSourceCurrent(answerId), false)
   const erased = await f.owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: digest.identity, version: digest.version }] }) as { action: string }
   assert.equal(erased.action, 'FORGET')
-  assert.equal(f.store.readSource(answerId)?.text?.trim(), '')
-  assert.equal(f.store.readSource(answerId)?.question, null)
+  assert.equal(f.store.readSource(answerId)?.text, 'The conference venue is the library.')
+  assert.match(f.store.readSource(answerId)?.question ?? '', /Conference venue/)
   const stopped = await f.owner.handleHost('readFile', { args: [f.file.identity] }) as MemoryFileDetail
   assert.ok(stopped.restrictions?.some(item => item.id === stop.restrictionId))
-})
-
-test('the executable tool signal cancels an in-flight Viva answer while the send fence drains', async t => {
-  const f = await setup(t), reader = await f.newReader()
-  const ref = f.recall(reader, topic).clarification?.ref
-  assert.ok(ref)
-  type FileQuestion = Extract<ReturnType<typeof memoryClarificationResult.parse>, { status: 'ready-file' }>['question']
-  type Tool = { name: string; execute(args: { ref: string }, context: { agent: object; signal: AbortSignal }): Promise<unknown> }
-  const controller = new AbortController()
-  let show!: (question: FileQuestion) => void
-  let stop!: (reason: Error) => void
-  const shown = new Promise<FileQuestion>(resolve => { show = resolve })
-  const pending = new Promise<never>((_, reject) => { stop = reject })
-  const agent = { session: { id: reader, header: { origin: 'web' } } }
-  const tools = new Map<string, Tool>()
-  const context = {
-    tools: { register(tool: Tool) { tools.set(tool.name, tool) } },
-    userQuestions: { ask({ questions, signal }: { questions: FileQuestion[]; signal: AbortSignal }) {
-      show(questions[0]!)
-      signal.addEventListener('abort', () => stop(new Error('Native tool stopped')), { once: true })
-      return pending
-    } },
-  }
-  registerMemoryTools(context as unknown as Parameters<typeof registerMemoryTools>[0], async input => f.owner.runtime.handle(input, f.owner.sessionContext(reader)),
-    async (questionId, text, _agent, signal) => Boolean(await f.owner.acceptFileClarification({ session: reader, contextGeneration: 0, questionId,
-      text, requireShown: false }, () => !signal?.aborted)),
-    id => f.owner.runtime.cancelFileClarification(reader, id))
-  const tool = tools.get('memory_clarify')
-  assert.ok(tool)
-  const stoppedNative = assert.rejects(tool.execute({ ref }, { agent, signal: controller.signal }), /Native tool stopped/)
-  const question = await shown
-  assert.match(question.id, /^memory-clarify:file:/)
-  const { questions } = f.desk(reader)
-  await questions.receive({ type: 'question', id: 'the-window-card', sessionId: reader, questions: [question] })
-  const permit = f.owner.acquireSend(randomUUID(), { session: reader }, 'Waiting provider request')
-  const replying = questions.answer('the-window-card', [{ id: question.id, selected: [], custom: 'Late genuine reply' }])
-  try {
-    if (!permit.signal.aborted) await new Promise<void>(resolve => permit.signal.addEventListener('abort', () => resolve(), { once: true }))
-    controller.abort()
-  } finally { permit.settled() }
-  await stoppedNative
-  assert.equal(await replying, false)
-  assert.equal(f.documents.deferred(f.workspace, f.workId)?.status, 'pending_clarification')
-  assert.equal(f.store.readSource(question.id.slice(MEMORY_FILE_QUESTION_PREFIX.length)), null)
 })
 
 
@@ -464,10 +261,9 @@ Use the accessible entrance.`,
   const current = await f.owner.handleHost('readFile', { args: [f.file.identity] }) as MemoryFileDetail
   const operationId = randomUUID()
   await f.owner.handleHost('forgetFile', { args: [{ operationId, identity: f.file.identity, version: current.version }] })
-  const erased = f.store.readSource(written)
-  assert.ok(erased?.erasure)
-  assert.doesNotMatch(erased.text ?? '', /library|accessible entrance/)
-  assert.equal(await f.owner.handleHost('readFile', { args: [digest.identity] }), null)
+  assert.equal(f.store.readSource(written)?.erasure ?? null, null)
+  assert.match(f.store.readSource(written)?.text ?? '', /accessible entrance/)
+  assert.ok(await f.owner.handleHost('readFile', { args: [digest.identity] }))
   const kept = await f.owner.handleHost('readFile', { args: [created.identity] }) as MemoryFileDetail
   assert.match(kept.markdown, /library/)
   assert.equal(f.store.readSource(independent)?.text, reply)

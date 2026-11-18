@@ -1,3 +1,4 @@
+import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -55,7 +56,7 @@ test('cold parent repair preserves machine output while a fork retires known lea
     } finally { await writer.close() }
   } finally { await mounted.dispose() }
   const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
-  await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: file.identity, version: detail.version }] })
+  await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
   await owner.close()
   for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storages'), hostNamespace: 'viva',
     isCold: () => true, trace: { key: () => undefined, erase: () => {} } })

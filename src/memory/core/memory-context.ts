@@ -14,8 +14,8 @@ export const MEMORY_RULES = [
   '应用把已完成的会话整理成 daily 笔记，再核验原文并整理为 digest 文件。保留说话人、时间、否定、条件、例外和不确定性。',
   '用户要求保存时，memory_remember 只提交本轮真实用户原文中的精确片段。收到成功回执后才说已保存。',
   '需要已保存的背景时用 memory_recall，可按日期查历史，再用 memory_read 核对完整原文及 applicability。',
-  '只有歧义会改变当前答案或操作，且无法根据现有证据、本轮指示或条件式答案继续时，才用本轮返回的 ref 调用 memory_clarify。后台任务记录尚未解决的歧义，完成可做的部分。',
-  '用户可在「关于你」按文件查看依据、编辑、停用、启用、撤销变更或遗忘。独立 DSH 中可用 /memory-remember 和 /memory-forget 管理文件。',
+  '若当前用户任务缺少必要信息，且无法给出条件式答案，可直接就当前任务提问。后台整理会跳过含糊内容。',
+  '用户可在「关于你」按文件查看依据、编辑、停用、启用、撤销变更或删除记忆文件。独立 DSH 中可用 /memory-remember 和 /memory-forget 管理文件。',
 ].join('')
 
 const WEEKDAYS = '日一二三四五六'

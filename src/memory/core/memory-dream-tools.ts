@@ -3,7 +3,7 @@ import { dailyPath, digestPath, parseIntegrateReceipt } from '../contracts/memor
 import type { DreamUnit, IntegrateReceipt } from '../contracts/memory-file-contract.ts'
 import type { MemoryModelJob, MemorySourceReference, MemoryToolExecutor } from '../contracts/service.ts'
 import { parseMemoryDocument, memoryDocumentLines, readMemoryLines, updateMemoryFrontmatter } from './memory-document.ts'
-import { parseMemoryMarkdown } from './memory-markdown.ts'
+import { lexMemoryMarkdownBody, parseMemoryMarkdown } from './memory-markdown.ts'
 import { memorySearchTokens } from './search-tokens.ts'
 import type { DocumentSupersession } from './ports/documents.ts'
 
@@ -40,7 +40,7 @@ const descriptions: Record<ToolName, string> = {
   node_search: 'Search all authorized digest node names, descriptions and tags, without returning document bodies. Search before choosing an integration target; read matching nodes to distinguish same_abstraction, related or unrelated.',
   read: 'Read authorized daily/digest Markdown with independent 1-based line bounds. Read a matching digest before changing it. Reads add document/source versions to this job dependency set.',
   frontmatter_read: 'Read frontmatter of an authorized daily/digest file. Does not read another workspace or grant permission to change sources.',
-  write: 'Write a complete isolated digest draft. Exactly one target is allowed per unit; CREATE must use the unit bucket. Preserve existing metadata, supporting Sources and related links. Every supplied daily path must appear as a real [[daily/...md]] wikilink in a Sources sentence explaining its support; plain paths and links inside code do not count. Repair rejected drafts before reporting success. Nothing is committed by this tool.',
+  write: 'Write a complete isolated digest draft. Exactly one target is allowed per unit; CREATE must use the unit bucket. Preserve existing metadata, supporting Sources and related links. Cite every supplied daily path with a real [[daily/...md]] wikilink; plain paths and links inside code do not count. Repair rejected drafts before reporting success. Nothing is committed by this tool.',
   edit: 'Replace one unique exact text occurrence in the isolated digest draft. Read the existing digest first. Ambiguous or missing text is rejected; there is no global replacement.',
   frontmatter_update: 'Merge JSON fields into the isolated digest draft frontmatter while preserving its body and unrelated fields. Exactly one target is allowed.',
 }
@@ -56,6 +56,55 @@ export function memoryDocumentLinks(markdown: string): string[] {
   return [...new Set(parseMemoryMarkdown(markdown).links
     .filter(link => readablePath.safeParse(link.path).success)
     .map(link => link.path + (link.anchor === undefined ? '' : `#${link.anchor}`)))]
+}
+
+// Compare parsed frontmatter so reordering YAML keys or changing quoting never changes the decision.
+function metadataValue(metadata: Record<string, unknown>) {
+  return JSON.stringify(metadata, (_key, value: unknown) => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value)
+}
+
+// Limit unreviewed citations to plain read paths and fixed support wording. An arbitrary
+// sentence copied from the Sources section could apply an old exception to a new case.
+function isSourceCitation(line: string, allowed: ReadonlySet<string>, bare = false): boolean {
+  const wikilink = /\[\[([^\]\r\n]+)\]\]/gu
+  const paths = [...line.matchAll(wikilink)]
+  if (!paths.length || paths.some(match => !allowed.has(match[1]!))) return false
+  const template = line.replace(wikilink, '[[source]]').trim()
+  return /^(?:[-*+]\s+)?(?:\[\[source\]\][ ,，、。.]*)+$/u.test(template)
+    || !bare && /^(?:Sources?\s*:\s*|来源[：:]\s*)(?:\[\[source\]\][ ,，、。.]*)+$/iu.test(template)
+}
+
+// Keep the block context from the same lexer as the index. An edit to a fence or
+// a setext underline can change the meaning of identical text on a later line.
+function conclusionLines(body: string) {
+  return lexMemoryMarkdownBody(body.replace(/\r\n?/gu, '\n')).flatMap(block => block.raw.split('\n')
+    .filter(line => line.trim()).map(line => ({ text: line.trimEnd(), block: block.type })))
+}
+
+/** Compare the actual conclusion and metadata with the retained document, independently of the receipt label. */
+export function dreamChangesConclusion(before: string, after: string, dailyPaths: readonly string[]): boolean {
+  const original = parseMemoryDocument(before), proposed = parseMemoryDocument(after)
+  if (metadataValue(original.metadata) !== metadataValue(proposed.metadata)) return true
+  const prior = conclusionLines(original.body)
+  const sources = /^#{1,6}\s+(?:Sources|来源|来源依据)\s*$/iu
+  const allowed = new Set(dailyPaths)
+  let index = 0, inSources = false
+  for (const line of conclusionLines(proposed.body)) {
+    const previous = prior[index]
+    if (line.text === previous?.text && line.block === previous.block) {
+      if (line.block === 'heading') inSources = sources.test(line.text)
+      index++
+    } else if (index === prior.length && !inSources && line.block === 'heading' && sources.test(line.text)) {
+      inSources = true
+    } else if (previous?.block === 'paragraph' && line.block === 'paragraph' && line.text.startsWith(previous.text + ' ')
+      && isSourceCitation(line.text.slice(previous.text.length), allowed, true)) {
+      index++
+    } else if (!inSources || !['paragraph', 'list'].includes(line.block) || !isSourceCitation(line.text, allowed)) {
+      return true
+    }
+  }
+  return index !== prior.length
 }
 
 function metadataSummary(snapshot: DreamDocumentSnapshot) {
@@ -97,8 +146,8 @@ export type DreamDraftResult<S extends DreamDocumentSnapshot> = {
 }
 
 /** Isolated per-unit draft and readset. This module never opens files or invokes the model.
- * Structural link validation is not semantic evidence verification: the caller must review
- * attribution, polarity, time and conditions against canonical user sources before commit. */
+ * The caller independently reviews changes to existing conclusions against canonical user
+ * sources and revalidates the authorized dependency set for every commit. */
 export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, documents, onRead = () => {}, allowsDraftMaterial }: {
   unit: DreamUnit,
   documents: { list(): readonly S[], read(path: string): S | null, locatorRetired?: (path: string) => boolean },
@@ -217,7 +266,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     } catch (error) {
       if (!(error instanceof DreamToolError)) throw error
       const content = error.message === 'memory-dream-unit-source-missing' ? JSON.stringify({ code: error.message,
-        message: 'Cite every required daily path as a real [[workspace-relative/path.md]] wikilink in a meaningful Sources sentence, outside code. Then retry the draft tool.',
+        message: 'Cite every required daily path with a real [[workspace-relative/path.md]] wikilink outside code. Then retry the draft tool.',
         requiredPaths: unit.paths }) : error.message === 'memory-dream-draft-material-unavailable' ? JSON.stringify({ code: error.message,
           message: 'The draft contains unavailable material or an invalid source reference. Do not copy or invent daily session_id/source_conversation metadata into a new digest. Keep backend-issued paths exact, remove unsupported material, and retry the draft tool.' }) : error.message
       return { callId: invocation.callId, state: 'rejected', content, sources: sources() }

@@ -16,6 +16,7 @@ export function createVivaMemoryClient(call: HostMemoryCaller, readBatch: Memory
       const fileProfile = await read('fileProfile', { args: [project] })
       return { profile, onboarding, cleanupPending, revision, fileProfile }
     }, options),
+    dreamStatus: method('dreamStatus'), requestDream: method('requestDream'),
     listFiles: method('listFiles'), readFile: method('readFile'),
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),

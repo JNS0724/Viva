@@ -65,6 +65,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const all = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects ORDER BY rowid')
   const holding = db.prepare('SELECT 1 AS held FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const one = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE kind = ? AND key = ?')
+  const timing = db.prepare('SELECT due_at AS dueAt, attempts, generation FROM effects WHERE kind = ? AND key = ?')
   const rewrite = db.prepare('UPDATE effects SET payload = ? WHERE kind = ? AND key = ? AND generation = ?')
   const runners = new Map<string, Runner>()
   const retries = new Map<string, (attempts: number) => number>()
@@ -239,6 +240,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     finishGeneration,
     holds,
     get,
+    timing: (kind: string, key: string) => timing.get(kind, key) as { dueAt: number, attempts: number, generation: number } | undefined,
     amend,
     cancelStarting,
     list,

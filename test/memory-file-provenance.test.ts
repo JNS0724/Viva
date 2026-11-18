@@ -90,7 +90,7 @@ test('file-bearing foreground and background contexts both require a physical me
     const coordinator = createMemoryCoordination({ dispatch: () => dispatch, runtime: () => ({
       busy: () => false, sourceCurrent: () => true, allowedHistory: () => true, staleSession: () => false,
       sessionProject: () => undefined, recordSessionProject() {}, projectAllows: () => true,
-      provisionalReadsCurrent: () => true, computeAdmission: () => null,
+      computeAdmission: () => null,
     }) })
     assert.equal(coordinator.allowsTransport('file-only', undefined, false, false), false)
     assert.equal(coordinator.allowsTransport('file-only', undefined, false, true), false)

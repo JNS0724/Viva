@@ -38,3 +38,20 @@ test('a card closed during remote authorization cannot reappear, and concurrent 
   assert.equal(await active.answer('once', [{ id: 'c', selected: ['北京'] }]), false)
   finish(); assert.equal(await first, true); assert.equal(delivered, 1)
 })
+
+test('retired Dream questions are declined in both venues while a live question remains answerable', async () => {
+  const sent: object[] = []
+  const desk = createQuestionDesk({ send: message => { sent.push(message) }, emit() {}, sessionId: () => 'main',
+    taskOf: session => session === 'task-session' ? 'task' : null,
+    allowGeneralQuestion: (_session, _questions, waiting) => waiting,
+  })
+  for (const session of ['main', 'task-session']) {
+    const legacy = asked('old-' + session, session)
+    legacy.questions[0].id = 'memory-clarify:file:old-ticket'
+    await desk.receive(legacy)
+    assert.deepEqual(sent.at(-1), { type: 'decline', id: legacy.id })
+    assert.equal(await desk.answer(legacy.id, []), false)
+  }
+  await desk.receive(asked('live', 'main'))
+  assert.equal(await desk.answer('live', [{ id: 'c', selected: ['上海'] }]), true)
+})

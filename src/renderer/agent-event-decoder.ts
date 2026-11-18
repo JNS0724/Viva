@@ -236,7 +236,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'secret_closed') return string(item.requestId) ? { type, context, requestId: item.requestId } : null
   if (type === 'waits') { const parsed = decodeWaits(item); return parsed ? { type, context, ...parsed } : null }
   if (type === 'memory_context') { const injected = list(item.injected, memoryInjection); return injected ? { type, context, injected } : null }
-  if (type === 'report_delivered') return nullableText(item.conversationId) && nullableText(item.sessionId) && string(item.reportId) && string(item.text) && number(item.at) ? { type, context, conversationId: item.conversationId, sessionId: item.sessionId, reportId: item.reportId, text: item.text, at: item.at } : null
+  if (type === 'report_delivered') return nullableText(item.conversationId) && nullableText(item.sessionId) && string(item.reportId) && string(item.text) && number(item.at) ? { type, context, conversationId: item.conversationId, sessionId: item.sessionId, reportId: item.reportId, text: item.text, at: item.at, ...(string(item.beforeSource) && { beforeSource: item.beforeSource }) } : null
   if (type === 'schedule_propose') {
     const proposal = objectOf(item.proposal), rule = scheduleRule(proposal?.rule)
     return proposal && rule && string(proposal.proposalId) && string(proposal.title) && string(proposal.prompt) && string(proposal.firstAt) ? { type, context, proposal: { proposalId: proposal.proposalId, title: proposal.title, prompt: proposal.prompt, firstAt: proposal.firstAt, rule } } : null

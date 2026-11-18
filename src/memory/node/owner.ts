@@ -116,7 +116,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
-    validateDispatch: dispatch.validateCommit, fileClarificationDispatch: dispatch,
+    validateDispatch: dispatch.validateCommit,
     runDocumentMutation: work => fence.mutate(work),
     fileDependencies(session, files, sources) {
       const scope = toolReadScope.getStore()
@@ -202,7 +202,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (contextRecovery.pending(session) || removedSession(session) || nativeSurface.has(session)) return true
     // New native sessions have no old model context to recover, even after a global memory epoch change.
     if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) return false
-    if (runtime.staleSession(session) || dispatch.stale(session) || !runtime.provisionalReadsCurrent(session)) return true
+    if (runtime.staleSession(session) || dispatch.stale(session)) return true
     for (const row of db.prepare(`SELECT p.session FROM owner_session_parents p WHERE p.parent=?
       AND NOT EXISTS(SELECT 1 FROM owner_context_retired_children r WHERE r.parent=p.parent AND r.child=p.session)`).all(session)) {
       const child = String(row.session)
@@ -217,11 +217,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
 
   const operation = (id: string) => db.prepare('SELECT * FROM owner_operations WHERE id=?').get(id) as Operation | undefined
+  function cleanupComplete(item: Operation) {
+    if (item.state !== 'completed') return false
+    const receipt = item.payload ? JSON.parse(item.payload) as { fileOnly?: boolean, result?: MemoryFileMutationResult } : null
+    if (receipt?.fileOnly && receipt.result) return !runtime.deletedFileCleanupPending(receipt.result.identity)
+    return runtime.cleanupPending() === 0 && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
+      && nativeCleanup.complete(item.id)
+  }
   const outcome = (item: Operation): MemoryOperationOutcome => ({ operationId: item.id, state: item.state,
     revision: store.revision(), sendFence: ['prepared', 'host-committed', 'completed'].includes(item.state) ? 'complete' : 'pending',
-    cleanup: item.state === 'completed' && runtime.cleanupPending() === 0
-      && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
-      && nativeCleanup.complete(item.id) ? 'complete' : 'pending' })
+    cleanup: cleanupComplete(item) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
   function reconcileChildren(session: string, visited = new Set<string>()) {
@@ -475,7 +480,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const active = sessionContext(input.sessionId).foregroundTurn
     const sameLiveTurn = Boolean(active && !input.inherited && (!saved || saved.owner_epoch === epoch
       && saved.origin_session === input.sessionId && saved.origin_turn === active))
-    const valid = evidence.turnOnly ? sameLiveTurn && runtime.provisionalReadsCurrent(input.sessionId) && !dispatch.stale(input.sessionId)
+    const valid = evidence.turnOnly ? sameLiveTurn && !dispatch.stale(input.sessionId)
       : dispatch.transferable(evidence)
     if (!coordination.allowsEvidence(evidence, sessionContext(input.sessionId).project) || !valid) throw new Error('Derived dependencies unavailable')
     const canonical = typeof old?.source === 'string' ? old.source : randomUUID()
@@ -487,22 +492,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!saved && input.contentDigest) db.prepare('INSERT INTO owner_message_content VALUES (?,?)').run(input.messageId, hash(input.contentDigest))
       if (input.nativeUserSource && input.contentDigest && (!saved || contentIdentity)) nativeDerived.bind(input.messageId, input.nativeUserSource, input.nativeMessageDigest ? hash(input.nativeMessageDigest) : undefined)
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
-    })
-  }
-  function acceptFileClarification(input: { session: string; contextGeneration: number; questionId: string; text: string; requireShown: boolean },
-    stillCurrent: () => boolean) {
-    const start = sessionContext(input.session)
-    return runtime.answerFileClarification(input, () => sessionContext(input.session), () => {
-      const current = sessionContext(input.session)
-      return state === 'ready' && !hasPending() && stillCurrent() && contextRecovery.contextGeneration(input.session) === input.contextGeneration
-        && current.foregroundTurn === start.foregroundTurn && current.conversation === start.conversation
-        && !contextRecovery.pending(input.session) && coordination.allowsSession(input.session, current.project)
-    }, (sourceId, context) => {
-      db.prepare('INSERT INTO owner_occurrences(session,message,source,conversation,admitted) VALUES (?,?,?,?,1)')
-        .run(input.session, sourceId, sourceId, context.conversation)
-      // The pinned Dream work owns this answer; normal turn ingestion must not
-      // run extraction or create independent daily evidence from the short reply.
-      dispatch.recordSource(input.session, sourceId)
     })
   }
   async function completeTurn(input: CompletedTurn) {
@@ -677,7 +666,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     state = 'ready'
     completeFileEffects()
     if (!hasPending()) await replayWrites()
-    runtime.resumeDocumentClarifications()
     void runtime.wake()
   }
   async function replayWrites() {
@@ -705,8 +693,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const previous = operation(id), fingerprint = hash(command)
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'failed') throw new Error('Memory operation previously failed')
+    if (previous?.state === 'completed') return runtime.profile()
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ command }))
-    return fence.mutate(async () => {
+    const write = async () => {
       try {
         const result = await runtime.setProfile(fields, id)
         db.prepare("UPDATE owner_operations SET state='completed',payload=NULL WHERE id=?").run(id)
@@ -717,10 +706,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         }
         throw error
       }
-    })
+    }
+    // A queued mutation can still change a value that currently matches.
+    if (!fence.blocked()) {
+      const profile = runtime.profile()
+      if (Object.entries(fields).every(([key, value]) => (profile[key]?.value ?? '') === value)) return write()
+    }
+    return fence.mutate(write)
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
-  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string }
+  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string, fileOnly?: true }
   function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
     const sourceIds = new Set(sources.map(ref => ref.sourceId))
     return (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id }) => {
@@ -847,7 +842,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const sources = pending?.sources ?? (command.method === 'forgetFile' || request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
     const sessions = pending?.sessions ?? (command.method === 'forgetFile' ? [] : fileSessions(request.identity, sources))
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint,
-      JSON.stringify({ command, sources, sessions, standaloneSession } satisfies FileWritePayload))
+      JSON.stringify({ command, sources, sessions, standaloneSession, ...(command.method === 'forgetFile' && { fileOnly: true }) } satisfies FileWritePayload))
     let notify = false
     const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
       store.tx(() => {
@@ -864,15 +859,21 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
       })
     }
+    // The result and its file tombstone commit together. Older intent rows predate file-only deletion.
+    const fileOnly = !pending || pending.fileOnly === true
+    const finishForget = (result: MemoryFileMutationResult) => {
+      db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession, ...(fileOnly && { fileOnly: true }) }), id)
+    }
     let readers: FileReaders | undefined
     try {
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
-          : await runtime.forgetFile(command.input.args[0], (result, cuts) => {
+          : !fileOnly ? await runtime.resumeFileRangeErasure(command.input.args[0], (result, cuts) => {
             notify = recordRangeErasure(id, cuts, readers)
-            db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
+            finishForget(result)
           }, () => { readers = currentFileReaders(request.identity.workspace) })
+          : runtime.forgetFile(command.input.args[0], finishForget)
       if (notify) options.onHostEffects?.()
       diagnostics.emit({ event: 'state.changed', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
         stage: 'applied', identities: { requestId: id, ownerEpoch: epoch, resourceId: result.identity.id, generation: result.contentRevision } })
@@ -938,7 +939,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'getOperation': { completeFileEffects(); const item = operation(command.input.operationId); return item ? outcome(item) : null }
       case 'pendingHostEffects': completeFileEffects(); return pendingHostEffects()
       case 'nativeOutputEvidence': return nativeOutputs.outputEvidence(command.input.session, command.input.seq, command.input.digest)
-      case 'cancelFileClarification': return runtime.cancelFileClarification(...command.input.args)
+      case 'cancelFileClarification': return false
       case 'ackHostEffect': {
         const saved = db.prepare('SELECT payload FROM owner_host_effects WHERE id=?').get(command.input.effectId)
         if (!saved) throw new Error('Unknown host effect')
@@ -1002,15 +1003,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     switch (command.method) {
       case 'acceptQuestionAnswer': {
         const input = command.input, sourceId = input.operationId
-        if (input.questionId.startsWith(MEMORY_FILE_QUESTION_PREFIX)) {
-          const context = sessionContext(input.session), turn = context.foregroundTurn
-          const current = turn && runtime.clarificationQuestion(input.session, turn, input.questionId, 'check')
-          if (!current || current.question !== input.question || context.conversation !== input.conversation
-            || context.project?.id !== input.project?.id) throw new Error('Question is no longer authorized')
-          const accepted = await acceptFileClarification({ ...input, contextGeneration: contextRecovery.contextGeneration(input.session), requireShown: true }, () => true)
-          if (!accepted) throw new Error('Question is no longer authorized')
-          return accepted
-        }
+        if (input.questionId.startsWith(MEMORY_FILE_QUESTION_PREFIX)) throw new Error('Question is no longer authorized')
         const existing = store.readSource(sourceId)
         if (existing) {
           if (existing.erasure || existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
@@ -1020,10 +1013,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const context = sessionContext(input.session), turn = context.foregroundTurn
         if (!turn || context.conversation !== input.conversation || context.project?.id !== input.project?.id
           || !coordination.allowsSession(input.session, context.project)) throw new Error('Answer context is unavailable')
-        const clarification = runtime.clarificationQuestion(input.session, turn, input.questionId, 'check')
         const general = [...generalQuestions.values()].some(item => item.session === input.session && item.check()
           && item.cards.some(card => card.id === input.questionId && card.question === input.question))
-        if (!general && (!clarification || clarification.question !== input.question)) throw new Error('Question is no longer authorized')
+        if (!general) throw new Error('Question is no longer authorized')
         store.tx(() => {
           runtime.accept(input.text, { ...context, context: input.context }, sourceId,
             { question: input.question, requestId: input.requestId, questionId: input.questionId, custom: true },
@@ -1035,7 +1027,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         })
         return { sourceId }
       }
-      case 'clarificationQuestion': { const [session, , id, phase] = command.input.args; const turn = sessionContext(session).foregroundTurn; return turn ? runtime.clarificationQuestion(session, turn, id, phase) : null }
+      case 'clarificationQuestion': return null
       case 'authorizeGeneralQuestion': {
         const [session, hostTurn, cards, conversation, context, project, phase] = command.input.args
         const turn = sessionContext(session).foregroundTurn
@@ -1091,6 +1083,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
       case 'useHistory': return coordination.useHistory(...command.input.args)
+      case 'dreamStatus': return runtime.dreamStatus()
+      case 'requestDream': return runtime.requestDream()
       case 'listFiles': return runtime.listFiles(command.input.args[0])
       case 'readFile': return runtime.readFile(...command.input.args)
       case 'fileProfile': return runtime.fileProfile(...command.input.args)
@@ -1099,8 +1093,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'setFileEnabled':
       case 'forgetFile':
       case 'undoFile': return durableFileWrite(command)
-      case 'setOnboarding': return fence.mutate(() => runtime.setOnboarding(...command.input.args))
-      case 'rebuildIndexes': return fence.mutate(() => runtime.rebuildIndexes(...command.input.args))
+      case 'setOnboarding': return runtime.setOnboarding(...command.input.args)
+      case 'rebuildIndexes': return runtime.rebuildIndexes(...command.input.args)
       case 'setProfile': return durableProfileWrite(command)
       case 'provenance': return dispatch.snapshot(...command.input.args)
       case 'authorizedProvenance': {
@@ -1133,8 +1127,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     registerDerived: (input: DerivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId }, metrics: { count: input.sourceIds.length } }),
     sessionContext, handleHost,
-    acceptFileClarification: (...args: Parameters<typeof acceptFileClarification>) => observeDiagnosticAsync(options.diagnostics, 'memory.clarify', () => acceptFileClarification(...args),
-      { identities: { sessionId: args[0].session, requestId: args[0].questionId, generation: args[0].contextGeneration } }),
     rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {
       identities: { sessionId: args[0], requestId: args[1].operationId } }),
     forgetStandaloneFile: (...args: Parameters<typeof forgetStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.forget', () => forgetStandaloneFile(...args), {

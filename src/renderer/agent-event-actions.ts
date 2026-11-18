@@ -18,7 +18,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'task_closed': return { type: 'task_closed', taskId: event.taskId }
       case 'task_snapshot': return { type: 'task_snapshot', snapshot: event.snapshot }
       case 'task_permission_closed': return { type: 'task_permission_closed', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, requestId: event.requestId, at }
-      case 'report_delivered': return { type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at }
+      case 'report_delivered': return { type: 'report_delivered', conversationId: event.conversationId, sessionId: event.sessionId, reportId: event.reportId, text: event.text, at: event.at, ...(event.beforeSource && { beforeSource: event.beforeSource }) }
       case 'reports_removed': return { type: 'reports_removed', reportIds: event.reportIds }
       case 'task_end': return { type: 'task_end', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, stopReason: event.stopReason, message: event.message ?? null, at }
       case 'task_question': return { type: 'task_question', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, questions: event.questions, at }

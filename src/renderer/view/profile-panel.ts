@@ -4,7 +4,7 @@ import { PROFILE_FIELDS } from '../../shared/profile-fields.ts'
 import { h, keepingInput, label } from './dom.ts'
 import { icon } from './icons.ts'
 import type { MemoryFileProfileItem } from '../../memory/contracts/file-management.ts'
-import { deferMemoryFileEditorRender, memoryFilesSection } from './memory-files-panel.ts'
+import { deferMemoryFileEditorRender, memoryFilesSection, memoryLoadError } from './memory-files-panel.ts'
 
 /** The 关于你 page's part of the state (personal-state.ts). */
 type MemoryPage = State['memory']
@@ -71,13 +71,6 @@ function fileSummarySection(scope: 'user' | 'project', items: readonly MemoryFil
     })))
 }
 
-function memoryLoadError(memory: MemoryPage, handlers: Handlers) {
-  return memory.loadError ? h('div', { class: 'profile-section' },
-    h('p', { class: 'form-error', role: 'alert', text: memory.loadError }),
-    h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
-      text: t('memory-files.retry'), onClick: handlers.loadMemory }))) : null
-}
-
 function profileView(memory: MemoryPage, handlers: Handlers): View[] {
   const fileProfile = !memory.loadError && !memory.files.selection && !memory.files.editor ? memory.fileProfile : null
   return [
@@ -90,10 +83,7 @@ function profileView(memory: MemoryPage, handlers: Handlers): View[] {
       habitsRow(memory.habits)),
     fileProfile ? fileSummarySection('user', fileProfile.user, handlers) : null,
     fileProfile ? fileSummarySection('project', fileProfile.project, handlers) : null,
-    memoryLoadError(memory, handlers),
-    memory.files.editor ? memoryFilesSection(memory, handlers) : memory.loadError ? null
-      : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
-      : memoryFilesSection(memory, handlers),
+    memoryFilesSection(memory, handlers),
   ]
 }
 

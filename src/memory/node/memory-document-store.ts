@@ -17,7 +17,7 @@ import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 type Row = { id: string, workspace: string, path: string, revision: string, usage_version: number, enabled: number, forgotten: number, sources: string, corrections: string }
 type Revision = { operation: string, document: string, before: string | null, after: string | null }
 type Mutation = { kind: 'revision', input: string, receipt: DocumentReceipt, before: DocumentSnapshot | null, after: DocumentSnapshot | null, sources: DocumentSourceRef[], reads: DocumentReadRef[], files: Array<{ path: string, revision: string }>, workspace: string, externalEdit?: DocumentExternalEdit, management?: DocumentManagementGuard, manualSource?: MemorySource }
-type Purge = { kind: 'purge', document: string, workspace: string, path: string, expected_revision: string | null, retire_path: number }
+type Purge = { kind: 'purge', fileOnly?: boolean, document: string, workspace: string, path: string, expected_revision: string | null, retire_path: number }
 type LocatorFile = { id: string, workspace: string, path: string, revision: string, kind: 'digest' | 'daily' }
 type LocatorCleanup = Omit<LocatorFile, 'kind'> & { kind: 'locator-cleanup', target: LocatorFile['kind'], projected: string, fingerprints: string[] }
 type Data = Mutation | Purge | LocatorCleanup
@@ -200,6 +200,8 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       if (!unchanged) db.prepare('INSERT INTO memory_document_revisions(operation,document,before,after,at) VALUES(?,?,?,?,?)')
         .run(data.receipt.operationId, data.receipt.documentId, data.before ? encode(data.before) : null, data.after ? encode(data.after) : null, now())
       db.prepare('INSERT INTO memory_document_receipts(operation,input,receipt) VALUES(?,?,?)').run(data.receipt.operationId, data.input, encode(data.receipt))
+      if (data.receipt.action === 'TAG') db.prepare("UPDATE memory_document_tag_attempts SET state='completed',reason=NULL WHERE workspace=? AND operation=?")
+        .run(data.workspace, data.receipt.operationId)
       db.prepare("UPDATE memory_document_deferred SET state='resolved',payload=NULL WHERE operation=? AND workspace=? AND state='ready'").run(data.receipt.operationId, data.workspace)
       if (!unchanged) onCommitted(data.receipt)
     },
@@ -386,23 +388,28 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const management = input.expectedPolicyToken === undefined ? undefined : { policyToken: input.expectedPolicyToken }
     return apply(input, current, after, receipt, current.sources, [], [], management)
   }
+  function restorableFile(item: Restore) {
+    const row = rowById(item.document)
+    if (!row || row.forgotten || row.revision !== item.revision || row.usage_version !== item.usage
+      || !currentSources(item.workspace, JSON.parse(item.sources) as DocumentSourceRef[])) return
+    const file = journal.files(item.workspace).read(item.path)
+    return file && [item.revision, item.written].includes(file.revision) ? file : undefined
+  }
+  const restores = () => db.prepare('SELECT * FROM memory_document_restores').all() as unknown as Restore[]
+  const purges = () => db.prepare('SELECT document,workspace,path,sources,expected_revision,retire_path FROM memory_document_purges').all() as Array<Omit<Purge, 'kind' | 'fileOnly'> & { sources: string }>
+  const purgeable = (purge: Omit<Purge, 'kind'>, revision?: string) =>
+    !revision || purge.expected_revision === null || revision === purge.expected_revision
   function recover() {
     // Only the previously committed, independently sourced body survives an abandoned draft.
     // Its replacement contains no forgotten text; hashes describe the discarded draft without retaining it.
-    for (const item of db.prepare('SELECT * FROM memory_document_restores').all() as unknown as Restore[]) {
-      try {
-        const row = rowById(item.document)
-        if (!row || row.forgotten || row.revision !== item.revision || row.usage_version !== item.usage || !currentSources(item.workspace, JSON.parse(item.sources) as DocumentSourceRef[])) throw new Error('memory-document-restore-stale')
-        const files = journal.files(item.workspace), actual = files.read(item.path)
-        if (!actual || ![item.revision, item.written].includes(actual.revision)) throw new Error('memory-document-restore-conflict')
-        if (actual.revision !== item.revision) files.write(item.path, item.markdown, actual.revision)
-        transaction(db, () => {
-          db.prepare('DELETE FROM memory_document_restores WHERE operation=?').run(item.operation)
-          db.prepare('DELETE FROM memory_file_reservations WHERE owner=?').run(item.operation)
-        })
-      } catch (error) {
-        if (!(error instanceof Error && ['memory-document-restore-stale', 'memory-document-restore-conflict'].includes(error.message))) throw error
-      }
+    for (const item of restores()) {
+      const actual = restorableFile(item)
+      if (!actual) continue
+      if (actual.revision !== item.revision) journal.files(item.workspace).write(item.path, item.markdown, actual.revision)
+      transaction(db, () => {
+        db.prepare('DELETE FROM memory_document_restores WHERE operation=?').run(item.operation)
+        db.prepare('DELETE FROM memory_file_reservations WHERE owner=?').run(item.operation)
+      })
     }
     // Owner management intents must wait for the persisted host withdrawal watermarks.
     // Only an authenticated command replay may apply them under its send fence.
@@ -414,20 +421,25 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       }
     }
     journal.recover(undefined, data => !managed(data))
-    const purges = db.prepare('SELECT document,workspace,path,sources,expected_revision,retire_path FROM memory_document_purges').all() as Array<Omit<Purge, 'kind'> & {sources:string}>
-    for (const purge of purges) {
+    applyPurges(purges())
+    cleanLocatorFiles()
+    checkpointCleanup()
+  }
+  function applyPurges(rows: ReturnType<typeof purges>) {
+    for (const purge of rows) {
       try {
         for (const ref of JSON.parse(purge.sources) as DocumentSourceRef[]) db.prepare('INSERT OR IGNORE INTO memory_document_erasures(source) VALUES(?)').run(ref.id)
         const before = journal.files(purge.workspace).read(purge.path)
         // A prepared CREATE has no accepted ownership of unrelated on-disk bytes.
         // Keep cleanup pending if its physical state cannot be verified.
-        if (before && purge.expected_revision !== null && before.revision !== purge.expected_revision) continue
-        journal.commit(`purge:${purge.document}`, hash(purge), () => ({ workspace: purge.workspace, changes: before ? [fileErasure({ path: purge.path, before: before.markdown, after: null })] : [], data: { ...purge, kind: 'purge' } }))
+        if (!purgeable(purge, before?.revision)) continue
+        journal.commit(`purge:${purge.document}`, hash(purge), () => ({ workspace: purge.workspace, changes: before ? [fileErasure({ path: purge.path, before: before.markdown, after: null })] : [], data: { ...purge, kind: 'purge', fileOnly: purge.sources === '[]' } }))
       } catch (error) {
         if (!(error instanceof Error && ['memory-file-plan-conflict', 'memory-file-plan-busy'].includes(error.message))) throw error
       }
     }
-    cleanLocatorFiles()
+  }
+  function checkpointCleanup() {
     if (db.prepare('SELECT 1 FROM memory_document_erasures LIMIT 1').get() && truncateMemoryJournal(db)) {
       db.prepare('DELETE FROM memory_document_erasures').run()
     }
@@ -915,7 +927,8 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     return rowById(value.documentId)?.workspace === scope ? value : null
   }
   function hasPendingCleanup(sourceId: string): boolean {
-    return Boolean(db.prepare("SELECT 1 FROM memory_document_erasures WHERE source=? OR source LIKE 'locators:%'").get(sourceId))
+    return Boolean(db.prepare("SELECT 1 FROM memory_document_erasures WHERE source IN (?,?) OR source LIKE 'locators:%'").get(sourceId, `file:${sourceId}`)
+      || db.prepare("SELECT 1 FROM memory_document_purges WHERE document=? AND sources='[]'").get(sourceId))
       || locatorCopiesPending(false) || (db.prepare('SELECT removed FROM memory_document_restores').all() as Array<{removed:string}>).some(row => (JSON.parse(row.removed) as string[]).includes(sourceId)) || (db.prepare('SELECT sources FROM memory_document_purges').all() as Array<{sources: string}>).some(row => (JSON.parse(row.sources) as DocumentSourceRef[]).some(ref => ref.id === sourceId))
   }
   function tagAttempt(scope: string, operation: string): DocumentTagAttempt | null {
@@ -924,6 +937,15 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (!row) return null
     const { reason, ...rest } = row
     return { ...rest, ...(reason ? { reason } : {}) }
+  }
+  function settleInterruptedTagAttempts() {
+    transaction(db, () => {
+      // Older versions could record a failure after the document commit already succeeded.
+      db.prepare(`UPDATE memory_document_tag_attempts SET state='completed',reason=NULL WHERE state<>'completed'
+        AND EXISTS (SELECT 1 FROM memory_document_receipts r WHERE r.operation=memory_document_tag_attempts.operation
+          AND json_extract(r.receipt,'$.action')='TAG')`).run()
+      db.prepare("UPDATE memory_document_tag_attempts SET state='failed',reason=coalesce(reason,'interrupted') WHERE state='attempted'").run()
+    })
   }
   function recordTagAttempt(input: DocumentTagAttempt) {
     workspace(input.workspace)
@@ -941,6 +963,28 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     db.prepare('INSERT INTO memory_document_tag_attempts(operation,workspace,path,revision,state,reason) VALUES(?,?,?,?,?,?)')
       .run(input.operationId, input.workspace, input.path, input.revision, input.state, input.reason ?? null)
   }
+  function deleteFile(scope: string, id: string, expectedUsageVersion: number) {
+    return transaction(db, () => {
+      const row = rowById(id)
+      if (!row || row.workspace !== scope || row.usage_version !== expectedUsageVersion || !journal.visible(scope, row.path)) throw new Error('memory-document-version')
+      if (!row.forgotten) {
+        // A local deletion owns only this revision. Sibling documents may share all its evidence.
+        db.prepare("INSERT INTO memory_document_purges(document,workspace,path,sources,expected_revision) VALUES(?,?,?,'[]',?)")
+          .run(id, scope, row.path, row.revision)
+      }
+      // Other files still need to know their old assertions were superseded.
+      const supersessions = correctionsOf(row).filter(item => item.sourceDocumentId !== id)
+        .map(item => ({ ...item, text: '', condition: '', time: '' }))
+      db.prepare("UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources='[]',corrections=? WHERE id=?")
+        .run(encode(supersessions), id)
+      db.prepare('UPDATE memory_document_revisions SET before=NULL,after=NULL WHERE document=?').run(id)
+      db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(scope, row.path)
+      db.prepare('DELETE FROM memory_document_aliases WHERE document=?').run(id)
+      db.prepare('INSERT OR IGNORE INTO memory_document_erasures VALUES(?)').run(`file:${id}`)
+      useRestrictions.removeTarget({ kind: 'digest', workspace: scope, key: id })
+      return row.usage_version + 1
+    })
+  }
   function sourceRestrictions(scope: string, except?: string): DocumentSourceRef[] {
     workspace(scope)
     const refs = [...erasures(scope), ...useRestrictions.sources(scope, except ? { kind: 'digest', workspace: scope, key: except } : undefined)]
@@ -948,12 +992,20 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   const pendingCleanup = () => Number((db.prepare('SELECT (SELECT COUNT(*) FROM memory_document_purges)+(SELECT COUNT(*) FROM memory_document_restores)+(SELECT COUNT(*) FROM memory_document_erasures) count').get() as { count: number }).count) + Number(locatorCopiesPending())
   function needsRecovery() {
-    if (pendingCleanup() > 0) return true
-    return (db.prepare("SELECT plan FROM memory_file_intents WHERE namespace='documents' AND plan IS NOT NULL").all() as Array<{ plan: string }>)
-      .some(row => !managed((JSON.parse(row.plan) as FilePlan<Data>).data))
+    return journal.needsRecovery(data => !managed(data) && !(data.kind === 'purge' && data.fileOnly)) || restores().some(item => restorableFile(item))
+      || purges().some(item => {
+        if (item.sources === '[]' || journal.state(`purge:${item.document}`)) return false
+        const file = journal.files(item.workspace).read(item.path)
+        return purgeable(item, file?.revision) && (!file || journal.visible(item.workspace, item.path))
+      })
+      || locatorCopiesPending()
   }
   if (!deferRecovery) recover()
   return {
+    retireClarifications() {
+      db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE state IN ('pending_clarification','ready')").run()
+    },
+    retiredClarification: (scope, id) => Boolean(db.prepare("SELECT 1 FROM memory_document_deferred WHERE workspace=? AND operation=? AND state='expired'").get(scope, id)),
     reconcileRename, reconcileEdit, acceptedSnapshot,
     reconciliationState: (operationId, kind) => kind === 'edit' ? journal.state(operationId) : db.prepare('SELECT 1 FROM memory_document_renames WHERE operation=?').get(operationId) ? 'done' : undefined,
     aliases: scope => db.prepare('SELECT path,document AS id FROM memory_document_aliases WHERE workspace=?').all(scope)
@@ -962,12 +1014,16 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, sources: refsOf(row), state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),
     workspaces: () => db.prepare('SELECT DISTINCT workspace FROM memory_documents').all().map(row => String(row.workspace)),
-    needsRecovery, recover,
+    needsRecovery, recover, checkpointCleanup,
+    recoverDeletedFiles: () => applyPurges(purges().filter(row => row.sources === '[]')),
+    deletedFileCleanupPending: (scope: string, id: string) => Boolean(rowById(id)?.workspace === scope
+      && (db.prepare("SELECT 1 FROM memory_document_purges WHERE document=? AND sources='[]'").get(id)
+        || db.prepare('SELECT 1 FROM memory_document_erasures WHERE source=?').get(`file:${id}`))),
     recoverManagement(operationId) {
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
-    sourceRestrictions, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
-    read, list, commit, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
+    sourceRestrictions, settleInterruptedTagAttempts, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
+    read, list, commit, deleteFile, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
   }
 }

@@ -167,6 +167,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   diagnosticsStatus: () => ipcRenderer.invoke('diagnostics:status'),
   clearDiagnostics: () => ipcRenderer.invoke('diagnostics:clear'),
   debugDiagnostics: (enabled) => ipcRenderer.invoke('diagnostics:debug', enabled),
+  getDreamStatus: () => ipcRenderer.invoke('memory:dream-status'),
+  runDream: () => ipcRenderer.invoke('memory:run-dream'),
   listMemoryFiles: (request) => ipcRenderer.invoke('memory:list-files', request),
   readMemoryFile: (identity, restrictionId) => ipcRenderer.invoke('memory:read-file', identity, restrictionId),
   setMemoryFileEnabled: (request) => ipcRenderer.invoke('memory:set-file-enabled', request),

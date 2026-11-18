@@ -1,3 +1,4 @@
+import type { MemoryDreamStatus } from './dream-status.ts'
 import { z } from 'zod'
 import { memoryProvenanceSchema, type MemoryErasureEvidence } from './provenance.ts'
 import type { MemoryProvenance } from './records.ts'
@@ -28,6 +29,8 @@ export type SourceChangeInput = { operationId: string, conversation: string, ids
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
+  dreamStatus: Args<[], MemoryDreamStatus>
+  requestDream: Args<[], MemoryDreamStatus>
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
   readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
   setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
@@ -70,7 +73,7 @@ export interface HostMemoryApi {
   replaySources: Args<[sources: readonly string[], text: string, project?: MemoryProject], boolean>
   bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string, wireSpans?: TextSpan[]], { wireText: string }>
   cancelFileClarification: Args<[session: string, questionId: string], boolean>
-  clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check'], HostMemoryQuestion | null>
+  clarificationQuestion: Args<[session: string, turn: string, id: string, phase: 'show' | 'check', interjections?: readonly string[]], HostMemoryQuestion | null>
   authorizeGeneralQuestion: Args<[session: string, turn: string, cards: readonly HostQuestionCard[], conversation: string | null, context: MemoryScope, project?: MemoryProject, phase?: 'show' | 'check'], boolean>
   acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, question: string, requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
   sourceAlias: { input: MemorySourceAlias, output: { sourceId: string } }
@@ -102,7 +105,7 @@ const empty = args(z.tuple([]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
-  profile: empty,
+  profile: empty, dreamStatus: empty, requestDream: empty,
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
@@ -124,7 +127,7 @@ export const hostMemoryInputSchemas = {
   replaySources: args(z.tuple([z.array(key), text, project.optional()])),
   bindWireAlias: args(z.tuple([key, text, text, key.optional(), wireSpans])),
   cancelFileClarification: args(z.tuple([key, key])),
-  clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check'])])),
+  clarificationQuestion: args(z.tuple([key, key, key, z.enum(['show', 'check']), z.array(key).optional()])),
   authorizeGeneralQuestion: args(z.tuple([key, key, z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })), key.nullable(), scope, project.optional(), z.enum(['show', 'check']).optional()])),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, question: text, requestId: key, questionId: key, context: scope, project: project.optional() }),
   sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), wireSpans, context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),
