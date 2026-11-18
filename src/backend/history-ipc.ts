@@ -190,6 +190,14 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     return deps.readNativeTrace ? deps.readNativeTrace(sessions, read) : read(sessions)
   })
 
+  handle('history:model-request', (conversationId, sessionId, turn, step) => {
+    const owner = assertId(conversationId)
+    const session = assertId(sessionId)
+    if (!db.sessionIds(owner).includes(session) || !Number.isSafeInteger(turn) || !Number.isSafeInteger(step) || turn < 1 || step < 1) return null
+    const read = (visible: readonly string[]) => visible.includes(session) ? traceDb?.()?.callOf(session, turn, step) ?? null : null
+    return deps.readNativeTrace ? deps.readNativeTrace([session], read) : read([session])
+  })
+
   handle('history:rename', (id, title) => db.rename(id, title))
   handle('history:pin', (id, pinned) => db.setPinned(id, pinned === true))
   handle('history:delete', (id) => {

@@ -4,9 +4,6 @@
  * record them live and the app can still read sessions from before the plugin existed. Pure.
  */
 const MAX_TEXT_CHARS = 4000
-const MAX_ARGS_CHARS = 2000
-/** When the arguments are too big to keep (file contents, long commands), only short values survive. */
-const MAX_KEPT_VALUE_CHARS = 200
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
@@ -19,20 +16,12 @@ function parsedArguments(raw: unknown): Record<string, unknown> {
   }
 }
 
-/** The call's arguments, small enough to store: whole when short, else just their short scalar values. */
-export function keptArguments(raw: unknown): Record<string, unknown> {
-  const args = parsedArguments(raw)
-  if (JSON.stringify(args).length <= MAX_ARGS_CHARS) return args
-  return Object.fromEntries(Object.entries(args).filter(([, value]) => (typeof value === 'string'
-    ? value.length <= MAX_KEPT_VALUE_CHARS
-    : typeof value === 'number' || typeof value === 'boolean')))
-}
-
 const reasoningOf = (message: { content?: Array<{ type: string, text?: string }> } | undefined) => (message?.content ?? [])
   .filter((part) => part.type === 'reasoning').map((part) => part.text ?? '').join('')
 
 type ThoughtStep = { seq: number, at: number, kind: 'thought', text: string }
-type ToolStep = { seq: number, at: number, kind: 'tool', callId: string, name: string, args: object, status: string }
+type ToolResult = { content?: unknown, error?: unknown, meta?: unknown }
+type ToolStep = { seq: number, at: number, kind: 'tool', callId: string, name: string, args: object, status: string, result?: ToolResult }
 export type Step = ThoughtStep | ToolStep
 
 /** @param events oldest first */
@@ -46,10 +35,11 @@ export function stepsFrom(events: Array<{ type: string, seq: number, time: numbe
       if (text) steps.push({ seq, at: time, kind: 'thought', text: clip(text, MAX_TEXT_CHARS) })
     } else if (type === 'tool/call' && data.callId) {
       toolAt.set(data.callId, steps.length)
-      steps.push({ seq, at: time, kind: 'tool', callId: String(data.callId), name: String(data.name ?? ''), args: keptArguments(data.arguments), status: 'in_progress' })
+      steps.push({ seq, at: time, kind: 'tool', callId: String(data.callId), name: String(data.name ?? ''), args: parsedArguments(data.arguments), status: 'in_progress' })
     } else if (type === 'tool/result') {
       const index = toolAt.get(data.message?.toolCallId)
-      if (index !== undefined) steps[index] = { ...(steps[index] as ToolStep), status: data.message.isError ? 'failed' : 'completed' }
+      if (index !== undefined) steps[index] = { ...(steps[index] as ToolStep), status: data.message.isError ? 'failed' : 'completed',
+        result: { content: data.message.content, error: data.error, meta: data.meta } }
     }
   }
   return steps

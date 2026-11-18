@@ -89,6 +89,7 @@ export interface IpcResults {
   'task:finished': KeptTask[]
   /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
   'agent:waits': true
+  'history:model-request': import('./trace.ts').ModelCallDetail | null
   'task:close': void
   'task:stop': void
   'memory:list-files': MemoryFileListResult

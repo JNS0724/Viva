@@ -88,9 +88,26 @@ export function decodeWaits(value: unknown): ForegroundWaits | null {
   return permissions && questions && secrets ? { permissions, questions, secrets } : null
 }
 const ignoredUpdates = ['user_message_chunk', 'plan', 'plan_update', 'plan_removed', 'available_commands_update', 'current_mode_update', 'config_option_update', 'session_info_update', 'notice', 'compaction_update', 'compaction_summary_chunk', 'subagent_update', 'session_message', 'session_message_chunk'] as const
+function decodeModelCall(value: unknown): import('../shared/trace.ts').ModelCallSummary | null {
+  const call = objectOf(value)
+  const metric = (item: unknown): item is number | null => item === null || natural(item)
+  if (!call || !string(call.sessionId) || !natural(call.turn) || !natural(call.step) || !natural(call.at)
+    || !string(call.provider) || !string(call.model) || !natural(call.attempts)
+    || (call.status !== 'running' && call.status !== 'completed' && call.status !== 'failed')
+    || !metric(call.inputTokens) || !metric(call.outputTokens) || !metric(call.durationMs)) return null
+  return {
+    sessionId: call.sessionId, turn: call.turn, step: call.step, at: call.at, status: call.status,
+    provider: call.provider, model: call.model, attempts: call.attempts,
+    inputTokens: call.inputTokens, outputTokens: call.outputTokens, durationMs: call.durationMs,
+  }
+}
 export function decodeUpdate(value: unknown): ConversationUpdate | null {
   const item = objectOf(value)
   if (!item) return null
+  if (item.sessionUpdate === 'viva_model_call') {
+    const call = decodeModelCall(item.call)
+    return call ? { sessionUpdate: item.sessionUpdate, call } : null
+  }
   if (item.sessionUpdate === 'agent_message_chunk' || item.sessionUpdate === 'agent_thought_chunk') {
     const content = objectOf(item.content)
     if (content?.type === 'text') return string(content.text) ? { sessionUpdate: item.sessionUpdate, content: { type: 'text', text: content.text } } : null
@@ -102,7 +119,7 @@ export function decodeUpdate(value: unknown): ConversationUpdate | null {
     if (!string(item.toolCallId) || !optional(item.title, nullableText) || !optional(item.kind, nullableText) || !optional(item.status, nullableText)) return null
     const locations = item.locations === undefined || item.locations === null ? item.locations : list(item.locations, value => { const row = objectOf(value); return row && string(row.path) && optional(row.line, (v): v is number | null => v === null || natural(v)) ? { path: row.path, line: row.line } : null })
     if (item.locations !== null && locations === null) return null
-    return { sessionUpdate: item.sessionUpdate, toolCallId: item.toolCallId, title: item.title, kind: item.kind, status: item.status, rawInput: item.rawInput, locations }
+    return { sessionUpdate: item.sessionUpdate, toolCallId: item.toolCallId, title: item.title, kind: item.kind, status: item.status, rawInput: item.rawInput, rawOutput: item.content, locations }
   }
   if (item.sessionUpdate === 'usage_update') return number(item.used) && number(item.size) ? { sessionUpdate: item.sessionUpdate, used: item.used, size: item.size } : null
   if (item.sessionUpdate === 'viva_stream') {

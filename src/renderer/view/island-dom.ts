@@ -132,50 +132,6 @@ function headParts(view: IslandShown, { host, now, tools, shortcut }: { host: Ho
   }
 }
 
-const button = (text: string, cls: string, onClick: () => void) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
-/** Buttons by role (prompt-card.js), as on the thread's card: the main one filled, the others outlined, the least a link. */
-const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string } = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
-
-/**
- * Whether the form has something to unfold: on the desktop only what opens by itself, in the title bar the
- * steps and the tasks in the background.
- */
-function hasPanel(view: IslandShown) {
-  const tasks = Boolean(view.background?.items.length)
-  return !NEEDS_USER.has(view.form) && (view.recent.length > 0 || tasks)
-}
-
-/** The title bar's panel. Each region owns its nodes: summaries may change while an action stays valid. */
-function createPanelParts(act: IslandAct) {
-  const background = createBackgroundSection(act)
-  const steps = h('ol', { class: 'isl-steps' })
-  const stop = button('', 'isl-btn-line', () => act({ kind: 'cancel' }))
-  const trace = button('', ROLE.text, () => act({ kind: 'trace' }))
-  const actions = h('div', { class: 'isl-actions' })
-  let stepsKey = ''
-  return (view: IslandShown, now: number): View[] => {
-    const section = background.update(view, now)
-    const nextSteps = JSON.stringify(view.recent)
-    if (nextSteps !== stepsKey) {
-      stepsKey = nextSteps
-      steps.replaceChildren(...view.recent.map(step => h('li', { 'data-tone': step.tone, text: step.title })))
-    }
-    stop.textContent = t('island-dom.stop')
-    trace.textContent = t('island-dom.view.full.activity')
-    reconcileChildren(actions, view.form === 'working' ? [stop, trace] : [trace])
-    return [...(view.recent.length ? [steps, actions] : []), ...(section ? [section] : [])]
-  }
-}
-
-/**
- * A click on the head. On the desktop: the resting cat takes a question, anything else opens the window.
- * In the title bar it unfolds the steps, or, when the agent waits on the user, goes to the card.
- */
-function headAction(view: IslandShown, unfolds: boolean): { kind: string } | null {
-  if (NEEDS_USER.has(view.form)) return { kind: 'jump' }
-  return unfolds ? { kind: 'toggle' } : null
-}
-
 /**
  * What an update has to redraw. The row (head and tools) follows the pointer as well; the panel does not, so
  * the tools appearing under a resting pointer leave its buttons alone: one held down meanwhile is the one
@@ -185,8 +141,18 @@ export function islandSignatures(view: IslandShown, open: boolean, showTools: bo
   const panel = JSON.stringify([view, open])
   const { count = 0, alsoWaiting = 0 } = view.background ?? {}
   const row = JSON.stringify([view.form, view.tone, view.label, view.action, view.detail, view.task,
-    view.startedAt, view.steps, view.elapsedMs, hasPanel(view), Boolean(view.background), count, alsoWaiting, open, showTools])
+    view.startedAt, view.steps, view.elapsedMs, Boolean(view.background), count, alsoWaiting, open, showTools])
   return { panel, row }
+}
+
+const button = (text: string, cls: string, onClick: () => void) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
+const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string } = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
+
+export function barBackgroundView(view: IslandShown): IslandShown {
+  if (NEEDS_USER.has(view.form)) return view
+  const count = view.background?.count ?? 0
+  return { ...view, form: 'idle', tone: view.background?.waiting ? 'waiting' : 'idle', label: t('island-tasks.background'),
+    detail: count ? t('island-dom.background.active', { count }) : t('island-dom.background.empty'), recent: [] }
 }
 
 /** options: the desktop's input, and the ask shortcut as the user presses it */
@@ -197,49 +163,41 @@ function createBarIsland(act: IslandAct) {
   const head = h('button', { type: 'button', class: 'isl-head' })
   const tools = h('span', { class: 'isl-tools' })
   const row = h('div', { class: 'isl-row' }, head, tools)
-  const panel = h('div', { class: 'isl-panel' })
-  const clip = h('div', { class: 'isl-clip' }, row, panel)
+  const clip = h('div', { class: 'isl-clip' }, row)
   const el = h('div', { class: 'isl', 'data-host': 'bar' }, clip, face)
-  const parts = createPanelParts(act)
   const tail = createTailCell()
-  const inner = h('div', { class: 'isl-in' })
   let signature = { panel: '', row: '' }
   let onHead: { kind: string } | null = null
   head.addEventListener('click', event => {
     if ((event.target as Element).closest('.isl-bg')) act({ kind: 'tasks' })
     else if (onHead) act(onHead)
   })
-  function layout(open: boolean) {
+  function layout() {
     head.style.width = 'max-content'
-    // Measure the new content without capping it to the capsule's previous width.
     head.style.maxWidth = 'none'
     queueLayout(el, () => {
       if (!el.isConnected) return
       const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
       const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
       const bare = !head.childElementCount && !toolsWidth
-      const headWidth = Math.min(bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth, size.maxHead, room)
-      const inner = open ? Math.min(size.panel - BORDER, room) : headWidth
+      const width = Math.min(bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth, size.maxHead, room)
       return () => {
-        head.style.width = `${Math.max(inner - toolsWidth, 0)}px`
+        head.style.width = `${Math.max(width - toolsWidth, 0)}px`
         head.style.maxWidth = ''
-        panel.style.width = `${inner}px`; el.style.width = `${inner + BORDER}px`
-        if (!open) el.style.height = `${size.head}px`
-        else queueLayout(panel, () => {
-          const height = size.head + panel.scrollHeight
-          return () => { if (el.dataset.open === 'true') el.style.height = `${height}px` }
-        })
+        el.style.width = `${width + BORDER}px`
+        el.style.height = `${size.head}px`
       }
     })
   }
-  function update(view: IslandShown, { now = Date.now(), pinned = false } = {}) {
+  function update(input: IslandShown, { now = Date.now(), pinned = false } = {}) {
+    const view = barBackgroundView(input)
     const portrait = maidFor(maids, 'bar', maidMood(view.mood, view.tone), { size: BAR_FACE_PX, framing: 'face', moving: !view.still })
     showMaid(face, portrait)
-    const unfolds = hasPanel(view), open = unfolds && pinned
+    const open = false
     const next = islandSignatures(view, open, false)
     next.row = `${localeRevision()}:${next.row}`; next.panel = `${localeRevision()}:${next.panel}`
-    const rowChanged = next.row !== signature.row, panelChanged = next.panel !== signature.panel
-    if (!rowChanged && !panelChanged) {
+    const rowChanged = next.row !== signature.row
+    if (!rowChanged) {
       const clock = head.querySelector('.isl-time')
       if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
       return
@@ -249,20 +207,13 @@ function createBarIsland(act: IslandAct) {
     if (rowChanged) {
       reconcileChildren(head, [...headParts(view, { host: 'bar', now, tools: false, shortcut: '' }), tail.update(view)]
         .filter((part): part is NonNullable<typeof part> => Boolean(part)))
-      onHead = headAction(view, unfolds)
-      head.disabled = !onHead && !view.background
+      onHead = NEEDS_USER.has(view.form) ? { kind: 'jump' } : { kind: 'tasks' }
+      head.disabled = !onHead
       head.setAttribute('aria-label', [view.label, view.action ?? safeDetail(view)].filter(Boolean).join('：'))
       if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
       else head.removeAttribute('aria-expanded')
     }
-    if (panelChanged) {
-      if (open) {
-        reconcileChildren(inner, parts(view, now).filter((part): part is HTMLElement => part instanceof HTMLElement))
-      }
-      reconcileChildren(panel, open ? [inner] : [])
-      panel.inert = !open
-    }
-    layout(open)
+    layout()
   }
   return { el, update, setPointer(_on: boolean) {} }
 }

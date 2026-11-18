@@ -115,7 +115,7 @@ flowchart TB
 | `app.db` | `app_events`、`meta`；定时（`schedules`，以及还没跑完的 `schedule_runs`）和动态的条目（`feed_items`）；历史（`conversations`、`messages` 及全文索引、`stars`）；留给下次启动的后台任务（`background_tasks`）；还要在外面做的事（`effects`，§11.4）；对话里的结果记录（`report_records`，§11.5）；主对话的请求、决策和动作（`routing_requests`、`routing_decisions`、`routing_actions`，见[路由设计](agent-routing-design.zh-CN.md)第 12 节） | 后端 | 和写入在同一个事务里 |
 | `memory/memory.db` | 核验过的原文与版本、文档目录和来源映射、操作与变更回执、停用和遗忘记录、daily/dream 工作、检索索引及副本清理凭证 | 记忆插件持有的 Node owner | 提交后通过宿主通道通知 Viva，再发布带 revision 的 `memory.changed` |
 | `memory/memory-files/` | 按 workspace 隔离的会话记录、`daily/` 笔记与日索引、`digest/` Markdown 文档 | Node 文件适配器，经文档 journal 写入 | journal 协调文件发布与 SQLite 回执，崩溃后恢复 |
-| `trace.db` | 每轮的“过程”：工具调用和思考 | 过程插件（dsh 进程） | 无 |
+| `trace.db` | 每轮的“过程”：工具调用、思考和每次模型调用的完整提示词 | 过程插件（dsh 进程） | 无 |
 | `settings.json`、`models.json`、`mcp-servers.json`、`preferences.json` | key、模型提供方、MCP 服务器、偏好 | 后端 | 无 |
 | `data-key.bin` | 加密 key 用的数据密钥，由系统钥匙串加密 | 外壳 | 无 |
 
@@ -142,7 +142,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | 约定 | 插件做什么 |
 | --- | --- |
 | `memory` | 独立 owner、会话摄取、文件写入/遗忘/检索、daily/dream、上下文注入、请求屏障与原生副本恢复；宿主通道供 Viva 客户端访问 |
-| `trace` | 把每轮的工具调用和思考记进 `trace.db` |
+| `trace` | 把每轮的工具调用、思考和模型请求记进 `trace.db` |
 | `tasks` | 后台任务的查询工具（`list_background_tasks`、`get_background_task`）和定时的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`）；由后端去做，范围由后端按工作目录和会话限定，不由工具参数决定。开始、停止任务和给任务发话不是工具，由主会话的路由决定交给后端去做（§11.1） |
 | `history` | 让模型查以前的对话 |
 | `stream` | `viva-routing`：主会话的请求路由（[路由设计](agent-routing-design.zh-CN.md)）。把主会话收窄到路由、上下文和应用设置的工具，并换上主会话的人设；`commit_route` 的决定交给后端（`request-runtime.ts`）接受和执行；只显示获准回答的文字。它同时是回答流式内容交给应用的唯一途径 |
@@ -164,7 +164,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 **约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 8 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在「能力」页。过程库记录 `meta.contract_version`。记忆 Node 存储在 owner 打开数据库前检查 SQLite `user_version`，不匹配就拒绝。
 
-**各插件用到的 dsh 接口。** `memory`：会话与 projection、agent/pre-step、原生工具执行与 PTC 事件、用户问题、llm 传输、持久化和 spill 服务；`trace`：agent/turn-stopping、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager；`mcp`：ctx.mcpManager（register、list、restart）、mcp-manager/status。可选功能失败可以降级，但记忆 owner 不可用或请求依赖未核验时，受影响的模型请求必须等待恢复或明确失败，不能以“省略记忆”绕过屏障。
+**各插件用到的 dsh 接口。** `memory`：会话与 projection、agent/pre-step、原生工具执行与 PTC 事件、用户问题、llm 传输、持久化和 spill 服务；`trace`：agent/turn-stopping、agent/assistant-stream、session/event、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager；`mcp`：ctx.mcpManager（register、list、restart）、mcp-manager/status。可选功能失败可以降级，但记忆 owner 不可用或请求依赖未核验时，受影响的模型请求必须等待恢复或明确失败，不能以“省略记忆”绕过屏障。
 
 **会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，120 秒没用就作废。会话不带自己的 MCP 服务器：用户的服务器由 `viva-mcp` 交给 dsh 的 MCP 管理器，整个 dsh 只连一次、各会话共用（单例服务器也只起一个进程）。连接在后台进行，每次尝试最多 30 秒，失败按退避自动重连；一个服务器卡住或坏掉只会让它自己的工具暂时没有，不会拖住会话的创建，也就不会拖慢 commit_route 交给后台任务。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
 

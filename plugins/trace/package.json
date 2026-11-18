@@ -16,7 +16,7 @@
   },
   "viva": {
     "contract": {
-      "trace": 1
+      "trace": 2
     }
   }
 }

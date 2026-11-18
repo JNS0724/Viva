@@ -1,6 +1,7 @@
 import type { SessionWaits } from '../shared/ipc-results.ts'
 import { diagnosticHub } from '../diagnostics/node/hub.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
+import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
@@ -263,6 +264,17 @@ export function createAcpBridge({
     proc.on('message', (message) => {
       if (diagnostics?.receive(message)) return
       if (disposed) return
+      const traceMessage = objectOf(message)
+      if (traceMessage?.type === 'trace_model_call' && traceMessage.version === 1 && typeof traceMessage.sessionId === 'string') {
+        const id = traceMessage.sessionId
+        const update = { sessionUpdate: 'viva_model_call', call: traceMessage.call }
+        if (taskSessions.has(id)) emit({ type: 'task_update', taskId: id, update })
+        else if (id === sessionId) {
+          const context = operations.context(id) ?? contextFor(id)
+          if (!conversationContext || context) emit({ type: 'update', sessionId: id, update, ...scoped(context) })
+        }
+        return
+      }
       void questions.receive(message).catch(error => { console.error('[questions] owner authorization failed', error); questions.declineAll() })
       config?.receive(message)
       steering.receive(message)

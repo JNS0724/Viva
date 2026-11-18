@@ -218,22 +218,19 @@ async function checkRelaunch(win: SmokeWindow, outDir: string) {
   return failures
 }
 
-/** Clicked, the title bar's island unfolds its steps over the conversation, not under it. */
-async function checkIslandOnTop(win: SmokeWindow, outDir: string) {
+/** The title-bar capsule opens background work without unfolding an activity panel. */
+async function checkBackgroundEntry(win: SmokeWindow, outDir: string) {
   await run(win, `document.querySelector('#island .isl-head').click()`)
-  await wait(UI_WAIT_MS)
+  await until(win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the background page from the title bar')
   const seen = await run(win, `(() => {
     const island = document.querySelector('#island .isl')
-    const steps = island?.querySelector('.isl-steps')
-    if (!steps) return { open: false, form: island?.dataset.form ?? null }
-    const box = steps.getBoundingClientRect()
-    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
-    return { open: island.dataset.open === 'true', onTop: island.contains(hit), rows: steps.children.length, hit: hit?.className ?? '' }
+    return { open: island.dataset.open === 'true', panel: Boolean(island.querySelector('.isl-panel')),
+      page: document.getElementById('tasks-page').dataset.open === 'true' }
   })()`)
-  await capture(win, outDir, 'island-panel')
-  await run(win, 'document.body.click()')
+  await capture(win, outDir, 'background-entry')
+  await run(win, `document.getElementById('hub-back').click()`)
   await wait(UI_WAIT_MS)
-  return seen.open && seen.onTop && seen.rows > 0 ? [] : [`the island's steps should unfold on top of the thread: ${JSON.stringify(seen)}`]
+  return !seen.open && !seen.panel && seen.page ? [] : [`the title bar should open background work without unfolding activity: ${JSON.stringify(seen)}`]
 }
 
 const DESK_ISLAND_STATE = `(() => {
@@ -283,7 +280,7 @@ async function walkthrough(win: SmokeAppWindow, outDir: string, hooks: SmokeHook
   await capture(win, outDir, 'chat')
   const failures = [...await checkLayouts(win, outDir), ...await checkDeskIsland(win, outDir, hooks.desk?.())]
   await finishTurn(win)
-  failures.push(...await checkIslandOnTop(win, outDir))
+  failures.push(...await checkBackgroundEntry(win, outDir))
   failures.push(...await checkLongTask(win, outDir))
   await finishTurn(win)
   failures.push(...await checkFiles(win, outDir, hooks.cwd))

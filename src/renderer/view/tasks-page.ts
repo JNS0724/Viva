@@ -8,6 +8,8 @@ import { icon } from './icons.ts'
 import { standing, statusMark } from './task-card.ts'
 import { renderThread, type ThreadView } from './thread.ts'
 import { queueLayout, reconcileChildren } from './reconcile.ts'
+import { traceNode } from './drawer.ts'
+import { renderTraceDetail, type TraceItem, type DetailHandlers } from './trace-detail.ts'
 
 /**
  * The 后台 page: every background task on the left, grouped by where it stands, with the follow-ups among them
@@ -129,6 +131,8 @@ export function threadState(state: State, task: BackgroundTask): ThreadView {
 const scopedHandlers = (handlers: Handlers, task: BackgroundTask): Handlers => ({
   ...handlers,
   openDrawer: () => handlers.openTaskSteps(),
+  openTraceDetail: (item: TraceItem) => handlers.openTraceDetail(item, task.segmentId),
+  closeDrawer: () => { handlers.closeTraceDetail(); handlers.closeHub() },
   pickOption: (id: string, label: string) => handlers.pickTaskOption(task.id, id, label),
   submitAnswer: () => handlers.submitTaskAnswer(task.id),
   skipQuestion: () => handlers.skipTaskQuestion(task.id),
@@ -139,12 +143,8 @@ type StepItem = ReturnType<typeof traceItems>[number]
 export const STEPS_SHOWN = 100
 const stepRows = new WeakMap<HTMLElement, Map<string, { item: StepItem, node: HTMLElement }>>()
 
-function stepRow(item: StepItem) {
-  return h('li', { class: 'trace-row' },
-    h('span', { class: 'trace-rail' }, h('span', { class: 'dot', 'data-tone': item.tone }), h('span', { class: 'line' })),
-    h('div', { class: 'trace-main' },
-      h('div', { class: 'row-between' }, h('span', { class: 'trace-title', text: item.title }), h('span', { class: 'trace-time', text: item.time })),
-      item.detail ? h('div', { class: 'trace-detail', text: item.detail }) : null))
+function stepRow(item: StepItem, handlers: Handlers) {
+  return traceNode(item as TraceItem, handlers)
 }
 
 function updateSteps(section: HTMLElement, state: State, task: BackgroundTask, handlers: Handlers) {
@@ -172,7 +172,7 @@ function updateSteps(section: HTMLElement, state: State, task: BackgroundTask, h
   const nodes = items.slice(earlier).map(item => {
     const cached = previous?.get(item.key)
     const node = cached && cached.item.title === item.title && cached.item.detail === item.detail
-      && cached.item.time === item.time && cached.item.tone === item.tone ? cached.node : stepRow(item)
+      && cached.item.time === item.time && cached.item.tone === item.tone ? cached.node : stepRow(item, handlers)
     next.set(item.key, { item, node })
     return node
   })
@@ -198,6 +198,12 @@ function mainView(state: State, handlers: Handlers, now: number) {
       h('p', { class: 'help', text: t("tasks-page.no.background.work.yet.type.a.request") }))
   }
   const live = LIVE.has(task.status)
+  const selectedDetail = state.traceDetail ? traceItems(task.view).find(item => item.key === state.traceDetail!.key) : null
+  if (selectedDetail) {
+    const detailState: State = { ...state, ...task.view, conversationId: task.segmentId, traceDetail: state.traceDetail }
+    return h('div', { class: 'tp-main tp-detail', 'data-task': task.id },
+      renderTraceDetail(detailState, selectedDetail, scopedHandlers(handlers, task) as DetailHandlers))
+  }
   const thread = h('div', { class: 'thread tp-thread' })
   renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
   const scroll = h('div', { class: 'tp-scroll', onWheel: () => pendingScroll.delete(scroll) }, thread, stepsView(state, task, handlers))
@@ -274,7 +280,7 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
   const main = container.querySelector<HTMLElement>('.tp-main')
   const thread = main?.querySelector<HTMLElement>('.tp-thread')
   if (prior?.handlers === handlers && sameTask && task && previousTask?.id === task.id
-    && main && thread && scroller) {
+    && main && thread && scroller && !state.traceDetail) {
     const title = main.querySelector('.tp-title')
     if (title && title.textContent !== `#${task.title}`) title.textContent = `#${task.title}`
     if (localeChanged || previousTask.status !== task.status || standing(previousTask, prior.now) !== standing(task, now)) {
@@ -294,7 +300,7 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
     if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps || prior.state.tasks.page.allSteps !== state.tasks.page.allSteps
       || previousTask.view.timeline !== task.view.timeline
       || previousTask.view.thoughts !== task.view.thoughts
-      || previousTask.view.tools !== task.view.tools) {
+      || previousTask.view.tools !== task.view.tools || previousTask.view.modelCalls !== task.view.modelCalls) {
       if (steps) updateSteps(steps, state, task, handlers)
       else {
         const nextSteps = stepsView(state, task, handlers)
@@ -306,6 +312,7 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
     return
   }
   keepingInput(container, () => reconcileChildren(container, [side.el, mainView(state, handlers, now)]))
+  if (state.traceDetail) queueLayout(container, () => () => container.querySelector<HTMLButtonElement>('.trace-back')?.focus())
   const next = container.querySelector<HTMLElement>('.tp-scroll')
   if (next) restoreScroll(next, !sameTask || atBottom, top, 0)
   renderedPages.set(container, { state: shown, handlers, now, locale: getLocale(), side })

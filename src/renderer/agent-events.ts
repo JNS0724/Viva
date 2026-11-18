@@ -9,7 +9,7 @@ function withoutHeldTrace(event: AgentEvent, sessions: ReadonlySet<string>): Age
     || !event.context.sessionId || !sessions.has(event.context.sessionId)) return event
   if (event.type === 'memory_context') return undefined
   const update = event.update
-  if (update.sessionUpdate === 'agent_thought_chunk' || update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') return undefined
+  if (update.sessionUpdate === 'agent_thought_chunk' || update.sessionUpdate === 'viva_model_call' || update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') return undefined
   if (update.sessionUpdate !== 'viva_stream') return event
   if (update.kind !== 'settle') return update.blockType === 'reasoning' ? undefined : event
   return { ...event, update: {

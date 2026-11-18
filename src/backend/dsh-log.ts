@@ -5,6 +5,7 @@ import { stepsFrom } from '../../plugins/trace/lib/steps.ts'
 import type { Step } from '../../plugins/trace/lib/steps.ts'
 import { assertId } from './history-schema.ts'
 import { decompressZstdFrames } from './zstd-frames.ts'
+import { modelCallId, type ModelCallSummary } from '../shared/trace.ts'
 
 /**
  * The 过程 of saved conversations. The trace plugin records every turn into trace.db (its contract);
@@ -17,13 +18,14 @@ const MAX_LOG_BYTES = 64 * 1024 * 1024
 const TITLE_CHARS = 60
 
 /** What the drawer shows of a tool call. */
-interface ToolView { id: string, kind: string, title: string, status?: string, at: number, locations: Array<{ path: string }>, rawInput: object | null }
+interface ToolView { id: string, kind: string, title: string, status?: string, at: number, locations: Array<{ path: string }>, rawInput: object | null, rawOutput?: unknown }
 
 /** The drawer's trace: thoughts and tool calls, and the order they came in. */
 export interface Trace {
   thoughts: Array<{ id: string, text: string, open: boolean, at: number }>
   tools: Record<string, ToolView>
-  timeline: Array<{ kind: 'thought' | 'tool', ref: string, at: number }>
+  modelCalls: Record<string, ModelCallSummary>
+  timeline: Array<{ kind: 'thought' | 'tool' | 'model', ref: string, at: number }>
 }
 
 const shorten = (text: unknown) => {
@@ -33,23 +35,23 @@ const shorten = (text: unknown) => {
 const fileName = (p: unknown) => path.basename(String(p ?? ''))
 const at = (p: unknown) => (p ? [{ path: String(p) }] : [])
 
-/** How each dsh tool shows up in the trace. Only small, non-content arguments are kept. */
+/** How each dsh tool shows up in the trace. Titles are short; full arguments and results remain available to the detail view. */
 const TOOL_VIEWS: Record<string, (a: Record<string, any>) => Partial<ToolView>> = {
-  bash: (a) => ({ kind: 'execute', title: shorten(a.description || a.command), rawInput: { command: shorten(a.command) } }),
+  bash: (a) => ({ kind: 'execute', title: shorten(a.description || a.command) }),
   read: (a) => ({ kind: 'read', title: t("main.dsh-log.read", { value1: fileName(a.file_path) }), locations: at(a.file_path) }),
   edit: (a) => ({ kind: 'edit', title: t("main.dsh-log.edit", { value1: fileName(a.file_path) }), locations: at(a.file_path) }),
   write: (a) => ({ kind: 'edit', title: t("main.dsh-log.write", { value1: fileName(a.file_path) }), locations: at(a.file_path) }),
-  web_fetch: (a) => ({ kind: 'fetch', title: t("main.dsh-log.fetch.webpage"), rawInput: { url: String(a.url ?? '') } }),
+  web_fetch: (a) => ({ kind: 'fetch', title: t("main.dsh-log.fetch.webpage") }),
   web_search: (a) => {
     const query = (Array.isArray(a.queries) ? a.queries : [a.query]).filter(Boolean).join(' / ')
-    return { kind: 'search', title: shorten(t("main.dsh-log.search", { query: query })), rawInput: { query } }
+    return { kind: 'search', title: shorten(t("main.dsh-log.search", { query: query })) }
   },
   todo_write: () => ({ kind: 'think', title: t("main.dsh-log.update.to.dos") }),
 }
 
 function toolFrom(sessionId: string, step: Extract<Step, { kind: 'tool' }>): ToolView {
   const view = TOOL_VIEWS[step.name]?.(step.args ?? {}) ?? { kind: 'other', title: String(step.name || t("main.dsh-log.tool.call")) }
-  return { kind: 'other', title: '', locations: [], rawInput: null, ...view, id: `${sessionId}:${step.callId}`, status: step.status, at: step.at }
+  return { kind: 'other', title: '', locations: [], rawInput: step.args ?? null, rawOutput: step.result, ...view, id: `${sessionId}:${step.callId}`, status: step.status, at: step.at }
 }
 
 /** Records of dsh's log, as plugins/trace/lib/steps.js reads them (dsh-private: not checked here). */
@@ -63,25 +65,29 @@ function parseLines(text: string): any[] {
   })
 }
 
-const emptyTrace = (): Trace => ({ thoughts: [], tools: {}, timeline: [] })
+const emptyTrace = (): Trace => ({ thoughts: [], tools: {}, modelCalls: {}, timeline: [] })
 
-/**
- * The drawer's trace from one session's steps. Steps after `until` are skipped, so turns the live view
- * already shows are not repeated.
- */
-export function traceFromSteps(steps: readonly Step[], { sessionId, until = Infinity }: { sessionId: string, until?: number }): Trace {
+export function traceFromSteps(steps: readonly Step[], { sessionId, until = Infinity, modelCalls = [] }: {
+  sessionId: string, until?: number, modelCalls?: readonly ModelCallSummary[],
+}): Trace {
   const trace = emptyTrace()
+  for (const call of modelCalls.filter(item => item.at <= until)) {
+    const id = modelCallId(call)
+    trace.modelCalls[id] = call
+    trace.timeline.push({ kind: 'model', ref: id, at: call.at })
+  }
   for (const step of steps.filter((item) => item.at <= until)) {
     if (step.kind === 'thought') {
       const id = `log-${sessionId}-${trace.thoughts.length}`
       trace.thoughts = [...trace.thoughts, { id, text: step.text, open: false, at: step.at }]
-      trace.timeline = [...trace.timeline, { kind: 'thought', ref: id, at: step.at }]
+      trace.timeline.push({ kind: 'thought', ref: id, at: step.at })
     } else {
       const tool = toolFrom(sessionId, step)
       trace.tools = { ...trace.tools, [tool.id]: tool }
-      trace.timeline = [...trace.timeline, { kind: 'tool', ref: tool.id, at: step.at }]
+      trace.timeline.push({ kind: 'tool', ref: tool.id, at: step.at })
     }
   }
+  trace.timeline.sort((a, b) => a.at - b.at)
   return trace
 }
 
@@ -105,6 +111,7 @@ async function findLog(dshHome: string, sessionId: string): Promise<string | nul
 const mergeTraces = (a: Trace, b: Trace): Trace => ({
   thoughts: [...a.thoughts, ...b.thoughts],
   tools: { ...a.tools, ...b.tools },
+  modelCalls: { ...a.modelCalls, ...b.modelCalls },
   timeline: [...a.timeline, ...b.timeline],
 })
 
@@ -116,7 +123,7 @@ async function traceFromLog(dshHome: string, sessionId: string, until: number): 
 }
 
 /** What of the trace store this reads. */
-interface TraceSource { hasSession: (sessionId: string) => boolean, stepsOf: (sessionId: string, until: number) => Step[] }
+interface TraceSource { hasSession: (sessionId: string) => boolean, stepsOf: (sessionId: string, until: number) => Step[], callsOf?: (sessionId: string, until: number) => ModelCallSummary[] }
 
 /**
  * Best-effort read of the trace for a conversation's dsh sessions, oldest session first: from trace.db when
@@ -133,7 +140,7 @@ export async function readSessionTrace({ dshHome, traceDb = null, sessionIds, un
   for (const sessionId of sessionIds.map(assertId)) {
     try {
       const found = traceDb?.hasSession(sessionId)
-        ? traceFromSteps(traceDb.stepsOf(sessionId, until), { sessionId, until })
+        ? traceFromSteps(traceDb.stepsOf(sessionId, until), { sessionId, until, modelCalls: traceDb.callsOf?.(sessionId, until) ?? [] })
         : await traceFromLog(dshHome, sessionId, until)
       trace = mergeTraces(trace, found)
     } catch {

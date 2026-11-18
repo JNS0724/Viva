@@ -11,7 +11,7 @@ export const SECRET_ACTIONS= {
     ...closeStreams(state),
     phase: 'asking',
     secret: { requestId, server, names },
-    timeline: [...state.timeline, { kind: 'secret', ref: requestId, at, title: `${server}：${names.join('、')}` }],
+    timeline: [...state.timeline, { kind: 'secret', ref: requestId, at, title: `${server}：${names.join('、')}`, server, names }],
   }),
   secret_resolved: (state, { requestId, provided, at }) => {
     if (state.secret?.requestId !== requestId) return state
