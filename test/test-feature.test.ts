@@ -87,7 +87,10 @@ test('level filtering preserves shared contracts and legacy all-level selection 
   assert.throws(() => selectTests(files, ['models', 'architecture'], ['fast']), /No tests/)
 })
 
-test('CLI rejects ambiguous all/features, unknown options and invalid levels', () => {
+test('CLI validates concurrency and rejects ambiguous all/features, unknown options and invalid levels', () => {
+  assert.equal(runFeatures(['--all', '--concurrency=2', '--list']), 0)
+  assert.equal(runFeatures(['--all', '--concurrency=0', '--list']), 2)
+  assert.equal(runFeatures(['--all', '--concurrency=1.5', '--list']), 2)
   assert.equal(runFeatures(['--all', 'architecture', '--list']), 2)
   assert.equal(runFeatures(['--all', '--level=typo', '--list']), 2)
   assert.equal(runFeatures(['--unknown-option']), 2)

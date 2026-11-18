@@ -52,7 +52,7 @@ Keep the existing aggregate status names in `check.yml` and `retries: 0`:
 
 ### 4.2 Conditional specialization belongs to the same gate
 
-Add reusable `memory.yml` to run the complete memory collection on macOS and Windows, with `workflow_dispatch` and `workflow_call`. Keep `workflow_call` in `package.yml` for affected PRs, daily acceptance, and releases.
+Add reusable `memory.yml` to run the complete memory collection on macOS and Windows with two-way test-file concurrency, limiting real DSH/SQLite contention, with `workflow_dispatch` and `workflow_call`. Keep `workflow_call` in `package.yml` for affected PRs, daily acceptance, and releases.
 
 A `scope` job in `check.yml` runs for every PR and main push and computes `memory-required` and `package-required`. Only this job sets `fetch-depth: 0` on `actions/checkout@v5` (or explicitly fetches both endpoints and their common ancestor); test-execution jobs remain shallow.
 
