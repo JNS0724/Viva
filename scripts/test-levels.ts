@@ -1,6 +1,8 @@
 // Explicit file-level costs. Mixed files use the more expensive level.
-// fast permits in-process DOM, SQLite and temporary files; integration uses real processes, sockets or packaging.
-// timing retains real long-duration deadlines. Keep these contracts in the full npm test collection.
+// fast permits in-process DOM, SQLite and temporary files; integration uses real processes or sockets.
+// critical keeps key process and safety contracts in PR; integration retains extended real-process coverage.
+// timing retains real long-duration deadlines; package owns offline installation and artifact acceptance.
+// Keep these contracts in the full npm test collection.
 export const testLevels = {
   fast: [
     'session-timing',
@@ -272,21 +274,11 @@ export const testLevels = {
     'memory-document-store',
     'memory-dream-transport',
     'memory-boundaries',
-    'memory-package',
     'memory-transport',
-    'memory-owner-lock',
-    'app-plugins',
     'asar-integrity',
-    'backend-keeper',
-    'backend-wire',
-    'config-plugin',
     'dsh-mcp-import',
-    'dsh-runtime',
-    'fake-dsh',
-    'file-access-integration',
     'fork-plugin',
     'images-bridge',
-    'mcp-bridge',
     'memory-embedder',
     'memory-handoff',
     'memory-plugin',
@@ -294,21 +286,35 @@ export const testLevels = {
     'model-discovery',
     'model-routes',
     'model-switch',
-    'permission-plugin',
     'plugin-catalog-pnpm',
     'plugin-registry-pnpm',
-    'plugin-source-dsh',
     'plugins-plugin',
     'pnpm-launcher',
-    'prewarm-runtime',
     'questions-plugin',
     'steer-plugin',
     'steer-reports-dsh',
-    'stream-runtime',
     'tasks-bridge',
     'tasks-plugin',
+  ],
+  critical: [
+    'memory-owner-lock',
+    'app-plugins',
+    'backend-keeper',
+    'backend-wire',
+    'config-plugin',
+    'dsh-runtime',
+    'fake-dsh',
+    'file-access-integration',
+    'mcp-bridge',
+    'permission-plugin',
+    'plugin-source-dsh',
+    'prewarm-runtime',
+    'stream-runtime',
     'tasks-routing-dsh',
     'trace-plugin',
+  ],
+  package: [
+    'memory-package',
   ],
   timing: [
     'diagnostics-sink',

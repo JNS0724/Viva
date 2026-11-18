@@ -1,0 +1,19 @@
+# Complete product acceptance every day: source, performance and the installed application.
+name: daily
+
+on:
+  schedule:
+    - cron: '17 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full:
+    uses: ./.github/workflows/full.yml
+
+  package:
+    uses: ./.github/workflows/package.yml
+    with:
+      runKey: ${{ github.run_id }}

@@ -14,6 +14,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      memory-required: ${{ steps.scope.outputs.memory-required }}
+      package-required: ${{ steps.scope.outputs.package-required }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: scope
+        run: node scripts/ci-scope.ts
+
   headless:
     strategy:
       fail-fast: false
@@ -29,10 +41,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:pr
       - run: npm run check:i18n
 
-  core:
+  smoke:
     strategy:
       fail-fast: false
       matrix:
@@ -40,7 +52,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
-      VIVA_SMOKE_RUN: ${{ matrix.os }}-core-${{ github.run_id }}-${{ github.run_attempt }}
+      VIVA_SMOKE_RUN: ${{ matrix.os }}-smoke-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -48,8 +60,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - run: npm run smoke:core
+      - run: npm run smoke
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -59,40 +70,23 @@ jobs:
             smoke/${{ env.VIVA_SMOKE_RUN }}/report
             smoke/${{ env.VIVA_SMOKE_RUN }}/junit.xml
 
-  integration:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-        lane: [interaction, memory]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    env:
-      VIVA_SMOKE_LANE: ${{ matrix.lane }}
-      VIVA_SMOKE_RUN: ${{ matrix.os }}-${{ matrix.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - run: npx playwright test -c test/smoke/playwright.config.ts --project=integration
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: smoke-${{ env.VIVA_SMOKE_RUN }}
-          path: |
-            smoke/${{ env.VIVA_SMOKE_RUN }}/test-results
-            smoke/${{ env.VIVA_SMOKE_RUN }}/report
-            smoke/${{ env.VIVA_SMOKE_RUN }}/junit.xml
+  memory:
+    if: needs.scope.outputs.memory-required == 'true'
+    needs: scope
+    uses: ./.github/workflows/memory.yml
+
+  package:
+    if: needs.scope.outputs.package-required == 'true'
+    needs: scope
+    uses: ./.github/workflows/package.yml
+    with:
+      runKey: ${{ github.run_id }}
 
   # Preserve the existing "check (macos-latest)" / "check (windows-latest)" status names.
   # Matrix needs aggregate both OSes, so either platform failing closes both gates.
   check:
     if: always()
-    needs: [headless, core, integration]
+    needs: [headless, smoke, scope, memory, package]
     strategy:
       fail-fast: false
       matrix:
@@ -103,9 +97,18 @@ jobs:
       - uses: actions/github-script@v8
         env:
           CHECK_RESULTS: ${{ toJSON(needs) }}
+          MEMORY_REQUIRED: ${{ needs.scope.outputs.memory-required }}
+          PACKAGE_REQUIRED: ${{ needs.scope.outputs.package-required }}
         with:
           script: |
             const results = JSON.parse(process.env.CHECK_RESULTS)
-            const required = ['headless', 'core', 'integration']
+            const required = ['headless', 'smoke', 'scope']
             const failed = required.filter(job => results[job]?.result !== 'success')
+            for (const job of ['memory', 'package']) {
+              const required = process.env[`${job.toUpperCase()}_REQUIRED`]
+              const result = results[job]?.result
+              if (required !== 'true' && required !== 'false') failed.push(`${job}:invalid-scope`)
+              else if (required === 'true' && result !== 'success') failed.push(job)
+              else if (required === 'false' && result !== 'skipped' && result !== 'success') failed.push(job)
+            }
             if (failed.length) core.setFailed(`Required jobs did not succeed: ${failed.join(', ')}`)

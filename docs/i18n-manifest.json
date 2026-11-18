@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-17",
+  "reviewedOn": "2026-11-18",
   "pairs": [
     {
       "en": "README.md",
@@ -11,8 +11,8 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "1843ffedf0157a1b82c466b7e67879aaf7f04c6675a9290e0724f7869f11bd73",
-      "zhHash": "d31c6af933b29b3fc0cef1f1966f165387d3eab7f33dc316b8ec2a1c6a7970e1"
+      "enHash": "320385429c380b457aae9755b389cdf66405729933722809ab18353c511d064d",
+      "zhHash": "b176e7486f345a43b765674ed37238494e613b6072510a8f86cc37e19ad283a8"
     },
     {
       "en": "docs/features.md",
@@ -25,6 +25,12 @@
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
       "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
+    },
+    {
+      "en": "docs/ci-full-acceptance.md",
+      "zh": "docs/ci-full-acceptance.zh-CN.md",
+      "enHash": "0f21c5576526bbbb6a28939c69dfb56a41cefc3cd419222f8d95ba9659293c59",
+      "zhHash": "06499327485feeaefb3a1b63032db853e2c05adecff5ec160d53b01a1e1a52e9"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
