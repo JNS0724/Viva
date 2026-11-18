@@ -1,6 +1,6 @@
 # The app as users get it: the installer built, the app run from outside the repository (where a missing package
 # would show instead of being found in the repo's node_modules), through the memory smoke phase with dsh, its
-# plugins and the fake model. check.yml invokes this for affected PRs, daily.yml runs complete acceptance,
+# plugins and the fake model. daily.yml runs complete acceptance,
 # and release.yml reuses these installers for publication.
 name: package
 

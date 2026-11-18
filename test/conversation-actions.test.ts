@@ -1,9 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createConversationActions } from '../src/renderer/conversation-actions.ts'
-import { initialState, reduce } from '../src/renderer/state.ts'
+import { harness, settle } from './fixtures/conversation-actions.ts'
 import { historyMessages } from '../src/renderer/selectors.ts'
-import { MAX_MESSAGE_CHARS } from '../src/shared/text-limits.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -11,38 +9,6 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-const settle = () => new Promise<void>(resolve => setImmediate(resolve))
-
-function harness(overrides: Partial<Parameters<typeof createConversationActions>[0]['api']> = {}) {
-  let state: State = { ...initialState, info: { mode: 'live', model: '', cwd: '/work' } }
-  const prompts: Array<{ text: string, images?: Array<{ id: string }> }> = []
-  const steers: string[] = [], toasts: string[] = [], pictures: string[] = []
-  let resets = 0
-  const dispatch = (action: Action) => { state = reduce(state, action) }
-  const actions = createConversationActions({
-    api: {
-      prompt: async (text, images) => { prompts.push({ text, images }) },
-      steer: async text => { steers.push(text); return { ok: true } },
-      answerQuestion: async () => true, provideSecrets: async () => true,
-      ...overrides,
-    },
-    getState: () => state, dispatch, errorMessage: String, showToast: text => { toasts.push(text) },
-    beforePrompt: () => { resets++ }, keepPicture: id => { pictures.push(id) }, now: () => 123,
-  })
-  return { actions, prompts, steers, toasts, pictures, dispatch, state: () => state, resets: () => resets,
-    change: (change: Partial<State>) => { state = { ...state, ...change } } }
-}
-
-test('normal and image questions keep their visible message and send once', async () => {
-  const h = harness()
-  assert.equal(h.actions.ask('hello', { via: 'island', images: [{ id: 'pic' }] }), true)
-  await settle()
-  assert.deepEqual(h.prompts, [{ text: 'hello', images: [{ id: 'pic' }] }])
-  assert.deepEqual(h.pictures, ['pic'])
-  assert.equal(h.resets(), 1)
-  assert.equal(h.state().messages.at(-1)?.text, 'hello')
-  assert.equal(h.state().messages.at(-1)?.via, 'island')
-})
 
 test('a negative native admission receipt keeps text and images visibly unsent after a report clears errors', async () => {
   for (const images of [[], [{ id: 'picture' }]]) {
@@ -147,17 +113,6 @@ test('a retired feed identity clears pending text and a late successful admissio
   assert.deepEqual(admitted, [false])
   assert.deepEqual(h.state().messages, [])
   assert.equal(h.actions.ask('late island draft', { feedItemId: 'feed-1' }), false)
-})
-
-test('setup, topic switches, empty and oversized questions do not reach the agent', () => {
-  const h = harness()
-  assert.equal(h.actions.ask(''), false)
-  assert.equal(h.actions.ask('x'.repeat(MAX_MESSAGE_CHARS + 1)), false)
-  h.change({ switching: true }); assert.equal(h.actions.ask('switching'), false)
-  h.change({ switching: false, newTopicPending: true }); assert.equal(h.actions.ask('new'), false)
-  h.change({ newTopicPending: false, info: { mode: 'setup', reason: 'no-key', model: '', cwd: '' } })
-  assert.equal(h.actions.ask('setup'), false)
-  assert.deepEqual(h.prompts, [])
 })
 
 test('directory, rewind and settings transitions refuse new questions and interjections without adding unsent words', () => {

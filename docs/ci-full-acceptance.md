@@ -2,7 +2,7 @@
 
 English | [简体中文](ci-full-acceptance.zh-CN.md)
 
-Date: 2026-11-18. Status: the safety net, conditional specialization gate, and file-level critical PR subset are implemented; pure-unit platform deduplication and scenario-level splitting of mixed files are not enabled. This document replaces earlier suggestions based on same-runner file splitting, temporary-directory redesign, and paid runners.
+> The original PR design below is historical. The current two-platform installer checks and the daily suite are described in the [development guide](development.md).
 
 ## 1 Decisions
 

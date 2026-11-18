@@ -3,64 +3,34 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { parse } from 'yaml'
 import { changedPaths, scopeForEvent, scopeForPaths } from '../scripts/ci-scope.ts'
-import { integrationLanes } from './smoke/suites.ts'
 
 type Step = { run?: string, uses?: string, if?: string, env?: Record<string, string>, with?: Record<string, unknown> }
 type Job = {
-  if?: string, needs?: string[], uses?: string, 'timeout-minutes'?: number,
-  strategy?: { 'fail-fast': boolean, matrix: { os: string[], lane?: string[] } },
+  name?: string, 'runs-on'?: string, if?: string, needs?: string[], uses?: string, 'timeout-minutes'?: number,
+  strategy?: { 'fail-fast': boolean, matrix: { include: { os: string, package: string }[] } },
   steps?: Step[],
 }
 const workflow = (name: string) => parse(fs.readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8')) as { jobs: Record<string, Job> }
 const { jobs } = workflow('check')
 const gate = jobs.check
-const script = String(gate.steps!.find(step => step.with?.script)!.with!.script)
 const commands = (job: Job) => (job.steps ?? []).flatMap(step => step.run ? [step.run] : [])
 
-test('the real CI gate requires every job and rejects failure, cancellation, skips and missing results', () => {
-  const run = (results: Record<string, { result: string }>, scope = { memory: 'true', package: 'true' }) => {
-    const failures: string[] = []
-    new Function('process', 'core', script)({ env: {
-      CHECK_RESULTS: JSON.stringify(results), MEMORY_REQUIRED: scope.memory, PACKAGE_REQUIRED: scope.package,
-    } }, { setFailed: (message: string) => failures.push(message) })
-    return failures
-  }
-  const success = Object.fromEntries(gate.needs!.map(name => [name, { result: 'success' }]))
-  assert.deepEqual(run(success), [])
-  assert.equal(gate.if, 'always()')
-  for (const name of gate.needs!) {
-    for (const result of ['failure', 'cancelled', 'skipped', 'unknown']) {
-      assert.match(run({ ...success, [name]: { result } }).join(), new RegExp(name))
-    }
-    const missing = { ...success }
-    delete missing[name]
-    assert.match(run(missing).join(), new RegExp(name))
-  }
-  assert.deepEqual(run({ ...success, memory: { result: 'skipped' }, package: { result: 'skipped' } }, { memory: 'false', package: 'false' }), [])
-  assert.match(run({ ...success, scope: { result: 'failure' } }, { memory: 'false', package: 'false' }).join(), /scope/)
-  assert.match(run(success, { memory: 'invalid', package: 'true' }).join(), /invalid-scope/)
-  assert.ok(run({}).length)
-})
-
-test('CI runs the critical headless subset and one complete smoke job per OS', () => {
-  assert.deepEqual(gate.needs, ['headless', 'smoke', 'scope', 'memory', 'package'])
-  for (const name of ['headless', 'smoke', 'check']) {
-    assert.deepEqual(jobs[name].strategy!.matrix.os, ['macos-latest', 'windows-latest'])
-    assert.equal(jobs[name].strategy!['fail-fast'], false)
-  }
-  for (const command of ['npm run typecheck', 'npm run test:pr', 'npm run check:i18n']) assert.ok(commands(jobs.headless).includes(command))
-  assert.ok(commands(jobs.smoke).includes('npm run smoke'))
-  assert.equal(commands(jobs.smoke).includes('npm run build'), false)
-  assert.equal(jobs.smoke['timeout-minutes'], 15)
-  assert.equal(jobs.scope.steps![0].with!['fetch-depth'], 0)
-  assert.equal(jobs.memory.if, "needs.scope.outputs.memory-required == 'true'")
-  assert.equal(jobs.package.if, "needs.scope.outputs.package-required == 'true'")
+test('each PR platform runs the basic tests and builds its own installer', () => {
+  assert.deepEqual(Object.keys(jobs), ['check'])
+  assert.equal(gate.name, 'check (${{ matrix.os }})')
+  assert.equal(gate['runs-on'], '${{ matrix.os }}')
+  assert.equal(gate.strategy!['fail-fast'], false)
+  assert.deepEqual(gate.strategy!.matrix.include, [
+    { os: 'macos-latest', package: 'dist:mac' },
+    { os: 'windows-latest', package: 'dist:win' },
+  ])
+  assert.deepEqual(commands(gate), ['npm ci', 'npm run typecheck', 'npm run test:pr', 'npm run ${{ matrix.package }}'])
 })
 
 test('full and daily workflows retain diagnostics and package owns offline installation', () => {
   const full = workflow('full').jobs.full
   assert.equal(full['timeout-minutes'], 45)
-  for (const command of ['npm run typecheck', 'npm run test:source', 'npm run smoke', 'npm run smoke:perf']) {
+  for (const command of ['npm run typecheck', 'npm run check:i18n', 'npm run test:source', 'npm run smoke', 'npm run smoke:perf']) {
     assert.ok(commands(full).includes(command))
   }
   assert.equal(commands(full).includes('npm run build'), false)

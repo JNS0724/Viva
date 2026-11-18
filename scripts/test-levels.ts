@@ -1,6 +1,6 @@
 // Explicit file-level costs. Mixed files use the more expensive level.
 // fast permits in-process DOM, SQLite and temporary files; integration uses real processes or sockets.
-// critical keeps key process and safety contracts in PR; integration retains extended real-process coverage.
+// critical covers key process and safety contracts; integration retains extended real-process coverage.
 // timing retains real long-duration deadlines; package owns offline installation and artifact acceptance.
 // Keep these contracts in the full npm test collection.
 export const testLevels = {
@@ -83,6 +83,7 @@ export const testLevels = {
     'config-actions',
     'config-channel',
     'conversation-actions',
+    'conversation-basics',
     'conversation-ingress',
     'conversation-island-completion',
     'conversation-session',

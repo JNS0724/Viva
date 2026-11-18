@@ -115,7 +115,7 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 ## 测试
 
-`npm test` 用 Electron 自带的 Node 运行全部源码单元、集成、计时和 package 测试。`npm run test:source` 运行完整的非 package 源码集合，供每日与发布的 `full.yml` 使用；离线插件安装由 `package.yml` 统一执行。PR headless 使用 `npm run test:pr` 运行 fast、critical 和 timing 子集。`npm run typecheck` 检查产品和测试 TypeScript。与 CI 一样使用 Node.js 24，提 PR 前跑完整测试。
+`npm test` 用 Electron 自带的 Node 运行完整源码测试。用 `npm run test:pr` 运行 PR 基础用例，检查消息只发送一次、无效输入被拒绝、回复进入当前对话。类型检查和构建使用 Node.js 24。
 
 本地快速反馈用 `npm run test:fast` 选择全部 fast 文件，用 `npm run test:feature -- architecture --level fast` 选择一个功能的 fast 文件。功能名包括 `conversation`、`runtime`、`tasks`、`architecture`、`models`、`skills`、`capabilities`、`files`、`memory`、`rendering`、`storage`、`i18n`、`shell` 和 `tooling`。多个功能自动去重。省略 `--level` 保留该功能全部层级，也可以重复该参数组合层级。加 `--list` 查看准确文件清单。
 
@@ -141,13 +141,13 @@ npm run dist:win    # Windows：在 Windows 上运行，dist/Viva-x.y.z-win-x64-
 
 自动重试为 0，每个 runner 的 worker 为 1。报告在 `smoke/report`（HTML）、`smoke/junit.xml`、`smoke/test-results`（启动回执/日志、断言及失败诊断）。`VIVA_SMOKE_RUN` 可在 `smoke/` 下增加唯一目录标识，允许字母、数字、下划线和连字符。失败时保留操作和截图 trace。公共 UI 冒烟还记录 DOM 快照，原有集成场景关闭向无脚本搜索 iframe 注入快照脚本。真模型和性能测试不录 trace，不上传原始资料目录或凭据。用 `npx playwright show-trace <trace.zip>` 查看保留的 trace。
 
-PR CI 在每个 OS 上运行 headless 和一个完整 smoke job。headless 执行类型检查、`test:pr` 的 fast/critical/timing 子集与文档检查；扩展 integration 由相关记忆专项、每日和发布承接。smoke 只调度一个桌面 runner，经 `presmoke` 构建一次后顺序运行公共 UI 与全部 integration，共十五条测试，各重启链共用自身资料目录。安装产物验收继续在同一资料目录执行 memory、schedules 和 resume。
+每个 PR 运行两个独立检查，分别为 `check (macos-latest)` 和 `check (windows-latest)`。每边执行类型检查和基础用例，再运行 `npm run dist:mac` 或 `npm run dist:win` 生成原生安装包。两个打包命令都会通过 npm 前置脚本编译应用。
 
 memory 的各个前置以命名 Playwright step 展示，stdout 输出 JSON 阶段计时。首个前置断言失败即终止依赖链并保留诊断。普通 UI 在业务就绪条件后等待字体、有限运行动画完成和两帧绘制。长任务滚动场景采用既有定时观测与位置预算。
 
-CI 报告目录和 artifact 名称包含 OS、lane、run ID 与 attempt，Playwright 元数据记录提交、平台、Node 版本和 lane。最终 `check (macos-latest)`、`check (windows-latest)` 保留现有名称，要求 headless、smoke、scope 以及按判断需要运行的 memory/package 全部成功。无关 PR 只有明确判定不需要时才允许专项 skipped；其他失败、取消、跳过或缺失必需结果都会让两个聚合门禁失败。runner 可用性和依赖安装计入墙钟时间，新增 job 会重复准备工作。
+每日 CI 在双平台运行完整源码测试、桌面冒烟、性能、诊断、文档检查与安装后验收。发布时对发布提交运行完整源码和安装包验收。
 
-`scripts/verify-windows.ps1 -Package` 安装到唯一临时目录，由外部 runner 驱动已安装程序、检查许可证，并在 finally 卸载。PR CI 在 macOS、Windows 跑完整源码套件；打包 CI 验证双平台安装产物的记忆与重启。这些自动测试不替代实机、签名、升级或物理快滚验收。
+`scripts/verify-windows.ps1 -Package` 安装到独立临时目录，由外部 runner 驱动已安装程序、检查许可证，最后卸载。
 
 `npm run live` 仍需主动执行：默认 26 个真模型场景各 3 次，保留 `--set core`、`--only`、`--repeat`、`--app`、`--dry`。密钥只显式传给独立子进程，不写日志。详见[真模型验证](live-check.zh-CN.md)。假模型通过不代表真模型行为通过。
 

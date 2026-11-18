@@ -2,27 +2,7 @@
 name: local diagnostics
 
 on:
-  push:
-    branches: [codex/local-diagnostics]
-  pull_request:
-    paths:
-      - src/diagnostics/**
-      - src/memory/**
-      - src/backend/**
-      - src/shell/**
-      - src/preload/**
-      - src/renderer/initialization-actions.ts
-      - scripts/smoke-*diagnostic*.ts
-      - scripts/smoke-memory-availability.ts
-      - scripts/benchmark-memory-diagnostics.ts
-      - scripts/benchmark-diagnostic-flows.ts
-      - scripts/diagnostic-performance-budget.ts
-      - test/diagnostics*.test.ts
-      - test/renderer-initialization.test.ts
-      - test/acp-operations.test.ts
-      - test/effects.test.ts
-      - test/fixtures/diagnostic*.ts
-      - .github/workflows/local-diagnostics.yml
+  workflow_call:
   workflow_dispatch:
 
 permissions:
