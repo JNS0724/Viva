@@ -57,8 +57,8 @@ test('every discovered JS/TS test has feature ownership and exactly one explicit
     assert.ok(!selectAllTests(files, ['fast']).some(selected => path.basename(selected) === file), `${file} uses real processes or sockets`)
     assert.ok(selectAllTests(files, ['integration']).some(selected => path.basename(selected) === file))
   }
-  assert.ok(selectAllTests(files, ['package']).includes('test/memory-package.test.ts'))
-  assert.ok(!selectAllTests(files, ['fast', 'integration', 'timing']).includes('test/memory-package.test.ts'))
+  assert.ok(selectAllTests(files, ['package']).some(selected => path.basename(selected) === 'memory-package.test.ts'))
+  assert.ok(!selectAllTests(files, ['fast', 'integration', 'timing']).some(selected => path.basename(selected) === 'memory-package.test.ts'))
   assert.throws(() => auditTests([...files, 'test/new-unknown.test.ts']), /missing feature/)
   assert.throws(() => auditTests([...files, 'test/model-new.test.js']), /expected one level/)
 })
