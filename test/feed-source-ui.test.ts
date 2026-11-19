@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { feedGroups, feedShown, isSourceDraftDirty, NEW_SOURCE_ID, scheduleFromDraft, type FeedSourceView } from '../src/renderer/feed-state.ts'
 import { createFeedActions } from '../src/renderer/feed-actions.ts'
+import { newSourceDetail, sourceDetail } from '../src/renderer/view/feed-source-panel.ts'
 
 const sampleSource = (id = 'fs1'): FeedSourceView => ({
   id,
@@ -107,4 +108,64 @@ test('feed-actions creates, updates, pauses, runs now and deletes plugin data so
 
   await actions.deleteSource('fs1')
   assert.equal(state.feed.sources.length, 0)
+})
+
+test('sourceDetail populates saved instruction into textarea and associates labels with controls', () => {
+  class FakeEl {
+    tag: string
+    className = ''
+    textContent = ''
+    attrs = new Map<string, string>()
+    children: FakeEl[] = []
+    constructor(tag: string) { this.tag = tag }
+    setAttribute(k: string, v: string) { this.attrs.set(k, v) }
+    addEventListener() {}
+    append(...nodes: unknown[]) {
+      for (const n of nodes) if (n instanceof FakeEl) this.children.push(n)
+    }
+    findAll(pred: (el: FakeEl) => boolean): FakeEl[] {
+      const out: FakeEl[] = pred(this) ? [this] : []
+      for (const c of this.children) out.push(...c.findAll(pred))
+      return out
+    }
+  }
+  const prevDoc = globalThis.document
+  const prevNode = globalThis.Node
+  ;(globalThis as unknown as { document: unknown, Node: unknown }).document = {
+    createElement: (tag: string) => new FakeEl(tag),
+    createTextNode: (text: string) => new FakeEl(`#text:${text}`),
+  }
+  ;(globalThis as unknown as { Node: unknown }).Node = FakeEl
+  try {
+    const src = sampleSource('fs1')
+    const editState = reduce(
+      reduce(initialState, { type: 'feed_loaded', items: [], schedules: [], sources: [src] }),
+      { type: 'feed_select', kind: 'source', id: 'fs1' },
+    )
+    const editRoot = sourceDetail(src, editState, {}, Date.parse('2026-11-19T12:00:00+08:00')) as unknown as FakeEl
+    const textarea = editRoot.findAll((el) => el.tag === 'textarea')[0]
+    assert.ok(textarea, 'textarea rendered')
+    assert.equal(textarea.textContent, '筛选紧急邮件', 'existing instruction populated via textContent')
+    assert.equal(textarea.attrs.get('id'), 'fs-fs1-rule')
+    const editLabels = editRoot.findAll((el) => el.tag === 'label').map((el) => el.attrs.get('for'))
+    assert.ok(editLabels.includes('fs-fs1-name'))
+    assert.ok(editLabels.includes('fs-fs1-rule'))
+
+    const addState = reduce(
+      reduce(initialState, {
+        type: 'plugins_loaded',
+        view: { connected: true, plugins: [{ name: '@company/dsh-plugin-mail', version: '1.0.0', description: 'mail', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, rows: [], overrides: [] }] },
+      }),
+      { type: 'feed_source_new', pluginName: '@company/dsh-plugin-mail' },
+    )
+    const addRoot = newSourceDetail(addState, {}) as unknown as FakeEl
+    const addLabels = addRoot.findAll((el) => el.tag === 'label').map((el) => el.attrs.get('for'))
+    assert.ok(addLabels.includes('fs-new-plugin'))
+    assert.ok(addLabels.includes('fs-new-name'))
+    assert.ok(addLabels.includes('fs-new-rule'))
+    assert.ok(addRoot.findAll((el) => el.tag === 'select' && el.attrs.get('id') === 'fs-new-plugin').length === 1)
+  } finally {
+    ;(globalThis as unknown as { document: unknown, Node: unknown }).document = prevDoc
+    ;(globalThis as unknown as { Node: unknown }).Node = prevNode
+  }
 })

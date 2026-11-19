@@ -5,7 +5,7 @@ import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { CatalogAnswer } from './plugin-catalog.ts'
 import type { PluginSourceView } from './plugin-source.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
-import { vivaFit, type VivaFit } from './plugin-fit.ts'
+import { declaredReadOnlyTools, vivaFit, type VivaFit } from './plugin-fit.ts'
 
 /**
  * IPC for the 插件 section of settings: the dsh plugins the user installed (bundles in the profile), installed by
@@ -53,6 +53,15 @@ export function fitOf(profileDir: string, name: string): VivaFit {
     return vivaFit(JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')))
   } catch {
     return { kind: 'unknown' }
+  }
+}
+
+/** Explicit read-only tools declared by an installed plugin package for 动态 data source runs. */
+export function readOnlyToolsOf(profileDir: string, name: string): string[] {
+  try {
+    return declaredReadOnlyTools(JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')))
+  } catch {
+    return []
   }
 }
 

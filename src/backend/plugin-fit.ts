@@ -26,3 +26,37 @@ export function vivaFit(manifest: unknown): VivaFit {
   if (needs.length) return { kind: 'needs-web', needs: [...new Set(needs)] }
   return record(pkg.dsh).client ? { kind: 'web-part' } : { kind: 'no-conflict' }
 }
+
+const DISALLOWED_SOURCE_TOOLS: ReadonlySet<string> = new Set([
+  'commit_route', 'bash', 'shell', 'exec', 'command', 'edit', 'write', 'multi_edit', 'notebook_edit',
+  'delete', 'remove', 'patch', 'apply_patch', 'subagent', 'subagent_fork', 'ask_user_question',
+  'read', 'glob', 'grep', 'read_image', 'web_fetch', 'web_search',
+  'search_conversations', 'read_conversation', 'list_background_tasks', 'get_background_task',
+  'memory_recall', 'memory_read', 'memory_node_search', 'memory_remember', 'memory_forget', 'memory_clarify', 'memory_write',
+  'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete',
+  'viva_mcp_add', 'viva_mcp_list', 'viva_mcp_import', 'viva_skill_create', 'viva_skill_list', 'viva_skill_install', 'viva_plugin_install',
+])
+
+/**
+ * Explicit read-only tools a dsh plugin declares for 动态 data sources in package.json:
+ * `"viva": { "feedSource": { "readOnlyTools": [...] } }` or `"viva": { "readOnlyTools": [...] }`.
+ * Built-in, write-capable, shell, memory, and app-management tools are always stripped.
+ */
+export function declaredReadOnlyTools(manifest: unknown): string[] {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return []
+  const viva = record(record(manifest).viva)
+  const raw = Array.isArray(record(viva.feedSource).readOnlyTools)
+    ? record(viva.feedSource).readOnlyTools
+    : Array.isArray(viva.readOnlyTools) ? viva.readOnlyTools : []
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const tools: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const name = item.trim()
+    if (!name || name.length > 200 || DISALLOWED_SOURCE_TOOLS.has(name) || seen.has(name)) continue
+    seen.add(name)
+    tools.push(name)
+  }
+  return tools
+}

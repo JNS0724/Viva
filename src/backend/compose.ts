@@ -51,7 +51,7 @@ import { registerSkillImportIpc } from './skill-import-ipc.ts'
 import { skillSources } from './skill-import.ts'
 import { registerMcpImportIpc } from './mcp-import-ipc.ts'
 import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
-import { pluginsView, registerPluginsIpc } from './plugins-ipc.ts'
+import { pluginsView, readOnlyToolsOf, registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb, type Conversation } from './history-db.ts'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.ts'
@@ -453,7 +453,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   async function changingMemory<T>(work: () => T | Promise<T>, { duringSelection = false } = {}): Promise<T> {
     if (memoryBusy() || (!duringSelection && sessions.isChanging())) throw new Error(t('main.memory.change.pending'))
     try { return await work() }
-    finally { dsh.current?.refreshMemoryQuestions(); scheduleRuns?.wake() }
+    finally { dsh.current?.refreshMemoryQuestions(); scheduleRuns?.wake(); feedSourceRuns?.wake() }
   }
 
   async function recordDeliveredSource(sourceId: string, origin = sessions.context(), { derived = false } = {}) {
@@ -617,7 +617,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           return []
         }
       },
-      readyMemory: () => { scheduleRuns?.wake() },
+      readyMemory: () => { scheduleRuns?.wake(); feedSourceRuns?.wake() },
       memoryStateChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
       memoryNotice: notice => {
         if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
@@ -1420,9 +1420,20 @@ ${question}` : question
     }))
   }
 
-  async function runFeedSource(prompt: string, cwd: string): Promise<RunResult> {
+  async function runFeedSource(prompt: string, cwd: string, allowedTools: readonly string[]): Promise<RunResult> {
     if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
-    return unattended.run(prompt, cwd)
+    if (!allowedTools.length) return { ok: false, problem: t('main.feed-sources.policy.unavailable') }
+    if (memoryBusy()) return { ok: false, unavailable: true, problem: t('main.memory.change.pending') }
+    const ready = () => dsh.current?.memory.ready() === true
+    if (!ready()) {
+      return { ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') }
+    }
+    return unattended.run(prompt, cwd, async (session, bridge) => {
+      if (bridge !== dsh.current) return 'memory-unavailable'
+      if (!await dsh.current.bindFeedSourceSession(session, allowedTools)) return 'memory-unavailable'
+      const project = memoryProjectScope(cwd)
+      if (!await bindSessionProject(session, project)) return 'stale'
+    })
   }
 
   function registerPersonalIpc(config: Config) {
@@ -1533,7 +1544,9 @@ ${question}` : question
       if (!found) return { ok: false, reason: t('main.feed-sources.plugin.missing', { name: pluginName }) }
       if (!found.enabled) return { ok: false, reason: t('main.feed-sources.plugin.disabled', { name: pluginName }) }
       if (found.error) return { ok: false, reason: t('main.feed-sources.plugin.error', { name: pluginName }) }
-      return { ok: true }
+      const allowedTools = readOnlyToolsOf(profileDir(), pluginName)
+      if (!allowedTools.length) return { ok: false, reason: t('main.feed-sources.plugin.no.readonly.tools', { name: pluginName }) }
+      return { ok: true, allowedTools }
     }
     feedSourceRuns = createFeedSourceRuns({
       db: appDb.db,
@@ -1542,6 +1555,7 @@ ${question}` : question
       feed: items,
       checkPlugin: checkFeedSourcePlugin,
       run: runFeedSource,
+      memoryCurrent: scheduleMemoryCurrent,
       serialize: serializeUnattended,
       keep: queueFeedNotice,
       delivered: () => {

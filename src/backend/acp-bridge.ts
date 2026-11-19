@@ -757,5 +757,16 @@ export function createAcpBridge({
   /** 重试 on a server that stopped trying. */
   const restartMcp = (name: string) => mcpDesk.restart(name)
 
-  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, refreshMemoryQuestions: questions.refreshMemoryQuestions, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid, memory }
+  /** Binds an unattended feed source session to the plugin's explicit read-only tool allowlist. */
+  async function bindFeedSourceSession(targetSessionId: string, allowedTools: readonly string[]): Promise<boolean> {
+    if (!child?.connected) return false
+    try {
+      await routingDesk.bindSource(targetSessionId, allowedTools)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  return { applyMcp, restartMcp, start, prompt, steer, deliverReport, reportStatus, currentSession, fork, resumeTask, startTask, startUnattendedTask, bindFeedSourceSession, promptTask, cancelTask, closeTask, steerTask, cancel, newSession, switchSession, reloadSession, setConfig, respondPermission, answerQuestion, refreshMemoryQuestions: questions.refreshMemoryQuestions, taskWaits, sessionWaits, provideSecrets, plugins, workingTasks, isSwitching, dispose, pid, memory }
 }

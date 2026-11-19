@@ -29,6 +29,7 @@ export interface FeedSource {
   cwd: string
   cursor: unknown | null
   lastRunAt: number | null
+  lastSuccessAt: number | null
   lastStatus: FeedSourceLastStatus
   lastMessage: string | null
   lastPublishedCount: number
@@ -55,6 +56,7 @@ const SCHEMA = `
     cwd TEXT NOT NULL,
     cursor TEXT,
     last_run_at INTEGER,
+    last_success_at INTEGER,
     last_status TEXT NOT NULL DEFAULT 'idle',
     last_message TEXT,
     last_published_count INTEGER NOT NULL DEFAULT 0,
@@ -78,6 +80,7 @@ const sourceOf = (row: Row): FeedSource => ({
   cwd: String(row.cwd),
   cursor: typeof row.cursor === 'string' ? JSON.parse(row.cursor) : null,
   lastRunAt: row.last_run_at === null ? null : Number(row.last_run_at),
+  lastSuccessAt: row.last_success_at === null || row.last_success_at === undefined ? null : Number(row.last_success_at),
   lastStatus: String(row.last_status ?? 'idle') as FeedSourceLastStatus,
   lastMessage: typeof row.last_message === 'string' ? row.last_message : null,
   lastPublishedCount: Number(row.last_published_count ?? 0),
@@ -134,6 +137,8 @@ export function openFeedSourceStore({ db, now = Date.now, newId = () => `fs${cry
   newId?: () => string
 }) {
   db.exec(SCHEMA)
+  const fields = db.prepare('PRAGMA table_info(feed_sources)').all()
+  if (!fields.some((row) => row.name === 'last_success_at')) db.exec('ALTER TABLE feed_sources ADD COLUMN last_success_at INTEGER')
 
   const get = (id: string): FeedSource | null => {
     const row = db.prepare('SELECT * FROM feed_sources WHERE id = ?').get(id) as Row | undefined
@@ -151,8 +156,8 @@ export function openFeedSourceStore({ db, now = Date.now, newId = () => `fs${cry
     const id = newId()
     const record = recordOf(id, name, instruction, schedule, at)
     db.prepare(`INSERT INTO feed_sources
-      (id, plugin_name, name, instruction, schedule, record, status, cwd, cursor, last_run_at, last_status, last_message, last_published_count, revision, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, NULL, 'idle', NULL, 0, 0, ?, ?)`)
+      (id, plugin_name, name, instruction, schedule, record, status, cwd, cursor, last_run_at, last_success_at, last_status, last_message, last_published_count, revision, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?, NULL, NULL, NULL, 'idle', NULL, 0, 0, ?, ?)`)
       .run(id, pluginName, name, instruction, JSON.stringify(schedule), JSON.stringify(record), cwd, at, at)
     return get(id) as FeedSource
   }
@@ -198,11 +203,13 @@ export function openFeedSourceStore({ db, now = Date.now, newId = () => `fs${cry
   }): FeedSource | null {
     const found = get(id)
     if (!found) return null
-    const nextCursor = outcome.cursor !== undefined ? outcome.cursor : found.cursor
+    const succeeded = outcome.status === 'published' || outcome.status === 'skipped'
+    const nextSuccessAt = succeeded ? outcome.ranAt : found.lastSuccessAt
+    const nextCursor = succeeded && outcome.cursor !== undefined ? outcome.cursor : found.cursor
     db.prepare(`UPDATE feed_sources
-      SET last_run_at = ?, last_status = ?, last_message = ?, last_published_count = ?, cursor = ?, updated_at = ?
+      SET last_run_at = ?, last_success_at = ?, last_status = ?, last_message = ?, last_published_count = ?, cursor = ?, updated_at = ?
       WHERE id = ?`)
-      .run(outcome.ranAt, outcome.status, outcome.message, outcome.publishedCount, nextCursor === null ? null : JSON.stringify(nextCursor), now(), id)
+      .run(outcome.ranAt, nextSuccessAt, outcome.status, outcome.message, outcome.publishedCount, nextCursor === null ? null : JSON.stringify(nextCursor), now(), id)
     return get(id)
   }
 

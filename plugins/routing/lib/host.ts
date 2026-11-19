@@ -3,7 +3,7 @@
  * answers every decision passed to it, accepted with a receipt for each action, or refused with the reason.
  */
 import { randomUUID } from 'node:crypto'
-import { asBind, asDecided, type Decided, type FastOutcome } from '../../../src/shared/request-routing/channel.ts'
+import { asBind, asBindSource, asDecided, type Decided, type FastOutcome } from '../../../src/shared/request-routing/channel.ts'
 
 /** Starting a task can take a while (dsh opens its session and connects the user's MCP servers). */
 const DECIDE_WAIT_MS = 60_000
@@ -15,7 +15,10 @@ const DECIDE_WAIT_MS = 60_000
  */
 export interface Unanswered { accepted: 'unanswered', reason: string }
 
-export function createHostChannel(port: NodeJS.Process, { onBind }: { onBind: (sessionId: string) => void }) {
+export function createHostChannel(port: NodeJS.Process, { onBind, onBindSource }: {
+  onBind: (sessionId: string) => void
+  onBindSource?: (sessionId: string, allowedTools: readonly string[]) => void
+}) {
   const waiting = new Map<string, (decided: Decided | Unanswered) => void>()
   const send = (message: object) => { if (port.connected) port.send!(message, () => {}) }
 
@@ -24,6 +27,12 @@ export function createHostChannel(port: NodeJS.Process, { onBind }: { onBind: (s
     if (bind) {
       onBind(bind.sessionId)
       send({ type: 'routing_bound', version: 1, id: bind.id })
+      return
+    }
+    const bindSource = asBindSource(message)
+    if (bindSource) {
+      onBindSource?.(bindSource.sessionId, bindSource.allowedTools)
+      send({ type: 'routing_bound', version: 1, id: bindSource.id })
       return
     }
     const decided = asDecided(message)

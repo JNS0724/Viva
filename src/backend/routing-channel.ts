@@ -38,6 +38,21 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
     }), { stage: 'connecting', identities: { requestId: id, sessionId } })
   }
 
+  /** Binds an unattended data source session to an explicit read-only tool allowlist before its first step. */
+  function bindSource(sessionId: string, allowedTools: readonly string[]): Promise<void> {
+    const id = randomUUID()
+    return withOperation('task.route', () => new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiting.delete(id)
+        emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'unavailable', reason: 'timeout', identities: { requestId: id, sessionId } })
+        reject(new Error(t('main.routing-channel.not.bound')))
+      }, timeoutMs)
+      const settle = () => { clearTimeout(timer); waiting.delete(id) }
+      waiting.set(id, { resolve: () => { settle(); resolve() }, reject: (error) => { settle(); reject(error) } })
+      send({ type: 'routing_bind_source', version: 1, id, sessionId, allowedTools: [...allowedTools] })
+    }), { stage: 'connecting', identities: { requestId: id, sessionId } })
+  }
+
   async function answer(id: string, decision: { requestId: string, sessionId: string, plan: unknown }) {
     let decided: Decided
     try {
@@ -72,7 +87,7 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
     for (const entry of [...waiting.values()]) entry.reject(new Error(t('main.routing-channel.not.bound')))
   }
 
-  return { bind, receive, close }
+  return { bind, bindSource, receive, close }
 }
 
 export type RoutingDesk = ReturnType<typeof createRoutingDesk>

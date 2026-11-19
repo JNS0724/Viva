@@ -13,6 +13,7 @@ import type { Receipt } from './protocol.ts'
 export const ROUTING_CHANNEL_VERSION = 1
 
 export type RoutingBind = { type: 'routing_bind', version: 1, id: string, sessionId: string }
+export type RoutingBindSource = { type: 'routing_bind_source', version: 1, id: string, sessionId: string, allowedTools: string[] }
 export type RoutingBound = { type: 'routing_bound', version: 1, id: string }
 export type RoutingDecide = { type: 'routing_decide', version: 1, id: string, sessionId: string, requestId: string, plan: unknown }
 /** The app's answer to a decision: accepted, with what became of each action, or refused and why. */
@@ -44,9 +45,16 @@ function isReceipt(value: unknown): value is Receipt {
   return r.ok === true ? r.taskId === undefined || id(r.taskId) : r.ok === false && typeof r.error === 'string'
 }
 
+const MAX_TOOLS = 200
 export function asBind(value: unknown): RoutingBind | null {
   const m = of(value, 'routing_bind')
   return m && id(m.id) && id(m.sessionId) ? { type: 'routing_bind', version: 1, id: m.id, sessionId: m.sessionId } : null
+}
+export function asBindSource(value: unknown): RoutingBindSource | null {
+  const m = of(value, 'routing_bind_source')
+  if (!m || !id(m.id) || !id(m.sessionId) || !Array.isArray(m.allowedTools) || m.allowedTools.length > MAX_TOOLS) return null
+  if (!m.allowedTools.every(id)) return null
+  return { type: 'routing_bind_source', version: 1, id: m.id, sessionId: m.sessionId, allowedTools: [...m.allowedTools] }
 }
 export function asBound(value: unknown): RoutingBound | null {
   const m = of(value, 'routing_bound')

@@ -20,7 +20,7 @@ import { COMMIT_DESCRIPTION, COMMIT_PARAMETERS, MAX_NOTICE_CHARS } from './lib/c
 import { deferCode, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover } from './lib/fast-lane.ts'
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
-import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
+import { admit, admitFeedSource, FORBIDDEN_SOURCE_TOOLS, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createHostChannel } from './lib/host.ts'
 import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
@@ -62,7 +62,9 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   // ── State: which sessions are main, the ledger of each one's turn, the grants its app_actions gave, fast work, and
   // how many turns each has ended (what the fast lane started in one tells only that one).
   const mains = new Set<string>()
+  const sourceScopes = new Map<string, ReadonlySet<string>>()
   const narrowed = new WeakSet<Agent>()
+  const narrowedSources = new WeakSet<Agent>()
   const ledgers = new Map<string, Ledger>()
   const grants = new Map<string, readonly Grant[]>()
   const fastWork = new Map<string, Set<Promise<void>>>()
@@ -87,12 +89,29 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     if (agent.session.header.origin !== 'subagent') return
     agent.ctx.tools.restrict({ allow: SUBAGENT_TOOLS.filter(tool => ctx.tools.get(tool)) })
   }
-  ctx.on('agent/created', ({ agent }) => { narrow(agent); narrowSubagent(agent); return undefined })
-  const host = createHostChannel(port, { onBind: (sessionId) => {
-    mains.add(sessionId)
-    const agent = ctx.agents.get(SessionId(sessionId))
-    if (agent) narrow(agent)
-  } })
+  function narrowSource(agent: Agent) {
+    const id = String(agent.session.id)
+    const allowed = sourceScopes.get(id)
+    if (!allowed || narrowedSources.has(agent)) return
+    narrowedSources.add(agent)
+    agent.ctx.tools.restrict({ allow: [...allowed].filter(tool => !FORBIDDEN_SOURCE_TOOLS.has(tool) && ctx.tools.get(tool)) })
+    const presets = (ctx as unknown as { get?: (key: string) => { set?: (session: unknown, preset: string) => void } | undefined }).get?.('permissionPresets')
+    try { presets?.set?.(agent.session, 'read-only') } catch { /* permission preset service optional in unit harnesses */ }
+  }
+  ctx.on('agent/created', ({ agent }) => { narrow(agent); narrowSubagent(agent); narrowSource(agent); return undefined })
+  ctx.on('agent/disposed', ({ agent }) => { sourceScopes.delete(String(agent.session.id)); return undefined })
+  const host = createHostChannel(port, {
+    onBind: (sessionId) => {
+      mains.add(sessionId)
+      const agent = ctx.agents.get(SessionId(sessionId))
+      if (agent) narrow(agent)
+    },
+    onBindSource: (sessionId, allowedTools) => {
+      sourceScopes.set(sessionId, new Set(allowedTools.filter(tool => !FORBIDDEN_SOURCE_TOOLS.has(tool))))
+      const agent = ctx.agents.get(SessionId(sessionId))
+      if (agent) narrowSource(agent)
+    },
+  })
   const tasks = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, TASK_LIST_WAIT_MS)
   const onSteer = (raw: unknown) => {
     const message = raw as { type?: string, sessionId?: unknown, text?: unknown, fast?: unknown } | null
@@ -141,6 +160,11 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   // the scope still reaches approval by its name); an app change uses up the grant that allowed it.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const id = String(exec.agent?.session.id ?? '')
+    const sourceAllowed = sourceScopes.get(id)
+    if (sourceAllowed) {
+      const decision = admitFeedSource(sourceAllowed, exec.name)
+      return decision.allowed ? next() : { kind: 'deny', reason: decision.reason ?? '' }
+    }
     if (!mains.has(id)) return next()
     const decision = admit(grants.get(id) ?? [], exec.name)
     grants.set(id, decision.grants)
