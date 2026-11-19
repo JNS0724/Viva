@@ -452,7 +452,7 @@ test('the right-click menu stays minimal: open the window or turn off the deskto
   assert.deepEqual(calls, ['open', 'off'])
 })
 
-test('switching off the desktop island closes an expanded input panel immediately', (t) => {
+test('switching off the desktop island closes an expanded input panel and clears shortcut-summoned state', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
   const desk = deskIsland(env)
@@ -465,6 +465,18 @@ test('switching off the desktop island closes an expanded input panel immediatel
   desk.setEnabled(false)
   assert.equal(desk.inputOpen(), false)
   assert.equal(win.visible, false)
+
+  // Summoned via shortcut while disabled, then sent (leaving working capsule visible): explicit switch-off must hide it
+  assert.equal(desk.openInput(), true)
+  desk.setView(view('working'))
+  desk.closeInput({ sent: true })
+  const summonedWin = env.windows.at(-1)!
+  assert.equal(summonedWin.visible, true)
+  desk.setEnabled(false)
+  assert.equal(summonedWin.visible, false)
+  // Shortcut can still summon the island again afterwards
+  assert.equal(desk.openInput(), true)
+  assert.equal(env.windows.at(-1)?.visible, true)
   desk.destroy()
 })
 
