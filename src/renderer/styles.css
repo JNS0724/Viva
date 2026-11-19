@@ -950,6 +950,9 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .tp-status[data-tone="error"] { color: var(--error-ink); }
 .fs-form { max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
 .fs-field { display: flex; flex-direction: column; gap: 6px; }
+.fs-field > .label { color: var(--ink-3); }
+/* .field grows along a row; in this column it would collapse to its padding. */
+.fs-field > .field { flex: none; }
 .fs-text-field { font-family: var(--font-sans); }
 .fs-rule { min-height: 120px; resize: vertical; line-height: 1.6; }
 .fs-hint { margin: 0; }
@@ -957,6 +960,7 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .fs-last[data-tone="error"] { color: var(--error-ink); }
 .fs-freq-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .fs-freq-stack { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.fs-freq-select, .fs-freq-time, .fs-freq-cron { flex: none; height: 38px; }
 .fs-freq-select { width: auto; min-width: 140px; }
 .fs-freq-time { width: 132px; }
 .fs-freq-cron { width: 200px; }
