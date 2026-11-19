@@ -734,14 +734,6 @@ const handlers = {
       dispatch({ type: 'settings_failed', message: errorMessage(err) })
     }
   },
-  async resetDeskPlace() {
-    try {
-      dispatch({ type: 'settings_loaded', view: await api.resetDeskPlace() })
-      historyActions.showToast(t("app.viva.island.moved.to.the.top.center"))
-    } catch (err) {
-      dispatch({ type: 'settings_failed', message: errorMessage(err) })
-    }
-  },
   saveKey: (value: string) => applySettingsChange(() => api.saveApiKey(value), saveNotice),
   clearKey: () => applySettingsChange(() => api.clearApiKey(), () => t("app.saved.key.cleared")),
   togglePicker: () => dispatch({ type: 'picker_toggle' }),

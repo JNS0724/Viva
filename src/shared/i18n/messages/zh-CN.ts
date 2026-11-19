@@ -350,7 +350,7 @@ export const zhCN = {
   'native.stop': '停止',
   'native.resetIsland': '放回顶部正中',
   'native.hideIsland': '先隐藏（下次关闭窗口时再出现）',
-  'native.disableIsland': '不再显示桌面岛（可在设置里打开）',
+  'native.disableIsland': '关闭桌面岛',
   'time.today': '今天',
   'time.yesterday': '昨天',
   'time.tomorrow': '明天',

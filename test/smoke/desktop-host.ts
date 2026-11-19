@@ -198,7 +198,6 @@ export async function checkDesktopDragRelease(application: ElectronApplication, 
     }
     screen.getCursorScreenPoint = () => point
     host.webContents.on('ipc-message', record)
-    desk.markCoached()
     desk.closeInput()
     desk.resetPlace()
     return {

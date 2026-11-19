@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deskCard, escapeAction, nextRequest, requestFor, showsCoach } from '../src/renderer/island-desk-card.ts'
+import { deskCard, escapeAction, nextRequest, requestFor } from '../src/renderer/island-desk-card.ts'
 
 /** What each desktop card says and offers (island-desk-card.ts), with no DOM: every word once, every action once. */
 
@@ -86,15 +86,6 @@ test('the background list counts its tasks in the head, not again in its body', 
   assert.deepEqual(card.actions.map(button => [button.text, button.act.kind]), [['打开后台页', 'tasks']])
 })
 
-test('the first-time card leads each tip with its gesture, and closing it counts as seen', () => {
-  const card = deskCard({ ...base, form: 'coach', tone: 'done', label: 'Viva 在这儿' }, { shortcut: '⌥Space' })!
-  const tips = card.body[0]
-  assert.equal(tips.kind, 'tips')
-  assert.deepEqual(tips.kind === 'tips' && tips.items.map(item => item.key), ['⌥Space', '拖入', '按住'])
-  assert.deepEqual(card.close, { kind: 'coached' })
-  assert.deepEqual(card.actions.map(button => button.act), [{ kind: 'coached' }])
-})
-
 test('no card repeats its head in its body', () => {
   const views = [permission, question, done, { ...done, summary: '', detail: '' },
     { ...base, form: 'error', tone: 'error', label: '未完成', detail: '' },
@@ -126,21 +117,8 @@ test('a task\'s request keeps its own head and face whatever the conversation on
   assert.deepEqual(deskCard(asked, { shortcut: '' })!.actions[0].act, { kind: 'task', taskId: 't' })
 })
 
-test('Esc does what × does: the first-time card counts as seen, anything else folds', () => {
-  const coach = { ...base, form: 'coach', tone: 'done', label: 'Viva 在这儿' }
-  assert.deepEqual(escapeAction(coach), { kind: 'coached' }, 'the main process does not know it is open, so dismiss would do nothing')
-  assert.deepEqual(escapeAction(coach), deskCard(coach, { shortcut: '' })!.close)
+test('Esc does what × does: any open card or input folds', () => {
   for (const view of [permission, question, done, { ...base, form: 'input', tone: 'done', label: '问 Viva' }]) {
     assert.deepEqual(escapeAction(view), { kind: 'dismiss' }, view.form)
   }
-})
-
-test('the first-time card shows only on the resting island', () => {
-  const resting = { coach: true, expanded: false, dragging: false, form: 'mini', dropping: false }
-  assert.equal(showsCoach(resting), true)
-  assert.equal(showsCoach({ ...resting, coach: false }), false)
-  assert.equal(showsCoach({ ...resting, expanded: true }), false)
-  assert.equal(showsCoach({ ...resting, dragging: true }), false)
-  assert.equal(showsCoach({ ...resting, dropping: true }), false)
-  assert.equal(showsCoach({ ...resting, form: 'waiting' }), false)
 })

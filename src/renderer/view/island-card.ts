@@ -39,7 +39,5 @@ export function cardPart(part: Exclude<DeskPart, { kind: 'background' }>, act: I
     case 'choices': return h('div', { class: 'isl-choices' }, part.options.map(option => h('button', {
       type: 'button', class: 'isl-btn isl-btn-secondary', onClick: () => act(option.act),
     }, h('span', { text: option.text }), icon('forward', CHOICE_ICON))))
-    case 'tips': return h('ul', { class: 'isl-tips' }, part.items.map(item => h('li', null,
-      h('span', { class: 'isl-kbd', text: item.key }), h('span', { text: item.text }))))
   }
 }

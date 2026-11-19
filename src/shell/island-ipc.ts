@@ -46,10 +46,8 @@ const ACTIONS: Readonly<Record<string, (fields: Fields) => IslandAction | null>>
   toggle: () => ({ kind: 'toggle' }),
   panel: ({ panel }) => panel === 'input' || panel === 'request' || panel === 'background' || panel === 'status' ? { kind: 'panel', panel } : null,
   request: ({ requestId }) => isText(requestId, MAX_ID_CHARS) ? { kind: 'request', requestId } : null,
-  place: ({ corner }) => ['left-top', 'right-top', 'left-bottom', 'right-bottom'].includes(String(corner)) ? { kind: 'place', corner } : null,
-  /** The right-click menu, and the first-time note seen. */
+  /** The right-click menu. */
   menu: () => ({ kind: 'menu' }),
-  coached: () => ({ kind: 'coached' }),
   rect: ({ x, y, width, height, version, ready, regions }) => {
     if (!isPx(x) || !isPx(y) || !isPx(width) || !isPx(height) || width < 0 || height < 0) return null
     if (version !== undefined && (typeof version !== 'number' || !Number.isSafeInteger(version) || version < 0)) return null

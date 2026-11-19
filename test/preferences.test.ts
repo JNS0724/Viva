@@ -13,8 +13,8 @@ test('preferences start from their defaults and keep what is set', () => {
   const prefs = createPreferences({ file })
   const home = { last: null, places: {} }
   const fresh = { workDirs: noDirs, imagesDir: '', permission: 'workspace-write', dshImportDir: '', openAtLogin: false, language: 'system', webSearch: 'auto' }
-  assert.deepEqual(prefs.get(), { deskIsland: true, deskPlaces: home, deskCoached: false, ...fresh })
-  assert.deepEqual(prefs.set('deskIsland', false), { deskIsland: false, deskPlaces: home, deskCoached: false, ...fresh })
+  assert.deepEqual(prefs.get(), { deskIsland: true, deskPlaces: home, ...fresh })
+  assert.deepEqual(prefs.set('deskIsland', false), { deskIsland: false, deskPlaces: home, ...fresh })
   const placed = { last: '1', places: { 1: { fx: 0.8, fy: 0.9 } } }
   prefs.set('deskPlaces', placed)
   const dirs = { recent: ['/me/site'], trusted: ['/me/site'] }
@@ -25,7 +25,7 @@ test('preferences start from their defaults and keep what is set', () => {
   prefs.set('openAtLogin', true)
   prefs.set('webSearch', 'off')
   assert.deepEqual(createPreferences({ file }).get(), {
-    deskIsland: false, deskPlaces: placed, deskCoached: false, workDirs: dirs, imagesDir: '/me/Pictures/Viva 图片', permission: 'auto',
+    deskIsland: false, deskPlaces: placed, workDirs: dirs, imagesDir: '/me/Pictures/Viva 图片', permission: 'auto',
     dshImportDir: '/me/work/team-dsh/.dsh', openAtLogin: true, language: 'system', webSearch: 'off',
   }, 'kept across launches')
 })
@@ -40,6 +40,6 @@ test('a broken file falls back to the defaults and is reported', () => {
   const file = tempFile()
   fs.writeFileSync(file, '{not json')
   const problems: string[] = []
-  assert.deepEqual(createPreferences({ file, onError: (err) => problems.push(err.message) }).get(), { deskIsland: true, deskPlaces: { last: null, places: {} }, deskCoached: false, workDirs: noDirs, imagesDir: '', permission: 'workspace-write', dshImportDir: '', openAtLogin: false, language: 'system', webSearch: 'auto' })
+  assert.deepEqual(createPreferences({ file, onError: (err) => problems.push(err.message) }).get(), { deskIsland: true, deskPlaces: { last: null, places: {} }, workDirs: noDirs, imagesDir: '', permission: 'workspace-write', dshImportDir: '', openAtLogin: false, language: 'system', webSearch: 'auto' })
   assert.equal(problems.length, 1)
 })
