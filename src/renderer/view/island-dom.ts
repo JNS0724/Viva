@@ -147,7 +147,9 @@ function createBarIsland(act: IslandAct) {
     const signal = barSignal(view)
     const portrait = maidFor(maids, 'bar', maidMood(view.mood, view.tone), { size: BAR_FACE_PX, framing: 'face', moving: !view.still })
     showMaid(face, portrait)
-    const next = `${localeRevision()}:${signal}:${islandSignatures(view, false, false).row}`
+    onHead = barActionFor(view)
+    head.disabled = !onHead
+    const next = `${localeRevision()}:${signal}:${view.taskId ?? ''}:${islandSignatures(view, false, false).row}`
     if (next === signature) {
       const clock = chin.querySelector('.isl-time')
       if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
@@ -171,8 +173,6 @@ function createBarIsland(act: IslandAct) {
       : view.form === 'done' && !view.task && view.elapsedMs ? formatElapsed(view.elapsedMs) : ''
     reconcileChildren(chin, [signEl, labelEl, timeText ? h('span', { class: 'isl-time', text: timeText }) : null]
       .filter((part): part is NonNullable<typeof part> => Boolean(part)))
-    onHead = barActionFor(view)
-    head.disabled = !onHead
     const detail = view.action ?? safeDetail(view)
     const bgLabel = bgCount > 0 ? t('background.running.count', { p0: bgCount }) : ''
     const summary = [barChinText(view), detail, bgLabel].filter(Boolean).join(' · ')

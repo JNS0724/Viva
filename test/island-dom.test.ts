@@ -83,3 +83,99 @@ test('the title-bar badge is display-only when idle, opens waiting background ta
   assert.equal(barSignal(bgApproval), 'confirm')
   assert.equal(barSignal(asking), 'asking')
 })
+
+test('switching between two waiting background tasks with the same title updates the title-bar click target', async () => {
+  const { createIsland } = await import('../src/renderer/view/island-dom.ts')
+  class StubNode {}
+  class StubEl extends StubNode {
+    tagName: string
+    className = ''
+    textContent = ''
+    title = ''
+    disabled = false
+    style: Record<string, string> = {}
+    dataset: Record<string, string> = {}
+    attributes: Record<string, string> = {}
+    children: StubEl[] = []
+    listeners: Record<string, Array<() => void>> = {}
+    complete = true
+    naturalWidth = 256
+    isConnected = true
+    parentElement: StubEl | null = null
+    constructor(tag: string) {
+      super()
+      this.tagName = tag.toUpperCase()
+    }
+    get firstElementChild() { return this.children[0] ?? null }
+    get childElementCount() { return this.children.length }
+    append(...nodes: Array<StubEl | string>) {
+      for (const n of nodes) {
+        if (typeof n === 'string') continue
+        n.parentElement = this
+        this.children.push(n)
+      }
+    }
+    replaceChildren(...nodes: Array<StubEl | string>) {
+      for (const c of this.children) c.parentElement = null
+      this.children = []
+      this.append(...nodes)
+    }
+    insertBefore(node: StubEl, ref: StubEl | null) {
+      if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(c => c !== node)
+      node.parentElement = this
+      const idx = ref ? this.children.indexOf(ref) : -1
+      if (idx >= 0) this.children.splice(idx, 0, node)
+      else this.children.push(node)
+      return node
+    }
+    remove() {
+      if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(c => c !== this)
+      this.parentElement = null
+    }
+    setAttribute(k: string, v: string) { this.attributes[k] = v }
+    addEventListener(type: string, fn: () => void) { (this.listeners[type] ??= []).push(fn) }
+    querySelector(selector: string): StubEl | null {
+      const cls = selector.startsWith('.') ? selector.slice(1) : ''
+      for (const child of this.children) {
+        if (cls ? child.className.split(/\s+/).includes(cls) : child.tagName.toLowerCase() === selector) return child
+        const nested = child.querySelector(selector)
+        if (nested) return nested
+      }
+      return null
+    }
+    click() {
+      if (this.disabled) return
+      for (const fn of this.listeners.click ?? []) fn()
+    }
+  }
+  const prevNode = globalThis.Node
+  const prevDocument = globalThis.document
+  const prevImage = globalThis.Image
+  globalThis.Node = StubNode as unknown as typeof Node
+  globalThis.document = {
+    createElement: (tag: string) => new StubEl(tag),
+    createTextNode: () => new StubNode(),
+  } as unknown as Document
+  globalThis.Image = class { src = '' } as unknown as typeof Image
+  try {
+    const actions: unknown[] = []
+    const island = createIsland('bar', (action) => actions.push(action))
+    const head = (island.el as unknown as StubEl).querySelector('.isl-head')!
+    const base = {
+      form: 'waiting', tone: 'waiting', mood: 'confirm', label: '等你确认', recent: [],
+      task: '同名任务', background: { count: 2, waiting: 2, items: [] },
+    }
+    island.update({ ...base, taskId: 'task-A' })
+    head.click()
+    island.update({ ...base, taskId: 'task-B' })
+    head.click()
+    assert.deepEqual(actions, [
+      { kind: 'task', taskId: 'task-A' },
+      { kind: 'task', taskId: 'task-B' },
+    ])
+  } finally {
+    globalThis.Node = prevNode
+    globalThis.document = prevDocument
+    globalThis.Image = prevImage
+  }
+})
