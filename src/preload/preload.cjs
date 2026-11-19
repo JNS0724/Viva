@@ -101,7 +101,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   setDeskIsland: (on) => ipcRenderer.invoke('settings:set-desk-island', on),
   setWebSearch: (on) => ipcRenderer.invoke('settings:set-web-search', on),
   setOpenAtLogin: (on) => ipcRenderer.invoke('settings:set-open-at-login', on),
-  resetDeskPlace: () => ipcRenderer.invoke('settings:reset-desk-place'),
   getModels: () => ipcRenderer.invoke('models:get'),
   addModelProvider: (input) => ipcRenderer.invoke('models:add', input),
   updateModelProvider: (id, input) => ipcRenderer.invoke('models:update', id, input),

@@ -35,30 +35,9 @@
 .isl-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--isl-dot); transition: background .3s; }
 .isl[data-tone="waiting"] .isl-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 25%, transparent); }
 
-/* The head and, on the desktop under a resting pointer, its tools (view/island-dom.js deskTools). */
 .isl-row { display: flex; align-items: center; height: calc(var(--isl-head) - 3px); }
-.isl-tools { flex: none; display: flex; align-items: center; gap: 2px; }
-.isl-tools:not(:empty) { padding-right: 8px; animation: isl-in .2s ease-out both; }
-.isl-tool {
-  position: relative; width: 30px; height: 30px; border: none; border-radius: 9px; background: none; color: var(--ink-2); cursor: pointer;
-}
-.isl-tool:hover { background: var(--line); color: var(--ink); }
-.isl-tool-stop::before { content: ''; position: absolute; inset: 0; margin: auto; width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
-.isl-tool-open { font-size: 17px; line-height: 30px; }
-/* Six dots: the grip the island is dragged by (the whole island drags; this says so). */
-.isl-grip {
-  width: 14px; height: 18px; margin-left: 4px; cursor: grab; opacity: .55;
-  background: radial-gradient(circle, var(--ink-2) 1.3px, transparent 1.6px) 0 0 / 7px 6px repeat;
-}
-.isl[data-host="desk"] .isl-row:hover .isl-grip { opacity: .9; }
-/* Too long for the island (Windows' Ctrl+Shift+Space, a wide system font), the words give way, never the tail
-   beside them: it ran into the tools (DeepSeek, 2026-10-26). */
 .isl-ask { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-3); font-size: 14px; }
 .isl-head .isl-kbd { flex: none; min-width: 0; font-size: 11px; }
-/* The first-time card's tips (view/island-card.ts): each led by its gesture or key. */
-.isl-tips { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--desk-gap); font-size: 13px; color: var(--ink-2); }
-.isl-tips li { display: flex; align-items: center; gap: 12px; }
-.isl-tips .isl-kbd { min-width: var(--desk-key); color: var(--ink); }
 
 .isl-head {
   display: flex; align-items: center; gap: 8px; box-sizing: border-box; height: calc(var(--isl-head) - 3px);

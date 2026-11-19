@@ -419,28 +419,6 @@ test('done stays up while the pointer rests on it, and a moment after it leaves'
   desk.destroy()
 })
 
-test('the first time the cat rests on the desktop it says what it can do, until the user has seen it', (t) => {
-  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
-  const env = fakes()
-  let coached = false
-  const coach = { get: () => coached, set: () => { coached = true } }
-  const desk = deskIsland(env, { coach })
-  desk.setView(view('idle'))
-  const [win] = env.windows
-  win.handlers['did-finish-load']()
-  assert.equal(win.lastView().coach, true)
-  desk.markCoached()
-  assert.deepEqual([coached, win.lastView().coach], [true, false])
-  desk.destroy()
-
-  coached = false
-  const dragged = deskIsland(fakes(), { coach })
-  dragged.setView(view('idle'))
-  dragged.startDrag()
-  assert.equal(coached, true, 'dragging the island, or opening its input, shows the user found it')
-  dragged.destroy()
-})
-
 test('a click on the cat opens what its state needs: the request, how it ended, what is missing, or the input', (t) => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
@@ -460,24 +438,18 @@ test('a click on the cat opens what its state needs: the request, how it ended, 
   desk.destroy()
 })
 
-test('the right-click menu: ask, open, stop only while working, put back, hide for now or for good', () => {
+test('the right-click menu stays minimal: open the window or turn off the desktop island', () => {
   const calls: string[] = []
-  const make = (working: boolean) => deskMenuTemplate({
-    working, shortcut: 'CommandOrControl+Shift+Space',
-    ask: () => calls.push('ask'), open: () => calls.push('open'), stop: () => calls.push('stop'),
-    resetPlace: () => calls.push('reset'), hide: () => calls.push('hide'), switchOff: () => calls.push('off'),
-  })
-  const items = make(true).filter((item) => item.type !== 'separator')
-  assert.deepEqual(items.map((item) => item.label), [
-    '提问…', '打开 Viva 窗口', '停止', '放回顶部正中', '先隐藏（下次关闭窗口时再出现）', '不再显示桌面岛（可在设置里打开）',
-  ])
-  assert.equal(items[0].registerAccelerator, false, 'the shortcut is shown, not registered twice')
+  const items = deskMenuTemplate({
+    open: () => calls.push('open'),
+    switchOff: () => calls.push('off'),
+  }).filter((item) => item.type !== 'separator')
+  assert.deepEqual(items.map((item) => item.label), ['打开 Viva 窗口', '关闭桌面岛'])
   for (const item of items) {
     assert.ok(item.click)
     Reflect.apply(item.click, undefined, [])
   }
-  assert.deepEqual(calls, ['ask', 'open', 'stop', 'reset', 'hide', 'off'])
-  assert.equal(make(false).find((item) => item.label === '停止')?.enabled, false)
+  assert.deepEqual(calls, ['open', 'off'])
 })
 
 test('the debug menu previews eight states in a separate window and resumes the live island on exit', t => {
@@ -518,27 +490,9 @@ test('the debug menu previews eight states in a separate window and resumes the 
   live.destroy()
 })
 
-test('the island may open its menu, open its input and say the user has seen what it can do', () => {
-  assert.deepEqual([checkIslandAction({ kind: 'menu', x: 1 }), checkIslandAction({ kind: 'coached' })], [{ kind: 'menu' }, { kind: 'coached' }])
-})
-
-test('hidden from its menu, the island stays away until the window is next closed to the tray', (t) => {
-  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
-  const env = fakes()
-  const desk = deskIsland(env)
-  desk.setView(view('working'))
-  const [win] = env.windows
-  desk.hideUntilAway()
-  assert.equal(win.visible, false)
-  desk.setView(view('waiting'))
-  assert.equal(win.visible, false, 'not even for what needs the user: the window still has it')
-  assert.equal(desk.openInput(), true, 'the shortcut still calls it up')
-  desk.closeInput()
-  assert.equal(win.visible, false)
-  desk.setAway(false)
-  desk.setAway(true)
-  assert.equal(env.windows.at(-1)?.visible, true, 'back once the window is closed again')
-  desk.destroy()
+test('the island may open its menu, while removed actions (place, coached) are rejected', () => {
+  assert.deepEqual([checkIslandAction({ kind: 'menu', x: 1 }), checkIslandAction({ kind: 'coached' }), checkIslandAction({ kind: 'place', corner: 'left-top' })],
+    [{ kind: 'menu' }, null, null])
 })
 
 test('gone and back, the island is a new window, letting the pointer through until it is over the island', (t) => {

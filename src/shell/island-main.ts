@@ -92,14 +92,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     showWindow()
   }
   const menu = (island: DeskIsland) => Menu.buildFromTemplate(deskMenuTemplate({
-    working: island.working(),
-    shortcut: ASK_SHORTCUT,
-    ask: () => island.openInput(),
     open: () => openWindow(island),
-    stop: () => toWindow({ kind: 'cancel' }),
-    resetPlace: () => island.resetPlace(),
-    placeAt: corner => island.placeAt(corner),
-    hide: () => island.hideUntilAway(),
     switchOff,
     preview: preview?.()?.menu(),
   }))
@@ -115,7 +108,6 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     toggle: island => island.togglePanel(),
     panel: (island, { panel }) => island.openPanel(panel),
     request: (island, { requestId }: { requestId: string }) => island.openPanel('request', requestId),
-    place: (island, { corner }) => island.placeAt(corner),
     input: (island) => island.openInput(),
     dismiss: (island) => island.closeInput(),
     open: openWindow,
@@ -133,7 +125,6 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
       openWindow(island)
     },
     menu: (island) => island.popup(menu(island)),
-    coached: (island) => island.markCoached(),
   }
   ipcMain.on('island:act', (event, raw) => {
     const activePreview = preview?.()
