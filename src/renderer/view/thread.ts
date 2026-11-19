@@ -8,7 +8,7 @@ import { currentAction, receiptLine, restoredNote } from '../selectors.ts'
 import { maidFor } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
 import { h, label } from './dom.ts'
-import { caretHost, revealMarkdown, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
+import { caretHost, revealMarkdown, refreshExpansionLabel, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { foldKey, foldTall } from './message-fold.ts'
 import { canRewindMessage, foldAfter } from '../rewind-state.ts'
@@ -84,15 +84,13 @@ function answerText(message: ThreadMessage, handlers: Handlers, look: Look): HTM
   look.streams?.delete(message.id)
   if (!finished || text.length <= LONG_ANSWER_CHARS) return renderMarkdown(text, { openLink: handlers.openLink })
   const start = answerStart(text)
+  const remaining = Math.round((text.length - start.length) / 1000)
   const el = renderMarkdown(start, { openLink: handlers.openLink })
   const button = h('button', {
-    class: 'btn btn-outline btn-small answer-more', type: 'button', text: t("thread.expand.remaining", { p0: Math.round((text.length - start.length) / 1000) }),
-    onClick: () => {
-      void revealMarkdown(el, button, text, handlers.openLink).catch(() => {
-        button.textContent = t('thread.expand.remaining', { p0: Math.round((text.length - start.length) / 1000) })
-      })
-    },
+    class: 'btn btn-outline btn-small answer-more', type: 'button',
+    onClick: () => { void revealMarkdown(el, button, text, handlers.openLink, remaining) },
   })
+  refreshExpansionLabel(button, remaining)
   el.append(button)
   return el
 }
@@ -382,8 +380,7 @@ function localizeAssistant(view: View, message: ThreadMessage): boolean {
   if (!markdown) return false
   refreshMarkdownLanguage(markdown)
   const more = markdown.querySelector<HTMLElement>('.answer-more')
-  if (more) more.textContent = markdown.getAttribute('aria-busy') === 'true' ? t('thread.expanding')
-    : t("thread.expand.remaining", { p0: Math.round((message.text.length - answerStart(message.text).length) / 1000) })
+  if (more) refreshExpansionLabel(more, Math.round((message.text.length - answerStart(message.text).length) / 1000))
   const receipt = root.querySelector<HTMLElement>('.receipt')
   if (receipt && message.receipt) {
     if (receipt.tagName === 'BUTTON') receipt.replaceChildren(...receiptParts(message.receipt))

@@ -321,6 +321,7 @@ export const en = {
   "dock.expand": "Expand background tasks",
   "task.list.collapse": "Collapse list",
   "thread.expand.remaining": "Expand full text (about {p0}K more characters)",
+  "thread.expand.retry": "Couldn’t expand the answer. Try again",
   "thread.expanding": "Expanding answer…",
   "topic.current.earlier.messages": "{p0} earlier messages in this topic, in Review",
   "topic.context.used": "{p0}% used",

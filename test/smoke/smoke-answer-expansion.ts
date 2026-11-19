@@ -1,3 +1,4 @@
+import { expect as assert, type Page } from '@playwright/test'
 import { report, run, type Expect, type SmokeWindow } from './smoke-kit.ts'
 
 /** Actual Markdown and ResizeObserver: revealing a finished answer must keep the reader's place. */
@@ -58,4 +59,150 @@ export async function checkAnswerExpansion(win: SmokeWindow, expect: Expect): Pr
     'expanding at the preview bottom preserves the reading position and leaves the jump button working',seen)
   expect(seen.errorKept&&seen.stillExpanded&&seen.errorShown&&seen.settledKept&&seen.errorCleared,
     'an error updates its notice without replacing or folding the expanded answer',seen)
+
+  for (const kind of ['list', 'table'] as const) {
+    const large = await run(win, largeBlockProbe(kind)) as LargeBlockProbe
+    report(`answer expansion ${kind}: ${JSON.stringify(large)}`)
+    expect(large.completed && large.kept && large.drawnAcrossFrames,
+      `a single large ${kind} retains its preview and draws across frames`, large)
+    // Full accessibility updates add occasional longer frames at this scale. Also gate sustained frame pacing.
+    if (process.platform === 'darwin') expect(large.frameGapMs < 100 && large.frameP95Ms < 50,
+      `a large ${kind} stays within its frame budgets with accessibility enabled`, large)
+  }
+}
+
+interface LargeBlockProbe { completed: boolean, kept: boolean, drawnAcrossFrames: boolean, frameGapMs: number, frameP95Ms: number }
+
+function largeBlockProbe(kind: 'list' | 'table') {
+  const count = 7_000
+  const content = kind === 'list'
+    ? Array.from({ length: count }, (_, i) => `- Entry ${i} with a [label](https://example.com/${i}) and some text`).join('\n')
+    : `| First | Second |\n| :-- | --: |\n${Array.from({ length: count }, (_, i) => `| Row ${i} | Test value ${i} with some text |`).join('\n')}`
+  const selector = kind === 'list' ? 'ul > li' : 'tbody > tr'
+  return `(async () => {
+    const {renderMarkdown, revealMarkdown} = await import('./view/markdown.js')
+    const {answerStart} = await import('./long-answer.js')
+    const text = ${JSON.stringify(content)}, selector = ${JSON.stringify(selector)}, options = {openLink() {}}
+    const host = document.createElement('div')
+    host.style.cssText = 'position:fixed;inset:50px 20px 20px;background:var(--bg);z-index:99999;overflow:auto'
+    const markdown = renderMarkdown(answerStart(text), options), first = markdown.querySelector(selector)
+    const button = document.createElement('button')
+    markdown.append(button); host.append(markdown); document.body.append(host)
+    const frame = () => new Promise(requestAnimationFrame)
+    try {
+      await frame(); await frame()
+      const preview = markdown.querySelectorAll(selector).length
+      const gaps = []
+      let prior = performance.now(), drawnAcrossFrames = false, finished = false
+      const work = revealMarkdown(markdown, button, text, options.openLink, 350).then(() => finished = true)
+      for (let i = 0; i < 180 && !finished; ++i) {
+        await frame()
+        const now = performance.now()
+        gaps.push(now - prior); prior = now
+        const count = markdown.querySelectorAll(selector).length
+        if (count > preview && count < ${count}) drawnAcrossFrames = true
+      }
+      await work; await frame()
+      gaps.push(performance.now() - prior); gaps.sort((a, b) => a - b)
+      return { completed: !button.isConnected && markdown.querySelectorAll(selector).length === ${count}, kept: first === markdown.querySelector(selector),
+        drawnAcrossFrames, frameGapMs: gaps.at(-1), frameP95Ms: gaps[Math.floor((gaps.length - 1) * .95)] }
+    } finally { host.remove() }
+  })()`
+}
+
+/** Exercise focus and Worker failure in Electron, independently of the frame timings. */
+export async function checkExpansionInteractions(page: Page) {
+  const host = page.locator('#expansion-focus-fixture')
+  try {
+    const scroll = await page.evaluate(`(async () => {
+      const {renderMarkdown, revealMarkdown} = await import('./view/markdown.js')
+      const prefix = '[Earlier link](https://example.com/earlier)\\n\\n' + '[x][later]\\n\\n'.repeat(1900) + 'End of preview'
+      const full = prefix + '\\n\\n[New link](https://example.com/new)\\n\\n[later]: https://example.com/reference'
+      const host = document.createElement('div'); host.id = 'expansion-focus-fixture'
+      host.style.cssText = 'position:fixed;inset:50px 20px 20px;background:var(--bg);z-index:99999;overflow:auto'
+      const openLink = () => {}, target = renderMarkdown(prefix, {openLink}), button = document.createElement('button')
+      button.textContent = 'Expand'; target.append(button); host.append(target); document.body.append(host)
+      const frame = () => new Promise(requestAnimationFrame)
+      await frame(); host.scrollTop = host.scrollHeight; button.focus({preventScroll:true}); await frame()
+      const before = host.scrollTop
+      let lowest = before, done = false
+      const draw = revealMarkdown(target, button, full, openLink, 1).then(() => done = true)
+      while (!done) { await frame(); lowest = Math.min(lowest, host.scrollTop) }
+      await draw; await frame()
+      return { before, lowest, after: host.scrollTop, newFocus: document.activeElement?.textContent }
+    })()`) as { before: number, lowest: number, after: number, newFocus: string }
+    assert(scroll.before - scroll.lowest, 'late definitions should never contract the preview mid-reveal').toBeLessThanOrEqual(2)
+    assert(Math.abs(scroll.after - scroll.before), 'late definitions should preserve the reading position').toBeLessThanOrEqual(2)
+    assert(scroll.newFocus, 'keyboard focus should transfer to the start of the newly revealed content').toBe('New link')
+    await page.keyboard.press('Tab')
+    await assert(host.locator('a[href="https://example.com/new"]')).toBeFocused()
+
+    const split = await page.evaluate(`(async () => {
+      const {renderMarkdown, revealMarkdown} = await import('./view/markdown.js')
+      const host = document.getElementById('expansion-focus-fixture')
+      const prefix = '[Readable label][later] '.repeat(650), openLink = () => {}
+      const full = prefix + '\\n\\n' + 'Full answer continues. '.repeat(44) + '\\n\\n[later]: https://example.com/reference'
+      const target = renderMarkdown(prefix, {openLink}), button = document.createElement('button')
+      target.append(button); host.replaceChildren(target)
+      const frame = () => new Promise(requestAnimationFrame)
+      await frame(); host.scrollTop = host.scrollHeight; await frame()
+      const before = host.scrollTop
+      let lowest = before, done = false, partial = false
+      const draw = revealMarkdown(target, button, full, openLink, 1).then(() => done = true)
+      while (!done) {
+        await frame()
+        lowest = Math.min(lowest, host.scrollTop)
+        const links = target.querySelector('p').querySelectorAll('a').length
+        if (links && links < 650) partial = true
+      }
+      await draw; await frame()
+      return {before, lowest, after: host.scrollTop, partial, links: target.querySelector('p').querySelectorAll('a').length}
+    })()`) as { before: number, lowest: number, after: number, partial: boolean, links: number }
+    assert(split.links).toBe(650)
+    assert(split.partial, 'the text to link conversion should preserve the existing paragraph until its replacement is ready').toBe(false)
+    assert(Math.min(split.before, split.after) - split.lowest, 'a single paragraph should never collapse partway through its replacement').toBeLessThanOrEqual(2)
+
+    const paragraphFocused = await page.evaluate(`(async () => {
+      const {renderMarkdown, revealMarkdown} = await import('./view/markdown.js')
+      const host = document.getElementById('expansion-focus-fixture')
+      const prefix = 'One long paragraph. '.repeat(900), openLink = () => {}
+      const target = renderMarkdown(prefix, {openLink}), button = document.createElement('button')
+      target.append(button); host.replaceChildren(target); button.focus()
+      await revealMarkdown(target, button, prefix + 'The end.', openLink, 1)
+      return document.activeElement === target.firstElementChild && !button.isConnected
+    })()`)
+    assert(paragraphFocused, 'an answer that only extends a paragraph should keep keyboard focus').toBe(true)
+  } finally { await host.evaluateAll(nodes => nodes.forEach(node => node.remove())) }
+
+  const outcome = await page.evaluate(`(async () => {
+    const {renderMarkdown, revealMarkdown} = await import('./view/markdown.js')
+    const host = document.createElement('div'); host.hidden = true; document.body.append(host)
+    const NativeWorker = window.Worker, nativeTimeout = window.setTimeout
+    let stopped = 0, timeouts = 0
+    class StalledWorker extends NativeWorker {
+      postMessage() {}
+      terminate() { ++stopped; super.terminate() }
+    }
+    const prefix = 'Preview', full = 'Preview\\n\\nFull text', openLink = () => {}
+    function answer() {
+      const target = renderMarkdown(prefix, {openLink}), button = document.createElement('button')
+      target.append(button); host.append(target)
+      return {target, button, draw: () => revealMarkdown(target, button, full, openLink, 1)}
+    }
+    window.Worker = StalledWorker
+    window.setTimeout = (callback, ms, ...args) => nativeTimeout(ms === 10_000 ? () => { ++timeouts; callback(...args) } : callback, ms === 10_000 ? 25 : ms, ...args)
+    try {
+      const cancelled = answer(), cancelledWork = cancelled.draw()
+      cancelled.target.remove(); await cancelledWork
+      const detached = stopped === 1 && timeouts === 0 && !cancelled.target.hasAttribute('aria-busy') && !cancelled.button.dataset.expandFailed
+      const retry = answer(), preview = retry.target.firstChild
+      await retry.draw()
+      const failed = stopped === 2 && timeouts === 1 && retry.button.dataset.expandFailed === 'true' && !retry.target.hasAttribute('aria-busy')
+        && retry.button.isConnected && retry.target.firstChild === preview && retry.target.querySelectorAll('p').length === 1
+      window.Worker = NativeWorker
+      await retry.draw()
+      return {detached, failed, retried: !retry.button.isConnected && retry.target.firstChild === preview && retry.target.querySelectorAll('p').length === 2}
+    } finally { window.Worker = NativeWorker; window.setTimeout = nativeTimeout; host.remove() }
+  })()`)
+  assert(outcome).toEqual({ detached: true, failed: true, retried: true })
 }

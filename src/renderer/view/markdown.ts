@@ -1,4 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { localeRevision } from '../../shared/i18n/locale.ts'
 import type { Token, Tokens } from 'marked'
 import { lexMarkdown } from './markdown-lexer.ts'
 import { h } from './dom.ts'
@@ -26,80 +27,114 @@ export function safeHref(href: unknown): string | null {
   }
 }
 
-function link(href: unknown, children: View, openLink: Context['openLink']) {
+function link(href: unknown, openLink: Context['openLink']) {
   const target = safeHref(href)
-  if (!target) return h('span', { class: 'md-link-off' }, children)
+  if (!target) return h('span', { class: 'md-link-off' })
   return h('a', {
     class: 'md-link', href: target, title: target,
     onClick: (event: MouseEvent) => {
       event.preventDefault()
       openLink(target)
     },
-  }, children)
+  })
 }
 
-function inline(tokens: readonly Token[] | undefined, ctx: Context): View[] {
-  return (tokens ?? []).map((token): View => {
+// Yield child nodes lazily so the same rendering rules can also draw a long answer across frames.
+type MarkdownPart = { node: ChildNode, sourceLength?: number }
+  | { node: HTMLElement, sourceLength?: number, children: Iterable<MarkdownPart> }
+
+function* inlineParts(tokens: readonly Token[] | undefined, ctx: Context): IterableIterator<MarkdownPart> {
+  for (const token of tokens ?? []) {
+    const sourceLength = token.raw?.length ?? 0
     switch (token.type) {
-      case 'strong': return h('strong', null, inline(token.tokens, ctx))
-      case 'em': return h('em', null, inline(token.tokens, ctx))
-      case 'del': return h('del', null, inline(token.tokens, ctx))
-      case 'codespan': return h('code', { class: 'md-code-inline', text: token.text })
-      case 'br': return h('br')
-      case 'link': return link(token.href, inline(token.tokens, ctx), ctx.openLink)
+      case 'strong':
+      case 'em':
+      case 'del': yield { node: h(token.type), sourceLength, children: inlineParts(token.tokens, ctx) }; break
+      case 'codespan': yield { node: h('code', { class: 'md-code-inline', text: token.text }), sourceLength }; break
+      case 'br': yield { node: h('br'), sourceLength }; break
+      case 'link': yield { node: link(token.href, ctx.openLink), sourceLength, children: inlineParts(token.tokens, ctx) }; break
       // In answers images are never loaded: the alt text, linked to where the image is. A host that may
       // show them (the 文件 preview, for pictures in the workspace) passes `image`.
       case 'image': {
         const shown = ctx.image?.(token.href, token.text)
-        if (shown) return shown
-        const label = token.text || token.href
-        const fallback = link(token.href, t("files-panel.image", { value1: label }), ctx.openLink)
-        fallback.dataset.mdImageLabel = label
-        return fallback
+        if (shown) yield { node: shown, sourceLength }
+        else {
+          const label = token.text || token.href
+          const fallback = link(token.href, ctx.openLink)
+          fallback.textContent = t('files-panel.image', { value1: label })
+          fallback.dataset.mdImageLabel = label
+          yield { node: fallback, sourceLength }
+        }
+        break
       }
-      case 'text': return token.tokens ? inline(token.tokens, ctx) : token.text
+      case 'text':
+        if (token.tokens) yield* inlineParts(token.tokens, ctx)
+        else yield { node: document.createTextNode(token.text), sourceLength }
+        break
       // escape, html and anything newer: what was written, as text
-      default: return token.raw
+      default: if (token.raw !== undefined) yield { node: document.createTextNode(token.raw), sourceLength }
     }
-  })
-}
-
-function listItem(item: Tokens.ListItem, ctx: Context) {
-  return h('li', { class: item.task ? 'md-task' : null },
-    item.task ? h('input', { type: 'checkbox', checked: item.checked, disabled: true, 'aria-label': item.checked ? t("island-view.completed") : t("markdown.incomplete") }) : null,
-    ...blocks(item.tokens.filter((token) => token.type !== 'checkbox'), ctx, { tight: !item.loose }).flat())
-}
-
-function table(token: Tokens.Table, ctx: Context) {
-  const cell = (tag: 'th' | 'td', content: Tokens.TableCell, index: number) => h(tag, { class: token.align[index] ? `md-align-${token.align[index]}` : null }, inline(content.tokens, ctx))
-  return h('div', { class: 'md-table-wrap' },
-    h('table', { class: 'md-table' },
-      h('thead', null, h('tr', null, token.header.map((content, i) => cell('th', content, i)))),
-      h('tbody', null, token.rows.map((row) => h('tr', null, row.map((content, i) => cell('td', content, i)))))))
-}
-
-function block(token: Token, ctx: Context, { tight }: { tight: boolean }): View {
-  switch (token.type) {
-    case 'heading': return h(HEADING_TAGS[token.depth - 1] ?? 'h5', { class: `md-heading md-h${token.depth}` }, inline(token.tokens, ctx))
-    case 'paragraph': return h('p', null, inline(token.tokens, ctx))
-    // Inside a tight list item the text is not a paragraph of its own.
-    case 'text': return tight ? inline(token.tokens ?? [token], ctx) : h('p', null, inline(token.tokens ?? [token], ctx))
-    case 'code': return h('pre', { class: 'md-code' },
-      token.lang ? h('span', { class: 'md-code-lang', text: token.lang }) : null,
-      h('code', { text: token.text }))
-    case 'blockquote': return h('blockquote', null, blocks(token.tokens, ctx))
-    case 'list': return h(token.ordered ? 'ol' : 'ul', { start: token.ordered && token.start !== 1 ? token.start : null },
-      (token as Tokens.List).items.map((item) => listItem(item, ctx)))
-    // marked's own table token (a generic one could only share its type by name).
-    case 'table': return table(token as Tokens.Table, ctx)
-    case 'hr': return h('hr')
-    case 'space': return null
-    default: return token.raw ? h('p', { text: token.raw }) : null
   }
 }
 
-function blocks(tokens: readonly Token[] | undefined, ctx: Context, options = { tight: false }): View[] {
-  return (tokens ?? []).map((token) => block(token, ctx, options))
+function* listContents(item: Tokens.ListItem, ctx: Context): IterableIterator<MarkdownPart> {
+  if (item.task) yield { node: h('input', { type: 'checkbox', checked: item.checked, disabled: true, 'aria-label': item.checked ? t('island-view.completed') : t('markdown.incomplete') }) }
+  for (const token of item.tokens) if (token.type !== 'checkbox') yield* blockParts(token, ctx, !item.loose)
+}
+
+function* tableRows(rows: readonly Tokens.TableCell[][], tag: 'th' | 'td', align: Tokens.Table['align'], ctx: Context): IterableIterator<MarkdownPart> {
+  function* cells(row: readonly Tokens.TableCell[]): IterableIterator<MarkdownPart> {
+    for (const [index, content] of row.entries()) {
+      yield { node: h(tag, { class: align[index] ? `md-align-${align[index]}` : null }), children: inlineParts(content.tokens, ctx) }
+    }
+  }
+  for (const row of rows) yield { node: h('tr'), children: cells(row) }
+}
+
+function* blockParts(token: Token, ctx: Context, tight = false): IterableIterator<MarkdownPart> {
+  switch (token.type) {
+    case 'heading': yield { node: h(HEADING_TAGS[token.depth - 1] ?? 'h5', { class: `md-heading md-h${token.depth}` }), children: inlineParts(token.tokens, ctx) }; break
+    case 'paragraph': yield { node: h('p'), children: inlineParts(token.tokens, ctx) }; break
+    // Inside a tight list item the text is not a paragraph of its own.
+    case 'text': {
+      const children = inlineParts(token.tokens ?? [token], ctx)
+      if (tight) yield* children
+      else yield { node: h('p'), children }
+      break
+    }
+    case 'code': yield { node: h('pre', { class: 'md-code' },
+      token.lang ? h('span', { class: 'md-code-lang', text: token.lang }) : null,
+      h('code', { text: token.text })) }; break
+    case 'blockquote': yield { node: h('blockquote'), children: blocks(token.tokens, ctx) }; break
+    case 'list': {
+      const list = token as Tokens.List
+      function* items(): IterableIterator<MarkdownPart> {
+        for (const item of list.items) yield { node: h('li', { class: item.task ? 'md-task' : null }), children: listContents(item, ctx) }
+      }
+      yield { node: h(list.ordered ? 'ol' : 'ul', { start: list.ordered && list.start !== 1 ? list.start : null }), children: items() }
+      break
+    }
+    case 'table': {
+      const { header, rows, align } = token as Tokens.Table
+      yield { node: h('div', { class: 'md-table-wrap' }), children: [{ node: h('table', { class: 'md-table' }), children: [
+        { node: h('thead'), children: tableRows([header], 'th', align, ctx) },
+        { node: h('tbody'), children: tableRows(rows, 'td', align, ctx) },
+      ] }] }
+      break
+    }
+    case 'hr': yield { node: h('hr') }; break
+    case 'space': break
+    default: if (token.raw) yield { node: h('p', { text: token.raw }) }
+  }
+}
+
+function* blocks(tokens: readonly Token[] | undefined, ctx: Context): IterableIterator<MarkdownPart> {
+  for (const token of tokens ?? []) yield* blockParts(token, ctx)
+}
+
+function buildPart(part: MarkdownPart): ChildNode {
+  if ('children' in part) for (const child of part.children) part.node.append(buildPart(child))
+  return part.node
 }
 
 /**
@@ -108,7 +143,7 @@ function blocks(tokens: readonly Token[] | undefined, ctx: Context, options = { 
  * @returns a `.msg-text.markdown` element
  */
 export function renderMarkdown(text: string, { openLink, image = null }: { openLink: Context['openLink'], image?: Context['image'] }): HTMLElement {
-  return h('div', { class: 'msg-text markdown' }, blocks(lexMarkdown(text), { openLink, image }))
+  return h('div', { class: 'msg-text markdown' }, [...blocks(lexMarkdown(text), { openLink, image })].map(buildPart))
 }
 
 /** A top-level block of an answer: the token marked made of it, and the nodes built for it. */
@@ -174,8 +209,7 @@ function paragraph(token: Tokens.Paragraph, ctx: Context, before?: BuiltBlock): 
   // The streaming caret is owned by thread.ts and stays after the paragraph's text.
   const caret = el.querySelector('.caret')
   for (const next of tokens.slice(same)) {
-    const holder = h('span', null, inline([next], ctx))
-    const nodes = [...holder.childNodes]
+    const nodes = [...inlineParts([next], ctx)].map(buildPart)
     for (const node of nodes) el.insertBefore(node, caret)
     parts.push({ token: next, nodes })
   }
@@ -184,8 +218,7 @@ function paragraph(token: Tokens.Paragraph, ctx: Context, before?: BuiltBlock): 
 
 function built(token: Token, ctx: Context): BuiltBlock {
   if (isParagraph(token)) return paragraph(token, ctx)
-  const holder = h('div', null, block(token, ctx, { tight: false }))
-  return { token, nodes: [...holder.childNodes] }
+  return { token, nodes: [...blockParts(token, ctx)].map(buildPart) }
 }
 
 /**
@@ -239,61 +272,131 @@ export function streamMarkdown(previous: MarkdownStream | null, input: string, c
   return { el, text, blocks, links: read.links }
 }
 
-function lexOffThread(text: string): Promise<readonly Token[]> {
+function lexOffThread(text: string, target: HTMLElement, active: () => boolean): Promise<readonly Token[] | null> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./markdown-worker.js', import.meta.url), { type: 'module' })
-    const stop = () => { clearTimeout(timer); worker.terminate() }
+    const watcher = new MutationObserver(() => {
+      if (!active()) { stop(); resolve(null) }
+    })
+    const stop = () => { clearTimeout(timer); watcher.disconnect(); worker.terminate() }
     const fail = () => { stop(); reject(new Error('Markdown parsing failed')) }
     const timer = setTimeout(fail, 10_000)
     worker.onmessage = (event: MessageEvent<Token[]>) => { stop(); resolve(event.data) }
     worker.onerror = event => { event.preventDefault(); fail() }
     worker.onmessageerror = fail
-    worker.postMessage(text)
+    watcher.observe(target.ownerDocument, { childList: true, subtree: true })
+    try { worker.postMessage(text) } catch { fail() }
   })
 }
 
-/** Parse the full source together so later reference definitions still affect
- * the opening. Draw verified tokens in small frames and keep equal preview nodes. */
-export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string, openLink: Context['openLink']) {
-  if (target.getAttribute('aria-busy') === 'true') return
+/** Same shape and link handler. The renderer always handles the same href with the same answer's openLink. */
+function sameElement(previous: ChildNode | null, next: HTMLElement): previous is HTMLElement {
+  return previous instanceof HTMLElement && previous.tagName === next.tagName && previous.attributes.length === next.attributes.length
+    && [...next.attributes].every(({ name, value }) => previous.getAttribute(name) === value)
+}
+
+/** Keep preview slots in place. A different subtree gets built before its old slot is replaced. */
+function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before: ChildNode | null = null,
+  onAdded?: (node: HTMLElement) => void): IterableIterator<void> {
+  const last = before ? before.previousSibling : parent.lastChild
+  let cursor = parent.firstChild
+  let staged: { previous: Text, content: DocumentFragment, sourceLeft: number } | undefined
+  function commitStaged() {
+    if (staged) staged.previous.replaceWith(staged.content)
+    staged = undefined
+  }
+  for (const part of parts) {
+    const { node, sourceLength } = part
+    const previous = cursor === before ? null : cursor
+    if (previous) cursor = previous.nextSibling
+    // A reference defined near the end can turn a preview's last plain text node into many inline parts.
+    // Hold the old node until the replacement covers the same source span. The rest can still grow in view.
+    if (sourceLength === undefined) commitStaged()
+    else if (previous instanceof Text && previous === last && sourceLength < previous.length) {
+      staged = { previous, content: document.createDocumentFragment(), sourceLeft: previous.length }
+    }
+    if (staged && sourceLength !== undefined) {
+      staged.content.append(node)
+      yield
+      if ('children' in part) yield* revealParts(part.node, part.children)
+      staged.sourceLeft -= sourceLength
+      if (staged.sourceLeft <= 0) commitStaged()
+      continue
+    }
+    if (!('children' in part)) {
+      if (previous && !previous.isEqualNode(node)) previous.replaceWith(node)
+      else if (!previous) {
+        parent.insertBefore(node, before)
+        if (node instanceof HTMLElement) onAdded?.(node)
+      }
+      yield
+    } else if (sameElement(previous, part.node)) {
+      yield* revealParts(previous, part.children, null, previous === last ? onAdded : undefined)
+    } else {
+      // A new container can grow right where it belongs. Keep a mismatched preview slot until its substitute is ready.
+      if (!previous) { parent.insertBefore(part.node, before); onAdded?.(part.node) }
+      yield
+      yield* revealParts(part.node, part.children)
+      if (previous) { previous.replaceWith(part.node); yield }
+    }
+  }
+  if (staged) { commitStaged(); yield }
+  while (cursor && cursor !== before) {
+    const next = cursor.nextSibling
+    cursor.remove()
+    cursor = next
+    yield
+  }
+}
+
+export function refreshExpansionLabel(button: HTMLElement, remaining: number) {
+  button.textContent = button.getAttribute('aria-disabled') === 'true' ? t('thread.expanding')
+    : button.dataset.expandFailed === 'true' ? t('thread.expand.retry')
+      : t('thread.expand.remaining', { p0: remaining })
+}
+
+const REVEAL_SLICE_MS = 5
+// DOM changes also cost layout and accessibility work after this script yields, especially table rows.
+const REVEAL_SLICE_NODES = 500
+
+/** Parse the full source together so later reference definitions still affect the opening. */
+export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string,
+  openLink: Context['openLink'], remaining: number) {
+  const active = () => target.isConnected && button.parentNode === target
+  if (target.getAttribute('aria-busy') === 'true' || !active()) return
   takeReaderControl(target)
+  delete button.dataset.expandFailed
   target.setAttribute('aria-busy', 'true')
   button.setAttribute('aria-disabled', 'true')
-  button.textContent = t('thread.expanding')
-  const moveFocus = () => {
-    if (document.activeElement !== button) return
-    target.tabIndex = -1
-    target.focus({ preventScroll: true })
-  }
+  refreshExpansionLabel(button, remaining)
   try {
-    const tokens = await lexOffThread(text).catch(() => lexMarkdown(text))
-    const ctx = { openLink, image: null }
-    const previous = [...target.childNodes].filter(node => node !== button)
-    let keep = 0, cursor = 0, different = false
-    while (cursor < tokens.length) {
+    const tokens = await lexOffThread(text, target, active)
+    if (!tokens || !active()) return
+    const language = localeRevision()
+    let firstAdded: HTMLElement | null = null
+    const draw = revealParts(target, blocks(tokens, { openLink, image: null }), button, node => { firstAdded ??= node })
+    for (let done = false; !done;) {
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-      if (!target.isConnected || button.parentNode !== target) return
-      const until = performance.now() + 5
-      const completed = document.createDocumentFragment()
-      do {
-        const holder = h('div', null, block(tokens[cursor++]!, ctx, { tight: false }))
-        for (const node of [...holder.childNodes]) {
-          if (!different && previous[keep]?.isEqualNode(node)) { keep++; continue }
-          if (!different) {
-            different = true
-            for (const old of previous.slice(keep)) old.remove()
-          }
-          completed.append(node)
-        }
-      } while (cursor < tokens.length && performance.now() < until)
-      target.insertBefore(completed, button)
+      if (!active()) return
+      const until = performance.now() + REVEAL_SLICE_MS
+      let remainingNodes = REVEAL_SLICE_NODES
+      do { done = draw.next().done === true } while (!done && --remainingNodes > 0 && performance.now() < until)
     }
-    if (!different) for (const old of previous.slice(keep)) old.remove()
-    moveFocus()
+    if (language !== localeRevision()) refreshMarkdownLanguage(target)
+    if (target.ownerDocument.activeElement === button) {
+      const nextFocus = firstAdded ?? button.previousElementSibling ?? target
+      if (nextFocus instanceof HTMLElement) {
+        if (nextFocus.tabIndex < 0) nextFocus.tabIndex = -1
+        nextFocus.focus({ preventScroll: true })
+      }
+    }
     button.remove()
+  } catch {
+    if (active()) button.dataset.expandFailed = 'true'
   } finally {
     target.removeAttribute('aria-busy')
     button.removeAttribute('aria-disabled')
+    if (button.parentNode === target) refreshExpansionLabel(button, remaining)
   }
 }
 

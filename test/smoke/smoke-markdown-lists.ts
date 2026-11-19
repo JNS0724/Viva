@@ -22,16 +22,16 @@ export async function checkMarkdownLists(win: SmokeWindow): Promise<string[]> {
     const prefix = '## 开头\\n\\n[入口](https://example.com/)\\n\\n- 原样'
     const target = renderMarkdown(prefix, options), heading = target.firstChild, link = target.querySelector('a')
     const button = document.createElement('button');target.append(button)
-    const full = prefix+'\\n\\n结尾', expected = renderMarkdown(full, options).innerHTML
+    const full = prefix+'\\n\\n3. [x] Done\\n   - Nested\\n4. Next\\n\\n|a|b|\\n|:-|--:|\\n|x|2|\\n\\n![image](https://example.com/image) <b>literal</b> [unsafe](javascript:alert(1))', expected = renderMarkdown(full, options).innerHTML
     const reference = renderMarkdown('说明 [目标][later]', options), beforeReference = reference.firstChild
     const referenceButton = document.createElement('button');reference.append(referenceButton)
     const resolved = '说明 [目标][later]\\n\\n[later]: https://example.com/target', expectedReference = renderMarkdown(resolved, options).innerHTML
     const host = document.createElement('div');host.hidden = true;host.append(target, reference);document.body.append(host)
     try {
-      await revealMarkdown(target, button, full, options.openLink);target.querySelector('a').click()
+      await revealMarkdown(target, button, full, options.openLink, 1);target.querySelector('a').click()
       const cached = target.firstChild === heading && target.querySelector('a') === link && !target.contains(button) && target.innerHTML === expected && opened.length === 1 && opened[0] === 'https://example.com/'
-      await revealMarkdown(reference, referenceButton, resolved, options.openLink)
-      const corrected = reference.firstChild !== beforeReference && reference.innerHTML === expectedReference && reference.querySelector('a')?.href === 'https://example.com/target'
+      await revealMarkdown(reference, referenceButton, resolved, options.openLink, 1)
+      const corrected = reference.firstChild === beforeReference && reference.innerHTML === expectedReference && reference.querySelector('a')?.href === 'https://example.com/target'
       return { lists, cached, corrected }
     } finally { host.remove() }
   })()`) as { lists: Array<{ text: string, host: string, tail: string, strong: string | null, code: string | null, href: string | null, nested: number, paragraphs: number, tasks: boolean[] }>, cached: boolean, corrected: boolean }
@@ -44,6 +44,6 @@ export async function checkMarkdownLists(win: SmokeWindow): Promise<string[]> {
   check(seen[2]?.paragraphs === 3 && seen[2].host === 'P' && seen[2].tail === '末项▏', 'loose list paragraphs')
   check(JSON.stringify(seen[3]?.tasks) === '[true,false]' && seen[3].tail === 'todo▏', 'task list and caret')
   check(result.cached, 'unchanged expansion blocks and their link listener stay attached')
-  check(result.corrected, 'later Markdown reference definitions replace a changed opening block')
+  check(result.corrected, 'later Markdown reference definitions update the opening block in place')
   return failures
 }

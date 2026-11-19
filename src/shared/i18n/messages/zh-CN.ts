@@ -322,6 +322,7 @@ export const zhCN = {
   "dock.expand": "展开后台任务",
   "task.list.collapse": "收起列表",
   "thread.expand.remaining": "展开全文（还有约 {p0} 千字）",
+  "thread.expand.retry": "未能展开回答，点击重试",
   "thread.expanding": "正在展开回答…",
   "topic.current.earlier.messages": "本话题前面还有 {p0} 条，在回顾里看",
   "topic.context.used": "已用 {p0}%",
