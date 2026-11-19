@@ -35,6 +35,7 @@ import type { HostCapabilities, HostEvent } from '../src/backend/host.ts'
 import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
 const MEMORY_EMBEDDING_FINGERPRINT = 'handoff-test-vector-space'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { SQLITE_BUSY_TIMEOUT_MS } from '../src/memory/node/sqlite.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
@@ -754,7 +755,7 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
 
 for (const failure of ['invalid-json', 'http-error'] as const) {
   // This scenario includes three native process launches and multiple real provider retry windows.
-  test(`real foreground sends remain usable while dream ${failure} repeatedly fails and recovers across restart`, { timeout: 120_000 }, async t => {
+  test(`real foreground sends remain usable while dream ${failure} repeatedly fails and recovers across restart`, { timeout: 120_000 + DAILY_MEMORY_DEFAULTS.retryMaxMs }, async t => {
     let dreamRequests = 0
     const app = await setup(t, request => {
       const system = JSON.stringify(request.system)
@@ -784,12 +785,15 @@ for (const failure of ['invalid-json', 'http-error'] as const) {
     await app.ask(first)
     assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => questionOf((raw as Request).messages) === first && JSON.stringify(raw).includes(oldValue))))
     assert.ok(await app.call('memory:get'))
-    const attemptsBeforeRestart = dreamRequests
     await app.stopBackend()
+    const attemptsBeforeRestart = dreamRequests
     read(db => { assert.equal(db.prepare("UPDATE effects SET due_at=0 WHERE kind='memory.dream'").run().changes, 1) })
     await app.startBackend()
     await app.ask('查一下 周报提交邮箱')
-    assert.ok(await eventually(() => dreamRequests > attemptsBeforeRestart))
+    // A cold attempt may run before the first foreground turn makes the model ready.
+    // The restarted owner keeps its attempt count and can legitimately wait a full backoff.
+    assert.ok(await eventually(() => dreamRequests > attemptsBeforeRestart, { timeoutMs: DAILY_MEMORY_DEFAULTS.retryMaxMs + 15_000 }),
+      'the restarted owner must make a new provider request within its persisted retry window')
     const resumed = '恢复 dream 重试后继续主对话'
     const resumedOffset = app.model.requests.length
     await app.ask(resumed)
