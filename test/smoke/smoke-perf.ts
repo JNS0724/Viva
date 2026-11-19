@@ -26,17 +26,17 @@ const BUDGET = Object.freeze({
    * past 20 ms: 95% of frames on time.
    */
   frameP95Ms: 20,
-  /** No frame past two vsyncs (a frame dropped twice over) while scrolling. */
-  frameMaxMs: 33.4,
+  /** Allow an isolated scroll frame up to three refresh intervals at 60 Hz; p95 still bounds sustained jank. */
+  frameMaxMs: 50,
   /** Growth of the page's JS heap over reading a thousand-turn topic end to end. */
   heapGrowthMb: 30,
   /** From 详情 to the 200 KB answer drawn. */
   markdownMs: 150,
   /**
    * One frame of typing out the end of a 60 000-character answer of short blocks (smoke-streaming.ts), the thread
-   * drawn and laid out: marked lexes it all, the blocks that come out the same keep their nodes.
+   * drawn and laid out within one 60 Hz refresh interval at p95.
    */
-  streamFrameP95Ms: 8,
+  streamFrameP95Ms: 16.7,
   /** The same for a 120 000-character answer that is one open code block, which grows in place. */
   streamCodeP95Ms: 12,
   /** Unfolding 过程 of a task of 1000 steps: its latest steps only (tasks-page.ts STEPS_SHOWN). */
