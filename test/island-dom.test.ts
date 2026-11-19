@@ -59,13 +59,123 @@ test('the desktop portrait says the state by ring and sign; resting as the cat a
     [true, false, false, false, false], 'worn only with the portrait alone, and not where the ring says it already')
 })
 
+test('the title-bar badge is display-only when idle, opens waiting background tasks directly, and jumps on foreground requests', async () => {
+  const { barActionFor, barSignal } = await import('../src/renderer/view/island-dom.ts')
+  const idle = { form: 'idle', tone: 'idle', mood: 'idle', label: '待命', recent: [] }
+  const working = { form: 'working', tone: 'working', mood: 'thinking', label: '正在工作', recent: [] }
+  const withTasks = { ...idle, background: { count: 2, waiting: 0, items: [] } }
+  const withWaitingTask = { ...idle, background: { count: 2, waiting: 1, items: [] } }
+  const bgApproval = {
+    form: 'waiting', tone: 'waiting', mood: 'confirm', label: '等你确认', recent: [],
+    task: '部署脚本', taskId: 'task-42', background: { count: 1, waiting: 1, items: [] },
+  }
+  const bgQuestion = { ...asking, task: '调研任务', taskId: 'task-99' }
+  assert.equal(barActionFor(idle), null)
+  assert.equal(barActionFor(working), null)
+  assert.deepEqual(barActionFor(withTasks), { kind: 'tasks' })
+  assert.deepEqual(barActionFor(asking), { kind: 'jump' })
+  assert.deepEqual(barActionFor(bgApproval), { kind: 'task', taskId: 'task-42' })
+  assert.deepEqual(barActionFor(bgQuestion), { kind: 'task', taskId: 'task-99' })
+  assert.equal(barSignal(idle), 'rest')
+  assert.equal(barSignal(working), 'working')
+  assert.equal(barSignal(withTasks), 'working')
+  assert.equal(barSignal(withWaitingTask), 'confirm')
+  assert.equal(barSignal(bgApproval), 'confirm')
+  assert.equal(barSignal(asking), 'asking')
+})
 
-test('the title-bar capsule opens background work instead of presenting the activity timeline', async () => {
-  const { barBackgroundView } = await import('../src/renderer/view/island-dom.ts')
-  const working = { form: 'working', tone: 'working', mood: 'thinking', label: '正在工作', recent: [{ title: '读取', tone: 'done' }],
-    background: { count: 2, waiting: 1, items: [] } }
-  const view = barBackgroundView(working)
-  assert.deepEqual([view.form, view.label, view.detail, view.recent, view.tone], ['idle', '后台', '2 个进行中', [], 'waiting'])
-  assert.equal(barBackgroundView({ ...working, background: null }).detail, '暂无进行中')
-  assert.equal(barBackgroundView(asking), asking, 'a foreground request keeps its existing jump behavior')
+test('switching between two waiting background tasks with the same title updates the title-bar click target', async () => {
+  const { createIsland } = await import('../src/renderer/view/island-dom.ts')
+  class StubNode {}
+  class StubEl extends StubNode {
+    tagName: string
+    className = ''
+    textContent = ''
+    title = ''
+    disabled = false
+    style: Record<string, string> = {}
+    dataset: Record<string, string> = {}
+    attributes: Record<string, string> = {}
+    children: StubEl[] = []
+    listeners: Record<string, Array<() => void>> = {}
+    complete = true
+    naturalWidth = 256
+    isConnected = true
+    parentElement: StubEl | null = null
+    constructor(tag: string) {
+      super()
+      this.tagName = tag.toUpperCase()
+    }
+    get firstElementChild() { return this.children[0] ?? null }
+    get childElementCount() { return this.children.length }
+    append(...nodes: Array<StubEl | string>) {
+      for (const n of nodes) {
+        if (typeof n === 'string') continue
+        n.parentElement = this
+        this.children.push(n)
+      }
+    }
+    replaceChildren(...nodes: Array<StubEl | string>) {
+      for (const c of this.children) c.parentElement = null
+      this.children = []
+      this.append(...nodes)
+    }
+    insertBefore(node: StubEl, ref: StubEl | null) {
+      if (node.parentElement) node.parentElement.children = node.parentElement.children.filter(c => c !== node)
+      node.parentElement = this
+      const idx = ref ? this.children.indexOf(ref) : -1
+      if (idx >= 0) this.children.splice(idx, 0, node)
+      else this.children.push(node)
+      return node
+    }
+    remove() {
+      if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(c => c !== this)
+      this.parentElement = null
+    }
+    setAttribute(k: string, v: string) { this.attributes[k] = v }
+    addEventListener(type: string, fn: () => void) { (this.listeners[type] ??= []).push(fn) }
+    querySelector(selector: string): StubEl | null {
+      const cls = selector.startsWith('.') ? selector.slice(1) : ''
+      for (const child of this.children) {
+        if (cls ? child.className.split(/\s+/).includes(cls) : child.tagName.toLowerCase() === selector) return child
+        const nested = child.querySelector(selector)
+        if (nested) return nested
+      }
+      return null
+    }
+    click() {
+      if (this.disabled) return
+      for (const fn of this.listeners.click ?? []) fn()
+    }
+  }
+  const prevNode = globalThis.Node
+  const prevDocument = globalThis.document
+  const prevImage = globalThis.Image
+  globalThis.Node = StubNode as unknown as typeof Node
+  globalThis.document = {
+    createElement: (tag: string) => new StubEl(tag),
+    createTextNode: () => new StubNode(),
+  } as unknown as Document
+  globalThis.Image = class { src = '' } as unknown as typeof Image
+  try {
+    const actions: unknown[] = []
+    const island = createIsland('bar', (action) => actions.push(action))
+    const head = (island.el as unknown as StubEl).querySelector('.isl-head')!
+    const base = {
+      form: 'waiting', tone: 'waiting', mood: 'confirm', label: '等你确认', recent: [],
+      task: '同名任务', background: { count: 2, waiting: 2, items: [] },
+    }
+    island.update({ ...base, taskId: 'task-A' })
+    head.click()
+    island.update({ ...base, taskId: 'task-B' })
+    head.click()
+    assert.deepEqual(actions, [
+      { kind: 'task', taskId: 'task-A' },
+      { kind: 'task', taskId: 'task-B' },
+    ])
+  } finally {
+    globalThis.Node = prevNode
+    globalThis.document = prevDocument
+    globalThis.Image = prevImage
+  }
 })

@@ -218,19 +218,22 @@ async function checkRelaunch(win: SmokeWindow, outDir: string) {
   return failures
 }
 
-/** The title-bar capsule opens background work without unfolding an activity panel. */
+/** The title-bar badge is display-only when idle and never unfolds an activity panel. */
 async function checkBackgroundEntry(win: SmokeWindow, outDir: string) {
-  await run(win, `document.querySelector('#island .isl-head').click()`)
-  await until(win, `document.getElementById('tasks-page').dataset.open === 'true'`, 'the background page from the title bar')
   const seen = await run(win, `(() => {
     const island = document.querySelector('#island .isl')
-    return { open: island.dataset.open === 'true', panel: Boolean(island.querySelector('.isl-panel')),
-      page: document.getElementById('tasks-page').dataset.open === 'true' }
+    const head = island?.querySelector('.isl-head')
+    head?.click()
+    return {
+      disabled: Boolean(head?.disabled),
+      open: island?.dataset.open === 'true',
+      panel: Boolean(island?.querySelector('.isl-panel')),
+      page: document.getElementById('tasks-page').dataset.open === 'true',
+    }
   })()`)
   await capture(win, outDir, 'background-entry')
-  await run(win, `document.getElementById('hub-back').click()`)
-  await wait(UI_WAIT_MS)
-  return !seen.open && !seen.panel && seen.page ? [] : [`the title bar should open background work without unfolding activity: ${JSON.stringify(seen)}`]
+  return seen.disabled && !seen.open && !seen.panel && !seen.page
+    ? [] : [`the idle title-bar badge should stay display-only without unfolding activity: ${JSON.stringify(seen)}`]
 }
 
 const DESK_ISLAND_STATE = `(() => {
