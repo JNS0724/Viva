@@ -48,9 +48,12 @@ export interface ExtensionStatus {
 }
 
 /** One row a plugin adds, and how it runs now. */
-export interface PluginRow { id: string, entryId: string | null, enabled: boolean, phase: string | null }
+export interface PluginRow { id: string, entryId: string | null, enabled: boolean | null, phase: string | null }
 
-export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' } | { kind: 'needs-web', needs: readonly string[] } | { kind: 'unknown' }
+export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' }
+  | { kind: 'needs-web', needs: readonly string[] }
+  | { kind: 'dsh-version', current: string, requirements: Readonly<Record<string, string>> }
+  | { kind: 'unknown' }
 
 /** A dsh plugin the company source has (plugin-catalog.ts CatalogEntry), with whether it works in Viva. */
 export interface CatalogEntry { name: string, version: string, description: string | null, fit: PluginFit }

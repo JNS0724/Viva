@@ -54,6 +54,7 @@ const changed = (state: State, { view, notice = null, pendingBuilds = [] }: Payl
 export const PLUGIN_ACTIONS= {
   plugins_loaded: (state, { view }) => withPlugins(state, { ...view, loaded: true, busy: false }),
   plugins_busy: (state) => withPlugins(state, { busy: true, error: null, notice: null }),
+  plugins_inspecting: (state) => withPlugins(state, { busy: true, error: null, notice: null, inspection: null, pendingBuilds: [] }),
   plugins_failed: (state, { message }) => withPlugins(state, { busy: false, error: message }),
   /** Typed, the field already says it; `filled` (a pick from the source) puts it there. */
   plugins_spec: (state, { spec, filled = false }) => withPlugins(state, {
@@ -91,7 +92,7 @@ const PROBLEMS: Readonly<Record<string, () => string>> = Object.freeze({
   'not-a-package': () => t('plugins.problem.not-a-package'),
   'not-a-bundle': () => t('plugins.problem.not-a-bundle'),
   network: () => t('plugins.problem.network'),
-  'incompatible-version': () => t('plugins.problem.incompatible-version'),
+  'incompatible-version': () => t('plugins.fit.dsh.version'),
 })
 
 /** dsh's code for a refusal, in the user's words; the manager's own words for anything else. */

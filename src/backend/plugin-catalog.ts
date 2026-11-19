@@ -48,6 +48,12 @@ const isName = (value: unknown): value is string => typeof value === 'string' &&
 const isVersion = (value: unknown): value is string => typeof value === 'string' && VERSION.test(value)
 const text = (value: unknown, max: number): string | null => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null)
 
+/** A published release, identified by the manifest returned by dsh's registry lookup. */
+export function registryRelease(name: string | null, version: string | null) {
+  if (!isName(name) || !isVersion(version) || !/^\d+\.\d+\.\d+(?:$|[-+])/.test(version)) return null
+  return { name, version }
+}
+
 /** What a failed run said: its first line of error output, else its message. */
 function detailOf(err: unknown): string | null {
   const said = String(record(err).stderr ?? '').split('\n').map((line) => line.trim()).find(Boolean)
@@ -90,7 +96,7 @@ async function eachAtMost<T, R>(items: readonly T[], limit: number, work: (item:
  * package.json cannot be read is kept, its fit unknown (installing it still checks it is a plugin); one that can be
  * read and is not a plugin is left out. Null `pnpm`: no company source to ask.
  */
-export async function searchCatalog({ query, pnpm, run }: { query: string, pnpm: PnpmCall | null, run: RunPnpm }): Promise<CatalogAnswer> {
+export async function searchCatalog({ query, pnpm, run, fitOptions }: { query: string, pnpm: PnpmCall | null, run: RunPnpm, fitOptions?: Parameters<typeof vivaFit>[1] }): Promise<CatalogAnswer> {
   if (!pnpm) return { ok: false, problem: 'no-source', detail: null }
   const keywords = keywordsOf(query)
   if (!keywords) return { ok: false, problem: 'query', detail: null }
@@ -111,7 +117,7 @@ export async function searchCatalog({ query, pnpm, run }: { query: string, pnpm:
     const manifest = await manifestOf(pnpm, run, `${name}@${version}`)
     if (manifest !== null && record(record(manifest).dsh).bundle === undefined) return null
     const description = text(item.description, MAX_DESCRIPTION_CHARS) ?? text(record(manifest).description, MAX_DESCRIPTION_CHARS)
-    return { name, version, description, fit: manifest === null ? { kind: 'unknown' as const } : vivaFit(manifest) }
+    return { name, version, description, fit: vivaFit(manifest, fitOptions) }
   })
   return { ok: true, entries: looked.filter((entry): entry is CatalogEntry => entry !== null) }
 }
@@ -120,11 +126,12 @@ export async function searchCatalog({ query, pnpm, run }: { query: string, pnpm:
  * Whether what `spec` names works in Viva, before it is installed: a registry name (or name@version) by its
  * package.json on the source, a folder by its own; a git address, a tarball or a version range is not looked up.
  */
-export async function specFit({ spec, pnpm, run }: { spec: string, pnpm: PnpmCall | null, run: RunPnpm }): Promise<VivaFit> {
+export async function specFit({ spec, pnpm, run, fitOptions }: { spec: string, pnpm: PnpmCall | null, run: RunPnpm, fitOptions?: Parameters<typeof vivaFit>[1] }): Promise<VivaFit> {
   const given = spec.trim()
-  if (path.isAbsolute(given)) {
+  const folder = given.replace(/^(?:file|link):/, '')
+  if (path.isAbsolute(folder)) {
     try {
-      return vivaFit(JSON.parse(fs.readFileSync(path.join(given, 'package.json'), 'utf8')))
+      return vivaFit(JSON.parse(fs.readFileSync(path.join(folder, 'package.json'), 'utf8')), fitOptions)
     } catch {
       return { kind: 'unknown' }
     }
@@ -133,7 +140,7 @@ export async function specFit({ spec, pnpm, run }: { spec: string, pnpm: PnpmCal
   const [name, version] = at > 0 ? [given.slice(0, at), given.slice(at + 1)] : [given, null]
   if (!pnpm || !isName(name) || (version !== null && !isVersion(version))) return { kind: 'unknown' }
   const manifest = await manifestOf(pnpm, run, given)
-  return manifest === null ? { kind: 'unknown' } : vivaFit(manifest)
+  return vivaFit(manifest, fitOptions)
 }
 
 /** pnpm run for real: a .cmd on Windows only through the shell, its path quoted (as plugin-registry.ts pnpmScopes). */

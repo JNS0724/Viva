@@ -50,7 +50,7 @@ test('a spec is looked up before it is installed, and the build scripts it asks 
     { change: { changed: true, application: 'applied', error: null, pendingBuilds: [] }, view: { connected: true, plugins: [{ name: 'compact' }] } },
   ]
   const { actions, calls, state } = harness({
-    inspectPlugin: async () => ({ ok: true, name: 'compact', version: '2.0.0', bundle: true }),
+    inspectPlugin: async () => ({ ok: true, name: 'compact', version: '2.0.0', bundle: true, previewId: '1' }),
     installPlugin: async () => answers.shift(),
   })
   await actions.inspectPlugin()
@@ -61,7 +61,7 @@ test('a spec is looked up before it is installed, and the build scripts it asks 
   await actions.installPlugin()
   assert.deepEqual(state().plugins.pendingBuilds, ['esbuild'])
   await actions.installPlugin()
-  assert.deepEqual(calls, [['inspectPlugin', 'compact'], ['installPlugin', 'compact', undefined], ['installPlugin', 'compact', ['esbuild']]])
+  assert.deepEqual(calls, [['inspectPlugin', 'compact'], ['installPlugin', 'compact', undefined, '1'], ['installPlugin', 'compact', ['esbuild'], '1']])
   assert.equal(state().plugins.notice, 'Done. It takes effect in new conversations.')
   assert.equal(state().plugins.spec, '')
   setLocale('zh-CN')
@@ -78,9 +78,16 @@ test('dsh\'s refusals are put in the user\'s words; a change that failed still s
   await actions.inspectPlugin()
   assert.match(state().plugins.error ?? '', /package registry/)
   await actions.setPluginEnabled('x', true)
-  assert.equal(state().plugins.error, 'This plugin does not support the dsh version in Viva.')
+  assert.equal(state().plugins.error, 'Incompatible dsh version')
   assert.equal(state().plugins.plugins.length, 1)
   setLocale('zh-CN')
+})
+
+test('looking up a spec again discards the earlier preview and its build approvals', async () => {
+  const initial = start({ spec: 'compact@latest', inspection: { ok: true, previewId: '1' }, pendingBuilds: ['esbuild'] })
+  const { actions, state } = harness({ inspectPlugin: async () => ({ ok: false, problem: 'network' }) }, initial)
+  await actions.inspectPlugin()
+  assert.deepEqual([state().plugins.inspection, state().plugins.pendingBuilds], [null, []])
 })
 
 test('a lookup of one the source listed belongs under that one, not under the install field', () => {

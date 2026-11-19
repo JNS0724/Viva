@@ -172,6 +172,7 @@ export interface ActionPayloads extends ConversationPayloads {
   extensions_edit_key_remove: { id: string | number }
   plugins_loaded: { view: Partial<State['plugins']> }
   plugins_busy: {}
+  plugins_inspecting: {}
   plugins_failed: { message: string }
   plugins_spec: { spec: State['plugins']['spec'], filled?: boolean }
   plugins_inspected: { inspection: State['plugins']['inspection'] }

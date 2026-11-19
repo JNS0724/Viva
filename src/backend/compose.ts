@@ -81,6 +81,7 @@ import { createPluginSourceStore } from './plugin-source.ts'
 import { launchMessage } from './dsh-launch.ts'
 import { authVariable, pinArgs, pnpmScopes } from './plugin-registry.ts'
 import { pnpmRunner, searchCatalog, specFit, type PnpmCall } from './plugin-catalog.ts'
+import { profileFitOptions } from './plugin-fit.ts'
 import { skillRoots } from './skills.ts'
 import { historyRecallAsync } from './history-recall.ts'
 import type { HistoryEvidence } from './history-recall.ts'
@@ -1453,15 +1454,20 @@ ${question}` : question
     })
     registerModelsIpc(ipcMain, { store: modelStore, restart: restartKeepingConversation })
     // The 插件 section: dsh's plugin manager, inside the running dsh (viva-plugins); nothing to ask while it is down.
+    const pluginProfileDir = () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE)
     registerPluginsIpc(ipcMain, {
       call: (op, args) => (dsh.current ? dsh.current.plugins(op, args) : Promise.resolve({ ok: false as const, problem: 'disconnected' })),
-      profileDir: () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE),
+      profileDir: pluginProfileDir,
       source: pluginSource,
       busy: () => turn.active,
       restart: restartKeepingConversation,
-      specFit: (spec) => specFit({ spec, pnpm: pluginPnpm?.call ?? null, run: runPnpm }),
+      specFit: (spec, registry) => {
+        const call = pluginPnpm?.call ?? null
+        const pnpm = call && registry && !pluginPnpm?.registry ? { ...call, args: [...call.args, `--registry=${registry}`] } : call
+        return specFit({ spec, pnpm, run: runPnpm, fitOptions: profileFitOptions(pluginProfileDir()) })
+      },
       // Only a company source is searched: the public registries are not a catalog of dsh plugins.
-      catalog: (query) => searchCatalog({ query, pnpm: pluginPnpm?.registry ? pluginPnpm.call : null, run: runPnpm }),
+      catalog: (query) => searchCatalog({ query, pnpm: pluginPnpm?.registry ? pluginPnpm.call : null, run: runPnpm, fitOptions: profileFitOptions(pluginProfileDir()) }),
     })
     const roots = () => skillRoots({ dshHome: dshHomeOf(config), cwd: workDirNow() ?? config.cwd })
     registerExtensionsIpc(ipcMain, {
