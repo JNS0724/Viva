@@ -10,6 +10,9 @@ import { createSchedules, type Schedules } from './schedules.ts'
 import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
 import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
 import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
+import { FEED_SOURCE_WRITES, openFeedSourceStore, type FeedSourceStore } from './feed-source-store.ts'
+import { createFeedSourceRuns, type FeedSourceRuns, type PluginCheckResult, type SourceExecutionPolicy } from './feed-source-runs.ts'
+import { registerFeedSourceIpc } from './feed-source-ipc.ts'
 import { continueText } from '../shared/feed-continuation.ts'
 import { admitFeedContinuation } from './feed-continuation.ts'
 import { onLocaleChange } from '../shared/i18n/locale.ts'
@@ -48,7 +51,7 @@ import { registerSkillImportIpc } from './skill-import-ipc.ts'
 import { skillSources } from './skill-import.ts'
 import { registerMcpImportIpc } from './mcp-import-ipc.ts'
 import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
-import { registerPluginsIpc } from './plugins-ipc.ts'
+import { pluginsView, readOnlyToolsOf, registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb, type Conversation } from './history-db.ts'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.ts'
@@ -179,9 +182,19 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let requests!: RequestRuntime
   /** 动态's items (feed-store.ts): what schedules brought; set once the personal stores are open. */
   let feed: FeedStore | null = null
+  let feedSources: FeedSourceStore | null = null
   let schedules: Schedules | null = null
   /** Schedules run when due, their answers into 动态 (schedule-runs.ts). */
   let scheduleRuns: ScheduleRuns | null = null
+  /** Plugin-backed data sources run when due, their results into 动态 (feed-source-runs.ts). */
+  let feedSourceRuns: FeedSourceRuns | null = null
+  /** Shared serializer so scheduled prompts and data sources run unattended one at a time. */
+  let unattendedQueue: Promise<unknown> = Promise.resolve()
+  function serializeUnattended<T>(work: () => Promise<T>): Promise<T> {
+    const next = unattendedQueue.then(work, work)
+    unattendedQueue = next.then(() => undefined, () => undefined)
+    return next
+  }
   /** Plugins left out of the profile at the last launch, and why; shown in settings. */
   let pluginProblems: Array<{ name: string, contract: string, problem: string }> = []
   /**
@@ -332,6 +345,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       wakeEffects()
       syncProjectView()
       scheduleRuns?.wake()
+      feedSourceRuns?.wake()
     },
     onGone: () => {
       retireForegroundRequests()
@@ -439,7 +453,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   async function changingMemory<T>(work: () => T | Promise<T>, { duringSelection = false } = {}): Promise<T> {
     if (memoryBusy() || (!duringSelection && sessions.isChanging())) throw new Error(t('main.memory.change.pending'))
     try { return await work() }
-    finally { dsh.current?.refreshMemoryQuestions(); scheduleRuns?.wake() }
+    finally { dsh.current?.refreshMemoryQuestions(); scheduleRuns?.wake(); feedSourceRuns?.wake() }
   }
 
   async function recordDeliveredSource(sourceId: string, origin = sessions.context(), { derived = false } = {}) {
@@ -603,7 +617,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           return []
         }
       },
-      readyMemory: () => { scheduleRuns?.wake() },
+      readyMemory: () => { scheduleRuns?.wake(); feedSourceRuns?.wake() },
       memoryStateChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
       memoryNotice: notice => {
         if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
@@ -782,6 +796,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function requireFeed(): FeedStore {
     if (!feed) throw new Error('动态 is not open yet')
     return feed
+  }
+
+  function requireFeedSources(): FeedSourceStore {
+    if (!feedSources) throw new Error('动态 is not open yet')
+    return feedSources
+  }
+
+  function requireFeedSourceRuns(): FeedSourceRuns {
+    if (!feedSourceRuns) throw new Error('动态 is not open yet')
+    return feedSourceRuns
   }
 
   function requireTasks(): TaskRuntime {
@@ -1387,13 +1411,36 @@ ${question}` : question
     if (!ready()) {
       return Promise.resolve({ ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') })
     }
-    return unattended.run(prompt, cwd, async (session, bridge) => {
+    return serializeUnattended(() => unattended.run(prompt, cwd, async (session, bridge) => {
       if (bridge !== dsh.current) return 'memory-unavailable'
       const project = memoryProjectScope(cwd)
       const status = await memoryCoordination.transferStatus(evidence, project, ready())
       if (status !== 'ready') return status
       if (!await bindSessionProject(session, project) || !await memoryCoordination.transfer(session, evidence, project, ready())) return 'stale'
+    }))
+  }
+
+  async function runFeedSource(prompt: string, cwd: string, policy: SourceExecutionPolicy): Promise<RunResult> {
+    if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
+    if (!policy.allowedTools.length) return { ok: false, problem: t('main.feed-sources.policy.unavailable') }
+    if (memoryBusy()) return { ok: false, unavailable: true, problem: t('main.memory.change.pending') }
+    const ready = () => dsh.current?.memory.ready() === true
+    if (!ready()) {
+      return { ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') }
+    }
+    let bindError: string | null = null
+    const outcome = await unattended.run(prompt, cwd, async (session, bridge) => {
+      if (bridge !== dsh.current) return 'memory-unavailable'
+      const bound = await dsh.current.bindFeedSourceSession(session, policy)
+      if (!bound.ok) {
+        bindError = bound.reason
+        return 'stale'
+      }
+      const project = memoryProjectScope(cwd)
+      if (!await bindSessionProject(session, project)) return 'stale'
     })
+    if (bindError) return { ok: false, problem: bindError }
+    return outcome
   }
 
   function registerPersonalIpc(config: Config) {
@@ -1491,6 +1538,50 @@ ${question}` : question
       requireFeed().markSeen(String(id))
       feedChanged()
       return items.list(FEED_LISTED)
+    })
+    const rawFeedSources = openFeedSourceStore({ db: appDb.db })
+    feedSources = journaled(rawFeedSources, 'feed_source', FEED_SOURCE_WRITES, applyChange)
+    const profileDir = () => path.join(dshHomeOf(config), 'profiles', DSH_PROFILE)
+    const checkFeedSourcePlugin = async (pluginName: string): Promise<PluginCheckResult> => {
+      const bridge = dsh.current
+      if (!bridge) return { ok: false, unavailable: true, reason: t('main.feed-sources.dsh.unavailable') }
+      const listed = await bridge.plugins('list')
+      if (!listed.ok) return { ok: false, unavailable: true, reason: listed.problem }
+      const found = pluginsView(listed.value, profileDir()).find((plugin) => plugin.name === pluginName)
+      if (!found) return { ok: false, reason: t('main.feed-sources.plugin.missing', { name: pluginName }) }
+      if (!found.enabled) return { ok: false, reason: t('main.feed-sources.plugin.disabled', { name: pluginName }) }
+      if (found.error) return { ok: false, reason: t('main.feed-sources.plugin.error', { name: pluginName }) }
+      const allowedTools = readOnlyToolsOf(profileDir(), pluginName)
+      if (!allowedTools.length) return { ok: false, reason: t('main.feed-sources.plugin.no.readonly.tools', { name: pluginName }) }
+      const ownerEntryIds = found.rows.map((row) => row.entryId).filter((entryId): entryId is string => Boolean(entryId))
+      return { ok: true, ownerEntryIds, allowedTools }
+    }
+    feedSourceRuns = createFeedSourceRuns({
+      db: appDb.db,
+      apply: applyChange,
+      store: rawFeedSources,
+      feed: items,
+      checkPlugin: checkFeedSourcePlugin,
+      run: runFeedSource,
+      memoryCurrent: scheduleMemoryCurrent,
+      serialize: serializeUnattended,
+      keep: queueFeedNotice,
+      delivered: () => {
+        wakeEffects()
+        feedChanged()
+      },
+      changed: feedChanged,
+      onError: (err) => emitDiagnosticFailure('schedule', err),
+    })
+    registerFeedSourceIpc(ipcMain, {
+      store: requireFeedSources,
+      cwd: () => workDirNow() ?? config.cwd,
+      validatePlugin: checkFeedSourcePlugin,
+      runNow: (id) => requireFeedSourceRuns().runNow(id),
+      changed: () => {
+        feedSourceRuns?.wake()
+        feedChanged()
+      },
     })
     feedChanged()
   }
@@ -1740,6 +1831,7 @@ ${question}` : question
   /** The computer back from sleep, or unlocked: schedules due meanwhile run. */
   function woke() {
     scheduleRuns?.wake()
+    feedSourceRuns?.wake()
   }
 
   function close() {
@@ -1750,6 +1842,7 @@ ${question}` : question
     memoryHostRecovery.close()
     memoryHostEffects?.close()
     scheduleRuns?.close()
+    feedSourceRuns?.close()
     taskRuntime?.dispose()
     historyDb?.close()
     appDb?.close()

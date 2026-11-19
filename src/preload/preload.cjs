@@ -220,6 +220,12 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   listFeed: () => ipcRenderer.invoke('feed:list'),
   continueFeed: (id) => ipcRenderer.invoke('feed:continue', id),
   markFeedSeen: (id) => ipcRenderer.invoke('feed:seen', id),
+  listFeedSources: () => ipcRenderer.invoke('feed-sources:list'),
+  createFeedSource: (input) => ipcRenderer.invoke('feed-sources:create', input),
+  updateFeedSource: (id, changes) => ipcRenderer.invoke('feed-sources:update', id, changes),
+  pauseFeedSource: (id, paused) => ipcRenderer.invoke('feed-sources:pause', id, paused),
+  deleteFeedSource: (id) => ipcRenderer.invoke('feed-sources:delete', id),
+  runFeedSourceNow: (id) => ipcRenderer.invoke('feed-sources:run-now', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   islandAskResult: (receiptId, result) => ipcRenderer.send('island:ask-result', receiptId, result),

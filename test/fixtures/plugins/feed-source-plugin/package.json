@@ -1,0 +1,15 @@
+{
+  "name": "feed-source-dsh-plugin",
+  "version": "0.1.0",
+  "description": "Test fixture: a dsh plugin offering one read-only tool for Viva data sources, and one that writes",
+  "type": "module",
+  "main": "tool.js",
+  "exports": { ".": "./tool.js", "./package.json": "./package.json" },
+  "peerDependencies": { "@deepseek-ai/cordis": "~4.1.0", "@deepseek-ai/dsh-tools": "0.2.2-rc.2" },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  },
+  "viva": {
+    "feedSource": { "readOnlyTools": ["feed_fixture_read"] }
+  }
+}

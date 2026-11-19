@@ -9,6 +9,7 @@
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-permission-presets'
 import { createUserMessage, type MessageSource } from '@deepseek-ai/dsh-llm'
 import * as persona from '@deepseek-ai/dsh-persona'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -21,6 +22,7 @@ import { deferCode, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecisio
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
+import { createSourceGuard, installToolProvenance, verifyPluginReadOnlyTools, type VerifySourceToolsResult } from './lib/source-tools.ts'
 import { createHostChannel } from './lib/host.ts'
 import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
@@ -62,7 +64,10 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   // ── State: which sessions are main, the ledger of each one's turn, the grants its app_actions gave, fast work, and
   // how many turns each has ended (what the fast lane started in one tells only that one).
   const mains = new Set<string>()
+  /** Plugins whose fibers were restarted once to record where their tools come from. */
+  const reregistered = new Set<string>()
   const narrowed = new WeakSet<Agent>()
+  const narrowedSources = new WeakSet<Agent>()
   const ledgers = new Map<string, Ledger>()
   const grants = new Map<string, readonly Grant[]>()
   const fastWork = new Map<string, Set<Promise<void>>>()
@@ -87,12 +92,68 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     if (agent.session.header.origin !== 'subagent') return
     agent.ctx.tools.restrict({ allow: SUBAGENT_TOOLS.filter(tool => ctx.tools.get(tool)) })
   }
-  ctx.on('agent/created', ({ agent }) => { narrow(agent); narrowSubagent(agent); return undefined })
-  const host = createHostChannel(port, { onBind: (sessionId) => {
-    mains.add(sessionId)
-    const agent = ctx.agents.get(SessionId(sessionId))
-    if (agent) narrow(agent)
-  } })
+  const provenance = installToolProvenance(ctx.tools)
+  const sources = createSourceGuard(provenance.lookup)
+  function narrowSource(agent: Agent) {
+    const id = String(agent.session.id)
+    const tools = sources.toolsOf(id)
+    if (!tools || narrowedSources.has(agent)) return
+    const presets = ctx.get('permissionPresets') as Context['permissionPresets'] | undefined
+    if (!presets) throw new Error('数据源会话无法设置只读权限')
+    presets.set(agent.session, 'read-only')
+    agent.ctx.tools.restrict({ allow: [...tools].filter(tool => ctx.tools.get(tool)) })
+    narrowedSources.add(agent)
+  }
+  ctx.on('agent/created', ({ agent }) => { narrow(agent); narrowSubagent(agent); narrowSource(agent); return undefined })
+  ctx.on('session/disposed', session => { sources.drop(String(session.id)) })
+  ctx.tools.guard(exec => {
+    if (!exec.agent) return
+    const sessionId = String(exec.agent.session.id)
+    if (!sources.toolsOf(sessionId)) return
+    return sources.deny(sessionId, exec.name, ctx.tools.executable(exec.name, exec.agent, exec.toolSet))
+  })
+
+  /** The selected plugin's own fibers started again, so registrations made before the tracker run through it. */
+  async function reregister(ownerEntryIds: readonly string[]): Promise<void> {
+    const loader = ctx.get('loader') as Context['loader'] | undefined
+    if (!loader) return
+    const wanted = new Set(ownerEntryIds)
+    const restarts: Promise<void>[] = []
+    for (const entry of loader.entries()) {
+      if (wanted.has(entry.id) && entry.fiber) restarts.push(entry.fiber.restart())
+    }
+    await Promise.allSettled(restarts)
+  }
+
+  async function verifySource(pluginName: string, ownerEntryIds: readonly string[], declared: readonly string[]): Promise<VerifySourceToolsResult> {
+    const check = () => verifyPluginReadOnlyTools({ pluginName, ownerEntryIds, allowedTools: declared }, tool => ctx.tools.get(tool), provenance.lookup)
+    const first = check()
+    if (first.ok || first.code !== 'unknown-provenance' || reregistered.has(pluginName)) return first
+    reregistered.add(pluginName)
+    await reregister(ownerEntryIds)
+    return check()
+  }
+
+  const host = createHostChannel(port, {
+    onBind: (sessionId) => {
+      mains.add(sessionId)
+      const agent = ctx.agents.get(SessionId(sessionId))
+      if (agent) narrow(agent)
+    },
+    onBindSource: async ({ sessionId, pluginName, ownerEntryIds, allowedTools }) => {
+      const checked = await verifySource(pluginName, ownerEntryIds, allowedTools)
+      if (!checked.ok) return { ok: false, reason: checked.reason }
+      sources.bind(sessionId, { pluginName, ownerEntryIds, allowedTools })
+      const agent = ctx.agents.get(SessionId(sessionId))
+      try {
+        if (agent) narrowSource(agent)
+      } catch (error) {
+        sources.drop(sessionId)
+        throw error
+      }
+      return { ok: true }
+    },
+  })
   const tasks = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, TASK_LIST_WAIT_MS)
   const onSteer = (raw: unknown) => {
     const message = raw as { type?: string, sessionId?: unknown, text?: unknown, fast?: unknown } | null
@@ -103,7 +164,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   }
   port.on('message', onSteer)
   port.channel?.unref?.()
-  ctx.effect(() => () => { host.close(); tasks.close(); port.off('message', onSteer) }, 'routing channel')
+  ctx.effect(() => () => { provenance.dispose(); host.close(); tasks.close(); port.off('message', onSteer) }, 'routing channel')
 
   // ── Ledger: requests come in with the user's messages; it follows the steps and ends with the turn.
   ctx.on('session/event', (session, event) => {

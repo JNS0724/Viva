@@ -39,6 +39,7 @@ test('the section lists the plugins the user installed, each row as it runs, and
   assert.equal(rest.length, 0, 'dsh\'s own bundles are not listed')
   assert.deepEqual(search, {
     name: '@someone/search', version: '1.2.0', description: 'Search', enabled: true, removable: true, error: null, fit: { kind: 'web-part' },
+    feedSourceTools: [],
     rows: [{ id: 'search', entryId: 'e1', enabled: true, phase: 'active' }, { id: 'search-ui', entryId: 'e2', enabled: true, phase: 'pending' }],
     overrides: ['web-search'],
   })

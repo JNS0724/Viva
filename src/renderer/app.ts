@@ -474,7 +474,7 @@ doneNotice = createDoneNotice({
   getState: () => state, dispatch,
   looking: () => document.visibilityState === 'visible' && document.hasFocus(),
 })
-const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer })
+const feedActions = createFeedActions({ api, getState: () => state, dispatch, errorMessage, fillComposer, loadPlugins: () => pluginActions.loadPlugins() })
 const modelActions = createModelActions({ api, getState: () => state, dispatch, errorMessage })
 const diagnosticActions = createDiagnosticsActions({ api, getState: () => state, dispatch })
 const pluginActions = createPluginActions({ api, getState: () => state, dispatch, errorMessage })
@@ -705,7 +705,7 @@ const handlers = {
     dispatch({ type: 'tasks_page_open', taskId })
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
-  selectFeed: (kind: 'item' | 'schedule', id: string) => dispatch({ type: 'feed_select', kind, id }),
+  selectFeed: (kind: 'item' | 'schedule' | 'source', id: string) => dispatch({ type: 'feed_select', kind, id }),
   openFeed: () => {
     dispatch({ type: 'feed_open' })
     feedActions.loadFeed()
@@ -715,6 +715,19 @@ const handlers = {
   dismissFeedItem: (id: string) => feedActions.dismissItem(id),
   pauseSchedule: (id: string, paused: boolean) => feedActions.pauseSchedule(id, paused),
   deleteSchedule: (id: string) => feedActions.deleteSchedule(id),
+  openNewFeedSource: () => feedActions.openNewSource(),
+  cancelNewFeedSource: () => {
+    const first = state.feed.sources[0]
+    if (first) dispatch({ type: 'feed_select', kind: 'source', id: first.id })
+    else dispatch({ type: 'feed_select', kind: 'item', id: state.feed.items[0]?.id ?? '' })
+  },
+  updateFeedSourceDraft: (changes: Partial<import('./feed-types.ts').FeedSourceDraft>) => dispatch({ type: 'feed_source_draft', changes }),
+  createFeedSource: (input: import('../shared/feed-source.ts').FeedSourceCreateInput) => feedActions.createSource(input),
+  updateFeedSource: (id: string, changes: import('../shared/feed-source.ts').FeedSourceUpdateInput) => feedActions.updateSource(id, changes),
+  pauseFeedSource: (id: string, paused: boolean) => feedActions.pauseSource(id, paused),
+  deleteFeedSource: (id: string) => feedActions.deleteSource(id),
+  runFeedSourceNow: (id: string) => feedActions.runSourceNow(id),
+  openPluginsForFeed: () => capabilityActions.openCapabilities('plugins'),
   toggleTaskSteps: () => dispatch({ type: 'tasks_page_steps' }),
   openTaskSteps: () => dispatch({ type: 'tasks_page_steps', open: true }),
   showAllTaskSteps: () => dispatch({ type: 'tasks_page_all_steps' }),

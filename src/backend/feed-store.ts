@@ -26,6 +26,13 @@ export interface FeedItem {
 
 export type NewFeedItem = Omit<FeedItem, 'id' | 'createdAt' | 'seenAt'> & { memory?: MemoryProvenance }
 export const feedSourceIdentity = (source: string, key: string) => createHash('sha256').update(JSON.stringify([source, key])).digest('hex')
+/** Raised when an offered item matches a previously erased memory copy and must not be recreated. */
+export class FeedItemErasedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FeedItemErasedError'
+  }
+}
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS feed_items (
@@ -65,7 +72,7 @@ export function openFeedStore({ db, now = Date.now, newId = () => crypto.randomU
   /** The item for `source` and `key`: made now, or the one made before (`made` false). */
   function add(input: NewFeedItem): { item: FeedItem, made: boolean } {
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_erased_feed_copies'").get()
-      && db.prepare('SELECT 1 FROM memory_erased_feed_copies WHERE identity=?').get(feedSourceIdentity(input.source, input.key))) throw new Error(t('main.feed.erased'))
+      && db.prepare('SELECT 1 FROM memory_erased_feed_copies WHERE identity=?').get(feedSourceIdentity(input.source, input.key))) throw new FeedItemErasedError(t('main.feed.erased'))
     const found = db.prepare('SELECT * FROM feed_items WHERE source = ? AND key = ?').get(input.source, input.key) as Row | undefined
     if (found) return { item: itemOf(found), made: false }
     const id = newId()
