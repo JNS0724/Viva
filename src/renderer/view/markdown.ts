@@ -307,12 +307,13 @@ function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before
   }
   for (const part of parts) {
     const { node, sourceLength } = part
-    const previous = cursor === before ? null : cursor
+    if (staged && sourceLength === undefined) commitStaged()
+    // Leave the next preview sibling where it is while accumulating an inline replacement.
+    const previous = staged || cursor === before ? null : cursor
     if (previous) cursor = previous.nextSibling
-    // A reference defined near the end can turn a preview's last plain text node into many inline parts.
+    // A reference defined near the end can turn a preview's plain text node into many inline parts.
     // Hold the old node until the replacement covers the same source span. The rest can still grow in view.
-    if (sourceLength === undefined) commitStaged()
-    else if (previous instanceof Text && previous === last && sourceLength < previous.length) {
+    if (sourceLength !== undefined && previous instanceof Text && sourceLength < previous.length) {
       staged = { previous, content: document.createDocumentFragment(), sourceLeft: previous.length }
     }
     if (staged && sourceLength !== undefined) {

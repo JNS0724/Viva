@@ -140,9 +140,10 @@ export async function checkExpansionInteractions(page: Page) {
     const split = await page.evaluate(`(async () => {
       const {renderMarkdown, revealMarkdown} = await import('./view/markdown.js')
       const host = document.getElementById('expansion-focus-fixture')
-      const prefix = '[Readable label][later] '.repeat(650), openLink = () => {}
+      const prefix = '[Readable label][later] '.repeat(650) + '[Explicit link](https://example.com/explicit)', openLink = () => {}
       const full = prefix + '\\n\\n' + 'Full answer continues. '.repeat(44) + '\\n\\n[later]: https://example.com/reference'
       const target = renderMarkdown(prefix, {openLink}), button = document.createElement('button')
+      const explicit = target.querySelector('a'), references = 'a[href="https://example.com/reference"]'
       target.append(button); host.replaceChildren(target)
       const frame = () => new Promise(requestAnimationFrame)
       await frame(); host.scrollTop = host.scrollHeight; await frame()
@@ -152,13 +153,15 @@ export async function checkExpansionInteractions(page: Page) {
       while (!done) {
         await frame()
         lowest = Math.min(lowest, host.scrollTop)
-        const links = target.querySelector('p').querySelectorAll('a').length
+        const links = target.querySelectorAll(references).length
         if (links && links < 650) partial = true
       }
       await draw; await frame()
-      return {before, lowest, after: host.scrollTop, partial, links: target.querySelector('p').querySelectorAll('a').length}
-    })()`) as { before: number, lowest: number, after: number, partial: boolean, links: number }
+      return {before, lowest, after: host.scrollTop, partial, links: target.querySelectorAll(references).length,
+        retained: explicit === target.querySelector('a[href="https://example.com/explicit"]')}
+    })()`) as { before: number, lowest: number, after: number, partial: boolean, links: number, retained: boolean }
     assert(split.links).toBe(650)
+    assert(split.retained, 'the explicit link after the converted preview text should keep its DOM node').toBe(true)
     assert(split.partial, 'the text to link conversion should preserve the existing paragraph until its replacement is ready').toBe(false)
     assert(Math.min(split.before, split.after) - split.lowest, 'a single paragraph should never collapse partway through its replacement').toBeLessThanOrEqual(2)
 
