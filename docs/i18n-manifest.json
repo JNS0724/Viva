@@ -17,8 +17,8 @@
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "2c229d1a1c9d9d36c02d3c77cb63fd5e2b77314bd932bf82ef9a1badd2241516",
-      "zhHash": "6aebf68e69e4ef130637780c8a49fe68c501d8be18ea913986eaddf27b7503e1"
+      "enHash": "3556a0f6e8031d81d0e727e45f423f7ef74efd217b1420301a266b3042e4b89c",
+      "zhHash": "ded06319995d7c0eca555170b9603cc1ee2ba72ac95bc2aeb059fd47dae57e22"
     },
     {
       "en": "docs/live-check.md",
@@ -71,8 +71,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "a78c27b0682292ecd20c0a8904ec9cb438b1099996fe50ce5d5bc7e0ba6ac55b",
-      "zhHash": "32dcf24337201dd5ebf2da62a87ab0b6d4f55302afd5078a363b35e90025a801"
+      "enHash": "1a5ab3b8f4718ed8869cc11e017c9505c918c923891e5c9b79bd017f6f56178a",
+      "zhHash": "d89f1441b4418765824afda4736400028a79700c71a03f69907e65070de5004a"
     },
     {
       "en": "docs/system-design.md",
@@ -107,8 +107,8 @@
     {
       "en": "docs/memory-owner-isolation.md",
       "zh": "docs/memory-owner-isolation.zh-CN.md",
-      "enHash": "ae26aabcbcc8a13c9efcd5324b23c09a6d6b0d750c1fbdbeea5989633ed15604",
-      "zhHash": "92d853d9f1f1036b0b0d60f1d85a7f7f583d5964a40c9f64267e9a20beece220"
+      "enHash": "3499e77f272cb077b351863e458d6a981023775a656e7c77a4b166edffe459cf",
+      "zhHash": "f3d1acf1d26c0ba1e314a1eed20d1a67199bff425743ddbf3b6cf787ba031a27"
     },
     {
       "en": "docs/memory-reme-plan.md",
@@ -128,6 +128,11 @@
     "build/icons/README.txt"
   ],
   "sourceReports": [
+    {
+      "path": "docs/qa-memory-latency-20261119.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "41bf616506c196c8211171fd4233dc76aed6f70be79cd717dcb14ca7994bccf8"
+    },
     {
       "path": "docs/qa-desktop-island-interaction-20261108.md",
       "locale": "zh-CN",

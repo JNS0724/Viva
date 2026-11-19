@@ -156,7 +156,7 @@ const BACKEND_ENTRY = path.join(CODE_ROOT, 'src', 'backend', 'server.js')
 /** Started with the computer (开机启动): the window stays hidden, Viva in the tray. */
 const startedHidden = process.argv.includes('--hidden') || (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin)
 
-type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces' | 'deskCoached'>
+type ShellPreferences = Pick<Preferences, 'deskIsland' | 'deskPlaces'>
 
 let win: BrowserWindow | null = null
 /** The island on the desktop, shown while the window is in the background (desk-island.ts). */
@@ -173,7 +173,7 @@ let pendingFeed = 0
 /** Whether the shortcut that opens the island's input is ours (another app may hold it); null before it is tried. */
 let shortcutHeld: ReturnType<typeof registerAskShortcut> | null = null
 /** The desktop island's preferences, kept here as the island reads them at once; written through to the backend. */
-let shellPreferences: ShellPreferences = { deskIsland: true, deskPlaces: { last: null, places: {} }, deskCoached: false }
+let shellPreferences: ShellPreferences = { deskIsland: true, deskPlaces: { last: null, places: {} } }
 /** Quitting has begun (or the session ends): the window closes for real, and the backend's end is expected. */
 let quitting = false
 /** The backend is stopping dsh and closing; then quitting goes on. */
@@ -465,7 +465,6 @@ function attachDeskIsland(window: BrowserWindow) {
     // Its 已完成 card read: the window's island goes back to 待命 too (done-notice-actions.ts).
     onDoneRead: () => { if (!window.isDestroyed()) window.webContents.send('island:action', { kind: 'seen' }) },
     places: { get: () => shellPreferences.deskPlaces, set: (places) => { setShellPreference('deskPlaces', places).catch(logged('places')) } },
-    coach: { get: () => shellPreferences.deskCoached, set: () => { setShellPreference('deskCoached', true).catch(logged('coached')) } },
   })
   desk = liveIsland
   if (previewMode) deskPreview = createDeskPreview(() => createDeskIsland({
@@ -512,11 +511,6 @@ function registerShellSettingsIpc() {
   ipcMain.handle('settings:set-desk-island', async (_event, on) => {
     if (typeof on !== 'boolean') throw new Error('invalid desk island switch')
     await setDeskIsland(on)
-    return (await backendConnection()).control('settings-view')
-  })
-  ipcMain.handle('settings:reset-desk-place', async () => {
-    desk?.resetPlace()
-    if (!desk) await setShellPreference('deskPlaces', { last: null, places: {} })
     return (await backendConnection()).control('settings-view')
   })
 }

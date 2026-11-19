@@ -64,6 +64,8 @@
   --drawer-width: 440px;
   /* How much of a long message shows folded (view/message-fold.ts); it folds only from about twice this. */
   --msg-fold-h: 280px; --msg-fold-fade: linear-gradient(to bottom, #000 70%, transparent);
+  /* Quiet breathing space and soft top fade between the title-bar badge and scrolling conversation content. */
+  --scroll-top-gap: 10px; --scroll-top-fade: linear-gradient(to bottom, transparent 0, #000 18px);
   /* A task's result the model read (view/report-record.ts): aligned with the answers' text, one quiet line. */
   --record-indent: 0px; --record-row-h: 28px; --record-gap: 6px; --record-row-gap: 8px;
   --record-text: 12px; --record-stamp: 11px; --record-text-max: 280px;
@@ -152,7 +154,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 /* A zoomed minimum-size window must constrain the grid column instead of adopting its contents' min-width. */
 .body { position: relative; display: flex; min-width: 0; min-height: 0; }
 /* --rail-lane: kept free of the column at each side, the turn rail's on the left (view/column-resize.ts RAIL_LANE). */
-.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: var(--scroll-top-gap) 28px 16px; }
 /* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge (--rail-lane), one mark per question,
    packed tighter as turns add up. A mark's tip opens rightwards, over the text. */
 .turn-rail {
@@ -198,7 +200,11 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .col-grip:focus-visible { outline: none; }
 .col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 /* A message's star extends 38px beyond its column. Keep that lane inside the scrollport at narrow widths too. */
-.scroll { position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
+.scroll {
+  position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center;
+  -webkit-mask-image: var(--scroll-top-fade); mask-image: var(--scroll-top-fade);
+}
 /* Back to the latest (view/scroll-follow.ts): an arrow only, a quiet way down while reading further up. */
 .jump-latest {
   align-self: center; flex: none; display: grid; place-items: center; width: 36px; height: 36px; margin: 0 0 4px; padding: 0;
@@ -953,6 +959,37 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .feed-her { display: flex; align-items: center; gap: 12px; padding: 10px 12px 14px; }
 .feed-say { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; }
 .feed-empty { align-items: center; justify-content: center; }
+/* Plugin-backed data sources inside 动态 (view/feed-page.ts, view/feed-source-panel.ts). */
+.fs-add .tp-name { color: var(--accent); font-size: 13px; font-weight: 500; }
+.fu-row[data-tone="error"] .tp-meta { color: var(--error-ink); }
+.tp-status[data-tone="error"] { color: var(--error-ink); }
+.fs-form { max-width: 560px; display: flex; flex-direction: column; gap: 18px; }
+.fs-field { display: flex; flex-direction: column; gap: 6px; }
+.fs-field > .label { color: var(--ink-3); }
+/* .field grows along a row; in this column it would collapse to its padding. */
+.fs-field > .field { flex: none; }
+.fs-text-field { font-family: var(--font-sans); }
+.fs-rule { min-height: 120px; resize: vertical; line-height: 1.6; }
+.fs-hint { margin: 0; }
+.fs-last { margin: 0; font-size: 13px; color: var(--ink-3); }
+.fs-last[data-tone="error"] { color: var(--error-ink); }
+.fs-freq-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fs-freq-stack { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.fs-freq-select, .fs-freq-time, .fs-freq-cron { flex: none; height: 38px; }
+.fs-freq-select { width: auto; min-width: 140px; }
+.fs-freq-time { width: 132px; }
+.fs-freq-cron { width: 200px; }
+.fs-weekly { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.fs-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.fs-day {
+  min-width: 34px; height: 32px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink-3); font-size: 12px; cursor: pointer;
+}
+.fs-day:hover:not(:disabled) { border-color: var(--line-2); color: var(--ink-2); }
+.fs-day[aria-pressed="true"] { border-color: var(--accent); background: var(--raised); color: var(--accent); font-weight: 600; }
+.fs-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.fs-empty { max-width: 520px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.fs-empty p { margin: 0; }
 
 /* ---------- 后台 page (view/tasks-page.ts): one of the hub's pages, its list and the task picked side by side ---------- */
 .hub-page.hub-tasks { width: 100%; height: 100%; margin: 0; padding: 0; display: flex; min-height: 0; }

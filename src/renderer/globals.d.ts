@@ -178,7 +178,6 @@ interface AgentApi extends DraftApi {
   setDeskIsland: Invoke<'settings:set-desk-island'>
   setWebSearch: Invoke<'settings:set-web-search'>
   setOpenAtLogin: Invoke<'settings:set-open-at-login'>
-  resetDeskPlace: Invoke<'settings:reset-desk-place'>
   getModels: Invoke<'models:get'>
   addModelProvider: Invoke<'models:add'>
   updateModelProvider: Invoke<'models:update'>
@@ -275,6 +274,12 @@ interface AgentApi extends DraftApi {
   listFeed: Invoke<'feed:list'>
   continueFeed: Invoke<'feed:continue'>
   markFeedSeen: Invoke<'feed:seen'>
+  listFeedSources: Invoke<'feed-sources:list'>
+  createFeedSource: Invoke<'feed-sources:create'>
+  updateFeedSource: Invoke<'feed-sources:update'>
+  pauseFeedSource: Invoke<'feed-sources:pause'>
+  deleteFeedSource: Invoke<'feed-sources:delete'>
+  runFeedSourceNow: Invoke<'feed-sources:run-now'>
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (...args: Args<'island:view'>) => void
   islandAskResult: (...args: Args<'island:ask-result'>) => void

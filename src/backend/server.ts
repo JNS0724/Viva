@@ -20,8 +20,8 @@ import { type ChannelKind, type FailedMessage, MIRROR, type ReadyMessage, START,
  */
 /** The signals the shell may send; the others come from inside the backend. */
 const SHELL_SIGNALS = new Set(['window.foreground', 'system.woke'])
-/** The preferences the shell writes (the desktop island's switch, places and coaching). */
-const SHELL_PREFERENCES = new Set(['deskIsland', 'deskPlaces', 'deskCoached'])
+/** The preferences the shell writes (the desktop island's switch and places). */
+const SHELL_PREFERENCES = new Set(['deskIsland', 'deskPlaces'])
 
 function reply(message: ReadyMessage) {
   process.send?.(message)

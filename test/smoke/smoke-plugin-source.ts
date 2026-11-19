@@ -33,10 +33,11 @@ export async function pluginSourceSteps(win: SmokeWindow, outDir: string, expect
 
 const CATALOG_TOKEN = 'npm_smoke_catalog_token'
 const bundle = { bundle: { patch: 'patch.yml' } }
-/** What the source has: a plugin, one that needs dsh's browser host, and a package that is no plugin at all. */
+/** Bundles with different compatibility findings and a package that is not a plugin. */
 const CATALOG: Record<string, FakePackage> = {
   '@viva-smoke/dsh-notes': { name: '@viva-smoke/dsh-notes', version: '1.2.0', description: '团队笔记：把会议纪要整理成待办', dsh: bundle },
   'dsh-web-panel': { name: 'dsh-web-panel', version: '0.3.0', description: '网页端的侧边面板', dsh: bundle, dependencies: { '@deepseek-ai/dsh-web-app': '^1' } },
+  'dsh-future': { name: 'dsh-future', version: '1.0.0', dsh: bundle, engines: { dsh: '>=99' } },
   'left-pad': { name: 'left-pad', version: '1.3.0', description: 'Not a plugin' },
 }
 
@@ -61,9 +62,11 @@ async function catalogSteps(win: SmokeWindow, outDir: string, expect: Expect) {
       const items = [...document.querySelectorAll('#capabilities-root .cap-catalog-item')]
       return items.length ? items.map((item) => ({ name: item.dataset.name, fit: item.querySelector('.ext-status')?.textContent ?? '' })) : null
     })()`, 'the plugins on the source')
-    expect(JSON.stringify(listed.map((item: { name: string }) => item.name)) === JSON.stringify(['@viva-smoke/dsh-notes', 'dsh-web-panel']),
-      'the source\'s dsh plugins should be listed, the package that is no plugin left out', listed)
-    expect(listed.find((item: { name: string }) => item.name === 'dsh-web-panel')?.fit.includes('用不了'), 'one that needs dsh\'s browser host should say it does not work here', listed)
+    expect(JSON.stringify(listed) === JSON.stringify([
+      { name: '@viva-smoke/dsh-notes', fit: '未发现已知冲突' },
+      { name: 'dsh-web-panel', fit: '需要 dsh 网页端' },
+      { name: 'dsh-future', fit: 'dsh 版本不兼容' },
+    ]), 'the catalog shows each bundle and its compatibility finding', listed)
     expect(registry.asked.some((request) => request.url.startsWith('/-/v1/search')) && registry.asked.every((request) => request.auth === `Bearer ${CATALOG_TOKEN}`),
       'the source should be searched with its token, and asked nothing without it', registry.asked)
     await wait(UI_WAIT_MS)
@@ -75,17 +78,34 @@ async function catalogSteps(win: SmokeWindow, outDir: string, expect: Expect) {
       const card = item?.querySelector('.ext-group[role="group"]')
       return card ? {
         fit: item.querySelector('.cap-catalog-head .ext-status')?.textContent ?? '',
-        repeated: card.textContent.includes('网页端的侧边面板') || card.textContent.includes('用不了'),
-        install: [...card.querySelectorAll('button')].some((button) => button.textContent === '安装'),
+        repeated: card.textContent.includes('网页端的侧边面板') || card.textContent.includes('需要 dsh 网页端'),
+        install: [...card.querySelectorAll('button')].some((button) => button.textContent === '安装' && !button.disabled),
         spec: document.querySelector('#capabilities-root [name="plugin-spec"]')?.value ?? '',
       } : null
     })()`, 'the lookup of the one picked, under it')
-    expect(looked.spec === 'dsh-web-panel@0.3.0' && looked.install && looked.fit.includes('用不了') && !looked.repeated,
+    expect(looked.spec === 'dsh-web-panel@0.3.0' && looked.install && looked.fit === '需要 dsh 网页端' && !looked.repeated,
       'looked at as name@version, 安装 under it, its fit said once beside its name before anything is installed', looked)
     await run(win, `(document.querySelector('#capabilities-root .cap-catalog-item[data-name="dsh-web-panel"]')).scrollIntoView({ block: 'center' })`)
     await wait(UI_WAIT_MS)
     await capture(win, outDir, 'plugin-catalog-look')
     await run(win, `[...document.querySelectorAll('#capabilities-root .ext-group[role="group"] button')].find((button) => button.textContent === '取消').click()`)
+
+    await run(win, `document.querySelector('#capabilities-root .cap-catalog-item[data-name="dsh-future"] button').click()`)
+    const futureCard = '#capabilities-root .cap-catalog-item[data-name="dsh-future"] .ext-group[role="group"]'
+    const incompatible = await until(win, `(() => {
+      const card = document.querySelector(${JSON.stringify(futureCard)})
+      return card ? {
+        disabled: [...card.querySelectorAll('button')].find((button) => button.textContent === '安装')?.disabled,
+        version: card.querySelector('summary')?.textContent,
+        requirement: card.querySelector('details li')?.textContent,
+      } : null
+    })()`, 'the incompatible plugin lookup')
+    expect(incompatible.disabled && incompatible.version?.startsWith('当前 dsh ') && incompatible.requirement === 'engines.dsh >=99',
+      'the incompatible version disables installation and shows its requirements', incompatible)
+    await run(win, `document.querySelector(${JSON.stringify(futureCard)}).querySelector('summary').click()`)
+    await run(win, `document.querySelector(${JSON.stringify(futureCard)}).scrollIntoView({ block: 'center' })`)
+    await wait(UI_WAIT_MS)
+    await capture(win, outDir, 'plugin-catalog-incompatible')
   } finally {
     await run(win, `(${sourceRow}).click()`)
     await until(win, `[...document.querySelectorAll('#capabilities-root button')].find((button) => button.textContent === '移除插件源') || null`, 'the plugin source to take away')

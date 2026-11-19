@@ -18,7 +18,6 @@ export type DeskPart =
   | { kind: 'code', text: string }
   | { kind: 'hint', text: string }
   | { kind: 'choices', options: ReadonlyArray<{ text: string, act: DeskAction }> }
-  | { kind: 'tips', items: ReadonlyArray<{ key: string, text: string }> }
   | { kind: 'background' }
 export interface DeskCard {
   label: string
@@ -106,19 +105,8 @@ function backgroundCard(view: IslandShown): DeskCard {
   })
 }
 
-/** The first time the cat rests on the desktop: what it can do, each tip led by its gesture. */
-function coachCard(view: IslandShown, shortcut: string): DeskCard {
-  const seen: DeskAction = { kind: 'coached' }
-  const items = [
-    ...(shortcut ? [{ key: shortcut, text: t('desk-card.coach.ask') }] : []),
-    { key: t('desk-card.coach.drop.key'), text: t('island-dom.drop.files.onto.me.for.help') },
-    { key: t('desk-card.coach.hold.key'), text: t('desk-card.coach.move') },
-  ]
-  return card(view.label, { close: escapeAction(view), body: [{ kind: 'tips', items }], actions: [{ text: t('island-dom.got.it'), role: 'blue', act: seen }] })
-}
-
 /** @returns the card for a form, or null for the input and files dragged over, which the input draws itself */
-export function deskCard(view: IslandShown, { shortcut }: { shortcut: string }): DeskCard | null {
+export function deskCard(view: IslandShown, _options?: { shortcut?: string }): DeskCard | null {
   switch (view.form) {
     case 'waiting': return view.permission ? permissionCard(view) : null
     case 'asking': return view.question ? questionCard(view) : null
@@ -126,7 +114,6 @@ export function deskCard(view: IslandShown, { shortcut }: { shortcut: string }):
     case 'error': return errorCard(view)
     case 'pending': return pendingCard(view)
     case 'background': return backgroundCard(view)
-    case 'coach': return coachCard(view, shortcut)
     case 'input':
     case 'switching':
     case 'drop': return null
@@ -134,11 +121,8 @@ export function deskCard(view: IslandShown, { shortcut }: { shortcut: string }):
   }
 }
 
-/**
- * What Esc does on the island as shown: the same as its ×. The first-time card is opened by the page alone, so the
- * main process would ignore a dismiss; closing it counts it as seen.
- */
-export const escapeAction = (view: IslandShown): DeskAction => (view.form === 'coach' ? { kind: 'coached' } : { ...DISMISS })
+/** What Esc does on the island as shown: the same as its ×. */
+export const escapeAction = (_view?: IslandShown): DeskAction => ({ ...DISMISS })
 
 const requestIdOf = (view: IslandShown): string | null => view.permission?.requestId ?? view.question?.questionId ?? null
 
@@ -164,7 +148,3 @@ export function nextRequest(view: IslandShown, id: string | null): IslandShown |
   if (requestFor(view, id)) return null
   return requestsOf(view)[0]
 }
-
-/** The first-time card shows on the resting island only, never over a request, an open card, a drag or a drop. */
-export const showsCoach = ({ coach, expanded, dragging, form, dropping }: { coach?: boolean, expanded?: boolean, dragging?: boolean, form?: string, dropping?: boolean }): boolean =>
-  Boolean(coach && !expanded && !dragging && !dropping && form === 'mini')

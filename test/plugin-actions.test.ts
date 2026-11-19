@@ -125,6 +125,32 @@ test('the install field shows what was put in it for the user, not what was type
   assert.deepEqual([state().plugins.spec, state().plugins.specVersion !== picked], ['', true], 'installed, the field starts empty')
 })
 
+test('an incompatible dsh version prevents install after lookup', async () => {
+  const fit = { kind: 'dsh-version', current: '0.2.2-rc.2', requirements: { 'engines.dsh': '>=99' } }
+  let installs = 0
+  const { actions, state } = setup({
+    inspectPlugin: async () => ({ ok: true, name: 'dsh-notes', version: '1.2.0', bundle: true, fit }),
+    installPlugin: async () => { installs++ },
+  })
+  await actions.pickCatalogEntry('dsh-notes', '1.2.0')
+  await actions.installPlugin()
+  assert.equal(installs, 0)
+  assert.deepEqual(state().plugins.inspection.fit, fit)
+})
+
+test('an inspection completed after the spec changes cannot block the new spec', async () => {
+  let answer!: (value: unknown) => void
+  const { actions, state } = setup({
+    inspectPlugin: () => new Promise((resolve) => { answer = resolve }),
+  })
+  actions.editPluginSpec('dsh-old')
+  const inspecting = actions.inspectPlugin()
+  actions.editPluginSpec('dsh-new')
+  answer({ ok: true, name: 'dsh-old', fit: { kind: 'dsh-version' } })
+  await inspecting
+  assert.deepEqual([state().plugins.spec, state().plugins.inspection, state().plugins.busy], ['dsh-new', null, false])
+})
+
 test('a search still going when the source changes is let go: its answer, or its failure, belongs to the source before', async () => {
   for (const late of [{ ok: true, entries: [{ name: 'dsh-old', version: '1.0.0', description: null, fit: { kind: 'unknown' } }] }, { ok: false, problem: 'search', detail: 'old source down' }]) {
     let answer!: (value: unknown) => void

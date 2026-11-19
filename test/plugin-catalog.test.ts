@@ -95,8 +95,10 @@ test('before an install: a registry name is looked up, a folder read, anything e
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-plugin-fit-'))
   try {
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(plugin('dsh-local', { viva: { supports: true } })))
-    assert.deepEqual(await specFit({ spec: dir, pnpm: PNPM, run }), { kind: 'declared' })
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(plugin('dsh-local', { engines: { dsh: '>=99' }, viva: { supports: true } })))
+    for (const spec of [dir, `file:${dir}`, `link:${dir}`]) {
+      assert.equal((await specFit({ spec, pnpm: PNPM, run })).kind, 'dsh-version')
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

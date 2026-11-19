@@ -102,7 +102,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   setDeskIsland: (on) => ipcRenderer.invoke('settings:set-desk-island', on),
   setWebSearch: (on) => ipcRenderer.invoke('settings:set-web-search', on),
   setOpenAtLogin: (on) => ipcRenderer.invoke('settings:set-open-at-login', on),
-  resetDeskPlace: () => ipcRenderer.invoke('settings:reset-desk-place'),
   getModels: () => ipcRenderer.invoke('models:get'),
   addModelProvider: (input) => ipcRenderer.invoke('models:add', input),
   updateModelProvider: (id, input) => ipcRenderer.invoke('models:update', id, input),
@@ -209,7 +208,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   /** The dsh plugins the company source finds for `query`: { ok, entries } | { ok: false, problem, detail }. */
   searchPluginCatalog: (query) => ipcRenderer.invoke('plugins:catalog', query),
   /** approvedBuilds: the dependency build scripts the user allowed after a first attempt asked. */
-  installPlugin: (spec, approvedBuilds) => ipcRenderer.invoke('plugins:install', spec, approvedBuilds),
+  installPlugin: (spec, approvedBuilds, previewId) => ipcRenderer.invoke('plugins:install', spec, approvedBuilds, previewId),
   removePlugin: (name) => ipcRenderer.invoke('plugins:remove', name),
   setPluginEnabled: (name, enabled) => ipcRenderer.invoke('plugins:set-enabled', name, enabled),
   getPluginSource: () => ipcRenderer.invoke('plugins:source'),
@@ -222,6 +221,12 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   listFeed: () => ipcRenderer.invoke('feed:list'),
   continueFeed: (id) => ipcRenderer.invoke('feed:continue', id),
   markFeedSeen: (id) => ipcRenderer.invoke('feed:seen', id),
+  listFeedSources: () => ipcRenderer.invoke('feed-sources:list'),
+  createFeedSource: (input) => ipcRenderer.invoke('feed-sources:create', input),
+  updateFeedSource: (id, changes) => ipcRenderer.invoke('feed-sources:update', id, changes),
+  pauseFeedSource: (id, paused) => ipcRenderer.invoke('feed-sources:pause', id, paused),
+  deleteFeedSource: (id) => ipcRenderer.invoke('feed-sources:delete', id),
+  runFeedSourceNow: (id) => ipcRenderer.invoke('feed-sources:run-now', id),
   /** What the island shows; the main process passes it to the desktop island while the window is away. */
   islandView: (view) => ipcRenderer.send('island:view', view),
   islandAskResult: (receiptId, result) => ipcRenderer.send('island:ask-result', receiptId, result),

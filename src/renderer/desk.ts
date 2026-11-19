@@ -6,7 +6,7 @@ import { createIsland } from './view/island-dom.ts'
 import { createIslandInput } from './view/island-input.ts'
 import { placeDesktopIsland } from './view/desktop-layout.ts'
 import { createComposerDraftActions } from './composer-draft-actions.ts'
-import { escapeAction, nextRequest, requestFor, showsCoach } from './island-desk-card.ts'
+import { escapeAction, nextRequest, requestFor } from './island-desk-card.ts'
 import type { DraftContent } from '../shared/composer-draft.ts'
 import type { DeskPreviewSurface } from '../shared/desk-preview.ts'
 
@@ -139,9 +139,6 @@ function shownView(): IslandShown {
   }
   const waits = NEEDS_USER.has(view.form)
   if (!waits && Date.now() < resolvedUntil) return resolvedNote(view, context)
-  if (!waits && showsCoach({ ...payload, dropping: Boolean(dropping) })) {
-    return { ...context, ...IDLE_VIEW, desktopOpen: true, form: 'coach', tone: 'done', mood: view.mood, label: t('desk.viva.is.here') }
-  }
   return { ...view, ...context, ...(payload?.form === 'mini' && !waits ? { form: 'mini' } : {}) }
 }
 const requestId = (view: IslandShown) => view.permission?.requestId ?? view.question?.questionId ?? null

@@ -125,7 +125,7 @@ Automatic injection, recall, reading by ID and relation queries never start a fu
 
 ### Latency of automatic injection and frequent tool calls
 
-Automatic injection runs before a model request and only searches when receipts for admitted messages yield a retrieval question. Today both injection and explicit recall enter `beginSearch()`, run a full `sync()`, then enumerate and recheck files. The existing 350 ms limit covers only the wait for automatic query encoding. Explicit tools also synchronize the session in both the pre-execution hook and the request handler. Measure these entry points before applying the following changes. [Injection hook](../plugins/memory/lib/adapter.ts) · [Search and deduplication](../src/memory/core/memory-file-retrieval.ts) · [Session replay](../plugins/memory/lib/ingestion.ts)
+Automatic injection searches only for admitted query inputs before a model request. Both foreground paths use the published index and asynchronously verify candidate files. Session replay still tracks durable event cursors. The management list pages through the committed registry and verifies selected candidates and their correction dependencies. Sparse title searches can continue into subsequent candidate pages. [Injection hook](../plugins/memory/lib/adapter.ts) · [Search and deduplication](../src/memory/core/memory-file-retrieval.ts) · [Session replay](../plugins/memory/lib/ingestion.ts)
 
 | Path | Initial implementation | Proposed acceptance target (local warm index) |
 |---|---|---|
@@ -140,6 +140,8 @@ These are proposed targets to calibrate. The 200 ms budget starts at optional lo
 Retain the existing persistence acknowledgment, serial queue, and event cursor. Measure duplicate waits for persistence on a real tool call. Reuse an acknowledgment within that call only if both entry points wait for the same durable position and context generation. Consider cross-call synchronization reuse or query vector caching only if measurements show a bottleneck. Within a request, coalesce checks on the same file revision and recheck visibility and revision before delivery. Authorize and record read dependencies per caller and retain explicit recall’s per-turn hit deduplication. [Read dependencies and turn scope](../src/memory/core/memory-runtime.ts)
 
 Compare before and after through the real plugin hooks. Measure time to the first model request with automatic injection on and off, end-to-end tool p50/p95, full scans, files validated and IPC round trips per call. Exercise cold and warm indexes, recall → read → repeat recall within a turn, concurrent Dream and an unavailable embedder. Keep the matches fixed and add unrelated files. Compare directory walks, index rows loaded and chunks decoded. Warm queries should perform zero directory walks and keep candidate and link loads within the query limits. Check retrieval quality, injection skip rate and visibility after revocation alongside latency.
+
+Local measurements cover cold and warm indexes, consecutive tools in the same turn, concurrent Dream, and loss of the embedding process. The report distinguishes the ACP tool result from the next model request. [Local latency results in Chinese](qa-memory-latency-20261119.zh-CN.md)
 
 ### Timeouts for conversation memory tools
 

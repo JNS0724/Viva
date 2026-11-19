@@ -61,7 +61,6 @@ export const IPC_ARGS = Object.freeze({
   'settings:set-web-search': z.tuple([z.boolean()]),
   'settings:set-permission': z.tuple([id]),
   'settings:set-open-at-login': z.tuple([z.boolean()]),
-  'settings:reset-desk-place': none,
 
   'images:keep': z.tuple([bytes]),
   'images:usage': read(none),
@@ -157,7 +156,7 @@ export const IPC_ARGS = Object.freeze({
   'plugins:inspect': read(z.tuple([path])),
   /** Words to search the company source with; '' lists by the default word (plugin-catalog.ts). */
   'plugins:catalog': read(z.tuple([z.string().max(200)])),
-  'plugins:install': z.tuple([path, z.array(id).max(50).optional()]),
+  'plugins:install': z.tuple([path, z.array(id).max(50).optional(), id.optional()]),
   'plugins:remove': z.tuple([id]),
   'plugins:set-enabled': z.tuple([id, z.boolean()]),
   'plugins:source': read(none),
@@ -173,6 +172,12 @@ export const IPC_ARGS = Object.freeze({
   'feed:list': read(none),
   'feed:continue': read(z.tuple([id])),
   'feed:seen': z.tuple([id]),
+  'feed-sources:list': read(none),
+  'feed-sources:create': z.tuple([record]),
+  'feed-sources:update': z.tuple([id, record]),
+  'feed-sources:pause': z.tuple([id, z.boolean()]),
+  'feed-sources:delete': z.tuple([id]),
+  'feed-sources:run-now': z.tuple([id]),
 
   'island:view': read(z.tuple([record])),
   'island:act': z.tuple([record]),

@@ -48,9 +48,12 @@ export interface ExtensionStatus {
 }
 
 /** One row a plugin adds, and how it runs now. */
-export interface PluginRow { id: string, entryId: string | null, enabled: boolean, phase: string | null }
+export interface PluginRow { id: string, entryId: string | null, enabled: boolean | null, phase: string | null }
 
-export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' } | { kind: 'needs-web', needs: readonly string[] } | { kind: 'unknown' }
+export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' }
+  | { kind: 'needs-web', needs: readonly string[] }
+  | { kind: 'dsh-version', current: string, requirements: Readonly<Record<string, string>> }
+  | { kind: 'unknown' }
 
 /** A dsh plugin the company source has (plugin-catalog.ts CatalogEntry), with whether it works in Viva. */
 export interface CatalogEntry { name: string, version: string, description: string | null, fit: PluginFit }
@@ -65,6 +68,8 @@ export interface PluginView {
   error: { code: string, detail: string | null } | null
   /** What its package.json says of it in Viva (plugin-fit.ts): its author says it supports Viva, nothing known against it, its part for dsh's Web client not shown, it needs dsh's browser host, or nothing can be told. Whether it runs is its standing. */
   fit: PluginFit
+  /** Read-only tools declared for 动态 data sources; empty when this plugin does not support data sources. */
+  feedSourceTools?: readonly string[]
   rows: readonly PluginRow[]
   overrides: readonly string[]
 }

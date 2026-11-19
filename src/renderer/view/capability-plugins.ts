@@ -20,8 +20,9 @@ function standingText(standing: PluginStanding) {
   if (standing.kind === 'error') return { tone: 'off', text: problemText(standing.code, standing.detail) }
   if (standing.kind === 'stalled') return { tone: 'off', text: t('plugins.not.running', { rows: standing.rows.join('、') }) }
   if (standing.kind === 'off') return { tone: 'idle', text: t('plugins.off') }
-  if (standing.kind === 'unsupported') return { tone: 'off', text: t('plugins.unsupported') }
-  return { tone: 'ok', text: t('plugins.on') }
+  if (standing.kind === 'unsupported') return { tone: 'off', text: t('plugins.fit.needs.web') }
+  if (standing.kind === 'loaded') return { tone: 'ok', text: t('plugins.loaded') }
+  return { tone: 'idle', text: t('plugins.on') }
 }
 
 const pluginsOf = (state: State) => state.plugins.plugins as readonly PluginView[]
@@ -56,9 +57,11 @@ export function pluginsSide(state: State, handlers: Handlers): Node[] {
   ].filter((node) => node !== null)
 }
 
-function pluginFacts(plugin: PluginView, state: State, handlers: Handlers) {
+function pluginFacts(plugin: PluginView, standing: PluginStanding, state: State, handlers: Handlers) {
   const busy = Boolean(state.plugins.busy)
-  const fit = fitText(plugin.fit)
+  const fit = standing.kind === 'loaded' && (plugin.fit.kind === 'needs-web' || plugin.fit.kind === 'dsh-version')
+    ? null
+    : fitText(plugin.fit)
   return [
     plugin.description ? h('p', { class: 'cap-text', text: plugin.description }) : null,
     h('dl', { class: 'cap-facts' },
@@ -86,10 +89,11 @@ export function pluginMain(state: State, handlers: Handlers): HTMLElement {
         // One picked from the source has its card under it (view/plugin-catalog.ts).
         catalogPick(state.plugins) ? null : installCard(state.plugins, handlers)))
   }
-  const standing = standingText(pluginStanding(plugin))
+  const status = pluginStanding(plugin)
+  const standing = standingText(status)
   return h('div', { class: 'tp-main' },
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: plugin.name }),
       h('span', { class: 'ext-status cap-standing', 'data-tone': standing.tone, title: standing.text, text: standing.text })),
-    h('div', { class: 'tp-scroll' }, ...pluginFacts(plugin, state, handlers)))
+    h('div', { class: 'tp-scroll' }, ...pluginFacts(plugin, status, state, handlers)))
 }

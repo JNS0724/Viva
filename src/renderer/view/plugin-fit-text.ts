@@ -7,14 +7,14 @@ import type { PluginFit } from '../capability-types.ts'
  * (view/plugin-catalog.ts).
  */
 
-/** What is known of it in Viva, in words; null when nothing can be told. */
-export function fitText(fit: PluginFit): string | null {
+/** The manifest finding in the catalogue, preview, or installed details. */
+export function fitText(fit: PluginFit): string {
   if (fit.kind === 'declared') return t('plugins.fit.declared')
   if (fit.kind === 'no-conflict') return t('plugins.fit.no.conflict')
   if (fit.kind === 'web-part') return t('plugins.fit.web.part')
-  if (fit.kind === 'needs-web') return t('plugins.fit.needs.web', { needs: fit.needs.join('、') })
-  return null
+  if (fit.kind === 'needs-web') return t('plugins.fit.needs.web')
+  if (fit.kind === 'dsh-version') return t('plugins.fit.dsh.version')
+  return t('plugins.fit.unknown')
 }
 
-/** Its tone beside a name (`.ext-status[data-tone]`): off when it cannot work here, ok when its author says it does. */
-export const fitTone = (fit: PluginFit): 'off' | 'ok' | 'idle' => (fit.kind === 'needs-web' ? 'off' : fit.kind === 'declared' ? 'ok' : 'idle')
+export const fitTone = (fit: PluginFit): 'off' | 'idle' => fit.kind === 'needs-web' || fit.kind === 'dsh-version' ? 'off' : 'idle'
