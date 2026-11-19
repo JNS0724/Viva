@@ -4,7 +4,7 @@ import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
 import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, memoryOwnerProjection, parseHostMemoryCommand } from '../memory/contracts/host.ts'
 import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemoryOwnerState, MemoryOwnerChange, MemoryOwnerContextUsed, MemoryOwnerProjection } from '../memory/contracts/host.ts'
-import { createRequestBudget, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
+import { createRequestBudget, MEMORY_PAGE_READ_LIMIT, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 import { diagnosticContext, emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
 import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
@@ -140,7 +140,7 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
     : withOperation('memory.owner', () => execute(method, input), { identities: { methodId: method, ownerEpoch: current?.epoch ?? '' } })
   async function readBatch<T>(work: (read: HostMemoryCaller) => Promise<T>, options: { budgetMs?: number, signal?: AbortSignal } = {}): Promise<T> {
     if (closed || current?.state !== 'ready') throw new MemoryOwnerUnavailable()
-    if (batches.size >= 2) {
+    if (batches.size >= MEMORY_PAGE_READ_LIMIT) {
       emitDiagnostic({ event: 'operation.progress', operation: 'memory.get', reason: 'busy', metrics: { pendingCount: batches.size } })
       throw new MemoryReadBusy()
     }

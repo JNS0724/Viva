@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createMemoryActions } from '../src/renderer/memory-actions.ts'
-import { createMemoryFileActions } from '../src/renderer/memory-file-actions.ts'
+import { createMemoryFileActions, createMemoryPageReads } from '../src/renderer/memory-file-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import type { MemoryFileDetailView } from '../src/shared/ipc-results.ts'
 import type { MemoryFileListResult, MemoryFileWriteResult } from '../src/memory/contracts/file-management.ts'
+import { MEMORY_READ_BUDGET_MS } from '../src/shared/request-budget.ts'
 
 const version = (id: string) => ({ contentRevision: `body-${id}`, usageVersion: 4, policyToken: `policy-${id}` })
 const detailOf = (id: string, kind: 'daily' | 'digest' = 'digest'): MemoryFileDetailView => ({
@@ -562,4 +563,41 @@ test('a file detail refresh shares pending work and leaves the second owner read
   assert.equal(lists, 0)
   await f.actions.showMemoryFile(null)
   assert.equal(lists, 1)
+})
+
+test('returning to the list can use the first released slot while the old detail read is still running', async () => {
+  const item = detailOf('active'), profile = deferred<typeof getMemory>(), old = deferred<MemoryFileDetailView>()
+  let profiles = 0, details = 0, lists = 0
+  let listBudget: number | undefined
+  const f = harness({
+    getMemory: () => { profiles++; return profile.promise },
+    readMemoryFile: async () => ++details === 1 ? item : old.promise,
+    listMemoryFiles: async (_query, options) => { lists++; listBudget = options?.budgetMs; return pageOf([item]) },
+  })
+  await f.all.showMemoryFile({ identity: item.identity })
+  f.all.onMemoryChanged({})
+  await Promise.resolve()
+  assert.equal(details, 2)
+  assert.equal(profiles, 1)
+  const back = f.all.showMemoryFile(null)
+  assert.equal(f.file().selection, null)
+  assert.equal(lists, 0, 'the old detail and profile are occupying both owner slots')
+  profile.resolve(getMemory)
+  await back
+  assert.equal(lists, 1)
+  assert.ok(listBudget !== undefined && listBudget > 0 && listBudget < MEMORY_READ_BUDGET_MS)
+  assert.equal(f.file().listError, null)
+  assert.equal(f.file().items[0]?.identity.id, item.identity.id)
+  old.resolve(item)
+})
+
+test('an expired page read does not start later when a physical slot is released', async t => {
+  const reads = createMemoryPageReads(20), held = deferred<void>()
+  t.after(() => held.resolve())
+  const first = reads(() => true, () => held.promise), second = reads(() => true, () => held.promise)
+  let started = false
+  await assert.rejects(reads(() => true, async () => { started = true }), /timed out/)
+  held.resolve()
+  await Promise.all([first, second])
+  assert.equal(started, false)
 })

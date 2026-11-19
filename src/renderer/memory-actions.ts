@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { createMemoryFileActions } from './memory-file-actions.ts'
+import { createMemoryFileActions, createMemoryPageReads } from './memory-file-actions.ts'
 import { memoryFilePageOpen } from './memory-file-state.ts'
 import { createRequestBudget, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
 const NOTICE_TOAST_MS = 6000
@@ -29,7 +29,8 @@ export function introChanges(values: IntroValues) {
 
 /** The "关于你" page and the intro. */
 export function createMemoryActions({ api, getState, dispatch, errorMessage, showToast, ask, readBudgetMs = MEMORY_READ_BUDGET_MS }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'errorMessage' | 'showToast' | 'ask'> & { readBudgetMs?: number }) {
-  const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage })
+  const readPage = createMemoryPageReads(readBudgetMs)
+  const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage }, readPage)
   // Status reads use a separate, lightweight owner call. Closing the list invalidates late replies.
   let watchingDream = false, dreamRequest = 0
   let pendingDreamOperation: string | undefined
@@ -66,7 +67,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     active?.lifetime.cancel(); active?.lifetime.close()
     const request = ++memoryRequest, generation = profileGeneration
     const lifetime = createRequestBudget(readBudgetMs)
-    const promise = lifetime.run(() => api.getMemory({ budgetMs: lifetime.remainingMs() })).then(data => {
+    const promise = lifetime.run(() => readPage(() => request === memoryRequest && !lifetime.signal.aborted,
+      () => api.getMemory({ budgetMs: lifetime.remainingMs() }))).then(data => {
       if (request !== memoryRequest || generation !== profileGeneration) return false
       dispatch({ type: 'memory_loaded', data })
       return true
