@@ -10,6 +10,7 @@ import { feedSourceViewOf, type FeedSourceStore } from './feed-source-store.ts'
 export function registerFeedSourceIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   store: () => FeedSourceStore
   cwd: () => string
+  validatePlugin?: (pluginName: string) => Promise<{ ok: true } | { ok: false, reason: string }>
   runNow: (id: string) => Promise<FeedSourceRunResult>
   changed: () => void
 }) {
@@ -17,10 +18,15 @@ export function registerFeedSourceIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps
 
   handle('feed-sources:list', (): FeedSourceView[] => deps.store().list().map(feedSourceViewOf))
 
-  handle('feed-sources:create', (input): FeedSourceView => {
+  handle('feed-sources:create', async (input): Promise<FeedSourceView> => {
     const raw = input as Record<string, unknown>
+    const pluginName = String(raw.pluginName ?? '').trim()
+    if (pluginName && deps.validatePlugin) {
+      const checked = await deps.validatePlugin(pluginName)
+      if (!checked.ok) throw new Error(checked.reason)
+    }
     const created = deps.store().create({
-      pluginName: String(raw.pluginName ?? ''),
+      pluginName,
       name: typeof raw.name === 'string' ? raw.name : undefined,
       instruction: String(raw.instruction ?? ''),
       schedule: raw.schedule,

@@ -757,14 +757,17 @@ export function createAcpBridge({
   /** 重试 on a server that stopped trying. */
   const restartMcp = (name: string) => mcpDesk.restart(name)
 
-  /** Binds an unattended feed source session to the plugin's explicit read-only tool allowlist. */
-  async function bindFeedSourceSession(targetSessionId: string, allowedTools: readonly string[]): Promise<boolean> {
-    if (!child?.connected) return false
+  /** Binds an unattended feed source session to verified read-only tools owned by `pluginName`. */
+  async function bindFeedSourceSession(
+    targetSessionId: string,
+    binding: { pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] },
+  ): Promise<{ ok: true } | { ok: false, reason: string }> {
+    if (!child?.connected) return { ok: false, reason: 'disconnected' }
     try {
-      await routingDesk.bindSource(targetSessionId, allowedTools)
-      return true
-    } catch {
-      return false
+      await routingDesk.bindSource(targetSessionId, binding)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) }
     }
   }
 

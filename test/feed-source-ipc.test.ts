@@ -18,6 +18,9 @@ test('feed-sources IPC validates arguments through ipc-contract and handles full
   registerFeedSourceIpc(checkedIpc(rawIpc), {
     store: () => store,
     cwd: () => '/work',
+    validatePlugin: async (name) => name === '@company/dsh-plugin-mail'
+      ? { ok: true }
+      : { ok: false, reason: `插件 ${name} 未声明允许数据源调用的只读工具。` },
     changed: () => { changes += 1 },
     runNow: async (id) => {
       ranId = id
@@ -27,6 +30,16 @@ test('feed-sources IPC validates arguments through ipc-contract and handles full
   })
 
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)!({}, ...args)
+
+  await assert.rejects(
+    async () => invoke('feed-sources:create', {
+      pluginName: '@company/dsh-plugin-unsupported',
+      instruction: '查内容',
+      schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
+    }),
+    /未声明允许数据源调用的只读工具/,
+  )
+  assert.deepEqual(await invoke('feed-sources:list'), [])
 
   const created = await invoke('feed-sources:create', {
     pluginName: '@company/dsh-plugin-mail',

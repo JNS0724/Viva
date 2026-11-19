@@ -73,9 +73,9 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
       if (loadPlugins) {
         try { await loadPlugins() } catch { /* plugin view handles disconnected state */ }
       }
-      const plugins = (getState().plugins?.plugins ?? []) as ReadonlyArray<{ name: string, enabled: boolean }>
-      const firstEnabled = plugins.find((plugin) => plugin.enabled)?.name ?? ''
-      dispatch({ type: 'feed_source_new', pluginName: firstEnabled })
+      const plugins = (getState().plugins?.plugins ?? []) as ReadonlyArray<{ name: string, enabled: boolean, feedSourceTools?: readonly string[] }>
+      const firstSupported = plugins.find((plugin) => plugin.enabled && (plugin.feedSourceTools?.length ?? 0) > 0)?.name ?? ''
+      dispatch({ type: 'feed_source_new', pluginName: firstSupported })
     },
     createSource: (input: FeedSourceCreateInput) => change(
       () => api.createFeedSource(input as unknown as Record<string, unknown>),

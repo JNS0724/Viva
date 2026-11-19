@@ -21,6 +21,7 @@ import { deferCode, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecisio
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
 import { admit, admitFeedSource, FORBIDDEN_SOURCE_TOOLS, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
+import { installToolOwnershipTracker, verifyPluginReadOnlyTools } from './lib/source-tools.ts'
 import { createHostChannel } from './lib/host.ts'
 import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
@@ -89,6 +90,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     if (agent.session.header.origin !== 'subagent') return
     agent.ctx.tools.restrict({ allow: SUBAGENT_TOOLS.filter(tool => ctx.tools.get(tool)) })
   }
+  const toolOwnership = installToolOwnershipTracker(ctx.tools)
   function narrowSource(agent: Agent) {
     const id = String(agent.session.id)
     const allowed = sourceScopes.get(id)
@@ -106,10 +108,18 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
       const agent = ctx.agents.get(SessionId(sessionId))
       if (agent) narrow(agent)
     },
-    onBindSource: (sessionId, allowedTools) => {
-      sourceScopes.set(sessionId, new Set(allowedTools.filter(tool => !FORBIDDEN_SOURCE_TOOLS.has(tool))))
+    onBindSource: ({ sessionId, pluginName, ownerEntryIds, allowedTools }) => {
+      const checked = verifyPluginReadOnlyTools({
+        pluginName,
+        ownerEntryIds,
+        declaredTools: allowedTools,
+        lookupTool: (tool) => (ctx.tools.get(tool) ? toolOwnership.lookup(tool) : undefined),
+      })
+      if (!checked.ok) return checked
+      sourceScopes.set(sessionId, new Set(checked.tools))
       const agent = ctx.agents.get(SessionId(sessionId))
       if (agent) narrowSource(agent)
+      return { ok: true }
     },
   })
   const tasks = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, TASK_LIST_WAIT_MS)
@@ -122,7 +132,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   }
   port.on('message', onSteer)
   port.channel?.unref?.()
-  ctx.effect(() => () => { host.close(); tasks.close(); port.off('message', onSteer) }, 'routing channel')
+  ctx.effect(() => () => { toolOwnership.dispose(); host.close(); tasks.close(); port.off('message', onSteer) }, 'routing channel')
 
   // ── Ledger: requests come in with the user's messages; it follows the steps and ends with the turn.
   ctx.on('session/event', (session, event) => {

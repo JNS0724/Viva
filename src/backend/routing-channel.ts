@@ -38,8 +38,8 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
     }), { stage: 'connecting', identities: { requestId: id, sessionId } })
   }
 
-  /** Binds an unattended data source session to an explicit read-only tool allowlist before its first step. */
-  function bindSource(sessionId: string, allowedTools: readonly string[]): Promise<void> {
+  /** Binds an unattended data source session to verified read-only tools owned by `pluginName`. */
+  function bindSource(sessionId: string, binding: { pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] }): Promise<void> {
     const id = randomUUID()
     return withOperation('task.route', () => new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -49,7 +49,15 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
       }, timeoutMs)
       const settle = () => { clearTimeout(timer); waiting.delete(id) }
       waiting.set(id, { resolve: () => { settle(); resolve() }, reject: (error) => { settle(); reject(error) } })
-      send({ type: 'routing_bind_source', version: 1, id, sessionId, allowedTools: [...allowedTools] })
+      send({
+        type: 'routing_bind_source',
+        version: 1,
+        id,
+        sessionId,
+        pluginName: binding.pluginName,
+        ownerEntryIds: [...binding.ownerEntryIds],
+        allowedTools: [...binding.allowedTools],
+      })
     }), { stage: 'connecting', identities: { requestId: id, sessionId } })
   }
 
@@ -68,7 +76,13 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
 
   function receive(message: unknown) {
     const bound = asBound(message)
-    if (bound) { waiting.get(bound.id)?.resolve(); return }
+    if (bound) {
+      const entry = waiting.get(bound.id)
+      if (!entry) return
+      if (bound.ok === false) entry.reject(new Error(bound.reason || t('main.routing-channel.not.bound')))
+      else entry.resolve()
+      return
+    }
     const decide = asDecide(message)
     if (decide) { void answer(decide.id, { requestId: decide.requestId, sessionId: decide.sessionId, plan: decide.plan }); return }
     const fast = asFast(message)

@@ -5,7 +5,7 @@ import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { transaction } from './app-db.ts'
 import { RETRY_MS as HOLD_MS } from './effects.ts'
 import type { Apply } from './journal.ts'
-import type { FeedItem, FeedStore } from './feed-store.ts'
+import { FeedItemErasedError, type FeedItem, type FeedStore } from './feed-store.ts'
 import { feedSourceViewOf, type FeedSource, type FeedSourceOccurrence, type FeedSourceStore } from './feed-source-store.ts'
 import type { RunResult } from './unattended-runs.ts'
 
@@ -43,8 +43,14 @@ const SCHEMA = `
   );
 `
 
+export interface SourceExecutionPolicy {
+  pluginName: string
+  ownerEntryIds: readonly string[]
+  allowedTools: readonly string[]
+}
+
 export type PluginCheckResult =
-  | { ok: true, allowedTools: readonly string[] }
+  | { ok: true, ownerEntryIds: readonly string[], allowedTools: readonly string[] }
   | { ok: false, reason: string, unavailable?: boolean }
 
 export interface ParsedPublishItem {
@@ -162,7 +168,7 @@ export function parseFeedSourceOutput(rawText: string, fallbackTitle: string): P
       if (items.length >= MAX_ITEMS_PER_RUN) break
     }
     if (items.length === 0) {
-      return { kind: 'skip', reason: null, ...(cursor !== undefined ? { cursor } : {}) }
+      return { kind: 'invalid', reason: t('main.feed-sources.output.invalid') }
     }
     return { kind: 'publish', items, ...(cursor !== undefined ? { cursor } : {}) }
   }
@@ -175,7 +181,7 @@ export interface FeedSourceRunsDeps {
   store: FeedSourceStore
   feed: FeedStore
   checkPlugin: (pluginName: string) => Promise<PluginCheckResult>
-  run: (prompt: string, cwd: string, allowedTools: readonly string[]) => Promise<RunResult>
+  run: (prompt: string, cwd: string, policy: SourceExecutionPolicy) => Promise<RunResult>
   memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
   /** Optional shared serializer so unattended schedules and data sources do not compete. */
   serialize?: <T>(fn: () => Promise<T>) => Promise<T>
@@ -306,6 +312,7 @@ export function createFeedSourceRuns({
     occurrenceKey: string,
     parsed: Extract<ParsedSourceOutput, { kind: 'publish' | 'skip' }>,
     queueKey: string | null,
+    checkpointAt: number,
     memory?: MemoryProvenance,
   ): { publishedCount: number, status: 'published' | 'skipped', message: string | null } {
     const ranAt = now()
@@ -315,17 +322,23 @@ export function createFeedSourceRuns({
       if (parsed.kind === 'publish') {
         parsed.items.forEach((entry, index) => {
           const itemKey = entry.key || `${occurrenceKey}#${index}`
-          const added = feed.add({
-            source: sourceTag,
-            key: itemKey,
-            title: entry.title,
-            body: entry.body,
-            origin: { label: source.name, ref: entry.ref || source.pluginName },
-            ...(memory ? { memory } : {}),
-          })
-          if (added.made) {
-            publishedCount += 1
-            keep(added.item)
+          try {
+            const added = feed.add({
+              source: sourceTag,
+              key: itemKey,
+              title: entry.title,
+              body: entry.body,
+              origin: { label: source.name, ref: entry.ref || source.pluginName },
+              ...(memory ? { memory } : {}),
+            })
+            if (added.made) {
+              publishedCount += 1
+              keep(added.item)
+            }
+          } catch (err) {
+            // Keep the erasure tombstone and skip only this item so other new items and the cursor still commit.
+            if (err instanceof FeedItemErasedError) return
+            throw err
           }
         })
       }
@@ -333,7 +346,7 @@ export function createFeedSourceRuns({
       const message = status === 'published'
         ? null
         : (parsed.kind === 'skip' ? parsed.reason : null)
-      store.recordRun(source.id, { ranAt, status, message, publishedCount, cursor: parsed.cursor })
+      store.recordRun(source.id, { ranAt, checkpointAt, status, message, publishedCount, cursor: parsed.cursor })
       if (queueKey) db.prepare('DELETE FROM feed_source_runs WHERE key = ?').run(queueKey)
       return { publishedCount, status, message }
     }).value
@@ -346,70 +359,65 @@ export function createFeedSourceRuns({
     if (dropIfSuperseded(item)) return true
     const startedAtWake = wakes
 
-    type SerializedResult =
-      | { kind: 'superseded' }
-      | { kind: 'unavailable' }
-      | { kind: 'plugin-unavailable', source: FeedSource, reason: string }
-      | { kind: 'ran', source: FeedSource, result: RunResult }
-
-    // Recheck lifecycle, source revision, and plugin readiness inside the serializer right before starting a session.
-    const executed: SerializedResult = await serialize(async () => {
-      if (closed || dropIfSuperseded(item)) return { kind: 'superseded' }
+    // Keep the entire read -> run -> verify -> commit lifecycle serialized per source so concurrent
+    // scheduled and manual runs never read stale cursors or overwrite newer checkpoints.
+    return serialize(async () => {
+      if (closed) return false
+      if (dropIfSuperseded(item)) return true
       const source = sourceCurrent(item)
-      if (!source) return { kind: 'superseded' }
+      if (!source) return true
 
       const plugin = await checkPlugin(source.pluginName)
-      if (closed || dropIfSuperseded(item)) return { kind: 'superseded' }
+      if (closed) return false
+      if (dropIfSuperseded(item)) return true
       if (!plugin.ok) {
-        if (plugin.unavailable) return { kind: 'unavailable' }
-        return { kind: 'plugin-unavailable', source, reason: plugin.reason }
+        if (plugin.unavailable) return false
+        change('feed_source.plugin_unavailable', { sourceId: source.id, key: item.key }, () => {
+          store.recordRun(source.id, { ranAt: now(), status: 'plugin_unavailable', message: plugin.reason, publishedCount: 0 })
+          db.prepare('DELETE FROM feed_source_runs WHERE key = ?').run(item.key)
+        })
+        changed()
+        return true
       }
 
-      const prompt = buildFeedSourcePrompt(source, now())
-      const result = await run(prompt, source.cwd, plugin.allowedTools)
-      return { kind: 'ran', source, result }
-    })
-
-    if (closed) return false
-    if (executed.kind === 'superseded' || dropIfSuperseded(item)) return true
-    if (executed.kind === 'unavailable') return false
-    if (executed.kind === 'plugin-unavailable') {
-      change('feed_source.plugin_unavailable', { sourceId: executed.source.id, key: item.key }, () => {
-        store.recordRun(executed.source.id, { ranAt: now(), status: 'plugin_unavailable', message: executed.reason, publishedCount: 0 })
-        db.prepare('DELETE FROM feed_source_runs WHERE key = ?').run(item.key)
+      const queryStartedAt = now()
+      const prompt = buildFeedSourcePrompt(source, queryStartedAt)
+      const result = await run(prompt, source.cwd, {
+        pluginName: source.pluginName,
+        ownerEntryIds: plugin.ownerEntryIds,
+        allowedTools: plugin.allowedTools,
       })
-      changed()
-      return true
-    }
+      if (closed) return false
+      if (dropIfSuperseded(item)) return true
 
-    const { source, result } = executed
-    if (!result.ok) {
-      if (result.unavailable) {
-        if (result.memoryUnavailable) {
-          if (wakes === startedAtWake) waitingForMemory.add(item.key)
-          return true
+      if (!result.ok) {
+        if (result.unavailable) {
+          if (result.memoryUnavailable) {
+            if (wakes === startedAtWake) waitingForMemory.add(item.key)
+            return true
+          }
+          return false
         }
-        return false
+        recordFailureOrRetry(item, source.id, result.problem)
+        return true
       }
-      recordFailureOrRetry(item, source.id, result.problem)
-      return true
-    }
 
-    const parsed = parseFeedSourceOutput(result.text, source.name)
-    if (parsed.kind === 'invalid') {
-      recordFailureOrRetry(item, source.id, parsed.reason)
-      return true
-    }
+      const parsed = parseFeedSourceOutput(result.text, source.name)
+      if (parsed.kind === 'invalid') {
+        recordFailureOrRetry(item, source.id, parsed.reason)
+        return true
+      }
 
-    if (parsed.kind === 'publish' && result.memory && !await memoryCurrent(result.memory)) {
+      if (parsed.kind === 'publish' && result.memory && !await memoryCurrent(result.memory)) {
+        if (closed || dropIfSuperseded(item)) return true
+        recordFailureOrRetry(item, source.id, t('main.schedule-runs.memory.result.stale'))
+        return true
+      }
       if (closed || dropIfSuperseded(item)) return true
-      recordFailureOrRetry(item, source.id, t('main.schedule-runs.memory.result.stale'))
-      return true
-    }
-    if (closed || dropIfSuperseded(item)) return true
 
-    persistOutcome(source, item.key, parsed, item.key, result.memory)
-    return true
+      persistOutcome(source, item.key, parsed, item.key, queryStartedAt, result.memory)
+      return true
+    })
   }
 
   async function pump(): Promise<void> {
@@ -458,8 +466,13 @@ export function createFeedSourceRuns({
         return { status: 'plugin_unavailable', publishedCount: 0, message: plugin.reason, source: feedSourceViewOf(updated) }
       }
 
-      const prompt = buildFeedSourcePrompt(source, now())
-      const result = await run(prompt, source.cwd, plugin.allowedTools)
+      const queryStartedAt = now()
+      const prompt = buildFeedSourcePrompt(source, queryStartedAt)
+      const result = await run(prompt, source.cwd, {
+        pluginName: source.pluginName,
+        ownerEntryIds: plugin.ownerEntryIds,
+        allowedTools: plugin.allowedTools,
+      })
       if (!result.ok) {
         const message = result.unavailable ? t('main.feed-sources.dsh.unavailable') : result.problem
         const updated = change('feed_source.failed', { sourceId: source.id, manual: true }, () =>
@@ -487,8 +500,8 @@ export function createFeedSourceRuns({
         return { status: 'failed', publishedCount: 0, message, source: feedSourceViewOf(updated) }
       }
 
-      const occurrenceKey = `${source.id}@manual:${now()}`
-      const persisted = persistOutcome(source, occurrenceKey, parsed, null, result.memory)
+      const occurrenceKey = `${source.id}@manual:${queryStartedAt}`
+      const persisted = persistOutcome(source, occurrenceKey, parsed, null, queryStartedAt, result.memory)
       const latest = store.get(source.id) ?? source
       return {
         status: persisted.status,

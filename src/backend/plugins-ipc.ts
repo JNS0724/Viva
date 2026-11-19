@@ -30,6 +30,8 @@ export interface PluginView {
   error: { code: string, detail: string | null } | null,
   /** Whether it works in Viva, from its package.json. */
   fit: VivaFit
+  /** Read-only tools explicitly declared for 动态 data sources (empty when unsupported). */
+  feedSourceTools: string[]
   rows: PluginRowView[]
   /** dsh's own rows it changes. */
   overrides: string[]
@@ -82,6 +84,7 @@ export function pluginsView(value: unknown, profileDir: string): PluginView[] {
       removable: bundle.removable === true,
       error: errorOf(bundle.error),
       fit: fitOf(profileDir, name),
+      feedSourceTools: readOnlyToolsOf(profileDir, name),
       rows: list(bundle.rows).map(record).map((row) => {
         const entryId = str(row.entryId)
         const live = entryId ? running.get(entryId) : undefined

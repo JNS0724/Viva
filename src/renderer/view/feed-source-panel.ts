@@ -130,19 +130,22 @@ function frequencyField(draft: FeedSourceDraft, prefix: string, disabled: boolea
     h('div', { class: draft.freqKind === 'weekly' ? 'fs-freq-stack' : 'fs-freq-row' }, seg, control))
 }
 
+const isSupportedPlugin = (plugin: PluginView): boolean => plugin.enabled && (plugin.feedSourceTools?.length ?? 0) > 0
+
 /** Right pane for adding a new plugin-backed data source. */
 export function newSourceDetail(state: State, handlers: Handlers): HTMLElement {
   const plugins = (state.plugins?.plugins ?? []) as readonly PluginView[]
-  const enabledPlugins = plugins.filter((plugin) => plugin.enabled)
-  const draft = (state.feed.draft as FeedSourceDraft | null) ?? emptyFeedSourceDraft(enabledPlugins[0]?.name ?? '')
+  const supportedPlugins = plugins.filter(isSupportedPlugin)
+  const draft = (state.feed.draft as FeedSourceDraft | null) ?? emptyFeedSourceDraft(supportedPlugins[0]?.name ?? '')
   const busy = Boolean(state.feed.busy)
   const selectedPlugin = plugins.find((plugin) => plugin.name === draft.pluginName) ?? null
-  const canCreate = Boolean(!busy && draft.pluginName && draft.instruction.trim())
+  const selectedSupported = Boolean(selectedPlugin && isSupportedPlugin(selectedPlugin))
+  const canCreate = Boolean(!busy && selectedSupported && draft.instruction.trim())
 
-  const body = !enabledPlugins.length
+  const body = !supportedPlugins.length
     ? [
       h('div', { class: 'empty fs-empty' },
-        h('p', { text: t('feed.source.plugin.none') }),
+        h('p', { text: plugins.length ? t('feed.source.plugin.none.supported') : t('feed.source.plugin.none') }),
         h('button', { class: 'btn btn-accent btn-small', type: 'button', text: t('feed.source.plugin.open'), onClick: () => handlers.openPluginsForFeed() })),
     ]
     : [
@@ -168,12 +171,20 @@ export function newSourceDetail(state: State, handlers: Handlers): HTMLElement {
           name: 'fs-new:plugin',
           disabled: busy,
           onChange: (event: Event) => handlers.updateFeedSourceDraft({ pluginName: (event.target as HTMLSelectElement).value }),
-        }, ...plugins.map((plugin) => h('option', {
-          value: plugin.name,
-          selected: plugin.name === draft.pluginName,
-          disabled: !plugin.enabled,
-          text: plugin.enabled ? plugin.name : t('feed.source.plugin.disabled', { name: plugin.name }),
-        }))),
+        }, ...plugins.map((plugin) => {
+          const supported = isSupportedPlugin(plugin)
+          const labelText = !plugin.enabled
+            ? t('feed.source.plugin.disabled', { name: plugin.name })
+            : !supported
+              ? t('feed.source.plugin.unsupported', { name: plugin.name })
+              : plugin.name
+          return h('option', {
+            value: plugin.name,
+            selected: plugin.name === draft.pluginName,
+            disabled: !supported,
+            text: labelText,
+          })
+        })),
         selectedPlugin?.description ? h('p', { class: 'help fs-hint', text: selectedPlugin.description }) : null),
       h('div', { class: 'fs-field' },
         h('label', { class: 'label', for: 'fs-new-name', text: t('feed.source.name') }),

@@ -45,7 +45,10 @@ test('feed-actions creates, updates, pauses, runs now and deletes plugin data so
     type: 'plugins_loaded',
     view: {
       connected: true,
-      plugins: [{ name: '@company/dsh-plugin-mail', version: '1.0.0', description: 'mail', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, rows: [], overrides: [] }],
+      plugins: [
+        { name: '@company/dsh-plugin-unsupported', version: '1.0.0', description: 'no tools', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, feedSourceTools: [], rows: [], overrides: [] },
+        { name: '@company/dsh-plugin-mail', version: '1.0.0', description: 'mail', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, feedSourceTools: ['mail_search'], rows: [], overrides: [] },
+      ],
     },
   })
   const dispatch = (action: Action) => { state = reduce(state, action) }
@@ -154,7 +157,13 @@ test('sourceDetail populates saved instruction into textarea and associates labe
     const addState = reduce(
       reduce(initialState, {
         type: 'plugins_loaded',
-        view: { connected: true, plugins: [{ name: '@company/dsh-plugin-mail', version: '1.0.0', description: 'mail', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, rows: [], overrides: [] }] },
+        view: {
+          connected: true,
+          plugins: [
+            { name: '@company/dsh-plugin-mail', version: '1.0.0', description: 'mail', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, feedSourceTools: ['mail_search'], rows: [], overrides: [] },
+            { name: '@company/dsh-plugin-plain', version: '1.0.0', description: 'plain', enabled: true, removable: true, error: null, fit: { kind: 'no-conflict' }, feedSourceTools: [], rows: [], overrides: [] },
+          ],
+        },
       }),
       { type: 'feed_source_new', pluginName: '@company/dsh-plugin-mail' },
     )
@@ -164,6 +173,8 @@ test('sourceDetail populates saved instruction into textarea and associates labe
     assert.ok(addLabels.includes('fs-new-name'))
     assert.ok(addLabels.includes('fs-new-rule'))
     assert.ok(addRoot.findAll((el) => el.tag === 'select' && el.attrs.get('id') === 'fs-new-plugin').length === 1)
+    const unsupportedOpt = addRoot.findAll((el) => el.tag === 'option' && el.attrs.get('value') === '@company/dsh-plugin-plain')[0]
+    assert.ok(unsupportedOpt?.attrs.has('disabled'), 'unsupported enabled plugin is disabled in selector')
   } finally {
     ;(globalThis as unknown as { document: unknown, Node: unknown }).document = prevDoc
     ;(globalThis as unknown as { Node: unknown }).Node = prevNode

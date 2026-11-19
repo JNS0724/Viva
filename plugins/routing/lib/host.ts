@@ -17,7 +17,7 @@ export interface Unanswered { accepted: 'unanswered', reason: string }
 
 export function createHostChannel(port: NodeJS.Process, { onBind, onBindSource }: {
   onBind: (sessionId: string) => void
-  onBindSource?: (sessionId: string, allowedTools: readonly string[]) => void
+  onBindSource?: (binding: { sessionId: string, pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] }) => { ok: true } | { ok: false, reason: string }
 }) {
   const waiting = new Map<string, (decided: Decided | Unanswered) => void>()
   const send = (message: object) => { if (port.connected) port.send!(message, () => {}) }
@@ -26,13 +26,20 @@ export function createHostChannel(port: NodeJS.Process, { onBind, onBindSource }
     const bind = asBind(message)
     if (bind) {
       onBind(bind.sessionId)
-      send({ type: 'routing_bound', version: 1, id: bind.id })
+      send({ type: 'routing_bound', version: 1, id: bind.id, ok: true })
       return
     }
     const bindSource = asBindSource(message)
     if (bindSource) {
-      onBindSource?.(bindSource.sessionId, bindSource.allowedTools)
-      send({ type: 'routing_bound', version: 1, id: bindSource.id })
+      const outcome = onBindSource
+        ? onBindSource({
+          sessionId: bindSource.sessionId,
+          pluginName: bindSource.pluginName,
+          ownerEntryIds: bindSource.ownerEntryIds,
+          allowedTools: bindSource.allowedTools,
+        })
+        : { ok: false as const, reason: 'source binding is not supported' }
+      send({ type: 'routing_bound', version: 1, id: bindSource.id, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason }) })
       return
     }
     const decided = asDecided(message)

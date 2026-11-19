@@ -196,6 +196,7 @@ export function openFeedSourceStore({ db, now = Date.now, newId = () => `fs${cry
 
   function recordRun(id: string, outcome: {
     ranAt: number
+    checkpointAt?: number
     status: FeedSourceLastStatus
     message: string | null
     publishedCount: number
@@ -204,7 +205,7 @@ export function openFeedSourceStore({ db, now = Date.now, newId = () => `fs${cry
     const found = get(id)
     if (!found) return null
     const succeeded = outcome.status === 'published' || outcome.status === 'skipped'
-    const nextSuccessAt = succeeded ? outcome.ranAt : found.lastSuccessAt
+    const nextSuccessAt = succeeded ? (outcome.checkpointAt ?? outcome.ranAt) : found.lastSuccessAt
     const nextCursor = succeeded && outcome.cursor !== undefined ? outcome.cursor : found.cursor
     db.prepare(`UPDATE feed_sources
       SET last_run_at = ?, last_success_at = ?, last_status = ?, last_message = ?, last_published_count = ?, cursor = ?, updated_at = ?

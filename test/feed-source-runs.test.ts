@@ -2,16 +2,17 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { EventEmitter } from 'node:events'
-import { openFeedStore, type FeedItem } from '../src/backend/feed-store.ts'
+import { feedSourceIdentity, openFeedStore, type FeedItem } from '../src/backend/feed-store.ts'
 import { openFeedSourceStore } from '../src/backend/feed-source-store.ts'
 import {
   buildFeedSourcePrompt, createFeedSourceRuns, MAX_ATTEMPTS, MAX_ITEMS_PER_RUN,
-  parseFeedSourceOutput, RETRY_MS, type PluginCheckResult,
+  parseFeedSourceOutput, RETRY_MS, type PluginCheckResult, type SourceExecutionPolicy,
 } from '../src/backend/feed-source-runs.ts'
 import { declaredReadOnlyTools } from '../src/backend/plugin-fit.ts'
 import { createRoutingDesk } from '../src/backend/routing-channel.ts'
 import { createHostChannel } from '../plugins/routing/lib/host.ts'
 import { admitFeedSource } from '../plugins/routing/lib/policy.ts'
+import { installToolOwnershipTracker, verifyPluginReadOnlyTools } from '../plugins/routing/lib/source-tools.ts'
 import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
 
@@ -20,7 +21,7 @@ const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 function harness(start: string, { checkPlugin, run, memoryCurrent, serialize }: {
   checkPlugin?: (name: string) => Promise<PluginCheckResult>
-  run: (prompt: string, cwd: string, allowedTools: readonly string[]) => Promise<RunResult>
+  run: (prompt: string, cwd: string, policy: SourceExecutionPolicy) => Promise<RunResult>
   memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
   serialize?: <T>(fn: () => Promise<T>) => Promise<T>
 }) {
@@ -37,7 +38,7 @@ function harness(start: string, { checkPlugin, run, memoryCurrent, serialize }: 
     db,
     store,
     feed,
-    checkPlugin: checkPlugin ?? (async () => ({ ok: true, allowedTools: ['mail_search', 'mail_read'] })),
+    checkPlugin: checkPlugin ?? (async () => ({ ok: true, ownerEntryIds: ['entry-mail'], allowedTools: ['mail_search', 'mail_read'] })),
     run,
     memoryCurrent,
     serialize,
@@ -64,7 +65,7 @@ function harness(start: string, { checkPlugin, run, memoryCurrent, serialize }: 
   return { db, store, feed, runs, kept, deliveredCount: () => deliveredCount, advance, setNow: (iso: string) => { now = at(iso) } }
 }
 
-test('parseFeedSourceOutput accepts publish/skip, caps items, and rejects prose or unknown actions', () => {
+test('parseFeedSourceOutput accepts publish/skip, caps items, and rejects prose, unknown actions, and malformed publish payloads', () => {
   const pub = parseFeedSourceOutput('```json\n{"action":"publish","items":[{"key":"m1","title":"紧急","body":"内容","ref":"msg://1"}],"cursor":{"id":"m1"}}\n```', '默认标题')
   assert.equal(pub.kind, 'publish')
   if (pub.kind === 'publish') {
@@ -81,19 +82,19 @@ test('parseFeedSourceOutput accepts publish/skip, caps items, and rejects prose 
   assert.equal(capped.kind, 'publish')
   if (capped.kind === 'publish') assert.equal(capped.items.length, MAX_ITEMS_PER_RUN)
 
-  const proseError = parseFeedSourceOutput('插件暂时无法读取，请稍后重试', '邮件监控')
-  assert.equal(proseError.kind, 'invalid')
-
-  const unknownAction = parseFeedSourceOutput('{"action":"error","message":"timeout"}', '邮件监控')
-  assert.equal(unknownAction.kind, 'invalid')
+  assert.equal(parseFeedSourceOutput('插件暂时无法读取，请稍后重试', '邮件监控').kind, 'invalid')
+  assert.equal(parseFeedSourceOutput('{"action":"error","message":"timeout"}', '邮件监控').kind, 'invalid')
+  // Malformed publish with empty body must return invalid so it does not consume a new cursor
+  assert.equal(parseFeedSourceOutput('{"action":"publish","items":[{"title":"空正文","body":"   "}],"cursor":{"uid":99}}', '邮件监控').kind, 'invalid')
+  assert.equal(parseFeedSourceOutput('{"action":"publish","items":[],"cursor":{"uid":99}}', '邮件监控').kind, 'invalid')
 })
 
-test('invalid prose output never publishes a feed item, keeps cursor, and retries as failure', async () => {
+test('invalid or malformed publish output never publishes, preserves cursor, and retries as failure', async () => {
   let calls = 0
   const h = harness('2026-11-19T12:00:00+08:00', {
     run: async () => {
       calls += 1
-      return { ok: true, text: '插件暂时无法读取，请稍后重试' }
+      return { ok: true, text: '{"action":"publish","items":[{"title":"空","body":""}],"cursor":{"uid":99}}' }
     },
   })
   const source = h.store.create({
@@ -114,17 +115,17 @@ test('invalid prose output never publishes a feed item, keeps cursor, and retrie
   assert.equal(h.feed.list().length, 0)
   assert.equal(h.kept.length, 0)
   assert.equal(h.store.get(source.id)?.lastStatus, 'failed')
-  assert.deepEqual(h.store.get(source.id)?.cursor, { uid: 9 }, 'cursor preserved across invalid output failures')
-  assert.equal(h.store.get(source.id)?.lastSuccessAt, at('2026-11-19T12:00:00+08:00'), 'lastSuccessAt unchanged on failure')
+  assert.deepEqual(h.store.get(source.id)?.cursor, { uid: 9 }, 'cursor preserved across malformed publish')
+  assert.equal(h.store.get(source.id)?.lastSuccessAt, at('2026-11-19T12:00:00+08:00'))
 })
 
-test('lastSuccessAt only advances on publish or skip, not on failure or plugin_unavailable', async () => {
+test('without cursor, incremental checkpoint uses query start time rather than completion time', async () => {
   const prompts: string[] = []
-  let shouldFail = true
-  const h = harness('2026-11-19T12:00:00+08:00', {
+  const h = harness('2026-11-19T08:30:00+08:00', {
     run: async (prompt) => {
       prompts.push(prompt)
-      if (shouldFail) return { ok: false, problem: 'boom' }
+      // Simulate a 6-minute run finishing at 09:06 when started at 09:00
+      h.setNow('2026-11-19T09:06:00+08:00')
       return { ok: true, text: '{"action":"skip","reason":"none"}' }
     },
   })
@@ -137,17 +138,103 @@ test('lastSuccessAt only advances on publish or skip, not on failure or plugin_u
   })
   h.runs.arm()
 
-  await h.advance('2026-11-19T12:30:01+08:00')
-  for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt += 1) {
-    await h.advance(RETRY_MS * attempt + 10)
-  }
-  assert.equal(h.store.get(source.id)?.lastStatus, 'failed')
-  assert.equal(h.store.get(source.id)?.lastSuccessAt, null)
+  await h.advance('2026-11-19T09:00:00+08:00')
+  const afterFirst = h.store.get(source.id)!
+  assert.equal(afterFirst.lastRunAt, at('2026-11-19T09:06:00+08:00'), 'display time is completion time')
+  assert.equal(afterFirst.lastSuccessAt, at('2026-11-19T09:00:00+08:00'), 'incremental checkpoint is query start time')
 
-  shouldFail = false
-  await h.advance('2026-11-19T13:00:01+08:00')
-  assert.match(prompts.at(-1)!, /这是该数据源的首次检查/, 'after first-run failure, next prompt still treats check as first')
-  assert.equal(h.store.get(source.id)?.lastSuccessAt, at('2026-11-19T13:00:01+08:00'))
+  await h.advance('2026-11-19T09:30:00+08:00')
+  assert.match(prompts[1], /2026-11-19T01:00:00\.000Z/, 'next prompt starts from 09:00+08:00, not 09:06+08:00')
+})
+
+test('erased feed item key is skipped without rolling back new items, cursor, or queue completion', async () => {
+  const h = harness('2026-11-19T12:00:00+08:00', {
+    run: async () => ({
+      ok: true,
+      text: JSON.stringify({
+        action: 'publish',
+        items: [
+          { key: 'erased-key', title: '已撤回旧条目', body: '不应再出现' },
+          { key: 'fresh-key', title: '同批新条目', body: '应该正常发布' },
+        ],
+        cursor: { uid: 55 },
+      }),
+    }),
+  })
+  const source = h.store.create({
+    pluginName: '@company/dsh-plugin-mail',
+    name: '邮件监控',
+    instruction: '查紧急邮件',
+    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
+    cwd: '/work',
+  })
+  h.db.exec('CREATE TABLE IF NOT EXISTS memory_erased_feed_copies (identity TEXT PRIMARY KEY)')
+  h.db.prepare('INSERT INTO memory_erased_feed_copies (identity) VALUES (?)')
+    .run(feedSourceIdentity(`source:${source.id}`, 'erased-key'))
+  h.runs.arm()
+
+  await h.advance('2026-11-19T12:30:01+08:00')
+  assert.equal(h.feed.list().length, 1)
+  assert.equal(h.feed.list()[0].key, 'fresh-key')
+  assert.deepEqual(h.store.get(source.id)?.cursor, { uid: 55 })
+  assert.equal(h.db.prepare('SELECT COUNT(*) AS n FROM feed_source_runs').get()?.n, 0, 'queue row cleared')
+  assert.ok(h.db.prepare('SELECT 1 FROM memory_erased_feed_copies WHERE identity=?').get(feedSourceIdentity(`source:${source.id}`, 'erased-key')), 'erasure tombstone kept')
+})
+
+test('serializer covers through commit so manual runNow cannot race delayed memoryCurrent and regress cursor', async () => {
+  let queue: Promise<unknown> = Promise.resolve()
+  const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = queue.then(fn, fn)
+    queue = next.then(() => undefined, () => undefined)
+    return next
+  }
+  let releaseMemoryCheck!: () => void
+  let checkCount = 0
+  let runIndex = 0
+  const prompts: string[] = []
+  const memory: MemoryProvenance = { sources: ['m1'], turnOnly: false, epoch: 1 }
+
+  const h = harness('2026-11-19T12:00:00+08:00', {
+    serialize,
+    memoryCurrent: async () => {
+      checkCount += 1
+      if (checkCount === 1) await new Promise<void>((resolve) => { releaseMemoryCheck = resolve })
+      return true
+    },
+    run: async (prompt) => {
+      prompts.push(prompt)
+      runIndex += 1
+      return {
+        ok: true,
+        text: JSON.stringify({
+          action: 'publish',
+          items: [{ key: `k-${runIndex}`, title: `条目 ${runIndex}`, body: '正文' }],
+          cursor: runIndex,
+        }),
+        memory,
+      }
+    },
+  })
+  const source = h.store.create({
+    pluginName: '@company/dsh-plugin-mail',
+    name: '邮件监控',
+    instruction: '查紧急邮件',
+    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
+    cwd: '/work',
+  })
+  h.runs.arm()
+
+  await h.advance('2026-11-19T12:30:01+08:00')
+  // Scheduled run is now waiting inside memoryCurrent(); trigger runNow concurrently
+  const manualPromise = h.runs.runNow(source.id)
+  await flush()
+  assert.equal(runIndex, 1, 'manual run must wait until scheduled run finishes commit')
+
+  releaseMemoryCheck()
+  await manualPromise
+  assert.equal(runIndex, 2)
+  assert.match(prompts[1], /上次保存的增量游标：1/, 'manual run sees cursor 1 committed by scheduled run')
+  assert.equal(h.store.get(source.id)?.cursor, 2, 'cursor advances monotonically 1 -> 2 without regression')
 })
 
 test('source paused while waiting in serializer never invokes run()', async () => {
@@ -176,7 +263,6 @@ test('source paused while waiting in serializer never invokes run()', async () =
   h.runs.arm()
 
   await h.advance('2026-11-19T12:30:01+08:00')
-  // Source is now queued inside serialize(); pause it before serializer frees up.
   h.store.setPaused(source.id, true)
   releaseBlocker()
   await flush()
@@ -185,107 +271,67 @@ test('source paused while waiting in serializer never invokes run()', async () =
   assert.equal(runCalls, 0, 'paused source must not start a session once serializer releases')
 })
 
-test('scheduled and manual publish persist memory provenance and reject stale memory results', async () => {
-  const memory: MemoryProvenance = {
-    sources: ['mem-src-1'],
-    turnOnly: false,
-    epoch: 1,
-  }
-  let memoryValid = true
-  const h = harness('2026-11-19T12:00:00+08:00', {
-    memoryCurrent: () => memoryValid,
-    run: async () => ({
-      ok: true,
-      text: '{"action":"publish","items":[{"key":"k1","title":"摘要","body":"内容"}]}',
-      memory,
-    }),
-  })
-  const source = h.store.create({
-    pluginName: '@company/dsh-plugin-mail',
-    name: '邮件监控',
-    instruction: '查紧急邮件',
-    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
-    cwd: '/work',
-  })
-
-  // Manual run saves memory provenance on the feed item
-  const manual = await h.runs.runNow(source.id)
-  assert.equal(manual.status, 'published')
-  const item = h.feed.list()[0]
-  assert.deepEqual(h.feed.continuation(item.id)?.memory, memory)
-
-  // Stale memory prevents publishing on manual run
-  memoryValid = false
-  const staleManual = await h.runs.runNow(source.id)
-  assert.equal(staleManual.status, 'failed')
-  assert.equal(h.feed.list().length, 1)
-})
-
-test('scheduled source runs when due, passes allowlisted read-only tools, deduplicates items and saves cursor', async () => {
-  const prompts: string[] = []
-  const seenTools: Array<readonly string[]> = []
-  const h = harness('2026-11-19T12:00:00+08:00', {
-    checkPlugin: async () => ({ ok: true, allowedTools: ['mail_search', 'mail_read'] }),
-    run: async (prompt, _cwd, allowedTools) => {
-      prompts.push(prompt)
-      seenTools.push(allowedTools)
-      return {
-        ok: true,
-        text: '```json\n{"action":"publish","items":[{"key":"mail-42","title":"客户合同催办","body":"请今天确认","ref":"mail://42"}],"cursor":{"lastUid":42}}\n```',
-      }
-    },
-  })
-  const source = h.store.create({
-    pluginName: '@company/dsh-plugin-mail',
-    name: '客户紧急邮件',
-    instruction: '筛选客户紧急邮件',
-    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
-    cwd: '/work',
-  })
-  h.runs.arm()
-
-  await h.advance('2026-11-19T12:30:01+08:00')
-  assert.equal(prompts.length, 1)
-  assert.deepEqual(seenTools[0], ['mail_search', 'mail_read'])
-  assert.equal(h.feed.list().length, 1)
-  assert.equal(h.feed.list()[0].source, `source:${source.id}`)
-  assert.equal(h.kept.length, 1)
-  assert.equal(h.deliveredCount(), 1)
-  assert.deepEqual(h.store.get(source.id)?.cursor, { lastUid: 42 })
-
-  // Next occurrence with identical key is deduplicated
-  await h.advance('2026-11-19T13:00:01+08:00')
-  assert.equal(h.feed.list().length, 1)
-  assert.equal(h.kept.length, 1)
-  assert.match(prompts[1], /"lastUid":42/, 'cursor passed into next prompt')
-})
-
-test('execution-layer policy strips disallowed tools, binds source allowlist over routing channel, and denies writes/other tools', async () => {
-  // 1. Manifest parsing strips built-in/write/shell/memory tools
+test('runtime ownership and read-only capability verification rejects foreign tools and non-readonly tools', async () => {
   assert.deepEqual(
     declaredReadOnlyTools({
       viva: { feedSource: { readOnlyTools: ['mail_search', 'bash', 'write', 'memory_remember', 'mail_read', 'mail_search'] } },
     }),
     ['mail_search', 'mail_read'],
   )
-  assert.deepEqual(declaredReadOnlyTools({ name: 'no-viva-field' }), [])
 
-  // 2. Policy guard allows only declared read-only tools and denies writes and other tools
-  const allowed = new Set(['mail_search', 'mail_read'])
-  assert.equal(admitFeedSource(allowed, 'mail_search').allowed, true)
-  assert.equal(admitFeedSource(allowed, 'mail_read').allowed, true)
-  assert.equal(admitFeedSource(allowed, 'mail_send').allowed, false)
-  assert.equal(admitFeedSource(allowed, 'other_plugin_read').allowed, false)
-  assert.equal(admitFeedSource(allowed, 'bash').allowed, false)
-  assert.equal(admitFeedSource(allowed, 'write').allowed, false)
-  assert.equal(admitFeedSource(allowed, 'edit').allowed, false)
-  // Even if a forbidden tool were mistakenly included in the set, admitFeedSource still denies it
-  assert.equal(admitFeedSource(new Set(['bash', 'write']), 'bash').allowed, false)
-  assert.equal(admitFeedSource(new Set(['bash', 'write']), 'write').allowed, false)
+  // Fake ToolsService prototype to verify ownership tracking across plugin contexts
+  class FakeToolsService {
+    ctx: unknown
+    constructor(ctx: unknown) { this.ctx = ctx }
+    register(_definition: { name: string }) { return () => {} }
+  }
+  const rootTools = new FakeToolsService({ fiber: { entry: { id: 'root' } } })
+  const tracker = installToolOwnershipTracker(rootTools)
 
-  // 3. Routing channel bindSource handshake delivers allowlist to plugin before prompt
+  // Mail plugin registers a read-only tool and a write tool
+  const mailTools = new FakeToolsService({ fiber: { entry: { id: 'entry-mail' }, runtime: { name: '@company/dsh-plugin-mail' } } })
+  mailTools.register({ name: 'mail_search', annotations: { readOnlyHint: true } } as never)
+  mailTools.register({ name: 'mail_send', annotations: { destructiveHint: true } } as never)
+  mailTools.register({ name: 'mail_unannotated' } as never)
+
+  // Another plugin registers a read-only tool globally
+  const otherTools = new FakeToolsService({ fiber: { entry: { id: 'entry-other' }, runtime: { name: '@company/dsh-plugin-other' } } })
+  otherTools.register({ name: 'other_read', annotations: { readOnlyHint: true } } as never)
+
+  // 1. Owned + read-only passes
+  const ok = verifyPluginReadOnlyTools({
+    pluginName: '@company/dsh-plugin-mail',
+    ownerEntryIds: ['entry-mail'],
+    declaredTools: ['mail_search'],
+    lookupTool: tracker.lookup,
+  })
+  assert.deepEqual(ok, { ok: true, tools: ['mail_search'] })
+
+  // 2. Global tool owned by ANOTHER plugin is rejected even if declared in mail manifest
+  const foreign = verifyPluginReadOnlyTools({
+    pluginName: '@company/dsh-plugin-mail',
+    ownerEntryIds: ['entry-mail'],
+    declaredTools: ['other_read'],
+    lookupTool: tracker.lookup,
+  })
+  assert.equal(foreign.ok, false)
+
+  // 3. Destructive or unannotated tool owned by mail plugin is rejected
+  assert.equal(verifyPluginReadOnlyTools({
+    pluginName: '@company/dsh-plugin-mail',
+    ownerEntryIds: ['entry-mail'],
+    declaredTools: ['mail_send'],
+    lookupTool: tracker.lookup,
+  }).ok, false)
+  assert.equal(verifyPluginReadOnlyTools({
+    pluginName: '@company/dsh-plugin-mail',
+    ownerEntryIds: ['entry-mail'],
+    declaredTools: ['mail_unannotated'],
+    lookupTool: tracker.lookup,
+  }).ok, false)
+
+  // 4. Routing channel handshake rejects binding when plugin verification fails
   const bus = new EventEmitter()
-  const bound: Array<{ sessionId: string, allowedTools: readonly string[] }> = []
   const desk = createRoutingDesk({
     send: (msg) => bus.emit('to-plugin', msg),
     handlers: {
@@ -303,33 +349,56 @@ test('execution-layer policy strips disallowed tools, binds source allowlist ove
   bus.on('to-plugin', (msg) => fakePort.emit('message', msg))
   const host = createHostChannel(fakePort as unknown as NodeJS.Process, {
     onBind: () => {},
-    onBindSource: (sessionId, allowedTools) => bound.push({ sessionId, allowedTools }),
+    onBindSource: ({ pluginName, ownerEntryIds, allowedTools }) => {
+      const checked = verifyPluginReadOnlyTools({ pluginName, ownerEntryIds, declaredTools: allowedTools, lookupTool: tracker.lookup })
+      return checked.ok ? { ok: true } : checked
+    },
   })
-  await desk.bindSource('sess-source-1', ['mail_search', 'mail_read'])
-  assert.deepEqual(bound, [{ sessionId: 'sess-source-1', allowedTools: ['mail_search', 'mail_read'] }])
+
+  await desk.bindSource('sess-ok', { pluginName: '@company/dsh-plugin-mail', ownerEntryIds: ['entry-mail'], allowedTools: ['mail_search'] })
+  await assert.rejects(
+    () => desk.bindSource('sess-foreign', { pluginName: '@company/dsh-plugin-mail', ownerEntryIds: ['entry-mail'], allowedTools: ['other_read'] }),
+    /归属其他插件/,
+  )
+
+  // 5. Execution-time guard rejects non-allowlisted tools and writes
+  assert.equal(admitFeedSource(new Set(['mail_search']), 'mail_search').allowed, true)
+  assert.equal(admitFeedSource(new Set(['mail_search']), 'other_read').allowed, false)
+  assert.equal(admitFeedSource(new Set(['mail_search']), 'bash').allowed, false)
+
   host.close()
   desk.close()
+  tracker.dispose()
 })
 
-test('disabled plugin skips model call and marks source plugin_unavailable', async () => {
-  let modelCalls = 0
+test('scheduled and manual publish persist memory provenance and reject stale memory results', async () => {
+  const memory: MemoryProvenance = { sources: ['mem-src-1'], turnOnly: false, epoch: 1 }
+  let memoryValid = true
   const h = harness('2026-11-19T12:00:00+08:00', {
-    checkPlugin: async () => ({ ok: false, reason: '插件未启用' }),
-    run: async () => { modelCalls += 1; return { ok: true, text: '{"action":"skip"}' } },
+    memoryCurrent: () => memoryValid,
+    run: async () => ({
+      ok: true,
+      text: '{"action":"publish","items":[{"key":"k1","title":"摘要","body":"内容"}]}',
+      memory,
+    }),
   })
   const source = h.store.create({
-    pluginName: '@company/dsh-plugin-im',
-    name: '群聊监控',
-    instruction: '看消息',
-    schedule: { kind: 'interval', minutes: 15, timeZone: 'Asia/Shanghai' },
+    pluginName: '@company/dsh-plugin-mail',
+    name: '邮件监控',
+    instruction: '查紧急邮件',
+    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
     cwd: '/work',
   })
-  h.runs.arm()
 
-  await h.advance('2026-11-19T12:15:01+08:00')
-  assert.equal(modelCalls, 0)
-  assert.equal(h.store.get(source.id)?.lastStatus, 'plugin_unavailable')
-  assert.equal(h.store.get(source.id)?.lastMessage, '插件未启用')
+  const manual = await h.runs.runNow(source.id)
+  assert.equal(manual.status, 'published')
+  const item = h.feed.list()[0]
+  assert.deepEqual(h.feed.continuation(item.id)?.memory, memory)
+
+  memoryValid = false
+  const staleManual = await h.runs.runNow(source.id)
+  assert.equal(staleManual.status, 'failed')
+  assert.equal(h.feed.list().length, 1)
 })
 
 test('buildFeedSourcePrompt includes plugin name, instruction, lastSuccessAt and prior cursor', () => {

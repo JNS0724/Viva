@@ -11,7 +11,7 @@ import { createScheduleRuns, type ScheduleRuns } from './schedule-runs.ts'
 import { createUnattendedRuns, type RunResult, type TaskEvent } from './unattended-runs.ts'
 import { FEED_WRITES, openFeedStore, type FeedItem, type FeedStore } from './feed-store.ts'
 import { FEED_SOURCE_WRITES, openFeedSourceStore, type FeedSourceStore } from './feed-source-store.ts'
-import { createFeedSourceRuns, type FeedSourceRuns, type PluginCheckResult } from './feed-source-runs.ts'
+import { createFeedSourceRuns, type FeedSourceRuns, type PluginCheckResult, type SourceExecutionPolicy } from './feed-source-runs.ts'
 import { registerFeedSourceIpc } from './feed-source-ipc.ts'
 import { continueText } from '../shared/feed-continuation.ts'
 import { admitFeedContinuation } from './feed-continuation.ts'
@@ -1420,20 +1420,27 @@ ${question}` : question
     }))
   }
 
-  async function runFeedSource(prompt: string, cwd: string, allowedTools: readonly string[]): Promise<RunResult> {
+  async function runFeedSource(prompt: string, cwd: string, policy: SourceExecutionPolicy): Promise<RunResult> {
     if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
-    if (!allowedTools.length) return { ok: false, problem: t('main.feed-sources.policy.unavailable') }
+    if (!policy.allowedTools.length) return { ok: false, problem: t('main.feed-sources.policy.unavailable') }
     if (memoryBusy()) return { ok: false, unavailable: true, problem: t('main.memory.change.pending') }
     const ready = () => dsh.current?.memory.ready() === true
     if (!ready()) {
       return { ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') }
     }
-    return unattended.run(prompt, cwd, async (session, bridge) => {
+    let bindError: string | null = null
+    const outcome = await unattended.run(prompt, cwd, async (session, bridge) => {
       if (bridge !== dsh.current) return 'memory-unavailable'
-      if (!await dsh.current.bindFeedSourceSession(session, allowedTools)) return 'memory-unavailable'
+      const bound = await dsh.current.bindFeedSourceSession(session, policy)
+      if (!bound.ok) {
+        bindError = bound.reason
+        return 'stale'
+      }
       const project = memoryProjectScope(cwd)
       if (!await bindSessionProject(session, project)) return 'stale'
     })
+    if (bindError) return { ok: false, problem: bindError }
+    return outcome
   }
 
   function registerPersonalIpc(config: Config) {
@@ -1546,7 +1553,8 @@ ${question}` : question
       if (found.error) return { ok: false, reason: t('main.feed-sources.plugin.error', { name: pluginName }) }
       const allowedTools = readOnlyToolsOf(profileDir(), pluginName)
       if (!allowedTools.length) return { ok: false, reason: t('main.feed-sources.plugin.no.readonly.tools', { name: pluginName }) }
-      return { ok: true, allowedTools }
+      const ownerEntryIds = found.rows.map((row) => row.entryId).filter((entryId): entryId is string => Boolean(entryId))
+      return { ok: true, ownerEntryIds, allowedTools }
     }
     feedSourceRuns = createFeedSourceRuns({
       db: appDb.db,
@@ -1568,6 +1576,7 @@ ${question}` : question
     registerFeedSourceIpc(ipcMain, {
       store: requireFeedSources,
       cwd: () => workDirNow() ?? config.cwd,
+      validatePlugin: checkFeedSourcePlugin,
       runNow: (id) => requireFeedSourceRuns().runNow(id),
       changed: () => {
         feedSourceRuns?.wake()
