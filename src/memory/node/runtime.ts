@@ -10,6 +10,7 @@ import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { openMemoryFileCatalog } from './memory-file-catalog.ts'
+import { createMemoryPhysicalFileReader } from './memory-file-store.ts'
 import { erasedDocumentSource } from '../core/memory-document-restrictions.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
@@ -18,17 +19,19 @@ export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRu
 /** Open the platform resources consumed through explicit core ports. */
 export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore, now?: () => number }): MemoryRuntimeResources {
   const effects = createEffects({ db: store.db, now, onError: error => emitDiagnosticFailure('effects', error) })
+  const readPhysicalFile = createMemoryPhysicalFileReader(() => store.fileRoot)
   const resources: MemoryRuntimeResources = {
     sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
     identity: { newId: randomUUID, hash: memoryHash },
     effects,
     openFileRestrictions: () => openMemoryFileRestrictions(store.db),
     openFileIndex: () => openMemoryFileIndex({ db: store.db, now }),
-    openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
-    openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
+    openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot, readPhysicalFile }),
+    readPhysicalFile,
+    openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted, deferRecovery: external?.deferRecovery, index: external?.index }),
     openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed, erasures: store.fileErasures,
       externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
-      expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned,
+      expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned, index: policy?.index,
       manual: policy?.manualCurrent && { current: policy.manualCurrent, token: memorySourceToken, workspace: memorySourceWorkspace,
         commit: store.insertManualFileSource, retainsText: store.manualFileRetainsText },
       source(id) {

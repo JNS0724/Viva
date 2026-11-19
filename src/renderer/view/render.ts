@@ -186,16 +186,19 @@ function renderComposerAvailability(dom: Dom, setup: SetupCopy | null, switching
 
 /** While the agent works the button stops it, unless there are words to send into the turn. */
 export function renderSendButton(dom: Dom, state: State) {
-  const stops = isBusy(state) && !dom.input.value.trim() && !Number(dom.composer.dataset.attachments ?? 0)
-  if (dom.sendBtn.dataset.busy === String(stops) && dom.sendBtn.dataset.locale === String(localeRevision())) return
+  const stopping = state.phase === 'stopping'
+  const stops = stopping || isBusy(state) && !dom.input.value.trim() && !Number(dom.composer.dataset.attachments ?? 0)
+  if (dom.sendBtn.dataset.busy === String(stops) && dom.sendBtn.dataset.stopping === String(stopping) && dom.sendBtn.dataset.locale === String(localeRevision())) return
   dom.sendBtn.dataset.locale = String(localeRevision())
   dom.sendBtn.dataset.busy = String(stops)
-  dom.sendBtn.setAttribute('aria-label', stops ? t("island-dom.stop") : t("render.send"))
+  dom.sendBtn.dataset.stopping = String(stopping)
+  dom.sendBtn.setAttribute('aria-label', stopping ? t("conversation.stop.pending") : stops ? t("island-dom.stop") : t("render.send"))
   dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
 }
 
 function renderComposer(dom: Dom, state: State, handlers: Handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.initialization.status !== 'ready' || state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
+  if (state.phase === 'stopping' || state.lastReceipt?.stopReason === 'cancel_unconfirmed') dom.sendBtn.disabled = true
   renderSendButton(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)

@@ -1,5 +1,5 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
-import type { DocumentSourceCut, DocumentSourceRef } from './documents.ts'
+import type { DocumentSourceCut, DocumentSourceRef, MemoryPhysicalFile } from './documents.ts'
 import type { MemorySource } from './store.ts'
 type SourceRef = DocumentSourceRef
 export interface NoteRow {
@@ -26,8 +26,10 @@ export interface DailyAllocation {
     revision: number;
     updatedAt: number;
 }
+export type DailyFileRegistration = DailyAllocation & { fileRevision: string | null }
 export interface MemoryNotes {
     allocations(): DailyAllocation[];
+    fileRegistry(): DailyFileRegistration[];
     deleteFile(workspace: string, key: string, expectedUsageVersion: number): number;
     advanceUseVersion(key: string, revision: number, at: number): boolean;
     usePolicyToken(workspace: string): string;
@@ -35,6 +37,8 @@ export interface MemoryNotes {
     reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined;
     reconcileEdit(input: import('./documents.ts').DocumentExternalEdit): boolean;
     reconcileRename(input: import('./documents.ts').DocumentRename): boolean;
+    resolveFileAlias(workspace: string, path: string): string | null;
+    fileAliases(workspace: string, path: string): string[];
     aliases(): Array<{ workspace: string, path: string, id: string }>;
     registeredAt(workspace: string, path: string): { key: string, file_revision: string } | undefined;
     registeredForSources(ids: readonly string[]): Array<{ workspace: string, path: string }>;
@@ -44,7 +48,7 @@ export interface MemoryNotes {
     checkpointCleanup(): void;
     needsRecovery(): boolean;
     recover: () => void;
-    read: (key: string) => Note | undefined;
+    read: (key: string, physical?: MemoryPhysicalFile | null) => Note | undefined;
     snapshot: (ids: readonly string[]) => SourceRef[];
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;

@@ -30,7 +30,10 @@ function fixture() {
     }, refsCurrent: () => sourceAllowed, materialAllowed: () => sourceAllowed,
     reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
   })
-  const service = createMemoryFileManagement({ policy, documents: { registered: () => [], undoCandidate: () => candidate }, workspaces: () => [workspace], hash })
+  const service = createMemoryFileManagement({ policy, documents: { registered: () => [], undoCandidate: () => candidate,
+    fileRegistry: () => docs.map(({ id, workspace, path, revision, usageVersion, enabled }) =>
+      ({ id, workspace, path, revision, usageVersion, state: forgotten.has(id) ? 'forgotten' : enabled ? 'active' : 'disabled' })),
+  }, workspaces: () => [workspace], hash })
   const identity = { kind: 'digest' as const, workspace, id: doc.id }
   return { service, policy, doc, docs, refs, note, identity, unavailable, forgotten, supersessions,
     denySource() { sourceAllowed = false }, setUndo(value: DocumentUndoCandidate | null) { candidate = value } }
@@ -121,6 +124,32 @@ test('list pages are deterministic, redact bodies and tokens, and reject a chang
   f.doc.usageVersion++
   assert.deepEqual(f.service.list({ cursor: first.nextCursor }, allow).items, [])
   assert.equal(f.service.list({ cursor: first.nextCursor }, allow).status, 'stale')
+})
+
+test('paged title and path filters continue after bounded empty pages without exposing quarantined documents', async () => {
+  const f = fixture()
+  f.docs.splice(0, 1, ...Array.from({ length: 109 }, (_, index) => ({
+    ...f.doc, id: `item-${String(index).padStart(3, '0')}`, path: `digest/wiki/file-${index}.md`,
+    markdown: `---\nname: ${[0, 3, 107].includes(index) ? 'Search Key' : 'Routine'}\n---\nPrivate body`,
+    enabled: index !== 0,
+  })))
+  f.unavailable.add('item-003')
+  const scanned = new Set<string>()
+  const options = { revision: () => 1, async load(files: readonly { path: string }[]) {
+    files.forEach(file => scanned.add(file.path)); return f.policy.managementRead
+  } }
+  const request = { kind: 'digest' as const, state: 'enabled' as const, query: 'SEARCH KEY', limit: 2 }
+  const first = await f.service.listPage(request, allow, [], options)
+  assert.deepEqual(first.items, [])
+  assert.ok(first.nextCursor)
+  assert.equal(scanned.size, 100)
+  assert(!scanned.has('digest/wiki/file-0.md'), 'the disabled digest is filtered before physical verification')
+  const result = await f.service.listPage({ ...request, cursor: first.nextCursor }, allow, [], options)
+  assert.deepEqual(result.items.map(row => row.identity.id), ['item-107'])
+  assert.equal(result.nextCursor, null)
+  assert.doesNotMatch(JSON.stringify(result), /Private body|private-source-token/u)
+  const byPath = await f.service.listPage({ ...request, query: 'file-7.md' }, allow, [], options)
+  assert.deepEqual(byPath.items.map(row => row.identity.id), ['item-007'])
 })
 
 test('management filters apply before paging and input rejects asserted authorization or internal paths', () => {

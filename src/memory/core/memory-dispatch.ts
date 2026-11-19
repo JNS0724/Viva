@@ -1,6 +1,7 @@
 import type { MemoryFileDependency, MemoryProvenance, MemoryStore } from './ports/store.ts'
 import { rawMemorySources } from '../contracts/provenance.ts'
 export type { MemoryFileDependency, MemoryProvenance } from './ports/store.ts'
+export type FileEvidenceCurrent = (files: readonly MemoryFileDependency[], at: number, fileSources: readonly string[]) => boolean
 
 export function needsMemoryTransport(evidence: MemoryProvenance | null | undefined) {
   return Boolean(evidence && (evidence.files?.length || evidence.sources.length || evidence.turnOnly))
@@ -18,25 +19,25 @@ export class MemoryDispatchConflict extends Error {
 
 /** Retains the source and file proof a session used in later replies and summaries. */
 export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoch'>, sourceCurrent: (id: string, at?: number) => boolean,
-  fileCurrent: (files: readonly MemoryFileDependency[], at: number, fileSources: readonly string[]) => boolean = (files, _, sources) => !files.length && !sources.length,
+  fileCurrent: FileEvidenceCurrent = (files, _, sources) => !files.length && !sources.length,
 ) {
   const { snapshot, files: recordFiles, source: recordSource, turnOnly: retainTurnOnly } = store.dispatch
   const liveTurnOnly = new Set<string>()
   const leases = new Map<string, { current: () => boolean, session?: string }>()
   const waiters = new Set<() => void>()
-  function evidenceCurrent(evidence: MemoryProvenance, at: number) {
+  function evidenceCurrent(evidence: MemoryProvenance, at: number, acceptsFiles = fileCurrent) {
     return rawMemorySources(evidence).every(id => sourceCurrent(id, at))
-      && fileCurrent(evidence.files ?? [], at, evidence.fileSources ?? [])
+      && acceptsFiles(evidence.files ?? [], at, evidence.fileSources ?? [])
   }
   function attach(session: string, evidence: MemoryProvenance) {
     if (evidence.files?.length) recordFiles(session, evidence.files, evidence.fileSources)
     for (const source of rawMemorySources(evidence)) recordSource(session, source)
     if (evidence.turnOnly) retainTurnOnly(session)
   }
-  function admission(session: string) {
+  function admission(session: string, acceptsFiles?: FileEvidenceCurrent) {
     const at = Date.now()
     const evidence = snapshot(session)
-    if ((evidence.turnOnly && !liveTurnOnly.has(session)) || !evidenceCurrent(evidence, at)) return { allowed: false } as const
+    if ((evidence.turnOnly && !liveTurnOnly.has(session)) || !evidenceCurrent(evidence, at, acceptsFiles)) return { allowed: false } as const
     return { allowed: true, deadline: null, evidence, at } as const
   }
   return {
@@ -51,12 +52,13 @@ export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoc
     inherit(parent: string, child: string) { if (parent !== child) attach(child, snapshot(parent)) },
     snapshot,
     attach,
-    transferable: (evidence: MemoryProvenance) => !evidence.turnOnly && evidence.epoch === store.epoch() && evidenceCurrent(evidence, Date.now()),
+    transferable: (evidence: MemoryProvenance, acceptsFiles?: FileEvidenceCurrent) =>
+      !evidence.turnOnly && evidence.epoch === store.epoch() && evidenceCurrent(evidence, Date.now(), acceptsFiles),
     recordTurnOnly(session: string) { retainTurnOnly(session); liveTurnOnly.add(session) },
     endTurn(session: string) { liveTurnOnly.delete(session) },
     resetLive() { liveTurnOnly.clear() },
     admission,
-    stale: (session: string) => !admission(session).allowed,
+    stale: (session: string, acceptsFiles?: FileEvidenceCurrent) => !admission(session, acceptsFiles).allowed,
     acquire(id: string, check = () => false, session?: string) { leases.set(id, { current: check, session }) },
     acquireSession(id: string, session: string, admitted: Extract<ReturnType<typeof admission>, { allowed: true }>, stillAllowed: () => boolean) {
       leases.set(id, { session, current: () => stillAllowed() && evidenceCurrent(admitted.evidence, admitted.at) })

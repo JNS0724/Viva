@@ -19,10 +19,11 @@ type Intent<T> = { id: string, input: string, state: string, plan: FilePlan<T> }
 export type FileCheckpoint = 'intent' | 'replace' | 'receipt' | 'checkpoint'
 
 /** One backend owner. Intent commits precede IO; receipt and application checkpoint share one SQL transaction. */
-export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes', cancelOnConflict = () => false, projectErasure }: {
+export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint = () => {}, namespace = 'notes', cancelOnConflict = () => false, projectErasure, afterCommit }: {
   db: DatabaseSync, root: string, valid: (data: T) => boolean, finish: (data: T) => void,
   checkpoint?: (point: FileCheckpoint, path?: string) => void, namespace?: string,
   cancelOnConflict?: (data: T) => boolean,
+  afterCommit?: (data: T, workspace: string) => void,
   projectErasure?: (data: T, path: string, before: string) => string | null | undefined,
 }) {
   db.exec(`CREATE TABLE IF NOT EXISTS memory_file_intents (
@@ -104,6 +105,7 @@ export function openMemoryFileJournal<T>({ db, root, valid, finish, checkpoint =
       if (accepted) finish(intent.plan.data)
       checkpoint('checkpoint')
     })
+    if (accepted) afterCommit?.(intent.plan.data, intent.plan.workspace)
     return accepted
   }
   function recover(id?: string, includes = (_data: T) => true) {

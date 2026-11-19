@@ -1,5 +1,6 @@
+import { DEFAULT_TOOL_TIMEOUT_MS } from '../../../src/shared/request-budget.ts'
 interface Port { send: (message: object) => unknown, on: (event: 'message', handler: (message: unknown) => void) => unknown, off: (event: 'message', handler: (message: unknown) => void) => unknown }
-export function createTasksChannel(port: Port, timeoutMs = 5000) {
+export function createTasksChannel(port: Port, timeoutMs = DEFAULT_TOOL_TIMEOUT_MS) {
   let seq = 0, closed = false
   const pending = new Map<string, (error: Error | null, text?: string) => void>()
   const receive = (raw: unknown) => {

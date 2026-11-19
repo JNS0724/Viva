@@ -101,7 +101,7 @@ process.on('message', async raw => {
     }
     process.send?.({ type: 'result', id, ...identity, rows })
   } catch {
-    process.send?.({ type: 'result', id, rows: null })
+    process.send?.({ type: 'failure', id, reason: 'model_failed' })
   } finally {
     running = false
   }

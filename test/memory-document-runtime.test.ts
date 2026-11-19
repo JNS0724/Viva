@@ -7,10 +7,11 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { offlineMemorySafety } from './fixtures/memory-safety.ts'
 import { scratch } from './fixtures/scratch.js'
 import { createMemoryRuntime } from '../src/memory/core/memory-runtime.ts'
+import { RequestTimeout } from '../src/memory/core/request-budget.ts'
 import { openMemoryRuntimeResources } from '../src/memory/node/runtime.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { MemoryDocuments } from '../src/memory/core/ports/documents.ts'
+import type { MemoryDocuments, ReadMemoryPhysicalFile } from '../src/memory/core/ports/documents.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
 
 const origin = { conversation: 'document-conversation', session: 'document-session' }
@@ -19,11 +20,19 @@ function fixture(t: TestContext) {
   const now = () => Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(join(dir, 'memory.db'), now)
   const resources = openMemoryRuntimeResources({ store, now })
+  const physicalReader = resources.readPhysicalFile!
+  let readPhysical: ReadMemoryPhysicalFile = physicalReader
+  resources.readPhysicalFile = (...args) => readPhysical(...args)
   const openDocuments = resources.openDocuments
   let documents!: MemoryDocuments
   let failCleanup = false
-  resources.openDocuments = (...args) => {
-    documents = openDocuments(...args)
+  let beforePublish = (_workspace: string, _id: string) => {}
+  resources.openDocuments = (readable, committed, renamed, policy) => {
+    const index = policy?.index
+    documents = openDocuments(readable, committed, renamed, index && policy ? { ...policy, index: {
+      queue: index.queue,
+      publish(workspace, id) { beforePublish(workspace, id); index.publish(workspace, id) },
+    } } : policy)
     return { ...documents, recover() { if (failCleanup) throw new Error('test-cleanup-unavailable'); documents.recover() } }
   }
   const calls: MemoryCompute[] = []
@@ -42,7 +51,9 @@ function fixture(t: TestContext) {
     const source = store.readSource(id)!
     return { workspace: memorySourceWorkspace(source), reference: { id, token: memorySourceToken(source) } }
   }
-  return { file: join(dir, 'memory.db'), store, memory, documents, calls, ref, fileReads, setCleanupFailure: (value: boolean) => { failCleanup = value } }
+  return { file: join(dir, 'memory.db'), store, memory, documents, calls, ref, fileReads, setCleanupFailure: (value: boolean) => { failCleanup = value },
+    beforePublish: (work: typeof beforePublish) => { beforePublish = work },
+    wrapPhysicalRead: (wrap: (read: ReadMemoryPhysicalFile) => ReadMemoryPhysicalFile) => { readPhysical = wrap(physicalReader) } }
 }
 
 test('runtime rebuilds mixed daily notes from permitted fragments and keeps unrelated new input usable', async t => {
@@ -201,11 +212,11 @@ test('file mode shares digest recall, original line reads, node search, injectio
   const recalled = JSON.parse(await f.memory.handleModelRequest({ op: 'recall', session: origin.session, query: '账单核对' }, origin, () => true))
   assert.equal(recalled.status, 'ok')
   assert(recalled.notes.some((note: {path:string,markdown:string}) => note.path === receipt.path && note.markdown.includes('账单核对')))
-  const read = JSON.parse(f.memory.handle({ op: 'file_read', session: origin.session, id: receipt.documentId, start_line: 6, end_line: 6 }, origin))
+  const read = JSON.parse(await f.memory.handleModelRequest({ op: 'file_read', session: origin.session, id: receipt.documentId, start_line: 6, end_line: 6 }, origin, () => true))
   assert.equal(read.text, '青岚发布需要先完成账单核对。')
   assert.equal(read.startLine, 6)
   assert(!Object.hasOwn(read, 'files'))
-  const nodes = JSON.parse(f.memory.handle({ op: 'node_search', session: origin.session, query: '青岚' }, origin))
+  const nodes = JSON.parse(await f.memory.handleModelRequest({ op: 'node_search', session: origin.session, query: '青岚' }, origin, () => true))
   assert.equal(nodes.status, 'ok')
   assert(JSON.stringify(nodes).includes(receipt.documentId))
   const unrelated = { op: 'context' as const, session: origin.session, turn: 1, question: '今天天气怎么样' }
@@ -217,12 +228,126 @@ test('file mode shares digest recall, original line reads, node search, injectio
   assert(f.fileReads.length > 0)
   const reads = [...f.fileReads]
   assert(f.memory.fileDependenciesCurrent(reads))
+  const acceptsFiles = await f.memory.loadFileEvidenceCheck(reads)
+  assert(acceptsFiles(reads, Date.now(), []))
+  f.wrapPhysicalRead(() => () => Promise.reject(new RequestTimeout()))
+  await assert.rejects(f.memory.loadFileEvidenceCheck(reads), RequestTimeout)
+  f.wrapPhysicalRead(read => read)
   await f.memory.setDocumentEnabled({ operationId: 'disable-release', workspace, documentId: receipt.documentId,
     expectedRevision: receipt.revision!, expectedUsageVersion: receipt.usageVersion, enabled: false })
   assert.equal(f.memory.fileDependenciesCurrent(reads), false)
+  assert.equal(acceptsFiles(reads, Date.now(), []), false)
   assert.equal(JSON.parse(f.memory.handle({ op: 'file_read', session: origin.session, id: receipt.documentId }, origin)).status, 'unavailable')
   const after = await f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 2, question: '账单核对' }, origin, () => true)
   assert(!after.includes('青岚发布需要先完成账单核对'))
+})
+
+test('a stalled verification leaves independent recall, injection and direct reads available', async t => {
+  const f = fixture(t)
+  function create(name: string, markdown: string) {
+    const id = randomUUID()
+    f.memory.accept(markdown, origin, id)
+    const { workspace, reference } = f.ref(id)
+    const receipt = f.documents.commit({ operationId: name, workspace, path: `digest/personal/${name}.md`,
+      expectedRevision: null, action: 'CREATE', markdown, sources: [reference], reads: [] })
+    return { ...receipt, workspace }
+  }
+  const slow = create('slow', '---\nname: Invoice delayed\n---\nInvoice contains the red invoice seal.')
+  const quick = create('quick', '---\nname: Invoice ready\n---\nInvoice uses the blue approval stamp.')
+  await f.memory.wake()
+  let started!: () => void
+  const stalled = new Promise<void>(resolve => { started = resolve })
+  f.wrapPhysicalRead(read => (workspace, path, signal) => {
+    if (path !== slow.path) return read(workspace, path, signal)
+    started()
+    return new Promise(resolve => {
+      const timer = setTimeout(stop, 65)
+      function stop() { clearTimeout(timer); signal?.removeEventListener('abort', stop); resolve(null) }
+      if (signal?.aborted) stop()
+      else signal?.addEventListener('abort', stop, { once: true })
+    })
+  })
+  const session = origin.session
+  const request = (input: Parameters<typeof f.memory.handleModelRequest>[0], signal?: AbortSignal) => f.memory.handleModelRequest(input, origin, () => true, signal)
+  const gathering = request({ op: 'recall', session, query: 'Invoice' })
+  await stalled
+  const direct = JSON.parse(await request({ op: 'file_read', session, id: quick.documentId }))
+  assert.match(direct.text, /blue approval stamp/u)
+  const detail = await f.memory.readFileAsync({ kind: 'digest', workspace: quick.workspace, id: quick.documentId })
+  assert.match(detail?.markdown ?? '', /blue approval stamp/u)
+  const recalled = JSON.parse(await gathering)
+  assert(recalled.partial)
+  assert.match(JSON.stringify(recalled.notes), /blue approval stamp/u)
+  assert.doesNotMatch(JSON.stringify(recalled.notes), /red invoice seal/u)
+  const context = await request({ op: 'context', session, turn: 1, question: 'Invoice' })
+  assert.match(context, /blue approval stamp/u)
+  assert.doesNotMatch(context, /red invoice seal/u)
+  const nodes = JSON.parse(await request({ op: 'node_search', session, query: 'Invoice' }))
+  assert.equal(nodes.partial, true)
+  assert.deepEqual(nodes.nodes.map((node: { id: string }) => node.id), [quick.documentId])
+  const list = await f.memory.listFilesAsync({})
+  assert.deepEqual(list.items.map(item => item.identity.id), [quick.documentId])
+  const profile = await f.memory.fileProfileAsync()
+  assert.deepEqual(profile.user.map(item => item.identity.id), [quick.documentId])
+  const cancellation = new AbortController()
+  const ongoing = request({ op: 'file_read', session, id: slow.documentId }, cancellation.signal)
+  cancellation.abort()
+  assert.equal(JSON.parse(await ongoing).status, 'unavailable')
+})
+
+test('file pagination verifies just this page and rejects cursors after a ledger change', async t => {
+  const f = fixture(t), id = randomUUID()
+  const markdown = 'Invoice approval stamp is blue.'
+  f.memory.accept(markdown, origin, id)
+  const { workspace, reference } = f.ref(id)
+  for (const name of ['quarterly', 'annual', 'weekly']) {
+    f.documents.commit({ operationId: name, workspace, path: `digest/wiki/${name}.md`, expectedRevision: null,
+      action: 'CREATE', markdown, sources: [reference], reads: [] })
+  }
+  await f.memory.wake()
+  const observed: string[] = []
+  f.wrapPhysicalRead(read => (workspace, path, signal) => {
+    observed.push(path)
+    return read(workspace, path, signal)
+  })
+  const initial = await f.memory.listFilesAsync({ kind: 'digest', limit: 1 })
+  assert.ok(initial.nextCursor)
+  assert.deepEqual(observed, [initial.items[0]?.path])
+  observed.length = 0
+  const next = await f.memory.listFilesAsync({ kind: 'digest', limit: 1, cursor: initial.nextCursor })
+  assert.notEqual(next.items[0]?.path, initial.items[0]?.path)
+  assert.deepEqual(observed, [next.items[0]?.path])
+  const first = initial.items[0]!
+  await f.memory.setDocumentEnabled({ operationId: 'disable', workspace, documentId: first.identity.id,
+    expectedRevision: first.version.contentRevision, expectedUsageVersion: first.version.usageVersion, enabled: false })
+  observed.length = 0
+  assert.equal((await f.memory.listFilesAsync({ kind: 'digest', limit: 1, cursor: initial.nextCursor })).status, 'stale')
+  assert.deepEqual(observed, [])
+})
+
+test('model file reads recheck the accepted usage version after asynchronous verification', async t => {
+  const f = fixture(t), source = randomUUID()
+  f.memory.accept('Invoice includes a private approval stamp.', origin, source)
+  const { workspace, reference } = f.ref(source)
+  const document = f.documents.commit({ operationId: 'write', workspace, path: 'digest/wiki/invoice.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Invoice includes a private approval stamp.', sources: [reference], reads: [] })
+  let captured!: () => void, release!: () => void
+  const observed = new Promise<void>(resolve => { captured = resolve })
+  const barrier = new Promise<void>(resolve => { release = resolve })
+  f.wrapPhysicalRead(read => async (...args) => {
+    const snapshot = await read(...args)
+    captured()
+    await barrier
+    return snapshot
+  })
+  const pending = f.memory.handleModelRequest({ op: 'file_read', session: origin.session, id: document.documentId }, origin, () => true)
+  await observed
+  try {
+    await f.memory.setDocumentEnabled({ operationId: 'disable', workspace, documentId: document.documentId,
+      expectedRevision: document.revision!, expectedUsageVersion: document.usageVersion, enabled: false })
+  } finally { release() }
+  assert.equal(JSON.parse(await pending).status, 'unavailable')
+  assert.equal(f.fileReads.length, 0)
 })
 
 test('external file changes remain quarantined by reindex and unique rename rescans preserve identity', async t => {
@@ -306,4 +431,58 @@ test('reusing a renamed path makes new links follow the current identity', async
   assert(hit)
   assert.deepEqual(hit.outlinks.neighbors.map((item: {id:string}) => item.id), [second.documentId])
   assert.equal(JSON.parse(f.memory.handle({ op: 'file_read', session: origin.session, id: second.documentId }, origin)).text, '星河新项目')
+})
+
+test('a correction and its undo immediately republish the unchanged anchor file', async t => {
+  const f = fixture(t)
+  const original = randomUUID()
+  f.memory.accept('Indigo code names were retired and replaced by saffron.', origin, original)
+  const { workspace, reference } = f.ref(original)
+  const anchor = f.documents.commit({ operationId: 'publication-old', workspace, path: 'digest/wiki/old.md',
+    expectedRevision: null, markdown: 'indigo', sources: [reference], reads: [], action: 'CREATE' })
+  const replacement = f.documents.commit({ operationId: 'publication-new', workspace, path: 'digest/wiki/new.md',
+    expectedRevision: null, markdown: 'saffron', sources: [reference], reads: [], action: 'CREATE' })
+  const recall = () => f.memory.handle({ op: 'recall', session: origin.session, query: 'indigo' }, origin)
+  assert.match(recall(), /indigo/u)
+
+  const corrected = f.documents.commit({ operationId: 'publication-correct', workspace, path: replacement.path,
+    expectedRevision: replacement.revision, markdown: 'saffron', sources: [reference], reads: [anchor].map(item => ({
+      id: item.documentId, revision: item.revision!, usageVersion: item.usageVersion,
+    })), action: 'CORRECT', corrections: [
+      { path: anchor.path, revision: anchor.revision!, startLine: 1, endLine: 1, text: 'indigo', condition: 'all', time: 'current' },
+    ] })
+  assert.equal(f.documents.read(workspace, anchor.path)?.revision, anchor.revision, 'the source bytes never changed')
+  assert.doesNotMatch(recall(), /indigo/u)
+
+  await f.memory.undoDocument({ operationId: 'publication-undo', workspace, documentId: replacement.documentId,
+    revision: corrected.revision!, usageVersion: corrected.usageVersion })
+  assert.match(recall(), /indigo/u, 'undo must republish the anchor without waiting for the catalog')
+})
+
+test('a temporarily unreadable committed file keeps its publication pending without hiding unrelated files', async t => {
+  const f = fixture(t)
+  const original = randomUUID()
+  f.memory.accept('Citrine and peridot are two unrelated labels.', origin, original)
+  const { workspace, reference } = f.ref(original)
+  f.documents.commit({ operationId: 'independent-publication', workspace, path: 'digest/wiki/citrine.md',
+    expectedRevision: null, markdown: 'citrine', sources: [reference], reads: [], action: 'CREATE' })
+  await f.memory.wake()
+
+  const path = 'digest/wiki/peridot.md', physical = join(f.store.fileRoot, workspace, path)
+  f.beforePublish(() => renameSync(physical, physical + '.fixture'))
+  assert.throws(() => f.documents.commit({ operationId: 'unreadable-publication', workspace, path,
+    expectedRevision: null, markdown: 'peridot', sources: [reference], reads: [], action: 'CREATE' }))
+  const receipt = f.documents.receipt(workspace, 'unreadable-publication')
+  assert.ok(receipt, 'the authority already committed, but the projection cannot verify the physical revision')
+  const effect = () => f.store.db.prepare('SELECT generation FROM effects WHERE kind=? AND key=?')
+    .get('memory.file-index-publish', JSON.stringify([workspace, receipt.documentId]))
+  assert.ok(effect(), 'unverified bytes must not consume pending publication')
+  const recall = (query: string) => f.memory.handle({ op: 'recall', session: origin.session, query }, origin)
+  assert.match(recall('citrine'), /citrine/u)
+  assert.doesNotMatch(recall('peridot'), /peridot/u)
+  renameSync(physical + '.fixture', physical)
+
+  await f.memory.wake()
+  assert.match(recall('peridot'), /peridot/u)
+  assert.equal(effect(), undefined)
 })

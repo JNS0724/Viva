@@ -140,3 +140,38 @@ test('closing a runtime retires a late note calculation before it can read close
   finish('{"status":"write","title":"Garden","markdown":"I keep a garden."}')
   await running
 })
+
+test('a committed write keeps its publication work across restart and retries without rewriting the file', async t => {
+  const f = fixture(t)
+  let clock = Date.parse('2026-11-19T06:00:00Z')
+  const now = () => clock
+  const { runtime, store } = f.start({ now })
+  const workspace = runtime.manualFileWorkspace()
+  const reader = { session: 'publication-reader', conversation: null }
+  const recall = (owner: typeof runtime, word: string) => owner.handle({ op: 'recall', session: reader.session, query: word }, reader)
+  const unrelated = { operationId: randomUUID(), text: 'keep tangerine receipts searchable' }
+  await runtime.writeManagedFile(unrelated.operationId, workspace, unrelated, () => {})
+  await runtime.wake()
+
+  const pending = { operationId: randomUUID(), text: 'magenta observations from the archive' }
+  store.db.exec(`CREATE TRIGGER reject_publication BEFORE INSERT ON memory_file_index_nodes
+    BEGIN SELECT RAISE(ABORT, 'fixture-index-publication-failure'); END`)
+  let receipts = 0
+  await assert.rejects(runtime.writeManagedFile(pending.operationId, workspace, pending, () => { receipts++ }), /fixture-index-publication-failure/u)
+  assert.equal(receipts, 0, 'the write is durable but must not report searchable success')
+  assert.equal(runtime.listFiles({ kind: 'digest' }).items.length, 2)
+  assert.match(recall(runtime, 'tangerine'), /tangerine/u)
+  assert.doesNotMatch(recall(runtime, 'magenta'), /magenta/u)
+  assert.match(store.db.prepare("SELECT payload FROM effects WHERE kind='memory.file-index-publish'").get()?.payload as string, /"ids"/u)
+  store.db.exec('DROP TRIGGER reject_publication')
+  clock += 60_000
+
+  const restarted = f.start({ now }).runtime
+  assert.match(recall(restarted, 'tangerine'), /tangerine/u, 'existing projections remain readable during recovery')
+  await restarted.wake()
+  assert.match(recall(restarted, 'magenta'), /magenta/u)
+  const replay = await restarted.writeManagedFile(pending.operationId, workspace, undefined, () => { receipts++ })
+  assert.equal(receipts, 1)
+  assert.ok(replay)
+  assert.equal(restarted.listFiles({ kind: 'digest' }).items.length, 2)
+})

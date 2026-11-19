@@ -47,7 +47,8 @@
     "memory",
     "README.md",
     "LICENSE",
-    "diagnostics"
+    "diagnostics",
+    "shared"
   ],
   "engines": {
     "node": ">=24.0.0"

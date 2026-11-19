@@ -1,4 +1,5 @@
 import { MemoryDispatchConflict, needsMemoryTransport } from './memory-dispatch.ts'
+import type { FileEvidenceCurrent } from './memory-dispatch.ts'
 import { MemoryDomainError } from './presentation.ts'
 import type { MemoryProvenance } from './ports/store.ts'
 
@@ -24,7 +25,7 @@ export interface MemoryCoordinationDispatch {
   snapshot(session: string): MemoryProvenance
   inherit(parent: string, child: string): void
   recordSource(session: string, source: string): void
-  stale(session: string): boolean
+  stale(session: string, acceptsFiles?: FileEvidenceCurrent): boolean
   admission(session: string): Admission
   acquireSession(id: string, session: string, admission: Extract<Admission, { allowed: true }>, current: () => boolean): void
   acquire(id: string, current: () => boolean): void
@@ -67,14 +68,14 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     if (owner.sessionProject(session) === undefined) owner.recordSessionProject(session, project?.id ?? '')
     return true
   }
-  function stale(session: string | null | undefined, project?: MemoryProject) {
+  function stale(session: string | null | undefined, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
     if (!session) return false
     const owner = runtime()
     return !owner || owner.staleSession(session) || projectChanged(session, project)
-      || Boolean(dispatch()?.stale(session))
+      || Boolean(dispatch()?.stale(session, acceptsFiles))
   }
-  function allowsSession(session: string, project?: MemoryProject) {
-    return !busy() && !stale(session, project) && allowsEvidence(dispatch()?.snapshot(session), project)
+  function allowsSession(session: string, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
+    return !busy() && !stale(session, project, acceptsFiles) && allowsEvidence(dispatch()?.snapshot(session), project)
   }
   const canTransferToModel = (session: string, transportReady: boolean) =>
     transportReady || !needsMemoryTransport(dispatch()?.snapshot(session))

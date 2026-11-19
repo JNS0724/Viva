@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.ts'
 
 /** A question sent while a model switch is still on its way is answered, not lost (reported on Windows). */
 

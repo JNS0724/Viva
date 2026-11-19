@@ -256,7 +256,7 @@ test('the intro saves only the profile fields and lists sites and documents in t
   assert.match(introPrompt({ sources: ['https://wiki.example'], docs: [{ path: '/w/我的资料/周报.md' }] }), /- https:\/\/wiki\.example\n- \/w\/我的资料\/周报\.md$/)
 })
 
-test('index rebuild runs once at a time and reports success and incomplete resets', async () => {
+test('index rebuild runs once at a time and reports scheduled work and incomplete resets', async () => {
   type Result = Awaited<ReturnType<AgentApi['rebuildMemoryIndexes']>>
   let state: State = initialState
   const requests: ((result: Result) => void)[] = []
@@ -275,7 +275,7 @@ test('index rebuild runs once at a time and reports success and incomplete reset
   requests[0]!({ fullText: false, semantic: false, files: { lexical: true, vectorGeneration: 1 } })
   await first
   assert.equal(state.memory.rebuildingIndexes, false)
-  assert.deepEqual(toasts, ['已重建文件记忆的全文索引。'])
+  assert.deepEqual(toasts, ['已开始重建索引，后台会补齐缺失的全文和语义索引。'])
 
   const retry = actions.rebuildMemoryIndexes()
   requests[1]!({ fullText: false, semantic: false, files: { lexical: false, vectorGeneration: 2 } })
@@ -294,7 +294,12 @@ test('Dream ignores a stale status read after a manual request and coalesces rap
   let resolveRead!: (value: typeof idle) => void, resolveStart!: () => void, starts = 0
   const api = {
     getDreamStatus: () => new Promise<typeof idle>(resolve => { resolveRead = resolve }),
-    async runDream() { starts++; await new Promise<void>(resolve => { resolveStart = resolve }); return { ...idle, state: 'running' as const } },
+    async runDream(operationId: string) {
+      assert.match(operationId, /^[0-9a-f-]{36}$/u)
+      starts++
+      await new Promise<void>(resolve => { resolveStart = resolve })
+      return { ...idle, state: 'running' as const }
+    },
   }
   const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
   t.after(() => actions.watchDream(false))

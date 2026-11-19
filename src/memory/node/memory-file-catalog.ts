@@ -1,61 +1,131 @@
-import { lstatSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import type { MemoryFileCatalog, MemoryCatalogFile, MemoryCatalogChange, MemoryFileIdentity } from '../core/ports/file-index.ts'
-import { dailyPath, digestPath } from '../contracts/memory-file-contract.ts'
-import { memoryFileRevision } from './memory-file-store.ts'
+import { fork, type ChildProcess, type ForkOptions } from 'node:child_process'
+import { lstatSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { MemoryFileCatalog, MemoryCatalogChange, MemoryFileIdentity } from '../core/ports/file-index.ts'
+import type { CatalogScan } from './memory-file-catalog-worker.ts'
+import { createMemoryPhysicalFileReader, openMemoryFileStore } from './memory-file-store.ts'
+import type { ReadMemoryPhysicalFile } from '../core/ports/documents.ts'
 
-/** Observation only. Neither a new pathname nor matching bytes grant a file a trusted identity. */
-export function openMemoryFileCatalog({ root }: { root: string }): MemoryFileCatalog {
-  function scan(workspace: string, accepted: readonly MemoryFileIdentity[]): MemoryCatalogChange[] {
-    if (!/^[a-f0-9]{64}$/u.test(workspace) || accepted.some(file => file.workspace !== workspace)) throw new Error('invalid-memory-workspace')
-    const output: MemoryCatalogChange[] = [], found = new Map<string,MemoryCatalogFile>()
-    function walk(directory: string, relative: string) {
-      try {
-        const stat = lstatSync(directory)
-        if (stat.isSymbolicLink()) { output.push({kind:'quarantined',path:relative,reason:'symlink'}); return }
-        if (!stat.isDirectory()) { output.push({kind:'quarantined',path:relative,reason:'invalid-path'}); return }
-        for (const entry of readdirSync(directory, {withFileTypes:true})) {
-          if (entry.name.startsWith('.') || /(?:\.tmp|\.bak|~)$/u.test(entry.name)) continue
-          const path = relative ? `${relative}/${entry.name}` : entry.name, absolute = join(directory,entry.name)
-          if (entry.isSymbolicLink()) { output.push({kind:'quarantined',path,reason:'symlink'}); continue }
-          if (entry.isDirectory()) { walk(absolute,path); continue }
-          if (!entry.name.endsWith('.md')) continue
-          if (!entry.isFile() || !(path.startsWith('daily/') ? dailyPath : digestPath).safeParse(path).success) { output.push({kind:'quarantined',path,reason:'invalid-path'}); continue }
-          try {
-            // Recheck immediately before reading, including any directory swapped after enumeration.
-            const components = path.split('/'); let cursor=join(root,workspace)
-            if (lstatSync(root).isSymbolicLink() || lstatSync(cursor).isSymbolicLink()) throw new Error('symlink')
-            for (const component of components) { cursor=join(cursor,component); if (lstatSync(cursor).isSymbolicLink()) throw new Error('symlink') }
-            const markdown=readFileSync(absolute,'utf8')
-            found.set(path,{path,markdown,revision:memoryFileRevision(markdown)})
-          } catch (error) { output.push({kind:'quarantined',path,reason:error instanceof Error && error.message==='symlink'?'symlink':'unreadable'}) }
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') output.push({kind:'quarantined',path:relative,reason:'unreadable'})
-      }
-    }
-    try {
-      if (lstatSync(root).isSymbolicLink() || lstatSync(join(root,workspace)).isSymbolicLink()) return [{kind:'quarantined',path:'',reason:'symlink'}]
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return [{kind:'quarantined',path:'',reason:'unreadable'}] }
-    walk(join(root,workspace,'daily'),'daily'); walk(join(root,workspace,'digest'),'digest')
-    const bound = new Set(accepted.map(file => file.path)), missing=accepted.filter(file => !found.has(file.path))
-    const added=[...found.values()].filter(file => !bound.has(file.path)), renamed=new Set<string>(), consumed=new Set<string>()
-    for (const file of accepted) {
-      const observed=found.get(file.path)
-      if (observed) output.push({kind:observed.revision===file.revision?'unchanged':'modified',identity:file,file:observed})
-    }
-    for (const file of added) {
-      const old=missing.filter(item => item.revision===file.revision)
-      const peers=[...found.values()].filter(item => item.revision===file.revision)
-      const prior=accepted.filter(item => item.revision===file.revision)
-      if (old.length===1 && peers.length===1 && prior.length===1) {
-        output.push({kind:'rename',identity:old[0]!,file}); renamed.add(old[0]!.id); consumed.add(file.path)
-      } else if (old.length > 0) { output.push({kind:'quarantined',path:file.path,reason:'ambiguous-rename'}); consumed.add(file.path) }
-      else if (prior.length || peers.length > 1) { output.push({kind:'quarantined',path:file.path,reason:'duplicate-content'}); consumed.add(file.path) }
-    }
-    for (const file of missing) if (!renamed.has(file.id)) output.push({kind:'missing',identity:file})
-    for (const file of added) if (!consumed.has(file.path)) output.push({kind:'added',file})
-    return output
+function byRevision<T extends { revision: string }>(items: Iterable<T>) {
+  const grouped = new Map<string, T[]>()
+  for (const item of items) {
+    const existing = grouped.get(item.revision)
+    if (existing) existing.push(item)
+    else grouped.set(item.revision, [item])
   }
-  return {scan}
+  return grouped
+}
+
+function classify(accepted: readonly MemoryFileIdentity[], scan: CatalogScan): MemoryCatalogChange[] {
+  const { complete } = scan
+  const output: MemoryCatalogChange[] = scan.quarantined
+  const found = new Map(scan.files.map(file => [file.path, file]))
+  const bound = new Set(accepted.map(file => file.path))
+  const missing = complete ? accepted.filter(file => !found.has(file.path)) : []
+  const added = [...found.values()].filter(file => !bound.has(file.path))
+  const renamed = new Set<string>()
+
+  for (const file of accepted) {
+    const observed = found.get(file.path)
+    if (observed) output.push({ kind: observed.revision === file.revision ? 'unchanged' : 'modified', identity: file, file: observed })
+  }
+  const missingByRevision = byRevision(missing)
+  const observedByRevision = byRevision(found.values())
+  const acceptedByRevision = byRevision(accepted)
+  for (const file of added) {
+    const old = missingByRevision.get(file.revision) ?? []
+    const peers = observedByRevision.get(file.revision) ?? []
+    const prior = acceptedByRevision.get(file.revision) ?? []
+    if (old.length === 1 && peers.length === 1 && prior.length === 1) {
+      output.push({ kind: 'rename', identity: old[0]!, file })
+      renamed.add(old[0]!.id)
+    } else if (old.length > 0) output.push({ kind: 'quarantined', path: file.path, reason: 'ambiguous-rename' })
+    else if (prior.length || peers.length > 1) output.push({ kind: 'quarantined', path: file.path, reason: 'duplicate-content' })
+    else output.push({ kind: 'added', file })
+  }
+  for (const file of missing) if (!renamed.has(file.id)) output.push({ kind: 'missing', identity: file })
+  return output
+}
+
+/** A hung scan keeps its slot until the child actually exits. The owner only interprets observations. */
+export function openMemoryFileCatalog({ root, timeoutMs = 5_000, forkWorker = fork, readPhysicalFile = createMemoryPhysicalFileReader(() => root) }: {
+  root: string, timeoutMs?: number, readPhysicalFile?: ReadMemoryPhysicalFile,
+  forkWorker?: (entry: string, args: readonly string[], options: ForkOptions) => ChildProcess,
+}): MemoryFileCatalog {
+  const active = new Map<string, () => void>()
+  let closed = false
+  const location = resolve(root)
+  const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
+  const entry = fileURLToPath(new URL(`./memory-file-catalog-worker${suffix}`, import.meta.url))
+  const unavailable = (): MemoryCatalogChange[] => [{ kind: 'quarantined', path: '', reason: 'scan-unavailable' }]
+
+  function workspaceRoot(workspace: string) {
+    if (!/^[a-f0-9]{64}$/u.test(workspace)) throw new Error('invalid-memory-workspace')
+    return join(location, workspace)
+  }
+  async function scan(workspace: string, accepted: readonly MemoryFileIdentity[]) {
+    workspaceRoot(workspace)
+    if (accepted.some(file => file.workspace !== workspace)) throw new Error('invalid-memory-workspace')
+    if (closed || active.has(workspace) || active.size >= 2) return unavailable()
+    return new Promise<MemoryCatalogChange[]>(done => {
+      const observation: CatalogScan = { files: [], quarantined: [], complete: false }
+      let complete: boolean | undefined
+      const child = forkWorker(entry, [location, workspace], {
+        execPath: process.execPath, execArgv: [], windowsHide: true,
+        env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      })
+      let settled = false
+      const finish = (changes: MemoryCatalogChange[]) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        done(changes)
+      }
+      const incomplete = () => {
+        if (settled) return
+        observation.quarantined.push({ kind: 'quarantined', path: '', reason: 'scan-unavailable' })
+        finish(classify(accepted, observation))
+      }
+      const stop = () => { incomplete(); child.kill() }
+      const timer = setTimeout(stop, timeoutMs)
+      active.set(workspace, stop)
+      child.once('close', code => {
+        active.delete(workspace)
+        if (settled) return
+        if (code !== 0 || complete === undefined) { incomplete(); return }
+        observation.complete = complete
+        finish(classify(accepted, observation))
+      })
+      child.on('error', incomplete)
+      child.on('message', (batch: CatalogScan) => {
+        if (settled) return
+        observation.files.push(...batch.files)
+        observation.quarantined.push(...batch.quarantined)
+        complete = batch.complete
+      })
+    })
+  }
+  return {
+    scan,
+    async read(workspace, path, signal) {
+      if (closed) throw new Error('memory-file-catalog-closed')
+      return readPhysicalFile(workspace, path, signal)
+    },
+    readAtCommit(workspace, path) {
+      const directory = workspaceRoot(workspace)
+      try {
+        if (lstatSync(location).isSymbolicLink() || lstatSync(directory).isSymbolicLink()) throw new Error('unsafe-memory-path')
+        return openMemoryFileStore(directory, { create: false }).read(path)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    },
+    close() {
+      closed = true
+      for (const stop of active.values()) stop()
+    },
+  }
 }

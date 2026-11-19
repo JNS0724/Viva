@@ -5,9 +5,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
 
-/** Actual DSH child owns storage, ingestion, computation, tools and dispatch. The host only calls RPC. */
+/** The real DSH adapter and the separate storage owner communicate through the backend relay. */
 async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]) {
   const harness = await setup(t, options)
   const agent = harness.bridge({ memoryRequired: true })
@@ -58,11 +58,13 @@ test('the plugin injects manual profile and recalls file memory with exact evide
   assert.match(lastContext(llm), /周报每周五下班前交给张三/)
   assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')))
   const epoch = agent.memory.state()!.epoch
+  const dsh = agent.pid()
   await agent.dispose()
   const restarted = bridge({ memoryRequired: true })
   await restarted.start()
   assert.ok(await eventually(() => restarted.memory.ready()))
-  assert.notEqual(restarted.memory.state()!.epoch, epoch)
+  assert.notEqual(restarted.pid(), dsh)
+  assert.equal(restarted.memory.state()!.epoch, epoch)
   assert.deepEqual(await restarted.memory.call('createFile', { args: [input] }), created)
   assert.ok((await restarted.memory.call('readFile', { args: [created.identity] }))?.markdown.includes(input.text))
 })

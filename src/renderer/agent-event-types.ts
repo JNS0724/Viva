@@ -12,7 +12,8 @@ export type AgentEvent =
   /** How the MCP servers stand, as viva-mcp says it changed: only the agent info's `mcp`. */
   | { type: 'mcp_status', mcp: NonNullable<AgentInfo['mcp']> }
   | ({ type: 'update' } & Scoped & Payload<'acp_update'>)
-  | ({ type: 'turn_started', by?: string | null } & Scoped)
+  | ({ type: 'turn_started', by?: string | null, turnId?: string } & Scoped)
+  | ({ type: 'turn_stopping' } & Scoped)
   | ({ type: 'turn_end' } & Scoped & Payload<'turn_end'>)
   | ({ type: 'permission' } & Payload<'permission_request'> & (Scoped | Position))
   | ({ type: 'question' } & Scoped & Payload<'question_request'>)

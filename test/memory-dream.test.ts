@@ -73,7 +73,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
       sources: notes.references(note.key), reads: [] })
   const run = async () => { jobs.run(); await effects.wake() }
   return { store, notes, documents, requests, addSource, add, seedDigest, run, defaultModel,
-    status: () => jobs.status(), request: () => jobs.request(), settle: () => effects.wake(),
+    status: () => jobs.status(), request: (operationId?: string) => jobs.request(operationId), settle: () => effects.wake(),
     setFixture(options: Parameters<typeof dreamModelStep>[2]) { fixtureOptions = options },
     setModel(next: DreamCalculate) { model = next },
     beforeMutation(next: () => void) { beforeMutation = next }, afterCommit(next: (receipt: DocumentReceipt) => void) { afterCommit = next },
@@ -96,8 +96,11 @@ test('manual Dream acknowledges immediately, joins the scheduled job and keeps a
     if (request.stage === 'extract') { entered(); await gate }
     return h.defaultModel(request)
   })
-  assert.equal(h.request().state, 'queued')
-  assert.equal(h.request().state, 'queued')
+  const operationId = randomUUID(), joined = randomUUID()
+  const queued = h.request(operationId)
+  assert.equal(queued.state, 'queued')
+  assert.equal(queued.jobId, operationId)
+  assert.equal(h.request(joined).jobId, operationId)
   await started
   assert.equal(h.request().state, 'running')
   release()
@@ -112,6 +115,10 @@ test('manual Dream acknowledges immediately, joins the scheduled job and keeps a
   await h.settle()
   h.restart()
   assert.deepEqual(h.status(), { state: 'idle', lastCheckResult: 'empty', lastCheckedAt: done.lastProcessedAt + 60_000, lastProcessedAt: done.lastProcessedAt })
+  const retried = h.request(operationId)
+  assert.deepEqual(retried, { ...done, jobId: operationId, completedAt: done.lastCheckedAt })
+  assert.deepEqual(h.request(joined), retried)
+  assert.equal(h.status().state, 'idle')
 })
 
 test('an oversized singleton is recorded as skipped without moving the last processing time', async t => {

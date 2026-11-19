@@ -26,5 +26,5 @@ export interface MemoryContextRecoveryOwner {
   needsContextRecovery(sessionId: string): boolean
   prepareContextRecovery(input: PrepareMemoryContextRecovery): Promise<MemoryContextRecoveryTicket>
   bindContextRecovery(input: BindMemoryContextRecovery): MemoryContextRecoveryTicket
-  commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean): Promise<MemoryContextRecoveryTicket>
+  commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean | Promise<boolean>): Promise<MemoryContextRecoveryTicket>
 }

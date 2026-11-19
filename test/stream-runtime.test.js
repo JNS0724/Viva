@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness } from './fixtures/dsh-harness.ts'
 import { piAiProviders, providerEnv } from '../src/backend/model-providers.ts'
 import { routeDelta } from './fixtures/fake-openai.js'
 import { initialState, reduce } from '../src/renderer/state.ts'

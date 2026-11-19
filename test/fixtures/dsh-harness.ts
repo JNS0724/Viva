@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { TestContext } from 'node:test'
 import { createAcpBridge } from '../../src/backend/acp-bridge.ts'
+import { createDesktopMemoryOwner } from '../../src/backend/desktop-memory-owner.ts'
 import { installedDshVersion, PERSONA, resolvePlugins } from '../../src/backend/app-plugins.ts'
 import { DSH_PROFILE } from '../../src/backend/config.ts'
 import { ensureDshProfile, vivaLayerFile } from '../../src/backend/dsh-profile.ts'
@@ -12,6 +14,7 @@ import { pnpmLauncher } from '../../src/backend/pnpm-launcher.ts'
 import { removeTree } from '../../src/backend/remove-tree.ts'
 import { startFakeLlm } from './fake-llm.ts'
 import { testRequests } from './request-routing.ts'
+import { objectOf } from '../../src/shared/unknown-value.ts'
 
 /**
  * The app's plugins inside the real dsh: the app's bridge, the app's profile (persona and every plugin that
@@ -23,10 +26,24 @@ const DSH_BIN = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'b
 /** The app's runtime: this test process is the app's Electron running as Node (or DSH_NODE). */
 const RUNTIME = dshRuntime({ env: process.env, execPath: process.execPath })
 export const DSH_TIMEOUT_MS = 60_000
+type Bridge = ReturnType<typeof createAcpBridge>
+type BridgeOptions = Parameters<typeof createAcpBridge>[0]
+type Event = Parameters<BridgeOptions['emit']>[0]
+type Profile = Parameters<typeof ensureDshProfile>[0]
+type Options = {
+  mcpServers?: ReturnType<NonNullable<BridgeOptions['mcpServers']>>
+  prewarmSessions?: boolean
+  allow?: boolean
+  models?: (llm: Awaited<ReturnType<typeof startFakeLlm>>) => Profile['models']
+  env?: Record<string, string | undefined>
+  configActions?: BridgeOptions['configActions']
+  imagesDir?: (dir: string) => string
+  permission?: string
+  decideFirst?: ((request: never) => object | null) | null
+  tasks?: NonNullable<Parameters<typeof testRequests>[0]>['tasks']
+}
 
 /**
- * @param {import('node:test').TestContext} t
- * @param {{ mcpServers?: object[], prewarmSessions?: boolean, allow?: boolean, models?: (llm: object) => object, env?: Record<string, string>, configActions?: object, imagesDir?: string, permission?: string, decideFirst?: ((request: never) => object | null) | null, tasks?: import('../../src/backend/request-runtime.ts').RequestTasks }} [options]
  *   mcpServers: declared on every session;
  *   allow: answer every approval request with "allow once" (otherwise they stay pending);
  *   imagesDir: Viva's pictures folder (dsh-profile.js), given the temporary directory; permission: the level picked (viva-permission);
@@ -36,7 +53,7 @@ export const DSH_TIMEOUT_MS = 60_000
  * Whatever the test opens in the directory (a database) is closed through `defer`, before the directory goes.
  * `requests` is the app's request runtime every bridge of the harness routes through (request-runtime.ts).
  */
-export async function startHarness(t, { mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks } = {}) {
+export async function startHarness(t: TestContext, { mcpServers = [], prewarmSessions = false, allow = false, models, env: extraEnv = {}, configActions = null, imagesDir, permission, decideFirst = null, tasks }: Options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-harness-'))
   const dshHome = path.join(dir, 'dsh-home')
   const workspace = path.join(dir, 'workspace')
@@ -44,44 +61,54 @@ export async function startHarness(t, { mcpServers = [], prewarmSessions = false
   const userData = path.join(dir, 'userData')
   const { plugins, problems } = resolvePlugins({ codeRoot: ROOT, userData, dshVersion: installedDshVersion(ROOT), permission })
   assert.deepEqual(problems, [], 'every app plugin passes the compatibility check')
-  const llm = await startFakeLlm({ decideFirst })
+  const llm = await startFakeLlm({ decideFirst: decideFirst ? request => decideFirst(request as never) : null })
   const requests = testRequests({ tasks })
   // As the app does at every launch (main.ts prepareProfile), with the pnpm the app ships for the plugin manager.
   const pnpmCommand = pnpmLauncher({ dir: path.join(dir, 'bin'), appRoot: ROOT, runtime: RUNTIME })
   const writeProfile = () => ensureDshProfile({ dshHome, profile: DSH_PROFILE, plugins, persona: PERSONA, models: models?.(llm), imagesDir: imagesDir?.(dir), pnpmCommand })
   writeProfile()
-  const bridges = []
-  const closers = []
+  const memoryOwner = createDesktopMemoryOwner({ root: path.join(userData, 'memory'), dailyNotes: true }, {})
+  const bridges: Bridge[] = []
+  const closers: Array<() => void> = []
   t.after(async () => {
     // dsh runs in the workspace: on Windows it cannot go until the process has exited.
     try {
       await Promise.all(bridges.map((bridge) => bridge.dispose()))
+      await memoryOwner.close()
       for (const close of [...closers].reverse()) close()
       await llm.close()
     } finally {
       await removeEventually(dir)
     }
   })
-  const defer = (close) => { closers.push(close) }
-  const events = []
-  /** @param {Partial<Parameters<typeof createAcpBridge>[0]>} [options] */
-  function bridge(options = {}) {
+  const defer = (close: () => void) => { closers.push(close) }
+  const events: Event[] = []
+  function bridge(options: Partial<BridgeOptions> = {}) {
     const created = createAcpBridge({
       routing: requests,
       dshBin: DSH_BIN,
       nodeBin: RUNTIME.nodeBin,
+      profile: DSH_PROFILE,
       overlay: vivaLayerFile(dshHome),
       cwd: workspace,
       env: dshEnv({ base: process.env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, ...extraEnv } }),
       mcpServers: () => mcpServers,
       prewarmSessions,
       configActions,
+      memoryOwner,
+      memoryRequired: true,
       emit: (event) => {
         events.push(event)
-        if (allow && event.type === 'permission') setImmediate(() => created.respondPermission(event.requestId, 'allow-once'))
+        const requestId = event.requestId
+        if (allow && event.type === 'permission' && typeof requestId === 'string') setImmediate(() => created.respondPermission(requestId, 'allow-once'))
       },
       ...options,
     })
+    const start = created.start
+    created.start = async input => {
+      await memoryOwner.prepare(async () => {})
+      return start(input)
+    }
     bridges.push(created)
     return created
   }
@@ -94,27 +121,36 @@ export async function startHarness(t, { mcpServers = [], prewarmSessions = false
 const REMOVE_PATIENCE_MS = 15_000
 const REMOVE_PAUSE_MS = 500
 
-async function removeEventually(dir) {
+async function removeEventually(dir: string) {
   const deadline = Date.now() + REMOVE_PATIENCE_MS
   for (;;) {
     try {
       removeTree(dir)
       return
     } catch (err) {
-      if ((err.code !== 'EPERM' && err.code !== 'EBUSY') || Date.now() > deadline) throw err
+      const code = objectOf(err)?.code
+      if ((code !== 'EPERM' && code !== 'EBUSY') || Date.now() > deadline) throw err
       await new Promise((resolve) => setTimeout(resolve, REMOVE_PAUSE_MS))
     }
   }
 }
 
 /** The assistant's visible text, in order. */
-export const replies = (events) => events
-  .flatMap((e) => e.update?.sessionUpdate === 'agent_message_chunk' ? [e.update.content.text]
-    : e.update?.sessionUpdate === 'viva_stream' && e.update.kind === 'settle'
-      ? e.update.blocks.filter(block => block.type === 'text').map(block => block.text) : [])
+export const replies = (events: readonly Event[]) => events.flatMap(event => {
+  const update = objectOf(event.update)
+  if (update?.sessionUpdate === 'agent_message_chunk') {
+    const words = objectOf(update.content)?.text
+    return typeof words === 'string' ? [words] : []
+  }
+  if (update?.sessionUpdate !== 'viva_stream' || update.kind !== 'settle' || !Array.isArray(update.blocks)) return []
+  return update.blocks.flatMap(block => {
+    const part = objectOf(block)
+    return part?.type === 'text' && typeof part.text === 'string' ? [part.text] : []
+  })
+})
 
 /** The background pass writes after a turn; wait for what it writes. */
-export async function eventually(read, { timeoutMs = 15_000, intervalMs = 100 } = {}) {
+export async function eventually<T>(read: () => T, { timeoutMs = 15_000, intervalMs = 100 } = {}): Promise<T> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     const value = read()

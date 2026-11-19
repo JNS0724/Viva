@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.ts'
 import { MAIN_SCOPE } from '../plugins/routing/lib/policy.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
 

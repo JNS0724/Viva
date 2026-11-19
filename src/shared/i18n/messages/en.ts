@@ -1,4 +1,9 @@
 export const en = {
+  "conversation.stop.pending": "Stopping…",
+  "conversation.stop.unconfirmed": "The runtime did not confirm that the turn stopped.",
+  "conversation.stop.restart.tasks": "Recovery restarts the runtime and may interrupt background tasks.",
+  "conversation.stop.recover": "Recover conversation",
+
   "diagnostics.scope": "Logs stay on this computer and exclude conversation text, memory text, attachments and credentials.",
   "diagnostics.status.summary": "Desktop logger: {state} · dropped events: {count}",
   "diagnostics.status.failed": "Log status is temporarily unavailable. Export is still available.",
@@ -136,7 +141,6 @@ export const en = {
   "memory-files.search": "Search memory titles",
   "memory-files.empty": "Viva’s saved memories will appear here.",
   "memory-files.more": "Show more memories",
-  "memory-files.index.rebuilt": "The full-text index for memory files was rebuilt.",
   "memory-files.editor.add": "Add memory",
   "memory-files.editor.edit": "Edit memory",
   "memory-files.editor.title": "Title (optional)",
@@ -159,7 +163,7 @@ export const en = {
   "memory-files.forget.check": "Check deletion status",
   "profile-panel.memory.index.rebuild": "Rebuild memory indexes",
   "profile-panel.memory.index.rebuilding": "Starting index rebuild…",
-  "memory-actions.index.rebuild.started": "Index rebuild started. The semantic index rebuilds in the background.",
+  "memory-actions.index.rebuild.started": "Index rebuild started. Missing text and semantic index entries will be filled in the background.",
   "memory-actions.index.rebuild.full-text-only": "The full-text index is rebuilding. The semantic index could not be reset.",
   "memory-actions.index.rebuild.semantic-only": "The semantic index is rebuilding in the background. The full-text index could not be reset.",
   "memory-actions.index.rebuild.failed": "Could not start rebuilding the memory indexes. Try again.",

@@ -194,9 +194,11 @@ export async function checkRuntime(embedder: MemoryEmbedder) {
     for (const fact of projectFacts) save(fact, fact.scope)
     // Warm the same accepted file passages served by normal recall.
     assert.ok(memory.rebuildIndexes().files?.lexical, 'the file lexical index should rebuild')
+    await memory.wake()
     const deadline = performance.now() + 15_000
     while ((!index.vectorState().active || index.missingVectors(index.vectorState().generation).length) && performance.now() < deadline) {
       await query('Weekly report destination', 'semantic')
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
     }
     assert.equal(index.vectorState().active, true, 'the derived file vector generation must publish')
     assert.equal(index.missingVectors(index.vectorState().generation).length, 0, 'every accepted file passage must be indexed')

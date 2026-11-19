@@ -16,7 +16,7 @@ export function createMemoryDailyUsage({ ledger, notes, sourceReferences, hash, 
   hash(text: string): string,
   now(): number,
   transaction<T>(work: () => T): T,
-  revisionChanged(): void,
+  revisionChanged(workspace: string, key: string, sources: readonly DocumentSourceRef[]): void,
   queueRebuild(key: string): void,
   queueRestrictedRebuilds(): void,
 }) {
@@ -46,7 +46,7 @@ export function createMemoryDailyUsage({ ledger, notes, sourceReferences, hash, 
       }
       queueRebuild(target.key)
       if (!input.enabled) queueRestrictedRebuilds()
-      revisionChanged()
+      revisionChanged(target.workspace, target.key, refs)
       const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
         contentRevision: input.version.contentRevision, usageVersion, restrictionId, action: input.enabled ? 'ENABLE' : 'DISABLE' }
       ledger.complete(input.operationId, { fingerprint, result, sources })

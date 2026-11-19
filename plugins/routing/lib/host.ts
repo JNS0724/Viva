@@ -3,10 +3,12 @@
  * answers every decision passed to it, accepted with a receipt for each action, or refused with the reason.
  */
 import { randomUUID } from 'node:crypto'
+import { LONG_TOOL_TIMEOUT_MS } from '../../../src/shared/node/tool-call-budget.ts'
+import { RequestTimeout } from '../../../src/shared/request-budget.ts'
 import { asBind, asDecided, type Decided, type FastOutcome } from '../../../src/shared/request-routing/channel.ts'
 
 /** Starting a task can take a while (dsh opens its session and connects the user's MCP servers). */
-const DECIDE_WAIT_MS = 60_000
+const DECIDE_WAIT_MS = LONG_TOOL_TIMEOUT_MS
 
 /**
  * A decision sent that got no answer: it did not come in time, the turn stopped, or the app went away. The host may
@@ -36,7 +38,7 @@ export function createHostChannel(port: NodeJS.Process, { onBind }: { onBind: (s
     const id = randomUUID()
     return new Promise((resolve) => {
       const done = (decided: Decided | Unanswered) => { clearTimeout(timer); signal?.removeEventListener('abort', abort); waiting.delete(id); resolve(decided) }
-      const abort = () => done({ accepted: 'unanswered', reason: '本轮已停止' })
+      const abort = () => done({ accepted: 'unanswered', reason: signal?.reason instanceof RequestTimeout ? '应用没有及时答复这次提交' : '本轮已停止' })
       const timer = setTimeout(() => done({ accepted: 'unanswered', reason: '应用没有及时答复这次提交' }), DECIDE_WAIT_MS)
       waiting.set(id, done)
       signal?.addEventListener('abort', abort, { once: true })

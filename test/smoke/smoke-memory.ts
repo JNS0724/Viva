@@ -184,7 +184,7 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   expect(page.sources.some((label: string) => label.startsWith('查看原文')), 'the note offers verified original links', page.sources)
   await capture(win, outDir, 'memory-profile')
   await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)
-  await until(win, `document.querySelector('.toast')?.textContent?.includes('已重建文件记忆的全文索引。')`, 'the file index rebuild receipt')
+  await until(win, `document.querySelector('.toast')?.textContent?.includes('已开始重建索引')`, 'the file index rebuild receipt')
   expect((await run(win, fileDetail(note.identity)))?.markdown.includes(REPORT_MEMORY), 'the current file survives index rebuilding')
   await closeProfile(win)
 

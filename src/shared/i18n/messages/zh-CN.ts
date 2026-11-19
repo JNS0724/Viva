@@ -1,5 +1,9 @@
 import type { MessageKey } from './en.ts'
 export const zhCN = {
+  "conversation.stop.pending": "正在停止…",
+  "conversation.stop.unconfirmed": "执行端未确认停止。",
+  "conversation.stop.restart.tasks": "恢复会话会重启运行时，可能中断后台任务。",
+  "conversation.stop.recover": "恢复会话",
   "diagnostics.scope": "日志只保存在本机，不包含对话正文、记忆正文、附件或凭据。",
   "diagnostics.status.summary": "桌面进程日志：{state} · 已丢弃事件：{count}",
   "diagnostics.status.failed": "暂时无法读取日志状态，仍可导出诊断包。",
@@ -137,7 +141,6 @@ export const zhCN = {
   "memory-files.search": "搜索记忆标题",
   "memory-files.empty": "Viva 保存的记忆会显示在这里。",
   "memory-files.more": "显示更多记忆",
-  "memory-files.index.rebuilt": "已重建文件记忆的全文索引。",
   "memory-files.editor.add": "添加记忆",
   "memory-files.editor.edit": "编辑记忆",
   "memory-files.editor.title": "标题（选填）",
@@ -160,7 +163,7 @@ export const zhCN = {
   "memory-files.forget.check": "检查删除结果",
   "profile-panel.memory.index.rebuild": "重建记忆索引",
   "profile-panel.memory.index.rebuilding": "正在启动索引重建…",
-  "memory-actions.index.rebuild.started": "索引已开始重建，语义索引会在后台分批补齐。",
+  "memory-actions.index.rebuild.started": "已开始重建索引，后台会补齐缺失的全文和语义索引。",
   "memory-actions.index.rebuild.full-text-only": "全文索引已开始重建，语义索引暂时无法重置。",
   "memory-actions.index.rebuild.semantic-only": "语义索引已开始后台重建，全文索引暂时无法重置。",
   "memory-actions.index.rebuild.failed": "无法启动记忆索引重建，请重试。",

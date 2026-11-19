@@ -105,6 +105,12 @@
       "zhHash": "b605673f39e0ae5ffcc1bc7a6f1e199c3fdda8642fd3c3bfbb1c2b5556d4eaf1"
     },
     {
+      "en": "docs/memory-owner-isolation.md",
+      "zh": "docs/memory-owner-isolation.zh-CN.md",
+      "enHash": "ae26aabcbcc8a13c9efcd5324b23c09a6d6b0d750c1fbdbeea5989633ed15604",
+      "zhHash": "92d853d9f1f1036b0b0d60f1d85a7f7f583d5964a40c9f64267e9a20beece220"
+    },
+    {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
       "enHash": "2b8b756678c4db72a731e54bb065f3a453571c8183814a15d6fe51e711e1a7d2",

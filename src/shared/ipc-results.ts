@@ -78,7 +78,8 @@ export interface IpcResults {
   /** A negative receipt proves native dispatch never began; void preserves normal turn completion. */
   'agent:prompt': void | { accepted: false, message: string, sourceIds: readonly string[] }
   'agent:steer': import('./agent-info.ts').SteerResult
-  'agent:cancel': void
+  'agent:cancel': boolean
+  'agent:recover': import('./agent-info.ts').AgentInfo | null
   'agent:new-session': import('./agent-info.ts').AgentInfo
   'agent:set-config': import('./agent-info.ts').AgentInfo
   'agent:permission': boolean

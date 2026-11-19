@@ -96,15 +96,17 @@ const quarantine = (result: FileScanResult, reason: string) => { result.quaranti
 /** Filesystem observations never acquire user authorship. Only an accepted identity's
  * original evidence can authorize an edit; new or ambiguous files remain isolated. */
 export function createMemoryFileMaintenance({ notes, documents, catalog, effects, commands, identity, now,
-  source, sourceToken, sourceWorkspace, readable, materialAllowed, calculate, mutate, changed = () => {}, intervalMs = 30_000 }: {
+  source, sourceToken, sourceWorkspace, readable, materialAllowed, calculate, mutate, changed = () => {}, observedUnchanged, intervalMs = 30_000 }: {
   notes: MemoryNotes, documents: MemoryDocuments, catalog: MemoryFileCatalog, effects: Effects,
   commands: Pick<MemoryStore, 'command' | 'recordCommand' | 'tx'>, identity: MemoryIdentity, now(): number,
   source(id: string): MemorySource | undefined, sourceToken(source: MemorySource): string, sourceWorkspace(source: MemorySource): string,
   readable(id: string): boolean, materialAllowed(text: string, refs: readonly DocumentSourceRef[]): boolean,
-  calculate: FileMaintenanceCalculate, mutate<T>(write: () => T): Promise<T>, changed(): void, intervalMs?: number,
+  calculate: FileMaintenanceCalculate, mutate<T>(write: () => T): Promise<T>, changed(): void,
+  observedUnchanged?(identity: MemoryFileIdentity): void, intervalMs?: number,
 }) {
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000) throw new Error('invalid-file-scan-interval')
   let closed = false
+  const lifetime = new AbortController()
   const policy: ExternalEditPolicy = { documents, source, sourceToken, sourceWorkspace, readable, hash: identity.hash }
   const commandKey = (operationId: string) => `${RESCAN}:${operationId}`
   function registered(): MemoryFileIdentity[] {
@@ -112,7 +114,7 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
       usageVersion: row.revision, kind: 'daily' as const, day: row.day, updatedAt: row.updatedAt, sources: row.sources, policyToken: '' }))
     const scopes = new Set([...daily.map(row => row.workspace), ...documents.workspaces()])
     return [...daily, ...[...scopes].flatMap(workspace => documents.registered(workspace).map(row => ({ ...row,
-      kind: 'digest' as const, updatedAt: 0, policyToken: '' })))].map(row => ({ ...row, policyToken: externalEditPolicyToken(row, policy) ?? '' }))
+      kind: 'digest' as const, updatedAt: 0, policyToken: '' })))]
   }
   function renamePolicy(row: MemoryFileIdentity): string {
     const state = row.kind === 'daily' ? notes.registered().find(item => item.key === row.id && item.workspace === row.workspace)?.state
@@ -124,12 +126,16 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
     // Moving unchanged bytes does not grant permission to use a disabled document.
     return identity.hash(JSON.stringify([row.workspace, row.id, row.path, row.revision, row.usageVersion, row.sources, state]))
   }
-  function scanPlan(operationId: string): ScanPlan {
+  async function scanPlan(operationId: string): Promise<ScanPlan> {
     const result = blank(operationId), work: ScanWork[] = [], rows = registered()
     for (const workspace of new Set(rows.map(row => row.workspace))) {
-      for (const change of catalog.scan(workspace, rows.filter(row => row.workspace === workspace))) {
+      for (const change of await catalog.scan(workspace, rows.filter(row => row.workspace === workspace))) {
+        if (closed) break
         result.scanned++
-        if (change.kind === 'unchanged') continue
+        if (change.kind === 'unchanged') {
+          observedUnchanged?.(change.identity)
+          continue
+        }
         if (change.kind === 'missing') { result.missing++; continue }
         if (change.kind === 'quarantined') { quarantine(result, change.reason); continue }
         if (change.kind === 'added') {
@@ -137,7 +143,7 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
           if (!rows.some(row => row.workspace === workspace && row.kind === 'daily' && change.file.path === `daily/${row.day}.md`)) quarantine(result, 'unregistered')
           continue
         }
-        const identitySnapshot = { ...change.identity, policyToken: change.kind === 'rename' ? renamePolicy(change.identity) : change.identity.policyToken }
+        const identitySnapshot = { ...change.identity, policyToken: change.kind === 'rename' ? renamePolicy(change.identity) : externalEditPolicyToken(change.identity, policy) ?? '' }
         if (!identitySnapshot.policyToken) { quarantine(result, 'restricted'); continue }
         const operationId = `file-change:${identity.hash(JSON.stringify([change.kind, identitySnapshot, change.file.path, change.file.revision]))}`
         work.push({ identity: identitySnapshot, path: change.file.path, observedRevision: change.file.revision, kind: change.kind, operationId })
@@ -145,14 +151,30 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
     }
     return { result, work, position: 0 }
   }
-  function observation(work: ScanWork) {
+  function registeredTarget(work: ScanWork) {
     const rows = registered().filter(row => row.workspace === work.identity.workspace)
     const current = rows.find(row => row.id === work.identity.id)
     if (!current || current.path !== work.identity.path || current.revision !== work.identity.revision
-      || current.usageVersion !== work.identity.usageVersion || (work.kind === 'rename' ? renamePolicy(current) : current.policyToken) !== work.identity.policyToken) return null
-    const change = catalog.scan(work.identity.workspace, rows).find(change => (change.kind === 'modified' || change.kind === 'rename')
-      && change.identity.id === work.identity.id && change.file.path === work.path && change.file.revision === work.observedRevision)
-    return change?.kind === work.kind ? change.file : null
+      || current.usageVersion !== work.identity.usageVersion || (work.kind === 'rename' ? renamePolicy(current) : externalEditPolicyToken(current, policy)) !== work.identity.policyToken) return null
+    if (work.kind === 'rename' && rows.some(row => row.id !== current.id && (row.path === work.path || row.revision === work.observedRevision))) return null
+    return current
+  }
+  async function observation(work: ScanWork) {
+    const current = registeredTarget(work)
+    if (closed || !current) return null
+    try {
+      if (work.kind === 'rename' && await catalog.read(current.workspace, current.path, lifetime.signal)) return null
+      const file = await catalog.read(current.workspace, work.path, lifetime.signal)
+      return !closed && file?.revision === work.observedRevision && registeredTarget(work) ? file : null
+    } catch { return null }
+  }
+  function observationCurrent(work: ScanWork) {
+    const current = registeredTarget(work)
+    if (!current) return false
+    try {
+      if (work.kind === 'rename' && catalog.readAtCommit(current.workspace, current.path)) return false
+      return catalog.readAtCommit(current.workspace, work.path)?.revision === work.observedRevision
+    } catch { return false }
   }
   function status(operationId: string): FileScanResult | null {
     const receipt = commands.command(commandKey(operationId))
@@ -180,10 +202,10 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
       changed()
       return settle(work.kind === 'modified' ? 'accepted' : 'renamed')
     }
-    const current = () => !closed && effects.holds(job) && Boolean(observation(work))
-    const observed = observation(work)
+    const current = () => !closed && effects.holds(job) && observationCurrent(work)
+    const observed = await observation(work)
     let result: 'accepted' | 'renamed' | 'quarantined' = 'quarantined'
-    if (observed && current()) {
+    if (observed && !closed && effects.holds(job)) {
       if (work.kind === 'rename') {
         result = await mutate(() => {
           if (!current()) return 'quarantined'
@@ -257,18 +279,25 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
   }
   effects.runs(RESCAN, async jobs => {
     const results = new Map<string, Outcome>()
+    const observations = new Map<string, Awaited<ReturnType<typeof process>>>()
+    let scan: ScanPlan | undefined
     for (const job of jobs) {
       if (closed) { results.set(job.key, 'wait'); continue }
       try {
         let plan = job.payload as Partial<ScanPlan>
         if (!plan.result || !plan.work) {
-          plan = scanPlan(job.key)
+          scan ??= await scanPlan(job.key)
+          const { result, work } = scan
+          plan = { result: { ...result, operationId: job.key, reasons: { ...result.reasons } }, work, position: 0 }
+          if (closed) { results.set(job.key, 'wait'); continue }
           if (!effects.amend(job, plan)) { results.set(job.key, 'done'); continue }
         }
         const active = plan as ScanPlan
         let retry = false
         for (; active.position < active.work.length; active.position++) {
-          const result = await process(job, active.work[active.position]!)
+          const work = active.work[active.position]!
+          const result = observations.get(work.operationId) ?? await process(job, work)
+          observations.set(work.operationId, result)
           if (result === 'retry') { retry = true; break }
           if (result === 'quarantined') quarantine(active.result, 'unverified-or-changed')
           else active.result[result]++
@@ -299,5 +328,6 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
     }
     return outcomes
   })
-  return { rescan, status, start() { if (!closed && !effects.get(SCAN, 'all')) effects.queue(SCAN, 'all', {}) }, close() { closed = true } }
+  return { rescan, status, start() { if (!closed && !effects.get(SCAN, 'all')) effects.queue(SCAN, 'all', {}) },
+    close() { closed = true; lifetime.abort(); catalog.close() } }
 }

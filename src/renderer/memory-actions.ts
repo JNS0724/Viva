@@ -32,20 +32,22 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   const files = createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage })
   // Status reads use a separate, lightweight owner call. Closing the list invalidates late replies.
   let watchingDream = false, dreamRequest = 0
+  let pendingDreamOperation: string | undefined
   let dreamTimer: ReturnType<typeof setTimeout> | undefined
-  async function refreshDream(start = false) {
+  async function refreshDream(operation?: string) {
     clearTimeout(dreamTimer)
     const request = ++dreamRequest
     try {
-      const status = await (start ? api.runDream() : api.getDreamStatus())
+      const status = await (operation ? api.runDream(operation) : api.getDreamStatus())
+      if (pendingDreamOperation === operation) pendingDreamOperation = undefined
       if (request === dreamRequest && watchingDream) dispatch({ type: 'memory_dream_status', status })
     } catch {
       if (request === dreamRequest && watchingDream) {
         dispatch({ type: 'memory_dream_status', status: null })
-        if (start) showToast(t('dream.start.failed'))
+        if (operation) showToast(t('dream.start.failed'))
       }
     } finally {
-      if (start) dispatch({ type: 'memory_dream_requesting', busy: false })
+      if (operation) dispatch({ type: 'memory_dream_requesting', busy: false })
       if (request === dreamRequest && watchingDream) {
         const state = getState().memory.dream?.state
         dreamTimer = setTimeout(() => { void refreshDream() }, state === 'queued' || state === 'running' ? 1000 : 10000)
@@ -127,7 +129,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       const { dream, requestingDream, dreamUnavailable } = getState().memory
       if (!watchingDream || requestingDream || dreamUnavailable || !dream || ['disabled', 'running', 'queued'].includes(dream.state)) return
       dispatch({ type: 'memory_dream_requesting', busy: true })
-      await refreshDream(true)
+      pendingDreamOperation ??= globalThis.crypto.randomUUID()
+      await refreshDream(pendingDreamOperation)
     },
     loadMemory,
     openProfile(view = 'profile') {
@@ -159,7 +162,7 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       dispatch({ type: 'memory_index_rebuild', busy: true })
       try {
         const result = await api.rebuildMemoryIndexes()
-        const message = t(result.files?.lexical ? 'memory-files.index.rebuilt' : 'memory-actions.index.rebuild.failed')
+        const message = t(result.files?.lexical ? 'memory-actions.index.rebuild.started' : 'memory-actions.index.rebuild.failed')
         showToast(message)
       } catch {
         showToast(t('memory-actions.index.rebuild.failed'))

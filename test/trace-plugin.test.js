@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { stepsFrom } from '../plugins/trace/lib/steps.ts'
 import { openTraceDb } from '../plugins/trace/lib/store.ts'
 import { readSessionTrace } from '../src/backend/dsh-log.ts'
-import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness.ts'
 
 /** The trace plugin: what it keeps from dsh's events, its store, and the app reading it instead of dsh's log. */
 const event = (type, seq, data) => ({ type, seq, time: 1000 + seq, data })

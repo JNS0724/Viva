@@ -559,7 +559,8 @@ const handlers = {
   submitTaskAnswer: (taskId: string) => taskActions.submitTaskAnswer(taskId),
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
-    if (state.initialization.status !== 'ready' || api && !composerDraft?.ready()) return
+    if (state.initialization.status !== 'ready' || state.phase === 'stopping'
+      || state.lastReceipt?.stopReason === 'cancel_unconfirmed' || api && !composerDraft?.ready()) return
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     const text = dom.input.value.trim()
@@ -626,9 +627,8 @@ const handlers = {
     dispatch({ type: 'toast_hide', key: toast.key })
     TOAST_ACTIONS[toast.action?.kind ?? '']?.(toast)
   },
-  cancel() {
-    api.cancel().catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
-  },
+  recoverConversation: conversationActions.recover,
+  cancel: conversationActions.cancel,
   respond(requestId: string, optionId: string | null) {
     if (state.initialization.status !== 'ready') return
     dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
@@ -840,6 +840,12 @@ function wireComposer() {
   dom.input.addEventListener('keydown', (event) => {
     // Some IMEs report the confirming key as 229 after isComposing has already cleared.
     if (event.isComposing || event.keyCode === 229) return
+    if (event.key === 'Escape' && isBusy(state)) {
+      event.preventDefault()
+      event.stopPropagation()
+      handlers.cancel()
+      return
+    }
     if (event.key !== 'Enter' || event.shiftKey) return
     event.preventDefault()
     handlers.send()

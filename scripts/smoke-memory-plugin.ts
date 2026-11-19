@@ -16,6 +16,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
@@ -42,6 +43,10 @@ const kept = '白茶依然放在正方形桌上'
 const original = `${originalFact}，${kept}。`
 const sessionsRoot = path.join(home, 'sessions')
 const storageRoot = path.join(home, 'storages')
+const ownerPids = path.join(temporary, 'owner-pids')
+const ownerProbe = new URL('../test/fixtures/memory-owner-process-probe.ts', import.meta.url).href
+const latestOwner = (stage: 'spawn' | 'ready' = 'spawn') => existsSync(ownerPids)
+  ? Number(readFileSync(ownerPids, 'utf8').split('\n').findLast(line => line.startsWith(stage + ' '))?.split(' ')[1] ?? 0) : 0
 const redact = (text: string) => text.replace(/https?:\/\/[^\s\x1b]+/gu, value => {
   try { const url = new URL(value); url.search = ''; url.hash = ''; return url.toString() } catch { return '[URL REDACTED]' }
 })
@@ -193,10 +198,12 @@ try {
   browser = await chromium.launch({ headless: true })
   const launch = async () => {
     let launchLog = ''
-    proc = spawn(process.execPath, [require.resolve('@deepseek-ai/dsh/lib/bin.js'), '--profile', 'web', '--patch', patch, '--no-open', '--port', '0'], {
+    const previousOwner = latestOwner()
+    proc = spawn(process.execPath, ['--import', ownerProbe, require.resolve('@deepseek-ai/dsh/lib/bin.js'), '--profile', 'web', '--patch', patch, '--no-open', '--port', '0'], {
       cwd: workspace,
       env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SystemRoot: process.env.SystemRoot,
-        DSH_HOME: home, DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, NO_PROXY: '127.0.0.1,localhost' },
+        DSH_HOME: home, DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url, NO_PROXY: '127.0.0.1,localhost',
+        VIVA_TEST_MEMORY_OWNER_PID_FILE: ownerPids },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     proc.on('error', error => errors.push(error.message))
@@ -210,6 +217,9 @@ try {
     await page.goto(url)
     const editor = page.locator('textarea,[contenteditable=true]').first()
     await editor.waitFor({ state: 'visible', timeout: 30_000 })
+    await until(() => Boolean(latestOwner() && latestOwner() !== previousOwner && latestOwner('ready') === latestOwner()),
+      'standalone memory owner startup')
+    assert.notEqual(latestOwner(), proc.pid, 'native dsh has a separate memory owner process')
     const proceed = page.getByRole('button', { name: 'Continue', exact: true })
     if (await proceed.isVisible()) await proceed.click()
     return page
@@ -246,7 +256,15 @@ try {
     assert.ok(!JSON.stringify(llm.requests).includes(explicit))
     await page.screenshot({ path: path.join(output, 'web-file-command-receipts.png'), fullPage: true })
   }
-  await send(page, '查一下 周报', '查到了：')
+  const originalOwner = latestOwner(), sameDsh = proc
+  assert.ok(originalOwner && sameDsh?.pid)
+  process.kill(originalOwner, 'SIGKILL')
+  await until(() => Boolean(latestOwner() && latestOwner() !== originalOwner && latestOwner('ready') === latestOwner()),
+    'standalone owner replacement')
+  assert.equal(sameDsh.exitCode, null)
+  assert.equal(sameDsh.signalCode, null)
+  await send(page, '查一下 周报', `查到了：${marker}`)
+  assert.equal(proc?.pid, sameDsh.pid, 'standalone dsh stays running after memory owner loss')
   for (let turn = 1; turn <= 3; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
   await until(() => collectMarkdown(dataRoot).some(file => file.includes(`${path.sep}daily${path.sep}`) && readFileSync(file, 'utf8').includes(marker)), 'completed conversation daily note')
   let recoveredGeneration = 0
@@ -257,7 +275,10 @@ try {
     const previousGeneration = noteContextGeneration(original.key)
     // Reading this card establishes a file dependency. Updating the same card must
     // retire the old native context before the next request, not strand the session.
-    for (let turn = 4; turn <= 7; turn++) await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
+    for (let offset = 0; offset < DAILY_MEMORY_DEFAULTS.noteInterval; offset++) {
+      const turn = 4 + offset
+      await send(page, `周报进展第 ${turn} 次：已经确认交付安排。`, `收到：「周报进展第 ${turn} 次`)
+    }
     await until(() => {
       const current = noteProgress()
       return current?.key === original.key && current.revision > original.revision
@@ -343,7 +364,8 @@ try {
   assert.deepEqual(errors, [])
   const report = { packedArtifact: true, isolatedInstallation: true, dshPeers: 'existing installed 0.2.2-rc.2 runtime', ordinaryNode: true,
     ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
-    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, fileDeletionPreservesChat: true, restart: true,
+    standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, fileDeletionPreservesChat: true,
+    standaloneOwnerRestart: true, restart: true,
     dream: { stages: dream.stages, tools: dream.tools, checkpoint },
     relatedRecallDoesNotAsk: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')

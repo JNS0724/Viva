@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.ts'
 import { pluginsView } from '../src/backend/plugins-ipc.ts'
 
 /**

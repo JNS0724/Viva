@@ -15,6 +15,7 @@ import type { NodeMemoryRuntimeOptions } from './runtime.ts'
 import type { DocumentSourceCut, DocumentSourceRef } from '../core/ports/documents.ts'
 import { combineMemoryProvenance, usesErasedMemory, type MemoryErasureEvidence } from '../contracts/provenance.ts'
 import { createMemoryDispatch } from '../core/memory-dispatch.ts'
+import type { FileEvidenceCurrent } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
 import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
@@ -30,7 +31,7 @@ import type { MemoryScope } from '../contracts/memory-contract.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { TextSpan } from '../contracts/text-spans.ts'
 import { createOwnerNativeOriginals } from './owner-native-originals.ts'
-import { nativeSurfaceInvalidation } from './native-original-maintenance.ts'
+import { nativeMaintenancePending, nativeSurfaceInvalidation } from './native-original-maintenance.ts'
 import { createNativeOutputAttempts, type NativeOutputAttempt } from './native-output-attempts.ts'
 import { createNativeToolReads, type NativeToolCall, type NativeToolReadScope } from './native-tool-reads.ts'
 import { createNativeErasureReceipts } from './native-erasure-receipts.ts'
@@ -72,7 +73,7 @@ function hostDiagnosticOperation(method: HostMemoryCommand['method']): Diagnosti
 export function openMemoryOwner(options: Options) {
   const lock = lockMemoryRoot(options.root)
   const store = (() => { try { return openMemoryStore(path.join(lock.root, 'memory.db')) } catch (error) { lock.close(); throw error } })()
-  try { removeAbandonedMemoryTemps(store.fileRoot); return assembleOwner(options, lock, store) }
+  try { return assembleOwner(options, lock, store) }
   catch (error) { try { store.close() } finally { lock.close() }; throw error }
 }
 
@@ -168,7 +169,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       ...(project ? { project: { kind: 'project' as const, id: project } } : {}) }
   }
   const hasPending = () => Boolean(db.prepare("SELECT 1 FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed') LIMIT 1").get())
-  const fence = createMemorySendFence({ epoch, diagnostics: options.diagnostics, admit(origin) {
+  function outputAdmission(origin: { session: string, contextGeneration?: number } | { jobId: string }) {
     if (state !== 'ready' || replayingWrites || hasPending()) return null
     if ('jobId' in origin) return runtime.computeAdmission(origin.jobId)
     const session = origin.session, project = sessionContext(session).project
@@ -178,7 +179,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return { current: () => state === 'ready' && !hasPending() && !contextRecovery.pending(session)
       && (origin.contextGeneration ?? 0) === contextRecovery.contextGeneration(session) && coordination.allowsSession(session, project),
       deadline: admission.deadline }
-  } })
+  }
+  const fence = createMemorySendFence({ epoch, diagnostics: options.diagnostics, admit: outputAdmission })
   function requireReady() { if (state !== 'ready' || hasPending()) throw new Error('Memory owner is recovering') }
   const contextRecovery = createOwnerContextRecovery({ db, store, hash, requireReady, mutate: work => fence.mutate(work),
     sourceAllowed: (session, source) => runtime.canRecoverOriginal(source, sessionContext(session)),
@@ -196,21 +198,36 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   })
   const nativeOriginals = createOwnerNativeOriginals(db)
   const nativeDerived = createNativeDerivedMessages(db)
-  function needsContextRecovery(session: string, visited = new Set<string>()): boolean {
+  function contextChildren(session: string) {
+    return db.prepare(`SELECT p.session FROM owner_session_parents p WHERE p.parent=?
+      AND NOT EXISTS(SELECT 1 FROM owner_context_retired_children r WHERE r.parent=p.parent AND r.child=p.session)`).all(session)
+      .map(row => String(row.session))
+  }
+  function needsContextRecovery(session: string, visited = new Set<string>(), acceptsFiles?: FileEvidenceCurrent): boolean {
     if (visited.has(session)) return true
     visited.add(session)
     if (contextRecovery.pending(session) || removedSession(session) || nativeSurface.has(session)) return true
     // New native sessions have no old model context to recover, even after a global memory epoch change.
     if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)) return false
-    if (runtime.staleSession(session) || dispatch.stale(session)) return true
-    for (const row of db.prepare(`SELECT p.session FROM owner_session_parents p WHERE p.parent=?
-      AND NOT EXISTS(SELECT 1 FROM owner_context_retired_children r WHERE r.parent=p.parent AND r.child=p.session)`).all(session)) {
-      const child = String(row.session)
-      if (needsContextRecovery(child, visited) || !dispatch.transferable(dispatch.snapshot(child))
+    if (runtime.staleSession(session) || dispatch.stale(session, acceptsFiles)) return true
+    for (const child of contextChildren(session)) {
+      if (needsContextRecovery(child, visited, acceptsFiles) || !dispatch.transferable(dispatch.snapshot(child), acceptsFiles)
         || !coordination.allowsEvidence(dispatch.snapshot(child), sessionContext(session).project)) return true
     }
     visited.delete(session)
     return false
+  }
+  function loadSessionFileProof(session: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const pending = [session], visited = new Set<string>(), refs: MemoryFileDependency[] = []
+    for (let index = 0; index < pending.length; index++) {
+      const current = pending[index]!
+      if (visited.has(current)) continue
+      visited.add(current)
+      refs.push(...dispatch.snapshot(current).files ?? [])
+      if (db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(current)) pending.push(...contextChildren(current))
+    }
+    return runtime.loadFileEvidenceCheck(refs, signal)
   }
   function requireContextGeneration(session: string, generation?: number) {
     if ((generation ?? 0) !== contextRecovery.contextGeneration(session)) throw new Error('Memory context generation changed')
@@ -654,9 +671,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     return changed
   }
-  async function recover() {
+  function reconcileActiveTurns(turns: readonly { sessionId: string, turn: number }[]) {
+    const live = new Map(turns.map(({ sessionId, turn }) => [sessionId, String(turn)]))
+    store.tx(() => {
+      const retire = db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?')
+      for (const row of db.prepare('SELECT session,turn FROM owner_active_turns').all()) {
+        if (live.get(String(row.session)) !== row.turn) retire.run(row.session, row.turn)
+      }
+    })
+    void runtime.wake()
+  }
+
+  async function recover(preserveActiveTurns: boolean) {
     if (closed) throw new Error('Memory owner is closed')
-    db.prepare('DELETE FROM owner_active_turns').run()
+    if (!preserveActiveTurns) db.prepare('DELETE FROM owner_active_turns').run()
     for (const item of db.prepare("SELECT * FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed')").all() as Operation[]) {
       const input = JSON.parse(item.payload!) as SourceChangeInput
       runtime.holdWithdrawal(input.conversation, input.onlySources ? input.ids : undefined)
@@ -929,20 +957,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return pending + new Set([...native, ...host]).size
   }
 
-  function handleHost(method: unknown, input: unknown): Promise<unknown> {
+  function handleHost(method: unknown, input: unknown, signal?: AbortSignal): Promise<unknown> {
     try {
     const command = parseHostMemoryCommand(method, input)
     const kind = hostDiagnosticOperation(command.method)
-    if (!kind) return executeHost(command)
+    if (!kind) return executeHost(command, signal)
     const raw = 'args' in command.input ? command.input.args[0] : command.input
     const requestId = raw !== null && typeof raw === 'object' && 'operationId' in raw && typeof raw.operationId === 'string'
       ? raw.operationId : command.method === 'setProfile' ? command.input.args[1] : undefined
-    return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command), {
+    return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command, signal), {
       identities: { methodId: command.method, ownerEpoch: epoch, ...(requestId ? { requestId } : {}) },
     })
     } catch (error) { return Promise.reject(error) }
   }
-  async function executeHost(command: HostMemoryCommand): Promise<unknown> {
+  async function executeHost(command: HostMemoryCommand, signal?: AbortSignal): Promise<unknown> {
     switch (command.method) {
       case 'prepareSourceChange': return prepare(command.input)
       case 'commitSourceChange': return commit(command.input)
@@ -1056,9 +1084,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
       case 'cleanupPending': return cleanupPending()
-      case 'profilePage': return {
-        profile: runtime.profile(), onboarding: runtime.onboarding(), cleanupPending: cleanupPending(),
-        revision: runtime.revision(), fileProfile: runtime.fileProfile(...command.input.args),
+      case 'profilePage': {
+        const fileProfile = await runtime.fileProfileAsync(command.input.args[0], signal)
+        return { profile: runtime.profile(), onboarding: runtime.onboarding(), cleanupPending: cleanupPending(),
+          revision: runtime.revision(), fileProfile }
       }
       case 'onboarding': return runtime.onboarding(...command.input.args)
       case 'sessionProject': return runtime.sessionProject(...command.input.args)
@@ -1069,9 +1098,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'bindProject': return coordination.bindProject(...command.input.args)
       case 'projectChanged': return coordination.projectChanged(...command.input.args)
       case 'allowsEvidence': return coordination.allowsEvidence(...command.input.args)
-      case 'stale': return coordination.stale(...command.input.args)
+      case 'stale': {
+        const [session, project] = command.input.args
+        const acceptsFiles = session ? await runtime.loadFileEvidenceCheck(dispatch.snapshot(session).files ?? [], signal) : undefined
+        return coordination.stale(session, project, acceptsFiles)
+      }
       case 'recoverContext': throw new Error('Context recovery requires the native host adapter')
-      case 'allowsSession': return coordination.allowsSession(...command.input.args)
+      case 'allowsSession': {
+        const [session, project] = command.input.args
+        const acceptsFiles = await runtime.loadFileEvidenceCheck(dispatch.snapshot(session).files ?? [], signal)
+        return coordination.allowsSession(session, project, acceptsFiles)
+      }
       case 'transferable': return coordination.transferable(...command.input.args)
       case 'transferStatus': return coordination.transferStatus(...command.input.args)
       case 'transfer': return coordination.transfer(...command.input.args)
@@ -1090,10 +1127,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
       case 'useHistory': return coordination.useHistory(...command.input.args)
       case 'dreamStatus': return runtime.dreamStatus()
-      case 'requestDream': return runtime.requestDream()
-      case 'listFiles': return runtime.listFiles(command.input.args[0])
-      case 'readFile': return runtime.readFile(...command.input.args)
-      case 'fileProfile': return runtime.fileProfile(...command.input.args)
+      case 'requestDream': return runtime.requestDream(...command.input.args)
+      case 'listFiles': return runtime.listFilesAsync(command.input.args[0], signal)
+      case 'readFile': return runtime.readFileAsync(command.input.args[0], command.input.args[1], signal)
+      case 'fileProfile': return runtime.fileProfileAsync(command.input.args[0], signal)
       case 'createFile':
       case 'editFile': return durableManualFileWrite(command)
       case 'setFileEnabled':
@@ -1105,11 +1142,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'provenance': return dispatch.snapshot(...command.input.args)
       case 'authorizedProvenance': {
         const { session, prior, sourceId } = command.input
-        if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session)
-          || fence.blocked() || contextRecovery.pending(session) || hasPending()) return null
+        const current = () => !closed && !signal?.aborted && !fence.blocked() && !contextRecovery.pending(session) && !hasPending()
+          && db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(session) !== undefined
+        if (!current()) return null
+        const acceptsFiles = await runtime.loadFileEvidenceCheck([...dispatch.snapshot(session).files ?? [], ...prior?.files ?? []], signal)
+        if (!current()) return null
         const { project, conversation } = sessionContext(session)
-        if (!coordination.allowsSession(session, project)) return null
-        if (prior) return !sourceId && coordination.transferStatus(prior, project, true) === 'ready' ? prior : null
+        if (!coordination.allowsSession(session, project, acceptsFiles)) return null
+        if (prior) return !sourceId && coordination.allowsEvidence(prior, project) && dispatch.transferable(prior, acceptsFiles) ? prior : null
         const evidence = dispatch.snapshot(session)
         if (!sourceId) return evidence
         // Fast routing may take the wire before native inbox intake. A host-bound
@@ -1124,22 +1164,27 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     throw new Error('Unsupported host operation')
   }
+  const tempCleanup = new AbortController()
+  void removeAbandonedMemoryTemps(store.fileRoot, tempCleanup.signal)
   return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
-    recover: () => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
+    recover: (preserveActiveTurns = false) => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(preserveActiveTurns), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
     receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => receiveSource(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.contextGeneration ?? 0 }, metrics: { count: 1, ok: input.admitted } }),
     completeTurn: (input: CompletedTurn) => observeDiagnosticAsync(options.diagnostics, 'memory.daily', () => completeTurn(input), {
       stage: 'checkpoint', identities: { sessionId: input.sessionId, generation: input.turn }, metrics: { eventCursor: input.eventSeq, count: input.sourceIds.length, ok: input.completed } }),
     registerDerived: (input: DerivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId }, metrics: { count: input.sourceIds.length } }),
-    sessionContext, handleHost,
+    sessionContext, handleHost, reconcileActiveTurns, nativeMaintenancePending: () => nativeMaintenancePending(db),
+    outputCurrent(origin: Parameters<typeof outputAdmission>[0]) {
+      return !fence.blocked() && Boolean(outputAdmission(origin)?.current())
+    },
     rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {
       identities: { sessionId: args[0], requestId: args[1].operationId } }),
     forgetStandaloneFile: (...args: Parameters<typeof forgetStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.forget', () => forgetStandaloneFile(...args), {
       identities: { sessionId: args[0], resourceId: args[1], requestId: args[2] } }),
     rememberNativeFile: (text: string) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberNativeFile(text), {
       identities: { sessionId: toolReadScope.getStore()?.call.session ?? null, requestId: toolReadScope.getStore()?.call.id ?? null } }),
-    contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery,
+    contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery, loadSessionFileProof,
     nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     finishNativeOutput: nativeOutputs.finish,
@@ -1198,6 +1243,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     async close() {
       if (closed) return
       closed = true; state = 'unavailable'; generalQuestions.clear()
+      tempCleanup.abort()
       await fence.close()
       try { runtime.close() } finally { lock.close() }
     },

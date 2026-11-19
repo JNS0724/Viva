@@ -26,13 +26,15 @@ test('the source smoke tests cover independent memory, schedules and real task r
   const source = (file: string) => fs.readFileSync(path.join(import.meta.dirname, 'smoke', file), 'utf8')
   const specs = ['critical.spec.ts', ...integrationSpecs()]
   const titles = specs.flatMap(file => [...source(file).matchAll(/\btest\('([^']+)'/g)].map(match => match[1]))
-  assert.equal(titles.length, 15)
+  assert.equal(titles.length, 17)
   for (const title of [
     'MCP import menu stays inside its sidebar and cancelling an edit restores the saved server',
     'desktop portrait releases without undoing the drag or opening the panel',
     'desktop island preserves draft and focus while showing requests and compact states',
     'setup and source management @setup',
     'walkthrough and persisted relaunch @walkthrough @relaunch',
+    'Stop reports a frozen runtime and preserves the editable draft through recovery @lifecycle',
+    'Viva replaces a crashed memory owner without restarting dsh @lifecycle',
     'memory, capabilities and background tasks @memory',
     'persisted tasks resume after a real restart @resume',
     'scheduled work runs when its real timer is due @schedules',

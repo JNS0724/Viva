@@ -31,6 +31,8 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   const plugin = path.join(compiledRoot, 'plugins/memory')
   const memory = path.join(compiledRoot, 'src/memory')
   const diagnostics = path.join(compiledRoot, 'src/diagnostics')
+  const shared = path.join(compiledRoot, 'src/shared')
+  const sharedBudgetFiles = ['request-budget.js', 'node/tool-call-budget.js'].map(file => path.join(shared, file))
   if (!existsSync(path.join(plugin, 'index.js')) || !existsSync(path.join(memory, 'node/index.js'))) throw new Error('Compile memory and its plugin before assembly')
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest
   const declared = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})])
@@ -38,9 +40,10 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     if (within(plugin, file)) return path.join(destination, path.relative(plugin, file))
     if (within(memory, file)) return path.join(destination, 'memory', path.relative(memory, file))
     if (within(diagnostics, file)) return path.join(destination, 'diagnostics', path.relative(diagnostics, file))
+    if (sharedBudgetFiles.includes(file)) return path.join(destination, 'shared', path.relative(shared, file))
     throw new Error(`Memory plugin depends on a repository-only module: ${path.relative(compiledRoot, file)}`)
   }
-  const sources = [...files(plugin), ...files(memory), ...(existsSync(diagnostics) ? files(diagnostics) : [])].filter(file => file.endsWith('.js'))
+  const sources = [...files(plugin), ...files(memory), ...sharedBudgetFiles.filter(file => existsSync(file)), ...(existsSync(diagnostics) ? files(diagnostics) : [])].filter(file => file.endsWith('.js'))
   const sourceSet = new Set(sources.map(file => path.resolve(file)))
   const output = sources.map(file => {
     const target = targetOf(file)
@@ -85,8 +88,8 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   if (existsSync(license)) cpSync(license, path.join(destination, 'LICENSE'))
   writeFileSync(path.join(destination, 'README.md'), [
     '# Viva memory for DSH', '',
-    'Install this package into a DSH 0.2.2-rc.2 server. It owns its memory data in ordinary Node; Viva and Electron are not required.',
-    'Keep the memory, native sessions and projection storage in private absolute directories. Every process that uses these sessions must use the same persistence entry. The entry takes the session root lease, finishes pending cold erasure, then publishes DSH persistence.',
+    'Install this package into a DSH 0.2.2-rc.2 server. A supervised owner process stores memory in ordinary Node. The dsh plugin handles native sessions and model calls.',
+    'Keep the memory, native sessions and projection storage in private absolute directories. Every process that uses these sessions must use the same persistence entry. The entry takes the session root lease, finishes pending cold erasure, and starts the owner before publishing DSH persistence.',
     'The host must disable session-log-deepseek (config.enabled: false). Unsupported model transports fail closed.',
     '', 'Example DSH profile patch (substitute the existing absolute session and storage roots for your private profile):', '',
     '```yaml', '- id: session-log-deepseek', '  config:', '    enabled: false',

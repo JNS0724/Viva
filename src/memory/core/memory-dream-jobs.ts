@@ -44,6 +44,9 @@ type ToolSnapshot = MemoryDocumentView
 const deferredReply = z.strictObject({ status: z.enum(['skip', 'deferred']), reason: z.string().trim().min(1).optional() })
 const tagReply = z.strictObject({ memory_tags: z.array(z.string().trim().min(1)) })
 const DAILY = 'daily'
+const MANUAL_JOB = 'dream.manualJob'
+const requestKey = (id: string) => `dream.request:${id}`
+const receiptKey = (id: string) => `dream.receipt:${id}`
 const DAY_MS = 86_400_000
 const unique = <T>(values: readonly T[]) => [...new Set(values)]
 const parse = (text: string) => JSON.parse(text) as unknown
@@ -86,7 +89,7 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 /** Four-stage document jobs. Storage and provider message/reasoning state stay behind their respective ports. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
   calculate, transaction, mutate, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
-  store: Pick<MemoryStore, 'meta' | 'setMeta'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
+  store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
@@ -178,6 +181,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       else {
         store.setMeta('dream.lastCheckedAt', String(at))
         store.setMeta('dream.lastCheckResult', plan.files.some(file => file.oversized) ? 'size-limit' : plan.files.length ? 'processed' : 'empty')
+        const jobId = store.meta(MANUAL_JOB)
+        if (jobId) {
+          const receipt: MemoryDreamStatus = { state: 'idle', ...dreamHistory(store), jobId, completedAt: at }
+          store.setMeta(receiptKey(jobId), JSON.stringify(receipt))
+          store.setMeta(MANUAL_JOB, '')
+        }
         effects.finishGeneration(job)
         schedule()
       }
@@ -563,13 +572,22 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   return {
     status,
     isRunning: () => active,
-    request() {
-      const state = status().state
-      if (state !== 'running' && state !== 'queued') {
-        transaction(() => effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null))
+    request(operationId = identity.newId()) {
+      const key = requestKey(operationId)
+      const prior = store.command(key)
+      if (prior) {
+        const saved = store.meta(receiptKey(prior.payload))
+        return saved ? JSON.parse(saved) as MemoryDreamStatus : { ...status(), jobId: prior.payload, completedAt: null }
       }
+      const state = status().state
+      const jobId = store.meta(MANUAL_JOB) || operationId
+      transaction(() => {
+        if (state !== 'running' && state !== 'queued') effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null)
+        store.setMeta(MANUAL_JOB, jobId)
+        store.recordCommand(key, 'dream.request', jobId, null)
+      })
       if (state !== 'running') void effects.wake()
-      return status()
+      return { ...status(), jobId, completedAt: null }
     },
     run() {
       transaction(() => effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null))

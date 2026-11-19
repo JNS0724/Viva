@@ -177,7 +177,7 @@ const snapshot = { taskId: 't', runId: 'r', title: 'job', status: 'running', cur
 const position = { taskId: 't', runId: 'r', taskSeq: 1 }, permission = { requestId: 'p', toolCall: { toolCallId: 'tool' }, options: [] }, question = { questionId: 'q', questions: [{ id: 'city', question: 'City?', options: [] }] }, secret = { requestId: 'secret', server: 'service', names: ['TOKEN'] }
 const examples = {
   ready: { type: 'ready', info }, workdir: { type: 'workdir', info }, config: { type: 'config', info }, update: { type: 'update', context, update: chunk('answer') },
-  turn_started: { type: 'turn_started', context }, turn_end: { type: 'turn_end', context }, permission: { type: 'permission', context, ...permission },
+  turn_started: { type: 'turn_started', context }, turn_stopping: { type: 'turn_stopping', context }, turn_end: { type: 'turn_end', context }, permission: { type: 'permission', context, ...permission },
   question: { type: 'question', context, ...question }, question_closed: { type: 'question_closed', context, questionId: 'q' },
   question_answered: { type: 'question_answered', context, questionId: 'q', answers: [{ id: 'city', selected: [], custom: 'Shanghai' }] },
   secret_request: { type: 'secret_request', context, ...secret }, secret_closed: { type: 'secret_closed', context, requestId: 'secret' }, waits: { type: 'waits', context, permissions: [permission], questions: [question], secrets: [secret] },

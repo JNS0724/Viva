@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import { defaultModel } from '../src/backend/model-providers.ts'
-import { DSH_TIMEOUT_MS, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, startHarness as setup } from './fixtures/dsh-harness.ts'
 
 /** Pictures pasted into a question, inside the real dsh: the model gets them, and dsh keeps its copy in Viva's folder. */
 

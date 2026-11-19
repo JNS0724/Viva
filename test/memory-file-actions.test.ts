@@ -213,6 +213,31 @@ test('an old pagination cursor reloads the first page instead of appending obsol
   assert.deepEqual(f.file().items.map(item => item.identity.id), ['new'])
 })
 
+test('a title search follows empty pages and stops when the query changes', async () => {
+  const requests: Array<Parameters<AgentApi['listMemoryFiles']>[0]> = []
+  const cursor = { snapshot: 'snapshot', offset: 100 }
+  const abandoned = deferred<MemoryFileListResult>()
+  const f = harness({ async listMemoryFiles(request) {
+    requests.push(request)
+    if (request.query === 'first' && request.cursor) return pageOf([detailOf('later-result')])
+    if (request.query === 'abandoned' && request.cursor) return abandoned.promise
+    return pageOf([], cursor)
+  } })
+  f.dispatch({ type: 'memory_files_query', query: 'first' })
+  await f.actions.refreshFiles()
+  assert.deepEqual(requests.map(request => request.cursor), [undefined, cursor])
+  assert.deepEqual(f.file().items.map(item => item.identity.id), ['later-result'])
+
+  f.dispatch({ type: 'memory_files_query', query: 'abandoned' })
+  const pending = f.actions.refreshFiles()
+  await Promise.resolve()
+  f.dispatch({ type: 'memory_files_query', query: 'new' })
+  abandoned.resolve(pageOf([], { ...cursor, offset: 200 }))
+  await pending
+  assert.equal(requests.length, 4)
+  assert.equal(f.file().items.length, 0)
+})
+
 test('detail version and panel generation both reject late data after a selection change or close', async () => {
   const first = detailOf('first'), second = detailOf('second')
   const reads = [deferred<MemoryFileDetailView>(), deferred<MemoryFileDetailView>(), deferred<MemoryFileDetailView>()]

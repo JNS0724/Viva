@@ -10,18 +10,18 @@ import { objectOf } from '../../../../src/memory/contracts/unknown-value.ts'
 import type { MemoryErasureEvidence } from '../../../../src/memory/contracts/provenance.ts'
 
 type CallEvent = SessionEvent<'tool/call' | 'tool/ptc-dispatch-start'>
-type PendingCall = { event: CallEvent, token?: ToolExecutionToken, signal?: AbortSignal, active?: NativeToolCall, parent?: PendingCall, input?: readonly MemoryErasureEvidence[] }
+type PendingCall = { event: CallEvent, token?: ToolExecutionToken, signal?: AbortSignal, active?: NativeToolCall, parent?: PendingCall, input?: Promise<readonly MemoryErasureEvidence[]> | readonly MemoryErasureEvidence[] }
 type Assembly = { signal: AbortSignal, tools: ResolvedToolSet }
 type Step = { turn: number, step: number, assembly: Assembly, calls: Map<string, PendingCall>, outputAttempt?: string }
 export type NativeToolLease = NativeToolReadScope
 
 /** The native tool call event is published before the executor can start the body. */
 export function trackNativeToolReads(finish: (call: NativeToolCall, result: NativeToolResult) => void, inheritance?: {
-  evidence(calls: readonly NativeToolCall[]): readonly MemoryErasureEvidence[],
-  archive(scope: NativeToolLease, evidence: readonly MemoryErasureEvidence[]): void,
+  evidence(calls: readonly NativeToolCall[]): Promise<readonly MemoryErasureEvidence[]> | readonly MemoryErasureEvidence[],
+  archive(scope: NativeToolLease, evidence: readonly MemoryErasureEvidence[]): void | Promise<void>,
 }) {
-  const assembling = new WeakMap<Session, Assembly>()
-  const sessions = new WeakMap<Session, Step>()
+  let assembling = new WeakMap<Session, Assembly>()
+  let sessions = new WeakMap<Session, Step>()
   function pending(session: Session, exec: ToolExecution) {
     const current = sessions.get(session)
     if (!current || exec.toolSet !== current.assembly.tools) return
@@ -31,7 +31,34 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
     return exec.parent && call.parent?.token === exec.parent && call.event.data.rootCallId === exec.rootCallId
       && isDeepStrictEqual(call.event.data.arguments, exec.arguments) ? call : undefined
   }
+  function acquire(session: Session, exec: ToolExecution, generation: number, evidence?: readonly MemoryErasureEvidence[]): NativeToolLease | undefined {
+    const current = pending(session, exec)
+    if (!current || current.token !== exec.token || current.active || exec.signal.aborted || sessions.get(session)?.assembly.signal.aborted) return
+    const callId = String(exec.callId)
+    const { turn, step, outputAttempt } = sessions.get(session)!
+    const call = { id: randomUUID(), session: String(session.id), callId, generation, turn, step,
+      seq: current.event.seq, digest: nativeEventDigest(current.event),
+      ...(outputAttempt ? { outputAttempt } : {}),
+      ...(evidence?.length ? { inputDerived: true as const } : {}),
+      ...(current.event.type === 'tool/ptc-dispatch-start' ? { ptc: {
+        rootCallId: String(current.event.data.rootCallId), parentCallId: String(current.event.data.parentCallId) } } : {}) }
+    current.active = call
+    current.signal = exec.signal
+    const chain: PendingCall[] = []
+    for (let node: PendingCall | undefined = current; node; node = node.parent) chain.push(node)
+    const calls = chain.flatMap(node => node.active?.generation === generation ? [node.active] : [])
+    if (calls.length !== chain.length) return
+    return { call, calls, current: () => sessions.get(session)?.calls.get(callId) === current
+      && !sessions.get(session)?.assembly.signal.aborted
+      && chain.every(node => Boolean(node.token) && !node.signal?.aborted && node.active?.generation === generation),
+      readCut() {
+        const event = session.snapshotEvents().at(-1)
+        if (!event) throw new Error('Native read has no current event cut')
+        return { seq: event.seq, digest: nativeEventDigest(event) }
+      } }
+  }
   return {
+    reset() { assembling = new WeakMap(); sessions = new WeakMap() },
     assembly(session: Session, signal: AbortSignal, tools: ResolvedToolSet) {
       assembling.set(session, { signal, tools })
     },
@@ -61,7 +88,9 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
         if (!parent?.token || !root?.token || parent.active?.generation !== root.active?.generation || step.calls.has(id)) return
         const ancestors: NativeToolCall[] = []
         for (let node: PendingCall | undefined = parent; node; node = node.parent) if (node.active) ancestors.push(node.active)
-        step.calls.set(id, { event, parent, input: inheritance?.evidence(ancestors) })
+        const input = inheritance?.evidence(ancestors)
+        if (input instanceof Promise) void input.catch(() => {})
+        step.calls.set(id, { event, parent, input })
         return
       }
       if (event.type !== 'tool/ptc-dispatch' && (event.type !== 'tool/result' || event.surfaceOp !== 'append')) return
@@ -85,31 +114,21 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       if (call && (call.parent || exec.signal === sessions.get(session)?.assembly.signal) && !call.token) call.token = exec.token
     },
     acquire(session: Session, exec: ToolExecution, generation: number): NativeToolLease | undefined {
-      const current = pending(session, exec)
-      if (!current || current.token !== exec.token || current.active || exec.signal.aborted || sessions.get(session)?.assembly.signal.aborted) return
-      const callId = String(exec.callId)
-      const { turn, step, outputAttempt } = sessions.get(session)!
-      const call = { id: randomUUID(), session: String(session.id), callId, generation, turn, step,
-        seq: current.event.seq, digest: nativeEventDigest(current.event),
-        ...(outputAttempt ? { outputAttempt } : {}),
-        ...(current.input?.length ? { inputDerived: true as const } : {}),
-        ...(current.event.type === 'tool/ptc-dispatch-start' ? { ptc: {
-          rootCallId: String(current.event.data.rootCallId), parentCallId: String(current.event.data.parentCallId) } } : {}) }
-      current.active = call
-      current.signal = exec.signal
-      const chain: PendingCall[] = []
-      for (let node: PendingCall | undefined = current; node; node = node.parent) chain.push(node)
-      const calls = chain.flatMap(node => node.active?.generation === generation ? [node.active] : [])
-      if (calls.length !== chain.length) return
-      const lease = { call, calls, current: () => sessions.get(session)?.calls.get(callId) === current
-        && !sessions.get(session)?.assembly.signal.aborted
-        && chain.every(node => Boolean(node.token) && !node.signal?.aborted && node.active?.generation === generation),
-        readCut() {
-          const event = session.snapshotEvents().at(-1)
-          if (!event) throw new Error('Native read has no current event cut')
-          return { seq: event.seq, digest: nativeEventDigest(event) }
-        } }
-      if (current.input?.length) inheritance?.archive(lease, current.input)
+      const evidence = pending(session, exec)?.input
+      if (evidence instanceof Promise) throw new Error('Native tool evidence requires an asynchronous execution')
+      const lease = acquire(session, exec, generation, evidence)
+      if (lease && evidence?.length) inheritance?.archive(lease, evidence)
+      return lease
+    },
+    async acquireAsync(session: Session, exec: ToolExecution, generation: number): Promise<NativeToolLease | undefined> {
+      const started = pending(session, exec)
+      if (!started) return
+      const evidence = await started.input
+      if (pending(session, exec) !== started) return
+      const lease = acquire(session, exec, generation, evidence)
+      if (!lease) return
+      if (evidence?.length) await inheritance?.archive(lease, evidence)
+      if (!lease.current()) throw new Error('Native tool input changed before execution')
       return lease
     },
     spill(session: Session, callId: string, name: string): NativeToolCall | undefined {

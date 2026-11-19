@@ -14,7 +14,7 @@ function harness(overrides: Partial<Parameters<typeof createAcpTaskSessions>[0]>
     connection: () => ({ closeSession: async request => { closed.push(request.sessionId); return {} }, setSessionConfigOption: async request => { configured.push(request); if ('type' in request && request.type === 'boolean') returnedFlag = request.value; return { configOptions: [select('chosen'), toggle(returnedFlag)] } } }),
     acquire: { fresh: async () => ({ sessionId: 'task', configOptions: [select('default'), toggle(false)] }), resume: async () => ({ configOptions: [select('default')] }) },
     foreground: () => ({ sessionId: 'main', cwd: '/origin', config: source }), canResume: () => true, prepareFresh: () => { prepares++ },
-    operations: { run: async () => {}, cancelInTime: async () => {}, count: () => 0 },
+    operations: { run: async () => {}, cancelInTime: async () => true, count: () => 0 },
     permissions: { pendingFor: () => [], waitingSessions: () => new Set() }, questions: { declineTask: () => {}, pendingOf: () => [] },
     steer: async () => ({ ok: true }), emit: event => { events.push(event) }, describeError: String, goneMessage: () => 'gone', stoppedMessage: () => 'stopped',
     ...overrides,
@@ -105,7 +105,7 @@ test('a reattachment waits for the previous native close and cannot have its per
 test('task prompts deliver the exact owner-bound wire text and closing during alias binding revokes delivery', async () => {
   const gate = deferred<string>(), sent: unknown[] = []
   const h = harness({ preparePrompt: () => gate.promise,
-    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => {}, count: () => 0 } })
+    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => true, count: () => 0 } })
   await h.sessions.startTask()
   const prompt = h.sessions.promptTask('task', 'generated brief')
   gate.resolve('delivery-token\ngenerated brief')
@@ -114,7 +114,7 @@ test('task prompts deliver the exact owner-bound wire text and closing during al
 
   const closingGate = deferred<string>()
   const other = harness({ preparePrompt: () => closingGate.promise,
-    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => {}, count: () => 0 } })
+    operations: { run: async request => { sent.push(request.prompt) }, cancelInTime: async () => true, count: () => 0 } })
   await other.sessions.startTask()
   const revoked = other.sessions.promptTask('task', 'same brief')
   await other.sessions.closeTask('task')

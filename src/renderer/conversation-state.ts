@@ -111,21 +111,21 @@ function updateConversation(view: ConversationView, update: AcpUpdate, at: numbe
 function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
   const last = messages[messages.length - 1]
   const problem = turnProblem(receipt.stopReason)
-  if (!problem && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
+  if (!problem && receipt.stopReason !== 'cancelled' && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
   const text = problem ?? (receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn"))
   return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
 }
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
 export const CONVERSATION_ACTIONS = {
-  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending, feedItemId }) => {
+  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending, feedItemId, turnId }) => {
     const closed = closeStreams(view)
     const message = {
       id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(pending ? { pending } : {}),
       ...(feedItemId ? { feedItemId } : {}),
       open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
     }
-    return { ...closed, phase: 'working', error: null, messages: [...closed.messages, message], turn: { startedAt: at, tools: 0, thoughts: 0 } }
+    return { ...closed, phase: 'working', error: null, messages: [...closed.messages, message], turn: { startedAt: at, tools: 0, thoughts: 0, ...(turnId && { id: turnId }) } }
   },
 
   prompt_admitted: (view, { sourceId, accepted }) => ({
@@ -140,11 +140,11 @@ export const CONVERSATION_ACTIONS = {
    * A turn the app started, not the user: a background task ended and its result comes back (backend/task-reports.ts).
    * The conversation works as for any turn, with no words of the user's.
    */
-  agent_turn_started: (view, { by = null, at }) => ({
+  agent_turn_started: (view, { by = null, at, turnId }) => turnId && view.turn?.id === turnId ? view : ({
     ...closeStreams(view),
     phase: 'working',
     error: null,
-    turn: { startedAt: at, tools: 0, thoughts: 0, messageCount: view.messages.length, ...(by ? { by } : {}) },
+    turn: { startedAt: at, tools: 0, thoughts: 0, messageCount: view.messages.length, ...(by ? { by } : {}), ...(turnId && { id: turnId }) },
   }),
 
   /**
@@ -215,6 +215,11 @@ export const CONVERSATION_ACTIONS = {
   },
 
   permission_closed: (view, { requestId }) => view.permission?.requestId !== requestId ? view : ({ ...view, permission: null, phase: view.phase === 'waiting' ? 'working' : view.phase }),
+
+  turn_stopping: (view) => ({ ...view, phase: 'stopping' }),
+  turn_stop_rejected: (view, { turnId, phase }) => view.phase === 'stopping' && view.turn?.id === turnId
+    ? { ...view, phase } : view,
+  turn_recovered: (view) => view.lastReceipt?.stopReason !== 'cancel_unconfirmed' ? view : ({ ...view, lastReceipt: null }),
 
   turn_end: (view, { stopReason, finalReply, at }) => {
     const closed = closeStreams(view)

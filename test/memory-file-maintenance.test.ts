@@ -30,7 +30,7 @@ function harness(t: test.TestContext) {
   const notes=openMemoryNotes(store,readable,undefined,undefined,undefined,undefined,input=>currentExternalEdit(input,policy()))
   documents.recover()
   let effects=createEffects({db:store.db,now:()=>now,later:()=>null,cancel:()=>{}})
-  let calls=0, changed=0
+  let calls=0, changed=0, scans=0
   let onChanged=()=>{}
   let model:FileMaintenanceCalculate=async request=>{
     const data=request.input as {canonicalSources:Array<{sourceId:string,version:number,text:string}>}
@@ -39,18 +39,25 @@ function harness(t: test.TestContext) {
       checks:{attribution:true,polarity:true,time:true,conditions:true,meaning:true,sources:true,action:true},
       evidence:[{sourceId:input.sourceId,sourceVersion:input.version,start:0,end:input.text.length,text:input.text,claim:'Peppermint preference.'}],changeEvidence:[],corrections:[]})
   }
-  const start=()=>createMemoryFileMaintenance({notes,catalog:openMemoryFileCatalog({root:store.fileRoot}),effects,commands:store,
+  const start = () => {
+    const catalog = openMemoryFileCatalog({ root: store.fileRoot })
+    return createMemoryFileMaintenance({notes, catalog: { ...catalog, scan(workspace, accepted) {
+      scans++
+      return catalog.scan(workspace, accepted)
+    } }, effects, commands:store,
     identity:{hash:memoryHash,newId:randomUUID},now:()=>now,...policy(),materialAllowed:text=>!text.includes('PRIVATE_SECRET'),
     calculate:async request=>{calls++;assert(request.current());return model(request)},mutate:async write=>write(),changed:()=>{changed++;onChanged()}})
+  }
   let maintenance=start()
   defer(()=>{maintenance.close();effects.close();store.close()})
   const put=(path:string,text:string)=>{const absolute=join(store.fileRoot,workspace,path);mkdirSync(dirname(absolute),{recursive:true});writeFileSync(absolute,text)}
   const daily=()=>{const key=notes.add('session','2026-11-14',[original],'')!;notes.commit(key,notes.pending(key),{status:'write',title:'Tea',markdown:original.text!},1,now,[ref],undefined);return notes.read(key)!}
   const digest=()=>{documents.commit({operationId:randomUUID(),workspace,path:'digest/personal/tea.md',expectedRevision:null,markdown:'Peppermint tea.',sources:[ref],reads:[],action:'CREATE'});return documents.read(workspace,'digest/personal/tea.md')!}
   return {store,notes,documents,workspace,original,ref,daily,digest,put,policy,
-    get calls(){return calls},get changed(){return changed},get maintenance(){return maintenance},
+    get calls(){return calls},get scans(){return scans},get changed(){return changed},get maintenance(){return maintenance},
     setModel(next:FileMaintenanceCalculate){model=next},afterChanged(next:()=>void){onChanged=next},
     async run(id:string){maintenance.rescan(id);await effects.wake();return maintenance.status(id)!},
+    async wake() { await effects.wake() },
     async retry(){now+=60_000;await effects.wake()},
     restart(){maintenance.close();effects.close();effects=createEffects({db:store.db,now:()=>now,later:()=>null,cancel:()=>{}});maintenance=start()},
     move(from:string,to:string){mkdirSync(dirname(join(store.fileRoot,workspace,to)),{recursive:true});renameSync(join(store.fileRoot,workspace,from),join(store.fileRoot,workspace,to))},
@@ -225,4 +232,21 @@ test('unreadable replacement policy isolates the affected chain instead of throw
   assert.equal(externalEditPolicyToken({ workspace:h.workspace, id:note.key, path:note.path, sources:[h.ref] }, denied), null)
   const independent = h.digest()
   assert(externalEditPolicyToken({ workspace:h.workspace, id:independent.id, path:independent.path, sources:[h.ref] }, denied))
+})
+
+test('queued rescans share one directory observation and still get individual durable receipts', async t => {
+  const h = harness(t)
+  const doc = h.digest()
+  h.put(doc.path, 'Clarified peppermint preference.')
+  h.maintenance.rescan('request-one')
+  h.maintenance.rescan('request-two')
+  await h.wake()
+
+  assert.equal(h.scans, 1)
+  assert.equal(h.calls, 1)
+  const first = h.maintenance.status('request-one')
+  const second = h.maintenance.status('request-two')
+  assert.equal(first?.accepted, 1)
+  assert.equal(second?.status, 'completed')
+  assert.deepEqual(second, { ...first, operationId: 'request-two' })
 })

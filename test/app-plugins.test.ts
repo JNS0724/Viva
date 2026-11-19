@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { APP_PLUGINS, CONTRACTS, installedDshVersion, PERSONA, resolvePlugins, ROUTING_PERSONA } from '../src/backend/app-plugins.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { MEMORY_CONTRACT } from '../src/memory/contracts/memory-contract.ts'
-import { ROOT } from './fixtures/dsh-harness.js'
+import { ROOT } from './fixtures/dsh-harness.ts'
 import appPackage from '../package.json' with { type: 'json' }
 
 /** The app's plugin list: what it puts in the profile, and what it leaves out and why. */

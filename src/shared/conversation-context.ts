@@ -1,5 +1,6 @@
 /** Identity of a selected history segment and the runtime session that serves it. */
 export interface ConversationContext { conversationId: string | null, sessionId: string | null }
+export interface ConversationTurnTarget extends ConversationContext { sessionId: string, turnId: string }
 
 /** The context gate interprets only routing metadata; the event decoder owns payload validation. */
 export interface ContextEvent {
@@ -10,7 +11,7 @@ export interface ContextEvent {
 }
 
 const FOREGROUND = new Set([
-  'config', 'update', 'turn_started', 'turn_end', 'permission', 'question', 'question_answered', 'question_closed',
+  'config', 'update', 'turn_started', 'turn_stopping', 'turn_end', 'permission', 'question', 'question_answered', 'question_closed',
   'waits', 'secret_request', 'secret_closed', 'memory_context', 'schedule_propose', 'report_delivered',
 ])
 export function contextOf(event: ContextEvent): ConversationContext | null {

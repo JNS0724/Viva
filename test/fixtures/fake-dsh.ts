@@ -154,7 +154,7 @@ function createAgent(conn: AgentSideConnection): Agent {
     }
     const stream = async (kind: 'agent_message_chunk' | 'agent_thought_chunk', text: string, size = PIECE_CHARS, ratio = PIECE_RATIO) => {
       await sleep(STEP_MS, signal)
-      const attempt = shown.start(sessionId, kind === 'agent_message_chunk' ? 'text' : 'reasoning')
+      const attempt = await shown.start(sessionId, kind === 'agent_message_chunk' ? 'text' : 'reasoning')
       const live = attempt.signal ? AbortSignal.any([signal, attempt.signal]) : signal
       try {
         for (const piece of pieces(text, size)) {
@@ -163,8 +163,8 @@ function createAgent(conn: AgentSideConnection): Agent {
           await send({ sessionUpdate: kind, content: { type: 'text', text: piece } })
           await sleep(STEP_MS * ratio, live)
         }
-        attempt.settle(text)
-      } finally { attempt.abandon() }
+        await attempt.settle(text)
+      } finally { await attempt.abandon() }
     }
     const tool = (toolCallId: string, title: string, kind: ToolKind, extra: Partial<ToolCall> = {}): SessionUpdate => ({ sessionUpdate: 'tool_call', toolCallId, title, kind, status: 'in_progress', ...extra })
     const status = (toolCallId: string, value: ToolCallStatus): SessionUpdate => ({ sessionUpdate: 'tool_call_update', toolCallId, status: value })
@@ -328,10 +328,10 @@ function answerStream() {
   }
   return {
     tool(sessionId: string) { const binding = bindings.get(sessionId); if (binding) binding.finalReply = false },
-    start(sessionId: string, blockType: 'text' | 'reasoning') {
+    async start(sessionId: string, blockType: 'text' | 'reasoning') {
       const binding = bindings.get(sessionId)
       if (!binding) return { signal: undefined, delta: (_text: string) => {}, settle: (_text: string) => {}, abandon: () => {} }
-      const proof = memoryOwner?.startOutput(sessionId)
+      const proof = await memoryOwner?.startOutput(sessionId)
       const key = `${binding.operation}:${binding.messages.length + 1}`
       const base = { type: 'assistant_stream', version: 1, sessionId, operation: binding.operation, key }
       send({ ...base, kind: 'start' })
@@ -339,9 +339,9 @@ function answerStream() {
         signal: proof?.signal,
         abandon: () => proof?.abandon(),
         delta: (text: string) => send({ ...base, kind: 'delta', index: 0, blockType, text }),
-        settle: (text: string) => {
+        settle: async (text: string) => {
           const blocks = [{ type: blockType, text }]
-          const native = proof?.settle(blocks)
+          const native = await proof?.settle(blocks)
           binding.messages = [...binding.messages, { key, blocks, ...(native ? { native } : {}) }]
           binding.finalReply = blockType === 'text' && Boolean(text.trim())
           send({ ...base, kind: 'settle', blocks, ...(native ? { native } : {}) })

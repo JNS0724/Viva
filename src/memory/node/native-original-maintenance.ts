@@ -34,6 +34,13 @@ type Publication = z.output<typeof publicationShape>
 type Medium = Publication['media'][number]
 export type NativeOriginalCandidate = { sessionId: string, messageId: string, wireText: string, contentDigest: string }
 
+/** Probe inside the live owner before releasing the root for cold native maintenance. */
+export function nativeMaintenancePending(db: DatabaseSync) {
+  const receipts = createNativeErasureReceipts(db)
+  return db.prepare('SELECT operation FROM owner_file_native_erasures').all()
+    .some(row => !receipts.complete(String(row.operation)))
+}
+
 export function nativeSurfaceInvalidation(db: DatabaseSync) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS owner_native_surface_invalidations (session TEXT PRIMARY KEY);

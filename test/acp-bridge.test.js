@@ -198,7 +198,7 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
   // Act
   const info = await bridge.start()
   await bridge.prompt('写个笔记')
-  await bridge.cancel()
+  assert.equal(await bridge.cancel(), false, 'an idle stop issues no native cancel')
 
   // Assert
   assert.deepEqual([info.mode, info.model, info.modelValue, info.cwd], ['live', 'DeepSeek V4 Flash', 'v4-flash', '/work'])
@@ -209,7 +209,6 @@ test('acp bridge initializes, opens a session, relays updates and answers permis
     ['newSession', '/work'],
     ['prompt', '写个笔记'],
     ['decision', { outcome: 'selected', optionId: 'yes' }],
-    ['cancel', SESSION],
   ])
   assert.equal(lastClientInfo?.version, APP_VERSION, 'dsh is told the version the app was built as')
   assert.deepEqual(requestsIn(lastPrompt).map((request) => request.words), ['写个笔记'], 'the words go as a request, under its header')
@@ -389,17 +388,22 @@ test('a session the bridge leaves ends its turn at the host: what it left undeci
 
 test('stopping the turn ends its requests at once: nothing is decided for it while it winds down', { timeout: 5000 }, async t => {
   const requests = testRequests()
+  let entered, resolveNative
+  const started = new Promise(resolve => { entered = resolve })
+  const native = new Promise(resolve => { resolveNative = resolve })
   const bridge = createAcpBridge({ routing: requests, dshBin: '/fake/dsh', cwd: '/work', emit: () => {},
     spawnFn: () => fakeDsh(conn => ({ ...scriptedAgent([])(conn),
-      async prompt(params) { lastPrompt = params.prompt[0].text; return { stopReason: 'end_turn' } },
-      async cancel() {},
+      async prompt(params) { lastPrompt = params.prompt[0].text; entered(); return native },
+      async cancel() { resolveNative({ stopReason: 'cancelled' }) },
     })),
   })
   t.after(() => { bridge.dispose() })
   const { sessionId } = await bridge.start()
-  await bridge.prompt('写个笔记')
+  const running = bridge.prompt('写个笔记')
+  await started
   const [asked] = requestsIn(lastPrompt)
-  await bridge.cancel()
+  assert.equal(await bridge.cancel(), true)
+  await running
   assert.deepEqual([requests.store.get(asked.id)?.status, requests.store.get(asked.id)?.failure], ['failed', 'cancelled'])
   assert.equal((await requests.decide({ requestId: asked.id, sessionId, plan: { goals: [{ goal: '笔记', disposition: 'delegate' }], actions: [{ kind: 'start', brief: '写笔记' }] } })).accepted, false)
 })

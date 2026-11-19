@@ -1,7 +1,7 @@
 import type { MemorySource } from './store.ts'
 import type { Effects } from './effects.ts'
 import type { MemoryNotes } from './notes.ts'
-import type { MemoryDocuments, DocumentReceipt, DocumentRename, DocumentExternalEdit, DocumentSnapshot, DocumentManagementGuard, DocumentSourceRef } from './documents.ts'
+import type { MemoryDocuments, DocumentReceipt, DocumentRename, DocumentExternalEdit, DocumentSnapshot, DocumentManagementGuard, DocumentSourceRef, ReadMemoryPhysicalFile } from './documents.ts'
 import type { MemoryFileRestrictions } from './file-restrictions.ts'
 import type { MemoryFileIndex, MemoryFileCatalog } from './file-index.ts'
 
@@ -9,6 +9,12 @@ import type { MemoryFileIndex, MemoryFileCatalog } from './file-index.ts'
 export interface MemoryIdentity {
   newId(): string
   hash(text: string): string
+}
+
+/** The authoritative commit queues affected identities. Publication may run once it is durable. */
+export interface MemoryFileIndexChanges {
+  queue(input: { workspace: string, id: string, anchors?: readonly string[], sources?: readonly string[] }): void
+  publish(workspace: string, id: string): void
 }
 
 /** Open resources belong to one owner. Core never sees a database connection or a filesystem root. */
@@ -20,8 +26,9 @@ export interface MemoryRuntimeResources {
   openFileRestrictions(): MemoryFileRestrictions
   openFileIndex(): MemoryFileIndex
   openFileCatalog(): MemoryFileCatalog
-  openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean, onRenamed?: (input: DocumentRename) => void, external?: { current(input: DocumentExternalEdit): boolean, committed(input: DocumentExternalEdit): void, noteCommitted(): void }): MemoryNotes
+  readPhysicalFile?: ReadMemoryPhysicalFile
+  openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean, onRenamed?: (input: DocumentRename) => void, external?: { current(input: DocumentExternalEdit): boolean, committed(input: DocumentExternalEdit): void, noteCommitted(): void, index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryNotes
   openDocuments(readable: (id: string) => boolean, onCommitted: (receipt: DocumentReceipt) => void, onRenamed?: (input: DocumentRename) => void, policy?: { current(input: DocumentExternalEdit): boolean, managementCurrent(before: DocumentSnapshot, guard: DocumentManagementGuard, after: DocumentSnapshot, staged?: MemorySource): boolean,
     manualCurrent?(source: MemorySource): boolean, locatorCleaned?(): void,
-    expandRestrictions?(refs: readonly DocumentSourceRef[]): DocumentSourceRef[], deferRecovery?: boolean }): MemoryDocuments
+    expandRestrictions?(refs: readonly DocumentSourceRef[]): DocumentSourceRef[], index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryDocuments
 }

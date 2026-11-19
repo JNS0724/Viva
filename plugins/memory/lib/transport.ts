@@ -8,8 +8,9 @@ import type { NativeOutputAttempt } from '../../../src/memory/node/native-output
 export type MemoryTransportOrigin = { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }
 interface OriginContext { owner: MemoryTransportOwner; origin: MemoryTransportOrigin }
 interface Sending { permit: MemorySendPermit; created: boolean; origin?: string; path?: string }
+type TransportPermit = MemorySendPermit & { recordBody?(): void | Promise<void> }
 export interface MemoryTransportOwner {
-  acquireSend(id: string, origin: MemoryTransportOrigin, payload: string): MemorySendPermit & { recordBody?(): void }
+  acquireSend(id: string, origin: MemoryTransportOrigin, payload: string, signal?: AbortSignal): TransportPermit | Promise<TransportPermit>
 }
 const calls = new AsyncLocalStorage<OriginContext>()
 const sends = new AsyncLocalStorage<Sending>()
@@ -58,12 +59,12 @@ const guardedFetch: typeof fetch = async (input, init) => {
   const body = init?.body ?? (input instanceof Request ? await input.clone().text() : undefined)
   if (typeof body !== 'string') throw new Error('Memory requires a prepared JSON request body')
   validatePayload(body)
-  const permit = context.owner.acquireSend(randomUUID(), context.origin, createHash('sha256').update(body).digest('hex'))
+  const originalSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+  const permit = await context.owner.acquireSend(randomUUID(), context.origin, createHash('sha256').update(body).digest('hex'), originalSignal ?? undefined)
   const sending: Sending = { permit, created: false }
   try {
     const url = new URL(input instanceof Request ? input.url : String(input))
     sending.origin = url.origin; sending.path = url.pathname + url.search
-    const originalSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
     const signal = originalSignal ? AbortSignal.any([permit.signal, originalSignal]) : permit.signal
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
     const bytes = new TextEncoder().encode(body)
@@ -71,14 +72,18 @@ const guardedFetch: typeof fetch = async (input, init) => {
     if (!permit.current() || signal.aborted) { permit.settled(); throw new Error('Memory send permit was revoked') }
     // One-shot stream prevents Undici's transparent 421 replay; SDK retries return to this gate.
     const options: RequestInit & { duplex: 'half' } = { ...init, method, headers, signal, redirect: 'error', duplex: 'half',
-      body: new ReadableStream<Uint8Array>({ pull(controller) {
+      body: new ReadableStream<Uint8Array>({ async pull(controller) {
         // Request construction must announce the audited physical boundary before any body byte is
         // handed over. An opaque fetch wrapper cannot consume the prompt and only then be rejected.
         if (!sending.created || !permit.current() || signal.aborted) {
           controller.error(new Error('Transport has no admitted observable request boundary'))
           return
         }
-        permit.recordBody?.()
+        await permit.recordBody?.()
+        if (!permit.current() || signal.aborted) {
+          controller.error(new Error('Memory send permit was revoked'))
+          return
+        }
         controller.enqueue(bytes); controller.close()
       } }, { highWaterMark: 0 }) }
     const result = await sends.run(sending, () => baseFetch!(input, options))

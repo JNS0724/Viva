@@ -457,6 +457,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return row ? toConversation(row) : null
   }
 
+  /** An unconfirmed native turn must not be reopened from a later cold launch. */
+  function detachNativeSession(conversationId: string, expectedSessionId: string) {
+    db.prepare('UPDATE conversations SET session_id = NULL WHERE id = ? AND session_id = ?')
+      .run(conversationId, expectedSessionId)
+  }
+
   /** An unsaved conversation; it reaches the database with its first message. */
   function create({ sessionId = null, mode = null, model = null, cwd = null, parentId = null, topicId = null }: Partial<Pick<Conversation, 'sessionId' | 'mode' | 'model' | 'cwd' | 'parentId' | 'topicId'>> = {}): Conversation {
     const at = now()
@@ -721,7 +727,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
-    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges,
+    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
     create, save, get, workspaceOf: (id: string) => {

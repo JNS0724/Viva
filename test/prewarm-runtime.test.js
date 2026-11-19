@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import net from 'node:net'
-import { DSH_TIMEOUT_MS, ROOT, eventually, replies, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, ROOT, eventually, replies, startHarness } from './fixtures/dsh-harness.ts'
 
 test('real dsh connects the user\'s MCP servers once for every session: a hung one holds none up, a singleton never starts twice', { timeout: DSH_TIMEOUT_MS }, async t => {
   const reserve = net.createServer()

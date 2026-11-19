@@ -1,9 +1,10 @@
-import type { DailyAllocation } from '../core/ports/notes.ts'
+import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
+import type { DailyAllocation, DailyFileRegistration } from '../core/ports/notes.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { truncateMemoryJournal } from './sqlite.ts'
 import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource, projectDocumentSource } from '../core/memory-document-restrictions.ts'
 import { dailyPath } from '../contracts/memory-file-contract.ts'
-import type { DocumentRename, DocumentSourceCut, DocumentExternalEdit, DocumentSupersession } from '../core/ports/documents.ts'
+import type { DocumentRename, DocumentSourceCut, DocumentExternalEdit, DocumentSupersession, MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { memorySourceWorkspace as workspaceOf, memorySourceToken as token } from './source-identity.ts'
 import { fileErasure, openMemoryFileJournal } from './memory-file-journal.ts'
@@ -67,7 +68,7 @@ type Data = { refs: SourceRef[], indexKeys?: string[] } & (
 /** Markdown/JSONL own content. SQLite keeps identities, dependencies, pending work and commit receipts. */
 export function openMemoryNotes(store: MemoryStore, readable: (id: string) => boolean,
   checkpoint?: (point: FileCheckpoint, path?: string) => void, currentJob?: (key: string, generation: number) => boolean, onRenamed: (input: DocumentRename) => void = () => {}, onExternalEdit: (input: DocumentExternalEdit) => void = () => {},
-  externalCurrent: (input: DocumentExternalEdit) => boolean = () => false, options: { deferRecovery?: boolean, onCommitted?: () => void } = {}) {
+  externalCurrent: (input: DocumentExternalEdit) => boolean = () => false, options: { deferRecovery?: boolean, onCommitted?: () => void, index?: MemoryFileIndexChanges } = {}) {
   const db = store.db
   db.exec(`
     CREATE TABLE IF NOT EXISTS memory_note_erasures (source TEXT PRIMARY KEY);
@@ -119,7 +120,16 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   }
   const rawNote = (key: string) => db.prepare('SELECT *,updated_at AS updatedAt FROM memory_daily_notes WHERE key=?').get(key) as NoteRow | undefined
   const deleted = (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_deleted_daily_notes WHERE note=?').get(key))
+  const publicNoteId = (key: string) => `daily:${memoryFileRevision(key)}`
+  function indexTarget(data: Data) {
+    return data.kind === 'note' && (data.path || data.remove) || data.kind === 'edit' || data.kind === 'rename' || data.kind === 'restore'
+      ? publicNoteId(data.key) : null
+  }
   const journal = openMemoryFileJournal<Data>({ db, root: store.fileRoot, checkpoint,
+    afterCommit(data, workspace) {
+      const id = indexTarget(data)
+      if (id) options.index?.publish(workspace, id)
+    },
     projectErasure(data, path, before) {
       if (data.kind === 'restore' && path === data.path) return data.markdown
       if (data.kind === 'purge' && path === sessionPath(data.dialog.session)) return purgeDialog(before, data.dialog)
@@ -131,6 +141,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       && data.refs.every(validRef),
 
     finish(data) {
+      const id = indexTarget(data)
+      const workspace = data.kind === 'restore' ? rawNote(data.key)?.workspace : 'workspace' in data ? data.workspace : undefined
+      if (id && workspace) options.index?.queue({ workspace, id })
       if (data.kind === 'turn') {
         const row = data.row
         db.prepare(`INSERT INTO memory_note_turns(id,note,session,day,workspace,sources,source_tokens,assistant_sources,assistant_digest,question_sources,question_valid)
@@ -224,14 +237,14 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       return {workspace:row.workspace,changes:[...edit.edits.values()],data: { ...data, indexKeys: [...edit.indexKeys] }}
     })
   }
-  function read(key: string): Note | undefined {
+  function read(key: string, physical?: MemoryPhysicalFile | null): Note | undefined {
     const row = rawNote(key)
     if (!row?.file_revision || !journal.visible(row.workspace, row.path)) return
     const refs = references(key)
     if (!refs.every(validRef)) return
     try {
-      const file = journal.files(row.workspace).read(row.path)
-      if (!file || file.revision !== row.file_revision) return
+      const file = physical === undefined ? journal.files(row.workspace).read(row.path) : physical
+      if (!file || file.path !== row.path || file.revision !== row.file_revision) return
       const doc = parseMemoryDocument(file.markdown)
       return { ...row, file_revision: file.revision, title: String(doc.metadata.name ?? ''), markdown: doc.body, document: file.markdown, fileRevision: file.revision }
     } catch { return undefined } // One malformed or externally replaced file cannot hide unrelated accepted notes.
@@ -478,11 +491,23 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   if (!options.deferRecovery) recover()
   return {
     allocations: () => db.prepare('SELECT key,day,workspace,path,revision,updated_at AS updatedAt FROM memory_daily_notes ORDER BY workspace,key').all() as unknown as DailyAllocation[],
+    fileRegistry: () => db.prepare(`SELECT n.key,n.day,n.workspace,n.path,n.revision,n.updated_at AS updatedAt,n.file_revision AS fileRevision
+      FROM memory_daily_notes n WHERE n.file_revision IS NOT NULL OR EXISTS (
+        SELECT 1 FROM memory_file_use_restrictions r WHERE r.workspace=n.workspace AND r.kind='daily' AND r.target=n.key
+      )`).all() as unknown as DailyFileRegistration[],
     advanceUseVersion: (key: string, revision: number, at: number) => db.prepare('UPDATE memory_daily_notes SET revision=revision+1,updated_at=? WHERE key=? AND revision=?')
       .run(at, key, revision).changes === 1,
     usePolicyToken, deleteFile,
     reconcileRename, reconcileEdit,
     reconciliationState: (operationId: string, kind: 'edit' | 'rename') => journal.state(`${kind === 'edit' ? 'external-edit' : 'rename'}:${operationId}`),
+    resolveFileAlias(workspace: string, path: string) {
+      if (db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(workspace, path)) return path
+      const row = db.prepare(`SELECT n.path FROM memory_note_aliases a JOIN memory_daily_notes n ON n.key=a.note
+        WHERE a.workspace=? AND a.path=? AND n.workspace=a.workspace`).get(workspace, path)
+      return row ? String(row.path) : null
+    },
+    fileAliases: (workspace: string, path: string) => db.prepare(`SELECT a.path FROM memory_daily_notes n JOIN memory_note_aliases a
+      ON a.note=n.key AND a.workspace=n.workspace WHERE n.workspace=? AND n.path=?`).all(workspace, path).map(row => String(row.path)),
     aliases: () => db.prepare('SELECT workspace,path,note AS id FROM memory_note_aliases').all().map(row => ({workspace:String(row.workspace),path:String(row.path),id:String(row.id)})),
     registeredAt: (workspace: string, path: string) => db.prepare(
       'SELECT key,file_revision FROM memory_daily_notes WHERE workspace=? AND path=? AND file_revision IS NOT NULL'

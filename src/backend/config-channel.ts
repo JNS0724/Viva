@@ -157,7 +157,7 @@ export function createConfigDesk({ send, emit, sessionId, actions, conversationC
   conversationContext?: (sessionId: string) => ConversationContext | null,
 }) {
   /** Servers to add or change, waiting for the user's keys, by request id. */
-  const pending = new Map<string, ({ op: 'mcp_add', spec: ServerSpec } | { op: 'mcp_update', spec: ServerUpdate }) & { context: ConversationContext | null }>()
+  const pending = new Map<string, ({ op: 'mcp_add', spec: ServerSpec } | { op: 'mcp_update', spec: ServerUpdate }) & { context: ConversationContext | null, trackBudget: boolean }>()
   /** What happens with the keys once typed, and what the model is told when they are not. */
   const KEYED = {
     mcp_add: { prepare: (spec: any) => actions.prepareServer(spec), apply: (spec: any, secrets: Record<string, string>) => actions.addServer(spec, secrets), undone: t("main.config-channel.not.connected") },
@@ -212,7 +212,9 @@ export function createConfigDesk({ send, emit, sessionId, actions, conversationC
     } catch (err: any) {
       return reply(id, false, err?.message ?? String(err))
     }
-    pending.set(id, { op, spec: args, context })
+    const trackBudget = message.trackBudget === true
+    pending.set(id, { op, spec: args, context, trackBudget })
+    if (trackBudget) send({ type: 'config_input', id, waiting: true })
     emit({ type: 'secret_request', requestId: id, server: args.name, names: args.secrets, ...(context ? { context } : {}) })
   }
 
@@ -231,6 +233,7 @@ export function createConfigDesk({ send, emit, sessionId, actions, conversationC
     }
     const secrets = checkSecrets(spec.secrets, values)
     pending.delete(requestId)
+    if (waiting.trackBudget) send({ type: 'config_input', id: requestId, waiting: false })
     Promise.resolve()
       .then(() => KEYED[op].apply(spec, secrets))
       .then((text) => reply(requestId, true, text), (err) => reply(requestId, false, err?.message ?? String(err)))

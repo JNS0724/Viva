@@ -84,6 +84,7 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
       }
       catch (error) {
         finish(); pending.delete(requestId)
+        settleExecution(requestId, epoch)
         emitDiagnostic({ ...fields, event: 'wait.end', operation: 'memory.owner', outcome: 'failed', reason: safeDiagnosticReason(error), metrics: { durationMs: performance.now() - started } })
         reject(error)
       }

@@ -17,6 +17,8 @@ export const DAILY_MEMORY_DEFAULTS = Object.freeze({
   markdownChunkBytes: 10_000,
   requestTimeoutMs: 10_000,
   automaticQueryTimeoutMs: 350,
+  automaticContextBudgetMs: 200,
+  automaticResultReserveMs: 50,
   automaticMinCosine: 0.83,
   backgroundTimeoutMs: 3_600_000,
   retryMs: 1000,

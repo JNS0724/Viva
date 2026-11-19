@@ -34,15 +34,31 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     dispatch({ type: 'memory_files_loading' })
     const current = () => active() && request === listRequest && state().query === query
     try {
-      const page = await api.listMemoryFiles({ query: query.trim(), ...(cursor ? { cursor } : {}) })
-      if (!current()) return
-      if (page.status === 'stale' && cursor) {
-        dispatch({ type: 'memory_files_invalidated' })
-        await refreshFiles()
+      const search = query.trim()
+      let next = cursor, more = Boolean(cursor), restarted = false
+      let detail: Promise<void> | undefined
+      while (current()) {
+        const page = await api.listMemoryFiles({ query: search, ...(next ? { cursor: next } : {}) })
+        if (!current()) return
+        if (page.status === 'stale' && next && !restarted) {
+          dispatch({ type: 'memory_files_invalidated' })
+          const { selection } = state()
+          if (selection) detail = read(selection)
+          next = undefined
+          more = false
+          restarted = true
+          continue
+        }
+        if (page.status !== 'ok') throw new Error(t('main.memory.revision.conflict'))
+        if (search && !page.items.length && page.nextCursor) {
+          if (next && page.nextCursor.offset <= next.offset) throw new Error(t('main.memory.revision.conflict'))
+          next = page.nextCursor
+          continue
+        }
+        dispatch({ type: 'memory_files_listed', query, page, more })
+        await detail
         return
       }
-      if (page.status !== 'ok') throw new Error(t('main.memory.revision.conflict'))
-      dispatch({ type: 'memory_files_listed', query, page, more: Boolean(cursor) })
     } catch (error) {
       if (current()) dispatch({ type: 'memory_files_list_failed', message: errorMessage(error) })
     }

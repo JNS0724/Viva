@@ -8,6 +8,7 @@ import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
+import { eventually } from './fixtures/eventually.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
@@ -585,7 +586,7 @@ test('forgetting a digest drains transport, cleans Node replicas and preserves d
   assert.equal(existsSync(join(root, f.created.path)), false)
   assert.match(f.documents.receipt(f.identity.workspace, f.created.operationId)!.path, /digest\/wiki\/erased-/)
   assert.equal(existsSync(join(root, dailyPath)), false)
-  assert.equal(existsSync(orphan), false)
+  assert.equal(await eventually(() => !existsSync(orphan)), true)
   assert.equal(readFileSync(foreign, 'utf8'), 'Unmanaged temporary file')
   const serialized = readFileSync(transcript, 'utf8')
   assert.match(serialized, /Tea is served on Monday/)

@@ -189,12 +189,12 @@ const ACTION_HANDLERS: ActionHandlers = {
   },
 
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
-  steer_resent: (state, { at }) => ({
+  steer_resent: (state, { at, turnId }) => ({
     ...state,
     phase: 'working',
     error: null,
     island: false,
-    turn: { startedAt: at, tools: 0, thoughts: 0 },
+    turn: { startedAt: at, tools: 0, thoughts: 0, ...(turnId && { id: turnId }) },
   }),
 
   error: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'error' }), switching: state.newTopicPending && state.switching }),

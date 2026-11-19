@@ -83,7 +83,8 @@ test('restarting retains accepted chunks and completed vectors, reindex invalida
   assert.equal(reopened.lexical('喜欢茶',[a],10).hits.length,1)
 })
 test('withdrawal physically erases accepted projections and generations, rejects delayed reaccept, keeps WAL cleanup pending with a reader',t=>{
-  const {db,path,index,defer}=fixture(t), marker='Archived sentence about quietly drinking peppermint tea.', a=file('private',marker)
+  const {db,path,index,defer}=fixture(t), marker='Archived sentence about quietly drinking peppermint tea.'
+  const a=file('private',marker,{ name: 'private-derived-node-name', links: [{ path: 'digest/wiki/private-derived-link.md', line: 1 }] })
   index.accept(a,null); const gen=index.beginVectors({fingerprint:'model',dimensions:2}), refs=index.missingVectors(gen).map(chunk=>chunk.ref)
   index.stageVectors(gen,refs.map(ref=>({ref,vectors:[new Float32Array([1,0])]})))
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
@@ -93,9 +94,13 @@ test('withdrawal physically erases accepted projections and generations, rejects
   assert.equal(index.snapshot(workspace,a.id),null)
   assert.equal(index.accept(a,null),false)
   assert.equal(db.prepare('SELECT count(*) AS n FROM memory_file_index_vectors').get()?.n,0)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM memory_file_index_lookup').get()?.n,0)
+  assert.equal(db.prepare('SELECT count(*) AS n FROM memory_file_index_links').get()?.n,0)
+  assert.deepEqual(index.nodeCandidates(a.name, { workspaces: [workspace] }, 10).rows, [])
   reader.exec('COMMIT'); index.recover(); assert.equal(index.pendingCleanup(),0)
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-  assert.equal(readFileSync(path).includes(Buffer.from(marker)),false)
+  const bytes = readFileSync(path)
+  for (const fragment of [marker,a.name,a.links[0]!.path]) assert.equal(bytes.includes(Buffer.from(fragment)),false)
 })
 
 test('FTS table loss across restart rebuilds from accepted chunks instead of silently returning empty results',t=>{
@@ -105,4 +110,65 @@ test('FTS table loss across restart rebuilds from accepted chunks instead of sil
   const reopened=openMemoryFileIndex({db})
   assert.equal(reopened.accept(a,a),true)
   assert.equal(reopened.lexical('tea',[a],10).hits.length,1)
+})
+
+test('published pages filter workspaces and dates before applying a bounded probe', t => {
+  const { db, index } = fixture(t)
+  const daily = file('daily-source', 'tea tea tea', {
+    path: 'daily/2026-11-05/note.md', kind: 'daily', day: '2026-11-05', updatedAt: 12,
+  })
+  const outsider = file('other-scope', 'tea tea tea', { workspace: 'b'.repeat(64) })
+  const first = file('first', 'tea tea tea')
+  const second = file('second', 'tea')
+  for (const entry of [daily, outsider, first, second]) assert.equal(index.accept(entry, null), true)
+  const scope = { workspaces: [workspace], from: '2026-11-06', asOf: 2 }
+  const lexical = index.lexicalCandidates('tea', scope, 1)
+  assert.equal(lexical.mode, 'fts')
+  assert.deepEqual(lexical.rows.map(hit => hit.file.id), ['first'])
+  assert.equal(lexical.incomplete, true)
+  assert.deepEqual(index.nodeCandidates('first', scope, 1).rows.map(entry => entry.id), ['first'])
+  db.exec('DROP TABLE memory_file_index_fts')
+  const fallback = index.lexicalCandidates('tea', scope, 1)
+  assert.equal(fallback.mode, 'fallback')
+  assert.deepEqual(fallback.rows.map(hit => hit.file.id), ['first'])
+  assert.equal(fallback.incomplete, true)
+})
+
+test('legacy snapshots seed lookup rows and indexed edges without rereading source files', t => {
+  const { db, index } = fixture(t)
+  const target = file('target')
+  const root = file('root', 'tea', {
+    links: [
+      { path: target.path, line: 1 },
+      { path: target.path, line: 2 },
+    ],
+  })
+  index.accept(target, null)
+  index.accept(root, null)
+  db.exec(`DROP TABLE memory_file_index_links;
+    DROP TABLE memory_file_index_lookup;
+    DROP TABLE memory_file_index_node_fts`)
+  const reopened = openMemoryFileIndex({ db })
+  assert.equal(reopened.nodeAt(workspace, target.path)?.id, target.id)
+  assert.deepEqual(reopened.linkTargets(root, 1), { rows: [target.path], incomplete: false })
+  assert.deepEqual(reopened.linkingNodes(workspace, [target.path], 1).rows.map(entry => entry.id), [root.id])
+  assert.equal(reopened.remove(root), true)
+  assert.deepEqual(reopened.linkingNodes(workspace, [target.path], 1).rows, [])
+  assert.deepEqual(reopened.nodeCandidates('root', { workspaces: [workspace] }, 1).rows, [])
+})
+
+test('bounded semantic probing retains lexical candidates and supplements the most recently published nodes', t => {
+  const { index } = fixture(t)
+  const contents = [file('preferred', 'needle'), file('older'), file('recent')]
+  for (const entry of contents) index.accept(entry, null)
+  const space = { fingerprint: 'test', dimensions: 2 }
+  const generation = index.beginVectors(space)
+  const refs = index.missingVectors(generation).map(entry => entry.ref)
+  index.stageVectors(generation, refs.map(ref => ({ ref, vectors: [new Float32Array([1, 0])] })))
+  assert.equal(index.finishVectors(generation, refs), true)
+  const scope = { workspaces: [workspace] }
+  const preferred = index.lexicalCandidates('needle', scope, 2).rows
+  const result = index.vectorCandidates(new Float32Array([1, 0]), space, scope, preferred, 2)
+  assert.equal(result?.incomplete, true)
+  assert.deepEqual(new Set(result?.rows.map(hit => hit.file.id)), new Set(['preferred', 'recent']))
 })

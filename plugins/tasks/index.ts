@@ -2,11 +2,10 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createTasksChannel } from './lib/channel.ts'
+import { LONG_TOOL_TIMEOUT_MS } from '../../src/shared/node/tool-call-budget.ts'
 export const name = 'viva-tasks'
 export const inject = ['tools']
 export const Config = z.object({})
-/** How long a change to a schedule may take before the tool says it timed out. */
-const ACTION_WAIT_MS = 60_000
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') return
   const channel = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) })
@@ -31,7 +30,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     execute: async (args, exec) => ({ text: await channel.request({ ...args, op: 'get' }, String(exec.agent?.session.id ?? ''), exec.signal) }),
   }))
   const act = (request: object, exec: { agent?: { session: { id: unknown } }, signal?: AbortSignal }) =>
-    channel.request(request, String(exec.agent?.session.id ?? ''), exec.signal, ACTION_WAIT_MS)
+    channel.request(request, String(exec.agent?.session.id ?? ''), exec.signal, LONG_TOOL_TIMEOUT_MS)
   // Schedules (system-design §12.2): a time and a prompt, run with read-only tools when due, its answer in 动态.
   // A rule from flat arguments, as dsh-schedule takes it; the app checks it again (tasks-channel.ts).
   const ruleOf = (args: Record<string, unknown>) => {
@@ -63,7 +62,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     description: '列出 Viva 里已保存的定时任务（未结束的）：id、标题、提示词、下次时间、是否暂停。用户问定了哪些、要改或删某个时先调用它拿 id。',
     parameters: {},
     output,
-    execute: async (_args, exec) => ({ text: await act({ op: 'schedule_list' }, exec) }),
+    execute: async (_args, exec) => ({ text: await channel.request({ op: 'schedule_list' }, String(exec.agent?.session.id ?? ''), exec.signal) }),
   }))
   ctx.tools.register(defineTool({
     name: 'schedule_update',

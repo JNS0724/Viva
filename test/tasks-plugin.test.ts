@@ -1,34 +1,13 @@
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createAcpBridge } from '../src/backend/acp-bridge.ts'
-import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
-import { ensureDshProfile, SUBAGENT_TOOLS, vivaLayerFile } from '../src/backend/dsh-profile.ts'
-import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
+import { SUBAGENT_TOOLS } from '../src/backend/dsh-profile.ts'
 import { createTaskRegistry } from '../src/backend/task-registry.ts'
-import { startFakeLlm } from './fixtures/fake-llm.ts'
-import { testRequests } from './fixtures/request-routing.ts'
+import { startHarness } from './fixtures/dsh-harness.ts'
 
 test('real DSH discovers both tools and queries main-process tasks over IPC with no permission prompt', { timeout: 60_000 }, async t => {
-  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-task-tools-'))
-  let bridge: ReturnType<typeof createAcpBridge> | undefined
-  let closeLlm: (() => Promise<void>) | undefined
-  t.after(async () => {
-    await bridge?.dispose()
-    await closeLlm?.()
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-  })
-  const registry = createTaskRegistry()
-  registry.put({ id: 'demo-task', title: '核对发票', cwd: dir, words: '核对本月发票' })
-  registry.receive({ type: 'task_update', taskId: 'demo-task', update: { sessionUpdate: 'agent_message_chunk', content: { text: '已核对三张发票' } } })
-  registry.receive({ type: 'task_end', taskId: 'demo-task', stopReason: 'end_turn' })
-  let calls = 0
-  const llm = await startFakeLlm({ decideFirst: (raw: object) => {
+  const h = await startHarness(t, { decideFirst: (raw: object) => {
     const request = raw as { tools?: { name: string }[], messages?: unknown[] }
     if (!request.tools?.some(tool => tool.name === 'list_background_tasks')) return null
     const messages = JSON.stringify(request.messages)
@@ -37,17 +16,13 @@ test('real DSH discovers both tools and queries main-process tasks over IPC with
     if (!messages.includes('get_background_task')) return { tool: { name: 'get_background_task', input: { taskId: 'demo-task', includeRequest: true, includeOutput: true } } }
     return { text: '任务查询测试完成' }
   } })
-  closeLlm = llm.close
-  const dshHome = path.join(dir, 'dsh-home')
-  const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
-  assert.deepEqual(problems, [])
-  const profile = 'viva-task-tools-test'
-  ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
-  const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
-  const events: { type: string }[] = []
-  bridge = createAcpBridge({ routing: testRequests(), dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
-    env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
-    emit: event => { events.push(event) },
+  const { dir, llm, events } = h
+  const registry = createTaskRegistry()
+  registry.put({ id: 'demo-task', title: '核对发票', cwd: dir, words: '核对本月发票' })
+  registry.receive({ type: 'task_update', taskId: 'demo-task', update: { sessionUpdate: 'agent_message_chunk', content: { text: '已核对三张发票' } } })
+  registry.receive({ type: 'task_end', taskId: 'demo-task', stopReason: 'end_turn' })
+  let calls = 0
+  const bridge = h.bridge({ cwd: dir,
     taskRead: (request, sessionId) => { assert.ok(sessionId); calls++; return registry.query(request, { cwd: dir }) },
   })
   await bridge.start()
@@ -61,34 +36,15 @@ test('real DSH discovers both tools and queries main-process tasks over IPC with
 })
 
 test('real DSH: the main agent routes work to a task, and the app is the one that starts it', { timeout: 60_000 }, async t => {
-  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-task-start-'))
-  let bridge: ReturnType<typeof createAcpBridge> | undefined
-  let closeLlm: (() => Promise<void>) | undefined
-  t.after(async () => {
-    await bridge?.dispose()
-    await closeLlm?.()
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-  })
   // The fake model routes 「后台做：X」 as a start with X its brief (fake-llm.ts).
-  const llm = await startFakeLlm()
-  closeLlm = llm.close
-  const dshHome = path.join(dir, 'dsh-home')
-  const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
-  assert.deepEqual(problems, [])
-  const profile = 'viva-task-start-test'
-  ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
-  const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
   const started: string[] = []
-  const requests = testRequests({ tasks: {
+  const h = await startHarness(t, { tasks: {
     start: async ({ brief }) => { started.push(brief); return { taskId: 't1' } },
     message: async () => { throw new Error('not asked') },
     stop: async () => { throw new Error('not asked') },
   } })
-  const events: Array<{ type: string }> = []
-  bridge = createAcpBridge({ routing: requests, dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
-    env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
-    emit: event => { events.push(event) },
+  const { dir, llm, events } = h
+  const bridge = h.bridge({ cwd: dir,
     taskRead: () => ({ observedAt: 0, tasks: [], total: 0, nextOffset: null }),
   })
   await bridge.start()
@@ -101,18 +57,9 @@ test('real DSH: the main agent routes work to a task, and the app is the one tha
 })
 
 test('real DSH: the model proposes a schedule with flat time arguments, and the app gets dsh-schedule\'s rule', { timeout: 60_000 }, async t => {
-  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-schedule-tool-'))
-  let bridge: ReturnType<typeof createAcpBridge> | undefined
-  let closeLlm: (() => Promise<void>) | undefined
-  t.after(async () => {
-    await bridge?.dispose()
-    await closeLlm?.()
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-  })
   const weekly = { title: '周报', prompt: '按上周的模板起草周报', kind: 'weekly', time: '16:00:00', time_zone: 'Asia/Shanghai', weekdays: [5] }
   // The fake model routes 「…到时候帮我…」 as an app operation (fake-llm.ts); its tool is called with these arguments.
-  const llm = await startFakeLlm({ decideFirst: (raw: object) => {
+  const h = await startHarness(t, { decideFirst: (raw: object) => {
     const request = raw as { messages?: unknown[] }
     const messages = JSON.stringify(request.messages)
     if (!messages.includes('定时任务测试')) return null
@@ -120,17 +67,9 @@ test('real DSH: the model proposes a schedule with flat time arguments, and the 
     if (messages.includes('"name":"commit_route"')) return { tool: { name: 'schedule_create', input: weekly } }
     return null
   } })
-  closeLlm = llm.close
-  const dshHome = path.join(dir, 'dsh-home')
-  const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
-  assert.deepEqual(problems, [])
-  const profile = 'viva-schedule-tool-test'
-  ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
-  const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
+  const { dir, llm } = h
   const acted: unknown[] = []
-  bridge = createAcpBridge({ routing: testRequests(), dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
-    env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
-    emit: () => {},
+  const bridge = h.bridge({ cwd: dir,
     taskRead: () => ({ observedAt: 0, tasks: [], total: 0, nextOffset: null }),
     taskAct: async request => { acted.push(request); return { proposed: true, firstAt: '2026-11-13T08:00:00.000Z' } },
   })
@@ -143,17 +82,8 @@ test('real DSH: the model proposes a schedule with flat time arguments, and the 
 })
 
 test('real DSH: sub-agents work within the turn, in the foreground, with read-only tools only, and cannot delegate', { timeout: 90_000 }, async t => {
-  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-subagent-'))
-  let bridge: ReturnType<typeof createAcpBridge> | undefined
-  let closeLlm: (() => Promise<void>) | undefined
-  t.after(async () => {
-    await bridge?.dispose()
-    await closeLlm?.()
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-  })
   const childTools: string[][] = []
-  const llm = await startFakeLlm({ decideFirst: (raw: object) => {
+  const h = await startHarness(t, { decideFirst: (raw: object) => {
     const request = raw as { tools?: { name: string }[], messages?: unknown[] }
     const messages = JSON.stringify(request.messages)
     const names = request.tools?.map(tool => tool.name) ?? []
@@ -165,18 +95,8 @@ test('real DSH: sub-agents work within the turn, in the foreground, with read-on
     if (!messages.includes('"tool_result"')) return { tool: { name: 'subagent', input: { description: '看目录', prompt: '子代理任务：看看目录' } } }
     return { text: '主对话收到子代理的结论' }
   } })
-  closeLlm = llm.close
-  const dshHome = path.join(dir, 'dsh-home')
-  const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
-  assert.deepEqual(problems, [])
-  const profile = 'viva-subagent-test'
-  ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
-  const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
-  const events: Array<{ type: string, [field: string]: unknown }> = []
-  bridge = createAcpBridge({ routing: testRequests(), dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: dir, profile, overlay: vivaLayerFile(dshHome),
-    env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
-    emit: event => { events.push(event) },
-  })
+  const { dir, llm, events, userData } = h
+  const bridge = h.bridge({ cwd: dir })
   await bridge.start()
   // Sub-agents are a task's: the main conversation hands such work over.
   const task = await bridge.startTask()
@@ -189,7 +109,7 @@ test('real DSH: sub-agents work within the turn, in the foreground, with read-on
   const subagent = main.tools?.find(tool => tool.name === 'subagent')
   assert.ok(!Object.keys(subagent?.input_schema?.properties ?? {}).includes('run_in_background'), 'no background mode to ask for')
   assert.equal(childTools.length, 1, 'Generated child instructions must not trigger automatic fact extraction')
-  const memory = new DatabaseSync(path.join(dir, 'userData', 'memory', 'memory.db'), { readOnly: true })
+  const memory = new DatabaseSync(path.join(userData, 'memory', 'memory.db'), { readOnly: true })
   try { assert.equal(memory.prepare("SELECT COUNT(*) AS n FROM memory_sources WHERE text LIKE '%子代理任务：看看目录%'").get()?.n, 0) } finally { memory.close() }
   const allowed = new Set(SUBAGENT_TOOLS)
   assert.deepEqual(childTools[0].filter(name => !allowed.has(name)), [], 'the child has only the read-only tools')

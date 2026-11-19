@@ -7,6 +7,8 @@
  *   plugin → app  { type: 'config_closed', id }                the turn was stopped while the app worked on it
  *   app → plugin  { type: 'config_result', id, ok, text }      what happened, in words for the model
  */
+import { currentToolBudget } from '../../../src/shared/node/tool-call-budget.ts'
+
 const MAX_TEXT_CHARS = 4000
 /** What arrives over IPC: anything at all, so every field is checked before it is used. */
 type Incoming = any
@@ -19,9 +21,13 @@ export function createConfigChannel(port: { send: (message: object) => unknown, 
   let seq = 0
 
   function onMessage(message: Incoming) {
-    if (message?.type !== 'config_result') return
+    if (message?.type !== 'config_result' && message?.type !== 'config_input') return
     const entry = waiting.get(message.id)
     if (!entry) return
+    if (message.type === 'config_input') {
+      if (typeof message.waiting === 'boolean') entry.budget?.waitForInput(message.waiting)
+      return
+    }
     if (typeof message.text !== 'string' || typeof message.ok !== 'boolean') return log(`ignored a malformed result for ${message.id}`)
     const text = message.text.slice(0, MAX_TEXT_CHARS)
     entry.settle(() => (message.ok ? entry.resolve(text) : entry.reject(new Error(text))))
@@ -36,6 +42,7 @@ export function createConfigChannel(port: { send: (message: object) => unknown, 
       const entry = {
         resolve,
         reject,
+        budget: currentToolBudget(),
         settle(finish: () => void) {
           waiting.delete(id)
           signal?.removeEventListener('abort', onAbort)
@@ -44,13 +51,14 @@ export function createConfigChannel(port: { send: (message: object) => unknown, 
       }
       function onAbort() {
         entry.settle(() => {
-          port.send({ type: 'config_closed', id })
+          try { port.send({ type: 'config_closed', id }) } catch { /* Host already disconnected. */ }
           reject(signal?.reason ?? new Error('aborted'))
         })
       }
       signal?.addEventListener('abort', onAbort)
       waiting.set(id, entry)
-      port.send({ type: 'config', id, sessionId, op, args })
+      try { port.send({ type: 'config', id, sessionId, op, args, ...(entry.budget && { trackBudget: true }) }) }
+      catch (error) { entry.settle(() => reject(error)) }
     })
   }
 

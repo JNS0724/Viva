@@ -557,3 +557,71 @@ test('a tokenizer that cannot fit the contextual prefix degrades without encodin
   assert.ok(inputs.every(text => text.startsWith(name.trim() + '\n\n')))
   assert.ok(inputs.length < 20)
 })
+
+test('published search skips failed and stale candidates beside an independent matching file', async t => {
+  const stale = view('stale', 'needle needle needle')
+  const stopped = view('stopped', 'needle needle needle')
+  const target = view('target', 'needle in a current file')
+  const unrelated = Array.from({ length: 120 }, (_, i) => view(`unrelated-${i}`, 'different material'))
+  const f = setup(t, [stale, stopped, target, ...unrelated])
+  const checks: string[] = []
+  const invalidations: string[] = []
+  let enabled = true
+  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash, usePublishedIndex: true,
+    onStale: file => { invalidations.push(file.id) },
+    policy: {
+      read(scope, path) {
+        checks.push(path)
+        if (!enabled && path === stopped.path) throw new Error('File unavailable')
+        return f.policy.read(scope, path)
+      },
+      list() { assert.fail('published reads must not walk authoritative files') },
+    },
+  })
+  t.after(() => retrieval.close())
+  assert.equal(retrieval.publishFiles([stale, stopped, target, ...unrelated]).accepted, 123)
+  f.views.set(stale.id, view(stale.id, 'external modification'))
+  enabled = false
+  checks.length = 0
+  const result = await retrieval.search({ query: 'needle', allows, limit: 1 })
+  assert.deepEqual(result.hits.map(hit => hit.id), [target.id])
+  assert.deepEqual(result.sourceIds, ['source-target'])
+  assert.ok(result.reasons.includes('file-changed'))
+  assert.equal(result.partial, true)
+  assert.deepEqual(new Set(invalidations), new Set([stale.id, stopped.id]))
+  assert.deepEqual(new Set(checks), new Set([stale.path, stopped.path, target.path]))
+  checks.length = 0
+  assert.deepEqual(retrieval.nodeSearch({ query: 'target', allows, limit: 1 }).nodes.map(hit => hit.id), [target.id])
+  assert.deepEqual(checks, [target.path])
+})
+
+test('published relations only verify indexed edges and their trusted rename aliases', t => {
+  const oldPath = 'digest/wiki/old.md'
+  const root = view('root', `[[${oldPath}]] [[digest/wiki/hidden.md]] [[digest/wiki/stale.md]]`)
+  const target = view('renamed', 'target')
+  const hidden = view('hidden', '[[digest/wiki/root.md]]')
+  const stale = view('stale', '[[digest/wiki/root.md]]')
+  const unrelated = view('unrelated', 'anything')
+  const f = setup(t, [root, target, hidden, stale, unrelated])
+  const checks: string[] = []
+  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash, usePublishedIndex: true,
+    resolveAlias: (_, path) => path === oldPath ? target.path : null,
+    aliasesFor: (_, path) => path === target.path ? [oldPath] : [],
+    policy: {
+      read(scope, path) { checks.push(path); return f.policy.read(scope, path) },
+      list() { assert.fail('published relations must not walk authoritative files') },
+    },
+  })
+  t.after(() => retrieval.close())
+  retrieval.publishFiles([root, target, hidden, stale, unrelated])
+  f.views.set(stale.id, view(stale.id, 'lost binding'))
+  checks.length = 0
+  const visible = retrieval.relations({ workspace, path: root.path, allows: view => view.id !== hidden.id })!
+  assert.deepEqual(visible.outlinks.neighbors.map(item => item.id), [target.id])
+  assert.equal(visible.outlinks.visibleCount, 1)
+  assert.equal(visible.inlinks.visibleCount, 0)
+  assert.deepEqual(visible.sourceIds, ['source-root', 'source-renamed'])
+  assert.deepEqual(new Set(checks), new Set([root.path, target.path, hidden.path, stale.path]))
+  const back = retrieval.relations({ workspace, path: oldPath, allows })!
+  assert.deepEqual(back.inlinks.neighbors.map(item => item.id), [root.id])
+})

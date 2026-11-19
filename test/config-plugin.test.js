@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
 import { DEMO_SERVER } from './fixtures/fake-llm.ts'
 
 /** The config plugin inside the real dsh: the model sets up a server; the user approves and types its key. */

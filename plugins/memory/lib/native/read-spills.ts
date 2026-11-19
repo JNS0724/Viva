@@ -8,14 +8,21 @@ import type { NativeToolReadScope } from '../../../../src/memory/node/native-too
 import { verifyNativeSpill } from './local-spills.ts'
 import { replaceServiceMethod } from './service-method.ts'
 
+type Owner = ReturnType<typeof openMemoryOwner>
+type SpillReadLease = { current(): boolean, revalidate?(): Promise<boolean> }
+type SpillReader = {
+  nativeSpillCandidates(): ReturnType<Owner['nativeSpillCandidates']> | Promise<ReturnType<Owner['nativeSpillCandidates']>>,
+  admitNativeSpillRead(id: string, scope: NativeToolReadScope, signal?: AbortSignal): SpillReadLease | Promise<SpillReadLease>,
+}
+
 /** Guard the filesystem service seam, including grep/stream consumers and path aliases. */
-export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof openMemoryOwner>, scope: () => NativeToolReadScope | undefined) {
+export function trackNativeSpillReads(ctx: Context, owner: SpillReader, scope: () => NativeToolReadScope | undefined) {
   return ctx.inject(['fs'], scoped => {
     const fs = scoped.fs, read = fs.readText, stream = fs.streamText
     let active = true
     async function admit(target: FsTarget, signal?: AbortSignal) {
       const actual = fs.processPath(target)
-      for (const candidate of owner.nativeSpillCandidates()) {
+      for (const candidate of await owner.nativeSpillCandidates()) {
         const locations = [candidate.file, candidate.publication ? { ...candidate.publication.stage, path: candidate.publication.target } : null,
           candidate.publication?.stage].filter(item => item != null)
         const file = locations.find(file => fs.processPathFromHostPath(file.path) === actual)
@@ -29,15 +36,17 @@ export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof ope
         if (!active) throw new Error('Native spill guard retired during reading')
         const execution = scope()
         if (!execution) throw new Error('Native spill read has no authenticated execution')
-        const lease = owner.admitNativeSpillRead(candidate.id, execution)
-        return { current: () => active && lease.current(), hash: candidate.hash, bytes: candidate.bytes }
+        const lease = await owner.admitNativeSpillRead(candidate.id, execution, signal)
+        return { current: () => active && lease.current(),
+          validate: async () => active && lease.current() && (!lease.revalidate || await lease.revalidate()) && active && lease.current(),
+          hash: candidate.hash, bytes: candidate.bytes }
       }
     }
     const guardedRead: typeof read = async (target, signal) => {
       if (!active) return read.call(fs, target, signal)
       const permit = await admit(target, signal), value = await read.call(fs, target, signal)
       signal?.throwIfAborted()
-      if (permit && (!permit.current() || Buffer.byteLength(value, 'utf8') !== permit.bytes
+      if (permit && (!await permit.validate() || Buffer.byteLength(value, 'utf8') !== permit.bytes
         || createHash('sha256').update(value).digest('hex') !== permit.hash)) throw new Error('Native spill changed during reading')
       return value
     }
@@ -56,11 +65,11 @@ export function trackNativeSpillReads(ctx: Context, owner: ReturnType<typeof ope
         snapshot.push(chunk)
       }
       signal?.throwIfAborted()
-      if (!permit.current() || bytes !== permit.bytes || hash.digest('hex') !== permit.hash) throw new Error('Native spill changed during reading')
+      if (!await permit.validate() || bytes !== permit.bytes || hash.digest('hex') !== permit.hash) throw new Error('Native spill changed during reading')
       return (async function* () {
         for (const chunk of snapshot) {
           signal?.throwIfAborted()
-          if (!permit.current()) throw new Error('Native spill source changed before its snapshot was consumed')
+          if (!await permit.validate()) throw new Error('Native spill source changed before its snapshot was consumed')
           yield chunk
         }
       })()

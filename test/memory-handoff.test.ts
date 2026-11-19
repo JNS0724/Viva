@@ -1,3 +1,4 @@
+import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
 import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
@@ -224,7 +225,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
   }
   return { ask, call, defer, directory, events, feed, files, model, newTopic, recallOld, replace, restart, schedule, stopBackend, tasks,
     startBackend: () => openBackend().startBridge(),
-    wake: () => backend?.signal({ kind: 'system.woke' }) }
+    wake: () => backend?.signal({ kind: 'system.woke' }), agentPid: () => backend?.agentPid() }
 }
 
 function messageTexts(request: Request) {
@@ -419,6 +420,57 @@ test('a missing native report agent keeps its user interjection retryable after 
   assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === question))
 })
 
+function cancelCurrent(app: Awaited<ReturnType<typeof setup>>) {
+  const event = app.events.findLast(item => item.type === 'turn_started')
+  assert.ok(event)
+  return app.call<Promise<boolean>>('agent:cancel', { ...event.context as object, turnId: event.turnId })
+}
+
+test('the backend expires Stop while dsh is suspended and recovery only accepts fresh output', { timeout: 45_000 }, async t => {
+  const question = '停下来验证超时反馈'
+  const lateText = 'this-closed-turn-must-not-appear'
+  let release!: () => void
+  let waiting = false
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const app = await setup(t, request => {
+    if (questionOf(request.messages) !== question) return null
+    waiting = true
+    return { text: lateText, waitFor: hold }
+  })
+  const pending = app.ask(question)
+  void pending.catch(() => {})
+  app.defer(release)
+  assert.ok(await eventually(() => waiting))
+  const pid = app.agentPid()
+  assert.ok(pid)
+  const paused = await pauseOwnedProcess(pid)
+  app.defer(() => paused.resume())
+
+  const start = app.events.findLast(event => event.type === 'turn_started')
+  assert.ok(start)
+  assert.equal(await app.call('agent:cancel', { ...start.context as object, turnId: randomUUID() }), false)
+  assert.equal(await app.call('agent:cancel', { ...start.context as object, sessionId: 'other', turnId: start.turnId }), false)
+  const before = app.events.length
+  assert.equal(await cancelCurrent(app), true)
+  assert.ok(app.events.slice(before).some(event => event.type === 'turn_stopping'))
+  assert.ok(await eventually(() => app.events.slice(before).some(event => event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed'), { timeoutMs: 12_000 }))
+  assert.throws(() => app.call('agent:prompt', '旧执行端仍不可接单'), /执行端未确认停止/)
+  const after = app.events.length
+
+  await paused.resume()
+  release()
+  await pending.catch(() => {})
+  assert.ok(await app.call('agent:recover'))
+  assert.notEqual(app.agentPid(), pid)
+  assert.notEqual(app.call<AgentInfo>('agent:info').sessionId, (start.context as { sessionId: string }).sessionId)
+  const requestCount = app.model.requests.length
+  await app.ask('恢复后的新问题')
+  assert.ok(app.model.requests.slice(requestCount).some(raw => questionOf((raw as Request).messages).includes('恢复后的新问题')),
+    JSON.stringify({ questions: app.model.requests.slice(requestCount).map(raw => questionOf((raw as Request).messages)),
+      events: app.events.slice(after).filter(event => ['error', 'turn_end', 'turn_started', 'ready'].includes(event.type)) }))
+  assert.doesNotMatch(JSON.stringify(app.events.slice(after)), new RegExp(lateText))
+})
+
 test('cancelling a report rejects its queued human before any native source is delivered', { timeout: 45_000 }, async t => {
   const question = '取消报告时仍待发送的独立用户原文', operation = randomUUID()
   let app: Awaited<ReturnType<typeof setup>> | undefined
@@ -426,7 +478,7 @@ test('cancelling a report rejects its queued human before any native source is d
   app = await setup(t, () => null, { onEvent(event) {
     if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
     incoming = app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', question, [], operation)
-    void app.call<Promise<unknown>>('agent:cancel').catch(() => {})
+    void cancelCurrent(app).catch(() => {})
   } })
   await app.ask('后台做：生成可以取消的报告')
   assert.ok(await eventually(() => Boolean(incoming)))
@@ -520,12 +572,12 @@ for (const duringReport of [false, true]) test(`a lost host receipt stays unknow
     assert.equal(receipt?.accepted, false)
     assert.deepEqual(receipt?.sourceIds, [])
     assert.match(receipt?.message ?? '', /Synthetic delivery receipt failure/)
-    await app.call('agent:cancel'); release()
+    await cancelCurrent(app); release()
   } else {
     const incoming = app.call<Promise<unknown>>('agent:prompt', question, [], operation)
     const rejected = assert.rejects(incoming, /Synthetic delivery receipt failure/)
     assert.ok(await eventually(() => held))
-    await app.call('agent:cancel'); release(); await rejected
+    await cancelCurrent(app); release(); await rejected
   }
   const db = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try { assert.equal(db.prepare('SELECT state FROM prompt_deliveries WHERE source=?').get(operation)?.state, 'pending') }
@@ -568,7 +620,7 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
   assert.ok(await eventually(() => nativeHeld))
   const rejected = assert.rejects(incoming!, /Synthetic retirement receipt failure/)
   const offset = app.events.length
-  const cancelling = app.call<Promise<void>>('agent:cancel')
+  const cancelling = cancelCurrent(app)
   assert.throws(() => app!.call('agent:prompt', question, [], [randomUUID()]), /finish|等待|结束/i,
     'retired scheduling ownership cannot let a replay start over a still-cancelling native turn')
   await cancelling; release(); await rejected
@@ -586,12 +638,13 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'with
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const request = message as { type?: string, method?: string, requestId?: string, epoch?: string, input?: { operationId?: string } }
-        if (!aliasHeld && request?.type === 'memory_host_request' && request.method === 'sourceAlias' && request.input?.operationId === operation) {
+        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
+        if (!aliasHeld && frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.operationId === operation) {
           aliasHeld = true
           releaseAlias = () => {
-            if (outcome === 'alias-error') this.emit('message', { type: 'memory_host_result', requestId: request.requestId, epoch: request.epoch,
-              ok: false, error: { reason: 'The original source alias was rejected.' } })
+            if (outcome === 'alias-error') this.emit('message', { type: 'memory_owner_rpc', kind: 'result', id: frame.id,
+              ok: false, error: { message: 'The original source alias was rejected.' } })
             else Reflect.apply(send, this, [message, ...rest])
           }
           return true
@@ -618,7 +671,7 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'with
   const steered = app.call<Promise<import('../src/shared/agent-info.ts').SteerResult>>('agent:steer', words, operation)
   void steered.catch(() => {})
   assert.ok(await eventually(() => aliasHeld))
-  if (outcome === 'replacement') await app.call('agent:cancel')
+  if (outcome === 'replacement') await cancelCurrent(app)
   if (outcome !== 'alias-error') { releaseOld(); await original }
   if (outcome === 'replacement') await app.newTopic()
   const fresh = outcome === 'replacement' || outcome === 'next-turn' ? app.ask(after) : null
@@ -666,9 +719,10 @@ test('first idle deliveries and canonical replay retain FIFO ahead of a later st
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const request = message as { type?: string, method?: string, input?: { operationId?: string } }
-        const id = request.input?.operationId
-        if (request.type === 'memory_host_request' && request.method === 'sourceAlias' && id && (id === firstId || id === secondId) && !aliases.has(id)) {
+        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
+        const id = frame.input?.input?.operationId
+        if (frame.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'sourceAlias' && id && (id === firstId || id === secondId) && !aliases.has(id)) {
           aliases.set(id, () => { Reflect.apply(send, this, [message, ...rest]) })
           return true
         }
@@ -872,7 +926,9 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     const identities = calls.map(row => JSON.parse(String(row.identity)) as { ptc?: unknown, inputDerived?: boolean })
     assert.equal(identities.filter(row => row.ptc).length, 2)
     assert.equal(identities.filter(row => row.inputDerived).length, 1)
-    assert.equal(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'run_code')).includes('PTC_BODY')), !nextFails)
+    assert.equal(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'run_code')).includes('PTC_BODY')), !nextFails,
+      JSON.stringify({ results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
+        tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
     const spills = db.prepare('SELECT intent,file FROM owner_native_spills').all()
     if (!nextFails) {
       assert.equal(spills.length, 2, JSON.stringify(spills))

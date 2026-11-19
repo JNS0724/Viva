@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { modelValue, piAiProviders, providerEnv, type Provider } from '../src/backend/model-providers.ts'
-import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.ts'
 import { OPENAI_REPLY, startFakeOpenAi } from './fixtures/fake-openai.js'
 
 /** Providers the user adds besides DeepSeek, served by the real dsh through the profile the app writes. */

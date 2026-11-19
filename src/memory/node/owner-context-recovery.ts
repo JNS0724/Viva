@@ -146,12 +146,13 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
     persist(item)
     return ticket(item)
   }
-  async function commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean): Promise<MemoryContextRecoveryTicket> {
+  async function commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean | Promise<boolean>): Promise<MemoryContextRecoveryTicket> {
     requireReady()
-    return mutate(() => {
+    return mutate(async () => {
+      const confirmed = stillCurrent()
+      if (!(typeof confirmed === 'boolean' ? confirmed : await confirmed)) throw new Error('Native context changed before recovery commit')
       requireReady()
       const item = saved(input.ticketId)
-      if (!stillCurrent()) throw new Error('Native context changed before recovery commit')
       if (input.persisted !== true || item.state === 'prepared' || item.baseSurfaceHash !== input.baseSurfaceHash
         || item.replacementMessageId !== input.replacementMessageId || item.replacementHash !== input.replacementHash
         || latest(item.sessionId)?.ticketId !== item.ticketId) throw new Error('Context recovery acknowledgement conflicts')

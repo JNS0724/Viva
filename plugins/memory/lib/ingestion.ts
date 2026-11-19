@@ -19,7 +19,17 @@ type Replay = {
   events: Map<number, readonly string[]>, messages: Map<string, string>, queue: Promise<void>,
   generation: number,
   failed: boolean,
+  epoch?: string,
 }
+type Checkpoint = { events: readonly SessionEvent[], persisted: Promise<unknown>, generation?: number | Promise<number | undefined>, epoch?: string }
+type Awaitable<Method> = Method extends (...args: infer Args) => infer Value ? (...args: Args) => Value | Promise<Value> : never
+type IngestionMethods = Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived' | 'noteInheritedNativeCut'>
+type RecoveryMethods = Partial<Omit<MemoryContextRecoveryOwner, 'contextGeneration'>> & { contextGeneration?(id: string): number | undefined }
+export type IngestionOwner = { [K in keyof IngestionMethods]: Awaitable<IngestionMethods[K]> }
+  & { [K in keyof RecoveryMethods]: Awaitable<RecoveryMethods[K]> }
+  & { dispatch: { snapshot: Awaitable<PluginMemoryOwner['dispatch']['snapshot']> }, epoch?: string,
+    readContext?(session: string): Promise<{ contextGeneration: number, contextRecovery: MemoryContextRecoveryTicket | null }>,
+    cachedGeneration?(session: string): number | undefined, inEpoch?<T>(epoch: string | undefined, work: () => Promise<T>): Promise<T> }
 
 /** Derived host input can query memory, while never becoming new evidence or daily-note input. */
 export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
@@ -27,13 +37,14 @@ export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
 }
 
 /** DSH's feed announces in-memory commits; flush is the explicit durability boundary. */
-export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived' | 'noteInheritedNativeCut'> & Partial<MemoryContextRecoveryOwner> & { dispatch: Pick<PluginMemoryOwner['dispatch'], 'snapshot'> }, flush: (session: Session) => Promise<unknown>,
+export function createSessionIngestion(owner: IngestionOwner, flush: (session: Session) => Promise<unknown>,
   deliveryProof?: (session: Session, message: UserMessage) => Promise<MemoryDeliveryProof | undefined>) {
   const states = new Map<string, Replay>()
   function state(session: Session) {
     let current = states.get(session.id)
-    if (!current || current.session !== session) {
-      current = { session, cursor: 0, turn: 0, step: 0, sources: new Set(), assistant: [], events: new Map(), messages: new Map(), queue: Promise.resolve(), generation: owner.contextGeneration?.(String(session.id)) ?? 0, failed: false }
+    if (!current || current.session !== session || current.epoch !== owner.epoch) {
+      current = { session, cursor: 0, turn: 0, step: 0, sources: new Set(), assistant: [], events: new Map(), messages: new Map(),
+        queue: current?.queue.catch(() => {}) ?? Promise.resolve(), generation: 0, failed: false, epoch: owner.epoch }
       states.set(session.id, current)
     }
     return current
@@ -56,7 +67,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
     const contentDigest = memoryOriginalContentDigest(message)
     const identity = { sessionId: String(session.id), messageId: message.id, text, contentDigest, nativeMessageDigest: memoryRecoveryMessageHash(message), inherited: options.inherited ?? false }
     if (!text.trim() && !message.content.some(part => part.type === 'image' || part.type === 'file')) {
-      owner.noteInheritedNativeCut?.(identity)
+      await owner.noteInheritedNativeCut?.(identity)
       return undefined
     }
     const receipt = await owner.receiveSource({ ...identity,
@@ -66,12 +77,13 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
     if (options.admitted && !receipt.handledIntent) current.sources.add(receipt.sourceId)
     return receipt
   }
-  function checkpoint(session: Session) {
+  function checkpoint(session: Session, expected?: number) {
     const events = session.snapshotEvents()
     const persisted = flush(session)
     // The serialized consumer owns rejection; do not leave a queued checkpoint unhandled.
     void persisted.catch(() => {})
-    return { events, persisted, generation: owner.contextGeneration?.(String(session.id)) ?? 0 }
+    const generation = expected ?? (owner.cachedGeneration ? owner.cachedGeneration(String(session.id)) : owner.contextGeneration?.(String(session.id)))
+    return { events, persisted, epoch: owner.epoch, generation }
   }
   function recoveryEvent(events: readonly SessionEvent[], ticket: MemoryContextRecoveryTicket) {
     const event = events.find(item => item.type === 'user/message' && item.data.id === ticket.replacementMessageId)
@@ -100,8 +112,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
       : event.surfaceOp !== 'append') throw new Error('Context recovery checkpoint did not replace the complete model history')
     return event
   }
-  async function restoreCheckpoint(session: Session, current: Replay, events: readonly SessionEvent[]) {
-    const ticket = owner.contextRecovery?.(String(session.id))
+  async function restoreCheckpoint(session: Session, current: Replay, events: readonly SessionEvent[], ticket?: MemoryContextRecoveryTicket | null) {
     if (!ticket) return
     if (ticket.state !== 'committed') throw new Error('Session context recovery requires a persisted replacement')
     const marker = recoveryEvent(events, ticket)
@@ -123,18 +134,21 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
     current.events.set(marker.seq, ticket.retainedMessageIds.flatMap(id => current.messages.get(id) ?? []))
     current.cursor = marker.seq + 1
   }
-  async function replay(session: Session, current: Replay, saved: { events: readonly SessionEvent[], persisted: Promise<unknown>, generation: number }) {
+  async function replay(session: Session, current: Replay, saved: Checkpoint) {
     if (await saved.persisted !== true) throw new Error('Session has no durable persistence acknowledgment')
-    if (saved.generation !== (owner.contextGeneration?.(String(session.id)) ?? 0)) {
-      if (saved.events.length <= current.cursor) return
+    const captured = await saved.generation
+    const view = await owner.readContext?.(String(session.id))
+    const generation = view?.contextGeneration ?? await owner.contextGeneration?.(String(session.id)) ?? 0
+    if (saved.epoch !== current.epoch || captured !== undefined && captured !== generation) {
+      if (saved.events.length <= current.cursor) return false
       throw new Error('Queued session intake belongs to a retired context generation')
     }
-    current.generation = saved.generation
+    current.generation = generation
     if (session.header.origin === 'subagent' && !session.header.parentSession) throw new Error('Subagent parent is unavailable')
-    owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
+    if (current.cursor === 0) await owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
       ...(session.header.origin === 'subagent' ? { parentSessionId: session.header.parentSession } : {}) })
     const events = saved.events
-    await restoreCheckpoint(session, current, events)
+    await restoreCheckpoint(session, current, events, view ? view.contextRecovery : await owner.contextRecovery?.(String(session.id)))
     for (let index = current.cursor; index < events.length; index++) {
       const event = events[index]!
       const inherited = index < session.inheritedEventCount
@@ -150,14 +164,14 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
           admitted: true, live: false, eventSeq: event.seq, inherited })
         if (receipt) current.events.set(event.seq, [receipt.sourceId])
         else {
-          const dependencies = [...new Set([...(event.sourceEventSeqs ?? []).flatMap(seq => current.events.get(seq) ?? []), ...owner.dispatch.snapshot(String(session.id)).sources])]
+          const dependencies = [...new Set([...(event.sourceEventSeqs ?? []).flatMap(seq => current.events.get(seq) ?? []), ...(await owner.dispatch.snapshot(String(session.id))).sources])]
           await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.id, nativeUserSource: event.data.source.kind, nativeMessageDigest: memoryRecoveryMessageHash(event.data),
             sourceIds: dependencies, eventSeq: event.seq, inherited, contextGeneration: current.generation, contentDigest: memoryOriginalContentDigest(event.data) })
           current.events.set(event.seq, dependencies)
         }
       }
       if (event.type === 'assistant/message') {
-        const dependencies = owner.dispatch.snapshot(String(session.id)).sources
+        const dependencies = (await owner.dispatch.snapshot(String(session.id))).sources
         await owner.registerDerived({ sessionId: String(session.id), messageId: event.data.message.id,
           sourceIds: dependencies, eventSeq: event.seq, inherited, contextGeneration: current.generation, contentDigest: memoryOriginalContentDigest(event.data.message) })
         current.events.set(event.seq, dependencies)
@@ -170,12 +184,14 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
       }
       current.cursor = index + 1
     }
+    return true
   }
   function serialize(session: Session, action: (current: Replay) => Promise<void>) {
     const current = state(session)
     // A failed durable registration blocks this session until the owner is recovered/restarted.
     // Advancing past it would let model/tool execution bypass an unregistered original.
-    current.queue = current.queue.then(() => action(current)).catch(error => { current.failed = true; throw error })
+    const run = () => action(current)
+    current.queue = current.queue.then(() => owner.inEpoch ? owner.inEpoch(current.epoch, run) : run()).catch(error => { current.failed = true; throw error })
     return current.queue
   }
   return {
@@ -183,7 +199,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
     recoverContext(session: Session, stillSafe: () => boolean = () => true) {
       const current = state(session)
       const run = async () => {
-        if (!current.failed && !owner.needsContextRecovery?.(String(session.id))) return
+        if (!current.failed && !await owner.needsContextRecovery?.(String(session.id))) return
         if (!stillSafe()) throw new Error('Session is not at a safe context recovery boundary')
         if (!owner.prepareContextRecovery || !owner.bindContextRecovery || !owner.commitContextRecovery || !owner.contextRecovery) {
           throw new Error('Session context recovery is unavailable')
@@ -191,7 +207,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         if (await flush(session) !== true) throw new Error('Session has no durable persistence acknowledgment')
         // Reauthorize on every attempt. A replacement already landed before a failed owner CAS
         // can safely become the base of a new ticket; it must never authorize old source versions.
-        owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
+        await owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
           ...(session.header.origin === 'subagent' ? { parentSessionId: session.header.parentSession } : {}) })
         let ticket = await owner.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
           ...(session.header.parentSession ? { nativeParentSessionId: String(session.header.parentSession) } : {}),
@@ -200,7 +216,7 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         if (!marker) {
           if (memorySessionSurfaceHash(session) !== ticket.baseSurfaceHash) throw new Error('Session surface changed during context recovery')
           const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds, ticket.replacementMessageId)
-          ticket = owner.bindContextRecovery({ ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
+          ticket = await owner.bindContextRecovery({ ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
           if (!stillSafe() || memorySessionSurfaceHash(session) !== ticket.baseSurfaceHash) throw new Error('Session surface changed before context replacement')
           session.append([plan.input])
           marker = recoveryEvent(session.snapshotEvents(), ticket)
@@ -213,34 +229,35 @@ export function createSessionIngestion(owner: Pick<PluginMemoryOwner, 'initializ
         await owner.commitContextRecovery({ ticketId: ticket.ticketId, baseSurfaceHash: ticket.baseSurfaceHash,
           replacementMessageId: ticket.replacementMessageId, replacementHash: ticket.replacementHash, persisted: true },
         () => stillSafe() && memorySessionSurfaceHash(session) === replaced)
+        if (!stillSafe() || memorySessionSurfaceHash(session) !== replaced) throw new Error('Native context changed during recovery commit')
         current.cursor = 0
-        await replay(session, current, { events: persistedEvents, persisted: Promise.resolve(true), generation: ticket.generation })
+        await replay(session, current, { events: persistedEvents, persisted: Promise.resolve(true), generation: ticket.generation, epoch: current.epoch })
         current.failed = false
       }
       // Recovery independently reauthenticates the durable surface and every retained source. It is
       // the only path allowed to replace a failed replay queue; ordinary intake never skips failures.
-      current.queue = current.queue.catch(() => { current.failed = true }).then(run).catch(error => { current.failed = true; throw error })
+      current.queue = current.queue.catch(() => { current.failed = true }).then(() => owner.inEpoch ? owner.inEpoch(current.epoch, run) : run()).catch(error => { current.failed = true; throw error })
       return current.queue
     },
     derived(session: Session, input: Omit<DerivedSource, 'sessionId'>) {
       const saved = checkpoint(session)
       return serialize(session, async current => {
-        await replay(session, current, saved)
-        await owner.registerDerived({ contextGeneration: saved.generation, ...input, sessionId: String(session.id) })
+        if (!await replay(session, current, saved)) throw new Error('Derived intake belongs to a retired context generation')
+        await owner.registerDerived({ contextGeneration: current.generation, ...input, sessionId: String(session.id) })
       })
     },
     async drain() { await Promise.allSettled([...states.values()].map(current => current.queue)) },
     synchronize(session: Session) {
       const saved = checkpoint(session)
-      return serialize(session, current => replay(session, current, saved))
+      return serialize(session, async current => { await replay(session, current, saved) })
     },
-    async receive(session: Session, messages: readonly UserMessage[], turn: number, step: number, admitted: boolean) {
-      const saved = checkpoint(session)
+    async receive(session: Session, messages: readonly UserMessage[], turn: number, step: number, admitted: boolean, generation?: number) {
+      const saved = checkpoint(session, generation)
       const receipts: SourceReceipt[] = []
       await serialize(session, async current => {
-        await replay(session, current, saved)
+        if (!await replay(session, current, saved)) throw new Error('Live intake belongs to a retired context generation')
         for (const message of messages) {
-          const receipt = await original(session, current, message, { at: Date.now(), turn, step, admitted, live: true, contextGeneration: saved.generation })
+          const receipt = await original(session, current, message, { at: Date.now(), turn, step, admitted, live: true, contextGeneration: current.generation })
           if (receipt) receipts.push(receipt)
         }
       })
