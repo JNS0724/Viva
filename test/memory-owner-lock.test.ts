@@ -248,6 +248,10 @@ test('the supervisor times out a suspended owner and replaces it after process e
   const paused = await pauseOwnedProcess(pid)
   defer(() => paused.resume().catch(() => {}))
   await assert.rejects(supervisor.callHost('revision', { args: [] }, { budgetMs: 25 }), /timed out|unavailable/)
+  assert.ok(await eventually(() => supervisor.status() === 'unavailable' || supervisor.epoch() !== epoch))
+  // A suspended Windows debugger can hold the exit notification. Resume after
+  // the supervisor has fenced this generation, then require a new OS process.
+  await paused.resume().catch(() => {})
   assert.ok(await eventually(() => supervisor.epoch() !== epoch && supervisor.status() === 'ready'))
   assert.notEqual(supervisor.pid(), pid)
   assert.equal(typeof await supervisor.callHost('revision', { args: [] }), 'number')
