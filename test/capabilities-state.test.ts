@@ -58,14 +58,16 @@ test('how a server stands: a key missing, connected, dropped with why, or not ye
   assert.deepEqual(serverStanding(server('new'), status), { kind: 'idle' })
 })
 
-test('how a plugin stands: broken, off, on but needing dsh\'s Web host, rows not running, or on', () => {
+test('installed plugin status gives loader rows priority over manifest warnings', () => {
   assert.deepEqual(pluginStanding(plugin('p', { error: { code: 'incompatible-version', detail: 'needs 0.1' } })), { kind: 'error', code: 'incompatible-version', detail: 'needs 0.1' })
   const rows = [{ id: 'a', entryId: 'e1', enabled: true, phase: 'pending' }, { id: 'b', entryId: 'e2', enabled: true, phase: 'active' }, { id: 'c', entryId: null, enabled: false, phase: null }]
   assert.deepEqual(pluginStanding(plugin('p', { rows })), { kind: 'stalled', rows: ['a'] })
   assert.deepEqual(pluginStanding(plugin('p', { rows, enabled: false })), { kind: 'off' })
   assert.deepEqual(pluginStanding(plugin('p')), { kind: 'on' })
   const web = { kind: 'needs-web' as const, needs: ['@deepseek-ai/dsh-host-webserver'] }
-  assert.deepEqual(pluginStanding(plugin('p', { fit: web, rows })), { kind: 'unsupported', needs: web.needs })
+  assert.deepEqual(pluginStanding(plugin('p', { fit: web })), { kind: 'unsupported', needs: web.needs })
+  assert.deepEqual(pluginStanding(plugin('p', { fit: web, rows })), { kind: 'stalled', rows: ['a'] })
+  assert.deepEqual(pluginStanding(plugin('p', { fit: web, rows: [rows[1]] })), { kind: 'loaded' })
   assert.deepEqual(pluginStanding(plugin('p', { fit: web, enabled: false })), { kind: 'off' }, 'switched off, it is not in the way')
 })
 

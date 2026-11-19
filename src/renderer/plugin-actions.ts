@@ -51,12 +51,15 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     if (!spec) return fail(t('plugins.enter.spec'))
     if (plugins().busy) return
     dispatch({ type: 'plugins_busy' })
+    const stillCurrent = () => plugins().spec.trim() === spec
     try {
       const inspection = await api.inspectPlugin(spec)
+      if (!stillCurrent()) return dispatch({ type: 'plugins_inspected', inspection: null })
       if (!inspection.ok) return fail(problemText(inspection.problem))
       dispatch({ type: 'plugins_inspected', inspection })
     } catch (err) {
-      fail(errorMessage(err))
+      if (stillCurrent()) fail(errorMessage(err))
+      else dispatch({ type: 'plugins_inspected', inspection: null })
     }
   }
 
@@ -84,7 +87,8 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     inspectPlugin,
     /** 安装, or 允许并安装 with the build scripts the first attempt asked for. */
     installPlugin() {
-      const { spec, pendingBuilds } = plugins()
+      const { spec, inspection, pendingBuilds } = plugins()
+      if (inspection?.fit?.kind === 'dsh-version') return
       if (!spec.trim()) return fail(t('plugins.enter.spec'))
       return change(() => api.installPlugin(spec.trim(), pendingBuilds.length ? [...pendingBuilds] : undefined))
     },

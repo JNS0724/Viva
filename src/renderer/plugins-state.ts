@@ -91,7 +91,7 @@ const PROBLEMS: Readonly<Record<string, () => string>> = Object.freeze({
   'not-a-package': () => t('plugins.problem.not-a-package'),
   'not-a-bundle': () => t('plugins.problem.not-a-bundle'),
   network: () => t('plugins.problem.network'),
-  'incompatible-version': () => t('plugins.problem.incompatible-version'),
+  'incompatible-version': () => t('plugins.fit.dsh.version'),
 })
 
 /** dsh's code for a refusal, in the user's words; the manager's own words for anything else. */

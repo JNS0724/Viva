@@ -14,7 +14,7 @@ function profile(t: TestContext) {
     fs.writeFileSync(path.join(dir, 'node_modules', ...name.split('/'), 'package.json'), JSON.stringify({ name, ...manifest }))
   }
   pkg('@someone/search', { dsh: { bundle: { patch: 'p.yml' }, client: { platform: 'web' } } })
-  pkg('compact', { dsh: { bundle: { patch: 'p.yml' } }, peerDependencies: { '@deepseek-ai/dsh-host-webserver': '0.2.0' } })
+  pkg('compact', { dsh: { bundle: { patch: 'p.yml' } }, peerDependencies: { '@deepseek-ai/dsh-host-webserver': '*' } })
   return dir
 }
 
@@ -66,7 +66,7 @@ test('the channels ask the plugin manager; with dsh down the section says it is 
     asked.push([op, args])
     if (!up) return { ok: false, problem: 'disconnected' }
     if (op === 'list') return { ok: true, value: LIST }
-    if (op === 'inspect') return { ok: true, value: { status: 'accepted', name: 'compact', version: '2.0.0', bundle: true } }
+    if (op === 'inspect') return { ok: true, value: { status: 'accepted', kind: 'registry', name: 'compact', version: '2.0.0', bundle: true } }
     return { ok: true, value: { changed: true, application: 'applied' } }
   }
   const looked: string[] = []
@@ -80,25 +80,25 @@ test('the channels ask the plugin manager; with dsh down the section says it is 
   assert.deepEqual([...handlers.keys()].sort(), ['plugins:catalog', 'plugins:get', 'plugins:inspect', 'plugins:install', 'plugins:remove', 'plugins:set-enabled', 'plugins:set-source', 'plugins:source'])
 
   assert.equal(((await invoke('plugins:get')) as { plugins: unknown[] }).plugins.length, 2)
-  assert.deepEqual(await invoke('plugins:inspect', 'compact'), {
+  assert.deepEqual(await invoke('plugins:inspect', 'compact@^2'), {
     ok: true, name: 'compact', version: '2.0.0', description: null, bundle: true, fit: { kind: 'needs-web', needs: ['@deepseek-ai/dsh-web-app'] },
   }, 'what it names, and whether it works in Viva, before anything is installed')
   assert.deepEqual(await invoke('plugins:catalog', 'notes'), { ok: true, entries: [] })
-  assert.deepEqual([looked, searched], [['compact'], ['notes']])
+  assert.deepEqual([looked, searched], [['compact@2.0.0'], ['notes']])
   const installed = await invoke('plugins:install', 'compact', ['esbuild']) as { change: { application: string }, view: { plugins: unknown[] } }
   assert.equal(installed.change.application, 'applied')
   assert.equal(installed.view.plugins.length, 2, 'the list as it is after the change')
   await invoke('plugins:set-enabled', 'compact', true)
   await invoke('plugins:remove', 'compact')
   assert.deepEqual(asked.filter(([op]) => op !== 'list'), [
-    ['inspect', { spec: 'compact' }], ['install', { spec: 'compact', approvedBuilds: ['esbuild'] }],
+    ['inspect', { spec: 'compact@^2' }], ['install', { spec: 'compact', approvedBuilds: ['esbuild'] }],
     ['setBundle', { name: 'compact', enabled: true }], ['remove', { name: 'compact' }],
   ])
 
   up = false
   assert.deepEqual(await invoke('plugins:get'), { connected: false, plugins: [] })
   await assert.rejects(Promise.resolve(invoke('plugins:inspect', 'other')), /disconnected/)
-  assert.deepEqual(looked, ['compact'], 'a spec dsh could not look at is not looked up on the source either')
+  assert.deepEqual(looked, ['compact@2.0.0'], 'a spec dsh could not look at is not looked up on the source either')
   await assert.rejects(Promise.resolve(invoke('plugins:remove', 'compact')), /disconnected/)
 })
 

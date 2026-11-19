@@ -69,20 +69,20 @@ export function serverStanding(server: ServerView, status: ExtensionStatus): Ser
   return dropped ? { kind: 'dropped', reason: dropped.reason } : { kind: 'idle' }
 }
 
-/**
- * How a plugin stands: dsh says what is wrong with it, switched off, on but needing dsh's Web host (which Viva does
- * not run), rows switched on that do not run, or on.
- */
+/** The loader's state takes precedence over the manifest preflight. */
 export type PluginStanding = { kind: 'error', code: string, detail: string | null } | { kind: 'off' }
-  | { kind: 'unsupported', needs: readonly string[] } | { kind: 'stalled', rows: readonly string[] } | { kind: 'on' }
+  | { kind: 'unsupported', needs: readonly string[] } | { kind: 'stalled', rows: readonly string[] }
+  | { kind: 'loaded' } | { kind: 'on' }
 
 export function pluginStanding(plugin: PluginView): PluginStanding {
   if (plugin.error) return { kind: 'error', code: plugin.error.code, detail: plugin.error.detail }
   if (!plugin.enabled) return { kind: 'off' }
+  const rows = plugin.rows.filter(row => row.entryId)
+  const stalled = rows.filter(row => row.phase !== 'active').map(row => row.id)
+  if (stalled.length) return { kind: 'stalled', rows: stalled }
+  if (rows.length) return { kind: 'loaded' }
   if (plugin.fit.kind === 'needs-web') return { kind: 'unsupported', needs: plugin.fit.needs }
-  // A row waiting for a service only dsh's Web client has, or that failed to load.
-  const stalled = plugin.rows.filter((row) => row.entryId && row.phase !== 'active').map((row) => row.id)
-  return stalled.length ? { kind: 'stalled', rows: stalled } : { kind: 'on' }
+  return { kind: 'on' }
 }
 
 const skillWrong = (skill: SkillView) => Boolean(skill.issues?.length)

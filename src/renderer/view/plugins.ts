@@ -1,7 +1,7 @@
 import { t } from '../../shared/i18n/translate.ts'
 import type { PluginFit } from '../capability-types.ts'
 import { composedInput, h, label } from './dom.ts'
-import { fitText } from './plugin-fit-text.ts'
+import { fitText, fitTone } from './plugin-fit-text.ts'
 
 /** Installing a dsh plugin, for 能力 · 插件 (view/capability-plugins.ts): the spec, what it names, then 安装. */
 /** The 插件 part of the state (plugins-state.ts). */
@@ -30,16 +30,21 @@ export function installCard(plugins: Plugins, handlers: Handlers, { listed = fal
   if (!found && !plugins.pendingBuilds.length) return null
   const shown = cardFit(found?.fit, { listed, listedFit })
   const fit = shown ? fitText(shown) : null
+  const warning = shown && fitTone(shown) === 'off'
+  const version = found?.fit?.kind === 'dsh-version' ? found.fit : null
   return h('div', { class: 'ext-group', role: 'group', 'aria-label': t('plugins.install') },
     found && !listed ? h('b', { text: t('plugins.found', { name: found.name ?? plugins.spec, version: found.version ?? '' }).trim() }) : null,
     found?.description && !listed ? h('p', { class: 'help', text: found.description }) : null,
     found?.bundle === false ? h('p', { class: 'form-error', text: t('plugins.not.a.bundle') }) : null,
-    fit ? h('p', { class: shown?.kind === 'needs-web' ? 'form-error' : 'help', role: shown?.kind === 'needs-web' ? 'alert' : null, text: fit }) : null,
+    fit ? h('p', { class: warning ? 'form-error' : 'help', role: warning ? 'alert' : null, text: fit }) : null,
+    version ? h('details', { class: 'help' },
+      h('summary', { text: t('plugins.fit.dsh.current', { version: version.current }) }),
+      h('ul', null, Object.entries(version.requirements).map(([key, range]) => h('li', { text: `${key} ${range}` })))) : null,
     plugins.pendingBuilds.length ? h('p', { class: 'help', text: t('plugins.builds', { names: plugins.pendingBuilds.join('、') }) }) : null,
     h('p', { class: 'help', text: t('plugins.trust') }),
     h('div', { class: 'settings-actions' },
-      // One that cannot work here can still be installed, but 安装 is not offered as the thing to do.
-      button(found?.fit?.kind === 'needs-web' ? 'outline' : 'accent', plugins.pendingBuilds.length ? t('plugins.allow.builds') : t('plugins.install'), () => handlers.installPlugin(), plugins.busy),
+      button(found?.fit && fitTone(found.fit) === 'off' ? 'outline' : 'accent',
+        plugins.pendingBuilds.length ? t('plugins.allow.builds') : t('plugins.install'), () => handlers.installPlugin(), plugins.busy || Boolean(version)),
       button('outline', t('plugins.cancel'), () => handlers.dismissPluginInstall(), plugins.busy)))
 }
 

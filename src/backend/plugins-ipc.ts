@@ -5,7 +5,7 @@ import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { CatalogAnswer } from './plugin-catalog.ts'
 import type { PluginSourceView } from './plugin-source.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
-import { declaredReadOnlyTools, vivaFit, type VivaFit } from './plugin-fit.ts'
+import { declaredReadOnlyTools, profileFitOptions, vivaFit, type VivaFit } from './plugin-fit.ts'
 
 /**
  * IPC for the 插件 section of settings: the dsh plugins the user installed (bundles in the profile), installed by
@@ -50,9 +50,9 @@ const errorOf = (value: unknown) => {
 }
 
 /** Whether the installed package works in Viva; unknown when its package.json cannot be read. */
-export function fitOf(profileDir: string, name: string): VivaFit {
+export function fitOf(profileDir: string, name: string, options = profileFitOptions(profileDir)): VivaFit {
   try {
-    return vivaFit(JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')))
+    return vivaFit(JSON.parse(fs.readFileSync(path.join(profileDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')), options)
   } catch {
     return { kind: 'unknown' }
   }
@@ -73,6 +73,7 @@ export function readOnlyToolsOf(profileDir: string, name: string): string[] {
  */
 export function pluginsView(value: unknown, profileDir: string): PluginView[] {
   const { bundles, plugins } = record(value)
+  const options = profileFitOptions(profileDir)
   const running = new Map(list(plugins).map(record).map((entry) => [String(entry.entryId ?? ''), entry]))
   return list(bundles).map(record).filter((bundle) => bundle.installed === true && bundle.optional !== true).map((bundle) => {
     const name = String(bundle.name ?? '')
@@ -83,7 +84,7 @@ export function pluginsView(value: unknown, profileDir: string): PluginView[] {
       enabled: bundle.enabled === true,
       removable: bundle.removable === true,
       error: errorOf(bundle.error),
-      fit: fitOf(profileDir, name),
+      fit: fitOf(profileDir, name, options),
       feedSourceTools: readOnlyToolsOf(profileDir, name),
       rows: list(bundle.rows).map(record).map((row) => {
         const entryId = str(row.entryId)
@@ -142,8 +143,11 @@ export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('plugins:get', view)
   // What dsh says the spec names first; only one it could look at is looked up on the source too.
   handle('plugins:inspect', async (spec) => {
-    const found = inspectionView(await ask(deps.call, 'inspect', { spec }))
-    return found.ok ? { ...found, fit: await deps.specFit(spec) } : found
+    const inspection = await ask(deps.call, 'inspect', { spec })
+    const found = inspectionView(inspection)
+    if (!found.ok) return found
+    const exact = record(inspection).kind === 'registry' && found.name && found.version ? `${found.name}@${found.version}` : spec
+    return { ...found, fit: await deps.specFit(exact) }
   })
   handle('plugins:catalog', (query) => deps.catalog(query))
   handle('plugins:install', (spec, approvedBuilds) => changed('install', { spec, ...(approvedBuilds?.length ? { approvedBuilds } : {}) }))

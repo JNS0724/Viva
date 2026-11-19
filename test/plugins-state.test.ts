@@ -78,7 +78,7 @@ test('dsh\'s refusals are put in the user\'s words; a change that failed still s
   await actions.inspectPlugin()
   assert.match(state().plugins.error ?? '', /package registry/)
   await actions.setPluginEnabled('x', true)
-  assert.equal(state().plugins.error, 'This plugin does not support the dsh version in Viva.')
+  assert.equal(state().plugins.error, 'Incompatible dsh version')
   assert.equal(state().plugins.plugins.length, 1)
   setLocale('zh-CN')
 })
