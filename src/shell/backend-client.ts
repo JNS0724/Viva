@@ -275,14 +275,13 @@ export function spawnBackend({ entry, start, onExit }: {
 
   async function shutdown(connection: Connection) {
     expected = true
-    try {
-      await connection.control('close')
-    } catch (err) {
-      emitDiagnosticFailure('shutdown', err)
-    }
+    // The close RPC itself may be stuck behind an earlier ordered request.
+    // Start the exit deadline before sending it and wait on the child, not the reply.
     const timer = setTimeout(() => child.kill(), EXIT_WAIT_MS)
-    await exited
-    clearTimeout(timer)
+    try {
+      void connection.control('close').catch(err => emitDiagnosticFailure('shutdown', err))
+      await exited
+    } finally { clearTimeout(timer) }
   }
 
   return new Promise((resolve, reject) => {
