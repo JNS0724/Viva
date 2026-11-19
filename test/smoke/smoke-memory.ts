@@ -185,8 +185,8 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   await capture(win, outDir, 'memory-profile')
   await run(win, `document.querySelector('[name="memory-rebuild-indexes"]').click()`)
   await until(win, `document.querySelector('.toast')?.textContent?.includes('已开始重建索引')`, 'the file index rebuild receipt')
-  expect((await run(win, fileDetail(note.identity)))?.markdown.includes(REPORT_MEMORY), 'the current file survives index rebuilding')
   await closeProfile(win)
+  expect((await run(win, fileDetail(note.identity)))?.markdown.includes(REPORT_MEMORY), 'the current file survives index rebuilding')
 
   const question = '周报提交约定'
   const sent = await askUsingMemory(win, hooks, question)
@@ -500,14 +500,15 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
     .find(button => button.textContent === ${JSON.stringify(label)})`
   await run(win, `(${button('停止使用这条记忆')}).click()`)
   await until(win, button('查看停用片段 1'), 'the archived selection')
-  const stopped = await until(win, `${fileDetail(note.identity)}.then(file => file?.restrictions?.length === 1 && file)`,
-    'the selected file is held by its own restriction')
-  expect(stopped.restrictions[0].version.usageVersion > note.version.usageVersion, 'stopping advances the usage version')
   await run(win, `(${button('查看停用片段 1')}).click()`)
   await until(win, button('恢复使用这段内容'), 'the exact archived range can be resumed')
   expect(!await run(win, button('删除记忆文件')), 'a stopped range only offers restore')
   await capture(win, outDir, 'memory-stopped')
   await closeProfile(win)
+
+  const stopped = await until(win, `${fileDetail(note.identity)}.then(file => file?.restrictions?.length === 1 && file)`,
+    'the selected file is held by its own restriction')
+  expect(stopped.restrictions[0].version.usageVersion > note.version.usageVersion, 'stopping advances the usage version')
 
   const during = await askUsingMemory(win, hooks, '周报提交约定？')
   expect(during.length > 0 && during.every(request => !readsFileMemory(request, REPORT_MEMORY)), 'the stopped range is omitted from file retrieval', during.length)
@@ -516,9 +517,13 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await run(win, `(${button('查看停用片段 1')}).click()`)
   await until(win, button('恢复使用这段内容'), 'the scoped restore control')
   await run(win, `(${button('恢复使用这段内容')}).click()`)
+  await until(win, `(${button('停止使用这条记忆')}) && !(${button('查看停用片段 1')})
+    && document.querySelector(${JSON.stringify(detail)})?.textContent.includes(${JSON.stringify(REPORT_MEMORY)})`,
+    'the restored note is visible and has no archived range')
+  // The independent storage assertion runs after the page has released its reads.
+  await closeProfile(win)
   await until(win, `${fileDetail(note.identity)}.then(file => file?.markdown.includes(${JSON.stringify(REPORT_MEMORY)}) && !file.restrictions?.length)`,
     'the released range is rebuilt from its sources')
-  await closeProfile(win)
   const after = await askUsingMemory(win, hooks, '周报提交约定。')
   expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
 
@@ -532,10 +537,12 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await run(win, `(${button('删除记忆文件')}).click()`)
   await capture(win, outDir, 'memory-file-delete')
   await run(win, `document.querySelector('[name="memory-file-forget-confirm"]').click()`)
+  await until(win, `document.querySelector('[data-memory-file-forget-status="complete"], [data-memory-file-forget-status="pending"]')`,
+    'the file deletion receipt is visible')
+  await closeProfile(win)
   await until(win, `${fileDetail(toDelete.identity)}.then(file => file === null)`, 'the confirmed daily file disappears')
   const remaining: string[] = await run(win, originals)
   expect(before.every(id => remaining.includes(id)), 'the original user messages remain searchable after file deletion')
-  await closeProfile(win)
 
   await newTopic(win)
   const withdrawn = await writeDailyMemory(win, WITHDRAWN, WITHDRAWN_TITLE)
