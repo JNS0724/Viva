@@ -36,6 +36,8 @@ export interface Schedule {
 /** One occurrence taken: its key (one item per key in 动态) and the schedule as it was. */
 export interface Occurrence { key: string, at: string, schedule: Schedule }
 
+// dsh stores scheduledAt as a canonical UTC ISO instant, so text order is chronological.
+const scheduledAtSql = "json_extract(record, '$.scheduledAt')"
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS schedules (
     id TEXT PRIMARY KEY,
@@ -47,6 +49,7 @@ const SCHEMA = `
     memory TEXT,
     revision INTEGER NOT NULL DEFAULT 0
   );
+  CREATE INDEX IF NOT EXISTS schedules_active_due ON schedules (${scheduledAtSql}) WHERE status = 'active';
 `
 
 type Row = Record<string, unknown>
@@ -117,9 +120,11 @@ export function openScheduleStore({ db, now = Date.now, newId = () => `s${crypto
     .toSorted((a, b) => Date.parse(a.record.scheduledAt) - Date.parse(b.record.scheduledAt))
 
   /** When the next active one is due, or null. */
+  const earliest = db.prepare(`SELECT ${scheduledAtSql} AS at FROM schedules WHERE status = 'active' ORDER BY ${scheduledAtSql} LIMIT 1`)
+  const due = db.prepare(`SELECT * FROM schedules WHERE status = 'active' AND ${scheduledAtSql} <= ? ORDER BY ${scheduledAtSql}, rowid`)
   const nextDueAt = (): number | null => {
-    const active = list().filter((schedule) => schedule.status === 'active')
-    return active.length ? Date.parse(active[0].record.scheduledAt) : null
+    const row = earliest.get()
+    return row ? Date.parse(String(row.at)) : null
   }
 
   /**
@@ -129,7 +134,8 @@ export function openScheduleStore({ db, now = Date.now, newId = () => `s${crypto
    */
   function takeDue(): Occurrence[] {
     const at = now()
-    return list().filter((schedule) => schedule.status === 'active' && Date.parse(schedule.record.scheduledAt) <= at).map((schedule) => {
+    return due.all(new Date(at).toISOString()).map(row => {
+      const schedule = scheduleOf(row)
       const { record } = schedule
       if (!isRecurringScheduleRecord(record)) {
         write({ ...schedule, status: 'ended' })

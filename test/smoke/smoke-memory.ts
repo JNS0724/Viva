@@ -17,6 +17,8 @@ const POLL_MS = 200
 const ROLE = '支付平台部的后端负责人'
 export const REPORT_MEMORY = '周报每周五下班前交给张三'
 export const REPORT_TITLE = '周报提交约定'
+const DELETE_MEMORY = '青竹项目的验收清单由陈工维护'
+const DELETE_TITLE = '青竹项目验收约定'
 const WITHDRAWN = '海棠城合成记忆一七二'
 const WITHDRAWN_TITLE = '海棠城项目约定'
 const PROVIDER = '本地网关'
@@ -28,7 +30,7 @@ export function fileMemorySmokeAnswer(request: object) {
   const { system, messages } = request as { system?: unknown, messages?: Array<{ content?: unknown }> }
   if (!JSON.stringify(system ?? '').includes('整理最近完成的会话回合')) return null
   const supplied = JSON.stringify(messages?.at(-1)?.content ?? '')
-  const record = [[REPORT_TITLE, REPORT_MEMORY], [WITHDRAWN_TITLE, WITHDRAWN]].find(([, body]) => supplied.includes(body!))
+  const record = [[REPORT_TITLE, REPORT_MEMORY], [DELETE_TITLE, DELETE_MEMORY], [WITHDRAWN_TITLE, WITHDRAWN]].find(([, body]) => supplied.includes(body!))
   const note = record ? { status: 'write', title: record[0], markdown: `# ${record[0]}\n\n${record[1]}` } : { status: 'skip' }
   return { text: JSON.stringify(note) }
 }
@@ -520,14 +522,17 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   const after = await askUsingMemory(win, hooks, '周报提交约定。')
   expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
 
-  const originals = `window.agent.searchTimeline(${JSON.stringify(REPORT_MEMORY)}).then(hits => hits.filter(hit => hit.role === 'user').map(hit => hit.messageId))`
+  // Keep the restored report note for the installed cross-language check after restart.
+  await newTopic(win)
+  const toDelete = await writeDailyMemory(win, DELETE_MEMORY, DELETE_TITLE)
+  const originals = `window.agent.searchTimeline(${JSON.stringify(DELETE_MEMORY)}).then(hits => hits.filter(hit => hit.role === 'user').map(hit => hit.messageId))`
   const before: string[] = await run(win, originals)
   expect(before.length > 0, 'the original user message is indexed before file deletion')
-  await openDailyMemory(win, note.identity)
+  await openDailyMemory(win, toDelete.identity)
   await run(win, `(${button('删除记忆文件')}).click()`)
   await capture(win, outDir, 'memory-file-delete')
   await run(win, `document.querySelector('[name="memory-file-forget-confirm"]').click()`)
-  await until(win, `${fileDetail(note.identity)}.then(file => file === null)`, 'the confirmed daily file disappears')
+  await until(win, `${fileDetail(toDelete.identity)}.then(file => file === null)`, 'the confirmed daily file disappears')
   const remaining: string[] = await run(win, originals)
   expect(before.every(id => remaining.includes(id)), 'the original user messages remain searchable after file deletion')
   await closeProfile(win)

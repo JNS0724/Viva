@@ -148,6 +148,17 @@ test('backend startup explicitly separates early health messages from its ready 
   assert.equal(unexpected, false)
 })
 
+test('shell shutdown waits for process exit even when its close RPC never answers', { timeout: 20_000 }, async t => {
+  let unexpected = false, closed = false
+  const backend = await spawnBackend({ entry: fileURLToPath(new URL('./fixtures/diagnostic-startup.ts', import.meta.url)),
+    start: { ...START, type: 'start', token: TOKEN, dataKey: null }, onExit: () => { unexpected = true } })
+  t.after(() => { if (!closed && backend.pid) process.kill(backend.pid) })
+  await backend.connection.control('stallClose')
+  await backend.shutdown()
+  closed = true
+  assert.equal(unexpected, false)
+})
+
 test('complete malformed JSON is counted once, does not leak, and does not prevent later records', async () => {
   const source = Buffer.from(`${JSON.stringify(fixture(1))}\n{"secret":"秘密_CANARY_🙂",oops}\n${JSON.stringify(fixture(3))}\n`)
   const chunks = Array.from({ length: Math.ceil(source.length / 3) }, (_, index) => source.subarray(index * 3, index * 3 + 3))

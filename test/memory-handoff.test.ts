@@ -1832,7 +1832,7 @@ test('deleting a memory file preserves the original chat and the task and report
   const task = await eventually(() => app.tasks().find(item => item.endedAt && item.task.title === brief))
   assert.ok(task)
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-  t.after(() => history.close())
+  app.defer(() => history.close())
   const reports = () => history.prepare(`SELECT r.report_id,r.text FROM report_records r JOIN memory_report_proofs p
     ON p.report_id=r.report_id WHERE p.memory LIKE ? ORDER BY r.report_id`).all('%' + file.identity.id + '%')
   assert.ok(await eventually(() => reports().length > 0), 'the saved report carries this file as evidence')

@@ -11,8 +11,15 @@ process.once('message', async raw => {
   const peer = createDiagnosticPeer({ component: 'backend', source, send(message, settled) { process.send?.(message, settled) } })
   process.on('message', peer.receive)
   const remote = createRemoteHost({ start, secrets: createEnvelope({ key: null }) })
+  let stallClose = false
   const server = createRpcServer({ token: start.token, channels: new Map(), remote, since: () => [], image: () => new Response(null, { status: 404 }),
-    controls: { close: () => { setTimeout(() => { peer.close(); void server.close().finally(() => process.exit(0)) }, 50) } } })
+    controls: {
+      stallClose: () => { stallClose = true },
+      close: () => {
+        if (stallClose) return new Promise<void>(() => {})
+        setTimeout(() => { peer.close(); void server.close().finally(() => process.exit(0)) }, 50)
+      },
+    } })
   const port = await server.listen()
   process.send?.({ type: 'ready', port, channels: [], locale: 'en' })
 })
