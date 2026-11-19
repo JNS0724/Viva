@@ -44,20 +44,17 @@ test('two expired callers retain actual read slots; late terminals settle before
   assert.deepEqual(f.channel.readState(), { batches: 0, executions: 0 })
 })
 
-test('a five-read page inherits one shrinking deadline and stops dispatching after expiry', async t => {
+test('the profile page has one owner round trip and discards a reply after its deadline', async t => {
   const f = channelFixture(); t.after(() => f.channel.close())
   const client = createVivaMemoryClient(f.channel.call, f.channel.readBatch)
-  const page = client.readPage(undefined, { budgetMs: 35 })
+  const project = { kind: 'project' as const, id: 'current' }
+  const page = client.readPage(project, { budgetMs: 35 })
   const expired = assert.rejects(page, RequestTimeout)
-  await tick(); f.answer(0, {})
   await tick()
-  assert.deepEqual(f.sent.map(message => message.method), ['profile', 'onboarding'])
-  const reads = f.sent.map(message => memoryHostRead.parse(message.read))
-  assert.equal(reads[0]!.readBatchId, reads[1]!.readBatchId)
-  assert.ok(reads[1]!.budgetMs < reads[0]!.budgetMs)
+  assert.deepEqual(f.sent.map(message => [message.method, message.input]), [['profilePage', { args: [project] }]])
+  assert.ok(memoryHostRead.parse(f.sent[0]!.read).budgetMs <= 35)
   await expired
-  f.answer(1, 'done'); await tick()
-  assert.equal(f.sent.length, 2, 'late completion must not dispatch cleanup/revision/fileProfile')
+  f.answer(0)
   assert.deepEqual(f.channel.readState(), { batches: 0, executions: 0 })
 })
 
@@ -118,7 +115,7 @@ test('budget cancellation rejects the caller, retains task rejection handling an
   budget.close()
 })
 
-test('dream model waits, repeated retry and persisted recovery never become a dependency of the five page reads', { timeout: 10_000 }, async t => {
+test('dream model waits, repeated retry and persisted recovery never become a dependency of a profile or foreground query', { timeout: 10_000 }, async t => {
   const { dir: root, defer } = scratch(t, 'memory-availability-dream-')
   let entered!: () => void, finish!: () => void
   let running!: Promise<void>
@@ -160,6 +157,11 @@ test('dream model waits, repeated retry and persisted recovery never become a de
     assert.equal(page.onboarding, 'pending')
     assert.equal(typeof page.revision, 'number')
     assert.equal(owner.ready(), true)
+    const list = await client.listFiles({ query: 'weekly' })
+    assert.ok(list.items.length > 0)
+    const recall = await owner.runtime.handleModelRequest({ op: 'recall', session: source.sessionId, query: 'weekly report' },
+      owner.sessionContext(source.sessionId), () => owner.ready())
+    assert.ok(JSON.parse(recall).notes.length > 0)
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     const started = new Promise<void>(resolve => { entered = resolve })

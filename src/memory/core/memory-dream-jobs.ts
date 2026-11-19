@@ -562,6 +562,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   transaction(() => { if (!effects.get(DREAM, DAILY)) schedule() })
   return {
     status,
+    isRunning: () => active,
     request() {
       const state = status().state
       if (state !== 'running' && state !== 'queued') {

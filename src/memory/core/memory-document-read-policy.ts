@@ -7,7 +7,7 @@ import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryD
 import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
 
-type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
+type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
 type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'aliases' | 'projectErasedLocators'>>
 
 /** A single authorized view used by dream and all file retrieval paths. The original is
@@ -63,7 +63,7 @@ export function mergeDocumentSources(refs: readonly DocumentSourceRef[]): Docume
 /** Source and prose validation is shared with write jobs; backend-issued hashes are
  * removed only from their exact trusted path/metadata positions for credential checks. */
 export function createMemoryDocumentEvidence({ notes, documents, hash, source, readable, allowsText }: {
-  notes: ReadNotes, documents: ReadDocuments, hash(text: string): string,
+  notes: Pick<MemoryNotes, 'snapshot' | 'registeredForSources'> & Partial<Pick<MemoryNotes, 'aliases'>>, documents: ReadDocuments, hash(text: string): string,
   source(id: string): MemorySource | undefined, readable(id: string): boolean,
   allowsText(text: string, source: MemorySource): boolean,
 }) {
@@ -76,8 +76,7 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
     })
   }
   const materialAllowed = (text: string, refs: readonly DocumentSourceRef[]) => {
-    const ids = new Set(refs.map(ref => ref.id))
-    const scoped = notes.registered().filter(note => note.sources.some(ref => ids.has(ref.id)))
+    const scoped = notes.registeredForSources(refs.map(ref => ref.id))
     const workspaces = [...new Set([...scoped.map(note => note.workspace), ...refs.flatMap(ref => {
       const original = source(ref.id)
       return original ? [hash(JSON.stringify([original.scope, original.context, original.project ?? null]))] : []
@@ -127,7 +126,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     const key = JSON.stringify([workspace, path])
     if (ancestors.has(key)) return null
     const chain = new Set([...ancestors, key])
-    const registered = path.startsWith('daily/') ? notes.registered().find(item => item.workspace === workspace && item.path === path) : undefined
+    const registered = path.startsWith('daily/') ? notes.registeredAt(workspace, path) : undefined
     const note = registered ? notes.read(registered.key) : undefined
     if (note && note.fileRevision !== registered?.file_revision) return null
     const digest = path.startsWith('digest/') ? acceptedDigest ?? documents.read(workspace, path, { includeDisabled }) : null
@@ -158,7 +157,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       correctionSources.push(...anchorSources)
       return item
     })
-    const candidates = documents.registered(workspace)
+    const candidates = supersessions.length ? documents.registered(workspace) : []
     const replacements = supersessions.map(item => {
       const entry = candidates.find(candidate => candidate.id === item.documentId && candidate.state === 'active')
       const candidate = entry ? documents.read(workspace, entry.path) : null

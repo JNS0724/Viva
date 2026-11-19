@@ -793,7 +793,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const query = fileQuery(request, origin)
       if (!query) return textOf({ status: 'rejected', reason: 'invalid-date' })
       if (mutation || closed || signal?.aborted || !stillCurrent()) return textOf({ status: 'unavailable' })
-      return fileRetrieval.search({ ...query, signal }).then(result => {
+      return fileRetrieval.search({ ...query, signal, publishedVectorsOnly: dream?.isRunning() }).then(result => {
         if (mutation || closed || signal?.aborted || !stillCurrent()) return textOf({ status: 'unavailable' })
         return filePacket(request.session, result)
       })

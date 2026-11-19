@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import { createMemoryFileActions } from './memory-file-actions.ts'
+import { memoryFilePageOpen } from './memory-file-state.ts'
 import { createRequestBudget, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
 const NOTICE_TOAST_MS = 6000
 /** The profile fields the intro asks for: all three. Sites and documents are only read, not kept. */
@@ -51,29 +52,48 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       }
     }
   }
-  let memoryRequest = 0
+  let memoryRequest = 0, profileGeneration = 0
   let active: { page: string, lifetime: ReturnType<typeof createRequestBudget>, promise: Promise<boolean> } | undefined
   const fail = (err: unknown) => dispatch({ type: 'memory_failed', message: errorMessage(err) })
 
-  function loadMemory(): Promise<boolean> {
+  function readProfile(): Promise<boolean> {
     const page = `${getState().memory.open}:${getState().memory.view}`
     if (active?.page === page && !active.lifetime.signal.aborted) return active.promise
     active?.lifetime.cancel(); active?.lifetime.close()
-    const request = ++memoryRequest
+    const request = ++memoryRequest, generation = profileGeneration
     const lifetime = createRequestBudget(readBudgetMs)
     const promise = lifetime.run(() => api.getMemory({ budgetMs: lifetime.remainingMs() })).then(data => {
-      if (request !== memoryRequest) return false
-      dispatch({ type: 'memory_loaded', data }); void files.refreshFiles()
+      if (request !== memoryRequest || generation !== profileGeneration) return false
+      dispatch({ type: 'memory_loaded', data })
       return true
     }, err => {
-      if (request === memoryRequest) dispatch({ type: 'memory_load_failed', message: err instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(err) })
+      if (request === memoryRequest && generation === profileGeneration) dispatch({ type: 'memory_load_failed', message: err instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(err) })
       return false
     }).finally(() => { lifetime.close(); if (request === memoryRequest) active = undefined })
+      .then(loaded => request === memoryRequest && generation !== profileGeneration ? readProfile() : loaded)
     active = { page, lifetime, promise }
     return promise
   }
 
+  let fileRefresh: Promise<void> | undefined
+  function refreshProfileFiles() {
+    if (fileRefresh || !memoryFilePageOpen(getState().memory)) return
+    const generation = profileGeneration
+    const current = files.refreshFiles().finally(() => {
+      if (fileRefresh !== current) return
+      fileRefresh = undefined
+      if (generation !== profileGeneration) refreshProfileFiles()
+    })
+    fileRefresh = current
+  }
+
+  function loadMemory(): Promise<boolean> {
+    refreshProfileFiles()
+    return readProfile()
+  }
+
   async function refreshMemoryViews() {
+    profileGeneration++
     dispatch({ type: 'memory_summaries_stale' })
     files.invalidateFiles()
     await loadMemory()
@@ -111,11 +131,13 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     },
     loadMemory,
     openProfile(view = 'profile') {
+      fileRefresh = undefined
       files.cancelReads()
       dispatch({ type: 'memory_open', view })
       loadMemory()
     },
     closeProfile() {
+      fileRefresh = undefined
       files.cancelReads()
       memoryRequest++
       active?.lifetime.cancel(); active?.lifetime.close(); active = undefined

@@ -80,7 +80,7 @@ function profileView(memory: MemoryPage, handlers: Handlers): View[] {
     h('section', { class: 'profile-section' },
       h('h3', { class: 'profile-heading', text: t("profile-panel.your.profile") }),
       h('div', { class: 'profile-grid' }, PROFILE_FIELDS.map((field) => fieldCard(field, memory, handlers))),
-      habitsRow(memory.habits)),
+      habitsRow(memory.habits), memoryLoadError(memory, handlers)),
     fileProfile ? fileSummarySection('user', fileProfile.user, handlers) : null,
     fileProfile ? fileSummarySection('project', fileProfile.project, handlers) : null,
     memoryFilesSection(memory, handlers),

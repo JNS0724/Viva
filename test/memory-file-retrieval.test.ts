@@ -70,7 +70,18 @@ test('automatic context returns lexical evidence before cold passage encoding an
   assert.equal(strong.hits[0]?.id, 'weekly')
 })
 
-test('slow hot query falls back to lexical evidence and its late vector cannot enter the completed turn', async t => {
+test('explicit recall during Dream returns lexical results without starting a cold embedding job', async t => {
+  const { embedder, calls } = encoder()
+  const { retrieval } = setup(t, [view('weekly', 'weekly report')], embedder)
+  const result = await retrieval.search({ query: 'weekly report', publishedVectorsOnly: true, allows })
+  assert.deepEqual(result.hits.map(hit => hit.id), ['weekly'])
+  assert.ok(result.partial)
+  assert.ok(result.reasons.includes('semantic-index-incomplete'))
+  assert.equal(calls.length, 0)
+})
+
+for (const mode of [{ automatic: true }, { publishedVectorsOnly: true }]) test(
+  `slow query falls back to lexical evidence for ${Object.keys(mode)[0]} reads`, async t => {
   const { embedder } = encoder()
   const run = embedder.embedBatch
   let finish!: () => void, querySignal: AbortSignal | undefined
@@ -84,7 +95,7 @@ test('slow hot query falls back to lexical evidence and its late vector cannot e
   assert.ok(await retrieval.prepareVectors())
   t.mock.timers.enable({ apis: ['setTimeout'] })
   try {
-    const pending = retrieval.search({ query: 'needle', automatic: true, allows })
+    const pending = retrieval.search({ query: 'needle', ...mode, allows })
     assert.ok(querySignal)
     t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticQueryTimeoutMs)
     const result = await pending

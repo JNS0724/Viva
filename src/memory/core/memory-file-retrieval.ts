@@ -49,6 +49,8 @@ export interface FileSearchRequest {
   contextKey?: string, maxChars?: number, allows: Allows, signal?: AbortSignal
   /** Automatic context must yield quickly and may omit weak evidence. */
   automatic?: boolean
+  /** During Dream an explicit recall can use published vectors without waiting for a rebuild. */
+  publishedVectorsOnly?: boolean
 }
 const identityKey = (file: {workspace: string, id: string}) => JSON.stringify([file.workspace, file.id])
 const sameVersion = (a: MemoryFileIdentity, b: MemoryDocumentView) => a.id === b.id && a.path === b.path
@@ -230,7 +232,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       run.done(); preparing = false
     }
   }
-  async function automaticQuery(query: string, signal?: AbortSignal) {
+  async function boundedQuery(query: string, signal?: AbortSignal) {
     const run = scopedController(signal)
     // Let an already-started worker finish warming up after the foreground budget
     // expires. Cancellation, shutdown and the normal inference deadline still apply.
@@ -372,14 +374,15 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         try {
           const state = index.vectorState()
           const target = space()
-          // Automatic input only inspects the published generation. Checking every
+          const publishedOnly = request.automatic || request.publishedVectorsOnly
+          // Latency-sensitive reads only inspect the published generation. Checking every
           // stored vector or switching spaces is index maintenance.
           const needsPreparation = !state.active || state.space?.fingerprint !== target.fingerprint
-            || state.space.dimensions !== target.dimensions || !request.automatic && index.missingVectors(state.generation).length > 0
+            || state.space.dimensions !== target.dimensions || !publishedOnly && index.missingVectors(state.generation).length > 0
           if (request.automatic && needsPreparation) prepareAfterSearch()
-          const ready = !needsPreparation || !request.automatic && await prepareVectors(run.controller.signal)
+          const ready = !needsPreparation || !publishedOnly && await prepareVectors(run.controller.signal)
           if (ready && !run.controller.signal.aborted && index.vectorState().active) {
-            const output = request.automatic ? await automaticQuery(request.query, request.signal)
+            const output = publishedOnly ? await boundedQuery(request.query, request.signal)
               : await encode([{kind:'query',text:request.query}], run.controller.signal)
             if (output?.[0] && !run.controller.signal.aborted) {
               const hits = index.vector(output[0], space(), allowed, candidates)

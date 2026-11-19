@@ -145,16 +145,56 @@ test('a changed file version requires a new review and operation before deletion
   assert.deepEqual(requests.map(request => request.version), [old.version, latest.version])
 })
 
-test('loading About You refreshes the file list after the profile', async () => {
+test('About You can search files while the profile request is still outstanding', async () => {
   const file = detailOf('useful')
-  const calls: string[] = []
+  const profile = deferred<typeof getMemory>()
+  const queries: string[] = []
   const f = harness({
-    getMemory: async () => { calls.push('profile'); return getMemory },
-    listMemoryFiles: async () => { calls.push('file list'); return pageOf([file]) },
+    getMemory: () => profile.promise,
+    listMemoryFiles: async ({ query }) => { queries.push(query ?? ''); return pageOf([file]) },
   })
-  await f.all.loadMemory()
-  assert.deepEqual(calls, ['profile', 'file list'])
+  const loading = f.all.loadMemory()
+  await Promise.resolve()
   assert.equal(f.file().items[0]?.identity.id, file.identity.id)
+  f.all.searchMemoryFiles('useful')
+  await f.all.reloadMemoryFileList()
+  assert.deepEqual(queries, ['', 'useful'])
+  profile.resolve(getMemory)
+  await loading
+  f.all.closeProfile()
+})
+
+test('a change during profile loading refreshes files immediately and discards the old profile reply', async () => {
+  const first = deferred<typeof getMemory>()
+  let profiles = 0, lists = 0
+  const f = harness({
+    getMemory: () => ++profiles === 1 ? first.promise : Promise.resolve(getMemory),
+    listMemoryFiles: async () => pageOf([detailOf(String(++lists))]),
+  })
+  const loading = f.all.loadMemory()
+  await Promise.resolve()
+  f.all.onMemoryChanged({})
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(f.file().items[0]?.identity.id, '2')
+  assert.equal(profiles, 1)
+  first.resolve(getMemory)
+  assert.equal(await loading, true)
+  assert.equal(profiles, 2)
+  assert.equal(lists, 2)
+})
+
+test('Dream change notifications during a slow file list coalesce into one fresh list', async () => {
+  const first = deferred<MemoryFileListResult>()
+  let lists = 0
+  const f = harness({ getMemory: async () => getMemory,
+    listMemoryFiles: async () => ++lists === 1 ? first.promise : pageOf([detailOf('current')]) })
+  await f.all.loadMemory()
+  for (let i = 0; i < 5; i++) f.all.onMemoryChanged({})
+  assert.equal(lists, 1)
+  first.resolve(pageOf([detailOf('stale')]))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(lists, 2)
+  assert.deepEqual(f.file().items.map(item => item.identity.id), ['current'])
 })
 
 test('an old pagination cursor reloads the first page instead of appending obsolete file identities', async () => {

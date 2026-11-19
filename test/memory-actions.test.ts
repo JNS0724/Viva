@@ -76,6 +76,7 @@ test('a failed reopen of About You offers an operable retry after a previous loa
   dispatch({ type: 'memory_dream_status', status: { state: 'idle', lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null } })
   const failed = draw(state.memory, actions as Handlers)
   assert.ok(failed.some(node => node.attrs['data-dream-state'] === 'idle'))
+  assert.ok(failed.some(node => node.attrs.name === 'memory-files-search'))
   assert.ok(failed.some(node => node.attrs.role === 'alert' && node.textContent.includes('Disconnected from owner')))
   assert.ok(!failed.some(node => node.textContent === '正在加载记忆…'))
   const retry = failed.find(node => node.tag === 'button' && node.textContent === '重新加载')
@@ -84,7 +85,7 @@ test('a failed reopen of About You offers an operable retry after a previous loa
   assert.equal(await retry.listeners.click(), true)
   assert.equal(state.memory.loadError, null)
   assert.equal(state.memory.files.loaded, true)
-  assert.equal(fileLists, 2)
+  assert.equal(fileLists, 3)
 })
 
 test('file details distinguish linked and unlocated sources without promoting the note text to evidence', t => {

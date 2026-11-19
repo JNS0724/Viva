@@ -18,7 +18,9 @@ function fixture() {
   const docs = [doc], supersessions: DocumentSupersession[] = [], unavailable = new Set<string>(), forgotten = new Set<string>()
   let sourceAllowed = true, candidate: DocumentUndoCandidate | null = { changeId: 'original-change', revision: doc.revision, usageVersion: doc.usageVersion }
   const policy = createMemoryDocumentReadPolicy({ hash,
-    notes: { registered: () => [{ ...note, state: 'active', sources: refs }], read: () => note, references: () => refs,
+    notes: { registered: () => [{ ...note, state: 'active', sources: refs }],
+      registeredAt: (scope, path) => scope === workspace && path === note.path ? note : undefined,
+      read: () => note, references: () => refs,
       snapshot: () => refs, sources: () => refs.map(ref => ref.id) },
     documents: {
       registered: () => docs.map(item => ({ ...item, state: forgotten.has(item.id) ? 'forgotten' : item.enabled ? 'active' : 'disabled' })),

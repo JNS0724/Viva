@@ -147,6 +147,7 @@ export function dataPolicy(documents: readonly EvaluationDocument[]) {
     return [document.id,{...row,title:document.name,markdown:parseMemoryDocument(markdown).body,document:markdown,fileRevision:revision}]
   }))
   const notePort: PolicyArguments['notes'] = {
+    registeredAt:(workspace,path)=>[...notes.values()].find(note=>note.workspace===workspace && note.path===path),
     registered:()=>[...notes.values()].map(note=>({...note,sources:[source(byId.get(note.key)!)],state:'active' as const})),
     read:key=>notes.get(key),references:key=>byId.has(key)?[source(byId.get(key)!)]:[],
     sources:key=>byId.has(key)?[source(byId.get(key)!).id]:[],

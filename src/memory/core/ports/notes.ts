@@ -36,6 +36,8 @@ export interface MemoryNotes {
     reconcileEdit(input: import('./documents.ts').DocumentExternalEdit): boolean;
     reconcileRename(input: import('./documents.ts').DocumentRename): boolean;
     aliases(): Array<{ workspace: string, path: string, id: string }>;
+    registeredAt(workspace: string, path: string): { key: string, file_revision: string } | undefined;
+    registeredForSources(ids: readonly string[]): Array<{ workspace: string, path: string }>;
     registered(): Array<NoteRow & { sources: DocumentSourceRef[], state: 'active' | 'withdrawing' }>;
     recoverDeletedFiles(): void;
     deletedFileCleanupPending(workspace: string, id: string): boolean;

@@ -85,6 +85,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       UNIQUE(workspace,path)
     );
     CREATE TABLE IF NOT EXISTS memory_note_sources (note TEXT NOT NULL, source TEXT NOT NULL, token TEXT NOT NULL, spans TEXT, PRIMARY KEY(note,source));
+    CREATE INDEX IF NOT EXISTS memory_note_sources_by_source ON memory_note_sources(source,note);
     CREATE TABLE IF NOT EXISTS memory_note_purges (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace TEXT NOT NULL, note TEXT NOT NULL, path TEXT, expected_revision TEXT, session TEXT NOT NULL, turn TEXT NOT NULL, mode TEXT NOT NULL, source TEXT);
   `)
   const snapshot = (ids: readonly string[]): SourceRef[] => [...new Set(ids)].map(id => {
@@ -483,6 +484,13 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     reconcileRename, reconcileEdit,
     reconciliationState: (operationId: string, kind: 'edit' | 'rename') => journal.state(`${kind === 'edit' ? 'external-edit' : 'rename'}:${operationId}`),
     aliases: () => db.prepare('SELECT workspace,path,note AS id FROM memory_note_aliases').all().map(row => ({workspace:String(row.workspace),path:String(row.path),id:String(row.id)})),
+    registeredAt: (workspace: string, path: string) => db.prepare(
+      'SELECT key,file_revision FROM memory_daily_notes WHERE workspace=? AND path=? AND file_revision IS NOT NULL'
+    ).get(workspace, path) as { key: string, file_revision: string } | undefined,
+    registeredForSources: (ids: readonly string[]) => db.prepare(`SELECT DISTINCT n.workspace,n.path
+      FROM memory_note_sources s JOIN memory_daily_notes n ON n.key=s.note
+      WHERE s.source IN (SELECT value FROM json_each(?)) AND n.file_revision IS NOT NULL ORDER BY n.workspace,n.key`).all(JSON.stringify(ids))
+      .map(row => ({ workspace: String(row.workspace), path: String(row.path) })),
     registered: () => db.prepare('SELECT * FROM memory_daily_notes WHERE file_revision IS NOT NULL ORDER BY workspace,key').all().map(row => ({
       key: String(row.key), day: String(row.day), workspace: String(row.workspace), path: String(row.path),
       revision: Number(row.revision), processed: Number(row.processed), updatedAt: Number(row.updated_at),

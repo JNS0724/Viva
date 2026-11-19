@@ -232,9 +232,7 @@ export function memoryFilesSection(memory: State['memory'], handlers: Handlers) 
   return h('section', { class: 'profile-section', 'aria-labelledby': 'memory-files-title' },
     h('h3', { class: 'profile-heading', id: 'memory-files-title', text: t('memory-files.title') }),
     !files.editor && !files.selection ? dreamRow(memory, handlers) : null,
-    memoryLoadError(memory, handlers),
-    files.editor ? editorView(files, files.editor, handlers) : memory.loadError ? null
-      : !memory.loaded ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') })
+    files.editor ? editorView(files, files.editor, handlers)
       : files.selection ? detailView(files, handlers) : listView(files, handlers),
     forgetView(files, handlers),
     memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',

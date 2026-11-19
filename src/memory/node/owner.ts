@@ -919,6 +919,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const item = operation(operationId)
     return item?.state === 'completed' && outcome(item).cleanup === 'complete' ? 'complete' as const : 'pending' as const
   }
+  function cleanupPending() {
+    completeFileEffects()
+    const pending = runtime.cleanupPending()
+    const native = db.prepare('SELECT operation FROM owner_file_native_erasures').all()
+      .flatMap(row => nativeCleanup.complete(String(row.operation)) ? [] : [String(row.operation)])
+    const host = db.prepare(`SELECT id FROM owner_host_effects WHERE acked=0
+      AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')`).all().map(row => String(row.id))
+    return pending + new Set([...native, ...host]).size
+  }
+
   function handleHost(method: unknown, input: unknown): Promise<unknown> {
     try {
     const command = parseHostMemoryCommand(method, input)
@@ -1045,14 +1055,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'profile': return runtime.profile(...command.input.args)
       case 'revision': return runtime.revision(...command.input.args)
       case 'epoch': return runtime.epoch(...command.input.args)
-      case 'cleanupPending': {
-        completeFileEffects()
-        const pending = runtime.cleanupPending()
-        const native = db.prepare('SELECT operation FROM owner_file_native_erasures').all()
-          .flatMap(row => nativeCleanup.complete(String(row.operation)) ? [] : [String(row.operation)])
-        const host = db.prepare(`SELECT id FROM owner_host_effects WHERE acked=0
-          AND json_extract(payload,'$.kind') IN ('erase-file-copies','erase-copies')`).all().map(row => String(row.id))
-        return pending + new Set([...native, ...host]).size
+      case 'cleanupPending': return cleanupPending()
+      case 'profilePage': return {
+        profile: runtime.profile(), onboarding: runtime.onboarding(), cleanupPending: cleanupPending(),
+        revision: runtime.revision(), fileProfile: runtime.fileProfile(...command.input.args),
       }
       case 'onboarding': return runtime.onboarding(...command.input.args)
       case 'sessionProject': return runtime.sessionProject(...command.input.args)

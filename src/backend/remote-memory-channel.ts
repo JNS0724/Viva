@@ -10,7 +10,7 @@ import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import type { DiagnosticContext, DiagnosticFields, DiagnosticStage } from '../diagnostics/contracts.ts'
 
 // Protocol read labels only; they never affect admission, dispatch, or memory facts.
-const READ_STAGE: Partial<Record<HostMemoryMethod, DiagnosticStage>> = { profile: 'profile', onboarding: 'onboarding', cleanupPending: 'cleanup', revision: 'revision', fileProfile: 'file-profile' }
+const READ_STAGE: Partial<Record<HostMemoryMethod, DiagnosticStage>> = { profilePage: 'profile', profile: 'profile', onboarding: 'onboarding', cleanupPending: 'cleanup', revision: 'revision', fileProfile: 'file-profile' }
 
 export class MemoryOwnerUnavailable extends Error {
   readonly code = 'unavailable'

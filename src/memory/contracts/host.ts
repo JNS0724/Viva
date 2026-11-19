@@ -13,7 +13,7 @@ import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIden
 export const MEMORY_HOST_PROTOCOL = 3
 /** Business lifetime metadata, never part of the optional diagnostic envelope. */
 export const memoryHostRead = z.strictObject({ readBatchId: z.uuid(), budgetMs: z.number().positive().max(10_000) })
-export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile'])
+export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profilePage', 'profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile'])
 export type MemoryProject = { kind: 'project', id: string }
 export type MemoryHistoryOccurrence = { segmentId: string, role: string, text: string, sourceId?: string | null, sessionId?: string | null }
 export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
@@ -38,6 +38,7 @@ export interface HostMemoryApi {
   editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
   forgetFile: Args<[request: MemoryFileForgetRequest], MemoryFileMutationResult>
   undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
+  profilePage: Args<[project?: MemoryProject], { profile: MemoryProfile, onboarding: string, cleanupPending: number, revision: number, fileProfile: MemoryFileProfile }>
   profile: Args<[], MemoryProfile>
   fileProfile: Args<[project?: MemoryProject], MemoryFileProfile>
   revision: Args<[], number>
@@ -109,7 +110,7 @@ export const hostMemoryInputSchemas = {
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
-  fileProfile: args(z.tuple([project.optional()])),
+  profilePage: args(z.tuple([project.optional()])), fileProfile: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
   setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
   setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),

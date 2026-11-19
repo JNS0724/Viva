@@ -40,6 +40,8 @@ test('deleting a daily file survives interrupted cleanup and preserves dialog, s
   assert.ok(notes.commit(siblingKey, notes.pending(siblingKey), { status: 'write', title: note.title, markdown: 'Independent note.' },
     1, Date.now(), notes.snapshot([sibling.id]), undefined))
   const kept = notes.read(siblingKey)!
+  assert.deepEqual({ ...notes.registeredAt(note.workspace, note.path) }, { key, file_revision: note.fileRevision })
+  assert.deepEqual(notes.registeredForSources([source.id, source.id]), [{ workspace: note.workspace, path: note.path }])
   const workspaceRoot = join(store.fileRoot, note.workspace)
   const dialog = join(workspaceRoot, 'session/dialog', memoryFileRevision('session') + '.jsonl')
   const originalDialog = readFileSync(dialog, 'utf8')
@@ -47,6 +49,8 @@ test('deleting a daily file survives interrupted cleanup and preserves dialog, s
   assert.throws(() => notes.deleteFile(note.workspace, key, note.revision + 1), /version/)
   assert.equal(notes.deleteFile(note.workspace, key, note.revision), note.revision + 1)
   assert.equal(notes.read(key), undefined)
+  assert.equal(notes.registeredAt(note.workspace, note.path), undefined)
+  assert.deepEqual(notes.registeredForSources([source.id, sibling.id]), [{ workspace: kept.workspace, path: kept.path }])
   assert.equal(notes.needsRecovery(), false)
   const id = `daily:${memoryFileRevision(key)}`
   assert.equal(notes.deletedFileCleanupPending(note.workspace, id), true)
