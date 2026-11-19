@@ -28,7 +28,7 @@ import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
 import { routingModelHistory } from './lib/model-history.ts'
 import { completeFastRouting } from './lib/model-call.ts'
-import { enableMainToolBudgets, executeToolCall, isMemoryTool } from '../../src/shared/node/tool-call-budget.ts'
+import { enableMainToolBudgets, executeToolCall, isMemoryTool, LONG_TOOL_TIMEOUT_MS } from '../../src/shared/node/tool-call-budget.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']
@@ -221,7 +221,7 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
 
   /** commit_route, registered on each main agent: the plan goes to the app, which decides it (lib/host.ts). */
   const routeTool = () => defineTool({
-    name: ROUTE_TOOL, description: COMMIT_DESCRIPTION, parameters: COMMIT_PARAMETERS,
+    name: ROUTE_TOOL, timeoutMs: LONG_TOOL_TIMEOUT_MS, description: COMMIT_DESCRIPTION, parameters: COMMIT_PARAMETERS,
     output: { schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } }, render: (_args, value) => [{ type: 'text', text: value.text }] },
     execute: async (args, exec) => {
       if (!exec.agent) throw new Error('missing agent')

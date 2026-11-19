@@ -49,7 +49,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     expression: { type: 'string', description: 'kind=cron 时：五段 cron 表达式' },
   } as const
   ctx.tools.register(defineTool({
-    name: 'schedule_create',
+    name: 'schedule_create', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     description: '用户要你在某个时间或定期做一件事（提醒、起草、汇总、查资料）时，提出一个定时任务：到点时 prompt 会在独立会话里以只读工具运行，回答出现在 Viva 的「动态」并通知用户。'
       + 'prompt 要自成一体：写清要做什么、用到的文件路径和输出要求，因为运行时看不到这段对话；纯提醒就写「用一句话提醒用户……」。'
       + '这只是提议：卡片出现在对话里，用户同意后才保存。提出后用一句话告诉用户，然后结束这一轮。',
@@ -65,14 +65,14 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     execute: async (_args, exec) => ({ text: await channel.request({ op: 'schedule_list' }, String(exec.agent?.session.id ?? ''), exec.signal) }),
   }))
   ctx.tools.register(defineTool({
-    name: 'schedule_update',
+    name: 'schedule_update', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     description: '按用户的话修改一个定时任务：改标题、提示词或时间（时间参数同 schedule_create，给了 kind 才改时间），或 paused=true 暂停、false 恢复。先用 schedule_list 拿 id。',
     parameters: { id: { type: 'string', required: true, description: '定时任务 id' }, title: { type: 'string', description: '新标题' }, prompt: { type: 'string', description: '新提示词' }, paused: { type: 'boolean', description: 'true 暂停，false 恢复' }, ...timeParameters },
     output,
     execute: async (args, exec) => ({ text: await act({ op: 'schedule_update', id: args.id, ...(args.title ? { title: args.title } : {}), ...(args.prompt ? { prompt: args.prompt } : {}), ...(typeof args.paused === 'boolean' ? { paused: args.paused } : {}), ...(args.kind ? { rule: ruleOf(args) } : {}) }, exec) }),
   }))
   ctx.tools.register(defineTool({
-    name: 'schedule_delete',
+    name: 'schedule_delete', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     description: '按用户的话删除一个定时任务。先用 schedule_list 拿 id。',
     parameters: { id: { type: 'string', required: true, description: '定时任务 id' } },
     output,

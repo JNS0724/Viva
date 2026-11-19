@@ -6,7 +6,7 @@ import type { MemorySendPermit } from '../../../src/memory/core/send-fence.ts'
 import type { NativeOutputAttempt } from '../../../src/memory/node/native-output-attempts.ts'
 
 export type MemoryTransportOrigin = { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }
-interface OriginContext { owner: MemoryTransportOwner; origin: MemoryTransportOrigin }
+interface OriginContext { owner: MemoryTransportOwner; origin: MemoryTransportOrigin; signal?: AbortSignal }
 interface Sending { permit: MemorySendPermit; created: boolean; origin?: string; path?: string }
 type TransportPermit = MemorySendPermit & { recordBody?(): void | Promise<void> }
 export interface MemoryTransportOwner {
@@ -59,7 +59,8 @@ const guardedFetch: typeof fetch = async (input, init) => {
   const body = init?.body ?? (input instanceof Request ? await input.clone().text() : undefined)
   if (typeof body !== 'string') throw new Error('Memory requires a prepared JSON request body')
   validatePayload(body)
-  const originalSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+  const requestSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+  const originalSignal = requestSignal && context.signal ? AbortSignal.any([requestSignal, context.signal]) : requestSignal ?? context.signal
   const permit = await context.owner.acquireSend(randomUUID(), context.origin, createHash('sha256').update(body).digest('hex'), originalSignal ?? undefined)
   const sending: Sending = { permit, created: false }
   try {
@@ -106,7 +107,7 @@ export function createMemoryTransport(owner: MemoryTransportOwner) {
   }
   owners.add(owner)
   return {
-    run<T>(origin: MemoryTransportOrigin, work: () => T): T { return calls.run({ owner, origin }, work) },
+    run<T>(origin: MemoryTransportOrigin, work: () => T, signal?: AbortSignal): T { return calls.run({ owner, origin, signal }, work) },
     dispose() {
       owners.delete(owner)
       if (!owners.size) {

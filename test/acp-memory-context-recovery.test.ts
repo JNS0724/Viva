@@ -9,7 +9,7 @@ import { testRequests, withPluginSide } from './fixtures/request-routing.ts'
 import { currentTurnTextParts } from './fixtures/model-user-text.ts'
 import { parseHostMemoryCommand } from '../src/memory/contracts/host.ts'
 
-function fixture({ recovered = true, admittedAfter = true, projectChanged = false, recoveryError = false, resumeError = '', beforeAlias = async () => {} } = {}) {
+function fixture({ recovered = true, admittedAfter = true, projectChanged = false, recoveryError = false, resumeError = '', beforeAlias = async () => {}, beforeNativeReply = async () => {} } = {}) {
   let allowed = false
   let created = 0
   const calls: string[] = []
@@ -45,7 +45,7 @@ function fixture({ recovered = true, admittedAfter = true, projectChanged = fals
     async resumeSession(params: { sessionId: string }) { calls.push(`resume:${params.sessionId}`); if (resumeError) throw new Error(resumeError); return { configOptions: [] } },
     async newSession() { calls.push('newSession'); return { sessionId: ++created === 1 ? 'native-main' : `native-new-${created}`, configOptions: [] } },
     async closeSession(params: { sessionId: string }) { calls.push(`close:${params.sessionId}`); return {} },
-    async prompt() { calls.push('prompt'); return { stopReason: 'end_turn' } },
+    async prompt() { calls.push('prompt'); await beforeNativeReply(); return { stopReason: 'end_turn' } },
     async cancel() {}, async authenticate() { return {} },
   }
   new AgentSideConnection(() => agent as never, ndJsonStream(Writable.toWeb(child.stdout), Readable.toWeb(child.stdin) as never))
@@ -71,6 +71,34 @@ for (const reason of ['unavailable', 'idle'] as const) test(`ordinary steer rech
   assert.equal(routing.store.get(request.id)?.status, 'failed')
   assert.equal(routing.store.get(request.id)?.failure, 'undelivered')
   assert.ok(!calls.includes('steer:wire'))
+})
+
+test('a cancelled prompt awaiting its wire alias cannot displace a new turn in the same session', async t => {
+  let held = true, first = true
+  let aliasReady = () => {}, finishAlias = () => {}, nextReady = () => {}, finishNext = () => {}
+  const alias = new Promise<void>(resolve => { aliasReady = resolve }), oldGate = new Promise<void>(resolve => { finishAlias = resolve })
+  const nextStarted = new Promise<void>(resolve => { nextReady = resolve }), newGate = new Promise<void>(resolve => { finishNext = resolve })
+  const { bridge, routing, ready } = fixture({
+    beforeAlias: async () => { if (first) { first = false; aliasReady(); await oldGate } },
+    beforeNativeReply: async () => { nextReady(); await newGate },
+  })
+  t.after(() => { finishAlias(); finishNext(); void bridge.dispose() })
+  await bridge.start()
+  ready()
+  const rejected = assert.rejects(bridge.prompt('Old turn', [], { held: () => held }))
+  await alias
+  const [oldRequest] = routing.store.undecided()
+  assert.ok(oldRequest)
+  assert.equal(await bridge.cancel('native-main'), false, 'the native operation has yet to start')
+  held = false
+  const next = bridge.prompt('Next turn')
+  await nextStarted
+  finishAlias()
+  await rejected
+  assert.equal(routing.store.get(oldRequest)?.failure, 'undelivered')
+  assert.equal(await bridge.cancel('native-main'), true, 'the new native operation still holds its slot')
+  finishNext()
+  await next
 })
 
 test('a new Viva human request performs native durable recovery before rechecking admission and constructing its prompt', async t => {

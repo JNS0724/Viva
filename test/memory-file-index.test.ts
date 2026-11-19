@@ -157,18 +157,17 @@ test('legacy snapshots seed lookup rows and indexed edges without rereading sour
   assert.deepEqual(reopened.nodeCandidates('root', { workspaces: [workspace] }, 1).rows, [])
 })
 
-test('bounded semantic probing retains lexical candidates and supplements the most recently published nodes', t => {
+test('semantic candidates include an older match outside the recent and lexical windows', async t => {
   const { index } = fixture(t)
-  const contents = [file('preferred', 'needle'), file('older'), file('recent')]
+  const contents = [file('older'), ...Array.from({ length: 80 }, (_, i) => file('recent-' + i, 'needle', { updatedAt: i + 2 }))]
   for (const entry of contents) index.accept(entry, null)
   const space = { fingerprint: 'test', dimensions: 2 }
   const generation = index.beginVectors(space)
   const refs = index.missingVectors(generation).map(entry => entry.ref)
-  index.stageVectors(generation, refs.map(ref => ({ ref, vectors: [new Float32Array([1, 0])] })))
+  index.stageVectors(generation, refs.map(ref => ({ ref, vectors: [new Float32Array(ref.fileId === 'older' ? [1, 0] : [0, 1])] })))
   assert.equal(index.finishVectors(generation, refs), true)
   const scope = { workspaces: [workspace] }
-  const preferred = index.lexicalCandidates('needle', scope, 2).rows
-  const result = index.vectorCandidates(new Float32Array([1, 0]), space, scope, preferred, 2)
+  const result = await index.vectorCandidates(new Float32Array([1, 0]), space, scope, 1)
   assert.equal(result?.incomplete, true)
-  assert.deepEqual(new Set(result?.rows.map(hit => hit.file.id)), new Set(['preferred', 'recent']))
+  assert.deepEqual(result?.rows.map(hit => hit.file.id), ['older'])
 })

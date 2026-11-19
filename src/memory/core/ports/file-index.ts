@@ -51,9 +51,9 @@ export interface MemoryFileIndex {
   chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[]
   lexical(query: string, authorized: readonly MemoryFileIdentity[], limit: number): { hits: MemoryFileHit[], mode: 'fts' | 'fallback' }
   /** Candidate pages contain trusted projections. Current access and revision are checked by core. */
-  lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
-  nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number): MemoryFilePage<MemoryFileNode>
-  vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, preferred: readonly MemoryFileHit[], limit: number): MemoryFilePage<MemoryFileHit> | null
+  lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
+  nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode>
+  vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, limit: number, current?: () => boolean, deadline?: number): Promise<MemoryFilePage<MemoryFileHit> | null>
   nodeAt(workspace: string, path: string): MemoryFileNode | null
   linkTargets(file: MemoryFileIdentity, limit: number): MemoryFilePage<string>
   linkingNodes(workspace: string, targets: readonly string[], limit: number): MemoryFilePage<MemoryFileNode>

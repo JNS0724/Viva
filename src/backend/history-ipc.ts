@@ -46,6 +46,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   readNativeTrace?: ReadNativeTrace,
   current: () => Conversation, setCurrent: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null },
+  historySourceSession?: () => string | null
   validateSave?: (conversationId: string, mark?: HistorySaveMark) => void,
   historySaved?: (conversationId: string, mark?: HistorySaveMark) => void,
   selectSession: SelectSession,
@@ -81,7 +82,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('history:save', (messages, mark) => {
     deps.validateSave?.(current().id, mark)
     const { mode, model } = agentInfo()
-    const saved = db.save({ ...current(), mode, model }, messages)
+    const saved = db.save({ ...current(), mode, model }, messages, { sourceSession: deps.historySourceSession?.() })
     deps.historySaved?.(saved.id, mark)
     setCurrent(saved)
     return summaryOf(saved)

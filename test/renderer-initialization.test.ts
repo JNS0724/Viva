@@ -361,3 +361,16 @@ test('an inactive saved segment still has its cutoff after other segments have b
   for (let i = 0; i < 130; i++) stream.save('other-' + i, mark)
   assert.deepEqual(stream.snapshot(context.conversationId, context).replay, [])
 })
+
+test('a stopped conversation with an evicted unsaved tail can recover from its durable checkpoint', t => {
+  const stream = backendStream(t)
+  for (let i = 0; i < 1025; i++) stream.send({ type: 'update', context, chunk: i })
+  stream.send({ type: 'turn_end', context, stopReason: 'cancel_unconfirmed' })
+  assert.throws(() => stream.snapshot(context.conversationId, context), /unreplayable gap/)
+  const view = stream.snapshot(context.conversationId, context, true)
+  assert.deepEqual(view.replay, [])
+  assert.equal(view.stoppedReplayLost, true)
+  const state = reduce(initialState, { type: 'initialization_snapshot', snapshot: { ...snapshot(), ...view, stopUnconfirmed: true } })
+  assert.equal(state.stoppedReplayLost, true)
+  assert.equal(state.stopUnconfirmed, true)
+})

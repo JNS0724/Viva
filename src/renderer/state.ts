@@ -162,7 +162,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   initialization_snapshot: (state, { snapshot }) => {
     const clean = { ...state, ...initialConversation, info: snapshot.info, conversationId: snapshot.info.conversationId ?? null,
       restored: null, restoredTrace: null, restoredTraceData: null, records: [], folds: [], topic: initialTopic,
-      switching: false, newTopicPending: false }
+      switching: false, newTopicPending: false, stopUnconfirmed: snapshot.stopUnconfirmed === true, stoppedReplayLost: snapshot.stoppedReplayLost === true }
     const saved = snapshot.history
     return saved ? ACTION_HANDLERS.history_loaded!(clean, { conversationId: saved.id, messages: saved.messages,
       records: saved.records, savedAt: saved.updatedAt, folds: [...saved.folds], parentId: saved.parentId, createdAt: saved.createdAt }) : clean
@@ -170,6 +170,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,
+    ...(state.stopUnconfirmed && info.sessionId && info.sessionId !== state.info.sessionId && { stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null }),
     phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
     error: !state.newTopicPending && state.phase === 'error' ? null : state.error,
   }),

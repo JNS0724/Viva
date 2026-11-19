@@ -1,6 +1,7 @@
 export const en = {
   "conversation.stop.pending": "Stopping…",
   "conversation.stop.unconfirmed": "The runtime did not confirm that the turn stopped.",
+  "conversation.stop.saved.only": "Showing the last saved history. Some output from the stopped turn could not be restored.",
   "conversation.stop.restart.tasks": "Recovery restarts the runtime and may interrupt background tasks.",
   "conversation.stop.recover": "Recover conversation",
 
@@ -136,6 +137,7 @@ export const en = {
   "memory-files.open.range": "View stopped range {number}",
   "memory-files.current": "View current content",
   "memory-files.back": "Back to memories",
+  "memory-files.list.partial": "Some memory files could not be checked. Reload to try again.",
   "memory-files.retry": "Reload",
   "memory-files.loading": "Loading memories…",
   "memory-files.search": "Search memory titles",

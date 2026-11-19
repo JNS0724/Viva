@@ -1,3 +1,4 @@
+import { dailyPath, digestPath } from '../contracts/memory-file-contract.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryNotes } from './ports/notes.ts'
@@ -6,7 +7,6 @@ import { inspectMemoryDocumentText } from './memory-dream-material.ts'
 import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
-import { RequestTimeout } from './request-budget.ts'
 
 type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
 type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'aliases' | 'projectErasedLocators'>>
@@ -14,13 +14,17 @@ type FileLocation = { workspace: string, path: string }
 type PhysicalSnapshot = (workspace: string, path: string) => MemoryPhysicalFile | null
 const locationKey = (workspace: string, path: string) => JSON.stringify([workspace, path])
 const MAX_READ_BATCH_FILES = 512
-const READ_BATCH_CONCURRENCY = 3
+export const MEMORY_DOCUMENT_READ_CONCURRENCY = 3
 
 export interface MemoryDocumentReadBatch {
   load(files: readonly FileLocation[], phaseSignal?: AbortSignal): Promise<void>
   read(workspace: string, path: string): MemoryDocumentView | null
+  physical(workspace: string, path: string): MemoryPhysicalFile | null
+  readObservation(workspace: string, path: string): MemoryDocumentView | null | undefined
   managementRead(workspace: string, path: string): MemoryDocumentManagementView | null
-  observedRevision(workspace: string, path: string): string | undefined
+  managementObservation(workspace: string, path: string): MemoryDocumentManagementView | null | undefined
+  /** A confirmed missing file returns null; an unread or unavailable file returns undefined. */
+  observedRevision(workspace: string, path: string): string | null | undefined
   incomplete(): boolean
 }
 
@@ -223,16 +227,21 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
           const key = locationKey(file.workspace, file.path)
           if (loaded.has(key) || queue.has(key)) continue
           if (queue.size + loaded.size >= maxFiles) { incomplete = true; break }
-          queue.set(key, file)
+          // Legacy or invalid locators are conclusively unusable without physical I/O.
+          if (!/^[a-f0-9]{64}$/u.test(file.workspace)
+            || !(dailyPath.safeParse(file.path).success || digestPath.safeParse(file.path).success)) {
+            loaded.set(key, null)
+          } else queue.set(key, file)
         }
         const tasks = queue.entries()
-        await Promise.all(Array.from({ length: Math.min(queue.size, READ_BATCH_CONCURRENCY) }, async () => {
+        await Promise.all(Array.from({ length: Math.min(queue.size, MEMORY_DOCUMENT_READ_CONCURRENCY) }, async () => {
           for (const [key, file] of tasks) {
             if (active?.aborted) break
-            loaded.set(key, await readPhysical(file.workspace, file.path, active).catch(error => {
-              if (error instanceof RequestTimeout) incomplete = true
-              return null
-            }))
+            try {
+              loaded.set(key, await readPhysical(file.workspace, file.path, active))
+            } catch {
+              incomplete = true
+            }
           }
         }))
         pending = []
@@ -252,11 +261,28 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       }
       incomplete ||= Boolean(active?.aborted || pending.some(file => !loaded.has(locationKey(file.workspace, file.path))))
     }
+    function observe<T>(workspace: string, path: string, build: (snapshot: PhysicalSnapshot) => T) {
+      if (signal?.aborted || !loaded.has(locationKey(workspace, path))) return undefined
+      if (!snapshot(workspace, path)) return null
+      let verified = true
+      const view = build((area, file) => {
+        if (!loaded.has(locationKey(area, file))) verified = false
+        return snapshot(area, file)
+      })
+      return verified ? view : undefined
+    }
+    const readObservation = (workspace: string, path: string) =>
+      observe(workspace, path, verified => read(workspace, path, new Set(), verified))
+    const managementObservation = (workspace: string, path: string) =>
+      observe(workspace, path, verified => managementRead(workspace, path, verified))
     return {
-      load,
-      read: (workspace, path) => signal?.aborted || !snapshot(workspace, path) ? null : read(workspace, path, new Set(), snapshot),
-      managementRead: (workspace, path) => signal?.aborted || !snapshot(workspace, path) ? null : managementRead(workspace, path, snapshot),
-      observedRevision: (workspace, path) => snapshot(workspace, path)?.revision,
+      load, managementObservation, readObservation, physical: snapshot,
+      read: (workspace, path) => readObservation(workspace, path) ?? null,
+      managementRead: (workspace, path) => managementObservation(workspace, path) ?? null,
+      observedRevision: (workspace, path) => {
+        const physical = loaded.get(locationKey(workspace, path))
+        return physical === null ? null : physical?.revision
+      },
       incomplete: () => incomplete,
     }
   }

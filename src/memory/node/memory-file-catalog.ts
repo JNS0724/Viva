@@ -22,7 +22,11 @@ function classify(accepted: readonly MemoryFileIdentity[], scan: CatalogScan): M
   const output: MemoryCatalogChange[] = scan.quarantined
   const found = new Map(scan.files.map(file => [file.path, file]))
   const bound = new Set(accepted.map(file => file.path))
-  const missing = complete ? accepted.filter(file => !found.has(file.path)) : []
+  const unavailable = (path: string) => scan.quarantined.some(entry => entry.path === path || path.startsWith(entry.path + '/'))
+  const missing = complete ? accepted.filter(file => !found.has(file.path) && !unavailable(file.path)) : []
+  // An unreadable eligible file or subtree might conceal a competing rename.
+  // Invalid paths and symlinks cannot be alternate accepted destinations.
+  const uncertainRename = scan.quarantined.some(entry => entry.reason === 'unreadable')
   const added = [...found.values()].filter(file => !bound.has(file.path))
   const renamed = new Set<string>()
 
@@ -37,7 +41,7 @@ function classify(accepted: readonly MemoryFileIdentity[], scan: CatalogScan): M
     const old = missingByRevision.get(file.revision) ?? []
     const peers = observedByRevision.get(file.revision) ?? []
     const prior = acceptedByRevision.get(file.revision) ?? []
-    if (old.length === 1 && peers.length === 1 && prior.length === 1) {
+    if (!uncertainRename && old.length === 1 && peers.length === 1 && prior.length === 1) {
       output.push({ kind: 'rename', identity: old[0]!, file })
       renamed.add(old[0]!.id)
     } else if (old.length > 0) output.push({ kind: 'quarantined', path: file.path, reason: 'ambiguous-rename' })
@@ -50,7 +54,7 @@ function classify(accepted: readonly MemoryFileIdentity[], scan: CatalogScan): M
 
 /** A hung scan keeps its slot until the child actually exits. The owner only interprets observations. */
 export function openMemoryFileCatalog({ root, timeoutMs = 5_000, forkWorker = fork, readPhysicalFile = createMemoryPhysicalFileReader(() => root) }: {
-  root: string, timeoutMs?: number, readPhysicalFile?: ReadMemoryPhysicalFile,
+  root: string, timeoutMs?: number, readPhysicalFile?: ReadMemoryPhysicalFile & { close?(): void },
   forkWorker?: (entry: string, args: readonly string[], options: ForkOptions) => ChildProcess,
 }): MemoryFileCatalog {
   const active = new Map<string, () => void>()
@@ -125,6 +129,7 @@ export function openMemoryFileCatalog({ root, timeoutMs = 5_000, forkWorker = fo
     },
     close() {
       closed = true
+      readPhysicalFile.close?.()
       for (const stop of active.values()) stop()
     },
   }

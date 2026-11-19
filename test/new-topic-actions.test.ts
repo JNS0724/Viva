@@ -64,3 +64,19 @@ test('an empty topic still displays preparation failure instead of hiding it beh
   assert.equal(showsHome(pending), false)
   assert.equal(showsHome(failed), false)
 })
+
+test('reload preserves the recovery action after the stopped receipt is saved, including on a new-topic shortcut', async () => {
+  const context = { conversationId: 'topic', sessionId: 'retired' }
+  const state = reduce(initialState, { type: 'initialization_snapshot', snapshot: {
+    context, info: { ...initialState.info, ...context }, stopUnconfirmed: true,
+    cutoverCursor: 7, streamGeneration: 'generation', history: null, replay: [],
+  } })
+  assert.equal(state.stopUnconfirmed, true)
+  assert.equal(showsHome(state), false)
+  let notice = ''
+  await createNewTopicAction({ getState: () => state, dispatch: () => assert.fail('recovery must remain visible'), open: assert.fail,
+    focus: assert.fail, jump: assert.fail, toast: text => { notice = text }, errorMessage: String })()
+  assert.ok(notice)
+  assert.equal(reduce(state, { type: 'ready', info: state.info }).stopUnconfirmed, true)
+  assert.equal(reduce(state, { type: 'ready', info: { ...state.info, sessionId: 'new' } }).stopUnconfirmed, false)
+})

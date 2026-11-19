@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { createMemoryRuntime as createCoreMemoryRuntime } from '../core/memory-runtime.ts'
+import { createMemoryRuntime as createCoreMemoryRuntime, publicationEffectKinds } from '../core/memory-runtime.ts'
 import type { MemoryRuntimeResources } from '../core/ports/runtime.ts'
 import type { MemoryStore } from './memory-store.ts'
 import { memoryHash } from './memory-store.ts'
@@ -18,7 +18,27 @@ export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRu
 
 /** Open the platform resources consumed through explicit core ports. */
 export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore, now?: () => number }): MemoryRuntimeResources {
-  const effects = createEffects({ db: store.db, now, onError: error => emitDiagnosticFailure('effects', error) })
+  // Both runners use the same durable rows and generation checks. A pending model
+  // request cannot occupy the runner that publishes or cleans committed indexes.
+  const options = { db: store.db, now, onError: (error: unknown) => emitDiagnosticFailure('effects', error) }
+  const jobs = createEffects(options)
+  const publications = createEffects(options)
+  let publicationPass: Promise<void> | undefined
+  const effects: typeof jobs = {
+    ...jobs,
+    runs(kind, run, delay) { (publicationEffectKinds.has(kind) ? publications : jobs).runs(kind, run, delay) },
+    queue(kind, key, payload, dueAt) {
+      jobs.queue(kind, key, payload, dueAt)
+      // wake() schedules its pass in a microtask after the enclosing SQLite transaction.
+      if (publicationEffectKinds.has(kind)) publicationPass = publications.wake()
+    },
+    async wake() {
+      await Promise.all([publications.wake(), jobs.wake()])
+      // A note or Dream job may have committed an index change during this wake.
+      await publicationPass
+    },
+    close() { publications.close(); jobs.close() },
+  }
   const readPhysicalFile = createMemoryPhysicalFileReader(() => store.fileRoot)
   const resources: MemoryRuntimeResources = {
     sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,

@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { fork } from 'node:child_process'
+import promises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync, writeFileSync, renameSync, symlinkSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -66,7 +69,7 @@ test('catalog refuses symlinks, ignores temporary files, and never reads outside
   await assert.rejects(catalog.scan('../escape',[]),/invalid-memory-workspace/)
 })
 
-test('an incomplete scan preserves unknown bindings without dropping observed edits', async t => {
+test('an unrelated invalid entry does not suppress verified moves and edits', async t => {
   const { root, put, catalog } = fixture(t)
   const missing = identity('digest/wiki/missing.md', 'original')
   const modified = identity('digest/wiki/modified.md', 'previous', 'b')
@@ -76,7 +79,7 @@ test('an incomplete scan preserves unknown bindings without dropping observed ed
 
   const changes = await catalog.scan(workspace, [missing, modified])
   assert.ok(changes.some(change => change.kind === 'modified' && change.identity.id === modified.id))
-  assert.equal(changes.some(change => change.kind === 'rename' || change.kind === 'missing'), false)
+  assert.ok(changes.some(change => change.kind === 'rename' && change.identity.id === missing.id))
 })
 
 test('a scan deadline returns unknown instead of inferring that files have disappeared', async t => {
@@ -105,6 +108,34 @@ test('concurrent verification shares one physical read of a path and leaves room
   assert.equal(opened, 2)
   assert.deepEqual((await Promise.all(samePath)).map(result => result?.markdown), Array(8).fill('first'))
   assert.equal((await independent)?.markdown, 'other')
+})
+
+test('three overdue physical files leave a healthy file verifiable in an independent reader', async t => {
+  const { root, put } = fixture(t)
+  const blocked = ['one', 'two', 'three'].map(name => `digest/wiki/${name}.md`)
+  const paths = new Set(blocked.map(path => put(path, 'unreadable')))
+  const healthy = 'digest/wiki/healthy.md'
+  put(healthy, 'available')
+  let release!: () => void
+  const gate = new Promise<void>(done => { release = done })
+  const original = promises.lstat
+  const mocked = t.mock.method(promises, 'lstat', async (...args: Parameters<typeof original>) => {
+    if (paths.has(String(args[0]))) await gate
+    return Reflect.apply(original, promises, args)
+  })
+  syncBuiltinESMExports()
+  const read = createMemoryPhysicalFileReader(() => root)
+  try {
+    await Promise.all(blocked.map(path => assert.rejects(read(workspace, path), /timed out/u)))
+    // The caller's deadline can be the timer immediately preceding the native IO deadline.
+    await delay(20)
+    assert.equal((await read(workspace, healthy))?.markdown, 'available')
+  } finally {
+    release()
+    read.close()
+    mocked.mock.restore()
+    syncBuiltinESMExports()
+  }
 })
 
 test('a stalled scanner returns completed observations without reporting missing files', async t => {

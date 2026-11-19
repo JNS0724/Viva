@@ -189,36 +189,35 @@ ${file.description}`))
     AND (n.kind <> 'daily' OR n.day IS NULL OR n.day <= coalesce(?,n.day))
     AND (n.updated_at = 0 OR n.updated_at <= coalesce(?,n.updated_at))`
   const chunksInScope = `JOIN memory_file_index_lookup n ON c.workspace=n.workspace AND c.file_id=n.id WHERE ${withinScope}`
-  function passagePage(scope: MemoryFileQueryScope, limit: number, order: 'stable' | 'recent' = 'stable') {
-    const by = order === 'recent' ? 'n.rowid DESC,c.ordinal' : 'c.workspace,c.file_id,c.ordinal'
+  function passagePage(scope: MemoryFileQueryScope, limit: number, offset: number) {
     const rows = db.prepare(`SELECT c.payload FROM memory_file_index_chunks c ${chunksInScope}
-      ORDER BY ${by} LIMIT ?`).all(...scopeArgs(scope), limit + 1)
+      ORDER BY c.workspace,c.file_id,c.ordinal LIMIT ? OFFSET ?`).all(...scopeArgs(scope), limit + 1, offset)
     return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFilePassage), limit)
   }
-  function lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number) {
+  function lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset = 0) {
     const match = queryOf(query)
     if (!match || !limitOf(limit)) return { rows: [], incomplete: false, mode: lexicalReady ? 'fts' as const : 'fallback' as const }
     if (lexicalReady) try {
       const rows = db.prepare(`SELECT c.payload,bm25(memory_file_index_fts) AS rank FROM memory_file_index_fts
         JOIN memory_file_index_chunks c ON c.rowid=memory_file_index_fts.rowid ${chunksInScope}
-        AND memory_file_index_fts MATCH ? ORDER BY rank,c.rowid LIMIT ?`).all(...scopeArgs(scope), match, limit + 1)
+        AND memory_file_index_fts MATCH ? ORDER BY rank,c.rowid LIMIT ? OFFSET ?`).all(...scopeArgs(scope), match, limit + 1, offset)
       return { ...page(rows.map(row => ({ ...(JSON.parse(String(row.payload)) as MemoryFilePassage), score: -Number(row.rank) })), limit), mode: 'fts' as const }
     } catch { lexicalReady = false; setMeta('fts-dirty','1') }
-    const candidates = passagePage(scope, limit)
+    const candidates = passagePage(scope, limit, offset)
     return { ...candidates, rows: fallback(query, candidates.rows), mode: 'fallback' as const }
   }
-  function nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number) {
+  function nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset = 0) {
     const match = queryOf(query)
     if (!match || !limitOf(limit)) return { rows: [], incomplete: false }
     if (lexicalReady) try {
       const rows = db.prepare(`SELECT n.payload FROM memory_file_index_node_fts
         JOIN memory_file_index_lookup n ON n.rowid=memory_file_index_node_fts.rowid
         WHERE ${withinScope} AND memory_file_index_node_fts MATCH ?
-        ORDER BY bm25(memory_file_index_node_fts),n.workspace,n.id LIMIT ?`).all(...scopeArgs(scope), match, limit + 1)
+        ORDER BY bm25(memory_file_index_node_fts),n.workspace,n.id LIMIT ? OFFSET ?`).all(...scopeArgs(scope), match, limit + 1, offset)
       return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
     } catch { lexicalReady = false; setMeta('fts-dirty','1') }
     const rows = db.prepare(`SELECT n.payload FROM memory_file_index_lookup n WHERE ${withinScope} AND n.kind='digest'
-      ORDER BY n.workspace,n.id LIMIT ?`).all(...scopeArgs(scope), limit + 1)
+      ORDER BY n.workspace,n.id LIMIT ? OFFSET ?`).all(...scopeArgs(scope), limit + 1, offset)
     return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
   }
   function nodeAt(workspace: string, path: string) {
@@ -296,15 +295,64 @@ ${file.description}`))
     const state = vectorState()
     return matchesVectorSpace(state, space, query) ? vectorScores(query,state,chunks(authorized)).slice(0,limitOf(limit)) : null
   }
-  function vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, preferred: readonly MemoryFileHit[], limit: number) {
+  async function vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, limit: number, current = () => true, deadline = Infinity) {
     const state = vectorState()
     if (!matchesVectorSpace(state, space, query)) return null
     if (!limitOf(limit)) return { rows: [], incomplete: false }
-    // Keep keyword matches and spend remaining space on recently published files.
-    // Exact corpus-wide cosine remains available to offline maintenance and evaluation.
-    const candidates = passagePage(scope, limit, 'recent')
-    const pool = new Map([...preferred, ...candidates.rows].map(chunk => [key(chunk.ref), chunk]))
-    return { rows: vectorScores(query, state, [...pool.values()].slice(0, limit)), incomplete: candidates.incomplete || pool.size > limit }
+    const chunksPage = db.prepare(`SELECT c.file_id,c.ordinal,json_extract(c.payload,'$.ref') AS ref
+      FROM memory_file_index_chunks c JOIN memory_file_index_lookup n ON n.workspace=c.workspace AND n.id=c.file_id
+      WHERE c.workspace=? AND (c.file_id,c.ordinal) > (?,?)
+      AND (n.kind <> 'daily' OR n.day IS NULL OR n.day >= coalesce(?,n.day))
+      AND (n.kind <> 'daily' OR n.day IS NULL OR n.day <= coalesce(?,n.day))
+      AND (n.updated_at = 0 OR n.updated_at <= coalesce(?,n.updated_at))
+      ORDER BY c.file_id,c.ordinal LIMIT 32`)
+    const scored = db.prepare('SELECT vector FROM memory_file_index_vectors WHERE generation=? AND ref=?')
+    const lookup = db.prepare('SELECT payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=? AND ordinal=?')
+    type Match = { ref: MemoryFileChunkRef, score: number, key: string }
+    const matches: Match[] = []
+    const rank = (a: Match, b: Match) => b.score - a.score || a.key.localeCompare(b.key)
+    const norm = Math.sqrt(query.reduce((sum, v) => sum + v*v, 0))
+    let incomplete = false, yieldAt = performance.now() + 4
+    search: for (const workspace of scope.workspaces) {
+      let fileId = '', ordinal = -1
+      do {
+        if (!current() || performance.now() >= deadline) { incomplete = true; break search }
+        const rows = chunksPage.all(workspace, fileId, ordinal, scope.from ?? null, scope.through ?? null, scope.asOf ?? null)
+        for (const row of rows) {
+          fileId = String(row.file_id); ordinal = Number(row.ordinal)
+          const ref = JSON.parse(String(row.ref)) as MemoryFileChunkRef
+          const tag = key(ref)
+          let score = -Infinity
+          for (const item of scored.iterate(state.generation, tag)) {
+            const bytes = item.vector as Uint8Array
+            if (bytes.byteLength !== query.byteLength) continue
+            const vector = new Float32Array(Uint8Array.from(bytes).buffer)
+            let dot = 0, squared = 0
+            for (let i = 0; i < vector.length; i++) {
+              dot += vector[i]! * query[i]!
+              squared += vector[i]! * vector[i]!
+            }
+            if (squared > 0) score = Math.max(score, dot / (norm * Math.sqrt(squared)))
+          }
+          if (Number.isFinite(score)) matches.push({ ref, score, key: tag })
+        }
+        if (matches.length > limit) { matches.sort(rank); matches.length = limit; incomplete = true }
+        if (rows.length < 32) break
+        if (performance.now() >= yieldAt) {
+          await new Promise<void>(resolve => setImmediate(resolve))
+          yieldAt = performance.now() + 4
+        }
+      } while (true)
+    }
+    // A caller can retire the owner or replace a generation while scoring yielded.
+    if (!current()) return { rows: [], incomplete: true }
+    if (vectorState().generation !== state.generation) return null
+    const rows = matches.sort(rank).flatMap(({ ref, score, key: tag }) => {
+      const row = lookup.get(ref.workspace, ref.fileId, ref.ordinal)
+      const passage = row && JSON.parse(String(row.payload)) as MemoryFilePassage | undefined
+      return passage && key(passage.ref) === tag ? [{ ...passage, score }] : []
+    })
+    return { rows, incomplete }
   }
   return {
     accept, snapshot, chunks, lexical, beginVectors, vectorState, stageVectors, finishVectors, vector,

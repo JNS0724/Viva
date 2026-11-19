@@ -5,8 +5,11 @@ import type { TestContext } from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { maskTextSpans } from '../src/memory/contracts/text-spans.ts'
 import { withRequestSource } from '../src/shared/request-routing/header.ts'
-import { join } from 'node:path'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fork } from 'node:child_process'
+import { once } from 'node:events'
+import { createOwnerRpcPeer } from '../src/memory/node/owner-rpc-peer.ts'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
 import { eventually } from './fixtures/eventually.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -48,7 +51,7 @@ async function fixture(t: TestContext, text = 'The report is due Friday. Tea is 
   const client = createVivaMemoryClient(call)
   const identity = { kind: 'digest' as const, workspace, id: created.documentId }
   const resumeOldErasure = (request: Parameters<typeof client.forgetFile>[0]) => resumeLegacyFileErasure(owner, store.db, request)
-  return { resumeOldErasure, get owner() { return owner }, client, store, documents, created, identity, session, sourceId,
+  return { defer, resumeOldErasure, get owner() { return owner }, client, store, documents, created, identity, session, sourceId,
     async reopen(beforeRecovery?: () => void) { await owner.close(); owner = openMemoryOwner(options); beforeRecovery?.(); await owner.recover() } }
 }
 
@@ -928,6 +931,33 @@ test('manual lineage erases copied wording even through a second digest, preserv
   assert.equal((await f.client.readFile(independent.identity))!.editor?.text, edit.text, 'identical explicit input is a separate proof, never a content blacklist')
 })
 
+test('a committed missing file cannot block owner restart, independent reads or durable invalidation', async t => {
+  const f = await fixture(t)
+  const healthy = await f.client.createFile({ operationId: randomUUID(), text: 'kumquat survives' })
+  const original = (await f.client.readFile(f.identity))!
+  f.owner.dispatch.recordFiles(f.session, [{ workspace: f.identity.workspace, id: f.identity.id, path: original.path,
+    revision: original.version.contentRevision, usageVersion: original.version.usageVersion, policyToken: original.version.policyToken,
+    sourceRanges: [{ sourceId: f.sourceId, spans: [{ start: 0, end: 25 }] }] }])
+  const command = { operationId: randomUUID(), identity: f.identity, version: original.version, text: 'citrine update' }
+  // Crash between the file journal commit and the owner operation/outbox transaction.
+  f.store.db.exec(`CREATE TRIGGER interrupt_owner_receipt BEFORE UPDATE ON owner_operations
+    WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'fixture interrupted owner receipt'); END`)
+  await assert.rejects(f.client.editFile(command), /interrupted owner receipt/u)
+  f.store.db.exec('DROP TRIGGER interrupt_owner_receipt')
+  const path = join(f.store.fileRoot, f.identity.workspace, original.path)
+  await f.reopen(() => renameSync(path, path + '.unavailable'))
+  assert.equal(f.owner.ready(), true)
+  assert.match((await f.client.readFile(healthy.identity))!.markdown, /kumquat/u)
+  const query = await f.owner.runtime.handleModelRequest({ op: 'recall', session: f.session, query: 'kumquat' },
+    { session: f.session, conversation: f.session }, () => true)
+  assert.match(query, /kumquat/u)
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.equal(effects.filter(effect => effect.causeOperationId === command.operationId).length, 1)
+  renameSync(path + '.unavailable', path)
+  assert.equal((await f.client.editFile(command)).action, 'EDIT')
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_revisions WHERE operation=?').get(command.operationId)?.n, 1)
+})
+
 test('a manual file replays after replacement and atomically publishes its evidence and receipt', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   const command = { operationId: randomUUID(), identity: f.identity, version: before.version, text: 'Written after an interrupted checkpoint.' }
@@ -1413,4 +1443,76 @@ test('a disjoint read after partial erasure cannot strand a later independent co
   assert.equal(groups.length, 1)
   assert.equal(notes.pending(groups[0]!.note)[0]?.assistant, '')
   assert.match(f.owner.runtime.handle({ op: 'file_read', session: reader, id: kept.documentId }, f.owner.sessionContext(reader)), /Tea is served on Monday/)
+})
+
+test('physical sends recheck external edits and a stalled file leaves other sessions and grants available', { timeout: 15_000 }, async t => {
+  const f = await fixture(t)
+  const a = await f.client.createFile({ operationId: randomUUID(), text: 'Aster send evidence' })
+  const b = await f.client.createFile({ operationId: randomUUID(), text: 'Birch send evidence' })
+  const path = join(f.store.fileRoot, a.identity.workspace, (await f.client.readFile(a.identity))!.path)
+  const original = readFileSync(path, 'utf8')
+  const reader = (id: string) => {
+    const session = randomUUID()
+    f.owner.initializeSession({ sessionId: session })
+    f.owner.runtime.handle({ op: 'file_read', session, id }, f.owner.sessionContext(session))
+    assert.equal(f.owner.dispatch.snapshot(session).files?.[0]?.id, id)
+    return session
+  }
+  const sessionA = reader(a.identity.id), sessionB = reader(b.identity.id)
+  await f.owner.close()
+  const child = fork(new URL('./fixtures/memory-send-read-stall.ts', import.meta.url), ['--memory-owner-ipc', path], {
+    execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, silent: true,
+  })
+  const exited = once(child, 'exit')
+  const peer = createOwnerRpcPeer({ send: frame => { child.send(frame) } })
+  function notice(value: string) {
+    return new Promise<void>(resolve => {
+      const observe = (message: unknown) => {
+        if (message === value) { child.off('message', observe); resolve() }
+      }
+      child.on('message', observe)
+    })
+  }
+  const armed = notice('file-blocked'), entered = notice('verification-stalled')
+  child.on('message', peer.receive)
+  f.defer(async () => { peer.close(); child.kill('SIGKILL'); await exited })
+  await peer.call('boot', { root: dirname(f.store.fileRoot), hostNamespace: 'viva-test', preserveActiveTurns: true })
+  const adapter = (method: string, ...args: unknown[]) => peer.call('adapter', { method, args }, { budgetMs: 2_000 })
+  const acquire = (id: string, session: string) => adapter('acquireSend', id, { session }, 'a'.repeat(64))
+  const first = randomUUID()
+  await acquire(first, sessionA)
+  writeFileSync(path, 'changed after original grant')
+  await assert.rejects(adapter('recordSendBody', first), /expired/)
+  await adapter('settleSend', first)
+  writeFileSync(path, original)
+  const second = randomUUID()
+  await acquire(second, sessionA)
+  child.send('block-file')
+  await armed
+  const denied = assert.rejects(adapter('recordSendBody', second), /timed out/)
+  await entered
+  const independent = randomUUID()
+  await acquire(independent, sessionB)
+  await adapter('recordSendBody', independent)
+  await adapter('settleSend', independent)
+  const detail = await peer.call<HostMemoryApi['readFile']['output']>('host', { method: 'readFile', input: { args: [b.identity] } })
+  assert.match(detail!.markdown, /Birch send evidence/)
+  await denied
+  const third = randomUUID()
+  await assert.rejects(acquire(third, sessionA), /timed out/)
+  await assert.rejects(adapter('recordSendBody', third), /expired/)
+  await adapter('settleSend', second)
+
+  // Completed-turn capture must still retain each independent user message
+  // when an earlier tool read can no longer justify retaining its generated reply.
+  for (const session of [sessionA, sessionB]) {
+    const message = randomUUID(), at = Date.now()
+    await adapter('receiveSource', { sessionId: session, messageId: message, text: 'My next independent question.', at,
+      timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+    await adapter('completeTurn', { sessionId: session, turn: 1, eventSeq: 4, sourceIds: [message],
+      assistant: 'A reply based on the earlier file.', completed: true, at, timezone: 'UTC' })
+    const captured = f.store.db.prepare('SELECT sources, assistant_digest FROM memory_note_turns WHERE id=?').get(message)
+    assert.deepEqual(JSON.parse(String(captured?.sources)), [message])
+    assert.equal(Boolean(captured?.assistant_digest), session === sessionB)
+  }
 })

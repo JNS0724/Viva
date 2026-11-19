@@ -7,7 +7,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { offlineMemorySafety } from './fixtures/memory-safety.ts'
 import { scratch } from './fixtures/scratch.js'
 import { createMemoryRuntime } from '../src/memory/core/memory-runtime.ts'
-import { RequestTimeout } from '../src/memory/core/request-budget.ts'
+import { RequestTimeout } from '../src/shared/request-budget.ts'
 import { openMemoryRuntimeResources } from '../src/memory/node/runtime.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
@@ -64,6 +64,7 @@ test('runtime rebuilds mixed daily notes from permitted fragments and keeps unre
   const { workspace, reference } = f.ref(sourceId)
   const home = f.documents.commit({ operationId: 'home', workspace, path: 'digest/personal/home.md', expectedRevision: null, action: 'CREATE', markdown: '深圳', sources: [{ ...reference, spans: [{ start: 0, end: 5 }] }], reads: [] })
   const tea = f.documents.commit({ operationId: 'tea', workspace, path: 'digest/personal/tea.md', expectedRevision: null, action: 'CREATE', markdown: '喜欢茶', sources: [{ ...reference, spans: [{ start: 5, end: text.length }] }], reads: [] })
+  await f.memory.wake()
   const before = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '深圳' }, origin)) as { notes?: unknown[] }
   assert.equal(before.notes?.length, 2, 'both the daily and digest evidence are searchable')
   const revision = f.memory.revision()
@@ -209,6 +210,7 @@ test('file mode shares digest recall, original line reads, node search, injectio
   const markdown = '---\r\nname: 青岚发布\r\ndescription: 发布要求\r\n---\r\n# 发布\r\n青岚发布需要先完成账单核对。'
   const receipt = f.documents.commit({ operationId: 'create-release', workspace, path: 'digest/wiki/release.md',
     expectedRevision: null, action: 'CREATE', markdown, sources: [reference], reads: [] })
+  await f.memory.wake()
   const recalled = JSON.parse(await f.memory.handleModelRequest({ op: 'recall', session: origin.session, query: '账单核对' }, origin, () => true))
   assert.equal(recalled.status, 'ok')
   assert(recalled.notes.some((note: {path:string,markdown:string}) => note.path === receipt.path && note.markdown.includes('账单核对')))
@@ -240,6 +242,35 @@ test('file mode shares digest recall, original line reads, node search, injectio
   assert.equal(JSON.parse(f.memory.handle({ op: 'file_read', session: origin.session, id: receipt.documentId }, origin)).status, 'unavailable')
   const after = await f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 2, question: '账单核对' }, origin, () => true)
   assert(!after.includes('青岚发布需要先完成账单核对'))
+})
+
+test('model searches and direct lookup exclude another project before opening candidate files', async t => {
+  const f = fixture(t)
+  function projectFile(projectId: string) {
+    const project = { kind: 'project' as const, id: projectId }, scope = { ...origin, context: project, project }
+    const source = randomUUID()
+    f.memory.accept('Invoice project ledger', scope, source)
+    const { workspace, reference } = f.ref(source)
+    const receipt = f.documents.commit({ operationId: projectId, workspace, path: 'digest/wiki/invoice.md', action: 'CREATE',
+      markdown: '---\nname: Invoice ledger\n---\nInvoice project ledger', expectedRevision: null, sources: [reference], reads: [] })
+    return { scope, workspace, receipt }
+  }
+  const foreign = projectFile('foreign'), local = projectFile('local')
+  await f.memory.wake()
+  const reads: string[] = []
+  f.wrapPhysicalRead(read => (workspace, path, signal) => { reads.push(workspace); return read(workspace, path, signal) })
+  const request = (input: Parameters<typeof f.memory.handleModelRequest>[0]) => f.memory.handleModelRequest(input, local.scope, () => true)
+  const session = origin.session
+  for (const output of [
+    await request({ op: 'recall', session, query: 'Invoice' }),
+    await request({ op: 'node_search', session, query: 'Invoice' }),
+  ]) {
+    assert.ok(output.includes(local.receipt.documentId))
+    assert.ok(!output.includes(foreign.receipt.documentId))
+  }
+  assert.equal(JSON.parse(await request({ op: 'file_read', session, id: foreign.receipt.documentId })).status, 'unavailable')
+  assert.ok(reads.includes(local.workspace))
+  assert.ok(!reads.includes(foreign.workspace))
 })
 
 test('a stalled verification leaves independent recall, injection and direct reads available', async t => {
@@ -293,6 +324,24 @@ test('a stalled verification leaves independent recall, injection and direct rea
   const ongoing = request({ op: 'file_read', session, id: slow.documentId }, cancellation.signal)
   cancellation.abort()
   assert.equal(JSON.parse(await ongoing).status, 'unavailable')
+})
+
+test('a stalled page observation returns within the page budget and can be retried', { timeout: 3_000 }, async t => {
+  const f = fixture(t)
+  const source = randomUUID()
+  f.memory.accept('Lemon tree schedule.', origin, source)
+  const { workspace, reference } = f.ref(source)
+  const entry = f.documents.commit({ operationId: 'lemon', workspace, path: 'digest/wiki/lemon.md',
+    expectedRevision: null, markdown: 'Lemon tree schedule.', sources: [reference], reads: [], action: 'CREATE' })
+  await f.memory.wake()
+  f.wrapPhysicalRead(() => () => new Promise(() => {}))
+  const incomplete = await f.memory.listFilesAsync({ kind: 'digest' })
+  assert.ok(incomplete.partial)
+  assert.deepEqual(incomplete.items, [])
+  f.wrapPhysicalRead(read => read)
+  const complete = await f.memory.listFilesAsync({ kind: 'digest' })
+  assert.equal(complete.partial, undefined)
+  assert.deepEqual(complete.items.map(item => [item.identity.id, item.enabled]), [[entry.documentId, true]])
 })
 
 test('file pagination verifies just this page and rejects cursors after a ledger change', async t => {
@@ -356,6 +405,7 @@ test('external file changes remain quarantined by reindex and unique rename resc
   const { workspace, reference } = f.ref(sourceId)
   const receipt = f.documents.commit({ operationId: 'create-invoice', workspace, path: 'digest/wiki/invoice.md',
     expectedRevision: null, action: 'CREATE', markdown: '海鸥上线前核对发票。', sources: [reference], reads: [] })
+  await f.memory.wake()
   const recall = () => JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '发票' }, origin))
   assert.equal(recall().notes.length, 1)
   const root = join(f.store.fileRoot, workspace)
@@ -376,6 +426,27 @@ test('external file changes remain quarantined by reindex and unique rename resc
 })
 
 
+test('background rescans remove an externally deleted projection and republish its restored bytes', async t => {
+  const f = fixture(t), source = randomUUID()
+  f.memory.accept('Cobalt preference.', origin, source)
+  const { workspace, reference } = f.ref(source)
+  const receipt = f.documents.commit({ operationId: 'cobalt', workspace, path: 'digest/wiki/cobalt.md', action: 'CREATE',
+    markdown: 'Cobalt preference.', expectedRevision: null, sources: [reference], reads: [] })
+  await f.memory.wake()
+  const indexed = () => f.store.db.prepare('SELECT 1 FROM memory_file_index_lookup WHERE workspace=? AND id=?').get(workspace, receipt.documentId)
+  const physical = join(f.store.fileRoot, workspace, receipt.path)
+  assert.ok(indexed())
+  renameSync(physical, physical + '.removed')
+  f.memory.rescanFiles!('observe-delete')
+  await f.memory.wake()
+  assert.equal(f.memory.fileScanStatus!('observe-delete')?.missing, 1)
+  assert.equal(indexed(), undefined)
+  renameSync(physical + '.removed', physical)
+  f.memory.rescanFiles!('observe-restore')
+  await f.memory.wake()
+  assert.ok(indexed(), 'the restored projection does not have to wait out the previous retry delay')
+})
+
 test('unaccepted daily edits and malformed frontmatter are isolated from all file read paths', async t => {
   const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('我喜欢茉莉花茶。', origin, sourceId)
@@ -384,6 +455,7 @@ test('unaccepted daily edits and malformed frontmatter are isolated from all fil
   const { workspace, reference } = f.ref(sourceId)
   const safe = f.documents.commit({ operationId: 'safe-tea', workspace, path: 'digest/wiki/tea.md',
     expectedRevision: null, action: 'CREATE', markdown: '我喜欢茉莉花茶。', sources: [reference], reads: [] })
+  await f.memory.wake()
   const recall = (query: string) => JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query }, origin)) as { notes: Array<{id:string,path:string,markdown:string}> }
   const daily = recall('茉莉花茶').notes.find(note => note.path.startsWith('daily/'))!
   assert(daily)
@@ -406,6 +478,7 @@ test('native file recall deduplicates within a trusted turn and resets for the n
   f.documents.commit({ operationId: 'dedup-invoice', workspace, path: 'digest/wiki/dedup.md',
     expectedRevision: null, action: 'CREATE', markdown: '银杏部署需要先核对发票。', sources: [reference], reads: [] })
   const request = { op: 'recall' as const, session: origin.session, query: '发票' }
+  await f.memory.wake()
   const recall = async (turn: string, session = origin.session) => JSON.parse(await f.memory.handleModelRequest({ ...request, session },
     { ...origin, session, foregroundTurn: turn }, () => true))
   assert.equal((await recall('1')).status, 'ok')
@@ -426,6 +499,7 @@ test('reusing a renamed path makes new links follow the current identity', async
     expectedRevision: null, action: 'CREATE', markdown: '星河新项目', sources: [reference], reads: [] })
   const linked = f.documents.commit({ operationId: 'path-link', workspace, path: 'digest/wiki/link.md',
     expectedRevision: null, action: 'CREATE', markdown: '星河流程入口 [[digest/wiki/old.md]]', sources: [reference], reads: [] })
+  await f.memory.wake()
   const result = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '流程入口' }, origin))
   const hit = result.notes.find((item: {id:string}) => item.id === linked.documentId)
   assert(hit)
@@ -443,6 +517,7 @@ test('a correction and its undo immediately republish the unchanged anchor file'
   const replacement = f.documents.commit({ operationId: 'publication-new', workspace, path: 'digest/wiki/new.md',
     expectedRevision: null, markdown: 'saffron', sources: [reference], reads: [], action: 'CREATE' })
   const recall = () => f.memory.handle({ op: 'recall', session: origin.session, query: 'indigo' }, origin)
+  await f.memory.wake()
   assert.match(recall(), /indigo/u)
 
   const corrected = f.documents.commit({ operationId: 'publication-correct', workspace, path: replacement.path,
@@ -452,6 +527,7 @@ test('a correction and its undo immediately republish the unchanged anchor file'
       { path: anchor.path, revision: anchor.revision!, startLine: 1, endLine: 1, text: 'indigo', condition: 'all', time: 'current' },
     ] })
   assert.equal(f.documents.read(workspace, anchor.path)?.revision, anchor.revision, 'the source bytes never changed')
+  await f.memory.wake()
   assert.doesNotMatch(recall(), /indigo/u)
 
   await f.memory.undoDocument({ operationId: 'publication-undo', workspace, documentId: replacement.documentId,
@@ -470,8 +546,8 @@ test('a temporarily unreadable committed file keeps its publication pending with
 
   const path = 'digest/wiki/peridot.md', physical = join(f.store.fileRoot, workspace, path)
   f.beforePublish(() => renameSync(physical, physical + '.fixture'))
-  assert.throws(() => f.documents.commit({ operationId: 'unreadable-publication', workspace, path,
-    expectedRevision: null, markdown: 'peridot', sources: [reference], reads: [], action: 'CREATE' }))
+  f.documents.commit({ operationId: 'unreadable-publication', workspace, path,
+    expectedRevision: null, markdown: 'peridot', sources: [reference], reads: [], action: 'CREATE' })
   const receipt = f.documents.receipt(workspace, 'unreadable-publication')
   assert.ok(receipt, 'the authority already committed, but the projection cannot verify the physical revision')
   const effect = () => f.store.db.prepare('SELECT generation FROM effects WHERE kind=? AND key=?')
@@ -482,7 +558,8 @@ test('a temporarily unreadable committed file keeps its publication pending with
   assert.doesNotMatch(recall('peridot'), /peridot/u)
   renameSync(physical + '.fixture', physical)
 
-  await f.memory.wake()
+  await f.memory.searchableReceipt({ operationId: 'unreadable-publication', identity: { kind: 'digest', workspace, id: receipt.documentId },
+    action: 'CREATE', contentRevision: receipt.revision!, usageVersion: receipt.usageVersion })
   assert.match(recall('peridot'), /peridot/u)
   assert.equal(effect(), undefined)
 })

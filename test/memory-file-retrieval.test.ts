@@ -1,3 +1,4 @@
+import { RequestTimeout } from '../src/shared/request-budget.ts'
 import assert from 'node:assert/strict'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { test } from 'node:test'
@@ -624,4 +625,39 @@ test('published relations only verify indexed edges and their trusted rename ali
   assert.deepEqual(new Set(checks), new Set([root.path, target.path, hidden.path, stale.path]))
   const back = retrieval.relations({ workspace, path: oldPath, allows })!
   assert.deepEqual(back.inlinks.neighbors.map(item => item.id), [root.id])
+})
+
+test('the automatic context deadline leaves a cold query worker warming until its own inference deadline', async t => {
+  const { embedder } = encoder()
+  const { retrieval } = setup(t, [view('a', 'needle')], embedder)
+  retrieval.sync()
+  assert.ok(await retrieval.prepareVectors())
+  const caller = new AbortController()
+  let signal: AbortSignal | undefined, release!: () => void
+  embedder.embedBatch = async (_inputs, infer) => { signal = infer; await new Promise<void>(resolve => { release = resolve }); return [unit(0)] }
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = retrieval.search({ query: 'needle', automatic: true, allows, signal: caller.signal })
+  try {
+    assert.ok(signal)
+    caller.abort(new RequestTimeout())
+    t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
+    await pending
+    assert.equal(signal.aborted, false)
+    retrieval.close()
+    assert.equal(signal.aborted, true)
+  } finally { release() }
+})
+
+test('vector preparation allows a corpus to exceed one inference deadline across completed batches', async t => {
+  const { embedder } = encoder()
+  const { retrieval, index } = setup(t, [view('a', 'first'), view('b', 'second'), view('c', 'third')], embedder)
+  retrieval.sync()
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  embedder.embedBatch = async (inputs, signal) => {
+    t.mock.timers.tick(4_000)
+    assert.equal(signal?.aborted, false)
+    return inputs.map(() => unit(0))
+  }
+  assert.equal(await retrieval.prepareVectors(), true)
+  assert.equal(index.vectorState().active, true)
 })

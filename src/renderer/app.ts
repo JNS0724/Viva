@@ -170,7 +170,7 @@ function publishIsland() {
   const target = pending && draft ? { ...draftTarget(state), key: draft.key } : draftTarget(state)
   composerDraft?.expect(pending ? null : target.key)
   dom.input.readOnly = !composerDraft?.ready()
-  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: pending || state.switching || state.newTopicPending,
+  const view = JSON.stringify({ ...islandView(state), target: { ...target, working: isBusy(state), blocked: pending || state.switching || state.newTopicPending || state.stopUnconfirmed || state.phase === 'stopping',
     ...(inheritDraft ? { inheritDraft: true } : {}), ...(migrateDraft ? { migrateDraft: true } : {}) } })
   if (view === publishedIsland || !api?.islandView) return
   publishedIsland = view
@@ -242,20 +242,21 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
 }
 
 function saveHistory() {
-  if (!historyReady || state.initialization.status !== 'ready' || !agentEvents?.settled() || state.messages.length === 0) return
+  void persistHistory().catch(err => console.error('[history] could not save the conversation:', errorMessage(err)))
+}
+
+async function persistHistory() {
+  if (!historyReady || state.stoppedReplayLost || state.initialization.status !== 'ready' || !agentEvents?.settled() || state.messages.length === 0) return
   const mark = initialization.watermark()
   if (!mark) return
   const sessionId = state.info.sessionId
   const topicStartedAt = state.topic.startedAt
-  api.saveHistory(historyMessages(state, { keys: true }), { ...mark,
+  const summary = await api.saveHistory(historyMessages(state, { keys: true }), { ...mark,
     context: { conversationId: state.conversationId ?? state.info.conversationId ?? null, sessionId: state.info.sessionId ?? null } })
-    .then((summary) => {
-      // A save from the topic just left must not attach its id to the new blank topic.
-      if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
-      else if (sessionId) dispatch({ type: 'archived_conversation_saved', sessionId, id: summary.id })
-      historyActions.refreshIfOpen()
-    })
-    .catch((err) => console.error('[history] could not save the conversation:', errorMessage(err)))
+  // A save from the topic just left must not attach its id to the new blank topic.
+  if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
+  else if (sessionId) dispatch({ type: 'archived_conversation_saved', sessionId, id: summary.id })
+  historyActions.refreshIfOpen()
 }
 
 /** At launch: the permission level picked, shown by the input (the rest of settings is read when they open). */
@@ -434,7 +435,7 @@ function revealRow(row: HTMLElement) {
 
 const conversationActions = createConversationActions({
   api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast,
-  beforePrompt: () => dom.follower.resetForPrompt(), keepPicture: pictureKept,
+  beforePrompt: () => dom.follower.resetForPrompt(), saveBeforeRecovery: persistHistory, keepPicture: pictureKept,
 })
 const { ask, answer, provideSecrets, sendAfterTurn } = conversationActions
 beforeSelection = conversationActions.clearAfterTurn
@@ -560,7 +561,7 @@ const handlers = {
   skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
   send() {
     if (state.initialization.status !== 'ready' || state.phase === 'stopping'
-      || state.lastReceipt?.stopReason === 'cancel_unconfirmed' || api && !composerDraft?.ready()) return
+      || state.stopUnconfirmed || api && !composerDraft?.ready()) return
     if (setupView(state.info)) return handlers.openSettings()
     if (dom.input.value.trim().length > MAX_MESSAGE_CHARS) return historyActions.showToast(MESSAGE_TOO_LONG)
     const text = dom.input.value.trim()

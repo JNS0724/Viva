@@ -2,7 +2,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
 import type { StoredEvent } from './event-core.ts'
 import type { RemoteHost } from './remote-host.ts'
-import { type Answer, type ChannelKind, decodeValue, encodeValue, isBlobRef, MAX_JSON_BYTES, SEQ_HEADER, sseMessage, TOKEN_HEADER } from './wire.ts'
+import { type Answer, type ChannelKind, decodeValue, encodeValue, isBlobRef, MAX_JSON_BYTES, readBudgetPosition, SEQ_HEADER, sseMessage, TOKEN_HEADER } from './wire.ts'
 import { safeDiagnosticReason, separateDiagnosticEnvelope } from '../diagnostics/contracts.ts'
 import { emitDiagnostic, withRemoteOperation } from '../diagnostics/node/context.ts'
 import { diagnosticOperationForChannel } from '../diagnostics/node/operations.ts'
@@ -180,16 +180,18 @@ export function createRpcServer({ token, channels, controls, remote, since, imag
         const value = await entry.listener({}, ...args)
         return entry.kind === 'on' ? null : value
       }, { identities: { methodId: key } })
-      if (key !== 'memory:get' && key !== 'agent:snapshot') return invoke
-      const limit = key === 'memory:get' ? MEMORY_READ_BUDGET_MS : INITIALIZATION_BUDGET_MS
-      const requested = (args[0] as { budgetMs?: unknown } | undefined)?.budgetMs
+      const position = readBudgetPosition(key)
+      if (position === undefined) return invoke
+      const isMemoryRead = key !== 'agent:snapshot'
+      const limit = isMemoryRead ? MEMORY_READ_BUDGET_MS : INITIALIZATION_BUDGET_MS
+      const requested = (args[position] as { budgetMs?: unknown } | undefined)?.budgetMs
       if (requested !== undefined && (typeof requested !== 'number' || !Number.isFinite(requested) || requested <= 0 || requested > limit)) throw new HttpProblem(400, 'invalid request budget')
       const disconnected = new AbortController()
       const lifetime = createRequestBudget(typeof requested === 'number' ? requested : limit, disconnected.signal)
       const stop = () => { if (!res.writableEnded) disconnected.abort(new Error('Request caller disconnected')) }
       res.once('close', stop)
       return async () => {
-        try { return await lifetime.run(() => key === 'memory:get' ? memoryReadContext.run(lifetime, invoke) : invoke()) }
+        try { return await lifetime.run(() => isMemoryRead ? memoryReadContext.run(lifetime, invoke) : invoke()) }
         finally { lifetime.close(); res.off('close', stop) }
       }
     }

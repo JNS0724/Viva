@@ -57,6 +57,8 @@ export interface ConversationState {
   question: AskedQuestion | null
   secret: AskedSecret | null
   turn: { startedAt: number, tools: number, thoughts: number, by?: string, messageCount?: number, id?: string } | null
+  stoppedReplayLost: boolean
+  stopUnconfirmed: boolean
   lastReceipt: TurnReceipt | null
   /**
    * Whether the last turn's 已完成 is still news (done-notice-actions.ts): fresh as it ends, still once her done pose
@@ -109,7 +111,7 @@ export interface ConversationPayloads {
   secret_resolved: { requestId: string, provided: boolean, at: number }
   secret_closed: { requestId: string }
   waits_restored: Partial<ForegroundWaits> & { at: number }
-  turn_stopping: {}
+  turn_stopping: { confirmed?: boolean }
   turn_stop_rejected: { turnId: string, phase: ConversationState['phase'] }
   turn_recovered: {}
   turn_end: { stopReason?: string, finalReply?: boolean, at: number }

@@ -60,8 +60,8 @@ export function createMemoryDispatch(store: Pick<MemoryStore, 'dispatch' | 'epoc
     admission,
     stale: (session: string, acceptsFiles?: FileEvidenceCurrent) => !admission(session, acceptsFiles).allowed,
     acquire(id: string, check = () => false, session?: string) { leases.set(id, { current: check, session }) },
-    acquireSession(id: string, session: string, admitted: Extract<ReturnType<typeof admission>, { allowed: true }>, stillAllowed: () => boolean) {
-      leases.set(id, { session, current: () => stillAllowed() && evidenceCurrent(admitted.evidence, admitted.at) })
+    acquireSession(id: string, session: string, admitted: Extract<ReturnType<typeof admission>, { allowed: true }>, stillAllowed: () => boolean, acceptsFiles?: FileEvidenceCurrent) {
+      leases.set(id, { session, current: () => stillAllowed() && evidenceCurrent(admitted.evidence, admitted.at, acceptsFiles) })
     },
     release(id: string) {
       if (leases.delete(id)) for (const notify of waiters) notify()

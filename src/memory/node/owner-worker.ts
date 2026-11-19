@@ -4,12 +4,12 @@ import { z } from 'zod'
 import { parseDiagnosticContext, safeDiagnosticEvent, type DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { diagnosticContext, diagnosticPort, installDiagnosticPort, newDiagnosticContext, withRemoteOperation } from '../../diagnostics/node/context.ts'
 import { MemoryComputeError, type MemoryComputeTools } from '../contracts/compute.ts'
-import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryHostRead, parseHostMemoryCommand } from '../contracts/host.ts'
+import { MEMORY_HOST_PROTOCOL } from '../contracts/host.ts'
 import { isDailyMemoryStage, memoryComputeFailure, memoryRequest } from '../contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
 import { OWNER_RPC_MAX_ACTIVE, OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
-import type { OwnerAdapterApi, RemoteToolReadScope } from './owner-adapter.ts'
+import type { OwnerAdapterApi, OwnerSendOrigin, RemoteToolReadScope } from './owner-adapter.ts'
 import type { NativeToolReadScope } from './native-tool-reads.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 import { openMemoryOwner } from './owner.ts'
@@ -37,7 +37,8 @@ let effectsRevision = 0
 let lastState = ''
 const sessions = new AsyncLocalStorage<string | undefined>()
 const computeTools = new Map<string, MemoryComputeTools>()
-const permits = new Map<string, ReturnType<Owner['acquireSend']>>()
+type Grant = { origin: OwnerSendOrigin, lifetime: AbortController, permit?: ReturnType<Owner['acquireSend']> }
+const permits = new Map<string, Grant>()
 const adapterExecutions = new Set<Promise<unknown>>()
 let pendingDiagnostics = 0
 const diagnosticRelay: DiagnosticPort = {
@@ -115,10 +116,11 @@ function nativeScope(scope: RemoteToolReadScope, signal: AbortSignal): NativeToo
 }
 
 function settleSend(id: string) {
-  const permit = permits.get(id)
-  if (!permit) return
+  const grant = permits.get(id)
+  if (!grant) return
   permits.delete(id)
-  permit.settled()
+  grant.lifetime.abort()
+  grant.permit?.settled()
 }
 
 const inputFrame = z.strictObject({ method: z.string(), args: z.array(z.unknown()).max(8) })
@@ -126,16 +128,16 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
   const { method, args } = inputFrame.parse(raw)
   // Only these operations can run on behalf of the native DSH adapter.
   const handlers: OwnerAdapterApi = {
-    initializeSession: current.initializeSession,
+    initializeSession: async input => current.initializeSession(input, await current.loadSessionFileProof(input.sessionId, signal, input.parentSessionId)),
     noteInheritedNativeCut: current.noteInheritedNativeCut,
     receiveSource: input => sessions.run(input.sessionId, () => current.receiveSource(input)),
-    registerDerived: current.registerDerived,
-    completeTurn: input => sessions.run(input.sessionId, () => current.completeTurn(input)),
+    registerDerived: input => current.registerDerived(input, signal),
+    completeTurn: input => sessions.run(input.sessionId, () => current.completeTurn(input, signal)),
     prepareContextRecovery: current.prepareContextRecovery,
     bindContextRecovery: current.bindContextRecovery,
     snapshot: current.dispatch.snapshot,
     rememberStandaloneFile: (session, input) => sessions.run(session, () => current.rememberStandaloneFile(session, input)),
-    forgetStandaloneFile: (...args) => sessions.run(args[0], () => current.forgetStandaloneFile(...args)),
+    forgetStandaloneFile: (session, id, operation) => sessions.run(session, () => current.forgetStandaloneFile(session, id, operation, signal)),
     finishNativeOutput: current.finishNativeOutput,
     finishNativeToolRead: current.finishNativeToolRead,
     nativeToolEvidence: current.nativeToolEvidence,
@@ -156,7 +158,10 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     commitContextRecovery: (input, checkId) => current.commitContextRecovery(input,
       () => peer.call<boolean>('checkRecovery', { checkId: attemptId.parse(checkId) }, { signal })),
     inheritNativeToolRead: (scope, evidence) => current.inheritNativeToolRead(nativeScope(scope, signal), evidence),
-    admitNativeSpillRead: (id, scope) => current.admitNativeSpillRead(id, nativeScope(scope, signal)).current(),
+    admitNativeSpillRead: async (id, scope) => {
+      const proof = await current.loadSpillFileProof(id, signal)
+      return current.admitNativeSpillRead(id, nativeScope(scope, signal), signal, proof).current()
+    },
     modelRequest: (request, session, generation, scope) => sessions.run(session, async () => {
       // The native DSH tools and runtime own argument semantics. Validate the operation
       // here without narrowing native file-tool input to the legacy memory RPC limits.
@@ -180,17 +185,37 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
       if (request.op === 'context') return read()
       return scope ? current.withNativeToolRead(nativeScope(scope, signal), read) : '{"status":"unavailable"}'
     }),
-    acquireSend: (id, origin, digest) => {
+    acquireSend: async (id, origin, digest) => {
       attemptId.parse(id)
-      if (permits.size >= OWNER_RPC_MAX_ACTIVE) throw new Error('Memory send limit reached')
-      const permit = current.acquireSend(id, origin, z.string().regex(/^[a-f0-9]{64}$/u).parse(digest))
-      permits.set(id, permit)
-      permit.signal.addEventListener('abort', () => notify({ type: 'memory_owner_send_revoked', epoch: current.epoch, id }), { once: true })
+      const payload = z.string().regex(/^[a-f0-9]{64}$/u).parse(digest)
+      if (permits.size >= OWNER_RPC_MAX_ACTIVE || permits.has(id)) throw new Error('Memory send limit reached or duplicate grant')
+      // Reserve the ID before awaiting disk. An adapter exit or settlement during
+      // verification must retire this attempt before it can acquire a physical lease.
+      const grant: Grant = { origin, lifetime: new AbortController() }
+      const active = AbortSignal.any([signal, grant.lifetime.signal])
+      permits.set(id, grant)
+      try {
+        const proof = await current.loadOutputProof(origin, active)
+        active.throwIfAborted()
+        grant.permit = current.acquireSend(id, origin, payload, proof)
+        grant.permit.signal.addEventListener('abort', () => notify({ type: 'memory_owner_send_revoked', epoch: current.epoch, id }), { once: true })
+      } catch (error) {
+        if (permits.get(id) === grant) settleSend(id)
+        throw error
+      }
     },
-    outputCurrent: origin => current.outputCurrent(origin),
-    recordSendBody: id => {
-      const permit = permits.get(id)
-      if (!permit?.current()) throw new Error('Memory send permission expired')
+    outputCurrent: async origin => current.outputCurrent(origin, await current.loadOutputProof(origin, signal)),
+    recordSendBody: async id => {
+      const grant = permits.get(id)
+      const permit = grant?.permit
+      if (!grant || !permit?.current()) throw new Error('Memory send permission expired')
+      // External edits can happen while the transport prepares the body. Reload
+      // at the actual send boundary, then check the same permit before recording it.
+      const active = AbortSignal.any([signal, grant.lifetime.signal, permit.signal])
+      const origin = grant.origin
+      const proof = await current.loadOutputProof(origin, active)
+      active.throwIfAborted()
+      if (!permit.current() || !current.outputCurrent(origin, proof)) throw new Error('Memory send permission expired')
       permit.recordBody?.()
     },
     settleSend,
@@ -203,7 +228,7 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     computeTool: (jobId, input) => {
       const tools = computeTools.get(jobId)
       if (!tools) throw new Error('Memory computation tools are unavailable')
-      return tools.executeTool(input)
+      return tools.executeTool(input, signal)
     },
   }
   if (!Object.hasOwn(handlers, method)) throw new Error('Unknown memory adapter method')
@@ -215,7 +240,7 @@ const peer = createOwnerRpcPeer({
     if (!process.connected || !process.send) throw new Error('Memory parent disconnected')
     process.send(frame, () => {})
   },
-  async handle(method, raw, signal, budgetMs) {
+  async handle(method, raw, signal) {
     if (method === 'ping') return
     if (method === 'boot') return boot(raw, signal)
     if (method === 'shutdown') {
@@ -248,16 +273,11 @@ const peer = createOwnerRpcPeer({
       }
       if (method !== 'host') throw new Error('Unsupported memory owner operation')
       const envelope = objectOf(raw)
-      const command = parseHostMemoryCommand(envelope?.method, envelope?.input)
-      if (envelope?.read !== undefined) {
-        const read = memoryHostRead.parse(envelope.read)
-        if (!MEMORY_PAGE_READ_METHODS.has(command.method) || read.budgetMs > budgetMs) throw new Error('Invalid memory read budget or method')
-      }
       signal.throwIfAborted()
       const host = owner
       const diagnostic = parseDiagnosticContext(envelope?.diagnostics)
-      return await withRemoteOperation(diagnostic, 'memory.owner', () => host.handleHost(command.method, command.input, signal),
-        { identities: { ownerEpoch: host.epoch, methodId: command.method, requestId: typeof envelope?.requestId === 'string' ? envelope.requestId : undefined } })
+      return await withRemoteOperation(diagnostic, 'memory.owner', () => host.handleHost(envelope?.method, envelope?.input, signal),
+        { identities: { ownerEpoch: host.epoch, methodId: typeof envelope?.method === 'string' ? envelope.method : undefined } })
     } finally { publishState() }
   },
 })

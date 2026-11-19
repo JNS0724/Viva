@@ -38,8 +38,10 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     clearTimeout(dreamTimer)
     const request = ++dreamRequest
     try {
-      const status = await (operation ? api.runDream(operation) : api.getDreamStatus())
-      if (pendingDreamOperation === operation) pendingDreamOperation = undefined
+      // A lost acknowledgement is recovered by looking up the same durable request.
+      const pending = operation ?? pendingDreamOperation
+      const status = await (pending ? api.runDream(pending) : api.getDreamStatus())
+      if (pendingDreamOperation === pending) pendingDreamOperation = undefined
       if (request === dreamRequest && watchingDream) dispatch({ type: 'memory_dream_status', status })
     } catch {
       if (request === dreamRequest && watchingDream) {
@@ -77,20 +79,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     return promise
   }
 
-  let fileRefresh: Promise<void> | undefined
-  function refreshProfileFiles() {
-    if (fileRefresh || !memoryFilePageOpen(getState().memory)) return
-    const generation = profileGeneration
-    const current = files.refreshFiles().finally(() => {
-      if (fileRefresh !== current) return
-      fileRefresh = undefined
-      if (generation !== profileGeneration) refreshProfileFiles()
-    })
-    fileRefresh = current
-  }
-
   function loadMemory(): Promise<boolean> {
-    refreshProfileFiles()
+    if (memoryFilePageOpen(getState().memory)) void files.refreshFiles()
     return readProfile()
   }
 
@@ -134,13 +124,11 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     },
     loadMemory,
     openProfile(view = 'profile') {
-      fileRefresh = undefined
       files.cancelReads()
       dispatch({ type: 'memory_open', view })
       loadMemory()
     },
     closeProfile() {
-      fileRefresh = undefined
       files.cancelReads()
       memoryRequest++
       active?.lifetime.cancel(); active?.lifetime.close(); active = undefined

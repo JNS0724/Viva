@@ -8,12 +8,13 @@ import { sameContext, type ConversationContext } from '../shared/conversation-co
 /** Conversation effects; the page supplies state and UI callbacks, never a document or the app entry. */
 type ConversationDeps = Pick<ActionDeps, 'getState' | 'dispatch' | 'errorMessage' | 'showToast'> & {
   api: Pick<AgentApi, 'prompt' | 'steer' | 'answerQuestion' | 'provideSecrets'> & Partial<Pick<AgentApi, 'cancel' | 'recover'>>
+  saveBeforeRecovery?: () => Promise<void>
   beforePrompt: () => void
   keepPicture: (id: string) => void
   now?: () => number
 }
 
-export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, keepPicture, now = Date.now }: ConversationDeps) {
+export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, saveBeforeRecovery, keepPicture, now = Date.now }: ConversationDeps) {
   const steerLost = () => t("app.your.message.did.not.reach.the.assistant")
   const context = (): ConversationContext => ({ conversationId: getState().conversationId ?? getState().info.conversationId ?? null, sessionId: getState().info.sessionId ?? null })
   const belongsHere = (origin: ConversationContext) => sameContext(origin, context())
@@ -48,7 +49,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       return false
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
-    if (getState().phase === 'stopping' || getState().lastReceipt?.stopReason === 'cancel_unconfirmed') return false
+    if (getState().phase === 'stopping' || getState().stopUnconfirmed) return false
     if (feedItemId && getState().feed.erasedIds.includes(feedItemId)) return false
     if (feedItemId && isBusy(getState())) {
       showToast(t('feed.continue.wait'))
@@ -233,10 +234,12 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
 
   let recovering = false
   async function recover() {
-    if (recovering || getState().lastReceipt?.stopReason !== 'cancel_unconfirmed' || !api.recover) return
+    if (recovering || selectionPending() || !getState().stopUnconfirmed || !api.recover) return
     recovering = true
     const conversation = context().conversationId
     try {
+      if (saveBeforeRecovery) await saveBeforeRecovery()
+      if (!getState().stopUnconfirmed || context().conversationId !== conversation) return
       if (await api.recover() && context().conversationId === conversation) dispatch({ type: 'turn_recovered' })
     } catch (error) { showToast(errorMessage(error)) }
     finally { recovering = false }

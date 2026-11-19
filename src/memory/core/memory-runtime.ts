@@ -1,5 +1,5 @@
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
-import { createRequestBudget, RequestTimeout } from './request-budget.ts'
+import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import { z } from 'zod'
 import { beginDiagnosticOperation } from '../../diagnostics/operation.ts'
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
@@ -73,6 +73,11 @@ const textOf = (result: object) => JSON.stringify(result)
 const sameScope = (a: MemoryScope, b: MemoryScope) => a.kind === b.kind && (a.kind === 'user' || 'id' in b && a.id === b.id)
 const automaticSource = (source: MemorySource) => source.author === 'user' || source.author === 'answer'
 
+const INDEX_PUBLISH = 'memory.file-index-publish'
+const INDEX_SEED = 'memory.file-index-seed'
+const DOCUMENT_CLEANUP = 'memory.document-cleanup'
+export const publicationEffectKinds: ReadonlySet<string> = new Set([INDEX_PUBLISH, INDEX_SEED, DOCUMENT_CLEANUP])
+
 export function createMemoryRuntime({ store, resources, presentation = {}, compute, route, embedder, quiesce, changed, injected,
   dailyNotes = false, fileDependencies, diagnostics: providedDiagnostics = NO_DIAGNOSTICS,
   canCommit, validateDispatch, runDocumentMutation, now = Date.now, timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone }: {
@@ -117,7 +122,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   let documents: MemoryDocuments | null = null
   let mutation: Promise<unknown> | null = null
   let closed = false
-  const runningComputations = new Map<string, { ready: () => boolean, current: () => boolean, deadline: number | null }>()
+  const runningComputations = new Map<string, { ready(): boolean, current(): boolean, deadline: number | null, observe?: (signal: AbortSignal) => Promise<() => boolean> }>()
 
   function publish(revision: number) {
     try { changed({ revision }) } catch (error) {
@@ -164,6 +169,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const job = runningComputations.get(id)
     return job?.ready() && (job.deadline === null || now() < job.deadline) ? job : null
   }
+  async function observeComputeAdmission(id: string, signal: AbortSignal) {
+    const job = runningComputations.get(id)
+    if (!job?.observe) return computeAdmission(id)
+    const observed = await job.observe(signal)
+    return { deadline: job.deadline, current: () => runningComputations.get(id) === job && !signal.aborted && observed() }
+  }
   const computeCurrent = (id: string) => Boolean(computeAdmission(id))
 
   async function calculate(source: MemorySource, job: Effect, snapshotRevision: number, model: Route,
@@ -189,13 +200,15 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     finally { observation.end(); runningComputations.delete(id) }
   }
 
-  const INDEX_PUBLISH = 'memory.file-index-publish'
-  const INDEX_SEED = 'memory.file-index-seed'
   const INDEX_SEEDED = 'memory-file-index-publication-v1'
   let deferIndexPublication = true
   const indexChanges: MemoryFileIndexChanges = {
     queue: queueFilePublication,
-    publish: publishFile,
+    publish(workspace, id) {
+      if (!deferIndexPublication) void flushPublication(workspace, id).catch(() => {
+        // The durable generation stays queued for retry.
+      })
+    },
   }
   let documentStorageReady = false
   function renamedDocument() {
@@ -236,8 +249,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       return { text: projectDocumentSource(source.text ?? '', ref, restrictions),
         spans: availableDocumentSourceSpans(source.text ?? '', ref, restrictions) }
     },
-    assistantContextCurrent: context => !context.turnOnly && context.epoch === store.epoch()
-      && fileDependenciesCurrent(context.files ?? [], context.fileSources ?? [])
+    assistantContextCurrent: (context, acceptsFiles) => !context.turnOnly && context.epoch === store.epoch()
+      && (acceptsFiles ? acceptsFiles(context.files ?? [], now(), context.fileSources ?? []) : fileDependenciesCurrent(context.files ?? [], context.fileSources ?? []))
       && context.sources.every(id => context.fileSources?.includes(id) || dispatchSourceCurrent(id)),
     allowsText: (text) => !looksSecret(text),
     async calculate(job, source, stage, system, input, sources, current) {
@@ -380,8 +393,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const parsed = publicationPayload.safeParse(job.payload)
     if (!parsed.success) { effects.finishGeneration(job); return unresolved }
     const { workspace, ids } = parsed.data
-    const targets = publicationTargets(workspace, ids, paths).map(({ id, path }) => {
-      const view = (batch ? batch.read(workspace, path) : filePolicy?.read(workspace, path)) ?? null
+    const targets = publicationTargets(workspace, ids, paths).flatMap(({ id, path }) => {
+      const observation = batch ? batch.readObservation(workspace, path) : filePolicy?.read(workspace, path)
+      const view = observation ?? null
       // A known valid body can be invisible by policy. A missing or changed body
       // is unverified, and the same generation still owes publication after it returns.
       if (!view) {
@@ -390,11 +404,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           try {
             const observed = batch ? batch.observedRevision(workspace, path) : fileCatalog?.readAtCommit(workspace, path)?.revision
             if (observed !== revision) unresolved.add(id)
+            if (batch && observation === undefined) { unresolved.add(id); return [] }
           }
           catch { unresolved.add(id) }
         }
       }
-      return { workspace, path, view }
+      return [{ workspace, path, view }]
     })
     const apply = fileRetrieval.preparePublication(targets)
     store.tx(() => {
@@ -405,20 +420,56 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     })
     return unresolved
   }
-  async function publishFileEffectInBackground(job: Effect, paths: ReadonlyMap<string, string>) {
+  async function publishFileEffectInBackground(job: Effect, paths?: ReadonlyMap<string, string>) {
     const batch = filePolicy?.readBatch()
     const input = publicationPayload.safeParse(job.payload)
     if (batch && input.success && effects.holds(job)) {
       const budget = createRequestBudget(350)
-      try { await batch.load(publicationTargets(input.data.workspace, input.data.ids, paths), budget.signal) }
+      try {
+        const targets = publicationTargets(input.data.workspace, input.data.ids, paths)
+          .filter(target => physicalRevision(target.workspace, target.id, target.path))
+        await budget.run(() => batch.load(targets, budget.signal))
+      } catch (error) {
+        if (!(error instanceof RequestTimeout)) throw error
+      }
       finally { budget.close() }
     }
     return closed ? new Set<string>() : publishFileEffect(job, paths, batch)
   }
-  function publishFile(workspace: string, id: string) {
-    if (deferIndexPublication || !fileRetrieval) return
-    const job = effects.get(INDEX_PUBLISH, publicationKey(workspace, id))
-    if (job && publishFileEffect(job).has(id)) throw domainError('change.pending')
+  const publishing = new Map<string, { generation: number, work: Promise<Set<string>> }>()
+  function publishOnce(job: Effect, paths?: ReadonlyMap<string, string>) {
+    const prior = publishing.get(job.key)
+    if (prior?.generation === job.generation) return prior.work
+    const work = publishFileEffectInBackground(job, paths).finally(() => {
+      if (publishing.get(job.key)?.work === work) publishing.delete(job.key)
+    })
+    publishing.set(job.key, { generation: job.generation, work })
+    return work
+  }
+  async function flushPublication(workspace: string, id: string) {
+    if (closed || deferIndexPublication || !fileRetrieval) return
+    const key = publicationKey(workspace, id)
+    const deadline = performance.now() + 1_000
+    let job = effects.get(INDEX_PUBLISH, key)
+    while (job) {
+      const unresolved = await publishOnce(job)
+      if (closed) throw domainError('change.pending')
+      const latest = effects.get(INDEX_PUBLISH, key)
+      if (!latest) return
+      if (latest.generation === job.generation) {
+        if (unresolved.has(id)) throw domainError('change.pending')
+        return
+      }
+      // A restored daily note may publish a newer projection while its original
+      // receipt is waiting. Join that generation up to the same caller deadline.
+      if (performance.now() >= deadline) throw domainError('change.pending')
+      job = latest
+    }
+  }
+  async function searchableReceipt(result: MemoryFileMutationResult) {
+    if (closed) throw domainError('change.pending')
+    if (result.action !== 'FORGET') await flushPublication(result.identity.workspace, result.identity.id)
+    return result
   }
   function indexPaths() {
     const paths = new Map<string, string>()
@@ -435,7 +486,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       // Give the connection and foreground requests a turn between publications.
       await new Promise<void>(resolve => setTimeout(resolve, 0))
       if (closed) break
-      try { outcomes.set(job.key, (await publishFileEffectInBackground(job, paths)).size ? 'retry' : 'done') }
+      try { outcomes.set(job.key, (await publishOnce(job, paths)).size ? 'retry' : 'done') }
       catch { outcomes.set(job.key, 'retry') }
     }
     return outcomes
@@ -494,12 +545,27 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const to = localDay(nextDay(asOf), zone)
     return to === null ? null : { from, to }
   }
+  // Workspace identity is derived from these three scope fields. Restrict SQL candidates
+  // before ranking; current source and policy checks still run on each returned document.
+  function visibleWorkspaces(origin: Origin, scope = origin.context ?? origin.scope) {
+    const keys = new Set<string>()
+    for (const owned of [USER, scope, origin.project]) {
+      if (!owned) continue
+      for (const context of [null, USER, origin.context ?? origin.scope, origin.project]) {
+        if (context === undefined) continue
+        for (const project of [null, origin.project]) {
+          if (project !== undefined) keys.add(memoryHash(JSON.stringify([owned, context, project])))
+        }
+      }
+    }
+    return [...keys]
+  }
   function fileQuery(request: RecallRequest, origin: Origin) {
     const interval = recallInterval(request.asOf, now())
     if (!interval) return null
     const scope = recallScope(request, origin)
     const turn = origin.turn ?? origin.foregroundTurn
-    return { query: request.query, limit: request.limit, minScore: request.min_score, maxChars: (request.deep ? MAX_DEEP_RECALL_CHARS : MAX_RECALL_CHARS) - 128,
+    return { workspaces: visibleWorkspaces(origin, scope), query: request.query, limit: request.limit, minScore: request.min_score, maxChars: (request.deep ? MAX_DEEP_RECALL_CHARS : MAX_RECALL_CHARS) - 128,
       ...(turn && origin.session === request.session ? { contextKey: JSON.stringify(['recall', request.session, turn, scope ?? null, origin.project ?? null]) } : {}),
       from: request.start_date, through: request.end_date,
       ...(request.asOf ? { asOf: interval.to! - 1 } : {}),
@@ -544,7 +610,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const batch = filePolicy?.readBatch(signal, refs.length + 512)
     if (!batch) { budget.close(); return () => false }
     try {
-      await batch.load(refs, budget.signal)
+      await budget.run(() => batch.load(refs, budget.signal))
       signal?.throwIfAborted()
       // A temporary observation timeout does not mean a previously consumed file
       // disappeared. Leave native recovery decisions for a verified observation.
@@ -620,7 +686,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           reason: !model ? 'not_ready' : 'source_changed', identities: { jobId: request.job.key, generation: request.job.generation } })
         return
       }
-      if (!request.current()) {
+      const observe = request.observe
+      const fresh = async () => {
+        const check = observe ? await observe() : request.current
+        return check()
+      }
+      if (!await fresh()) {
         diagnostics.emit({ event: 'operation.progress', operation: 'memory.dream', stage: request.stage,
           reason: 'source_changed', identities: { jobId: request.job.key, generation: request.job.generation } })
         return
@@ -634,13 +705,17 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       runningComputations.set(id, {
         ready: () => !mutation && store.revision() === snapshotRevision && current(),
         current, deadline: null,
+        ...(observe && { observe: async (signal: AbortSignal) => {
+          const observed = await observe(signal)
+          return () => !closed && !mutation && store.revision() === snapshotRevision && observed() && request.sourceIds().every(fileSourceAllowsUse)
+        } }),
       })
       try {
         const result = compute({ id, sourceId: sources[0]!, stage: 'dream', generation: request.job.generation,
           ...model, system: request.system, input: JSON.stringify(request.input) }, undefined, request.tools)
         if (!result) return
         const text = await result
-        const valid = current() && store.revision() === snapshotRevision
+        const valid = await fresh() && !closed && request.sourceIds().every(fileSourceAllowsUse) && store.revision() === snapshotRevision
         diagnosticOutcome = valid ? 'completed' : 'cancelled'; diagnosticReason = valid ? undefined : 'stale'
         return valid ? text : undefined
       } catch (error) {
@@ -653,6 +728,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     }
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
     store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics,
+    readPhysicalFile: resources.readPhysicalFile,
     settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: fileSourceAllowsUse,
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
@@ -672,18 +748,24 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     readable: id => !closed && fileSourceAllowsUse(id), materialAllowed: documentEvidence.materialAllowed,
     calculate: request => calculateDocument({ ...request, stage: 'verify' }), mutate: runDocumentMutation,
     changed() { publish(store.revision()); notes.refreshRestrictions() },
+    observedMissing(file) {
+      const id = file.kind === 'daily' ? noteFileId(file.id) : file.id
+      const published = fileIndex?.nodeAt(file.workspace, file.path)
+      if (published?.id === id && published.revision === file.revision && published.usageVersion === file.usageVersion) {
+        // A completed scan supplies the durable trigger even without a foreground lookup.
+        store.tx(() => { stagePublication(file.workspace, id, [id]) })
+      }
+    },
     observedUnchanged(file) {
       const id = file.kind === 'daily' ? noteFileId(file.id) : file.id
       const published = fileIndex?.snapshot(file.workspace, id)
       if (published?.path === file.path && published.revision === file.revision && published.usageVersion === file.usageVersion) return
-      store.tx(() => {
-        if (!effects.get(INDEX_PUBLISH, publicationKey(file.workspace, id))) stagePublication(file.workspace, id, [id])
-      })
+      // Restored bytes can now satisfy a write previously put off for retry.
+      store.tx(() => { stagePublication(file.workspace, id, [id]) })
       void effects.wake()
     },
   }) : null
   fileMaintenance?.start()
-  const DOCUMENT_CLEANUP = 'memory.document-cleanup'
   effects.runs(DOCUMENT_CLEANUP, async jobs => {
     // Recovery may also finish a prepared revision, so it shares the physical send fence.
     const revision = store.revision(), pending = documents?.pendingCleanup()
@@ -995,25 +1077,22 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (!filePolicy || closed || mutation) return summarizeFileProfile([], project)
     return summarizeFileProfile(fileWorkspaces().flatMap(workspace => filePolicy.list(workspace, 'digest')), project)
   }
-  async function loadFileScope(kind?: 'digest', signal?: AbortSignal) {
-    if (!filePolicy || closed) return
-    signal?.throwIfAborted()
-    const paths = new Map(fileWorkspaces().map(workspace => [workspace, filePolicy.paths(workspace, kind)]))
-    const files = [...paths].flatMap(([workspace, paths]) => paths.map(path => ({ workspace, path })))
-    // Management pagination snapshots cover the complete registry. Limiting the
-    // model candidate set must not make the tail of the registry disappear.
-    const batch = filePolicy.readBatch(signal, files.length)
-    if (!batch) return
-    await batch.load(files)
-    signal?.throwIfAborted()
-    return { paths, files, batch }
-  }
   async function fileProfileAsync(project?: Origin['project'], signal?: AbortSignal) {
+    if (closed || mutation || !filePolicy) return summarizeFileProfile([], project)
+    signal?.throwIfAborted()
+    const origins = visibleWorkspaces({ conversation: null, session: null, scope: project ?? USER, project })
+    const files = origins.flatMap(workspace => filePolicy.paths(workspace, 'digest')
+      .filter(path => project || path.startsWith('digest/personal/')).map(path => ({ workspace, path })))
+    const batch = filePolicy.readBatch(signal, files.length + 512)
+    if (!batch) return fileProfile(project)
+    const budget = createRequestBudget(350, signal)
+    try {
+      await budget.run(() => batch.load(files, budget.signal))
+    } catch (error) {
+      if (!(error instanceof RequestTimeout) || signal?.aborted) throw error
+    } finally { budget.close() }
     if (closed || mutation) return summarizeFileProfile([], project)
-    const scope = await loadFileScope('digest', signal)
-    if (closed || mutation) return summarizeFileProfile([], project)
-    if (!scope) return fileProfile(project)
-    return summarizeFileProfile(scope.files.flatMap(({ workspace, path }) => scope.batch.read(workspace, path) ?? []), project)
+    return summarizeFileProfile(files.flatMap(file => batch.read(file.workspace, file.path) ?? []), project)
   }
   async function listFilesAsync(input: MemoryFileListRequest, signal?: AbortSignal) {
     if (!fileManagement || closed) throw new Error('Document memory is not enabled')
@@ -1021,13 +1100,18 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (!filePolicy || !resources.readPhysicalFile) return fileManagement.list(input, managementAllows)
     const scope = new Set(fileWorkspaces())
     const committed = input.kind === 'digest' ? [] : notes?.storage.fileRegistry() ?? []
-    return fileManagement.listPage(input, view => !closed && scope.has(view.workspace), committed, { revision: store.revision, signal,
-      async load(files) {
-        const batch = filePolicy.readBatch(signal, 128)!
-        await batch.load(files)
-        return batch.managementRead
-      },
-    })
+    const budget = createRequestBudget(350, signal)
+    try {
+      return await fileManagement.listPage(input, view => !closed && scope.has(view.workspace), committed, {
+        revision: store.revision, signal, exhausted: () => budget.signal.aborted,
+        async load(files) {
+          const batch = filePolicy.readBatch(signal, 128)!
+          try { await budget.run(() => batch.load(files, budget.signal)) }
+          catch (error) { if (!(error instanceof RequestTimeout) || signal?.aborted) throw error }
+          return batch.managementObservation
+        },
+      })
+    } finally { budget.close() }
   }
   async function readFileAsync(identity: MemoryManagedFileIdentity, restrictionId?: string, signal?: AbortSignal) {
     if (!fileManagement || closed) return null
@@ -1064,7 +1148,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const batch = filePolicy?.readBatch(budget.signal)
       return budget.run(() => fileRetrieval.search({
         query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128,
-        signal: budget.signal, allows: view => fileAllowsOrigin(view, origin),
+        signal: budget.signal, workspaces: visibleWorkspaces(origin), allows: view => fileAllowsOrigin(view, origin),
       }, batch)).then(result => current() ? fileContext(request, result, batch) : '', error => {
         if (!(error instanceof RequestTimeout) && !signal?.aborted) throw error
         return current() ? fileContext(request, null) : ''
@@ -1075,12 +1159,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const batch = filePolicy?.readBatch(signal)
       const allows = (view: MemoryDocumentView) => fileAllowsOrigin(view, origin)
       if (request.op === 'file_read') {
-        return fileRetrieval.readAsync({ id: request.id, startLine: request.start_line, endLine: request.end_line,
+        return fileRetrieval.readAsync({ workspaces: visibleWorkspaces(origin), id: request.id, startLine: request.start_line, endLine: request.end_line,
           evidence: request.evidence, allows, signal }, batch).then(result =>
           current() && result && fileDependenciesCurrent(result.files, [], false, batch)
             ? retainFileReadPacket(request.session, result) : textOf({ status: 'unavailable' }))
       }
-      return fileRetrieval.nodeSearchAsync({ query: request.query, limit: request.limit, allows, signal }, batch).then(result =>
+      return fileRetrieval.nodeSearchAsync({ workspaces: visibleWorkspaces(origin), query: request.query, limit: request.limit, allows, signal }, batch).then(result =>
         current() && fileDependenciesCurrent(result.files, [], false, batch)
           ? retainNodeSearchPacket(request.session, result) : textOf({ status: 'unavailable' }))
     }
@@ -1174,7 +1258,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
 
   async function writeSourceFile(operationId: string, proof: DocumentSourceRef, session: string, committed: FileMutationCommitted,
-    current: () => boolean): Promise<MemoryFileMutationResult> {
+    current: () => boolean, waitForPublication = true): Promise<MemoryFileMutationResult> {
     if (!documents || !filePolicy) throw domainError('not.found')
     const storage = documents
     const source = store.readSource(proof.id)
@@ -1201,15 +1285,22 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!receipt.revision || receipt.action !== 'CREATE') throw domainError('operation.conflict')
       const result: MemoryFileMutationResult = { operationId, identity: { kind: 'digest', workspace, id: receipt.documentId },
         contentRevision: receipt.revision, usageVersion: receipt.usageVersion, action: 'CREATE' }
-      publishFile(workspace, receipt.documentId)
       if (!already) documentChanged(receipt)
       committed(result)
-      const view = filePolicy.read(workspace, receipt.path)
-      if (view) retainFileReads(session, { files: [fileDependency(view)], sourceIds: [proof.id] })
       return result
     })
     dream?.run()
     void effects.wake()
+    if (waitForPublication) await searchableReceipt(response)
+    if (waitForPublication && !closed && current()) {
+      const path = resolveFileId(workspace, response.identity.id)
+      if (path) {
+        const batch = filePolicy.readBatch()
+        await batch?.load([{ workspace, path }])
+        const view = !closed && current() && batch?.read(workspace, path)
+        if (view && view.revision === response.contentRevision) retainFileReads(session, { files: [fileDependency(view)], sourceIds: [proof.id] })
+      }
+    }
     return response
   }
 
@@ -1220,7 +1311,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
 
   async function writeManagedFile(operationId: string, workspace: string, input: MemoryFileCreateRequest | MemoryFileEditRequest | undefined,
-    committed: FileMutationCommitted, project?: Origin['project'], context?: MemoryScope): Promise<MemoryFileMutationResult | null> {
+    committed: FileMutationCommitted, project?: Origin['project'], context?: MemoryScope, waitForPublication = true): Promise<MemoryFileMutationResult | null> {
     if (!documents || !fileManagement) throw domainError('not.found')
     if (!/^[a-f0-9]{64}$/u.test(workspace)) throw domainError('revision.conflict')
     const storage = documents, management = fileManagement
@@ -1264,13 +1355,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!receipt.revision || (receipt.action !== 'CREATE' && receipt.action !== 'REFINE')) throw domainError('operation.conflict')
       const response: MemoryFileMutationResult = { operationId, identity: { kind: 'digest', workspace, id: receipt.documentId },
         contentRevision: receipt.revision, usageVersion: receipt.usageVersion, action: receipt.action === 'CREATE' ? 'CREATE' : 'EDIT' }
-      publishFile(workspace, receipt.documentId)
       if (!already) documentChanged(receipt)
       committed(response)
       return response
     })
     if (result) { dream?.run(); void effects.wake() }
-    return result
+    return result && waitForPublication ? searchableReceipt(result) : result
   }
 
   function forgetManagedFile(input: MemoryFileForgetRequest, committed: (result: MemoryFileMutationResult) => void) {
@@ -1339,7 +1429,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return result
   }
 
-  async function mutateManagedFile(input: MemoryFileMutation, committed?: FileMutationCommitted): Promise<MemoryFileMutationResult> {
+  async function mutateManagedFile(input: MemoryFileMutation, committed?: FileMutationCommitted, waitForPublication = true): Promise<MemoryFileMutationResult> {
     const command = memoryFileMutation.parse(input)
     if (!documents || !fileManagement) throw domainError('not.found')
     let changed = false
@@ -1349,7 +1439,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         if (!dailyUsage) throw domainError('not.found')
         const applied = dailyUsage.command(command, () => fileManagement.validate(command, managementAllows))
         changed = applied.changed
-        publishFile(command.identity.workspace, command.identity.id)
         if (changed) publish(store.revision())
         committed?.(applied.result, applied.sources)
         return applied.result
@@ -1377,7 +1466,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           useRestrictions.complete(command.operationId, receipt)
           return receipt
         })
-        publishFile(command.identity.workspace, command.identity.id)
         if (changed) publish(store.revision())
         committed?.(applied.result, applied.sources)
         return applied.result
@@ -1399,7 +1487,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (receipt.revision === null || !['ENABLE', 'DISABLE', 'UNDO'].includes(receipt.action)) throw new Error('Unexpected memory file mutation receipt')
       const response: MemoryFileMutationResult = { operationId, identity: { ...identity }, contentRevision: receipt.revision,
         usageVersion: receipt.usageVersion, action: receipt.action as MemoryFileMutationResult['action'] }
-      publishFile(identity.workspace, identity.id)
       if (!alreadyCommitted && response.usageVersion !== version.usageVersion) { changed = true; documentChanged(receipt) }
       // The owner persists its outbox synchronously here, before this single fence opens.
       // A crash between storage receipt and callback is completed by replaying the receipt.
@@ -1407,16 +1494,28 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       return response
     })
     if (changed) { dream?.run(); void effects.wake() }
-    return result
+    return waitForPublication ? searchableReceipt(result) : result
   }
 
   return {
     fileProfile, fileProfileAsync, listFilesAsync, readFileAsync,
-    fileForSession(id: string, origin: Origin) {
+    async fileForSession(id: string, origin: Origin, signal?: AbortSignal) {
       if (!filePolicy || closed || mutation || !origin.session) return null
-      for (const workspace of fileWorkspaces()) {
+      signal?.throwIfAborted()
+      const locations = fileWorkspaces().flatMap(workspace => {
         const path = resolveFileId(workspace, id)
-        const found = path ? filePolicy.read(workspace, path) : null
+        return path ? [{ workspace, path }] : []
+      })
+      const batch = filePolicy.readBatch(signal)
+      if (batch) {
+        const budget = createRequestBudget(350, signal)
+        try { await budget.run(() => batch.load(locations, budget.signal)) }
+        finally { budget.close() }
+        if (batch.incomplete()) throw new RequestTimeout()
+      }
+      if (closed || mutation) throw domainError('change.pending')
+      for (const { workspace, path } of locations) {
+        const found = (batch ?? filePolicy).read(workspace, path)
         const file = found?.id === id && fileAllowsOrigin(found, origin) ? found : null
         if (file) return { identity: { kind: file.kind, workspace, id },
           version: { contentRevision: file.revision, usageVersion: file.usageVersion, policyToken: file.policyToken } }
@@ -1431,15 +1530,15 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!fileManagement || closed) return null
       return fileManagement.detail(identity, managementAllows, restrictionId)
     },
-    setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted) =>
-      mutateManagedFile({ ...input, action: 'setEnabled' }, committed),
+    setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted, waitForPublication = true) =>
+      mutateManagedFile({ ...input, action: 'setEnabled' }, committed, waitForPublication),
     forgetFile: forgetManagedFile, resumeFileRangeErasure,
     manualFileWorkspace,
-    writeManagedFile,
+    writeManagedFile, searchableReceipt,
     explicitFileSource,
     writeSourceFile,
-    undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted) =>
-      mutateManagedFile({ ...input, action: 'undo' }, committed),
+    undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted, waitForPublication = true) =>
+      mutateManagedFile({ ...input, action: 'undo' }, committed, waitForPublication),
     dreamStatus: (): MemoryDreamStatus => dream?.status() ?? { state: 'disabled', ...dreamHistory(store) },
     requestDream: (operationId?: string): MemoryDreamStatus => dream?.request(operationId) ?? { state: 'disabled', ...dreamHistory(store) },
     runDocumentDream: () => { dream?.run(); return effects.wake() },
@@ -1452,22 +1551,22 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!documents) throw new Error('Document memory is not enabled')
       const result = await runDocumentMutation(() => {
         const receipt = documents.undo(input)
-        publishFile(input.workspace, receipt.documentId)
         documentChanged(receipt)
         return receipt
       })
       dream?.run()
+      await flushPublication(input.workspace, result.documentId)
       return result
     },
     async setDocumentEnabled(input: Parameters<NonNullable<typeof documents>['setEnabled']>[0]) {
       if (!documents) throw new Error('Document memory is not enabled')
       const result = await runDocumentMutation(() => {
         const receipt = documents.setEnabled(input)
-        publishFile(input.workspace, receipt.documentId)
         documentChanged(receipt)
         return receipt
       })
       dream?.run()
+      await flushPublication(input.workspace, result.documentId)
       return result
     },
     accept,
@@ -1479,7 +1578,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     rescanFiles: fileMaintenance?.rescan,
     fileScanStatus: fileMaintenance?.status,
     computeCurrent,
-    computeAdmission,
+    computeAdmission, observeComputeAdmission,
     authorizeGeneralQuestion,
     setProfile,
     sourceCurrent,
@@ -1494,15 +1593,16 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         : documents?.deletedFileCleanupPending(identity.workspace, identity.id) === true
     },
     cleanupPending: () => (notes?.storage.pendingCleanup() ?? 0) + (documents?.pendingCleanup() ?? 0) + (fileIndex?.pendingCleanup() ?? 0),
-    projectAllows(evidence: Pick<MemoryProvenance, 'files' | 'sources' | 'projects'>, project?: Origin['project']) {
+    projectAllows(evidence: Pick<MemoryProvenance, 'files' | 'sources' | 'projects'>, project?: Origin['project'], acceptsFiles?: FileEvidenceCurrent) {
       const allowed = (scope?: MemoryScope | null) => scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
       return (evidence.projects ?? []).every(id => id === project?.id)
         && evidence.sources.every(id => allowed(store.readSource(id)?.project))
+        && (acceptsFiles ? acceptsFiles(evidence.files ?? [], now(), []) : fileDependenciesCurrent(evidence.files ?? []))
         && (evidence.files ?? []).every(ref => {
-          return Boolean(fileDependenciesCurrent([ref]) && ref.sourceRanges.every(range => {
+          return ref.sourceRanges.every(range => {
             const source = store.readSource(range.sourceId)
             return source && allowed(source.scope) && allowed(source.context) && allowed(source.project)
-          }))
+          })
         })
     },
     profile: store.profile,

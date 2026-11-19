@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { fork, type ChildProcess } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   realpathSync, readdirSync, renameSync, unlinkSync, writeFileSync,
@@ -7,7 +9,7 @@ import { lstat, open, readdir, realpath, unlink } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { dailyPath, digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument } from '../core/memory-document.ts'
-import { createRequestBudget, RequestTimeout } from '../core/request-budget.ts'
+import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryPhysicalFile, ReadMemoryPhysicalFile } from '../core/ports/documents.ts'
 
 export class MemoryFileError extends Error {
@@ -24,12 +26,60 @@ export const memoryFileRevision = (text: string) => createHash('sha256').update(
 const MAX_PHYSICAL_FILE_BYTES = 4 * 1024 * 1024
 const PHYSICAL_FILE_TIMEOUT_MS = 250
 const PHYSICAL_FILE_CONCURRENCY = 3
+const RECOVERY_READ_TIMEOUT_MS = 2_000
+
+// This slow path is used only when all normal reads are overdue in native IO.
+// A single disposable process gives an independent file a separate libuv pool.
+function recoveryReader() {
+  let child: ChildProcess | undefined
+  let reading: { key: string, result: Promise<MemoryPhysicalFile | null>, exited: Promise<void> } | undefined
+  let closed = false
+  return {
+    async read(directory: string, workspace: string, path: string, key: string, signal: AbortSignal) {
+      while (reading) {
+        if (reading.key === key) return reading.result
+        await reading.exited
+        signal.throwIfAborted()
+      }
+      if (closed) throw new Error('Memory file reader closed')
+      const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
+      const entry = fileURLToPath(new URL(`./memory-file-catalog-worker${suffix}`, import.meta.url))
+      const worker = fork(entry, [directory, workspace, path], {
+        execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'advanced',
+        env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
+        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      })
+      child = worker
+      const result = new Promise<MemoryPhysicalFile | null>((resolve, reject) => {
+        const timer = setTimeout(() => { reject(new RequestTimeout()); worker.kill('SIGKILL') }, RECOVERY_READ_TIMEOUT_MS)
+        worker.once('message', (file: MemoryPhysicalFile | { missing: true } | { unavailable: true }) => {
+          if ('missing' in file) resolve(null)
+          else if ('unavailable' in file || file.path !== path) reject(new Error('Memory file unavailable'))
+          else resolve(file)
+        })
+        worker.once('error', reject)
+        worker.once('close', () => {
+          clearTimeout(timer)
+          child = undefined
+          reading = undefined
+          reject(new Error('Memory file worker closed'))
+        })
+      })
+      const exited = new Promise<void>(resolve => worker.once('close', resolve))
+      reading = { key, result, exited }
+      return result
+    },
+    close() { closed = true; child?.kill('SIGKILL') },
+  }
+}
 
 /** Native I/O can outlive its caller. Hold the slot until the operation actually ends,
  * so multiple timeouts cannot fill the owner's filesystem thread pool. */
-export function createMemoryPhysicalFileReader(root: () => string): ReadMemoryPhysicalFile {
+export function createMemoryPhysicalFileReader(root: () => string) {
   const active = new Map<string, Promise<MemoryPhysicalFile | null>>()
   const available = new Set<() => void>()
+  const overdue = new Set<string>()
+  const recovery = recoveryReader()
   async function inspect(workspace: string, path: string, signal: AbortSignal): Promise<MemoryPhysicalFile | null> {
     const directory = resolve(root())
     const parts = [workspace, ...path.split('/')]
@@ -70,13 +120,16 @@ export function createMemoryPhysicalFileReader(root: () => string): ReadMemoryPh
     } finally { await handle.close() }
   }
 
-  return async (workspace, path, signal) => {
+  const read: ReadMemoryPhysicalFile = async (workspace, path, signal) => {
     if (!/^[a-f0-9]{64}$/u.test(workspace)
       || !memoryFilePath.safeParse(path).success
       || !(dailyPath.safeParse(path).success || digestPath.safeParse(path).success)) throw new MemoryFileError('path')
-    const budget = createRequestBudget(PHYSICAL_FILE_TIMEOUT_MS, signal)
     const key = JSON.stringify([workspace, path])
+    if (overdue.has(key)) throw new RequestTimeout()
+    const saturated = overdue.size >= PHYSICAL_FILE_CONCURRENCY
+    const budget = createRequestBudget(saturated ? RECOVERY_READ_TIMEOUT_MS : PHYSICAL_FILE_TIMEOUT_MS, signal)
     try {
+      if (saturated) return await budget.run(() => recovery.read(root(), workspace, path, key, budget.signal))
       while (!active.has(key) && active.size >= PHYSICAL_FILE_CONCURRENCY) {
         let wake: () => void = () => {}
         const waiting = new Promise<void>(resolve => { wake = resolve; available.add(wake) })
@@ -88,11 +141,15 @@ export function createMemoryPhysicalFileReader(root: () => string): ReadMemoryPh
         // Coalesced I/O has its own deadline. One cancelled lookup must not
         // cancel verification for another caller still waiting on this path.
         const nativeSignal = AbortSignal.timeout(PHYSICAL_FILE_TIMEOUT_MS)
+        const stalled = () => overdue.add(key)
+        nativeSignal.addEventListener('abort', stalled, { once: true })
         operation = inspect(workspace, path, nativeSignal).catch(error => {
           if (nativeSignal.aborted) throw new RequestTimeout()
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
           throw error
         }).finally(() => {
+          nativeSignal.removeEventListener('abort', stalled)
+          overdue.delete(key)
           active.delete(key)
           for (const wake of available) wake()
         })
@@ -103,6 +160,7 @@ export function createMemoryPhysicalFileReader(root: () => string): ReadMemoryPh
       return await budget.run(() => operation)
     } finally { budget.close() }
   }
+  return Object.assign(read, { close: recovery.close })
 }
 
 const ABANDONED_TEMP = /^\.viva-memory-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/u
@@ -148,7 +206,19 @@ export async function removeAbandonedMemoryTemps(root: string, signal: AbortSign
     } catch { /* An interrupted sync may leave the temp for a later retry. */ }
   }
 
-  const location = resolve(root)
+  // Windows TEMP can use an 8.3 alias. Canonicalize the trusted root once so
+  // descendant comparisons use the same spelling as fs.promises.realpath.
+  const supplied = resolve(root)
+  let location = supplied
+  if (process.platform === 'win32') {
+    try {
+      for (let cursor = supplied; ; cursor = dirname(cursor)) {
+        if (signal.aborted || (await lstat(cursor)).isSymbolicLink()) return
+        if (dirname(cursor) === cursor) break
+      }
+      location = await realpath(supplied)
+    } catch { return }
+  }
   for (const workspace of await entries(location)) {
     if (signal.aborted) return
     if (!workspace.isDirectory() || !/^[0-9a-f]{64}$/u.test(workspace.name)) continue

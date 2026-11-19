@@ -1,11 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { ChildProcess } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
+import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
+import { objectOf } from '../src/memory/contracts/unknown-value.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 
 /** The real DSH adapter and the separate storage owner communicate through the backend relay. */
 async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]) {
@@ -46,6 +50,34 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
   assert.match(JSON.stringify(llm.requests[0]), /Current working directory:/)
   assert.doesNotMatch(JSON.stringify(llm.requests[0]), /coding agent/)
   assert.ok(replies(events).join('').includes('你好'))
+})
+
+test('automatic context reuses the admitted step and a missing evidence receipt lets the foreground continue', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { agent, call, ask, llm, events } = await setupMemory(t)
+  await call('setProfile', { args: [{ role: 'injection-receipt-test' }, randomUUID()] })
+  const pid = agent.pid(), emit = ChildProcess.prototype.emit
+  let admitted = false, lookup = false, extraSessionReads = 0
+  let lostReceiptBudget: number | undefined
+  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'request' && frame.method === 'adapter') {
+      const call = objectOf(frame.input), input = Array.isArray(call?.args) ? objectOf(call.args[0]) : null
+      if (call?.method === 'receiveSource' && input?.admitted === true) admitted = true
+      if (admitted && !lookup && call?.method === 'sessionView') extraSessionReads++
+      if (call?.method === 'modelRequest' && input?.op === 'context') lookup = true
+      if (lookup && lostReceiptBudget === undefined && call?.method === 'registerDerived' && input?.nativeUserSource === 'viva-memory') {
+        lostReceiptBudget = frame.budgetMs
+        return true // The owner never acknowledges this optional evidence write.
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  await ask('照常回复这一条消息')
+  assert.ok(admitted && lookup)
+  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 100)
+  assert.equal(extraSessionReads, 0)
+  assert.match(replies(events).join(''), /照常回复这一条消息/)
+  assert.doesNotMatch(JSON.stringify(llm.requests), /injection-receipt-test/)
 })
 
 test('the plugin injects manual profile and recalls file memory with exact evidence after restart', { timeout: DSH_TIMEOUT_MS }, async t => {

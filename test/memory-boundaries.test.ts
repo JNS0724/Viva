@@ -33,6 +33,8 @@ test('memory contracts/core/node obey the declared dependency direction, includi
       const target = relative(memory, resolve(dirname(full), imported)).replaceAll('\\', '/')
       // Shared diagnostics is below the domain and has no product or runtime-framework imports.
       // Keep this exception file-specific: Core must never acquire the Node logger or Pino.
+      // The deadline implementation is also used by renderer, backend and standalone DSH.
+      if (layer !== 'contracts' && target === '../shared/request-budget.ts') continue
       if (['../diagnostics/contracts.ts', '../diagnostics/operation.ts'].includes(target) || layer === 'node' && target === '../diagnostics/node/context.ts') continue
       assert.ok(!target.startsWith('../'), `${file}: dependency escapes memory module: ${imported}`)
       if (layer === 'contracts') assert.ok(target.startsWith('contracts/'), `${file}: contracts depend on ${target}`)
@@ -66,6 +68,8 @@ test('copied Node memory runs in a clean project without Viva, DSH or Electron i
   const dir = mkdtempSync(join(tmpdir(), 'viva-memory-standalone-'))
   try {
     cpSync(memory, join(dir, 'src/memory'), { recursive: true })
+    mkdirSync(join(dir, 'src/shared'), { recursive: true })
+    cpSync(join(root, 'src/shared/request-budget.ts'), join(dir, 'src/shared/request-budget.ts'))
     mkdirSync(join(dir, 'src/diagnostics/node'), { recursive: true })
     for (const file of ['contracts.ts', 'operation.ts', 'node/context.ts']) cpSync(join(root, 'src/diagnostics', file), join(dir, 'src/diagnostics', file))
     mkdirSync(join(dir, 'test/fixtures'), { recursive: true })

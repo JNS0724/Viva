@@ -11,7 +11,10 @@ export function createVivaMemoryClient(call: HostMemoryCaller, readBatch: Memory
     readPage: (project?: MemoryProject, options?: { budgetMs?: number, signal?: AbortSignal }) =>
       readBatch(read => read('profilePage', { args: project ? [project] : [] }), options),
     dreamStatus: method('dreamStatus'), requestDream: method('requestDream'),
-    listFiles: method('listFiles'), readFile: method('readFile'),
+    listFiles: (request: HostMemoryApi['listFiles']['input']['args'][0], options?: Parameters<MemoryReadBatch>[1]) =>
+      readBatch(read => read('listFiles', { args: [request] }), options),
+    readFile: (identity: HostMemoryApi['readFile']['input']['args'][0], restriction?: string, options?: Parameters<MemoryReadBatch>[1]) =>
+      readBatch(read => read('readFile', { args: [identity, restriction] }), options),
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     fileOperation: (operationId: string) => call('getOperation', { operationId }),

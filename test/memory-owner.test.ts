@@ -28,7 +28,7 @@ const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>
 
 test('owner recovery and close do not wait for a stalled abandoned-temp directory read', { timeout: 15_000 }, async t => {
   const { dir, defer } = scratch(t, 'memory-owner-temps-')
-  const root = realpathSync(dir)
+  const root = await promises.realpath(dir)
   const workspace = join(root, 'memory-files', 'a'.repeat(64))
   const digest = join(workspace, 'digest')
   const daily = join(workspace, 'daily')

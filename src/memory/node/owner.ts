@@ -1,3 +1,4 @@
+import { RequestTimeout } from '../../shared/request-budget.ts'
 import { createOwnerContextRecovery } from './owner-context-recovery.ts'
 import type { DiagnosticOperation, DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { guardDiagnosticPort } from '../../diagnostics/contracts.ts'
@@ -19,7 +20,7 @@ import type { FileEvidenceCurrent } from '../core/memory-dispatch.ts'
 import { createMemoryCoordination } from '../core/coordination.ts'
 import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
-import { createMemorySendFence } from '../core/send-fence.ts'
+import { createMemorySendFence, type SendAdmission } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
 import { MEMORY_FILE_QUESTION_PREFIX } from '../contracts/memory-contract.ts'
 import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed, MemoryProject } from '../contracts/host.ts'
@@ -169,15 +170,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       ...(project ? { project: { kind: 'project' as const, id: project } } : {}) }
   }
   const hasPending = () => Boolean(db.prepare("SELECT 1 FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed') LIMIT 1").get())
-  function outputAdmission(origin: { session: string, contextGeneration?: number } | { jobId: string }) {
+  type OutputProof = { files?: FileEvidenceCurrent, job?: SendAdmission | null }
+  function outputAdmission(origin: { session: string, contextGeneration?: number } | { jobId: string }, proof: OutputProof = {}) {
+    const acceptsFiles = proof.files
     if (state !== 'ready' || replayingWrites || hasPending()) return null
-    if ('jobId' in origin) return runtime.computeAdmission(origin.jobId)
+    if ('jobId' in origin) return proof.job === undefined ? runtime.computeAdmission(origin.jobId) : proof.job
     const session = origin.session, project = sessionContext(session).project
     if (contextRecovery.pending(session) || (origin.contextGeneration ?? 0) !== contextRecovery.contextGeneration(session)) return null
-    const admission = dispatch.admission(session)
-    if (!admission.allowed || !coordination.allowsSession(session, project)) return null
+    const admission = dispatch.admission(session, acceptsFiles)
+    if (!admission.allowed || !coordination.allowsSession(session, project, acceptsFiles)) return null
     return { current: () => state === 'ready' && !hasPending() && !contextRecovery.pending(session)
-      && (origin.contextGeneration ?? 0) === contextRecovery.contextGeneration(session) && coordination.allowsSession(session, project),
+      && (origin.contextGeneration ?? 0) === contextRecovery.contextGeneration(session) && coordination.allowsSession(session, project, acceptsFiles),
       deadline: admission.deadline }
   }
   const fence = createMemorySendFence({ epoch, diagnostics: options.diagnostics, admit: outputAdmission })
@@ -212,14 +215,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (runtime.staleSession(session) || dispatch.stale(session, acceptsFiles)) return true
     for (const child of contextChildren(session)) {
       if (needsContextRecovery(child, visited, acceptsFiles) || !dispatch.transferable(dispatch.snapshot(child), acceptsFiles)
-        || !coordination.allowsEvidence(dispatch.snapshot(child), sessionContext(session).project)) return true
+        || !coordination.allowsEvidence(dispatch.snapshot(child), sessionContext(session).project, acceptsFiles)) return true
     }
     visited.delete(session)
     return false
   }
-  function loadSessionFileProof(session: string, signal?: AbortSignal) {
+  function loadSessionFileProof(session: string, signal?: AbortSignal, parent?: string) {
     signal?.throwIfAborted()
-    const pending = [session], visited = new Set<string>(), refs: MemoryFileDependency[] = []
+    const pending = parent ? [session, parent] : [session], visited = new Set<string>(), refs: MemoryFileDependency[] = []
     for (let index = 0; index < pending.length; index++) {
       const current = pending[index]!
       if (visited.has(current)) continue
@@ -246,22 +249,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     cleanup: cleanupComplete(item) ? 'complete' : 'pending' })
   /** Reconcile durable child reads even if a crash preceded the live settlement callback.
    * Conservatively retaining unfinished-child reads also covers persisted foreground tool results. */
-  function reconcileChildren(session: string, visited = new Set<string>()) {
+  function reconcileChildren(session: string, visited = new Set<string>(), acceptsFiles?: FileEvidenceCurrent) {
     if (visited.has(session)) throw new Error('Session parent cycle')
     visited.add(session)
     for (const row of db.prepare('SELECT session FROM owner_session_parents WHERE parent=?').all(session)) {
       const child = String(row.session)
       if (db.prepare('SELECT 1 FROM owner_context_retired_children WHERE parent=? AND child=?').get(session, child)) continue
-      reconcileChildren(child, visited)
+      reconcileChildren(child, visited, acceptsFiles)
       const evidence = dispatch.snapshot(child)
-      if (!coordination.allowsSession(child, sessionContext(child).project) || !dispatch.transferable(evidence)
-        || !coordination.allowsEvidence(evidence, sessionContext(session).project)) throw new Error('Child memory context is unavailable')
+      if (!coordination.allowsSession(child, sessionContext(child).project, acceptsFiles) || !dispatch.transferable(evidence, acceptsFiles)
+        || !coordination.allowsEvidence(evidence, sessionContext(session).project, acceptsFiles)) throw new Error('Child memory context is unavailable')
       dispatch.attach(session, evidence)
     }
     visited.delete(session)
   }
   /** Native session metadata binds workspace identity before original or derived replay. */
-  function initializeSession(input: { sessionId: string, cwd?: string, parentSessionId?: string }) {
+  function initializeSession(input: { sessionId: string, cwd?: string, parentSessionId?: string }, acceptsFiles?: FileEvidenceCurrent) {
     requireReady()
     const project = input.cwd === undefined ? sessionContext(input.sessionId).project : memoryProjectScope(input.cwd)
     const saved = db.prepare('SELECT project,context FROM owner_sessions WHERE session=?').get(input.sessionId) as Pick<Session, 'project' | 'context'> | undefined
@@ -276,8 +279,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const metadata = input.cwd !== undefined || input.parentSessionId !== undefined
     if (parent && metadata && parent !== input.parentSessionId) throw new Error('Session parent context changed')
     if (input.parentSessionId && !parent && (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(input.parentSessionId)
-      || !coordination.canInherit(input.parentSessionId, sessionContext(input.parentSessionId).project, project, true)
-      || !dispatch.transferable(dispatch.snapshot(input.parentSessionId)))) throw new Error('Parent memory context is unavailable')
+      || !coordination.canInherit(input.parentSessionId, sessionContext(input.parentSessionId).project, project, true, acceptsFiles)
+      || !dispatch.transferable(dispatch.snapshot(input.parentSessionId), acceptsFiles))) throw new Error('Parent memory context is unavailable')
     const bound = saved?.context ? JSON.parse(saved.context) as MemoryScope : undefined
     const defaultScope: MemoryScope = input.parentSessionId || parent ? { kind: 'task', id: input.sessionId } : project ?? { kind: 'user' }
     const newlyBoundChild = Boolean(input.parentSessionId && !parent && bound?.kind !== 'task')
@@ -295,7 +298,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare('INSERT INTO owner_session_parents VALUES (?,?)').run(input.sessionId, input.parentSessionId)
       }
     })
-    if (!needsContextRecovery(input.sessionId)) reconcileChildren(input.sessionId)
+    if (!needsContextRecovery(input.sessionId, undefined, acceptsFiles)) reconcileChildren(input.sessionId, undefined, acceptsFiles)
   }
   function originalFromWire(wire: string, spans: readonly TextSpan[]) {
     let position = 0
@@ -464,7 +467,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (store.readSource(sourceId)?.outcome === 'rejected') return { sourceId, text: '' }
     return { sourceId, text: store.readSource(sourceId)?.text ?? text }
   }
-  async function registerDerived(input: DerivedSource) {
+  async function registerDerived(input: DerivedSource, signal?: AbortSignal) {
+    requireReady()
+    const prior = db.prepare('SELECT evidence FROM owner_derived WHERE message=?').get(input.messageId)
+    const files = prior ? (JSON.parse(String(prior.evidence)) as ReturnType<typeof dispatch.snapshot>).files ?? []
+      : input.senderSessionId ? dispatch.snapshot(input.senderSessionId).files ?? [] : []
+    const proof = await runtime.loadFileEvidenceCheck([...files, ...dispatch.snapshot(input.sessionId).files ?? []], signal)
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
     if (contextRecovery.retired(input.sessionId, input.messageId) || contextRecovery.retiredDerived(input.messageId)) throw new Error('Derived context was retired')
@@ -489,7 +497,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const sender = input.senderSessionId
       const evidence = dispatch.snapshot(sender)
       if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(sender)
-        || !coordination.allowsSession(sender, sessionContext(sender).project) || !dispatch.transferable(evidence)) throw new Error('Sender memory context is unavailable')
+        || !coordination.allowsSession(sender, sessionContext(sender).project, proof) || !dispatch.transferable(evidence, proof)) throw new Error('Sender memory context is unavailable')
       observed = combineMemoryProvenance(observed, evidence)
     }
     const evidence = saved ? JSON.parse(saved.evidence as string) as typeof observed
@@ -497,9 +505,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const active = sessionContext(input.sessionId).foregroundTurn
     const sameLiveTurn = Boolean(active && !input.inherited && (!saved || saved.owner_epoch === epoch
       && saved.origin_session === input.sessionId && saved.origin_turn === active))
-    const valid = evidence.turnOnly ? sameLiveTurn && !dispatch.stale(input.sessionId)
-      : dispatch.transferable(evidence)
-    if (!coordination.allowsEvidence(evidence, sessionContext(input.sessionId).project) || !valid) throw new Error('Derived dependencies unavailable')
+    const valid = evidence.turnOnly ? sameLiveTurn && !dispatch.stale(input.sessionId, proof)
+      : dispatch.transferable(evidence, proof)
+    if (!coordination.allowsEvidence(evidence, sessionContext(input.sessionId).project, proof) || !valid) throw new Error('Derived dependencies unavailable')
     const canonical = typeof old?.source === 'string' ? old.source : randomUUID()
     store.tx(() => {
       db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'derived')").run(input.messageId, canonical, hash(evidence))
@@ -511,16 +519,33 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
     })
   }
-  async function completeTurn(input: CompletedTurn) {
+  async function completeTurn(input: CompletedTurn, signal?: AbortSignal) {
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
-    const answers = db.prepare('SELECT source FROM owner_answer_sources WHERE session=? AND turn=?').all(input.sessionId, String(input.turn)) as Array<{source: string}>
-    input = { ...input, sourceIds: [...new Set([...input.sourceIds, ...answers.map(row => row.source)])] }
-    const receipt = db.prepare('SELECT state FROM owner_turns WHERE session=? AND turn=?').get(input.sessionId, input.turn)
+    const finished = () => db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND turn=?').get(input.sessionId, input.turn)
+    let receipt = finished()
+    let acceptsFiles: FileEvidenceCurrent | undefined
+    if (!receipt && input.completed && options.dailyNotes !== false) {
+      const seen = dispatch.snapshot(input.sessionId)
+      if (seen.files?.length && !seen.turnOnly) {
+        try { acceptsFiles = await runtime.loadFileEvidenceCheck(seen.files, signal) }
+        catch (error) {
+          if (!(error instanceof RequestTimeout) || signal?.aborted) throw error
+          // A missing proof excludes generated context while retaining the user's independent turn.
+          acceptsFiles = () => false
+        }
+        signal?.throwIfAborted()
+        requireReady()
+        requireContextGeneration(input.sessionId, input.contextGeneration)
+        receipt = finished()
+      }
+    }
     if (receipt) {
       db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(input.sessionId, String(input.turn))
       return
     }
+    const answers = db.prepare('SELECT source FROM owner_answer_sources WHERE session=? AND turn=?').all(input.sessionId, String(input.turn)) as Array<{source: string}>
+    input = { ...input, sourceIds: [...new Set([...input.sourceIds, ...answers.map(row => row.source)])] }
     store.tx(() => {
       if (input.completed) {
         for (const id of input.sourceIds) {
@@ -535,7 +560,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
     })
     // File journal has its own crash receipt and must not be nested inside a SQLite transaction.
-    if (input.completed) runtime.recordNoteTurn?.(input.sessionId, input.sourceIds, input.assistant)
+    if (input.completed) runtime.recordNoteTurn?.(input.sessionId, input.sourceIds, input.assistant, acceptsFiles)
     db.prepare('INSERT INTO owner_turns VALUES (?,?,?,?)').run(input.sessionId, input.turn, input.eventSeq, input.completed ? 'completed' : 'cancelled')
     for (const [key, question] of generalQuestions) if (question.session === input.sessionId) generalQuestions.delete(key)
     db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(input.sessionId, String(input.turn))
@@ -758,9 +783,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     try {
       return await runtime.writeSourceFile(id, plan.source, plan.session, result => {
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
-      }, current)
+      }, current, !replayingWrites)
     } catch (error) {
-      if (error instanceof MemoryDomainError && error.code !== 'change.pending') {
+      if (error instanceof MemoryDomainError && error.code !== 'change.pending' && operation(id)?.state !== 'completed') {
         db.prepare("UPDATE owner_operations SET state='failed',payload=NULL WHERE id=?").run(id)
       }
       throw error
@@ -790,7 +815,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint, JSON.stringify({ nativeRemember: plan }))
     })
-    if (previous?.state === 'completed') return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+    if (previous?.state === 'completed') return runtime.searchableReceipt((JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result)
     if (previous?.state === 'failed') throw new MemoryDomainError('operation.conflict')
     return completeNativeRemember(id, plan, () => scope.current() && call.generation === contextRecovery.contextGeneration(call.session)
       && sessionContext(call.session).foregroundTurn === String(call.turn))
@@ -814,8 +839,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           notify = true
         }
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
-      }), plan.project, plan.context)
-      if (notify) options.onHostEffects?.()
+      }), plan.project, plan.context, !replayingWrites)
       if (receipt) diagnostics.emit({ event: 'state.changed', operation: 'memory.write', stage: 'applied',
         identities: { requestId: id, ownerEpoch: epoch, resourceId: receipt.identity.id, generation: receipt.contentRevision } })
       return receipt
@@ -824,6 +848,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(JSON.stringify({ code: error.code }), id)
       }
       throw error
+    } finally {
+      if (notify && operation(id)?.state === 'completed') options.onHostEffects?.()
     }
   }
 
@@ -835,7 +861,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (previous && previous.fingerprint !== fingerprint) throw new MemoryDomainError('operation.conflict')
     if (previous?.state === 'completed') {
       diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'settled', reason: 'idempotent', identities: { requestId: id, ownerEpoch: epoch } })
-      return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+      return runtime.searchableReceipt((JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result)
     }
     if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
@@ -860,7 +886,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (previous?.state === 'completed') {
       diagnostics.emit({ event: 'operation.progress', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
         stage: 'settled', reason: 'idempotent', identities: { requestId: id, ownerEpoch: epoch } })
-      return (JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result
+      return runtime.searchableReceipt((JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result)
     }
     if (previous?.state === 'failed') {
       const failure = JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }
@@ -895,14 +921,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     let readers: FileReaders | undefined
     try {
       const result = command.method === 'setFileEnabled'
-        ? await runtime.setFileEnabled(command.input.args[0], committed)
-        : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed)
+        ? await runtime.setFileEnabled(command.input.args[0], committed, !replayingWrites)
+        : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed, !replayingWrites)
           : !fileOnly ? await runtime.resumeFileRangeErasure(command.input.args[0], (result, cuts) => {
             notify = recordRangeErasure(id, cuts, readers)
             finishForget(result)
           }, () => { readers = currentFileReaders(request.identity.workspace) })
           : runtime.forgetFile(command.input.args[0], finishForget)
-      if (notify) options.onHostEffects?.()
       diagnostics.emit({ event: 'state.changed', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
         stage: 'applied', identities: { requestId: id, ownerEpoch: epoch, resourceId: result.identity.id, generation: result.contentRevision } })
       return result
@@ -912,6 +937,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       // Storage/flush failures keep the intent for recovery, including a committed document receipt.
       throw error
+    } finally {
+      if (notify && operation(id)?.state === 'completed') options.onHostEffects?.()
     }
   }
   function standaloneFileOrigin(session: string) {
@@ -925,12 +952,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const origin = standaloneFileOrigin(session), request = memoryFileCreateRequest.parse(input)
     return durableManualFileWrite({ method: 'createFile', input: { args: [request] } }, origin)
   }
-  async function forgetStandaloneFile(session: string, id: string, operationId: string) {
+  async function forgetStandaloneFile(session: string, id: string, operationId: string, signal?: AbortSignal): Promise<'complete' | 'pending'> {
     const origin = standaloneFileOrigin(session), previous = operation(operationId)
     if (previous?.state === 'completed') {
       const receipt = JSON.parse(previous.payload!) as { standaloneSession?: string, result: MemoryFileMutationResult }
       if (receipt.standaloneSession !== session || receipt.result.identity.id !== id) throw new MemoryDomainError('operation.conflict')
-      return outcome(previous).cleanup
+      return outcome(previous).cleanup ?? 'pending'
     }
     if (previous?.state === 'running') {
       const payload = JSON.parse(previous.payload!) as FileWritePayload
@@ -939,7 +966,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       await durableFileWrite(payload.command, session)
     } else {
-      const target = runtime.fileForSession(id, origin)
+      const target = await runtime.fileForSession(id, origin, signal)
+      signal?.throwIfAborted()
+      // An identical concurrent forget can finish while this caller verifies the file.
+      if (!target && ['running', 'completed'].includes(operation(operationId)?.state ?? '')) return forgetStandaloneFile(session, id, operationId, signal)
       if (!target) throw new MemoryDomainError('not.found')
       const request = memoryFileForgetRequest.parse({ ...target, operationId })
       await durableFileWrite({ method: 'forgetFile', input: { args: [request] } }, session)
@@ -1097,7 +1127,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'isDerivedDelivery': return runtime.isDerivedDelivery(...command.input.args)
       case 'bindProject': return coordination.bindProject(...command.input.args)
       case 'projectChanged': return coordination.projectChanged(...command.input.args)
-      case 'allowsEvidence': return coordination.allowsEvidence(...command.input.args)
+      case 'allowsEvidence': {
+        const [evidence, project] = command.input.args
+        return coordination.allowsEvidence(evidence, project, await runtime.loadFileEvidenceCheck(evidence?.files ?? [], signal))
+      }
       case 'stale': {
         const [session, project] = command.input.args
         const acceptsFiles = session ? await runtime.loadFileEvidenceCheck(dispatch.snapshot(session).files ?? [], signal) : undefined
@@ -1109,23 +1142,41 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const acceptsFiles = await runtime.loadFileEvidenceCheck(dispatch.snapshot(session).files ?? [], signal)
         return coordination.allowsSession(session, project, acceptsFiles)
       }
-      case 'transferable': return coordination.transferable(...command.input.args)
-      case 'transferStatus': return coordination.transferStatus(...command.input.args)
-      case 'transfer': return coordination.transfer(...command.input.args)
-      case 'canInherit': return coordination.canInherit(...command.input.args)
-      case 'inherit': return coordination.inherit(...command.input.args)
+      case 'transferable':
+      case 'transferStatus': {
+        const proof = await runtime.loadFileEvidenceCheck(command.input.args[0]?.files ?? [], signal)
+        return command.method === 'transferable' ? coordination.transferable(...command.input.args, proof)
+          : coordination.transferStatus(...command.input.args, proof)
+      }
+      case 'transfer': {
+        const proof = await runtime.loadFileEvidenceCheck(command.input.args[1]?.files ?? [], signal)
+        return coordination.transfer(...command.input.args, proof)
+      }
+      case 'canInherit':
+      case 'inherit': {
+        const proof = await runtime.loadFileEvidenceCheck(dispatch.snapshot(command.input.args[0]).files ?? [], signal)
+        return command.method === 'inherit' ? coordination.inherit(...command.input.args, proof) : coordination.canInherit(...command.input.args, proof)
+      }
       case 'inheritFork': {
         const [parent, session] = command.input.args
+        const proof = await runtime.loadFileEvidenceCheck(dispatch.snapshot(parent).files ?? [], signal)
         const previous = nativeSurface.parent(session)
         if (parent === session || previous && previous !== parent) return false
         return store.tx(() => {
-          if (!coordination.inherit(...command.input.args)) return false
+          if (!coordination.inherit(...command.input.args, proof)) return false
           nativeSurface.bindFork(session, parent)
           return true
         })
       }
-      case 'allowsProjectHistory': return coordination.allowsProjectHistory(...command.input.args)
-      case 'useHistory': return coordination.useHistory(...command.input.args)
+      case 'allowsProjectHistory':
+      case 'useHistory': {
+        const row = command.method === 'useHistory' ? command.input.args[1] : command.input.args[0]
+        const files = row.sessionId && !(row.role === 'user' && row.sourceId) ? dispatch.snapshot(row.sessionId).files ?? [] : []
+        const proof = await runtime.loadFileEvidenceCheck(files, signal)
+        if (command.method === 'useHistory') return coordination.useHistory(...command.input.args, proof)
+        const [occurrence, sourceProject, targetProject, sessionProject] = command.input.args
+        return coordination.allowsProjectHistory(occurrence, sourceProject, targetProject, sessionProject, proof)
+      }
       case 'dreamStatus': return runtime.dreamStatus()
       case 'requestDream': return runtime.requestDream(...command.input.args)
       case 'listFiles': return runtime.listFilesAsync(command.input.args[0], signal)
@@ -1149,7 +1200,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (!current()) return null
         const { project, conversation } = sessionContext(session)
         if (!coordination.allowsSession(session, project, acceptsFiles)) return null
-        if (prior) return !sourceId && coordination.allowsEvidence(prior, project) && dispatch.transferable(prior, acceptsFiles) ? prior : null
+        if (prior) return !sourceId && coordination.allowsEvidence(prior, project, acceptsFiles) && dispatch.transferable(prior, acceptsFiles) ? prior : null
         const evidence = dispatch.snapshot(session)
         if (!sourceId) return evidence
         // Fast routing may take the wire before native inbox intake. A host-bound
@@ -1170,13 +1221,17 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     recover: (preserveActiveTurns = false) => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(preserveActiveTurns), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
     receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => receiveSource(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.contextGeneration ?? 0 }, metrics: { count: 1, ok: input.admitted } }),
-    completeTurn: (input: CompletedTurn) => observeDiagnosticAsync(options.diagnostics, 'memory.daily', () => completeTurn(input), {
+    completeTurn: (input: CompletedTurn, signal?: AbortSignal) => observeDiagnosticAsync(options.diagnostics, 'memory.daily', () => completeTurn(input, signal), {
       stage: 'checkpoint', identities: { sessionId: input.sessionId, generation: input.turn }, metrics: { eventCursor: input.eventSeq, count: input.sourceIds.length, ok: input.completed } }),
-    registerDerived: (input: DerivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input), {
+    registerDerived: (input: DerivedSource, signal?: AbortSignal) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => registerDerived(input, signal), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId }, metrics: { count: input.sourceIds.length } }),
     sessionContext, handleHost, reconcileActiveTurns, nativeMaintenancePending: () => nativeMaintenancePending(db),
-    outputCurrent(origin: Parameters<typeof outputAdmission>[0]) {
-      return !fence.blocked() && Boolean(outputAdmission(origin)?.current())
+    async loadOutputProof(origin: Parameters<typeof outputAdmission>[0], signal: AbortSignal): Promise<OutputProof> {
+      return 'session' in origin ? { files: await loadSessionFileProof(origin.session, signal) }
+        : { job: await runtime.observeComputeAdmission(origin.jobId, signal) }
+    },
+    outputCurrent(origin: Parameters<typeof outputAdmission>[0], proof?: OutputProof) {
+      return !fence.blocked() && Boolean(outputAdmission(origin, proof)?.current())
     },
     rememberStandaloneFile: (...args: Parameters<typeof rememberStandaloneFile>) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberStandaloneFile(...args), {
       identities: { sessionId: args[0], requestId: args[1].operationId } }),
@@ -1197,14 +1252,18 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       return nativeSpills.begin({ ...identity, evidence, ...(provenance ? { provenance } : {}) })
     },
     finishNativeSpill: nativeSpills.finish, nativeSpillCandidates: nativeSpills.candidates,
-    admitNativeSpillRead(id: string, scope: NativeToolReadScope) {
+    loadSpillFileProof(id: string, signal: AbortSignal) {
+      return runtime.loadFileEvidenceCheck(nativeSpills.read(id)?.provenance?.files ?? [], signal)
+    },
+    admitNativeSpillRead(id: string, scope: NativeToolReadScope, signal?: AbortSignal, acceptsFiles?: FileEvidenceCurrent) {
+      signal?.throwIfAborted()
       const saved = nativeSpills.read(id)
       if (!saved || saved.erased || !saved.file || !saved.provenance || !saved.evidence?.length) throw new Error('Native spill proof is unavailable')
       const generation = contextRecovery.contextGeneration(scope.call.session)
       const proof = { ...saved.provenance, epoch: store.epoch() }
       const current = () => state === 'ready' && !replayingWrites && !hasPending() && scope.current() && scope.call.generation === generation
         && contextRecovery.contextGeneration(scope.call.session) === generation && nativeSpills.read(id)?.erased === false
-        && dispatch.transferable(proof) && coordination.allowsEvidence(proof, sessionContext(scope.call.session).project)
+        && dispatch.transferable(proof, acceptsFiles) && coordination.allowsEvidence(proof, sessionContext(scope.call.session).project, acceptsFiles)
       if (!current()) throw new Error('Native spill source or scope was retired')
       store.tx(() => {
         for (const call of scope.calls) for (const evidence of saved.evidence!) nativeToolReads.recordEvidence(call, evidence, scope.readCut?.())
@@ -1223,19 +1282,20 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     withNativeToolRead<T>(scope: NativeToolReadScope, read: () => T): T {
       return toolReadScope.run(scope, read)
     },
-    acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string) {
+    acquireSend(id: string, origin: { session: string, contextGeneration?: number, output?: NativeOutputAttempt } | { jobId: string }, payload: string, proof: OutputProof = {}) {
+      const acceptsFiles = proof.files
       const output = 'session' in origin ? origin.output : undefined
       if ('session' in origin) {
         if (output && (output.session !== origin.session || output.generation !== (origin.contextGeneration ?? 0))) throw new Error('Native output attempt belongs to a different send origin')
         if (contextRecovery.pending(origin.session) || (origin.contextGeneration ?? 0) !== contextRecovery.contextGeneration(origin.session)) throw new Error('Memory context generation changed')
-        reconcileChildren(origin.session)
+        reconcileChildren(origin.session, undefined, acceptsFiles)
       }
       const sessionAdmission = 'session' in origin && coordination.beginSession(id, origin.session, sessionContext(origin.session).project,
-        () => sessionContext(origin.session).project)
-      if (!('session' in origin ? sessionAdmission : coordination.beginJob(id, origin.jobId))) throw new Error('Memory dispatch denied')
+        () => sessionContext(origin.session).project, acceptsFiles)
+      if (!('session' in origin ? sessionAdmission : coordination.beginJob(id, origin.jobId, proof.job))) throw new Error('Memory dispatch denied')
       const evidence = sessionAdmission ? sessionAdmission.evidence : undefined
       try {
-        const permit = fence.acquire(id, origin, payload)
+        const permit = fence.acquire(id, origin, payload, epoch, proof)
         return { ...permit, settled() { coordination.endDispatch(id); permit.settled() },
           ...(output && evidence ? { recordBody: () => nativeOutputs.record(output, evidence) } : {}) }
       } catch (error) { coordination.endDispatch(id); throw error }

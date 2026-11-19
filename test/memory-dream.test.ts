@@ -19,12 +19,13 @@ import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { openMemoryStore, memoryHash } from '../src/memory/node/memory-store.ts'
-import type { DocumentReceipt } from '../src/memory/core/ports/documents.ts'
+import { createMemoryPhysicalFileReader } from '../src/memory/node/memory-file-store.ts'
+import type { DocumentReceipt, ReadMemoryPhysicalFile } from '../src/memory/core/ports/documents.ts'
 import type { MemorySource } from '../src/memory/core/ports/store.ts'
 import { noteSource } from './fixtures/memory-note-fixture.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
 
-function harness(t: TestContext, options: { units?: number, budget?: number, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'], diagnostics?: DiagnosticPort,
+function harness(t: TestContext, options: { units?: number, budget?: number, readPhysicalFile?: ReadMemoryPhysicalFile, checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'], diagnostics?: DiagnosticPort,
   mutate?: <T>(work: () => T) => Promise<T>, eligible?: () => boolean } = {}) {
   let now = Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(':memory:', () => now)
@@ -48,7 +49,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number, che
   let beforeMutation = () => {}
   let afterCommit: (receipt: DocumentReceipt) => void = () => {}
   const start = () => createMemoryDreamJobs({ store, notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
-    diagnostics: options.diagnostics,
+    diagnostics: options.diagnostics, readPhysicalFile: options.readPhysicalFile,
     settings: { timezone: 'UTC', dreamUnits: options.units ?? 5, dreamBatchBytes: options.budget ?? 40_000 },
     readable, eligible: options.eligible ?? (() => true), source: id => store.readSource(id) ?? undefined,
     reference: id => { const original = store.readSource(id); return original ? { namespace: 'canonical', sourceId: id, revision: original.version } : null },
@@ -184,7 +185,7 @@ test('timeout on a later batch defers remaining batches and workspaces without l
   await h.retry(); await h.retry()
   assert.equal(calls, 5)
   assert.equal(new Set(notes).size, 4)
-  assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+  assert.equal(h.notes.changedFiles('2026-11-16', '2026-11-16').length, 0)
 })
 
 for (const reason of ['error', 'call-failed', 'timeout', 'max-tokens'] as const) {
@@ -195,12 +196,12 @@ for (const reason of ['error', 'call-failed', 'timeout', 'max-tokens'] as const)
     h.setModel(async () => { throw new MemoryComputeError(reason) })
     await h.run()
     assert.equal(h.requests.length, 1)
-    assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 3)
+    assert.equal(h.notes.changedFiles('2026-11-16', '2026-11-16').length, 3)
     h.restart()
     h.setModel(async () => '{"units":[]}')
     await h.retry()
     assert.equal(h.requests.length, 3)
-    assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+    assert.equal(h.notes.changedFiles('2026-11-16', '2026-11-16').length, 0)
   })
 }
 
@@ -217,7 +218,7 @@ test('extract splits before the provider when the actual JSON exceeds the batch 
   })
   await h.run()
   assert.deepEqual(sizes, [1, 1])
-  assert.equal(h.notes.changed(first.note.day, first.note.day).length, 0)
+  assert.equal(h.notes.changedFiles(first.note.day, first.note.day).length, 0)
 })
 
 test('a large single note still reaches the provider once with the truncated markdown', async t => {
@@ -246,7 +247,7 @@ test('explicit context overflow splits batches and checkpoints an oversized sing
   })
   await h.run()
   assert.deepEqual(sizes, [3, 1, 2, 1, 1])
-  assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+  assert.equal(h.notes.changedFiles('2026-11-16', '2026-11-16').length, 0)
   h.restart()
   await h.retry()
   await h.run()
@@ -408,7 +409,7 @@ test('a new digest combines original evidence and checkpoints without independen
   assert.deepEqual(new Set(docs[0]!.sources.map(ref => ref.id)), new Set([first.source.id, second.source.id]))
   assert.deepEqual(new Set(docs[0]!.sources.map(ref => ref.token)), new Set([...h.notes.references(first.key), ...h.notes.references(second.key)].map(ref => ref.token)))
   assert.deepEqual(new Set(h.requests.find(item => item.stage === 'integrate')!.sourceIds()), new Set([first.source.id, second.source.id]))
-  assert.equal(h.notes.changed('2026-11-16', '2026-11-16').length, 0)
+  assert.equal(h.notes.changedFiles('2026-11-16', '2026-11-16').length, 0)
   assert.equal(h.store.db.prepare("SELECT COUNT(*) n FROM effects WHERE kind='memory.extract'").get()?.n, 0)
 })
 
@@ -722,7 +723,7 @@ for (const reason of ['call-failed', 'timeout'] as const) test(`Auto Tag ${reaso
   assert.ok(h.documents.read(workspace, 'digest/personal/Plan.md')?.markdown.includes('memory_tags:'))
   const attempt = h.documents.tagAttempt(workspace, `tag:${memoryHash(JSON.stringify([workspace, doc.id, doc.revision]))}`)
   assert.equal(attempt?.state, 'failed')
-  assert.equal(h.notes.changed(first.note.day, first.note.day).length, 0)
+  assert.equal(h.notes.changedFiles(first.note.day, first.note.day).length, 0)
   const completed = h.requests.length
   h.restart()
   await h.retry()
@@ -1073,4 +1074,75 @@ test('persisted extraction policy rejects a new transitive correction before ret
   chain.extend(); h.restart(); await h.retry()
   assert.deepEqual(h.requests.map(request => request.stage), ['extract', 'integrate'], 'stale unit is not sent again')
   assert.equal(h.notes.read(chain.first.key)?.processed, 0)
+})
+
+test('a manual Dream joining an active automatic run processes newly arrived notes before its receipt', async t => {
+  const h = harness(t)
+  h.add('The team files reports every Friday.')
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const hold = new Promise<void>(resolve => { release = resolve })
+  h.setModel(async request => {
+    if (request.stage === 'extract') { entered(); await hold }
+    return h.defaultModel(request)
+  })
+  const automatic = h.run()
+  await started
+  const added = h.add('The other team orders groceries on Tuesdays.', 'Shopping')
+  const id = randomUUID()
+  assert.equal(h.request(id).completedAt, null)
+  release()
+  await automatic
+  assert.ok(h.request(id).completedAt)
+  assert.equal(h.notes.read(added.key)?.processed, added.note.revision)
+})
+
+test('Dream leaves an unreadable changed note pending and checkpoints an independent note', async t => {
+  let unavailable: string | undefined
+  const h = harness(t, { readPhysicalFile: (workspace, path, signal) => {
+    if (path === unavailable) return new Promise(() => {})
+    return read(workspace, path, signal)
+  } })
+  const read = createMemoryPhysicalFileReader(() => h.store.fileRoot)
+  t.after(() => read.close())
+  const first = h.add('First independent note', 'First')
+  const second = h.add('Second independent note', 'Second')
+  unavailable = first.note.path
+  h.setModel(async () => '{"units":[]}')
+  await h.run()
+  assert.deepEqual(h.notes.changedFiles(first.note.day, first.note.day).map(file => file.path), [first.note.path])
+  assert(h.requests.some(request => JSON.stringify(request.input).includes(second.note.path)))
+  assert(h.requests.every(request => !JSON.stringify(request.input).includes(first.note.path)))
+  unavailable = undefined
+  await h.retry()
+  assert.deepEqual(h.notes.changedFiles(first.note.day, first.note.day), [])
+})
+
+test('Dream node search reaches matching nodes beyond a blocked page and honors tool cancellation', async t => {
+  let block = false
+  const h = harness(t, { readPhysicalFile: (workspace, path, signal) => {
+    if (block && path.includes('/Offline')) return new Promise(() => {})
+    return read(workspace, path, signal)
+  } })
+  const read = createMemoryPhysicalFileReader(() => h.store.fileRoot)
+  t.after(read.close)
+  const { note } = h.add('Publish the weekly report every Friday.')
+  for (let index = 0; index < 4; index++) h.seedDigest(note, 'Offline' + String(index).padStart(2, '0'))
+  h.seedDigest(note, 'Zircon')
+  let result: string | undefined, cancelled = false
+  h.setModel(async request => {
+    if (request.stage !== 'integrate') return h.defaultModel(request)
+    const tool = { callId: 'healthy-node', name: 'node_search', input: { query: 'Zircon' } }
+    block = true
+    const stop = new AbortController()
+    const pending = request.tools!.executeTool(tool, stop.signal)
+    stop.abort(new Error('Dream RPC cancelled'))
+    await assert.rejects(pending, /Dream RPC cancelled/)
+    cancelled = true
+    result = (await request.tools!.executeTool(tool)).content
+    return '{"status":"skip"}'
+  })
+  await h.run()
+  assert.equal(cancelled, true)
+  assert.match(result ?? '', /Zircon/)
 })

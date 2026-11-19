@@ -31,7 +31,7 @@ export async function startFakeMemoryOwner() {
     const parsed = memoryOwnerState.safeParse(event)
     if (!parsed.success) return
     const state = parsed.data
-    const send = () => { if (process.connected) process.send?.(state, () => {}) }
+    const send = () => connection.reconciled?.(state.epoch, state.state === 'ready' && reconciledEpoch === state.epoch)
     if (state.state !== 'ready' || reconciledEpoch === state.epoch) { send(); return }
     void owner.inEpoch(state.epoch, async () => {
       await owner.call('reconcileActiveTurns', [[...turns].map(([sessionId, turn]) => ({ sessionId, turn: turn.turn }))])

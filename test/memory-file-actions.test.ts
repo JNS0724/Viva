@@ -39,6 +39,17 @@ const mutationReceipt = (operationId: string, detail: MemoryFileDetailView, acti
   operationId, identity: detail.identity, usageVersion: detail.version.usageVersion + 1, contentRevision: detail.version.contentRevision, action,
 })
 
+test('a partial list stays marked through pagination and clears after a complete refresh', () => {
+  const f = harness({})
+  const listed = (page: MemoryFileListResult, more: boolean) => f.dispatch({ type: 'memory_files_listed', query: '', page, more })
+  listed({ ...pageOf([detailOf('one')]), partial: true }, false)
+  listed(pageOf([detailOf('two')]), true)
+  assert.deepEqual(f.file().items.map(item => item.title), ['one', 'two'])
+  assert.equal(f.file().partial, true)
+  listed(pageOf([detailOf('one')]), false)
+  assert.equal(f.file().partial, false)
+})
+
 test('permanent file forget requires capability and current explicit confirmation before preserving one retry identity', async () => {
   const old = detailOf('private'), allowed = { ...old, actions: { ...old.actions, forget: true } }
   const other = detailOf('from-same-source')
@@ -518,4 +529,37 @@ test('a durable create result after close and reopen cannot steal the current se
   assert.equal(f.file().writing, false)
   assert.equal(f.file().detail, current)
   assert.deepEqual(f.notices, [])
+})
+
+test('the first unfiltered page can change revision and skip an entire filtered page', async () => {
+  const requests: Parameters<AgentApi['listMemoryFiles']>[0][] = []
+  const cursor = { snapshot: 'snapshot', offset: 100 }
+  const f = harness({ async listMemoryFiles(request) {
+    requests.push(request)
+    if (requests.length === 1) return { status: 'stale', snapshot: 'old', items: [], nextCursor: null }
+    return request.cursor ? pageOf([detailOf('visible')]) : pageOf([], cursor)
+  } })
+  await f.actions.refreshFiles()
+  assert.deepEqual(requests.map(request => request.cursor), [undefined, undefined, cursor])
+  assert.deepEqual(f.file().items.map(item => item.identity.id), ['visible'])
+})
+
+test('a file detail refresh shares pending work and leaves the second owner read slot for the profile', async () => {
+  const item = detailOf('active')
+  const loading = deferred<MemoryFileDetailView>()
+  let details = 0, lists = 0
+  const f = harness({ getMemory: async () => getMemory,
+    listMemoryFiles: async () => { lists++; return pageOf([item]) },
+    readMemoryFile: async () => ++details === 2 ? loading.promise : item })
+  await f.actions.showMemoryFile({ identity: item.identity })
+  const first = f.actions.refreshFiles()
+  const second = f.actions.refreshFiles()
+  assert.equal(details, 2)
+  assert.equal(lists, 0)
+  loading.resolve(item)
+  await Promise.all([first, second])
+  assert.equal(details, 3)
+  assert.equal(lists, 0)
+  await f.actions.showMemoryFile(null)
+  assert.equal(lists, 1)
 })

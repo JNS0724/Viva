@@ -16,7 +16,7 @@ import { closeLast, closeStreams } from './streams.ts'
  */
 export const initialConversation: Readonly<ConversationState> = Object.freeze({
   phase: 'idle', messages: [], thoughts: [], tools: {}, modelCalls: {}, timeline: [], permission: null, question: null,
-  secret: null, turn: null, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null, usage: null,
+  secret: null, turn: null, stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null, usage: null,
 })
 
 const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput', 'rawOutput'] as const
@@ -216,10 +216,11 @@ export const CONVERSATION_ACTIONS = {
 
   permission_closed: (view, { requestId }) => view.permission?.requestId !== requestId ? view : ({ ...view, permission: null, phase: view.phase === 'waiting' ? 'working' : view.phase }),
 
-  turn_stopping: (view) => ({ ...view, phase: 'stopping' }),
+  turn_stopping: (view, { confirmed }) => ({ ...view, phase: 'stopping',
+    ...(confirmed && { permission: null, question: null, secret: null }) }),
   turn_stop_rejected: (view, { turnId, phase }) => view.phase === 'stopping' && view.turn?.id === turnId
     ? { ...view, phase } : view,
-  turn_recovered: (view) => view.lastReceipt?.stopReason !== 'cancel_unconfirmed' ? view : ({ ...view, lastReceipt: null }),
+  turn_recovered: (view) => view.stopUnconfirmed ? { ...view, stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null } : view,
 
   turn_end: (view, { stopReason, finalReply, at }) => {
     const closed = closeStreams(view)
@@ -229,7 +230,7 @@ export const CONVERSATION_ACTIONS = {
       && (!last || (last.role === 'assistant' && isSilentReply(last.text)))
     const reason = stopReason === 'end_turn' && finalReply === false && !silentTask ? 'no_response' : stopReason
     const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason: reason }
-    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt, doneNotice: 'fresh' as const,
+    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, stopUnconfirmed: stopReason === 'cancel_unconfirmed', lastReceipt: receipt, doneNotice: 'fresh' as const,
       completedTurn: { startedAt: turn.startedAt, endedAt: at } }
     // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
     if (silentTask) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }

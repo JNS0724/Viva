@@ -59,10 +59,11 @@ let renderedTopicInputs: unknown[] = []
 function renderTopicLabelIfChanged(area: HTMLElement | null, state: State, handlers: Handlers) {
   if (!area) return
   const ready = !setupView(state.info) && state.info.mode !== 'connecting'
-  const inputs = [localeRevision(), state.topic, state.usage, state.messages.length, state.earlier.segments, ready, isBusy(state), state.switching, state.newTopicPending]
+  const busy = isBusy(state) || state.phase === 'stopping' || state.stopUnconfirmed
+  const inputs = [localeRevision(), state.topic, state.usage, state.messages.length, state.earlier.segments, ready, busy, state.switching, state.newTopicPending]
   if (inputs.every((value, i) => value === renderedTopicInputs[i])) return
   renderedTopicInputs = inputs
-  renderTopicLabel(area, state, handlers, { ready, busy: isBusy(state) })
+  renderTopicLabel(area, state, handlers, { ready, busy })
 }
 
 let renderedPermissionInputs: unknown[] = []
@@ -198,7 +199,7 @@ export function renderSendButton(dom: Dom, state: State) {
 
 function renderComposer(dom: Dom, state: State, handlers: Handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.initialization.status !== 'ready' || state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
-  if (state.phase === 'stopping' || state.lastReceipt?.stopReason === 'cancel_unconfirmed') dom.sendBtn.disabled = true
+  if (state.phase === 'stopping' || state.stopUnconfirmed) dom.sendBtn.disabled = true
   renderSendButton(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)
@@ -210,7 +211,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 /** Cards are conversation content even when no foreground user bubble was created. */
 export const showsHome = (state: State) => state.messages.length === 0 && state.earlier.segments.length === 0
   && cardedTasks(state).length === 0
-  && !state.newTopicPending && state.phase !== 'error'
+  && !state.newTopicPending && !state.stopUnconfirmed && state.phase !== 'stopping' && state.phase !== 'error'
 
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */
 export function render(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {

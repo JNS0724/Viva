@@ -238,12 +238,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     } finally { foregroundRequests.invalidate() }
   }
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
+  // The stopped session still owns its renderer history. Its native binding is retired.
+  let stoppedContext: ConversationContext | null = null
   const sessions = createConversationSession({
     history: () => historyDb,
     agent: () => dsh.current,
     info: () => lastInfo,
     setInfo: (info) => { lastInfo = info },
-    isBusy: () => turn.active,
+    isBusy: () => turn.active || stoppedContext !== null,
     carryRevision: () => historyDb.fileErasureRevision(),
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
@@ -252,6 +254,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       syncProjectView()
     },
   })
+
+  const rendererContext = () => stoppedContext?.conversationId === sessions.current().id ? stoppedContext : sessions.context()
 
   /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */
   function emitToRenderer(event: HostEvent) {
@@ -352,6 +356,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         await bindSessionProject(started.sessionId, project)
       }
       if (sameProject && (context.carryHistory || rebuild || (!started.resumed && memory?.epoch() > 0 && historyDb.get(old.id)))) await storeSessionCarry(old.id)
+      stoppedContext = null
       emitToRenderer({ type: 'ready', info: sameProject ? info : { ...info, conversationId: sessions.current().id, topicId: sessions.topicId(), remembersHistory: false } })
       wakeEffects()
       syncProjectView()
@@ -727,6 +732,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed') {
           const selected = sessions.current()
           if (selected.sessionId) {
+            stoppedContext = sessions.context()
             try { historyDb.detachNativeSession(selected.id, selected.sessionId) }
             catch (error) { emitDiagnosticFailure('conversation.cancel', error, { stage: 'checkpoint' }) }
             sessions.select({ ...selected, sessionId: null })
@@ -926,6 +932,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     }
     fs.mkdirSync(config.cwd, { recursive: true })
     const context = sessions.startingIn(config.cwd)
+    carryHistory ||= stoppedContext !== null
     if (carryHistory || memoryProjectScope(sessions.current().cwd)?.id !== memoryProjectScope(context.cwd)?.id) context.resumeSessionId = null
     try {
       const started = await dsh.start({ config, ...context, carryHistory })
@@ -1010,13 +1017,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:info', () => lastInfo)
     ipcMain.handle('agent:snapshot', (): RendererSnapshot => {
       if (sessions.isChanging()) throw new Error('Conversation selection is changing; retry initialization')
-      const selected = sessions.current(), context = sessions.context()
+      const selected = sessions.current(), context = rendererContext()
       const found = historyDb.get(selected.id)
       // No await between the history read and publication cutoff: both share this boundary.
       const history = found ? { id: found.conversation.id, updatedAt: found.conversation.updatedAt,
         createdAt: found.conversation.createdAt, parentId: found.conversation.parentId,
         messages: found.messages, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
-      return { ...rendererStream.snapshot(selected.id, context), context, history,
+      return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null), context, history, stopUnconfirmed: Boolean(stoppedContext),
         info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
     })
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
@@ -1034,7 +1041,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
       const pictures = imagesForPrompt(imageStore, images)
       const agent = requireBridge()
-      if (agent.needsRecovery()) throw new Error(t('conversation.stop.unconfirmed'))
+      if (stoppedContext || agent.needsRecovery()) throw new Error(t('conversation.stop.unconfirmed'))
       // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
       // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
       if (agent.isSwitching()) throw new Error(switchingMessage())
@@ -1082,7 +1089,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     let foregroundRecovery: Promise<AgentInfo | null> | undefined
     ipcMain.handle('agent:recover', async () => {
       if (foregroundRecovery) return foregroundRecovery
-      if (dsh.current && !dsh.current.needsRecovery()) return lastInfo
+      if (!stoppedContext && !dsh.current?.needsRecovery()) return lastInfo
       foregroundRecovery = (async () => {
         await stopBridge()
         return startBridge({ carryHistory: true })
@@ -1090,6 +1097,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       try { return await foregroundRecovery } finally { foregroundRecovery = undefined }
     })
     ipcMain.handle('agent:new-session', async () => {
+      if (stoppedContext) throw new Error(t('conversation.stop.unconfirmed'))
       if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
       // The bridge's onSessionCreated binds owner metadata before returning the acquired session.
       // Repeating it after selection commits can turn a successful switch into an unrelated recovery failure.
@@ -1656,8 +1664,9 @@ ${question}` : question
       // A report waiting for this conversation (task-reports.ts) may go now.
       setCurrent: sessions.select,
       agentInfo: () => lastInfo,
+      historySourceSession: () => rendererContext().sessionId,
       validateSave: (id, mark) => {
-        if (mark && !sameContext(mark.context, sessions.context())) throw new Error('Conversation save belongs to an old selection')
+        if (mark && !sameContext(mark.context, rendererContext())) throw new Error('Conversation save belongs to an old selection')
         rendererStream.validateSave(id, mark)
       },
       historySaved: rendererStream.save,

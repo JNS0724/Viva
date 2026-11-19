@@ -2,17 +2,13 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ToolBudgetNotice } from '../tool-budget-notice.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolDispatchExecution, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
-import { APP_WRITE_TIMEOUT_MS, DEFAULT_TOOL_TIMEOUT_MS, MEMORY_READ_BUDGET_MS, createRequestBudget, RequestTimeout } from '../request-budget.ts'
+import { DEFAULT_TOOL_TIMEOUT_MS, createRequestBudget, RequestTimeout } from '../request-budget.ts'
 
 export const LONG_TOOL_TIMEOUT_MS = 60_000
 
-const budgets = new Map<string, number>([
-  ['memory_recall', MEMORY_READ_BUDGET_MS], ['memory_read', MEMORY_READ_BUDGET_MS], ['memory_node_search', MEMORY_READ_BUDGET_MS],
+// The native DSH tools belong to the installed SDK. App-owned tools declare their budgets when registered.
+const nativeBudgets = new Map<string, number>([
   ['read', 10_000], ['read_image', 10_000], ['glob', 30_000], ['grep', 30_000],
-  ['memory_remember', APP_WRITE_TIMEOUT_MS], ['viva_mcp_add', APP_WRITE_TIMEOUT_MS], ['viva_mcp_update', APP_WRITE_TIMEOUT_MS],
-  ['viva_mcp_remove', APP_WRITE_TIMEOUT_MS], ['viva_skill_create', APP_WRITE_TIMEOUT_MS], ['viva_skill_remove', APP_WRITE_TIMEOUT_MS],
-  ['commit_route', LONG_TOOL_TIMEOUT_MS], ['schedule_create', LONG_TOOL_TIMEOUT_MS], ['schedule_update', LONG_TOOL_TIMEOUT_MS],
-  ['schedule_delete', LONG_TOOL_TIMEOUT_MS], ['viva_mcp_import', LONG_TOOL_TIMEOUT_MS], ['viva_skill_install', LONG_TOOL_TIMEOUT_MS],
 ])
 
 const mainAgents = new WeakMap<Agent, (notice: ToolBudgetNotice) => void>()
@@ -21,7 +17,7 @@ const active = new AsyncLocalStorage<ReturnType<typeof startToolPhase>>()
 const memoryTools = new Set(['memory_recall', 'memory_read', 'memory_node_search', 'memory_remember'])
 export const isMemoryTool = (name: string) => memoryTools.has(name)
 export const enableMainToolBudgets = (agent: Agent, send: (notice: ToolBudgetNotice) => void) => { mainAgents.set(agent, send) }
-export const toolBudgetMs = (name: string, declared?: number) => declared ?? budgets.get(name) ?? DEFAULT_TOOL_TIMEOUT_MS
+export const toolBudgetMs = (name: string, declared?: number) => declared ?? nativeBudgets.get(name) ?? DEFAULT_TOOL_TIMEOUT_MS
 
 export function budgetedTool(exec: ToolExecution) {
   return !!exec.agent && (isMemoryTool(exec.name) || mainAgents.has(exec.agent))
@@ -52,12 +48,13 @@ function startToolPhase(exec: ToolExecution, milliseconds: number, phase: ToolBu
 
 // DSH waits for approvals between preparation and dispatch. Retain only the duration left,
 // so a permission card never consumes the budget and never masks caller cancellation.
-export async function prepareToolCall(exec: ToolExecution, declared: number | undefined, work: () => Promise<void>) {
-  if (!budgetedTool(exec)) return work()
-  const budget = startToolPhase(exec, toolBudgetMs(exec.name, declared), 'prepare')
+export async function prepareToolCall<T>(exec: ToolExecution, declared: number | undefined, work: (signal: AbortSignal, remainingMs?: () => number) => Promise<T>) {
+  if (!budgetedTool(exec)) return work(exec.signal)
+  const budget = startToolPhase(exec, remaining.get(exec) ?? toolBudgetMs(exec.name, declared), 'prepare')
   try {
-    await budget.run(work)
+    const result = await budget.run(() => work(budget.signal, budget.remainingMs))
     remaining.set(exec, budget.remainingMs())
+    return result
   } finally { budget.close() }
 }
 

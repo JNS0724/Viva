@@ -40,7 +40,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       while (current()) {
         const page = await api.listMemoryFiles({ query: search, ...(next ? { cursor: next } : {}) })
         if (!current()) return
-        if (page.status === 'stale' && next && !restarted) {
+        if (page.status === 'stale' && !restarted) {
           dispatch({ type: 'memory_files_invalidated' })
           const { selection } = state()
           if (selection) detail = read(selection)
@@ -50,7 +50,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
           continue
         }
         if (page.status !== 'ok') throw new Error(t('main.memory.revision.conflict'))
-        if (search && !page.items.length && page.nextCursor) {
+        if (!page.partial && !page.items.length && page.nextCursor) {
           if (next && page.nextCursor.offset <= next.offset) throw new Error(t('main.memory.revision.conflict'))
           next = page.nextCursor
           continue
@@ -79,10 +79,22 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     }
   }
 
-  async function refreshFiles() {
-    if (!active()) return
-    const { selection } = state()
-    await Promise.all([list(), selection ? read(selection) : undefined])
+  let refresh: Promise<void> | undefined
+  let refreshAgain = false
+  function refreshFiles(): Promise<void> {
+    if (!active()) return Promise.resolve()
+    if (refresh) { refreshAgain = true; return refresh }
+    async function run() {
+      do {
+        refreshAgain = false
+        const { selection } = state()
+        // Profile summary and visible file contents have one read slot each.
+        if (selection) await read(selection)
+        else await list()
+      } while (refreshAgain && active())
+    }
+    refresh = run().finally(() => { refresh = undefined })
+    return refresh
   }
 
   async function write(target: MemoryFileDetailView, command: (operationId: string) => Promise<unknown>, message: string, restoredRestriction?: string) {
@@ -260,7 +272,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       if (!active()) return
       detailRequest++
       dispatch({ type: 'memory_file_select', selection })
-      if (selection) return read(selection)
+      return selection ? read(selection) : list()
     },
     reloadMemoryFile() {
       const { selection } = state()

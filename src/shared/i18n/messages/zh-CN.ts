@@ -2,6 +2,7 @@ import type { MessageKey } from './en.ts'
 export const zhCN = {
   "conversation.stop.pending": "正在停止…",
   "conversation.stop.unconfirmed": "执行端未确认停止。",
+  "conversation.stop.saved.only": "已显示上次保存的记录。停止前的部分输出未能恢复。",
   "conversation.stop.restart.tasks": "恢复会话会重启运行时，可能中断后台任务。",
   "conversation.stop.recover": "恢复会话",
   "diagnostics.scope": "日志只保存在本机，不包含对话正文、记忆正文、附件或凭据。",
@@ -136,6 +137,7 @@ export const zhCN = {
   "memory-files.open.range": "查看停用片段 {number}",
   "memory-files.current": "查看当前内容",
   "memory-files.back": "返回记忆列表",
+  "memory-files.list.partial": "部分记忆文件暂时无法核验，可以重新加载。",
   "memory-files.retry": "重新加载",
   "memory-files.loading": "正在加载记忆…",
   "memory-files.search": "搜索记忆标题",

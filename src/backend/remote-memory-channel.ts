@@ -1,4 +1,5 @@
-import { memoryDomainErrorCode } from '../memory/contracts/domain-error.ts'
+import type { OwnerCallOptions } from '../memory/node/owner-adapter.ts'
+import { memoryDomainErrorCode, memoryHostFailure } from '../memory/contracts/domain-error.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
 import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, memoryOwnerProjection, parseHostMemoryCommand } from '../memory/contracts/host.ts'
@@ -20,12 +21,28 @@ export class MemoryReadBusy extends Error {
   readonly code = 'busy'
   constructor() { super('Memory reads are busy; retry after an active read finishes') }
 }
-type ReadBatch = { id: string, epoch: string, lifetime: ReturnType<typeof createRequestBudget>, sealed: boolean, executions: Set<string> }
-/** Parent IPC is the authentication boundary. A replaced owner never inherits pending calls. */
-export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, onContextUsed, onProjection, timeoutMs = 30_000 }: {
-  send: (message: object) => void, onReady?: () => void, onChanged?: (state: MemoryOwnerState) => void, onNotice?: (notice: MemoryOwnerChange) => void,
-  onContextUsed?: (notice: MemoryOwnerContextUsed) => void, onProjection?: (notice: MemoryOwnerProjection) => void, timeoutMs?: number,
-}) {
+type ReadBatch = { id: string, epoch: string, lifetime: ReturnType<typeof createRequestBudget>, sealed: boolean, executions: number }
+type OwnerTransport = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'],
+  options: OwnerCallOptions) => Promise<HostMemoryApi[M]['output']>
+export interface MemoryChannelEvents {
+  onReady?: () => void
+  onChanged?: (state: MemoryOwnerState) => void
+  onNotice?: (notice: MemoryOwnerChange) => void
+  onContextUsed?: (notice: MemoryOwnerContextUsed) => void
+  onProjection?: (notice: MemoryOwnerProjection) => void
+}
+
+function channelError(failure: Record<string, unknown>) {
+  const domain = memoryDomainErrorCode.safeParse(failure.domainCode)
+  const error = new Error(domain.success ? t(`main.memory.${domain.data}`) : typeof failure.reason === 'string' ? failure.reason : 'Memory owner request failed')
+  return Object.assign(error, { code: typeof failure.code === 'string' ? failure.code : 'unavailable',
+    ...(domain.success ? { domainCode: domain.data } : {}) })
+}
+
+/** The desktop supervisor owns its RPC transport. Only the native dsh channel sends legacy host frames. */
+export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged, onNotice, onContextUsed, onProjection, timeoutMs = 30_000 }:
+  MemoryChannelEvents & { timeoutMs?: number } & ({ send(message: object): void, callOwner?: never } | { callOwner: OwnerTransport, send?: never })) {
+  let connectionLifetime = new AbortController()
   let current: MemoryOwnerState | undefined
   let closed = false
   // These are actual executions, not caller waiters. Timeout does not free an owner slot.
@@ -34,13 +51,18 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
   function settleExecution(requestId: string, epoch: string) {
     const batch = executions.get(requestId)
     if (!batch || batch.epoch !== epoch) return
-    executions.delete(requestId); batch.executions.delete(requestId)
-    if (batch.sealed && !batch.executions.size) batches.delete(batch.id)
+    executions.delete(requestId); releaseExecution(batch)
+  }
+  function releaseExecution(batch: ReadBatch) {
+    batch.executions--
+    if (batch.sealed && !batch.executions) batches.delete(batch.id)
   }
   const waiters = new Set<{ resolve(): void, reject(error: Error): void, timer: ReturnType<typeof setTimeout> }>()
   const pending = new Map<string, { epoch: string, context?: DiagnosticContext, fields: DiagnosticFields, started: number, resolve(value: unknown): void, reject(error: Error): void, timer: ReturnType<typeof setTimeout> }>()
   function invalidate(message: string, releaseExecutions = true) {
     current = undefined
+    connectionLifetime.abort(new MemoryOwnerUnavailable(message))
+    connectionLifetime = new AbortController()
     for (const item of pending.values()) {
       emitDiagnostic({ ...item.fields, event: 'wait.end', operation: 'memory.owner', reason: 'epoch_changed', metrics: { durationMs: performance.now() - item.started } }, item.context)
       clearTimeout(item.timer); item.reject(new MemoryOwnerUnavailable(message))
@@ -58,6 +80,26 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
     if (closed || !current || current.state !== 'ready' && !(recovery && current.state === 'recovering')) {
       emitDiagnostic({ event: 'operation.progress', operation: 'memory.owner', stage: READ_STAGE[method], reason: closed ? 'closed' : 'not_ready', identities: { methodId: method, ownerEpoch: current?.epoch ?? null } })
       throw new MemoryOwnerUnavailable()
+    }
+    if (callOwner) {
+      const signal = batch ? AbortSignal.any([batch.lifetime.signal, connectionLifetime.signal]) : connectionLifetime.signal
+      if (batch) batch.executions++
+      const fields: DiagnosticFields = { stage: READ_STAGE[method], identities: { methodId: method, ownerEpoch: current.epoch, readBatchId: batch?.id } }
+      const started = performance.now()
+      try {
+        emitDiagnostic({ ...fields, event: 'wait.begin', operation: 'memory.owner' })
+        // readBatch owns the caller deadline. This promise observes actual completion
+        // so a timed-out caller cannot free one of the two physical execution slots.
+        const value = await callOwner(method, input, { signal, budgetMs: budgetMs ?? timeoutMs, waitForCompletion: Boolean(batch) })
+        signal.throwIfAborted()
+        emitDiagnostic({ ...fields, event: 'wait.end', operation: 'memory.owner', metrics: { ok: true, durationMs: performance.now() - started } })
+        return value
+      } catch (error) {
+        emitDiagnostic({ ...fields, event: 'wait.end', operation: 'memory.owner', reason: safeDiagnosticReason(error), metrics: { ok: false, durationMs: performance.now() - started } })
+        signal.throwIfAborted()
+        if (error instanceof RequestTimeout) throw error
+        throw channelError(memoryHostFailure(error))
+      } finally { if (batch) releaseExecution(batch) }
     }
     const command = parseHostMemoryCommand(method, input)
     const requestId = randomUUID(), epoch = current.epoch
@@ -78,7 +120,7 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
       try {
         emitDiagnostic({ ...fields, event: 'wait.begin', operation: 'memory.owner', metrics: { pendingCount: pending.size } })
         const read = batch ? { readBatchId: batch.id, budgetMs: batch.lifetime.remainingMs() } : undefined
-        if (batch) { executions.set(requestId, batch); batch.executions.add(requestId) }
+        if (batch) { executions.set(requestId, batch); batch.executions++ }
         send({ type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch, ...command,
           ...(read ? { read } : {}), diagnostics: diagnosticContext() })
       }
@@ -103,12 +145,12 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
       throw new MemoryReadBusy()
     }
     const lifetime = createRequestBudget(Math.min(MEMORY_READ_BUDGET_MS, options.budgetMs ?? MEMORY_READ_BUDGET_MS), options.signal)
-    const batch: ReadBatch = { id: randomUUID(), epoch: current.epoch, lifetime, sealed: false, executions: new Set() }
+    const batch: ReadBatch = { id: randomUUID(), epoch: current.epoch, lifetime, sealed: false, executions: 0 }
     batches.set(batch.id, batch)
     try { return await lifetime.run(() => work((method, input) => execute(method, input, batch))) }
     finally {
       batch.sealed = true; lifetime.close()
-      if (!batch.executions.size) batches.delete(batch.id)
+      if (!batch.executions) batches.delete(batch.id)
     }
   }
   function receive(raw: unknown) {
@@ -160,11 +202,7 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
     if (msg.ok === true) item.resolve(msg.result)
     else {
       const failure = objectOf(msg.error) ?? {}
-      const domain = memoryDomainErrorCode.safeParse(failure.domainCode)
-      const error = new Error(domain.success ? t(`main.memory.${domain.data}`) : typeof failure.reason === 'string' ? failure.reason : 'Memory owner request failed')
-      Object.assign(error, { code: typeof failure.code === 'string' ? failure.code : 'unavailable',
-        ...(domain.success ? { domainCode: domain.data } : {}) })
-      item.reject(error)
+      item.reject(channelError(failure))
     }
     return true
   }
@@ -177,7 +215,7 @@ export function createRemoteMemoryChannel({ send, onReady, onChanged, onNotice, 
     })
   }
   return { call, readBatch, receive, waitReady, ready: () => current?.state === 'ready' && !closed, state: () => current,
-    readState: () => ({ batches: batches.size, executions: executions.size }),
+    readState: () => ({ batches: batches.size, executions: [...batches.values()].reduce((sum, batch) => sum + batch.executions, 0) }),
     processExited: () => invalidate('Memory owner disconnected'),
     close: () => { closed = true; invalidate('Memory owner connection closed') },
   }

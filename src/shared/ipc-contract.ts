@@ -23,6 +23,7 @@ const record = z.looseObject({})
 const images = z.array(z.looseObject({ id })).max(MAX_IMAGES)
 const bytes = z.union([z.instanceof(Uint8Array), z.instanceof(ArrayBuffer)])
 const none = z.tuple([])
+const memoryReadOptions = z.strictObject({ budgetMs: z.number().positive().max(10_000) }).optional()
 const QUERY = 'query'
 /** A channel that only reads (QUERY_CHANNELS below): said here, where the channel is defined, not in a list apart. */
 const read = <T extends z.ZodType>(schema: T): T => schema.describe(QUERY) as T
@@ -115,11 +116,11 @@ export const IPC_ARGS = Object.freeze({
   'workdir:forget': z.tuple([path]),
   'workdir:reveal': none,
 
-  'memory:get': read(z.tuple([z.strictObject({ budgetMs: z.number().positive().max(10_000) }).optional()])),
+  'memory:get': read(z.tuple([memoryReadOptions])),
   'memory:dream-status': read(none),
   'memory:run-dream': z.tuple([operationId]),
-  'memory:list-files': read(z.tuple([memoryFileListRequest])),
-  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
+  'memory:list-files': read(z.tuple([memoryFileListRequest, memoryReadOptions])),
+  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional(), memoryReadOptions])),
   'memory:set-file-enabled': z.tuple([memoryFileSetEnabledRequest]),
   'memory:undo-file': z.tuple([memoryFileUndoRequest]),
   'memory:create-file': z.tuple([memoryFileCreateRequest]),

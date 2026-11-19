@@ -17,6 +17,13 @@ export const TOKEN_HEADER = 'authorization'
 export const bearer = (token: string): string => `Bearer ${token}`
 /** The order the shell made its calls in, from 1 (rpc-server.ts inOrder). */
 export const SEQ_HEADER = 'x-viva-seq'
+/** Bounded read methods put their optional remaining deadline after their business arguments. */
+export function readBudgetPosition(channel: string) {
+  if (channel === 'memory:get' || channel === 'agent:snapshot') return 0
+  if (channel === 'memory:list-files') return 1
+  if (channel === 'memory:read-file') return 2
+  return undefined
+}
 /** Shared optional-diagnostic budget; the original receiver body limit is unchanged. */
 /** Existing complete JSON body limit; history:save is the largest caller. */
 export const MAX_JSON_BYTES = 32 * 1024 * 1024

@@ -155,6 +155,8 @@ export function islandView(state: State): IslandView {
  */
 function mainView(state: State, background: IslandBackground | null): IslandView {
   const base: IslandBase = { mood: catMood(state), recent: recentSteps(state) }
+  if (state.stopUnconfirmed) return { ...base, form: 'error', tone: 'error', label: t('conversation.stop.unconfirmed') }
+  if (state.phase === 'stopping') return { ...base, form: 'working', tone: 'working', label: t('conversation.stop.pending') }
   if (state.phase === 'waiting' && state.permission) {
     return { ...base, form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, permission: permissionView(state.permission) }
   }

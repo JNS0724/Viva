@@ -120,10 +120,11 @@ export function trackNativeToolReads(finish: (call: NativeToolCall, result: Nati
       if (lease && evidence?.length) inheritance?.archive(lease, evidence)
       return lease
     },
-    async acquireAsync(session: Session, exec: ToolExecution, generation: number): Promise<NativeToolLease | undefined> {
+    async acquireAsync(session: Session, exec: ToolExecution, generation: number, signal = exec.signal): Promise<NativeToolLease | undefined> {
       const started = pending(session, exec)
       if (!started) return
       const evidence = await started.input
+      signal.throwIfAborted()
       if (pending(session, exec) !== started) return
       const lease = acquire(session, exec, generation, evidence)
       if (!lease) return

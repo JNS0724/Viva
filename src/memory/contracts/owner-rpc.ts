@@ -35,6 +35,3 @@ export function ownerRpcFrame(value: unknown): OwnerRpcFrame | null {
 }
 
 export type MemoryOwnerSendRevoked = { type: 'memory_owner_send_revoked', epoch: string, id: string }
-export type MemoryOwnerHostResult = { type: 'memory_host_result', requestId: string, epoch: string } & (
-  { ok: true, result: unknown } | { ok: false, error: { code: string, reason: string, domainCode?: string } }
-)

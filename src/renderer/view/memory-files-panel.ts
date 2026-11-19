@@ -111,7 +111,11 @@ function listView(files: State['memory']['files'], handlers: Handlers) {
       h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button', text: t('memory-files.retry'),
         onClick: handlers.reloadMemoryFileList }))) : null,
     files.loading || !files.loaded && !files.listError ? h('p', { class: 'help', role: 'status', text: t('memory-files.loading') }) : null,
-    files.loaded && !files.loading && !files.items.length && !files.nextCursor && !files.listError ? h('p', { class: 'empty',
+    files.partial && !files.loading && !files.listError ? h('div', { class: 'profile-section' },
+      h('p', { class: 'help', role: 'status', text: t('memory-files.list.partial') }),
+      h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button', text: t('memory-files.retry'),
+        onClick: handlers.reloadMemoryFileList }))) : null,
+    files.loaded && !files.loading && !files.partial && !files.items.length && !files.nextCursor && !files.listError ? h('p', { class: 'empty',
       text: files.query.trim() ? t('profile-panel.no.memories.contain', { value1: files.query.trim() }) : t('memory-files.empty') }) : null,
     files.nextCursor && !files.listError ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', disabled: files.loading, text: t('memory-files.more'), onClick: handlers.loadMoreMemoryFiles })) : null)

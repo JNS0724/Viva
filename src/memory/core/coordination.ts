@@ -16,7 +16,7 @@ export interface MemoryCoordinationRuntime {
   staleSession(session: string): boolean
   sessionProject(session: string): string | undefined
   recordSessionProject(session: string, project: string): void
-  projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject): boolean
+  projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent): boolean
   computeAdmission(job: string): { current(): boolean, deadline: number | null } | null
 }
 
@@ -26,13 +26,13 @@ export interface MemoryCoordinationDispatch {
   inherit(parent: string, child: string): void
   recordSource(session: string, source: string): void
   stale(session: string, acceptsFiles?: FileEvidenceCurrent): boolean
-  admission(session: string): Admission
-  acquireSession(id: string, session: string, admission: Extract<Admission, { allowed: true }>, current: () => boolean): void
+  admission(session: string, acceptsFiles?: FileEvidenceCurrent): Admission
+  acquireSession(id: string, session: string, admission: Extract<Admission, { allowed: true }>, current: () => boolean, acceptsFiles?: FileEvidenceCurrent): void
   acquire(id: string, current: () => boolean): void
   release(id: string): void
   sessionsOf(requests: readonly string[]): string[]
   whenIdle(requests: readonly string[]): Promise<void>
-  transferable(evidence: MemoryProvenance): boolean
+  transferable(evidence: MemoryProvenance, acceptsFiles?: FileEvidenceCurrent): boolean
   attach(session: string, evidence: MemoryProvenance): void
 }
 
@@ -60,8 +60,8 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     const saved = session ? runtime()?.sessionProject(session) : undefined
     return saved !== undefined && saved !== (project?.id ?? '')
   }
-  const allowsEvidence = (evidence: MemoryProvenance | null | undefined, project?: MemoryProject) =>
-    !evidence || Boolean(runtime()?.projectAllows(evidence, project))
+  const allowsEvidence = (evidence: MemoryProvenance | null | undefined, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) =>
+    !evidence || Boolean(runtime()?.projectAllows(evidence, project, acceptsFiles))
   function bindProject(session: string, project?: MemoryProject) {
     const owner = runtime()
     if (!owner || projectChanged(session, project)) return false
@@ -75,7 +75,7 @@ export function createMemoryCoordination({ runtime, dispatch }: {
       || Boolean(dispatch()?.stale(session, acceptsFiles))
   }
   function allowsSession(session: string, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
-    return !busy() && !stale(session, project, acceptsFiles) && allowsEvidence(dispatch()?.snapshot(session), project)
+    return !busy() && !stale(session, project, acceptsFiles) && allowsEvidence(dispatch()?.snapshot(session), project, acceptsFiles)
   }
   const canTransferToModel = (session: string, transportReady: boolean) =>
     transportReady || !needsMemoryTransport(dispatch()?.snapshot(session))
@@ -89,71 +89,71 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     return !evidence?.turnOnly && !evidence?.files?.length && (!admission || admission.allowed && admission.deadline === null)
   }
 
-  function beginSession(id: string, session: string, project: MemoryProject | undefined, currentProject: () => MemoryProject | undefined) {
+  function beginSession(id: string, session: string, project: MemoryProject | undefined, currentProject: () => MemoryProject | undefined, acceptsFiles?: FileEvidenceCurrent) {
     const owner = runtime()
     const leases = dispatch()
     if (acquired.has(id) || !owner || !leases || blocked.has(session) || owner.staleSession(session)) return false
-    const admission = leases.admission(session)
-    if (!admission.allowed || !allowsEvidence(admission.evidence, project) || !bindProject(session, project)) return false
+    const admission = leases.admission(session, acceptsFiles)
+    if (!admission.allowed || !allowsEvidence(admission.evidence, project, acceptsFiles) || !bindProject(session, project)) return false
     leases.acquireSession(id, session, admission, () => runtime() === owner && dispatch() === leases
       && !owner.staleSession(session)
-      && !projectChanged(session, currentProject()) && allowsEvidence(admission.evidence, currentProject()))
+      && !projectChanged(session, currentProject()) && allowsEvidence(admission.evidence, currentProject(), acceptsFiles), acceptsFiles)
     acquired.set(id, leases)
     return { allowed: true as const, evidence: admission.evidence, deadline: admission.deadline }
   }
 
-  function beginJob(id: string, jobId: string) {
+  function beginJob(id: string, jobId: string, proof?: ReturnType<MemoryCoordinationRuntime['computeAdmission']>) {
     if (busy() || acquired.has(id)) return false
     const owner = runtime()
     const leases = dispatch()
-    const job = owner?.computeAdmission(jobId)
-    if (!owner || !leases || !job) return false
+    const job = proof === undefined ? owner?.computeAdmission(jobId) : proof
+    if (!owner || !leases || !job?.current()) return false
     leases.acquire(id, () => runtime() === owner && dispatch() === leases && job.current())
     acquired.set(id, leases)
     return { allowed: true as const, deadline: job.deadline }
   }
 
-  const transferable = (evidence: MemoryProvenance | null | undefined) => !evidence || Boolean(dispatch()?.transferable(evidence))
-  function transferStatus(evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean): 'ready' | 'stale' | 'memory-unavailable' {
-    if (!allowsEvidence(evidence, project) || !transferable(evidence)) return 'stale'
+  const transferable = (evidence: MemoryProvenance | null | undefined, acceptsFiles?: FileEvidenceCurrent) => !evidence || Boolean(dispatch()?.transferable(evidence, acceptsFiles))
+  function transferStatus(evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent): 'ready' | 'stale' | 'memory-unavailable' {
+    if (!allowsEvidence(evidence, project, acceptsFiles) || !transferable(evidence, acceptsFiles)) return 'stale'
     if (needsMemoryTransport(evidence) && !transportReady) return 'memory-unavailable'
     return 'ready'
   }
-  function transfer(session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean) {
-    if (transferStatus(evidence, project, transportReady) !== 'ready') return false
+  function transfer(session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent) {
+    if (transferStatus(evidence, project, transportReady, acceptsFiles) !== 'ready') return false
     if (evidence) dispatch()!.attach(session, evidence)
     return true
   }
-  function canInherit(source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean) {
-    return !stale(source, sourceProject) && canTransferToModel(source, transportReady) && allowsEvidence(dispatch()?.snapshot(source), targetProject)
+  function canInherit(source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent) {
+    return !stale(source, sourceProject, acceptsFiles) && canTransferToModel(source, transportReady) && allowsEvidence(dispatch()?.snapshot(source), targetProject, acceptsFiles)
   }
-  function inherit(source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean) {
-    if (!canInherit(source, sourceProject, targetProject, transportReady)) return false
+  function inherit(source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent) {
+    if (!canInherit(source, sourceProject, targetProject, transportReady, acceptsFiles)) return false
     dispatch()?.inherit(source, target)
     return true
   }
-  function allowsHistory(row: MemoryHistoryOccurrence, sourceProject?: MemoryProject) {
+  function allowsHistory(row: MemoryHistoryOccurrence, sourceProject?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
     const owner = runtime()
     return Boolean(owner?.allowedHistory(row) && (!row.sourceId || owner.sourceCurrent(row.sourceId))
-      && ((row.role === 'user' && Boolean(row.sourceId)) || !stale(row.sessionId, sourceProject)))
+      && ((row.role === 'user' && Boolean(row.sourceId)) || !stale(row.sessionId, sourceProject, acceptsFiles)))
   }
-  function allowsProjectHistory(row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject) {
-    if (sourceProject?.id !== targetProject?.id || !allowsHistory(row, sessionProject)) return false
+  function allowsProjectHistory(row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
+    if (sourceProject?.id !== targetProject?.id || !allowsHistory(row, sessionProject, acceptsFiles)) return false
     if (row.sourceId && !runtime()?.projectAllows({ sources: [row.sourceId] }, targetProject)) return false
-    return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || allowsEvidence(dispatch()?.snapshot(row.sessionId), targetProject)
+    return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || allowsEvidence(dispatch()?.snapshot(row.sessionId), targetProject, acceptsFiles)
   }
-  function useHistory(session: string | undefined, row: MemoryHistoryOccurrence) {
+  function useHistory(session: string | undefined, row: MemoryHistoryOccurrence, acceptsFiles?: FileEvidenceCurrent) {
     const owner = runtime()
     const leases = dispatch()
     const sourceProject = row.sessionId ? owner?.sessionProject(row.sessionId) : undefined
-    if (busy() || !owner || !leases || !allowsHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined)) {
+    if (busy() || !owner || !leases || !allowsHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, acceptsFiles)) {
       throw new MemoryDomainError('revision.conflict')
     }
     if (!session) return
     const targetProject = owner.sessionProject(session)
     const project = targetProject ? { kind: 'project' as const, id: targetProject } : undefined
     if (row.sourceId && !owner.projectAllows({ sources: [row.sourceId] }, project)
-      || row.sessionId && (row.role !== 'user' || !row.sourceId) && !allowsEvidence(leases.snapshot(row.sessionId), project)) {
+      || row.sessionId && (row.role !== 'user' || !row.sourceId) && !allowsEvidence(leases.snapshot(row.sessionId), project, acceptsFiles)) {
       throw new MemoryDomainError('revision.conflict')
     }
     if (row.sourceId) leases.recordSource(session, row.sourceId)

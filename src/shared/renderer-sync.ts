@@ -15,6 +15,8 @@ export interface RendererSnapshot {
   cutoverCursor: number
   context: ConversationContext
   info: AgentInfo
+  stoppedReplayLost?: boolean
+  stopUnconfirmed?: boolean
   history: ConversationSnapshot | null
   replay: readonly unknown[]
 }

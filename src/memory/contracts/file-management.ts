@@ -23,7 +23,7 @@ export const memoryFileDetail = memoryFileSummary.extend({ markdown: z.string(),
   stoppedSnapshot: z.strictObject({ restrictionId: memoryFileRestrictionId, markdown: z.string().nullable(), sources: z.array(memorySourceReference) }).optional(),
 })
 export const memoryFileListResult = z.strictObject({ status: z.enum(['ok', 'stale']), snapshot: opaque,
-  items: z.array(memoryFileSummary).max(100), nextCursor: memoryFileCursor.nullable() })
+  items: z.array(memoryFileSummary).max(100), partial: z.boolean().optional(), nextCursor: memoryFileCursor.nullable() })
 const mutation = { operationId: z.uuid(), identity: memoryFileIdentity, version: memoryFileVersion }
 export const memoryFileSetEnabledRequest = z.strictObject({ ...mutation, enabled: z.boolean(), restrictionId: memoryFileRestrictionId.optional() })
 const manual = { text: z.string().min(1).max(MAX_MESSAGE_CHARS), title: z.string().max(200).optional() }

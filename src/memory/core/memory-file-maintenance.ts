@@ -9,6 +9,8 @@ import { dreamReviewSchema, validateDreamReview } from './memory-dream-evidence.
 import { DREAM_VERIFY_SYSTEM } from './memory-dream-prompts.ts'
 import { readMemoryLines, parseMemoryDocument } from './memory-document.ts'
 
+// Manual requests have durable UUID receipts. The recurring scan only needs its active effect.
+const PERIODIC_SCAN = 'periodic'
 const SCAN = 'memory.file-scan', RESCAN = 'memory.file-rescan'
 type ExternalPolicyInput = Pick<DocumentExternalEdit, 'workspace' | 'id' | 'path' | 'sources'>
 export interface ExternalEditPolicy {
@@ -96,13 +98,13 @@ const quarantine = (result: FileScanResult, reason: string) => { result.quaranti
 /** Filesystem observations never acquire user authorship. Only an accepted identity's
  * original evidence can authorize an edit; new or ambiguous files remain isolated. */
 export function createMemoryFileMaintenance({ notes, documents, catalog, effects, commands, identity, now,
-  source, sourceToken, sourceWorkspace, readable, materialAllowed, calculate, mutate, changed = () => {}, observedUnchanged, intervalMs = 30_000 }: {
+  source, sourceToken, sourceWorkspace, readable, materialAllowed, calculate, mutate, changed = () => {}, observedUnchanged, observedMissing, intervalMs = 30_000 }: {
   notes: MemoryNotes, documents: MemoryDocuments, catalog: MemoryFileCatalog, effects: Effects,
   commands: Pick<MemoryStore, 'command' | 'recordCommand' | 'tx'>, identity: MemoryIdentity, now(): number,
   source(id: string): MemorySource | undefined, sourceToken(source: MemorySource): string, sourceWorkspace(source: MemorySource): string,
   readable(id: string): boolean, materialAllowed(text: string, refs: readonly DocumentSourceRef[]): boolean,
   calculate: FileMaintenanceCalculate, mutate<T>(write: () => T): Promise<T>, changed(): void,
-  observedUnchanged?(identity: MemoryFileIdentity): void, intervalMs?: number,
+  observedUnchanged?(identity: MemoryFileIdentity): void, observedMissing?(identity: MemoryFileIdentity): void, intervalMs?: number,
 }) {
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 1000) throw new Error('invalid-file-scan-interval')
   let closed = false
@@ -136,7 +138,7 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
           observedUnchanged?.(change.identity)
           continue
         }
-        if (change.kind === 'missing') { result.missing++; continue }
+        if (change.kind === 'missing') { observedMissing?.(change.identity); result.missing++; continue }
         if (change.kind === 'quarantined') { quarantine(result, change.reason); continue }
         if (change.kind === 'added') {
           // Day indexes are generated navigation, not independent evidence documents.
@@ -307,7 +309,7 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
         if (!effects.holds(job) || closed) { results.set(job.key, 'wait'); continue }
         commands.tx(() => {
           const result = { ...active.result, status: 'completed' as const }
-          if (!commands.command(commandKey(job.key))) commands.recordCommand(commandKey(job.key), RESCAN, JSON.stringify(result), null)
+          if (job.key !== PERIODIC_SCAN && !commands.command(commandKey(job.key))) commands.recordCommand(commandKey(job.key), RESCAN, JSON.stringify(result), null)
           effects.finishGeneration(job)
         })
         results.set(job.key, 'done')
@@ -320,7 +322,7 @@ export function createMemoryFileMaintenance({ notes, documents, catalog, effects
     for (const job of jobs) {
       if (closed) { outcomes.set(job.key, 'wait'); continue }
       commands.tx(() => {
-        rescan(`periodic:${job.generation}`)
+        rescan(PERIODIC_SCAN)
         effects.finishGeneration(job)
         effects.queue(SCAN, 'all', {}, now() + intervalMs)
       })

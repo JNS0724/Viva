@@ -1,4 +1,3 @@
-import { memoryHostFailure } from '../../../src/memory/contracts/domain-error.ts'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -16,11 +15,12 @@ import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
 import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
-import { MEMORY_HOST_PROTOCOL, memoryOwnerState, parseHostMemoryCommand } from '../../../src/memory/contracts/host.ts'
+import { memoryOwnerState } from '../../../src/memory/contracts/host.ts'
 import type { MemoryOwnerState } from '../../../src/memory/contracts/host.ts'
 import type { MemoryPluginConfig } from './config.ts'
 import { openPluginOwner } from './standalone-owner.ts'
 import { createRemoteMemoryOwner } from './remote-owner.ts'
+import { verifiedModelOutput } from './stream-output.ts'
 import { createMemoryTransport } from './transport.ts'
 import type { MemoryTransportOrigin } from './transport.ts'
 import { createSessionIngestion, retrievalQuestion } from './ingestion.ts'
@@ -40,12 +40,11 @@ import type { MemoryDeliveryProof, MemoryToolOrigin } from './delivery-provenanc
 import { memorySource } from './source.ts'
 import { createManagedDiagnostics } from '../../../src/diagnostics/node/managed.ts'
 import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
-import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort, withOperation, withRemoteOperation } from '../../../src/diagnostics/node/context.ts'
-import { parseDiagnosticContext } from '../../../src/diagnostics/contracts.ts'
+import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort, withOperation } from '../../../src/diagnostics/node/context.ts'
 import { observeDshDiagnostics } from './diagnostics.ts'
 
-import { RequestTimeout } from '../../../src/shared/request-budget.ts'
-import { currentToolBudget, executeToolCall, isMemoryTool, prepareToolCall } from '../../../src/shared/node/tool-call-budget.ts'
+import { createRequestBudget, RequestTimeout } from '../../../src/shared/request-budget.ts'
+import { currentToolBudget, executeToolCall, isMemoryTool, prepareToolCall, toolTimeoutResult } from '../../../src/shared/node/tool-call-budget.ts'
 
 function clearPreviousContext(agent: Agent) {
   const session = agent.session
@@ -69,7 +68,6 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   let lastRoute: Route | null = null
   let publishedRoute: { epoch: string, route: Route | null } | undefined
   let readyEpoch: string | undefined
-  const send = (message: object) => { if (config.host && port.connected) port.send?.(message, () => {}) }
   const root = path.resolve(config.dataRoot ?? path.join(process.env.DSH_HOME ?? path.join(homedir(), '.dsh'), 'memory'))
   const diagnostics = createManagedDiagnostics({ directory: typeof config.diagnosticsRoot === 'string' && path.isAbsolute(config.diagnosticsRoot)
     ? config.diagnosticsRoot : path.join(root, 'diagnostics'), component: 'dsh', componentVersion: '0.2.0',
@@ -112,6 +110,19 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
         }
       },
       checkRecovery: ({ checkId }) => owner.checkRecovery(checkId),
+      recoverContext: async (sessionId, signal) => {
+        const expected = owner.epoch
+        if (!expected || !ready()) throw new Error('Memory adapter is not ready')
+        return owner.inEpoch(expected, async () => {
+          const id = SessionId(sessionId), session = ctx.sessions.get(id)
+          const idle = () => !signal.aborted && !closing && Boolean(session) && ctx.sessions.get(id) === session && ctx.agents.get(id)?.status !== 'running'
+          if (!session || !idle()) return false
+          await ingestion.recoverContext(session, idle)
+          await ingestion.synchronize(session)
+          const view = await owner.readContext(sessionId, { signal })
+          return idle() && !view.needsContextRecovery && view.allowsSession
+        })
+      },
       drainSends: ({ epoch }) => owner.drainSends(epoch),
     },
   }, port)
@@ -240,18 +251,13 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const request = async (input: MemoryRequest, agent: Agent, signal?: AbortSignal) => {
     const execution = caller.getStore()
     if (!execution || !('agent' in execution) || execution.agent !== agent || execution.contextGeneration === undefined
-      || input.op !== 'context' && !execution.toolRead || !ready()) return input.op === 'context' ? '' : '{"status":"unavailable"}'
+      || !execution.toolRead || !ready()) return '{"status":"unavailable"}'
     const generation = execution.contextGeneration
     return owner.inEpoch(execution.ownerEpoch, async () => {
       await ingestion.synchronize(agent.session)
       signal?.throwIfAborted()
-      if (input.op !== 'context') return owner.modelRequest(input, String(agent.session.id), generation, execution.toolRead,
+      return owner.modelRequest(input, String(agent.session.id), generation, execution.toolRead,
         { signal, budgetMs: currentToolBudget()?.remainingMs() })
-      // Leave room for the owner to publish its normal search-budget fallback over IPC.
-      const deadline = AbortSignal.timeout(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 100)
-      const combined = signal ? AbortSignal.any([signal, deadline]) : deadline
-      try { return await owner.modelRequest(input, String(agent.session.id), generation, undefined, { signal: combined }) }
-      catch (error) { if (!deadline.aborted || signal?.aborted) throw error; return '' }
     })
   }
   // Automatic tool review may omit sessionId. Bind the actual execution, not its text.
@@ -268,8 +274,9 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       toolReads?.bind(agent.session, exec)
       return owner.inEpoch(ownerEpoch, () => caller.run({ agent, ownerEpoch, contextGeneration: generation, toolOrigin: origin }, async () => {
         try {
-          await prepareToolCall(exec, ctx.tools.get(exec.name, agent, exec.toolSet)?.timeoutMs, async () => {
+          await prepareToolCall(exec, ctx.tools.get(exec.name, agent, exec.toolSet)?.timeoutMs, async signal => {
             await owner.drainSession(session)
+            signal.throwIfAborted()
             await ingestion.synchronize(agent.session)
             if (generation !== owner.cachedGeneration(session)) throw new Error('Tool review belongs to a retired context generation')
           })
@@ -297,14 +304,24 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const origin = deliveryBindings.tool(session, String(exec.rootCallId)), ownerEpoch = owner.epoch
     if (!origin || !ownerEpoch || !ready()) throw new Error('Tool call has no verified memory origin')
     const generation = origin.generation
-    const dispatch = () => owner.inEpoch(ownerEpoch, async () => {
-      await owner.drainSession(session)
-      const view = await owner.readContext(session, { signal: exec.signal, budgetMs: currentToolBudget()?.remainingMs() })
-      if (generation !== view.contextGeneration || view.needsContextRecovery) throw new Error('Tool call belongs to a retired context generation')
-      const toolRead = await toolReads?.acquireAsync(agent.session, exec, generation)
-      return caller.run({ agent, ownerEpoch, contextGeneration: generation, toolOrigin: origin, toolRead }, next)
+    const declared = ctx.tools.get(exec.name, agent, exec.toolSet)?.timeoutMs
+    return owner.inEpoch(ownerEpoch, async () => {
+      let toolRead: NativeToolLease | undefined
+      try {
+        toolRead = await prepareToolCall(exec, declared, async (signal, remainingMs) => {
+          await owner.drainSession(session)
+          signal.throwIfAborted()
+          const view = await owner.readContext(session, { signal, budgetMs: remainingMs?.() })
+          if (generation !== view.contextGeneration || view.needsContextRecovery) throw new Error('Tool call belongs to a retired context generation')
+          return toolReads?.acquireAsync(agent.session, exec, generation, signal)
+        })
+      } catch (error) {
+        if (error instanceof RequestTimeout && !exec.signal.aborted) return toolTimeoutResult(exec.name, false)
+        throw error
+      }
+      const dispatch = () => caller.run({ agent, ownerEpoch, contextGeneration: generation, toolOrigin: origin, toolRead }, next)
+      return isMemoryTool(exec.name) ? executeToolCall(exec, dispatch, { declared, mutates: exec.name === 'memory_remember' }) : dispatch()
     })
-    return isMemoryTool(exec.name) ? executeToolCall(exec, dispatch, { mutates: exec.name === 'memory_remember' }) : dispatch()
   }, { prepend: true })
   ctx.on('llm/stream', async function* (options, next) {
     const current = caller.getStore()
@@ -334,18 +351,19 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     // Only audited fetch-based adapters provide an observable physical send/retry boundary.
     assertMemoryProviderSupported(ctx.llm, options.provider)
     const origin: MemoryTransportOrigin = session ? { session: String(session.id), contextGeneration, ...(output ? { output } : {}) } : { jobId: jobId! }
-    const stream = transport.run(origin, next)
+    const reading = new AbortController()
+    const stream = transport.run(origin, next, reading.signal)
     const iterator = stream[Symbol.asyncIterator]()
     try {
-      for (;;) {
-        const chunk = await owner.inEpoch(ownerEpoch, () => transport.run(origin, () => iterator.next()))
-        if (!ready() || !await owner.inEpoch(ownerEpoch, () => owner.call('outputCurrent', [origin], { signal: options.signal }))) {
-          throw new Error('Memory context changed before model output was accepted')
-        }
-        if (chunk.done) return
-        yield chunk.value
-      }
-    } finally { await transport.run(origin, () => iterator.return?.()) }
+      yield* verifiedModelOutput(
+        () => owner.inEpoch(ownerEpoch, () => transport.run(origin, () => iterator.next(), reading.signal)),
+        () => ready() ? owner.inEpoch(ownerEpoch, () => owner.call('outputCurrent', [origin], { signal: options.signal })) : Promise.resolve(false),
+      )
+    } finally {
+      // A provider read may still be waiting for bytes when verification fails or the consumer closes.
+      reading.abort()
+      await transport.run(origin, () => iterator.return?.(), reading.signal)
+    }
   }, { prepend: true })
   ctx.on('system-prompt/assemble', (_presentation, { agent, toolSet, signal }, next) => {
     if (agent && toolSet && signal) toolReads?.assembly(agent.session, signal, toolSet)
@@ -380,52 +398,54 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       const question = retrievalQuestion(receipts)
       if (!question) return decision
       clearPreviousContext(agent)
-      const text = await request({ op: 'context', session, turn, question }, agent, signal)
-      if (!text || signal.aborted) return decision
-      const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
-      await owner.registerDerived({ sessionId: session, messageId: message.id, nativeUserSource: memorySource.kind, nativeMessageDigest: memoryRecoveryMessageHash(message),
-        sourceIds: (await owner.dispatch.snapshot(session)).sources, contextGeneration: generation, contentDigest: memoryOriginalContentDigest(message) })
-      return { ...decision, messages: [...decision.messages, message] }
+      if (!ready()) return decision
+      // receive(..., true) just flushed and admitted this step. Bound the optional lookup
+      // and its evidence receipt together; the model send still checks the live session.
+      const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 100, signal)
+      const options = () => ({ signal: budget.signal, budgetMs: budget.remainingMs() })
+      try {
+        return await budget.run(async () => {
+          const text = await owner.modelRequest({ op: 'context', session, turn, question }, session, generation, undefined, options())
+          if (!text) return decision
+          const message = createUserMessage({ content: [{ type: 'text', text }], source: memorySource })
+          const evidence = await owner.call('snapshot', [session], options())
+          await owner.call('registerDerived', [{ sessionId: session, messageId: message.id, nativeUserSource: memorySource.kind, nativeMessageDigest: memoryRecoveryMessageHash(message),
+            sourceIds: evidence.sources, contextGeneration: generation, contentDigest: memoryOriginalContentDigest(message) }], options())
+          return { ...decision, messages: [...decision.messages, message] }
+        })
+      } catch (error) {
+        if (error instanceof RequestTimeout && !signal.aborted) return decision
+        throw error
+      } finally { budget.close() }
     }))
   }, { prepend: true })
   registerMemoryTools(ctx, request)
 
-  const receive = (raw: unknown) => {
-    if (diagnosticsHub.receive(raw)) return
-    const message = objectOf(raw)
-    if (!config.host || message?.type !== 'memory_host_request' || typeof message.requestId !== 'string') return
-    const requestId = message.requestId
-    const expected = owner.epoch
-    const diagnostic = parseDiagnosticContext(message.diagnostics)
-    if (message.diagnostics !== undefined && !diagnostic) emitDiagnostic({ event: 'context.dropped', operation: 'memory.owner', reason: 'invalid_context' })
-    void withRemoteOperation(diagnostic, 'memory.owner', async () => {
-      if (message.protocol !== MEMORY_HOST_PROTOCOL || !expected || message.epoch !== expected || !ready()) throw new Error('Memory host protocol or epoch mismatch')
-      const command = parseHostMemoryCommand(message.method, message.input)
-      if (command.method !== 'recoverContext') throw new Error('Unsupported memory adapter request')
-      const result = await owner.inEpoch(expected, async () => {
-        const id = SessionId(command.input.args[0]), session = ctx.sessions.get(id)
-        const idle = () => !closing && Boolean(session) && ctx.sessions.get(id) === session && ctx.agents.get(id)?.status !== 'running'
-        if (!session || !idle()) return false
-        await ingestion.recoverContext(session, idle)
-        await ingestion.synchronize(session)
-        const view = await owner.readContext(String(id))
-        return idle() && !view.needsContextRecovery && view.allowsSession
-      })
-      send({ type: 'memory_host_result', requestId, epoch: expected, ok: true, result })
-    }, { identities: { requestId, ownerEpoch: expected ?? null } }).catch(error => send({ type: 'memory_host_result', requestId, epoch: expected, ok: false,
-      error: memoryHostFailure(error) }))
-  }
+  const receive = (raw: unknown) => { diagnosticsHub.receive(raw) }
   if (config.host) port.on('message', receive)
   let snapshot: MemoryOwnerState | undefined
   let watchedEpoch: string | undefined
   let warming: { epoch: string, done: Promise<void> } | undefined
+  let retryWarm: ReturnType<typeof setTimeout> | undefined
+  let retryDelay = 250
+  function resetRetry() {
+    clearTimeout(retryWarm)
+    retryWarm = undefined
+    retryDelay = 250
+  }
+  let reportedReadiness: { epoch: string, ready: boolean } | undefined
   function publishState() {
-    if (!snapshot) return
-    send({ ...snapshot, state: snapshot.state === 'ready' && !ready() ? 'recovering' : snapshot.state })
+    if (!snapshot || !connection.reconciled) return
+    const current = ready()
+    if (reportedReadiness?.epoch === snapshot.epoch && reportedReadiness.ready === current) return
+    reportedReadiness = { epoch: snapshot.epoch, ready: current }
+    connection.reconciled(snapshot.epoch, current)
   }
   function warmOwner(epoch: string) {
     if (readyEpoch === epoch || closing) return Promise.resolve()
     if (warming?.epoch === epoch) return warming.done
+    clearTimeout(retryWarm)
+    retryWarm = undefined
     const done = withOperation('memory.recover', async () => {
       await connection.start()
       await owner.inEpoch(epoch, async () => {
@@ -441,14 +461,28 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
         if (closing || owner.epoch !== epoch || !owner.ready()) return
         readyEpoch = epoch
         await publishRoute()
+        if (closing || owner.epoch !== epoch) return
+        resetRetry()
         publishState()
       })
     }, { identities: { ownerEpoch: epoch } })
     const attempt = { epoch, done }
     warming = attempt
     void done.then(() => { if (warming === attempt) warming = undefined }, error => {
-      if (warming === attempt) { warming = undefined; readyEpoch = undefined }
+      if (warming !== attempt) return
+      warming = undefined
+      readyEpoch = undefined
       report(error)
+      if (closing || snapshot?.epoch !== epoch || snapshot.state !== 'ready') return
+      publishState()
+      // A lost acknowledgement does not change owner state or produce a new
+      // ready event. Reconcile only the still-current instance.
+      retryWarm = setTimeout(() => {
+        retryWarm = undefined
+        if (!closing && snapshot?.epoch === epoch && snapshot.state === 'ready') void warmOwner(epoch).catch(() => {})
+      }, retryDelay)
+      retryWarm.unref()
+      retryDelay = Math.min(retryDelay * 2, 5000)
     })
     return done
   }
@@ -456,6 +490,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const update = memoryOwnerState.safeParse(event)
     if (!update.success || closing) return
     snapshot = update.data
+    if (watchedEpoch !== snapshot.epoch || snapshot.state !== 'ready') resetRetry()
     if (watchedEpoch !== snapshot.epoch) {
       readyEpoch = undefined
       watchedEpoch = snapshot.epoch
@@ -465,13 +500,14 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       deliveries.clear()
     }
     publishState()
-    if (snapshot.state === 'ready') void warmOwner(snapshot.epoch).catch(() => {})
+    if (snapshot.state === 'ready' && !retryWarm) void warmOwner(snapshot.epoch).catch(() => {})
   })
   ctx.effect(() => async () => {
     let stopped = false
     try {
       if (config.host) port.off('message', receive)
       closing = true
+      resetRetry()
       unsubscribe()
       await spillReader?.dispose()
       await spillWriter?.dispose()
@@ -493,7 +529,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const epoch = owner.epoch
   if (epoch && owner.ready()) {
     watchedEpoch = epoch
-    await warmOwner(epoch)
+    await warmOwner(epoch).catch(() => {})
   }
   return owner
 }

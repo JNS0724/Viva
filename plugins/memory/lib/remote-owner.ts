@@ -11,6 +11,7 @@ import type { MemoryTransportOrigin } from './transport.ts'
 export type MemoryOwnerConnection = OwnerAdapterCaller & {
   start(): Promise<void>
   close(): Promise<void>
+  reconciled?(epoch: string, ready: boolean): void
   callHost: HostMemoryCaller
   subscribe(listener: (event: unknown) => void): () => void
   status(): MemoryOwnerState['state']
@@ -109,18 +110,18 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
       if (current(expected)) void inEpoch(expected, () => call('settleSend', [id])).catch(report)
     } }
     sends.set(id, send)
-    const canSend = () => current(expected) && ready() && !controller.signal.aborted && sends.get(id) === send
+    const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    const canSend = () => current(expected) && ready() && !combined.aborted && sends.get(id) === send
     try {
       if ('session' in origin) await completion(origin.session)
-      const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
       await inEpoch(expected, () => call('acquireSend', [id, origin, payload], { signal: combined }))
-      if (!canSend() || combined.aborted) throw new Error('Memory send permit was revoked')
+      if (!canSend()) throw new Error('Memory send permit was revoked')
     } catch (error) {
       send.finish()
       throw error
     }
     return { id, payload, signal: controller.signal, current: canSend, settled: send.finish,
-      recordBody: () => inEpoch(expected, () => call('recordSendBody', [id], { signal: controller.signal })) }
+      recordBody: () => inEpoch(expected, () => call('recordSendBody', [id], { signal: combined })) }
   }
 
   function serializableScope(lease: NativeToolReadScope): RemoteToolReadScope {
@@ -157,8 +158,10 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
       try { return await call('commitContextRecovery', [input, checkId]) } finally { checks.delete(checkId) }
     },
     async checkRecovery(checkId: string) { return await checks.get(checkId)?.() === true },
-    rememberStandaloneFile: (...args: Parameters<OwnerAdapterApi['rememberStandaloneFile']>) => call('rememberStandaloneFile', args),
-    forgetStandaloneFile: (...args: Parameters<OwnerAdapterApi['forgetStandaloneFile']>) => call('forgetStandaloneFile', args),
+    rememberStandaloneFile: (session: string, input: Parameters<OwnerAdapterApi['rememberStandaloneFile']>[1], opts?: OwnerCallOptions) =>
+      call('rememberStandaloneFile', [session, input], opts),
+    forgetStandaloneFile: (session: string, id: string, operationId: string, opts?: OwnerCallOptions) =>
+      call('forgetStandaloneFile', [session, id, operationId], opts),
     async modelRequest(input: MemoryRequest, session: string, generation: number, lease?: NativeToolReadScope, options?: OwnerCallOptions) {
       await completion(session)
       const result = await call('modelRequest', lease ? [input, session, generation, serializableScope(lease)] : [input, session, generation], options)

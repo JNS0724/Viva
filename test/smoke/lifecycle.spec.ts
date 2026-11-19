@@ -70,7 +70,7 @@ test('intentional dsh restarts settle the old foreground turn @lifecycle', async
   await finishTurn(win)
 })
 
-test('Stop reports a frozen runtime and preserves the editable draft through recovery @lifecycle', async ({ scenario }) => {
+test('Stop reports a frozen runtime and preserves the editable draft through recovery @lifecycle', async ({ scenario }, info) => {
   const app = await scenario({ phase: 'memory', bridge: 'real' })
   const { page, window: win, hooks } = await app.start('stop-and-recover')
   await submit(win, '帮我接入演示服务')
@@ -85,12 +85,15 @@ test('Stop reports a frozen runtime and preserves the editable draft through rec
     await expect(page.locator('.msg-working')).toContainText('正在停止', { timeout: 2_000 })
     const draft = page.locator('#composer-input')
     await draft.fill('停止后保留的草稿')
-    await expect(page.getByText('执行端未确认停止。', { exact: true })).toBeVisible({ timeout: 12_000 })
+    await expect(page.locator('#thread').getByText('执行端未确认停止。', { exact: true })).toBeVisible({ timeout: 12_000 })
     await expect(draft).toHaveValue('停止后保留的草稿')
     const recover = page.getByRole('button', { name: '恢复会话', exact: true })
     await expect(recover).toBeVisible()
     await expect(page.getByText('恢复会话会重启运行时，可能中断后台任务。')).toBeVisible()
 
+    const screenshot = info.outputPath('stop-recovery.png')
+    await page.screenshot({ path: screenshot })
+    await info.attach('stop-recovery', { path: screenshot, contentType: 'image/png' })
     await paused.resume()
     await recover.click()
     await expect.poll(() => hooks.agentPid(), { timeout: 20_000 }).not.toBe(pid)

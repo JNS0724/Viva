@@ -455,6 +455,17 @@ test('the backend expires Stop while dsh is suspended and recovery only accepts 
   assert.ok(app.events.slice(before).some(event => event.type === 'turn_stopping'))
   assert.ok(await eventually(() => app.events.slice(before).some(event => event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed'), { timeoutMs: 12_000 }))
   assert.throws(() => app.call('agent:prompt', '旧执行端仍不可接单'), /执行端未确认停止/)
+  const snapshot = () => app.call<IpcResults['agent:snapshot']>('agent:snapshot')
+  const stopped = snapshot()
+  assert.equal(stopped.stopUnconfirmed, true)
+  assert.deepEqual(stopped.context, start.context)
+  assert.ok(stopped.replay.some(event => (event as HostEvent).stopReason === 'cancel_unconfirmed'))
+  await assert.rejects(app.newTopic(), /执行端未确认停止/)
+  const mark = { context: stopped.context, streamGeneration: stopped.streamGeneration, eventCursor: stopped.cutoverCursor }
+  app.call('history:save', [{ role: 'user', text: question, receipt: null }], mark)
+  const reloaded = snapshot()
+  assert.equal(reloaded.history?.messages[0]?.text, question)
+  assert.equal(reloaded.stopUnconfirmed, true, 'recovery survives the terminal event being checkpointed')
   const after = app.events.length
 
   await paused.resume()
@@ -462,6 +473,8 @@ test('the backend expires Stop while dsh is suspended and recovery only accepts 
   await pending.catch(() => {})
   assert.ok(await app.call('agent:recover'))
   assert.notEqual(app.agentPid(), pid)
+  assert.equal(snapshot().stopUnconfirmed, false)
+  assert.throws(() => app.call('history:save', [{ role: 'user', text: lateText }], mark), /old selection/)
   assert.notEqual(app.call<AgentInfo>('agent:info').sessionId, (start.context as { sessionId: string }).sessionId)
   const requestCount = app.model.requests.length
   await app.ask('恢复后的新问题')

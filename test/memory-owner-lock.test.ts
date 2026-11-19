@@ -2,14 +2,19 @@ import assert from 'node:assert/strict'
 import { test, type TestContext } from 'node:test'
 import { ChildProcess, fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { once } from 'node:events'
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { EventEmitter, once } from 'node:events'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import { OWNER_RPC_MAX_ACTIVE, ownerRpcFrame, type OwnerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
+import { boot } from '@deepseek-ai/dsh-app-boot'
+import type { Context } from '@deepseek-ai/cordis'
+import * as memoryPlugin from '../plugins/memory/index.ts'
+import * as persistencePlugin from '../plugins/memory/persistence.ts'
+import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
+import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import { createMemoryOwnerSupervisor } from '../src/memory/node/owner-supervisor.ts'
 import { createOwnerRpcPeer } from '../src/memory/node/owner-rpc-peer.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -89,23 +94,15 @@ test('a dsh-only exit releases pending send fences without restarting the owner 
   await supervisor.callAdapter('initializeSession', [{ sessionId: session }])
   await supervisor.callAdapter('acquireSend', [id, { session }, 'a'.repeat(64)])
   const revoked = deferred<void>()
-  const reply = deferred<unknown>()
-  const requestId = randomUUID()
   const unsubscribe = supervisor.subscribe(event => {
     if (event.type === 'memory_owner_send_revoked' && event.id === id) revoked.resolve()
-    if (event.type === 'memory_host_result' && event.requestId === requestId) {
-      assert.equal(event.epoch, epoch)
-      if (event.ok) reply.resolve(event.result)
-      else reply.reject(new Error(event.error.reason))
-    }
   })
   defer(unsubscribe)
   const operationId = randomUUID()
-  supervisor.sendHost({ type: 'memory_host_request', protocol: MEMORY_HOST_PROTOCOL, requestId, epoch,
-    method: 'setProfile', input: { args: [{ role: 'Designer' }, operationId] } })
+  const reply = supervisor.callHost('setProfile', { args: [{ role: 'Designer' }, operationId] })
   await revoked.promise
   await supervisor.adapterExited()
-  await reply.promise
+  await reply
   assert.equal((await supervisor.callHost('getOperation', { operationId }))?.state, 'completed')
   assert.equal(supervisor.epoch(), epoch)
   assert.equal(supervisor.pid(), pid)
@@ -142,7 +139,7 @@ test('RPC keeps cancelled execution slots until terminal completion and still ad
   } finally { left.close(); right.close() }
 })
 
-test('an aborted owner mutation waits for its actual terminal receipt', async () => {
+test('an explicit terminal observer waits for real execution to finish after cancellation', async () => {
   const release = deferred<boolean>()
   const cancelled = deferred<void>()
   const request = new AbortController()
@@ -156,7 +153,7 @@ test('an aborted owner mutation waits for its actual terminal receipt', async ()
   })
   try {
     let reported = false
-    const result = left.call('adapter', { method: 'forgetStandaloneFile', args: [] }, { signal: request.signal })
+    const result = left.call('host', { method: 'profilePage' }, { signal: request.signal, waitForCompletion: true })
       .then(value => { reported = true; return value })
     await Promise.resolve()
     request.abort()
@@ -262,7 +259,8 @@ function ownerFaults(t: TestContext) {
   type Request = Extract<OwnerRpcFrame, { kind: 'request' }>
   const emit = ChildProcess.prototype.emit
   let owner: ChildProcess | undefined
-  let fault: { matches(request: Request): boolean, hit: ReturnType<typeof deferred<unknown>> } | undefined
+  let reconciles = 0
+  let fault: { kill: boolean, matches(request: Request): boolean, hit: ReturnType<typeof deferred<unknown>> } | undefined
   const watched = new Map<string, NonNullable<typeof fault>>()
   t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
     if (this.spawnargs?.includes('--memory-owner-ipc')) {
@@ -271,6 +269,7 @@ function ownerFaults(t: TestContext) {
         const send = this.send
         t.mock.method(this, 'send', function (this: ChildProcess, message: unknown, ...rest: unknown[]) {
           const frame = ownerRpcFrame(message)
+          if (frame?.kind === 'request' && frame.method === 'adapter' && objectOf(frame.input)?.method === 'reconcileActiveTurns') reconciles++
           if (fault && frame?.kind === 'request' && fault.matches(frame)) watched.set(frame.id, fault)
           return Reflect.apply(send, this, [message, ...rest]) as boolean
         })
@@ -282,7 +281,7 @@ function ownerFaults(t: TestContext) {
           if (pending && pending === fault) {
             fault = undefined
             if (frame.ok) {
-              assert.ok(this.kill('SIGKILL'))
+              if (pending.kill) assert.ok(this.kill('SIGKILL'))
               pending.hit.resolve(frame.result)
               return true
             }
@@ -296,10 +295,11 @@ function ownerFaults(t: TestContext) {
   return {
     pid: () => owner?.pid,
     kill() { assert.ok(owner?.kill('SIGKILL')) },
-    drop(matches: (request: Request) => boolean) {
+    reconciles: () => reconciles,
+    drop(matches: (request: Request) => boolean, kill = true) {
       assert.equal(fault, undefined)
       const hit = deferred<unknown>()
-      fault = { matches, hit }
+      fault = { matches, kill, hit }
       return hit.promise
     },
   }
@@ -386,8 +386,13 @@ test('Viva keeps dsh while retiring send and response paths and recovering an al
   const turn = bridge.prompt('Probe the owner generation')
   try {
     await started.promise
+    const lost = fault.drop(frame => frame.method === 'adapter' && objectOf(frame.input)?.method === 'reconcileActiveTurns', false)
+    const reconciles = fault.reconciles()
     fault.kill()
-    await turn
+    await Promise.all([turn, lost])
+    const livePid = fault.pid()
+    assert.ok(await eventually(() => fault.reconciles() >= reconciles + 2 && bridge.memory.ready()))
+    assert.equal(fault.pid(), livePid, 'the surviving replacement owner can acknowledge the retried reconciliation')
   } finally { await turn.catch(() => {}) }
   assert.ok(await eventually(() => bridge.memory.ready() && bridge.memory.state()?.epoch !== epoch))
   assert.equal(bridge.pid(), dsh)
@@ -414,4 +419,129 @@ test('Viva keeps dsh while retiring send and response paths and recovering an al
   assert.ok(!JSON.stringify(h.llm.requests).includes(unsent), 'the adapter released no request body without the owner acknowledgment')
   assert.ok(await eventually(() => bridge.memory.ready() && bridge.memory.state()?.epoch !== sendEpoch))
   assert.equal(bridge.pid(), dsh)
+})
+
+test('standalone dsh retries its first lost reconciliation without a new owner notification', { timeout: 25_000 }, async t => {
+  const { dir, defer } = scratch(t, 'memory-standalone-reconcile-')
+  const config = join(dir, 'cordis.yml'), root = join(dir, 'memory')
+  writeFileSync(config, JSON.stringify(['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-llm',
+    'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions', 'dsh-commands'].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+  const ctx = await boot('memory-reconcile-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
+  defer(() => ctx.fiber.dispose())
+  const fault = ownerFaults(t)
+  // The persistence provider owns startup in a real standalone profile. Its
+  // owner is already ready by the time the memory adapter subscribes.
+  await ctx.plugin(persistencePlugin, { root: join(dir, 'sessions'), memoryRoot: root, storageRoot: join(dir, 'storage') })
+  const persistPid = fault.pid()
+  assert.ok(persistPid)
+  const lost = fault.drop(frame => frame.method === 'adapter' && objectOf(frame.input)?.method === 'reconcileActiveTurns', false)
+  const activation = ctx.plugin({ ...memoryPlugin, async apply(scope: Context) {
+    await memoryPlugin.apply(scope, { dataRoot: root })
+  } })
+  await lost
+  const pid = fault.pid()
+  await activation
+  assert.ok(await eventually(() => fault.reconciles() >= 2))
+  assert.equal(pid, persistPid)
+  assert.equal(fault.pid(), persistPid)
+})
+
+test('Viva activates its live dsh plugin after the first attach acknowledgement disappears', { timeout: 30_000 }, async t => {
+  const emit = ChildProcess.prototype.emit
+  let firstRequest: string | undefined, attempts = 0, dropped = false
+  let sender: ChildProcess | undefined
+  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    const frame = event === 'message' ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'request' && frame.method === 'attach') {
+      attempts++
+      if (!sender) {
+        sender = this
+        firstRequest = frame.id
+        const send = this.send
+        t.mock.method(this, 'send', function (this: ChildProcess, message: unknown, ...rest: unknown[]) {
+          const response = ownerRpcFrame(message)
+          if (response?.kind === 'result' && response.id === firstRequest && response.ok) { dropped = true; return true }
+          return Reflect.apply(send, this, [message, ...rest]) as boolean
+        })
+      }
+      assert.equal(this, sender)
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const harness = await startHarness(t)
+  const bridge = harness.bridge()
+  await bridge.start()
+  assert.ok(dropped)
+  assert.equal(attempts, 2)
+  assert.equal(bridge.pid(), sender?.pid)
+  assert.ok(bridge.memory.ready())
+  const text = 'Continue after a missing attach reply'
+  await bridge.prompt(text)
+  assert.ok(replies(harness.events).join('').includes(text))
+})
+
+test('a ready notification outranks an older attach response on the same Viva IPC link', async () => {
+  const port = Object.assign(new EventEmitter(), { connected: true, send(frame: OwnerRpcFrame) {
+    if (frame.kind !== 'request') return
+    const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: 'new-owner', state: 'ready', revision: 1, coreEpoch: 0 }
+    port.emit('message', { type: frame.type, kind: 'event', event: state })
+    port.emit('message', { type: frame.type, kind: 'result', id: frame.id, ok: true,
+      result: { ...state, epoch: 'retired-owner', state: 'recovering' } })
+  } })
+  const connection = openPluginOwner({ root: '/fixture', hostNamespace: 'viva' }, port as unknown as typeof process)
+  try {
+    await connection.start()
+    assert.equal(connection.status(), 'ready')
+    assert.equal(connection.epoch(), 'new-owner')
+  } finally { await connection.close() }
+})
+
+test('dsh departure during owner replacement retires the abandoned foreground turn on next boot', { timeout: 15_000 }, async t => {
+  const { dir: root, defer } = scratch(t, 'memory-dsh-exit-gap-')
+  const entered = deferred<void>(), resume = deferred<void>()
+  const supervisor = createMemoryOwnerSupervisor({ root, callbacks: { drainSends() { entered.resolve(); return resume.promise } } })
+  defer(() => { resume.resolve(); return supervisor.close() })
+  await supervisor.start()
+  const sessionId = randomUUID()
+  await supervisor.callAdapter('receiveSource', [{ sessionId, messageId: randomUUID(), text: 'An unfinished turn.', at: Date.now(),
+    timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false }])
+  process.kill(supervisor.pid()!, 'SIGKILL')
+  await entered.promise
+  assert.equal(supervisor.pid(), undefined)
+  await supervisor.adapterExited()
+  resume.resolve()
+  await supervisor.start()
+  assert.equal((await supervisor.callAdapter('sessionView', [sessionId])).sessionContext.foregroundTurn, undefined)
+})
+
+test('a stopped foreground cannot write or send through the live relay while background work and settlement continue', { timeout: 10_000 }, async t => {
+  const { dir: root, defer } = scratch(t, 'memory-relay-session-')
+  const desktop = createDesktopMemoryOwner({ root }, {})
+  const exited = deferred<void>()
+  const stop = new AbortController()
+  const foreground = randomUUID(), task = randomUUID()
+  await desktop.prepare(async () => {})
+  const peer = createOwnerRpcPeer({ send: frame => { link.receive(frame) } })
+  const link = desktop.bindDsh(frame => { peer.receive(frame) }, exited.promise, id => id === foreground ? stop.signal : undefined)
+  defer(async () => { exited.resolve(); peer.close(); await desktop.close() })
+  assert.equal(link.ready(), false)
+  const epoch = desktop.channel.state()?.epoch
+  await peer.call('attach', { root, hostNamespace: 'viva', protocol: MEMORY_HOST_PROTOCOL })
+  assert.equal(typeof await desktop.channel.call('revision', { args: [] }), 'number', 'management does not wait for dsh reconciliation')
+  const call = (method: string, ...args: unknown[]) => peer.call('adapter', { epoch, method, args })
+  await call('initializeSession', { sessionId: foreground })
+  const id = randomUUID()
+  await call('acquireSend', id, { session: foreground }, 'a'.repeat(64))
+  stop.abort(new Error('foreground stopped'))
+  const receive = (sessionId: string) => call('receiveSource', { sessionId, messageId: randomUUID(), text: 'an update',
+    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  await assert.rejects(receive(foreground), /foreground stopped/)
+  await assert.rejects(call('registerDerived', { sessionId: task, senderSessionId: foreground,
+    messageId: randomUUID(), sourceIds: [] }), /foreground stopped/)
+  await assert.rejects(call('initializeSession', { sessionId: task, parentSessionId: foreground }), /foreground stopped/)
+  await assert.rejects(call('prepareContextRecovery', { sessionId: task, nativeParentSessionId: foreground,
+    baseSurfaceHash: '0'.repeat(64), candidates: [] }), /foreground stopped/)
+  await assert.rejects(call('recordSendBody', id), /foreground stopped/)
+  await call('settleSend', id)
+  await receive(task)
 })

@@ -573,9 +573,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       return (db.prepare('SELECT key FROM memory_daily_notes WHERE file_revision IS NOT NULL AND (? IS NULL OR day>=?) AND (? IS NULL OR day<=?) ORDER BY day,key')
         .all(from, from, through, through) as Array<{ key: string }>).flatMap(row => read(row.key) ?? [])
     },
-    changed(from: string, through: string) {
-      return (db.prepare('SELECT key FROM memory_daily_notes WHERE file_revision IS NOT NULL AND day BETWEEN ? AND ? AND revision>processed ORDER BY day,key')
-        .all(from, through) as Array<{ key: string }>).flatMap(row => read(row.key) ?? [])
+    changedFiles(from: string, through: string) {
+      return db.prepare('SELECT key, workspace, path FROM memory_daily_notes WHERE file_revision IS NOT NULL AND day BETWEEN ? AND ? AND revision>processed ORDER BY day,key')
+        .all(from, through) as Array<{ key: string, workspace: string, path: string }>
     },
     pendingGroups: () => db.prepare('SELECT note,session,day,COUNT(*) AS count FROM memory_note_turns WHERE written=0 AND note NOT IN (SELECT note FROM memory_deleted_daily_notes) GROUP BY note,session,day')
       .all() as Array<{ note: string, session: string, day: string, count: number }>,

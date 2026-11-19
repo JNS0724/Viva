@@ -9,11 +9,15 @@ export type RemoteToolReadScope = Pick<NativeToolReadScope, 'call' | 'calls'> & 
 export type OwnerActiveTurn = { sessionId: string, turn: number }
 export type OwnerCallOptions = { signal?: AbortSignal, budgetMs?: number, waitForCompletion?: boolean }
 export type OwnerAdapterApi = Pick<Owner,
-  'initializeSession' | 'noteInheritedNativeCut' | 'receiveSource' | 'registerDerived' | 'completeTurn'
-  | 'prepareContextRecovery' | 'bindContextRecovery' | 'rememberStandaloneFile' | 'forgetStandaloneFile'
+  'noteInheritedNativeCut' | 'receiveSource'
+  | 'prepareContextRecovery' | 'bindContextRecovery' | 'rememberStandaloneFile'
   | 'finishNativeOutput' | 'finishNativeToolRead' | 'nativeToolEvidence' | 'nativeSpillGoverned'
   | 'beginNativeSpill' | 'finishNativeSpill' | 'nativeSpillCandidates'
 > & {
+  forgetStandaloneFile(session: string, id: string, operationId: string): ReturnType<Owner['forgetStandaloneFile']>
+  initializeSession(input: Parameters<Owner['initializeSession']>[0]): Promise<void>
+  registerDerived(input: Parameters<Owner['registerDerived']>[0]): Promise<void>
+  completeTurn(input: Parameters<Owner['completeTurn']>[0]): Promise<void>
   sessionView(session: string): Promise<{
     contextGeneration: ReturnType<Owner['contextGeneration']>
     contextRecovery: ReturnType<Owner['contextRecovery']>
@@ -25,11 +29,11 @@ export type OwnerAdapterApi = Pick<Owner,
   snapshot(...args: Parameters<Owner['dispatch']['snapshot']>): ReturnType<Owner['dispatch']['snapshot']>
   commitContextRecovery(input: Parameters<Owner['commitContextRecovery']>[0], checkId: string): ReturnType<Owner['commitContextRecovery']>
   inheritNativeToolRead(scope: RemoteToolReadScope, evidence: Parameters<Owner['inheritNativeToolRead']>[1]): void
-  admitNativeSpillRead(id: string, scope: RemoteToolReadScope): boolean
+  admitNativeSpillRead(id: string, scope: RemoteToolReadScope): Promise<boolean>
   modelRequest(input: MemoryRequest, session: string, generation: number, scope?: RemoteToolReadScope): ReturnType<Owner['runtime']['handleModelRequest']>
-  acquireSend(id: string, origin: OwnerSendOrigin, digest: string): void
-  outputCurrent(origin: OwnerSendOrigin): boolean
-  recordSendBody(id: string): void
+  acquireSend(id: string, origin: OwnerSendOrigin, digest: string): Promise<void>
+  outputCurrent(origin: OwnerSendOrigin): Promise<boolean>
+  recordSendBody(id: string): Promise<void>
   settleSend(id: string): void
   setRoute(route: { provider: string, model: string } | null): void
   reconcileActiveTurns(turns: readonly OwnerActiveTurn[]): void

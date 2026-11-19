@@ -166,7 +166,7 @@ export type MemoryToolInvocation = Readonly<{ callId: string, name: string, inpu
 export type MemoryToolResult = Readonly<{
   callId: string, state: 'completed' | 'rejected', content: string, sources: readonly MemorySourceReference[],
 }>
-export type MemoryToolExecutor = (invocation: MemoryToolInvocation) => Promise<MemoryToolResult>
+export type MemoryToolExecutor = (invocation: MemoryToolInvocation, signal?: AbortSignal) => Promise<MemoryToolResult>
 export interface MemoryModelCompute {
   /** Core owns execution/authorization. Adapter feeds tool results back and updates dynamic dependencies
    * before every following model send; provider tool IDs/reasoning stay inside the adapter's isolated job. */

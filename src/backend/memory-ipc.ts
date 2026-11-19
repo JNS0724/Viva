@@ -62,20 +62,22 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
   sourceLink?: (sourceId: string, segmentId?: string) => string | null,
 }) {
   const handle = handlerOf(ipcMain)
+  function readOptions(options?: { budgetMs?: number }) {
+    const lifetime = memoryReadContext.getStore()
+    return lifetime ? { budgetMs: lifetime.remainingMs(), signal: lifetime.signal } : options
+  }
   handle('memory:get', async options => {
     const project = projectScope?.()
-    const lifetime = memoryReadContext.getStore()
-    const { profile, onboarding, cleanupPending, revision, fileProfile } = await client.readPage(project,
-      lifetime ? { budgetMs: lifetime.remainingMs(), signal: lifetime.signal } : options)
+    const { profile, onboarding, cleanupPending, revision, fileProfile } = await client.readPage(project, readOptions(options))
     emitDiagnostic({ event: 'operation.progress', operation: 'memory.get', stage: 'responded', metrics: { pendingCount: cleanupPending } })
     return { profile, onboarding, cleanupPending, revision, habits: habits(),
       fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
   })
   handle('memory:dream-status', client.dreamStatus)
   handle('memory:run-dream', client.requestDream)
-  handle('memory:list-files', client.listFiles)
-  handle('memory:read-file', async (identity, restrictionId): Promise<IpcResults['memory:read-file']> => {
-    const item = await client.readFile(identity, restrictionId)
+  handle('memory:list-files', (query, options) => client.listFiles(query, readOptions(options)))
+  handle('memory:read-file', async (identity, restrictionId, options): Promise<IpcResults['memory:read-file']> => {
+    const item = await client.readFile(identity, restrictionId, readOptions(options))
     if (!item) return null
     const link = (source: typeof item.sources[number]): MemoryFileSourceView => ({ ...source,
       link: source.namespace === 'canonical' ? sourceLink?.(source.sourceId) ?? null : null,

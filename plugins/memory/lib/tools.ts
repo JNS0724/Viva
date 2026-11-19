@@ -3,6 +3,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
+import { APP_WRITE_TIMEOUT_MS, MEMORY_READ_BUDGET_MS } from '../../../src/shared/request-budget.ts'
 import { currentToolBudget } from '../../../src/shared/node/tool-call-budget.ts'
 
 export function registerMemoryTools(ctx: Context, request: (input: MemoryRequest, agent: Agent, signal?: AbortSignal) => Promise<string | null>) {
@@ -26,13 +27,13 @@ export function registerMemoryTools(ctx: Context, request: (input: MemoryRequest
   } as const
   function register<P extends ParameterSchemaSpec>(op: string, description: string, parameters: P, make: (session: string, args: unknown) => MemoryRequest) {
     ctx.tools.register(defineTool({
-      name: 'memory_' + op, description, parameters, output,
+      name: 'memory_' + op, timeoutMs: op === 'remember' ? APP_WRITE_TIMEOUT_MS : MEMORY_READ_BUDGET_MS, description, parameters, output,
       execute: async (args, exec) => {
         const agent = exec.agent
         if (!agent) return { text: '{"status":"unavailable"}' }
         const budget = currentToolBudget()
         const invoke = () => request(make(String(agent.session.id), args), agent, exec.signal)
-        const text = await (budget && op !== 'remember' ? budget.run(invoke) : invoke())
+        const text = await (budget ? budget.run(invoke) : invoke())
         return { text: text ?? '{"status":"unavailable"}' }
       },
     }))

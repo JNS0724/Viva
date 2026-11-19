@@ -55,7 +55,7 @@ export interface MemoryNotes {
     contextSources(session: string, source: MemorySource): string[];
     add(session: string, day: string, sources: MemorySource[], assistant: string, requestId?: string, assistantSources?: readonly string[], inputAssistant?: string, options?: { questionSources?: readonly string[], questionCurrent?: boolean }): string | null;
     list(from: string | null, through: string | null): Note[];
-    changed(from: string, through: string): Note[];
+    changedFiles(from: string, through: string): Array<Pick<NoteRow, 'key' | 'workspace' | 'path'>>;
     pendingGroups: () => Array<{
         note: string;
         session: string;

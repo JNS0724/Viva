@@ -164,7 +164,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
   /** Cursor offsets address the committed registry. Only page candidates and
    * their correction dependencies need physical verification. */
   async function listPage(input: MemoryFileListRequest, allows: Allows, notes: readonly DailyFileRegistration[], options: {
-    revision(): number, load(files: readonly { workspace: string, path: string }[]): Promise<ReadManagedFile>, signal?: AbortSignal,
+    revision(): number, exhausted?(): boolean, load(files: readonly { workspace: string, path: string }[]): Promise<(workspace: string, path: string) => MemoryDocumentManagementView | null | undefined>, signal?: AbortSignal,
   }): Promise<MemoryFileListResult> {
     const request = memoryFileListRequest.parse(input)
     const query = (request.query ?? '').trim().normalize('NFKC').toLowerCase()
@@ -193,14 +193,17 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     if (request.cursor && (request.cursor.snapshot !== snapshot || offset > entries.length)) return stale()
     const limit = request.limit ?? 25
     const end = Math.min(entries.length, offset + Math.max(limit, 100))
+    let partial = false
     const items: MemoryFileSummary[] = []
     while (offset < end && items.length < limit) {
+      if (options.exhausted?.()) { partial = true; break }
       const candidates = entries.slice(offset, Math.min(end, offset + limit - items.length))
       const read = await options.load(candidates.flatMap(({ identity, path, physical }) => physical ? [{ workspace: identity.workspace, path }] : []))
       options.signal?.throwIfAborted()
       if (options.revision() !== revision) return stale()
       for (const { identity, path, physical, allocation, detached } of candidates) {
         const observed = physical ? read(identity.workspace, path) : null
+        if (observed === undefined) { partial = true; continue }
         const view = observed?.kind === identity.kind && observed.id === identity.id ? observed : undefined
         const item = allocation ? dailyView(allocation, identity.id, view) : detached ? detachedDigestView(detached) : view
         if (!item || !allows(item) || !acceptsState(item.enabled)) continue
@@ -209,7 +212,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       }
       offset += candidates.length
     }
-    return { status: 'ok', snapshot, items, nextCursor: offset < entries.length ? { snapshot, offset } : null }
+    return { status: 'ok', snapshot, items, ...(partial && { partial }), nextCursor: offset < entries.length ? { snapshot, offset } : null }
   }
   function validate(input: MemoryFileMutation, allows: Allows) {
     const command = memoryFileMutation.parse(input), view = resolve(command.identity, allows)

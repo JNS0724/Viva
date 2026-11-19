@@ -3,7 +3,7 @@ import { lstat, open, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dailyPath, digestPath } from '../contracts/memory-file-contract.ts'
 import type { MemoryCatalogChange, MemoryCatalogObservation } from '../core/ports/file-index.ts'
-import { memoryFileRevision } from './memory-file-store.ts'
+import { memoryFileRevision, createMemoryPhysicalFileReader } from './memory-file-store.ts'
 
 export interface CatalogScan {
   complete?: boolean
@@ -15,7 +15,6 @@ const MAX_SCAN_FILE_BYTES = 4 * 1024 * 1024
 
 async function inspect(root: string, workspace: string, send: NonNullable<typeof process.send>) {
   const pending: CatalogScan = { files: [], quarantined: [] }
-  let complete = true
   const flush = (last?: boolean) => {
     if (last === undefined && pending.files.length === 0 && pending.quarantined.length === 0) return
     const batch = { files: pending.files.splice(0), quarantined: pending.quarantined.splice(0), complete: last }
@@ -28,7 +27,6 @@ async function inspect(root: string, workspace: string, send: NonNullable<typeof
   }
   const workspaceRoot = join(root, workspace)
   const quarantine = (path: string, reason: CatalogScan['quarantined'][number]['reason']) => {
-    complete = false
     pending.quarantined.push({ kind: 'quarantined', path, reason })
     progress()
   }
@@ -95,12 +93,19 @@ async function inspect(root: string, workspace: string, send: NonNullable<typeof
   const timer = setInterval(flush, 100)
   try { await Promise.all([walk('daily'), walk('digest')]) }
   finally { clearInterval(timer) }
-  flush(complete)
+  flush(true)
 }
 
 // This entry has no owner, database, or write capability. Losing its parent ends the scan.
 process.once('disconnect', () => process.exit(0))
-const [root, workspace] = process.argv.slice(2)
+const [root, workspace, path] = process.argv.slice(2)
 if (root && workspace && /^[a-f0-9]{64}$/u.test(workspace) && process.send) {
-  await inspect(root, workspace, process.send.bind(process))
+  const send = process.send.bind(process)
+  if (path) {
+    const read = createMemoryPhysicalFileReader(() => root)
+    try {
+      const file = await read(workspace, path)
+      send(file ?? { missing: true }, error => process.exit(error ? 1 : 0))
+    } catch { send({ unavailable: true }, error => process.exit(error ? 1 : 0)) }
+  } else await inspect(root, workspace, send)
 }

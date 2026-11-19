@@ -318,3 +318,27 @@ test('Dream ignores a stale status read after a manual request and coalesces rap
   const unchanged = reduce(state, { type: 'memory_dream_status', status: state.memory.dream })
   assert.equal(unchanged, state)
 })
+
+test('reopening Dream status collects a lost manual receipt before another click starts fresh', async t => {
+  let state = reduce(initialState, { type: 'memory_open' })
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  const idle = { state: 'idle' as const, lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null }
+  const operations: string[] = []
+  const api = { getDreamStatus: async () => idle, async runDream(id: string) {
+    operations.push(id)
+    if (operations.length === 1) throw new Error('lost reply')
+    return { ...idle, jobId: id, completedAt: 42 }
+  } }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
+  t.after(() => actions.watchDream(false))
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  actions.watchDream(false)
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  assert.equal(operations.length, 3)
+  assert.equal(operations[0], operations[1])
+  assert.notEqual(operations[1], operations[2])
+})

@@ -1,13 +1,17 @@
 import path from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { RequestTimeout } from '../../../src/shared/request-budget.ts'
 import { MEMORY_HOST_PROTOCOL, memoryOwnerState, type MemoryOwnerState } from '../../../src/memory/contracts/host.ts'
 import { createOwnerRpcPeer } from '../../../src/memory/node/owner-rpc-peer.ts'
 import { createMemoryOwnerSupervisor } from '../../../src/memory/node/owner-supervisor.ts'
 import type { MemoryOwnerConnection } from './remote-owner.ts'
 
 type SupervisorOptions = Parameters<typeof createMemoryOwnerSupervisor>[0]
-type Callbacks = NonNullable<SupervisorOptions['callbacks']>
+type Callbacks = NonNullable<SupervisorOptions['callbacks']> & {
+  recoverContext?(session: string, signal: AbortSignal): Promise<boolean>
+}
 type Supervisor = ReturnType<typeof createMemoryOwnerSupervisor>
-type OwnerOptions = Pick<SupervisorOptions, 'root' | 'hostNamespace' | 'dailyNotes' | 'embedding' | 'callbacks'>
+type OwnerOptions = Pick<SupervisorOptions, 'root' | 'hostNamespace' | 'dailyNotes' | 'embedding'> & { callbacks?: Callbacks }
 
 type StandaloneOwner = ReturnType<typeof standaloneOwner>
 const byRoot = new Map<string, StandaloneOwner>()
@@ -41,6 +45,9 @@ function standaloneOwner(initial: OwnerOptions) {
     attached = options
     const subscribe: MemoryOwnerConnection['subscribe'] = listener => {
       listeners.add(listener)
+      // Persistence can finish boot before Cordis activates the dsh adapter.
+      const snapshot = supervisor.state()
+      if (snapshot) listener(snapshot)
       return () => { listeners.delete(listener) }
     }
     let retiring: Promise<void> | undefined
@@ -111,6 +118,7 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
   const { callbacks } = options
   const listeners = new Set<(event: unknown) => void>()
   let current: MemoryOwnerState | undefined, starting: Promise<void> | undefined
+  const lifetime = new AbortController()
   function onEvent(event: unknown) {
     const state = memoryOwnerState.safeParse(event)
     if (state.success) current = state.data
@@ -128,6 +136,11 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
         case 'compute': return required(callbacks?.compute)(input as Parameters<NonNullable<Callbacks['compute']>>[0], signal)
         case 'quiesce': return required(callbacks?.quiesce)(input as Parameters<NonNullable<Callbacks['quiesce']>>[0], signal)
         case 'checkRecovery': return required(callbacks?.checkRecovery)(input as Parameters<NonNullable<Callbacks['checkRecovery']>>[0], signal)
+        case 'recoverContext': {
+          const request = input as { session?: unknown, epoch?: unknown } | null
+          if (!current || request?.epoch !== current.epoch || typeof request.session !== 'string') throw new Error('Memory adapter generation changed')
+          return required(callbacks?.recoverContext)(request.session, signal)
+        }
         case 'drainSends': return required(callbacks?.drainSends)(input as Parameters<NonNullable<Callbacks['drainSends']>>[0])
         default: throw new Error('Unsupported memory adapter callback')
       }
@@ -135,16 +148,31 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
   })
   const receive = (raw: unknown) => { peer.receive(raw) }
   function disconnect() {
+    lifetime.abort()
     peer.close()
     if (current) onEvent({ ...current, state: 'unavailable' })
   }
   port.on('message', receive)
   port.once('disconnect', disconnect)
+  async function attach() {
+    // Repeated attachment authenticates the same parent link and returns its
+    // current state. Retry only missing acknowledgements, within startup time.
+    for (let attempt = 0; ; attempt++) {
+      const before = current
+      try {
+        const state = await peer.call<MemoryOwnerState | undefined>('attach',
+          { protocol: MEMORY_HOST_PROTOCOL, root: options.root, hostNamespace: options.hostNamespace }, { signal: lifetime.signal })
+        if (state && current === before) onEvent(state)
+        return
+      } catch (error) {
+        if (!(error instanceof RequestTimeout) || lifetime.signal.aborted || attempt >= 2) throw error
+        await delay(250 * 2 ** attempt, undefined, { signal: lifetime.signal })
+      }
+    }
+  }
   return {
     start() {
-      starting ??= peer.call<MemoryOwnerState | undefined>('attach',
-        { protocol: MEMORY_HOST_PROTOCOL, root: options.root, hostNamespace: options.hostNamespace })
-        .then(state => { if (state) onEvent(state) })
+      starting ??= Promise.resolve().then(attach).catch(error => { starting = undefined; throw error })
       return starting
     },
     async close() {
@@ -153,6 +181,7 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
       disconnect()
       listeners.clear()
     },
+    reconciled(epoch, ready) { peer.notify({ type: 'memory_adapter_ready', epoch, ready }) },
     callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch, waitForCompletion: opts?.waitForCompletion }, opts),
     callHost: () => Promise.reject(new Error('The Viva memory adapter has no host capabilities')),
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },

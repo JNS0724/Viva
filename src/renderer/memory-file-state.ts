@@ -8,6 +8,7 @@ export interface MemoryFileState {
   nextCursor: MemoryFileListResult['nextCursor']
   loaded: boolean
   loading: boolean
+  partial: boolean
   listError: string | null
   selection: MemoryFileSelection | null
   detail: MemoryFileDetailView | null
@@ -24,6 +25,7 @@ export const initialMemoryFiles = Object.freeze<MemoryFileState>({
   nextCursor: null,
   loaded: false,
   loading: false,
+  partial: false,
   listError: null,
   selection: null,
   detail: null,
@@ -53,15 +55,15 @@ const withFiles = (state: State, patch: Partial<MemoryFileState>): State => memo
   : state
 
 export const MEMORY_FILE_ACTIONS = {
-  memory_files_query: (state, { query }) => withFiles(state, { query, items: [], nextCursor: null, loaded: false, loading: true, listError: null }),
+  memory_files_query: (state, { query }) => withFiles(state, { query, items: [], nextCursor: null, partial: false, loaded: false, loading: true, listError: null }),
   memory_files_invalidated: (state) => withFiles(state, {
-    items: [], nextCursor: null, loaded: false, loading: true, listError: null, detail: null, detailError: null,
+    items: [], nextCursor: null, partial: false, loaded: false, loading: true, listError: null, detail: null, detailError: null,
     forget: state.memory.files.forget?.phase === 'confirm' ? null : state.memory.files.forget,
   }),
   memory_files_loading: (state) => withFiles(state, { loading: true, listError: null }),
   memory_files_listed: (state, { query, page, more }) => query === state.memory.files.query ? withFiles(state, {
     items: more ? [...state.memory.files.items, ...page.items] : page.items,
-    nextCursor: page.nextCursor, loaded: true, loading: false, listError: null,
+    nextCursor: page.nextCursor, partial: Boolean(page.partial || more && state.memory.files.partial), loaded: true, loading: false, listError: null,
   }) : state,
   memory_files_list_failed: (state, { message }) => withFiles(state, { loading: false, listError: message }),
   memory_file_select: (state, { selection }) => withFiles(state, { selection, detail: null, detailError: null, editor: null, writeError: null,

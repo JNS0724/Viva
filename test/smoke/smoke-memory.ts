@@ -499,10 +499,10 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   const button = (label: string) => `[...document.querySelectorAll(${JSON.stringify(detail + ' button')})]
     .find(button => button.textContent === ${JSON.stringify(label)})`
   await run(win, `(${button('停止使用这条记忆')}).click()`)
+  await until(win, button('查看停用片段 1'), 'the archived selection')
   const stopped = await until(win, `${fileDetail(note.identity)}.then(file => file?.restrictions?.length === 1 && file)`,
     'the selected file is held by its own restriction')
   expect(stopped.restrictions[0].version.usageVersion > note.version.usageVersion, 'stopping advances the usage version')
-  await until(win, button('查看停用片段 1'), 'the archived selection')
   await run(win, `(${button('查看停用片段 1')}).click()`)
   await until(win, button('恢复使用这段内容'), 'the exact archived range can be resumed')
   expect(!await run(win, button('删除记忆文件')), 'a stopped range only offers restore')

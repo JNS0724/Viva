@@ -4,7 +4,7 @@ import {
   type OwnerRpcFrame,
 } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
-import { RequestTimeout } from '../core/request-budget.ts'
+import { RequestTimeout } from '../../shared/request-budget.ts'
 import type { OwnerCallOptions } from './owner-adapter.ts'
 
 type PeerOptions = {
@@ -26,14 +26,6 @@ function laneFor(method: string, input: unknown): Lane {
   return 'normal'
 }
 
-function confirmationRequired(method: string, input: unknown) {
-  if (method !== 'adapter') return false
-  const adapter = objectOf(input)
-  if (!adapter) return false
-  if (adapter.method === 'rememberStandaloneFile' || adapter.method === 'forgetStandaloneFile' || adapter.method === 'commitContextRecovery') return true
-  return adapter.method === 'modelRequest' && Array.isArray(adapter.args) && objectOf(adapter.args[0])?.op === 'remember'
-}
-
 function hasCapacity(entries: Iterable<{ lane: Lane }>, lane: Lane) {
   let count = 0
   const limit = lane === 'control' ? 3 : OWNER_RPC_MAX_ACTIVE
@@ -49,7 +41,7 @@ export function createOwnerRpcPeer(options: PeerOptions) {
   // The caller can stop waiting while the handler is still running. Retain its slot
   // until a terminal response or disconnect, so repeated timeouts cannot build a queue.
   function call<T>(method: string, input: unknown, optionsForCall: OwnerCallOptions = {}): Promise<T> {
-    const { signal, budgetMs = OWNER_RPC_DEFAULT_BUDGET_MS, waitForCompletion = confirmationRequired(method, input) } = optionsForCall
+    const { signal, budgetMs = OWNER_RPC_DEFAULT_BUDGET_MS, waitForCompletion = false } = optionsForCall
     if (closed) return Promise.reject(unavailable())
     if (signal?.aborted) return Promise.reject(signal.reason)
     if (!Number.isFinite(budgetMs) || budgetMs <= 0 || budgetMs > OWNER_RPC_MAX_BUDGET_MS) return Promise.reject(new Error('Invalid memory owner deadline'))

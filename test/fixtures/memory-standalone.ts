@@ -10,7 +10,7 @@ for (const dependency of ['electron', '@deepseek-ai/dsh']) assert.throws(() => r
 assert.equal(process.send, undefined)
 const checked = new Set<string>()
 const hooks = registerHooks({ resolve(specifier, context, next) {
-  assert.doesNotMatch(specifier, /(?:^electron$|@deepseek-ai\/|\/backend\/|\/shared\/|\/plugins\/)/u)
+  if (specifier !== '../../shared/request-budget.ts') assert.doesNotMatch(specifier, /(?:^electron$|@deepseek-ai\/|\/backend\/|\/shared\/|\/plugins\/)/u)
   const result = next(specifier, context)
   checked.add(result.url)
   return result

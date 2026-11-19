@@ -5,7 +5,7 @@ import { MEMORY_EMBEDDING_BATCH } from '../contracts/embedding.ts'
 import type { MemoryEmbedder, MemoryEmbeddingInput } from '../contracts/embedding.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import { fileDependency, type MemoryDocumentReadBatch, type MemoryDocumentView } from './memory-document-read-policy.ts'
-import { createRequestBudget } from './request-budget.ts'
+import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryFileIndex, MemoryFileIdentity, MemoryFileSnapshot, MemoryFileHit, MemoryFileChunkRef, MemoryFileQueryScope, MemoryFileNode } from './ports/file-index.ts'
 import { dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
 import { memoryFileLexicalQuery, memoryIdentifierTokens, memorySearchTokens } from './search-tokens.ts'
@@ -22,9 +22,9 @@ export interface FileReadPolicy {
   readBatch?(signal?: AbortSignal): MemoryDocumentReadBatch | undefined
 }
 type Allows = (view: MemoryDocumentView) => boolean
-type FileLookup = {id?:string,workspace?:string,path?:string,allows:Allows}
+type FileLookup = {id?:string,workspace?:string,workspaces?: string[],path?:string,allows:Allows}
 type FileReadInput = FileLookup & {startLine?:number,endLine?:number,evidence?:boolean,signal?:AbortSignal}
-type NodeSearchInput = {query:string,limit?:number,allows:Allows,signal?:AbortSignal}
+type NodeSearchInput = {workspaces?: readonly string[],query:string,limit?:number,allows:Allows,signal?:AbortSignal}
 export interface FileReadSet { files: MemoryFileDependency[], sourceIds: string[] }
 export interface FileNeighbor { id: string, workspace: string, path: string, name: string, description: string }
 export interface FileNeighbors { neighbors: FileNeighbor[], visibleCount: number, partial: boolean }
@@ -50,6 +50,7 @@ export interface FileSearchResult extends FileReadSet {
   partial: boolean
 }
 export interface FileSearchRequest {
+  workspaces?: readonly string[]
   query: string, limit?: number, minScore?: number, from?: string, through?: string, asOf?: number
   contextKey?: string, maxChars?: number, allows: Allows, signal?: AbortSignal
   /** Automatic context must yield quickly and may omit weak evidence. */
@@ -160,9 +161,9 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     if (file.kind === 'daily' && file.day && (request.from && file.day < request.from || request.through && file.day > request.through)) return false
     return request.asOf === undefined || !file.updatedAt || file.updatedAt <= request.asOf
   }
-  function searchScope(request: Pick<FileSearchRequest, 'from' | 'through' | 'asOf'> = {}): MemoryFileQueryScope {
+  function searchScope(request: Pick<FileSearchRequest, 'from' | 'through' | 'asOf' | 'workspaces'> = {}): MemoryFileQueryScope {
     const { from, through, asOf } = request
-    return { workspaces: [...new Set(workspaces())], from, through, asOf }
+    return { workspaces: request.workspaces ?? [...new Set(workspaces())], from, through, asOf }
   }
   function authorized(allows: Allows, scope: MemoryFileQueryScope) {
     return index.files(scope.workspaces).filter(file => inDateRange(file, scope) && current(file, allows))
@@ -181,7 +182,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         if (!view || view.currentMarkdown === null || !sameVersion(file, view)) {
           stale = true
           checked.set(key, null)
-          if (usePublishedIndex && reportStale && (!batch || batch.observedRevision(file.workspace, file.path))) {
+          if (usePublishedIndex && reportStale && (!batch || batch.observedRevision(file.workspace, file.path) !== undefined)) {
             try { onStale?.(file) } catch { /* Publishing recovery is separate from the verified read. */ }
           }
         } else checked.set(key, allows(view) ? view : null)
@@ -274,14 +275,17 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const budget = createRequestBudget(milliseconds, signal)
     try { await batch.load(files, budget.signal) } finally { budget.close() }
   }
-  function scopedController(signal?: AbortSignal) {
+  function scopedController(signal?: AbortSignal, { keepWarm = false, deadline = true } = {}) {
     const controller = new AbortController()
     const abort = () => controller.abort()
-    signal?.addEventListener('abort', abort, { once: true })
-    if (signal?.aborted) controller.abort()
-    const timer = setTimeout(abort, defaults.requestTimeoutMs)
+    const parentAborted = () => {
+      if (!(keepWarm && signal?.reason instanceof RequestTimeout)) abort()
+    }
+    signal?.addEventListener('abort', parentAborted, { once: true })
+    if (signal?.aborted) parentAborted()
+    const timer = deadline ? setTimeout(abort, defaults.requestTimeoutMs) : undefined
     controllers.add(controller)
-    return { controller, done() { clearTimeout(timer); signal?.removeEventListener('abort', abort); controllers.delete(controller) } }
+    return { controller, done() { clearTimeout(timer); signal?.removeEventListener('abort', parentAborted); controllers.delete(controller) } }
   }
   async function encode(inputs: readonly MemoryEmbeddingInput[], signal: AbortSignal) {
     if (!embedder || closed || signal.aborted) return null
@@ -296,7 +300,12 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     let complete = false, staged = 0
     const revision = publicationRevision
     preparing = true
-    const run = scopedController(signal)
+    const run = scopedController(signal, { deadline: false })
+    // A large rebuild may take many batches. Each inference has its own deadline.
+    const encodeBatch = async (inputs: readonly MemoryEmbeddingInput[]) => {
+      const batch = scopedController(run.controller.signal)
+      try { return await encode(inputs, batch.controller.signal) } finally { batch.done() }
+    }
     const valid = (file: MemoryFileIdentity) => {
       const authoritative = usePublishedIndex ? index.nodeAt(file.workspace, file.path) : current(file)
       return authoritative !== null && sameVersion(file, authoritative)
@@ -320,7 +329,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
           const recovered: Float32Array[] = []
           for (const part of parts) {
             if (closed || run.controller.signal.aborted || !valid(chunk.file)) return null
-            const retry = await encode([{kind: 'passage', text: part.text}], run.controller.signal)
+            const retry = await encodeBatch([{kind: 'passage', text: part.text}])
             if (!retry || retry.length !== 1 || closed || run.controller.signal.aborted || !valid(chunk.file)) return null
             if (retry[0]) recovered.push(retry[0])
             else {
@@ -334,7 +343,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         for (let offset = 0; offset < passages.length; offset += MEMORY_EMBEDDING_BATCH) {
           if (closed || run.controller.signal.aborted || !valid(chunk.file)) return false
           const batch = passages.slice(offset, offset + MEMORY_EMBEDDING_BATCH)
-          const result = await encode(batch.map(part => ({ kind: 'passage', text: part.text })), run.controller.signal)
+          const result = await encodeBatch(batch.map(part => ({ kind: 'passage', text: part.text })))
           if (!result || result.length !== batch.length || closed || run.controller.signal.aborted || !valid(chunk.file)) return false
           for (const [position, vector] of result.entries()) {
             if (vector) vectors.push(vector)
@@ -361,8 +370,8 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       if (usePublishedIndex && publicationRevision !== revision) prepareAfterSearch()
     }
   }
-  async function boundedQuery(query: string, timeoutMs: number, signal?: AbortSignal) {
-    const run = scopedController(signal)
+  async function boundedQuery(query: string, timeoutMs: number, signal?: AbortSignal, keepWarm = false) {
+    const run = scopedController(signal, { keepWarm })
     // Let an already-started worker finish warming up after the foreground budget
     // expires. Cancellation, shutdown and the normal inference deadline still apply.
     const encoded = encode([{ kind: 'query', text: query }], run.controller.signal).finally(() => {
@@ -552,10 +561,12 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
               : defaults.automaticQueryTimeoutMs
             let output = null
             if (publishedOnly) {
-              if (queryBudget > 0) output = await boundedQuery(request.query, queryBudget, request.signal)
+              if (queryBudget > 0) output = await boundedQuery(request.query, queryBudget, request.signal, request.automatic)
             } else output = await encode([{kind:'query',text:request.query}], run.controller.signal)
             if (output?.[0] && !run.controller.signal.aborted) {
-              const page = allowed ? null : index.vectorCandidates(output[0], space(), scope, plan.lexical, candidateProbe(candidates))
+              const scoreDeadline = performance.now() + verificationBudget(40, defaults.automaticQueryTimeoutMs)
+              const page = allowed ? null : await index.vectorCandidates(output[0], space(), scope, candidateProbe(candidates),
+                () => !closed && !request.signal?.aborted, scoreDeadline)
               const hits = allowed ? index.vector(output[0], space(), allowed, candidates) : page?.rows
               if (hits) vector = hits
               else reasons.push('semantic-unavailable')
@@ -570,7 +581,19 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         const qualified = qualifyCandidates(request, [], vector).vector
         await loadFiles(batch, qualified.map(hit => hit.file), verificationBudget(30, 250), request.signal)
         if (!closed && !request.signal?.aborted) {
-          const { selected } = selectSearch(request, plan, vector, batch, false)
+          let { selected } = selectSearch(request, plan, vector, batch, false)
+          const size = candidateProbe(candidates)
+          const stopAt = performance.now() + verificationBudget(35, 150)
+          const refill = plan.reasons.includes('candidate-limit')
+          for (let offset = size; refill && selected.length < plan.limit && offset < 512 && performance.now() < stopAt; offset += size) {
+            const page = index.lexicalCandidates(memoryFileLexicalQuery(request.query), scope, size, offset)
+            plan.lexical.push(...page.rows)
+            await loadFiles(batch, qualifyCandidates(request, page.rows, []).lexical.map(hit => hit.file),
+              stopAt - performance.now(), request.signal)
+            if (closed || request.signal?.aborted) return unavailable('cancelled')
+            selected = selectSearch(request, plan, vector, batch, false).selected
+            if (!page.incomplete) break
+          }
           const neighbors = selected.flatMap(hit => {
             const { incoming, outgoing } = publishedLinks(hit.file, scope)
             return [...incoming.rows, ...outgoing.rows]
@@ -598,11 +621,12 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     } catch { return new Map() }
   }
   function resolve(input: FileLookup, read = readable) {
-    if (input.workspace && !workspaces().includes(input.workspace)) return null
+    const scopes = input.workspaces ?? workspaces()
+    if (input.workspace && !scopes.includes(input.workspace)) return null
     if (input.workspace && input.path) { const view=read(input.workspace,resolveAlias?.(input.workspace,input.path) ?? input.path); return view && (!input.id || view.id===input.id) && input.allows(view) ? view : null }
     if (!input.id) throw new Error('invalid-memory-file-read')
     const id = input.id
-    const found = (input.workspace ? [input.workspace] : workspaces()).flatMap(workspace => {
+    const found = (input.workspace ? [input.workspace] : scopes).flatMap(workspace => {
       if (!resolveId) return policy.list(workspace)
       const path = resolveId(workspace, id)
       return path ? read(workspace, path) ?? [] : []
@@ -626,7 +650,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   async function readAsync(input: FileReadInput, batch = policy.readBatch?.(input.signal)) {
     if (!batch || !resolveId) return read(input)
     if (closed || input.signal?.aborted) return null
-    const files = workspaces().flatMap(workspace => {
+    const files = (input.workspaces ?? workspaces()).flatMap(workspace => {
       if (input.workspace && input.workspace !== workspace) return []
       const path = input.workspace && input.path ? resolveAlias?.(workspace, input.path) ?? input.path : input.id && resolveId(workspace, input.id)
       return path ? [{ workspace, path }] : []
@@ -637,7 +661,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   function planNodeSearch(input: NodeSearchInput) {
     if (!input.query.trim()) throw new Error('invalid-memory-file-search')
     const limit = checkedLimit(input.limit)
-    const scope = searchScope()
+    const scope = searchScope(input)
     const query = memoryFileLexicalQuery(input.query)
     if (!usePublishedIndex) sync()
     const candidates = usePublishedIndex ? index.nodeCandidates(query, scope, candidateProbe(Math.min(defaults.searchMaxCandidates, limit * defaults.searchCandidateMultiplier)))
@@ -663,8 +687,19 @@ ${file.description}`, file, view }] : []
   async function nodeSearchAsync(input: NodeSearchInput, batch = usePublishedIndex ? policy.readBatch?.(input.signal) : undefined) {
     if (!batch || closed || input.signal?.aborted) return nodeSearch(input)
     const plan = planNodeSearch(input)
+    const until = performance.now() + 350
     await loadFiles(batch, plan.candidates.rows, 350, input.signal)
-    return nodeSearch(input, plan, batch)
+    let result = nodeSearch(input, plan, batch)
+    const size = candidateProbe(Math.min(defaults.searchMaxCandidates, plan.limit * defaults.searchCandidateMultiplier))
+    for (let offset = size; plan.candidates.incomplete && result.nodes.length < plan.limit && offset < 512 && performance.now() < until; offset += size) {
+      const page = index.nodeCandidates(plan.query, searchScope(input), size, offset)
+      await loadFiles(batch, page.rows, until - performance.now(), input.signal)
+      if (closed || input.signal?.aborted) break
+      plan.candidates.rows.push(...page.rows)
+      plan.candidates.incomplete = page.incomplete
+      result = nodeSearch(input, plan, batch)
+    }
+    return result
   }
   function relations(input:{workspace:string,path:string,allows:Allows}) {
     if (closed) return null

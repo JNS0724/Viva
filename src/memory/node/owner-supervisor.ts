@@ -3,18 +3,17 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseDiagnosticContext, safeDiagnosticEvent, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import { diagnosticContext, emitDiagnostic } from '../../diagnostics/node/context.ts'
-import { createRequestBudget } from '../core/request-budget.ts'
-import { memoryHostFailure } from '../contracts/domain-error.ts'
-import { MEMORY_HOST_PROTOCOL, memoryHostRead, memoryOwnerState, type HostMemoryApi, type HostMemoryMethod,
+import { createRequestBudget } from '../../shared/request-budget.ts'
+import { memoryOwnerState, type HostMemoryApi, type HostMemoryMethod,
   type MemoryOwnerChange, type MemoryOwnerContextUsed, type MemoryOwnerProjection, type MemoryOwnerState } from '../contracts/host.ts'
-import { type MemoryOwnerHostResult, type MemoryOwnerSendRevoked, OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
+import { type MemoryOwnerSendRevoked, OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryCompute } from '../contracts/memory-contract.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 
-export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerChange | MemoryOwnerContextUsed | MemoryOwnerProjection | MemoryOwnerSendRevoked | MemoryOwnerHostResult
+export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerChange | MemoryOwnerContextUsed | MemoryOwnerProjection | MemoryOwnerSendRevoked
 export type MemoryOwnerCallbacks = {
   compute?(input: { job: MemoryCompute, tools?: MemoryComputeTools['tools'] }, signal: AbortSignal): Promise<string>
   quiesce?(input: { session?: string }, signal: AbortSignal): Promise<void>
@@ -41,7 +40,6 @@ type Instance = {
   ready: Promise<void>
   epoch?: string
 }
-const HOST_EXECUTION_BUDGET_MS = 120_000
 const STARTUP_BUDGET_MS = 15_000
 const HEARTBEAT_INTERVAL_MS = 6_000
 const STOP_GRACE_MS = 1_000
@@ -71,7 +69,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   let closePromise: Promise<void> | undefined
   let startFailures = 0
   let previousEpoch: string | undefined
-  let bootEverCompleted = false
+  let preserveActiveTurns = false
 
   function publish(event: MemoryOwnerEvent) {
     if (event.type === 'memory_owner_state') {
@@ -139,7 +137,8 @@ export function createMemoryOwnerSupervisor(options: Options) {
   function spawn(): Instance {
     const child = fork(workerEntry(), ['--memory-owner-ipc'], {
       execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'advanced',
-      env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
+      env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+        TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR, USERPROFILE: process.env.USERPROFILE, TZ: process.env.TZ },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     })
     emitDiagnostic({ event: 'process.start', operation: 'memory.owner', stage: previousEpoch ? 'recovering' : 'connecting' })
@@ -210,8 +209,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
       child, peer, exit, retire, retiring: () => retiring,
       ready: Promise.resolve().then(async () => {
         try {
-          await peer.call('boot', { ...settings, preserveActiveTurns: bootEverCompleted }, { budgetMs: options.timeoutMs ?? STARTUP_BUDGET_MS })
-          bootEverCompleted = true
+          await peer.call('boot', { ...settings, preserveActiveTurns }, { budgetMs: options.timeoutMs ?? STARTUP_BUDGET_MS })
           pulse()
         } catch (error) { await retire(); throw error }
       }),
@@ -257,23 +255,13 @@ export function createMemoryOwnerSupervisor(options: Options) {
 
   const callAdapter: OwnerAdapterCaller['callAdapter'] = <M extends keyof OwnerAdapterApi>(
     method: M, args: Parameters<OwnerAdapterApi[M]>, optionsForCall?: OwnerCallOptions,
-  ) => callCurrent<Awaited<ReturnType<OwnerAdapterApi[M]>>>('adapter', { method, args }, optionsForCall)
+  ) => {
+    if (current && !current.retiring() && !closing) preserveActiveTurns = true
+    return callCurrent<Awaited<ReturnType<OwnerAdapterApi[M]>>>('adapter', { method, args }, optionsForCall)
+  }
 
   function callHost<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], optionsForCall?: OwnerCallOptions) {
     return callCurrent<HostMemoryApi[M]['output']>('host', { method, input, diagnostics: diagnosticContext() }, optionsForCall)
-  }
-
-  function sendHost(raw: object) {
-    const message = objectOf(raw)
-    if (message?.type !== 'memory_host_request' || message.protocol !== MEMORY_HOST_PROTOCOL || message.epoch !== snapshot?.epoch
-      || typeof message.requestId !== 'string' || typeof message.epoch !== 'string') throw new Error('Memory host protocol or epoch mismatch')
-    const { epoch, requestId, method, input, read } = message
-    const budgetMs = read === undefined ? HOST_EXECUTION_BUDGET_MS : memoryHostRead.parse(read).budgetMs
-    const { peer } = openPeer()
-    const base = { type: 'memory_host_result', requestId, epoch } as const
-    void peer.call('host', { method, input, read, requestId, diagnostics: parseDiagnosticContext(message.diagnostics) }, { budgetMs, waitForCompletion: true }).then(
-      result => publish({ ...base, ok: true, result }), error => publish({ ...base, ok: false, error: memoryHostFailure(error) }),
-    )
   }
 
   async function shutdown() {
@@ -290,12 +278,15 @@ export function createMemoryOwnerSupervisor(options: Options) {
   }
 
   return {
-    start, close: () => closePromise ??= shutdown(), sendHost, callHost, callAdapter,
+    start, close: () => closePromise ??= shutdown(), callHost, callAdapter,
     async adapterExited() {
       const instance = current
-      if (!instance) return
+      // A dsh exit can fall between two owner processes. The next boot must
+      // retire persisted turns even when there was no live child to notify.
+      preserveActiveTurns = false
+      if (!instance || instance.retiring() || closing) return
       await instance.ready
-      if (current === instance && !closing && snapshot?.state !== 'unavailable') await instance.peer.call('adapterExited', {})
+      if (current === instance && !closing && !instance.retiring()) await instance.peer.call('adapterExited', {})
     },
     nativeMaintenancePending: () => callCurrent<boolean>('nativeMaintenancePending', {}, { budgetMs: Math.min(options.timeoutMs ?? STARTUP_BUDGET_MS, OWNER_RPC_MAX_BUDGET_MS) }),
     subscribe(listener: (event: MemoryOwnerEvent) => void) {
