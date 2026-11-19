@@ -16,10 +16,15 @@ export async function checkReadingLanguage(win: SmokeAppWindow): Promise<string[
     const text=Array.from({length:507},(_,i)=>'## Section '+i+'\\n\\nStable source text 中文 emoji 😀 '+i+'\\n\\n|A|B|\\n|-|-|\\n|1|2|\\n\\n'+fence+'ts\\nconst value = '+i+'\\n'+fence).join('\\n\\n')+'\\n\\n- [x] Done\\n- [ ] Open\\n\\n![diagram](https://example.invalid/image.png)';
     const handlers=new Proxy({openLink(){}},{get:(target,key)=>Reflect.get(target,key)??(()=>{})});
     const check=(value,message)=>{if(!value)failures.push(message)};
+    async function reveal(container){
+      container.querySelector('.answer-more').click();
+      const deadline=performance.now()+5000;
+      while(container.querySelector('.answer-more')&&performance.now()<deadline)await new Promise(requestAnimationFrame);
+    }
     try{
       setLocale('zh-CN');
       const state={...initialState,messages:[{id:'reading-answer',role:'assistant',text,shown:text.length}],conversationId:'reading-fixture'};
-      renderThread(thread,state,handlers);thread.querySelector('.answer-more').click();
+      renderThread(thread,state,handlers);await reveal(thread);
       const markdown=thread.querySelector('.markdown'),heading=markdown.querySelector('h3'),code=markdown.querySelector('pre'),image=markdown.querySelector('[data-md-image-label]');
       const range=document.createRange();range.selectNodeContents(markdown.querySelector('p'));const selection=getSelection();selection.removeAllRanges();selection.addRange(range);const selected=selection.toString();
       for(const locale of ['en','zh-CN','en']){
@@ -36,7 +41,7 @@ export async function checkReadingLanguage(win: SmokeAppWindow): Promise<string[
       const page=document.createElement('div');page.className='tasks-page';page.style.cssText='display:flex;height:400px;width:900px';host.append(page);
       let stateTask=reduce(initialState,{type:'task_snapshot',snapshot:{taskId:'reading-task',runId:'run-1',title:'Task fixture',status:'running',currentAction:null,waitingFor:null,startedAt:1,updatedAt:1,endedAt:null,resultPreview:'',revision:1,taskSeq:0,opening:{words:'Fixture request',task:{id:'reading-task',title:'Task fixture',words:'Fixture request',segmentId:'reading-segment'},hostSession:null}}});
       const task=stateTask.tasks.list[0];stateTask={...stateTask,tasks:{...stateTask.tasks,list:[{...task,view:{...task.view,messages:[...task.view.messages,{id:'task-answer',role:'assistant',text,shown:text.length}]}}],page:{open:true,selected:task.id,steps:false}}};
-      renderTasksPage(page,stateTask,handlers);page.querySelector('.answer-more').click();
+      renderTasksPage(page,stateTask,handlers);await reveal(page);
       const answer=page.querySelector('.markdown'),scroller=page.querySelector('.tp-scroll');
       scroller.scrollTop=1200;const top=scroller.scrollTop;
       for(const locale of ['en','zh-CN','en']){

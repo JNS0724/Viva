@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { SmokeAppWindow } from './smoke-kit.ts'
 import { openIndependentHistory } from '../fixtures/independent-history.ts'
 import { measureStreaming } from './smoke-streaming.ts'
+import { checkAnswerExpansion } from './smoke-answer-expansion.ts'
 import { capture, report, run, UI_WAIT_MS, until, wait, type Expect } from './smoke-kit.ts'
 
 /**
@@ -290,6 +291,7 @@ export async function checkPerf(win: SmokeAppWindow, outDir: string): Promise<st
   await capture(win, outDir, 'perf-far-hit')
 
   seen.streaming = await measureStreaming(win)
+  await checkAnswerExpansion(win, expect)
   judge(expect, seen, process.platform)
   report(`perf: ${JSON.stringify(seen)}`)
   await run(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
