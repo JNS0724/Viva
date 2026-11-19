@@ -87,6 +87,12 @@ export interface IpcResults {
   'schedules:accept': { title: string, nextAt: string }
   'schedules:decline': void
   'feed:continue': string
+  'feed-sources:list': import('./feed-source.ts').FeedSourceView[]
+  'feed-sources:create': import('./feed-source.ts').FeedSourceView
+  'feed-sources:update': import('./feed-source.ts').FeedSourceView
+  'feed-sources:pause': import('./feed-source.ts').FeedSourceView
+  'feed-sources:delete': { deleted: boolean }
+  'feed-sources:run-now': import('./feed-source.ts').FeedSourceRunResult
   'task:finished': KeptTask[]
   /** Said on the live channel (`waits`, a SessionWaits), in its place among the pushes. */
   'agent:waits': true

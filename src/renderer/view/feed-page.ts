@@ -1,17 +1,19 @@
 import { onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
-import { feedGroups, feedLine, feedShown, type FeedItemView, type ScheduleView } from '../feed-state.ts'
-import { h } from './dom.ts'
+import { feedGroups, feedLine, feedShown, NEW_SOURCE_ID, type FeedItemView, type FeedSourceView, type ScheduleView } from '../feed-state.ts'
+import { h, keepingInput } from './dom.ts'
 import { whenText } from './proposal-card.ts'
 import { maidFor } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { renderMarkdown } from './markdown.ts'
+import { newSourceDetail, sourceDetail, sourceFreqText } from './feed-source-panel.ts'
 
 /**
  * 动态 (system-design §12.2): what the app brings on its own, its own page, opened from the title bar. Her line and
- * picture at its head, then what is new, what comes next (the schedules) and what was seen; the one picked on the
- * right. An item can go into the conversation or be let go; a schedule can be paused, resumed or deleted (or changed
- * by asking in the conversation). Nothing here becomes a background task (后台 is apart).
+ * picture at its head, then what is new, plugin data sources, what comes next (the schedules) and what was seen; the
+ * one picked on the right. An item can go into the conversation or be let go; a data source binds a dsh plugin to an
+ * explicit schedule and a natural-language rule; a schedule can be paused, resumed or deleted. Nothing here becomes a
+ * background task (后台 is apart).
  */
 const LINE_MAID_PX = 56
 const DETAIL_MAID_PX = 64
@@ -36,19 +38,50 @@ const scheduleStanding = (schedule: ScheduleView, now: number) => (schedule.stat
   ? t('feed.schedule.paused')
   : t('feed.schedule.next.at', { when: whenText(Date.parse(schedule.nextAt), now) }))
 
-interface Row { kind: 'item' | 'schedule', id: string, title: string, meta: string, status: string }
+const sourceStanding = (source: FeedSourceView, now: number) => {
+  if (source.lastStatus === 'plugin_unavailable') return t('feed.source.status.plugin.unavailable')
+  if (source.status === 'paused') return t('feed.source.status.paused')
+  return `${sourceFreqText(source.schedule)} · ${t('feed.schedule.next.at', { when: whenText(Date.parse(source.nextAt), now) })}`
+}
+
+interface Row { kind: 'item' | 'schedule' | 'source', id: string, title: string, meta: string, status: string, tone?: 'error' }
 const itemRow = (item: FeedItemView, now: number): Row => ({ kind: 'item', id: item.id, title: item.title, meta: whenText(item.createdAt, now), status: item.seenAt === null ? 'new' : 'seen' })
 const scheduleRow = (schedule: ScheduleView, now: number): Row => ({ kind: 'schedule', id: schedule.id, title: schedule.title, meta: scheduleStanding(schedule, now), status: schedule.status })
+const sourceRow = (source: FeedSourceView, now: number): Row => ({
+  kind: 'source',
+  id: source.id,
+  title: source.name,
+  meta: sourceStanding(source, now),
+  status: source.status,
+  tone: source.lastStatus === 'plugin_unavailable' ? 'error' : undefined,
+})
 
 function group(name: string, rows: readonly Row[], shown: { kind: string, id: string } | null, handlers: Handlers) {
   if (!rows.length) return []
   return [
     h('div', { class: 'tp-group' }, name, h('span', { class: 'tp-group-count', text: String(rows.length) })),
     ...rows.map((row) => h('button', {
-      class: 'tp-row fu-row', type: 'button', 'data-status': row.status,
+      class: 'tp-row fu-row', type: 'button', 'data-status': row.status, 'data-tone': row.tone ?? null,
       'aria-current': shown?.kind === row.kind && shown.id === row.id ? 'page' : null,
       onClick: () => handlers.selectFeed(row.kind, row.id),
     }, h('span', { class: 'tp-name', text: row.title }), h('span', { class: 'tp-meta', text: row.meta }))),
+  ]
+}
+
+function sourcesGroup(sources: readonly FeedSourceView[], shown: { kind: string, id: string } | null, handlers: Handlers, now: number) {
+  const rows = sources.map((source) => sourceRow(source, now))
+  return [
+    h('div', { class: 'tp-group' }, t('feed.sources'), sources.length ? h('span', { class: 'tp-group-count', text: String(sources.length) }) : null),
+    ...rows.map((row) => h('button', {
+      class: 'tp-row fu-row', type: 'button', 'data-status': row.status, 'data-tone': row.tone ?? null,
+      'aria-current': shown?.kind === 'source' && shown.id === row.id ? 'page' : null,
+      onClick: () => handlers.selectFeed('source', row.id),
+    }, h('span', { class: 'tp-name', text: row.title }), h('span', { class: 'tp-meta', text: row.meta }))),
+    h('button', {
+      class: 'tp-row fu-row fs-add', type: 'button',
+      'aria-current': shown?.kind === 'new-source' && shown.id === NEW_SOURCE_ID ? 'page' : null,
+      onClick: () => handlers.openNewFeedSource(),
+    }, h('span', { class: 'tp-name', text: t('feed.source.add') })),
   ]
 }
 
@@ -88,9 +121,14 @@ function scheduleDetail(schedule: ScheduleView, state: State, handlers: Handlers
 }
 
 export function renderFeedPage(container: HTMLElement, state: State, handlers: Handlers, now = Date.now()) {
-  const { fresh, next, seen } = feedGroups(state)
+  const { fresh, sources, next, seen } = feedGroups(state)
   const shown = feedShown(state)
-  const picked = shown?.kind === 'item' ? { kind: 'item', id: shown.item.id } : shown ? { kind: 'schedule', id: shown.schedule.id } : null
+  const picked = shown?.kind === 'item' ? { kind: 'item', id: shown.item.id }
+    : shown?.kind === 'source' ? { kind: 'source', id: shown.source.id }
+      : shown?.kind === 'new-source' ? { kind: 'new-source', id: NEW_SOURCE_ID }
+        : shown?.kind === 'schedule' ? { kind: 'schedule', id: shown.schedule.id }
+          : null
+
   const side = h('nav', { class: 'tp-side feed-side', 'aria-label': t('feed.title') },
     h('div', { class: 'tp-side-head' },
       h('h1', { class: 'feed-title', text: t('feed.title') }),
@@ -98,11 +136,19 @@ export function renderFeedPage(container: HTMLElement, state: State, handlers: H
         h('span', { text: t('tasks-page.back') }), h('kbd', { text: 'Esc' }))),
     herLine(state),
     ...group(t('feed.new'), fresh.map((item) => itemRow(item, now)), picked, handlers),
+    ...sourcesGroup(sources, picked, handlers, now),
     ...group(t('feed.next'), next.map((schedule) => scheduleRow(schedule, now)), picked, handlers),
     ...group(t('feed.seen'), seen.map((item) => itemRow(item, now)), picked, handlers))
+
   const main = shown?.kind === 'item'
     ? itemDetail(shown.item, shown.fresh, state, handlers, now)
-    : shown ? scheduleDetail(shown.schedule, state, handlers, now)
-      : h('div', { class: 'tp-main feed-empty' }, h('p', { class: 'empty', text: t('feed.empty') }))
-  container.replaceChildren(side, main)
+    : shown?.kind === 'source'
+      ? sourceDetail(shown.source, state, handlers, now)
+      : shown?.kind === 'new-source'
+        ? newSourceDetail(state, handlers)
+        : shown?.kind === 'schedule'
+          ? scheduleDetail(shown.schedule, state, handlers, now)
+          : h('div', { class: 'tp-main feed-empty' }, h('p', { class: 'empty', text: t('feed.empty') }))
+
+  keepingInput(container, () => container.replaceChildren(side, main))
 }

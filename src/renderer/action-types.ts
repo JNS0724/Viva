@@ -99,7 +99,11 @@ export interface ActionPayloads extends ConversationPayloads {
   feed_open: { kind?: FeedPick['kind'], id?: string }
   feed_close: {}
   feed_select: FeedPick
-  feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[] }
+  feed_source_new: { pluginName?: string }
+  feed_source_draft: { changes: Partial<import('./feed-types.ts').FeedSourceDraft> }
+  feed_source_running: { id: string | null }
+  feed_source_notice: { message: string | null }
+  feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[], sources?: readonly import('./feed-types.ts').FeedSourceView[], select?: FeedPick | null, resetDraft?: boolean }
   feed_busy: {}
   feed_failed: { message: string | null }
   feed_erased: { ids: readonly string[] }

@@ -172,6 +172,12 @@ export const IPC_ARGS = Object.freeze({
   'feed:list': read(none),
   'feed:continue': read(z.tuple([id])),
   'feed:seen': z.tuple([id]),
+  'feed-sources:list': read(none),
+  'feed-sources:create': z.tuple([record]),
+  'feed-sources:update': z.tuple([id, record]),
+  'feed-sources:pause': z.tuple([id, z.boolean()]),
+  'feed-sources:delete': z.tuple([id]),
+  'feed-sources:run-now': z.tuple([id]),
 
   'island:view': read(z.tuple([record])),
   'island:act': z.tuple([record]),
