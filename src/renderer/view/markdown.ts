@@ -384,11 +384,17 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
       do { done = draw.next().done === true } while (!done && --remainingNodes > 0 && performance.now() < until)
     }
     if (language !== localeRevision()) refreshMarkdownLanguage(target)
-    if (target.ownerDocument.activeElement === button) {
+    if (target.ownerDocument.activeElement === button && button.matches(':focus-visible')) {
       const nextFocus = firstAdded ?? button.previousElementSibling ?? target
       if (nextFocus instanceof HTMLElement) {
-        if (nextFocus.tabIndex < 0) nextFocus.tabIndex = -1
+        const temporaryTabIndex = nextFocus.tabIndex < 0 && !nextFocus.hasAttribute('tabindex')
+        if (temporaryTabIndex) nextFocus.tabIndex = -1
         nextFocus.focus({ preventScroll: true })
+        if (temporaryTabIndex) {
+          const clearTabIndex = () => nextFocus.removeAttribute('tabindex')
+          if (target.ownerDocument.activeElement === nextFocus) nextFocus.addEventListener('blur', clearTabIndex, { once: true })
+          else clearTabIndex()
+        }
       }
     }
     button.remove()

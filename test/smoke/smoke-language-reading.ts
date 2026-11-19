@@ -18,7 +18,8 @@ export async function checkReadingLanguage(win: SmokeAppWindow): Promise<string[
     const check=(value,message)=>{if(!value)failures.push(message)};
     async function reveal(container){
       container.querySelector('.answer-more').click();
-      for(let i=0;i<180&&container.querySelector('.answer-more');i++)await new Promise(requestAnimationFrame);
+      const deadline=performance.now()+5000;
+      while(container.querySelector('.answer-more')&&performance.now()<deadline)await new Promise(requestAnimationFrame);
     }
     try{
       setLocale('zh-CN');

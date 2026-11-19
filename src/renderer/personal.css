@@ -1,7 +1,7 @@
 /* 关于你 · 认识你 · 扩展 — same tokens as styles.css (A 方案 · 工业饱和 Bento · 深海蓝) */
 
 .btn-small { height: 34px; padding: 0 14px; font-size: 13px; border-radius: 10px; }
-.btn-outline:hover:not(:disabled) { border-color: var(--accent); }
+.btn-outline:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--accent); }
 .link-btn { margin-left: auto; padding: 0; border: none; background: none; color: var(--accent); font-size: 12px; font-weight: 700; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
 .badge {

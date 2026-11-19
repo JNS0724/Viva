@@ -81,7 +81,9 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
 button { font: inherit; color: inherit; }
-button:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, textarea:focus-visible, a:focus-visible, summary:focus-visible,
+input[type="checkbox"]:focus-visible, .markdown:focus-visible,
+.markdown [tabindex="-1"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .mono { font-family: var(--font-mono); }
@@ -874,7 +876,7 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 }
 .field:focus { outline: none; border-color: var(--accent); }
 .field::placeholder { color: var(--ink-3); opacity: 1; }
-.field:disabled, .btn:disabled { opacity: .5; cursor: not-allowed; }
+.field:disabled, .btn:disabled, .btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 6px; }
 .btn-accent { background: var(--accent); color: var(--bg); border: none; }
 .btn-field { height: 48px; padding: 0 16px; }
