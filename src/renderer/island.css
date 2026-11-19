@@ -35,30 +35,9 @@
 .isl-dot { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--isl-dot); transition: background .3s; }
 .isl[data-tone="waiting"] .isl-dot { box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 25%, transparent); }
 
-/* The head and, on the desktop under a resting pointer, its tools (view/island-dom.js deskTools). */
 .isl-row { display: flex; align-items: center; height: calc(var(--isl-head) - 3px); }
-.isl-tools { flex: none; display: flex; align-items: center; gap: 2px; }
-.isl-tools:not(:empty) { padding-right: 8px; animation: isl-in .2s ease-out both; }
-.isl-tool {
-  position: relative; width: 30px; height: 30px; border: none; border-radius: 9px; background: none; color: var(--ink-2); cursor: pointer;
-}
-.isl-tool:hover { background: var(--line); color: var(--ink); }
-.isl-tool-stop::before { content: ''; position: absolute; inset: 0; margin: auto; width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
-.isl-tool-open { font-size: 17px; line-height: 30px; }
-/* Six dots: the grip the island is dragged by (the whole island drags; this says so). */
-.isl-grip {
-  width: 14px; height: 18px; margin-left: 4px; cursor: grab; opacity: .55;
-  background: radial-gradient(circle, var(--ink-2) 1.3px, transparent 1.6px) 0 0 / 7px 6px repeat;
-}
-.isl[data-host="desk"] .isl-row:hover .isl-grip { opacity: .9; }
-/* Too long for the island (Windows' Ctrl+Shift+Space, a wide system font), the words give way, never the tail
-   beside them: it ran into the tools (DeepSeek, 2026-10-26). */
 .isl-ask { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--ink-3); font-size: 14px; }
 .isl-head .isl-kbd { flex: none; min-width: 0; font-size: 11px; }
-/* The first-time card's tips (view/island-card.ts): each led by its gesture or key. */
-.isl-tips { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--desk-gap); font-size: 13px; color: var(--ink-2); }
-.isl-tips li { display: flex; align-items: center; gap: 12px; }
-.isl-tips .isl-kbd { min-width: var(--desk-key); color: var(--ink); }
 
 .isl-head {
   display: flex; align-items: center; gap: 8px; box-sizing: border-box; height: calc(var(--isl-head) - 3px);
@@ -396,3 +375,99 @@ html.desk, html.desk body { height: 100%; margin: 0; background: transparent; ov
   50% { opacity: 1; box-shadow: 0 0 10px 3px color-mix(in srgb, var(--accent) 80%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) { .isl-breath { animation: none; opacity: .8; } }
+
+/* ---------- title-bar vertical badge (view/island-dom.ts createBarIsland) ----------
+   46px portrait with semantic ring + tucked 18px status chin, anchored at --bar-top (12px) inside --titlebar-h (72px). */
+.isl[data-host="bar"] {
+  width: auto; max-width: 100%; height: auto;
+  border: none; border-radius: 14px; background: transparent; transition: none;
+}
+.isl[data-host="bar"] .isl-head {
+  height: auto; max-width: 100%; padding: 0 10px 2px; border-radius: 14px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 0;
+  transition: background .15s ease;
+}
+.isl[data-host="bar"] .isl-head:not(:disabled):hover { background: var(--panel); }
+.isl[data-host="bar"] .isl-head:disabled { cursor: default; }
+.isl[data-host="bar"] .isl-bar-portrait {
+  position: relative; flex: none; width: var(--island-face); height: var(--island-face);
+  display: grid; place-items: center;
+}
+.isl[data-host="bar"] .isl-face {
+  position: relative; left: auto; top: auto; width: var(--island-face); height: var(--island-face);
+  display: grid; place-items: center; pointer-events: none;
+}
+.isl[data-host="bar"] .isl-face > .maid { box-shadow: 0 0 0 1.5px var(--line-2); transition: box-shadow .25s ease; }
+.isl[data-host="bar"][data-signal="working"] .isl-face > .maid {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.isl[data-host="bar"][data-signal="working"] .isl-bar-portrait::before {
+  content: ''; position: absolute; left: 50%; top: 50%;
+  width: calc(var(--island-face) + 6px); height: calc(var(--island-face) + 6px); border-radius: 50%; pointer-events: none; z-index: 3;
+  background: conic-gradient(var(--accent) 0 105deg, transparent 132deg 360deg);
+  -webkit-mask: radial-gradient(circle, transparent calc(var(--island-face) / 2 + .5px), var(--bg) calc(var(--island-face) / 2 + 1px));
+  transform: translate(-50%, -50%); animation: isl-ring-turn 1.4s linear infinite;
+}
+.isl[data-host="bar"][data-signal="confirm"] .isl-face > .maid,
+.isl[data-host="bar"][data-signal="asking"] .isl-face > .maid {
+  box-shadow: 0 0 0 var(--bar-ring) var(--orange); animation: isl-bar-call 1.6s ease-out infinite;
+}
+.isl[data-host="bar"][data-signal="done"] .isl-face > .maid {
+  box-shadow: 0 0 0 2px var(--accent); animation: isl-bar-breathe 3.4s ease-in-out infinite;
+}
+.isl[data-host="bar"][data-signal="error"] .isl-face > .maid { box-shadow: 0 0 0 var(--bar-ring) var(--red); }
+.isl[data-host="bar"][data-signal="offline"] .isl-face > .maid { box-shadow: none; outline: 2px dashed var(--ink-3); outline-offset: 2px; }
+@keyframes isl-bar-call {
+  0%, 100% { box-shadow: 0 0 0 var(--bar-ring) var(--orange), 0 0 0 calc(var(--bar-ring) + 1px) color-mix(in srgb, var(--orange) 40%, transparent); }
+  50% { box-shadow: 0 0 0 var(--bar-ring) var(--orange), 0 0 0 calc(var(--bar-ring) + 5px) color-mix(in srgb, var(--orange) 0%, transparent); }
+}
+@keyframes isl-bar-breathe {
+  0%, 100% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--accent) 45%, transparent); }
+  50% { box-shadow: 0 0 0 2.5px var(--accent), 0 0 10px 2px color-mix(in srgb, var(--accent) 45%, transparent); }
+}
+.isl[data-host="bar"] .isl-bar-bg-slot { display: contents; }
+.isl[data-host="bar"] .isl-bar-bg {
+  position: absolute; top: -2px; right: -4px; z-index: 4; margin: 0; padding: 0 4px;
+  min-width: var(--bar-badge); height: var(--bar-badge); box-sizing: border-box;
+  border: 1.5px solid var(--accent); border-radius: 999px; background: var(--panel-2);
+  box-shadow: 0 0 0 2px var(--bg); display: inline-grid; place-items: center; pointer-events: none;
+}
+.isl[data-host="bar"] .isl-bar-bg b { font: 700 10px/1 var(--font-mono); color: var(--ink); }
+.isl[data-host="bar"] .isl-bar-bg.isl-bg-waits { border-color: var(--orange); }
+.isl[data-host="bar"] .isl-bar-bg.isl-bg-waits b { color: var(--orange); }
+.isl[data-host="bar"] .isl-bar-chin {
+  position: relative; z-index: 5; margin-top: var(--bar-chin-overlap);
+  height: var(--bar-chin-h); max-width: 100%; padding: 0 8px; box-sizing: border-box;
+  border-radius: 999px; border: 1px solid var(--line-2); background: var(--island-bg);
+  box-shadow: 0 0 0 2px var(--bg);
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 1; color: var(--ink);
+}
+.isl[data-host="bar"] .isl-bar-chin .isl-label { font-size: 11px; font-weight: 600; }
+.isl[data-host="bar"] .isl-bar-chin .isl-time { font-size: 11px; font-weight: 500; color: var(--accent); }
+.isl[data-host="bar"][data-signal="rest"] .isl-bar-chin { border-color: var(--line); color: var(--ink-3); }
+.isl[data-host="bar"][data-signal="working"] .isl-bar-chin { border-color: color-mix(in srgb, var(--accent) 60%, var(--line-2)); }
+.isl[data-host="bar"][data-signal="confirm"] .isl-bar-chin,
+.isl[data-host="bar"][data-signal="asking"] .isl-bar-chin { border-color: var(--orange); background: var(--orange); color: var(--bg); }
+.isl[data-host="bar"][data-signal="confirm"] .isl-bar-chin .isl-label,
+.isl[data-host="bar"][data-signal="asking"] .isl-bar-chin .isl-label,
+.isl[data-host="bar"][data-signal="confirm"] .isl-bar-sign,
+.isl[data-host="bar"][data-signal="asking"] .isl-bar-sign { color: var(--bg); font-weight: 700; }
+.isl[data-host="bar"][data-signal="done"] .isl-bar-chin { border-color: var(--accent); }
+.isl[data-host="bar"][data-signal="error"] .isl-bar-chin { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, var(--island-bg)); }
+.isl[data-host="bar"][data-signal="error"] .isl-bar-chin .isl-label { color: var(--error-ink); }
+.isl[data-host="bar"][data-signal="offline"] .isl-bar-chin { border-style: dashed; border-color: var(--ink-3); color: var(--ink-2); }
+.isl[data-host="bar"] .isl-bar-sign { flex: none; font-size: 11px; font-weight: 700; line-height: 1; }
+.isl[data-host="bar"][data-signal="rest"] .isl-bar-sign { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-3); }
+.isl[data-host="bar"][data-signal="working"] .isl-bar-sign {
+  width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%;
+  border: 1.8px solid color-mix(in srgb, var(--accent) 30%, transparent); border-top-color: var(--accent);
+  animation: isl-spin 1s linear infinite;
+}
+.isl[data-host="bar"][data-signal="done"] .isl-bar-sign { color: var(--accent); }
+.isl[data-host="bar"][data-signal="error"] .isl-bar-sign { color: var(--error-ink); }
+.isl[data-host="bar"][data-signal="offline"] .isl-bar-sign { color: var(--ink-3); }
+@media (prefers-reduced-motion: reduce) {
+  .isl[data-host="bar"] .isl-face > .maid,
+  .isl[data-host="bar"] .isl-bar-portrait::before,
+  .isl[data-host="bar"] .isl-bar-sign { animation: none; transition: none; }
+}

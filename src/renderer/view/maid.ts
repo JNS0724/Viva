@@ -46,9 +46,14 @@ export const badgeOf = (mood: MaidMood): string | null => BADGES[mood] ?? null
 
 export const ringOf = (mood: MaidMood): Ring => RINGS[mood]
 
-/** Both asset sets already contain their final framing; display the complete canvas. */
-export function framingOf(size: number, _framing: Framing): { size: number, offset: number } {
-  return { size, offset: 0 }
+/**
+ * Half-body art displays the complete canvas; small `face` portraits trim a quiet 8% outer margin of
+ * cream paper so her expression and props stay legible in the title bar without clipping hair or hands.
+ */
+export function framingOf(size: number, framing: Framing): { size: number, offset: number } {
+  if (framing !== 'face') return { size, offset: 0 }
+  const pad = Math.round(size * 0.08)
+  return { size: size + pad * 2, offset: -pad }
 }
 
 /** How she is drawn: her size, how she is framed, whether she may move, whether a badge says what she holds. */

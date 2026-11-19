@@ -30,11 +30,16 @@
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Consolas, Menlo, Monaco, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', ui-monospace, monospace;
   --font-dot: 'Doto', 'JetBrains Mono', ui-monospace, monospace;
   --radius-tile: 28px;
-  /* main's window-options.ts TITLEBAR_HEIGHT matches it; the island (44px, view/island-dom.ts) is centred in it with her 36px portrait. */
-  --titlebar-h: 56px;
-  --island-h: 44px;
-  --island-face: 36px;
+  /* main's window-options.ts TITLEBAR_HEIGHT matches it; the vertical badge (view/island-dom.ts) sits inside with her 46px portrait on the same midline as the window buttons. */
+  --titlebar-h: 72px;
+  --island-h: 64px;
+  --island-face: 46px;
   --island-pad: 48px;
+  --bar-top: 12px;
+  --bar-chin-h: 18px;
+  --bar-chin-overlap: -9px;
+  --bar-badge: 18px;
+  --bar-ring: 2.5px;
   --hero-maid-medium: 120px;
   --hero-maid-short: 90px;
   /* Desktop island families (view/island-dom.ts and island-input.ts). */
@@ -59,6 +64,8 @@
   --drawer-width: 440px;
   /* How much of a long message shows folded (view/message-fold.ts); it folds only from about twice this. */
   --msg-fold-h: 280px; --msg-fold-fade: linear-gradient(to bottom, #000 70%, transparent);
+  /* Quiet breathing space and soft top fade between the title-bar badge and scrolling conversation content. */
+  --scroll-top-gap: 10px; --scroll-top-fade: linear-gradient(to bottom, transparent 0, #000 18px);
   /* A task's result the model read (view/report-record.ts): aligned with the answers' text, one quiet line. */
   --record-indent: 0px; --record-row-h: 28px; --record-gap: 6px; --record-row-gap: 8px;
   --record-text: 12px; --record-stamp: 11px; --record-text-max: 280px;
@@ -101,28 +108,29 @@ html:not([data-platform="darwin"]) .titlebar {
 .titlebar {
   position: relative; min-width: 0; display: flex; align-items: center; justify-content: space-between;
   padding: 0 calc(var(--reserve-right) + var(--titlebar-gutter)) 0 calc(var(--reserve-left) + var(--titlebar-gutter));
-  border-bottom: 1px solid var(--line); -webkit-app-region: drag; user-select: none;
+  border-bottom: 1px solid transparent; -webkit-app-region: drag; user-select: none;
   /* The island unfolds over the conversation below, which comes later in the page. */
   z-index: 35;
 }
+body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) .titlebar { border-bottom-color: var(--line); }
 .titlebar button, .isl { -webkit-app-region: no-drag; }
 .titlebar-left { min-width: 0; }
-/* Centred on the window, not on the space between the reserved areas; shrinks before it can touch the buttons.
-   Pinned to the top, so the island unfolds downwards only. */
+/* Centred on the window, not on the space between the reserved areas; pinned from the top so her portrait disc shares the midline of the window controls. */
 .titlebar-center {
-  position: absolute; left: 50%; top: calc((var(--titlebar-h) - var(--island-h)) / 2); transform: translateX(-50%); display: flex;
+  position: absolute; left: 50%; top: var(--bar-top); transform: translateX(-50%); display: flex; align-items: flex-start;
   max-width: calc(100vw - 2 * (max(var(--reserve-left), var(--reserve-right)) + var(--titlebar-gutter) + var(--titlebar-actions) + 16px));
 }
-.titlebar-center:has(.isl[data-open="true"]) { max-width: calc(100vw - var(--reserve-left) - var(--reserve-right) - 32px); }
 .titlebar-right { display: flex; justify-content: flex-end; gap: 6px; }
-.titlebar .icon-btn { width: 36px; height: 36px; }
-/* 动态's way in (view/feed-page.ts): a title bar button with its word and, when something is new, a count. */
+.titlebar .icon-btn { width: 36px; height: 36px; border-color: transparent; background: transparent; }
+.titlebar .icon-btn:hover { background: var(--panel); border-color: var(--line); color: var(--ink); }
+.titlebar .icon-btn[aria-pressed="true"] { background: var(--panel); border-color: var(--accent); color: var(--accent); }
+/* 动态's way in (view/feed-page.ts): quiet ghost button aligned with the title bar's icon buttons, showing a count when new. */
 .feed-btn {
-  height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-2);
-  background: var(--panel); color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer;
+  height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 11px; border-radius: 10px; border: 1px solid transparent;
+  background: transparent; color: var(--ink-2); font-size: 13px; font-weight: 500; cursor: pointer;
 }
-.feed-btn:hover { color: var(--ink); border-color: var(--ink-3); }
-.feed-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.feed-btn:hover { background: var(--panel); color: var(--ink); border-color: var(--line); }
+.feed-btn[aria-pressed="true"] { background: var(--panel); color: var(--accent); border-color: var(--accent); }
 .feed-btn .feed-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: var(--bg); font: 600 11px/20px var(--font-mono); text-align: center; }
 /* At 150% zoom the minimum window has less title-bar room; keep her portrait clear of the actions. */
 @media (max-width: 720px) {
@@ -146,7 +154,7 @@ html:not([data-platform="darwin"]) .titlebar {
 /* A zoomed minimum-size window must constrain the grid column instead of adopting its contents' min-width. */
 .body { position: relative; display: flex; min-width: 0; min-height: 0; }
 /* --rail-lane: kept free of the column at each side, the turn rail's on the left (view/column-resize.ts RAIL_LANE). */
-.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 0 28px 16px; }
+.main { --rail-lane: 40px; position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: var(--scroll-top-gap) 28px 16px; }
 /* 按轮次跳转 (view/turn-rail.ts): in its own lane at the main area's left edge (--rail-lane), one mark per question,
    packed tighter as turns add up. A mark's tip opens rightwards, over the text. */
 .turn-rail {
@@ -192,7 +200,11 @@ html:not([data-platform="darwin"]) .titlebar {
 .col-grip:focus-visible { outline: none; }
 .col-resizing, .col-resizing * { cursor: col-resize !important; user-select: none !important; }
 /* A message's star extends 38px beyond its column. Keep that lane inside the scrollport at narrow widths too. */
-.scroll { position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto; display: flex; flex-direction: column; align-items: center; }
+.scroll {
+  position: relative; flex: 1; width: 100%; min-height: 0; padding-inline: 38px; overflow-y: auto;
+  display: flex; flex-direction: column; align-items: center;
+  -webkit-mask-image: var(--scroll-top-fade); mask-image: var(--scroll-top-fade);
+}
 /* Back to the latest (view/scroll-follow.ts): an arrow only, a quiet way down while reading further up. */
 .jump-latest {
   align-self: center; flex: none; display: grid; place-items: center; width: 36px; height: 36px; margin: 0 0 4px; padding: 0;
@@ -210,9 +222,9 @@ html:not([data-platform="darwin"]) .titlebar {
 .timeline-more:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
 .timeline-more:disabled { cursor: default; opacity: .7; }
 .timeline-day {
-  display: flex; align-items: center; gap: 12px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
+  display: flex; align-items: center; justify-content: center; margin-bottom: -14px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
 }
-.timeline-day::before, .timeline-day::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .timeline-workdir {
   align-self: center; display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 6px 14px; box-sizing: border-box;
   border: 1px solid var(--line-2); border-radius: 999px; background: var(--panel); font-size: 12px; color: var(--ink-2);
@@ -220,7 +232,8 @@ html:not([data-platform="darwin"]) .titlebar {
 .timeline-workdir b { color: var(--ink); }
 /* Topics (view/earlier.js): one the assistant no longer has is a step quieter, its head says so. */
 /* Folded to one line (its first question, turns, when); opened in place, its messages a step quieter. */
-.topic-old { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.topic-old { border: 1px solid transparent; border-radius: 14px; background: var(--panel); transition: border-color .15s; }
+.topic-old:hover { border-color: var(--line); }
 .topic-old[open] { border-color: var(--line-2); }
 .topic-head {
   display: flex; align-items: center; gap: 14px; padding: 12px 16px; cursor: pointer; list-style: none;
@@ -245,17 +258,18 @@ html:not([data-platform="darwin"]) .titlebar {
 .topic-back:disabled { cursor: default; opacity: .6; }
 /* Where the topic on screen starts. */
 .topic-start { display: flex; align-items: center; gap: 12px; font-size: 13px; font-weight: 600; color: var(--ink); }
-.topic-start::before, .topic-start::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+.topic-start::before { content: ''; flex: 1; height: 1px; background: linear-gradient(to right, transparent, var(--line-2)); }
+.topic-start::after { content: ''; flex: 1; height: 1px; background: linear-gradient(to left, transparent, var(--line-2)); }
 .topic-start time { font: 12px var(--font-mono); font-weight: 400; color: var(--ink-3); }
 .topic-note { align-self: center; margin-top: -16px; font-size: 12px; color: var(--ink-3); text-align: center; }
 
 /* Above the input: what the assistant has in mind now, and ＋ 新话题 (view/topic-label.js). */
 .ctx-area { position: relative; width: 100%; max-width: var(--col, 760px); display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .ctx-new {
-  display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2);
-  background: none; color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 12px; border-radius: 8px; border: 1px solid transparent;
+  background: var(--panel); color: var(--ink-2); font-size: 12px; cursor: pointer; white-space: nowrap;
 }
-.ctx-new:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); }
+.ctx-new:hover:not(:disabled) { color: var(--ink); border-color: var(--line-2); }
 .ctx-new:disabled { cursor: default; opacity: .5; }
 .ctx-chip { gap: 6px; border: 1px solid transparent; cursor: pointer; }
 .ctx-chip:hover, .ctx-chip[aria-expanded="true"] { border-color: var(--line-2); }
@@ -536,7 +550,8 @@ html:not([data-platform="darwin"]) .titlebar {
 .history-divider {
   display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--ink-3);
 }
-.history-divider::before, .history-divider::after { content: ''; flex: 1; height: 1px; background: var(--line-2); }
+.history-divider::before { content: ''; flex: 1; height: 1px; background: linear-gradient(to right, transparent, var(--line-2)); }
+.history-divider::after { content: ''; flex: 1; height: 1px; background: linear-gradient(to left, transparent, var(--line-2)); }
 .history-when { font-family: var(--font-mono); color: var(--ink-2); }
 .msg-working { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2); }
 .working-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: working-pulse 1.4s ease-in-out infinite; }
@@ -809,9 +824,9 @@ body:has(.workdir-menu, .model-menu, .perm-menu, .ctx-menu) .toast-root { visibi
 .model-area { position: relative; }
 .model-btn {
   display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px 0 12px; border-radius: 9px;
-  border: 1px solid var(--line-2); background: var(--raised); color: var(--ink); cursor: pointer; max-width: 260px;
+  border: 1px solid transparent; background: var(--raised); color: var(--ink); cursor: pointer; max-width: 260px;
 }
-.model-btn:hover:not(:disabled) { border-color: var(--accent); }
+.model-btn:hover:not(:disabled), .model-btn[aria-expanded="true"] { border-color: var(--line-2); }
 .model-btn:disabled { opacity: .55; cursor: not-allowed; }
 .model-btn-name { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-btn-effort { font-family: var(--font-mono); font-weight: 700; font-size: 11px; color: var(--accent); }

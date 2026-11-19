@@ -100,7 +100,7 @@ function webSearchSection(settings: Settings, handlers: Handlers) {
       })))
 }
 
-/** The desktop island can be turned off (it is on by default) and put back at the top centre. */
+/** The desktop island can be turned off (it is on by default). */
 function deskSection(settings: Settings, handlers: Handlers) {
   return h('section', { class: 'ext', 'aria-label': t("settings.desktop.island") },
     h('label', { class: 'pref-row' },
@@ -112,7 +112,6 @@ function deskSection(settings: Settings, handlers: Handlers) {
         type: 'checkbox', class: 'switch', name: 'desk-island', checked: settings.deskIsland !== false, 'aria-label': t("settings.desktop.island"),
         onChange: (event: Event) => handlers.setDeskIsland((event.target as HTMLInputElement).checked),
       })),
-    h('button', { type: 'button', class: 'btn btn-outline desk-reset', text: t("settings.move.to.top.center"), onClick: () => handlers.resetDeskPlace() }),
     openAtLoginRow(settings, handlers))
 }
 

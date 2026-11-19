@@ -349,7 +349,7 @@ export const en = {
   'native.stop': 'Stop',
   'native.resetIsland': 'Move to top center',
   'native.hideIsland': 'Hide until the window is closed again',
-  'native.disableIsland': 'Turn off desktop island (enable in Settings)',
+  'native.disableIsland': 'Turn off desktop island',
   'time.today': 'Today',
   'time.yesterday': 'Yesterday',
   'time.tomorrow': 'Tomorrow',

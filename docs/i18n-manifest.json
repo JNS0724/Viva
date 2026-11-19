@@ -71,8 +71,8 @@
     {
       "en": "docs/ui-guidelines.md",
       "zh": "docs/ui-guidelines.zh-CN.md",
-      "enHash": "c92794b2c7184533d7991d0c7c38aab2af5b7e38b6c49bc70b16ea95b0b8674f",
-      "zhHash": "706013fdce45fc34e1c85652867b6729a71522f687c550996550e2794cef62f1"
+      "enHash": "1a5ab3b8f4718ed8869cc11e017c9505c918c923891e5c9b79bd017f6f56178a",
+      "zhHash": "d89f1441b4418765824afda4736400028a79700c71a03f69907e65070de5004a"
     },
     {
       "en": "docs/system-design.md",
