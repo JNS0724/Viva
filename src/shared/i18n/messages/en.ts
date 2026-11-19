@@ -1471,6 +1471,7 @@ export const en = {
   "plugins.off": "Disabled",
   "plugins.loaded": "Loaded",
   "plugins.enter.spec": "Enter an npm package name, a git address, or a folder.",
+  "plugins.inspect.again": "Look up the plugin again before installing.",
   "plugins.found": "{name} {version}",
   "plugins.not.a.bundle": "This package declares no dsh plugin.",
   "plugins.fit.declared": "Developer declares Viva support",

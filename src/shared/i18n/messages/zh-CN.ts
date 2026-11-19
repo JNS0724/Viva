@@ -1472,6 +1472,7 @@ export const zhCN = {
   "plugins.off": "已停用",
   "plugins.loaded": "已加载",
   "plugins.enter.spec": "填一个 npm 包名、git 地址或文件夹。",
+  "plugins.inspect.again": "请重新查看插件后再安装。",
   "plugins.found": "{name} {version}",
   "plugins.not.a.bundle": "此软件包未声明 dsh 插件。",
   "plugins.fit.declared": "开发者声明支持 Viva",

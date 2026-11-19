@@ -54,6 +54,7 @@ const changed = (state: State, { view, notice = null, pendingBuilds = [] }: Payl
 export const PLUGIN_ACTIONS= {
   plugins_loaded: (state, { view }) => withPlugins(state, { ...view, loaded: true, busy: false }),
   plugins_busy: (state) => withPlugins(state, { busy: true, error: null, notice: null }),
+  plugins_inspecting: (state) => withPlugins(state, { busy: true, error: null, notice: null, inspection: null, pendingBuilds: [] }),
   plugins_failed: (state, { message }) => withPlugins(state, { busy: false, error: message }),
   /** Typed, the field already says it; `filled` (a pick from the source) puts it there. */
   plugins_spec: (state, { spec, filled = false }) => withPlugins(state, {

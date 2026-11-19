@@ -2,8 +2,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { t } from '../shared/i18n/translate.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
-import type { CatalogAnswer } from './plugin-catalog.ts'
-import type { PluginSourceView } from './plugin-source.ts'
+import { registryRelease, type CatalogAnswer } from './plugin-catalog.ts'
+import { normalizeRegistry, type PluginSourceView } from './plugin-source.ts'
 import type { PluginsOp, PluginsResult } from './plugins-channel.ts'
 import { declaredReadOnlyTools, profileFitOptions, vivaFit, type VivaFit } from './plugin-fit.ts'
 
@@ -22,7 +22,7 @@ const MAX_TEXT_CHARS = 2000
 type Call = (op: PluginsOp, args?: Record<string, unknown>) => Promise<PluginsResult>
 
 /** One row a bundle adds, and how it runs now. */
-export interface PluginRowView { id: string, entryId: string | null, enabled: boolean, phase: string | null }
+export interface PluginRowView { id: string, entryId: string | null, enabled: boolean | null, phase: string | null }
 /** One installed plugin as the section shows it. */
 export interface PluginView {
   name: string, version: string | null, description: string | null, enabled: boolean, removable: boolean,
@@ -89,7 +89,7 @@ export function pluginsView(value: unknown, profileDir: string): PluginView[] {
       rows: list(bundle.rows).map(record).map((row) => {
         const entryId = str(row.entryId)
         const live = entryId ? running.get(entryId) : undefined
-        return { id: String(row.rowId ?? ''), entryId, enabled: live?.enabled === true, phase: str(live?.fiberPhase) }
+        return { id: String(row.rowId ?? ''), entryId, enabled: typeof live?.enabled === 'boolean' ? live.enabled : null, phase: str(live?.fiberPhase) }
       }),
       overrides: list(bundle.overrides).map(String),
     }
@@ -128,11 +128,13 @@ export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   /** dsh again, on the conversation on screen, with the source as saved. */
   restart: () => Promise<unknown>,
   /** Whether what a spec names works in Viva, from its package.json (plugin-catalog.ts specFit). */
-  specFit: (spec: string) => Promise<VivaFit>,
+  specFit: (spec: string, registry?: string | null) => Promise<VivaFit>,
   /** The dsh plugins the company source finds (plugin-catalog.ts searchCatalog). */
   catalog: (query: string) => Promise<CatalogAnswer>,
 }) {
   const handle = handlerOf(ipcMain)
+  let lookup = 0
+  let preview: { id: string, input: string, release: { name: string, version: string }, registry: string | null, fit: VivaFit } | null = null
   async function view(): Promise<PluginsView> {
     const result = await deps.call('list')
     if (!result.ok) return { connected: false, plugins: [] }
@@ -143,20 +145,39 @@ export function registerPluginsIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   handle('plugins:get', view)
   // What dsh says the spec names first; only one it could look at is looked up on the source too.
   handle('plugins:inspect', async (spec) => {
-    const inspection = await ask(deps.call, 'inspect', { spec })
+    const id = String(++lookup)
+    preview = null
+    const inspection = record(await ask(deps.call, 'inspect', { spec }))
     const found = inspectionView(inspection)
     if (!found.ok) return found
-    const exact = record(inspection).kind === 'registry' && found.name && found.version ? `${found.name}@${found.version}` : spec
-    return { ...found, fit: await deps.specFit(exact) }
+    if (inspection.kind !== 'registry') return { ...found, fit: await deps.specFit(spec) }
+    const release = registryRelease(found.name, found.version)
+    if (!release) return { ok: false as const, problem: 'unknown' }
+    const company = deps.source.view().registry
+    // A company source is the only source for the whole operation. Otherwise use the registry that answered dsh.
+    const registry = company ?? (typeof inspection.registry === 'string' ? normalizeRegistry(inspection.registry) : null)
+    if (company && inspection.registry && inspection.registry !== company) return { ok: false as const, problem: 'unknown' }
+    const fit = await deps.specFit(`${release.name}@${release.version}`, registry)
+    if (id === String(lookup)) preview = { id, input: spec.trim(), release, registry, fit }
+    return { ...found, fit, previewId: id }
   })
   handle('plugins:catalog', (query) => deps.catalog(query))
-  handle('plugins:install', (spec, approvedBuilds) => changed('install', { spec, ...(approvedBuilds?.length ? { approvedBuilds } : {}) }))
+  handle('plugins:install', (spec, approvedBuilds, previewId) => {
+    const args = approvedBuilds?.length ? { approvedBuilds } : {}
+    if (previewId === undefined) return changed('install', { spec, ...args })
+    if (preview?.id !== previewId || preview.input !== spec.trim()) throw new Error(t('plugins.inspect.again'))
+    if (preview.fit.kind === 'dsh-version') throw new Error(t('plugins.fit.dsh.version'))
+    const { release, registry } = preview
+    return changed('install', { spec: `${release.name}@${release.version}`, registry, expected: release, ...args })
+  })
   handle('plugins:remove', (name) => changed('remove', { name }))
   handle('plugins:set-enabled', (name, enabled) => changed('setBundle', { name, enabled }))
   handle('plugins:source', () => deps.source.view())
   handle('plugins:set-source', async (registry, token) => {
     if (deps.busy()) throw new Error(t('main.plugin-source.busy'))
     const source = deps.source.save({ registry, ...(token === undefined ? {} : { token }) })
+    lookup++
+    preview = null
     await deps.restart()
     return { source, view: await view() }
   })

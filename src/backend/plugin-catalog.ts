@@ -48,6 +48,12 @@ const isName = (value: unknown): value is string => typeof value === 'string' &&
 const isVersion = (value: unknown): value is string => typeof value === 'string' && VERSION.test(value)
 const text = (value: unknown, max: number): string | null => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null)
 
+/** A published release, identified by the manifest returned by dsh's registry lookup. */
+export function registryRelease(name: string | null, version: string | null) {
+  if (!isName(name) || !isVersion(version) || !/^\d+\.\d+\.\d+(?:$|[-+])/.test(version)) return null
+  return { name, version }
+}
+
 /** What a failed run said: its first line of error output, else its message. */
 function detailOf(err: unknown): string | null {
   const said = String(record(err).stderr ?? '').split('\n').map((line) => line.trim()).find(Boolean)
@@ -122,9 +128,10 @@ export async function searchCatalog({ query, pnpm, run, fitOptions }: { query: s
  */
 export async function specFit({ spec, pnpm, run, fitOptions }: { spec: string, pnpm: PnpmCall | null, run: RunPnpm, fitOptions?: Parameters<typeof vivaFit>[1] }): Promise<VivaFit> {
   const given = spec.trim()
-  if (path.isAbsolute(given)) {
+  const folder = given.replace(/^(?:file|link):/, '')
+  if (path.isAbsolute(folder)) {
     try {
-      return vivaFit(JSON.parse(fs.readFileSync(path.join(given, 'package.json'), 'utf8')), fitOptions)
+      return vivaFit(JSON.parse(fs.readFileSync(path.join(folder, 'package.json'), 'utf8')), fitOptions)
     } catch {
       return { kind: 'unknown' }
     }

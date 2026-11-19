@@ -50,7 +50,7 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
     const spec = plugins().spec.trim()
     if (!spec) return fail(t('plugins.enter.spec'))
     if (plugins().busy) return
-    dispatch({ type: 'plugins_busy' })
+    dispatch({ type: 'plugins_inspecting' })
     const stillCurrent = () => plugins().spec.trim() === spec
     try {
       const inspection = await api.inspectPlugin(spec)
@@ -90,7 +90,7 @@ export function createPluginActions({ api, getState, dispatch, errorMessage }: P
       const { spec, inspection, pendingBuilds } = plugins()
       if (inspection?.fit?.kind === 'dsh-version') return
       if (!spec.trim()) return fail(t('plugins.enter.spec'))
-      return change(() => api.installPlugin(spec.trim(), pendingBuilds.length ? [...pendingBuilds] : undefined))
+      return change(() => api.installPlugin(spec.trim(), pendingBuilds.length ? [...pendingBuilds] : undefined, inspection?.previewId))
     },
     dismissPluginInstall: () => dispatch({ type: 'plugins_dismiss' }),
     editCatalogQuery: (query: string) => dispatch({ type: 'plugins_catalog_query', query }),

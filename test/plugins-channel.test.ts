@@ -35,9 +35,15 @@ test('each call goes to dsh\'s plugin manager and its answer comes back', async 
   const { desk, stop, listeners } = wired(fakeManager(calls))
   assert.deepEqual(await desk.call('list'), { ok: true, value: { bundles: [{ name: 'b' }], plugins: [{ entryId: 'e' }] } })
   await desk.call('install', { spec: ' demo ', approvedBuilds: ['esbuild'] })
+  const registry = 'https://registry.npmmirror.com/'
+  const expected = { name: 'demo', version: '1.0.0' }
+  await desk.call('install', { spec: 'demo@1.0.0', registry, expected })
   await desk.call('setBundle', { name: 'demo', enabled: false })
   await desk.call('remove', { name: 'demo' })
-  assert.deepEqual(calls, [['installBundle', 'demo', { approvedBuilds: ['esbuild'] }], ['setBundleEnabled', 'demo', false], ['removeBundle', 'demo']])
+  assert.deepEqual(calls, [
+    ['installBundle', 'demo', { approvedBuilds: ['esbuild'] }], ['installBundle', 'demo@1.0.0', { registry, expected }],
+    ['setBundleEnabled', 'demo', false], ['removeBundle', 'demo'],
+  ])
   stop()
   assert.equal(listeners.size, 0)
 })
@@ -48,6 +54,7 @@ test('malformed calls are refused before they reach the manager', async () => {
   await assert.rejects(runCall(manager, 'install', { spec: '' }), /invalid argument/)
   await assert.rejects(runCall(manager, 'setBundle', { name: 'x', enabled: 'yes' }), /invalid argument/)
   await assert.rejects(runCall(manager, 'install', { spec: 'x', approvedBuilds: 'all' }), /invalid argument/)
+  await assert.rejects(runCall(manager, 'install', { spec: 'x', expected: { name: 'x' } }), /invalid argument/)
   await assert.rejects(runCall(manager, 'drop-tables', {}), /unknown operation/)
   assert.deepEqual(calls, [])
   const { desk } = wired(manager)

@@ -1461,7 +1461,11 @@ ${question}` : question
       source: pluginSource,
       busy: () => turn.active,
       restart: restartKeepingConversation,
-      specFit: (spec) => specFit({ spec, pnpm: pluginPnpm?.call ?? null, run: runPnpm, fitOptions: profileFitOptions(pluginProfileDir()) }),
+      specFit: (spec, registry) => {
+        const call = pluginPnpm?.call ?? null
+        const pnpm = call && registry && !pluginPnpm?.registry ? { ...call, args: [...call.args, `--registry=${registry}`] } : call
+        return specFit({ spec, pnpm, run: runPnpm, fitOptions: profileFitOptions(pluginProfileDir()) })
+      },
       // Only a company source is searched: the public registries are not a catalog of dsh plugins.
       catalog: (query) => searchCatalog({ query, pnpm: pluginPnpm?.registry ? pluginPnpm.call : null, run: runPnpm, fitOptions: profileFitOptions(pluginProfileDir()) }),
     })

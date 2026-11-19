@@ -48,7 +48,7 @@ export interface ExtensionStatus {
 }
 
 /** One row a plugin adds, and how it runs now. */
-export interface PluginRow { id: string, entryId: string | null, enabled: boolean, phase: string | null }
+export interface PluginRow { id: string, entryId: string | null, enabled: boolean | null, phase: string | null }
 
 export type PluginFit = { kind: 'declared' } | { kind: 'no-conflict' } | { kind: 'web-part' }
   | { kind: 'needs-web', needs: readonly string[] }

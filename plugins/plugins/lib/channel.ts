@@ -15,7 +15,7 @@ export interface Manager {
   listBundles(): Promise<unknown>
   listPlugins(): Promise<unknown>
   inspect(spec: string): Promise<unknown>
-  installBundle(spec: string, options?: { approvedBuilds?: string[] }): Promise<unknown>
+  installBundle(spec: string, options?: { approvedBuilds?: string[], registry?: string | null, expected?: { name: string, version: string } }): Promise<unknown>
   removeBundle(name: string): Promise<unknown>
   setBundleEnabled(name: string, enabled: boolean): Promise<unknown>
   setPluginEnabled(id: string, enabled: boolean): Promise<unknown>
@@ -42,6 +42,12 @@ const builds = (value: unknown): string[] | undefined => {
   if (!Array.isArray(value) || value.length > MAX_BUILDS) throw new Error('invalid argument')
   return value.map((name) => text(name, MAX_NAME_CHARS))
 }
+const release = (value: unknown): { name: string, version: string } | undefined => {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid argument')
+  const { name, version } = value as Args
+  return { name: text(name, MAX_NAME_CHARS), version: text(version, 64) }
+}
 
 /** Runs one call against the manager; throws on an unknown op or bad arguments. */
 export async function runCall(manager: Manager, op: string, args: Args): Promise<unknown> {
@@ -53,7 +59,13 @@ export async function runCall(manager: Manager, op: string, args: Args): Promise
     case 'inspect': return manager.inspect(text(args.spec, MAX_SPEC_CHARS))
     case 'install': {
       const approvedBuilds = builds(args.approvedBuilds)
-      return manager.installBundle(text(args.spec, MAX_SPEC_CHARS), approvedBuilds ? { approvedBuilds } : {})
+      const registry = args.registry === undefined || args.registry === null ? args.registry : text(args.registry, MAX_SPEC_CHARS)
+      const expected = release(args.expected)
+      return manager.installBundle(text(args.spec, MAX_SPEC_CHARS), {
+        ...(approvedBuilds ? { approvedBuilds } : {}),
+        ...(registry === undefined ? {} : { registry }),
+        ...(expected ? { expected } : {}),
+      })
     }
     case 'remove': return manager.removeBundle(text(args.name, MAX_NAME_CHARS))
     case 'setBundle': return manager.setBundleEnabled(text(args.name, MAX_NAME_CHARS), flag(args.enabled))

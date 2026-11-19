@@ -77,8 +77,8 @@ export type PluginStanding = { kind: 'error', code: string, detail: string | nul
 export function pluginStanding(plugin: PluginView): PluginStanding {
   if (plugin.error) return { kind: 'error', code: plugin.error.code, detail: plugin.error.detail }
   if (!plugin.enabled) return { kind: 'off' }
-  const rows = plugin.rows.filter(row => row.entryId)
-  const stalled = rows.filter(row => row.phase !== 'active').map(row => row.id)
+  const rows = plugin.rows.filter(row => row.enabled !== false || !row.entryId)
+  const stalled = rows.filter(row => !row.entryId || row.phase !== 'active').map(row => row.id)
   if (stalled.length) return { kind: 'stalled', rows: stalled }
   if (rows.length) return { kind: 'loaded' }
   if (plugin.fit.kind === 'needs-web') return { kind: 'unsupported', needs: plugin.fit.needs }
