@@ -56,9 +56,10 @@ test('the ring follows the mood: orange waits on the user, red is an error, blue
   assert.equal(ringOf('idle'), 'quiet')
 })
 
-test('half-body and centred portraits both use the complete canvas without a second crop', () => {
+test('half-body art keeps the complete canvas while face portraits trim a quiet outer margin', () => {
   assert.deepEqual(framingOf(72, 'whole'), { size: 72, offset: 0 })
-  assert.deepEqual(framingOf(48, 'face'), { size: 48, offset: 0 })
+  assert.deepEqual(framingOf(48, 'face'), { size: 56, offset: -4 })
+  assert.deepEqual(framingOf(46, 'face'), { size: 54, offset: -4 })
 })
 
 type Manifest = {

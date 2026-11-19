@@ -4,10 +4,11 @@ import type { BrowserWindowConstructorOptions } from 'electron'
 /** Window chrome, size and icon per platform. Pure, so the choices can be tested on any OS. */
 
 /**
- * Shared by both platforms; Windows draws its caption buttons at this height too. Room for the island (48px,
- * its cat 36px, like the desktop island's) with 4px above and below: keep in step with styles.css --titlebar-h.
+ * Shared by both platforms; Windows draws its caption buttons at this height too. Room for the vertical
+ * title-bar badge (46px portrait anchored 12px from the top + tucked status chin) strictly inside: keep
+ * in step with styles.css --titlebar-h.
  */
-export const TITLEBAR_HEIGHT = 56
+export const TITLEBAR_HEIGHT = 72
 const BACKGROUND = '#060B16'
 const SYMBOL_COLOR = '#A3B0CC'
 const TRAFFIC_LIGHT_HEIGHT = 14

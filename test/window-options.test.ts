@@ -3,12 +3,12 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import { TITLEBAR_HEIGHT, devIcon, windowChrome, windowSize } from '../src/shell/window-options.ts'
 
-test('macOS keeps its traffic lights, inset and centred in the shorter title bar', () => {
+test('macOS keeps its traffic lights, inset and centred in the title bar', () => {
   const chrome = windowChrome('darwin')
 
   assert.equal(chrome.titleBarStyle, 'hiddenInset')
   assert.equal(chrome.titleBarOverlay, undefined)
-  assert.equal(chrome.trafficLightPosition.y, 21, 'lights are about 14px tall, so they sit centred in 56px')
+  assert.equal(chrome.trafficLightPosition?.y, 29, 'lights are about 14px tall, so they sit centred in 72px')
 })
 
 test('Windows and Linux get system-drawn window buttons in a matching overlay', () => {

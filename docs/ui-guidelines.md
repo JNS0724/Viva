@@ -99,12 +99,12 @@ Nested corners should be concentric: inner radius = outer radius − padding. Th
 
 ## Layout
 
-- **Title bar.** `--titlebar-h` is 56px and the island, `--island-h`, is 36px, centred in it. The title-bar island uses a state dot. The height must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
+- **Title bar.** `--titlebar-h` is 72px, housing a centred vertical status badge strictly inside its bottom border: a 46px dedicated portrait (anchored 12px from the top to share the midline of the window controls, with a semantic status ring and a top-right count badge while background tasks run) above a tucked 18px status chin. The badge is display-only when idle, opens the matching task when a background task waits on approval or an answer, opens the Background page while background tasks are running, and jumps to the request card when a foreground request waits on you. The bottom border stays hidden on the home and conversation views and appears when a hub page or the right drawer is open; right-side actions share a quiet borderless ghost treatment that reveals `--panel` on hover or active state. The height must match `TITLEBAR_HEIGHT` in the main process's `window-options.ts`.
 - **Room for window buttons.** On macOS, `--reserve-left` keeps 84px on the left for the traffic lights. On Windows and Linux, `env(titlebar-area-width)` gives how much to leave on the right. This value is set only on `.titlebar`, so resizing the window doesn't invalidate the inherited style of every message.
 - **Status capsule.** It is always centered on the whole window. When space runs out it shrinks first, so it never covers the buttons on either side.
 - **Conversation column.** `--col` defaults to 760px and can be resized by dragging its edges. On the left, `--rail-lane` keeps 40px free for the turn rail.
 - **Drawer.** `--drawer-width` is 440px. At 1100px and narrower, it floats over the conversation. When a request is waiting in the conversation, the drawer offers **View request** to close it and focus the request.
-- **Activity details.** **View activity** under a conversation receipt opens the right drawer. Every node has a read-only detail view, with long content scrolling across the detail body. A model call exposes its actual prompt, message roles and raw JSON; credential values are never shown. The title-bar capsule no longer unfolds activity: ordinarily it opens the Background page, while a pending foreground request keeps its jump to the request card.
+- **Activity details.** **View activity** under a conversation receipt opens the right drawer. Every node has a read-only detail view, with long content scrolling across the detail body. A model call exposes its actual prompt, message roles and raw JSON; credential values are never shown. The title-bar badge no longer unfolds activity: it is display-only when idle, opens the matching task when a background task waits on you, opens the Background page while background tasks run, and jumps to the request card when a foreground request waits on you.
 - **Breakpoints.** 720px (pages go to one column), 760px (home cards stack), 1100px (the drawer floats). The minimum window size is 880×600.
 - **Layers (z-index):**
 
@@ -235,7 +235,7 @@ Ring colors match the interface's state colors: orange waits on you, red is an e
 
 Drawn by `src/renderer/view/maid.ts`:
 
-- **Framing:** `whole` shows the half-body picture at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 48px in conversation. Both sets display their complete canvas.
+- **Framing:** `whole` shows the complete half-body canvas at 200px on the home page, 96px on cards, 72px in every desktop-island state and 64px on feed details. `face` uses the dedicated centred assets in `avatars/` at 46px in the title-bar badge and 48px in conversation, trimming a quiet 8% outer cream margin so her expression stays legible.
 - **Animations** are used by default on the home page, approval and question cards, the desktop island and the current conversation portrait. Feed lists and details remain still. Reduced motion selects the matching still.
 - **In the conversation** she appears only beside the latest answer. Earlier answers keep a 48 px gap without her, so the text above doesn't shift when she moves to a new answer. While a card waits on you she's on the card, not repeated beside the answer.
 - **On the desktop island** she moves both folded and open. Updates within the same layout and mood retain the image node. Status is told by the shape of a ring as well as by text and colour (`view/island-dom.ts` `deskSignal`):

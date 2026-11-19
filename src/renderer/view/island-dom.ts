@@ -5,9 +5,9 @@ import { userError } from '../user-error.ts'
 import { maidFor, maidMood, showMaid } from './maid.ts'
 import type { MaidSlots } from './maid.ts'
 import { h } from './dom.ts'
-import { queueLayout, reconcileChildren } from './reconcile.ts'
+import { reconcileChildren } from './reconcile.ts'
 import type { createIslandInput } from './island-input.ts'
-import { createBackgroundSection, createTailCell, taskTag } from './island-tasks.ts'
+import { createBackgroundSection, createTailCell } from './island-tasks.ts'
 import { deskCard } from '../island-desk-card.ts'
 import type { DeskAction, DeskCard } from '../island-desk-card.ts'
 import { cardButton, cardPart, iconButton, nameIcon } from './island-card.ts'
@@ -16,18 +16,12 @@ import { cardButton, cardPart, iconButton, nameIcon } from './island-card.ts'
  * portrait in one 80px target, with explicit expansion of its neighbouring surface. Views wire actions;
  * the controller owns IPC, pointer intention, draft lifetime and native placement. */
 
-const NS = 'http://www.w3.org/2000/svg'
-/** The island's border, on both sides: its content is this much narrower than the shape. */
-const BORDER = 3
 type Host = 'bar' | 'desk'
-const BAR_FACE_PX = 36
+const BAR_FACE_PX = 46
 /**
- * In the title bar the island carries her dedicated 36px conversation portrait on the left; on the desktop she is the
- * island at 72px, with her neighbouring status and cards beside her.
+ * In the title bar the island is a vertical badge (46px portrait + tucked status chin inside 72px);
+ * on the desktop she is the island at 72px, with her neighbouring status and cards beside her.
  */
-const SIZES = {
-  bar: { head: 44, panel: 380, maxHead: 380 },
-}
 
 export type DeskLayout = 'rest' | 'capsule' | 'input' | 'content'
 
@@ -92,44 +86,31 @@ function deskHead(view: IslandShown, now: number) {
 /** Requests jump to their card in the title bar; on the desktop they wait for explicit expansion. */
 const NEEDS_USER = new Set(['waiting', 'asking'])
 
-function ring() {
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class', 'isl-ring')
-  svg.setAttribute('viewBox', '0 0 18 18')
-  svg.setAttribute('aria-hidden', 'true')
-  const track = document.createElementNS(NS, 'circle')
-  for (const [key, value] of Object.entries({ cx: 9, cy: 9, r: 7 })) track.setAttribute(key, String(value))
-  const arc = document.createElementNS(NS, 'path')
-  arc.setAttribute('d', 'M9 2a7 7 0 0 1 7 7')
-  svg.append(track, arc)
-  return svg
-}
-
 const elapsedSince = (view: IslandShown, now: number) => formatElapsed(now - (view.startedAt ?? now))
 
-/**
- * What sits beside the cat: the label and, depending on the host, a few words more.
- * @param context tools: the pointer rests on it
- */
-function headParts(view: IslandShown, { host, now, tools, shortcut }: { host: Host, now: number, tools: boolean, shortcut: string }) {
-  const label = (text: string) => h('b', { class: 'isl-label', text })
-  const time = (text: string) => h('span', { class: 'isl-time', text })
-  const more = (text: string | null | undefined) => (text ? h('span', { class: 'isl-more', text }) : null)
-  const desk = host === 'desk'
-  switch (view.form) {
-    case 'mini': return tools
-      ? [h('span', { class: 'isl-ask', text: t("island-dom.ask.viva.or.drop.files.here") }), h('span', { class: 'isl-kbd', text: shortcut })]
-      : []
-    case 'coach': return [label(view.label)]
-    case 'working': return desk
-      ? [label(view.label), more(view.action), time(elapsedSince(view, now)), ring()]
-      : [label(view.label), time(elapsedSince(view, now)), view.steps ? more(t("island-dom.steps", { steps: view.steps })) : null, ring()]
-    case 'waiting':
-    case 'asking': return [label(desk ? view.label : t("island-dom.needs.your.attention")), taskTag(view)]
-    // A task in the background that has just ended says only that (island-view.js).
-    case 'done': return view.task ? [label(view.label)] : [label(view.label), time(formatElapsed(view.elapsedMs ?? 0)), desk ? more(view.detail) : null]
-    default: return [label(view.label), more(safeDetail(view))]
-  }
+export type BarAction = { kind: 'jump' } | { kind: 'tasks' } | { kind: 'task', taskId: string }
+
+/** Title-bar badge clicks jump to a foreground request, open a waiting background task, or open background work when tasks run; idle is display-only. */
+export function barActionFor(view: IslandShown): BarAction | null {
+  if (NEEDS_USER.has(view.form)) return view.taskId ? { kind: 'task', taskId: view.taskId } : { kind: 'jump' }
+  if ((view.background?.count ?? 0) > 0) return { kind: 'tasks' }
+  return null
+}
+
+/** Semantic ring & sign for the title-bar portrait, surfacing active background work when the foreground is idle. */
+export function barSignal(view: IslandShown): DeskSignal {
+  const base = deskSignal(view)
+  if (base !== 'rest' && base !== 'plain') return base
+  if (view.background?.waiting) return 'confirm'
+  if ((view.background?.count ?? 0) > 0) return 'working'
+  return 'rest'
+}
+
+function barChinText(view: IslandShown): string {
+  if (NEEDS_USER.has(view.form)) return t('island-dom.needs.your.attention')
+  if (view.form === 'idle' && view.background?.waiting) return t('island-dom.needs.your.attention')
+  if (view.form === 'idle' && (view.background?.count ?? 0) > 0) return t('island-view.background.working')
+  return view.label
 }
 
 /**
@@ -146,74 +127,57 @@ export function islandSignatures(view: IslandShown, open: boolean, showTools: bo
 }
 
 const button = (text: string, cls: string, onClick: () => void) => h('button', { type: 'button', class: `isl-btn ${cls}`, text, onClick })
+/** Buttons by role (prompt-card.js), as on the thread's card: the main one filled, the others outlined, the least a link. */
 const ROLE: Readonly<Record<string, string>> & { text: string, secondary: string } = Object.freeze({ primary: 'isl-btn-primary', secondary: 'isl-btn-secondary', text: 'isl-btn-text' })
 
-export function barBackgroundView(view: IslandShown): IslandShown {
-  if (NEEDS_USER.has(view.form)) return view
-  const count = view.background?.count ?? 0
-  return { ...view, form: 'idle', tone: view.background?.waiting ? 'waiting' : 'idle', label: t('island-tasks.background'),
-    detail: count ? t('island-dom.background.active', { count }) : t('island-dom.background.empty'), recent: [] }
-}
-
-/** options: the desktop's input, and the ask shortcut as the user presses it */
 function createBarIsland(act: IslandAct) {
-  const size = SIZES.bar
   const maids: MaidSlots = new Map()
   const face = h('span', { class: 'isl-face', 'aria-hidden': 'true' })
-  const head = h('button', { type: 'button', class: 'isl-head' })
-  const tools = h('span', { class: 'isl-tools' })
-  const row = h('div', { class: 'isl-row' }, head, tools)
-  const clip = h('div', { class: 'isl-clip' }, row)
-  const el = h('div', { class: 'isl', 'data-host': 'bar' }, clip, face)
-  const tail = createTailCell()
-  let signature = { panel: '', row: '' }
-  let onHead: { kind: string } | null = null
-  head.addEventListener('click', event => {
-    if ((event.target as Element).closest('.isl-bg')) act({ kind: 'tasks' })
-    else if (onHead) act(onHead)
+  const bgSlot = h('span', { class: 'isl-bar-bg-slot' })
+  const portraitBox = h('span', { class: 'isl-bar-portrait' }, face, bgSlot)
+  const chin = h('span', { class: 'isl-bar-chin' })
+  const head = h('button', { type: 'button', class: 'isl-head' }, portraitBox, chin)
+  const el = h('div', { class: 'isl', 'data-host': 'bar' }, head)
+  let signature = ''
+  let onHead: BarAction | null = null
+  head.addEventListener('click', () => {
+    if (onHead) act(onHead)
   })
-  function layout() {
-    head.style.width = 'max-content'
-    head.style.maxWidth = 'none'
-    queueLayout(el, () => {
-      if (!el.isConnected) return
-      const room = (parseFloat(el.parentElement ? getComputedStyle(el.parentElement).maxWidth : '') || Infinity) - BORDER
-      const toolsWidth = Math.ceil(tools.getBoundingClientRect().width)
-      const bare = !head.childElementCount && !toolsWidth
-      const width = Math.min(bare ? size.head - BORDER : Math.ceil(head.getBoundingClientRect().width) + toolsWidth, size.maxHead, room)
-      return () => {
-        head.style.width = `${Math.max(width - toolsWidth, 0)}px`
-        head.style.maxWidth = ''
-        el.style.width = `${width + BORDER}px`
-        el.style.height = `${size.head}px`
-      }
-    })
-  }
-  function update(input: IslandShown, { now = Date.now(), pinned = false } = {}) {
-    const view = barBackgroundView(input)
+  function update(view: IslandShown, { now = Date.now() } = {}) {
+    const signal = barSignal(view)
     const portrait = maidFor(maids, 'bar', maidMood(view.mood, view.tone), { size: BAR_FACE_PX, framing: 'face', moving: !view.still })
     showMaid(face, portrait)
-    const open = false
-    const next = islandSignatures(view, open, false)
-    next.row = `${localeRevision()}:${next.row}`; next.panel = `${localeRevision()}:${next.panel}`
-    const rowChanged = next.row !== signature.row
-    if (!rowChanged) {
-      const clock = head.querySelector('.isl-time')
+    const next = `${localeRevision()}:${signal}:${islandSignatures(view, false, false).row}`
+    if (next === signature) {
+      const clock = chin.querySelector('.isl-time')
       if (clock && view.form === 'working') clock.textContent = elapsedSince(view, now)
       return
     }
     signature = next
-    Object.assign(el.dataset, { form: view.form, tone: view.tone, open: String(open) })
-    if (rowChanged) {
-      reconcileChildren(head, [...headParts(view, { host: 'bar', now, tools: false, shortcut: '' }), tail.update(view)]
-        .filter((part): part is NonNullable<typeof part> => Boolean(part)))
-      onHead = NEEDS_USER.has(view.form) ? { kind: 'jump' } : { kind: 'tasks' }
-      head.disabled = !onHead
-      head.setAttribute('aria-label', [view.label, view.action ?? safeDetail(view)].filter(Boolean).join('：'))
-      if (onHead?.kind === 'toggle') head.setAttribute('aria-expanded', String(open))
-      else head.removeAttribute('aria-expanded')
-    }
-    layout()
+    const tone = view.form === 'idle' && view.background?.waiting ? 'waiting'
+      : view.form === 'idle' && (view.background?.count ?? 0) > 0 ? 'working' : view.tone
+    Object.assign(el.dataset, { form: view.form, tone, signal, open: 'false' })
+    const bgCount = view.background?.count ?? 0
+    reconcileChildren(bgSlot, bgCount > 0 ? [
+      h('span', {
+        class: `isl-bar-bg isl-bg${view.background?.waiting ? ' isl-bg-waits' : ''}`,
+        'aria-hidden': 'true',
+      }, h('b', { text: String(bgCount) })),
+    ] : [])
+    const signText = DESK_SIGNS[signal] ?? ''
+    const signEl = h('span', { class: 'isl-bar-sign', 'aria-hidden': 'true', text: signText })
+    const labelEl = h('b', { class: 'isl-label', text: barChinText(view) })
+    const timeText = view.form === 'working' ? elapsedSince(view, now)
+      : view.form === 'done' && !view.task && view.elapsedMs ? formatElapsed(view.elapsedMs) : ''
+    reconcileChildren(chin, [signEl, labelEl, timeText ? h('span', { class: 'isl-time', text: timeText }) : null]
+      .filter((part): part is NonNullable<typeof part> => Boolean(part)))
+    onHead = barActionFor(view)
+    head.disabled = !onHead
+    const detail = view.action ?? safeDetail(view)
+    const bgLabel = bgCount > 0 ? t('background.running.count', { p0: bgCount }) : ''
+    const summary = [barChinText(view), detail, bgLabel].filter(Boolean).join(' · ')
+    head.setAttribute('aria-label', summary)
+    head.title = summary
   }
   return { el, update, setPointer(_on: boolean) {} }
 }
