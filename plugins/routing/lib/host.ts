@@ -17,29 +17,34 @@ export interface Unanswered { accepted: 'unanswered', reason: string }
 
 export function createHostChannel(port: NodeJS.Process, { onBind, onBindSource }: {
   onBind: (sessionId: string) => void
-  onBindSource?: (binding: { sessionId: string, pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] }) => { ok: true } | { ok: false, reason: string }
+  onBindSource?: (binding: { sessionId: string, pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] }) =>
+    { ok: true } | { ok: false, reason: string } | Promise<{ ok: true } | { ok: false, reason: string }>
 }) {
   const waiting = new Map<string, (decided: Decided | Unanswered) => void>()
   const send = (message: object) => { if (port.connected) port.send!(message, () => {}) }
+
+  async function answerSource(binding: NonNullable<ReturnType<typeof asBindSource>>) {
+    let outcome: { ok: true } | { ok: false, reason: string }
+    try {
+      outcome = onBindSource
+        ? await onBindSource({ sessionId: binding.sessionId, pluginName: binding.pluginName, ownerEntryIds: binding.ownerEntryIds, allowedTools: binding.allowedTools })
+        : { ok: false, reason: 'source binding is not supported' }
+    } catch (err) {
+      outcome = { ok: false, reason: err instanceof Error ? err.message : String(err) }
+    }
+    send({ type: 'routing_source_bound', version: 1, id: binding.id, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason }) })
+  }
 
   const receive = (message: unknown) => {
     const bind = asBind(message)
     if (bind) {
       onBind(bind.sessionId)
-      send({ type: 'routing_bound', version: 1, id: bind.id, ok: true })
+      send({ type: 'routing_bound', version: 1, id: bind.id })
       return
     }
     const bindSource = asBindSource(message)
     if (bindSource) {
-      const outcome = onBindSource
-        ? onBindSource({
-          sessionId: bindSource.sessionId,
-          pluginName: bindSource.pluginName,
-          ownerEntryIds: bindSource.ownerEntryIds,
-          allowedTools: bindSource.allowedTools,
-        })
-        : { ok: false as const, reason: 'source binding is not supported' }
-      send({ type: 'routing_bound', version: 1, id: bindSource.id, ok: outcome.ok, ...(outcome.ok ? {} : { reason: outcome.reason }) })
+      void answerSource(bindSource)
       return
     }
     const decided = asDecided(message)

@@ -11,8 +11,8 @@ import {
 import { declaredReadOnlyTools } from '../src/backend/plugin-fit.ts'
 import { createRoutingDesk } from '../src/backend/routing-channel.ts'
 import { createHostChannel } from '../plugins/routing/lib/host.ts'
-import { admitFeedSource } from '../plugins/routing/lib/policy.ts'
-import { installToolOwnershipTracker, verifyPluginReadOnlyTools } from '../plugins/routing/lib/source-tools.ts'
+import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { createSourceGuard, verifyPluginReadOnlyTools } from '../plugins/routing/lib/source-tools.ts'
 import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
 
@@ -271,7 +271,7 @@ test('source paused while waiting in serializer never invokes run()', async () =
   assert.equal(runCalls, 0, 'paused source must not start a session once serializer releases')
 })
 
-test('runtime ownership and read-only capability verification rejects foreign tools and non-readonly tools', async () => {
+test('bindings require read-only tools from the selected loader entry and recheck replacements', async (t) => {
   assert.deepEqual(
     declaredReadOnlyTools({
       viva: { feedSource: { readOnlyTools: ['mail_search', 'bash', 'write', 'memory_remember', 'mail_read', 'mail_search'] } },
@@ -279,61 +279,36 @@ test('runtime ownership and read-only capability verification rejects foreign to
     ['mail_search', 'mail_read'],
   )
 
-  // Fake ToolsService prototype to verify ownership tracking across plugin contexts
-  class FakeToolsService {
-    ctx: unknown
-    constructor(ctx: unknown) { this.ctx = ctx }
-    register(_definition: { name: string }) { return () => {} }
-  }
-  const rootTools = new FakeToolsService({ fiber: { entry: { id: 'root' } } })
-  const tracker = installToolOwnershipTracker(rootTools)
+  const tool = (name: string, readOnly: boolean): ToolDefinition => ({
+    ...defineTool({
+      name,
+      description: 'Returns a fixture value.',
+      parameters: {},
+      output: { schema: { type: 'string' }, render: () => [] },
+      execute: async () => 'fixture',
+    }),
+    annotations: { readOnlyHint: readOnly },
+  } as ToolDefinition)
+  const search = tool('mail_search', true)
+  const writer = tool('mail_send', false)
+  const foreign = tool('other_read', true)
+  const tools = new Map([search, writer, foreign].map(definition => [definition.name, definition]))
+  const owners = new Map([
+    [search, new Set(['entry-mail'])],
+    [writer, new Set(['entry-mail'])],
+    [foreign, new Set(['entry-other'])],
+  ])
+  const policy = { pluginName: '@company/dsh-plugin-mail', ownerEntryIds: ['entry-mail'], allowedTools: [search.name] }
+  const verify = (allowedTools: string[]) => verifyPluginReadOnlyTools(
+    { ...policy, allowedTools }, name => tools.get(name), definition => owners.get(definition),
+  )
+  assert.deepEqual(verify([search.name]), { ok: true })
+  assert.equal(verify([foreign.name]).ok, false)
+  assert.equal(verify([writer.name]).ok, false)
 
-  // Mail plugin registers a read-only tool and a write tool
-  const mailTools = new FakeToolsService({ fiber: { entry: { id: 'entry-mail' }, runtime: { name: '@company/dsh-plugin-mail' } } })
-  mailTools.register({ name: 'mail_search', annotations: { readOnlyHint: true } } as never)
-  mailTools.register({ name: 'mail_send', annotations: { destructiveHint: true } } as never)
-  mailTools.register({ name: 'mail_unannotated' } as never)
-
-  // Another plugin registers a read-only tool globally
-  const otherTools = new FakeToolsService({ fiber: { entry: { id: 'entry-other' }, runtime: { name: '@company/dsh-plugin-other' } } })
-  otherTools.register({ name: 'other_read', annotations: { readOnlyHint: true } } as never)
-
-  // 1. Owned + read-only passes
-  const ok = verifyPluginReadOnlyTools({
-    pluginName: '@company/dsh-plugin-mail',
-    ownerEntryIds: ['entry-mail'],
-    declaredTools: ['mail_search'],
-    lookupTool: tracker.lookup,
-  })
-  assert.deepEqual(ok, { ok: true, tools: ['mail_search'] })
-
-  // 2. Global tool owned by ANOTHER plugin is rejected even if declared in mail manifest
-  const foreign = verifyPluginReadOnlyTools({
-    pluginName: '@company/dsh-plugin-mail',
-    ownerEntryIds: ['entry-mail'],
-    declaredTools: ['other_read'],
-    lookupTool: tracker.lookup,
-  })
-  assert.equal(foreign.ok, false)
-
-  // 3. Destructive or unannotated tool owned by mail plugin is rejected
-  assert.equal(verifyPluginReadOnlyTools({
-    pluginName: '@company/dsh-plugin-mail',
-    ownerEntryIds: ['entry-mail'],
-    declaredTools: ['mail_send'],
-    lookupTool: tracker.lookup,
-  }).ok, false)
-  assert.equal(verifyPluginReadOnlyTools({
-    pluginName: '@company/dsh-plugin-mail',
-    ownerEntryIds: ['entry-mail'],
-    declaredTools: ['mail_unannotated'],
-    lookupTool: tracker.lookup,
-  }).ok, false)
-
-  // 4. Routing channel handshake rejects binding when plugin verification fails
-  const bus = new EventEmitter()
+  let receive: (message: unknown) => void = () => {}
   const desk = createRoutingDesk({
-    send: (msg) => bus.emit('to-plugin', msg),
+    send: message => receive(message),
     handlers: {
       receive: () => 'r1',
       decide: async () => ({ accepted: true, receipts: [] }),
@@ -344,31 +319,31 @@ test('runtime ownership and read-only capability verification rejects foreign to
   })
   const fakePort = Object.assign(new EventEmitter(), {
     connected: true,
-    send: (msg: object) => { desk.receive(msg); return true },
+    send: (message: object) => { desk.receive(message); return true },
   })
-  bus.on('to-plugin', (msg) => fakePort.emit('message', msg))
+  receive = message => { fakePort.emit('message', message) }
   const host = createHostChannel(fakePort as unknown as NodeJS.Process, {
     onBind: () => {},
-    onBindSource: ({ pluginName, ownerEntryIds, allowedTools }) => {
-      const checked = verifyPluginReadOnlyTools({ pluginName, ownerEntryIds, declaredTools: allowedTools, lookupTool: tracker.lookup })
-      return checked.ok ? { ok: true } : checked
-    },
+    onBindSource: ({ pluginName, ownerEntryIds, allowedTools }) => verifyPluginReadOnlyTools(
+      { pluginName, ownerEntryIds, allowedTools }, name => tools.get(name), definition => owners.get(definition),
+    ),
   })
+  t.after(() => { host.close(); desk.close() })
+  await desk.bindSource('sess-ok', policy)
+  await assert.rejects(() => desk.bindSource('sess-foreign', { ...policy, allowedTools: [foreign.name] }), /归属其他插件/)
 
-  await desk.bindSource('sess-ok', { pluginName: '@company/dsh-plugin-mail', ownerEntryIds: ['entry-mail'], allowedTools: ['mail_search'] })
-  await assert.rejects(
-    () => desk.bindSource('sess-foreign', { pluginName: '@company/dsh-plugin-mail', ownerEntryIds: ['entry-mail'], allowedTools: ['other_read'] }),
-    /归属其他插件/,
-  )
-
-  // 5. Execution-time guard rejects non-allowlisted tools and writes
-  assert.equal(admitFeedSource(new Set(['mail_search']), 'mail_search').allowed, true)
-  assert.equal(admitFeedSource(new Set(['mail_search']), 'other_read').allowed, false)
-  assert.equal(admitFeedSource(new Set(['mail_search']), 'bash').allowed, false)
-
-  host.close()
-  desk.close()
-  tracker.dispose()
+  const guard = createSourceGuard(definition => owners.get(definition))
+  guard.bind('sess-ok', policy)
+  assert.equal(guard.deny('sess-ok', search.name, search), undefined)
+  assert.match(guard.deny('sess-ok', writer.name, writer) ?? '', /拒绝/)
+  const replacement = tool(search.name, true)
+  owners.set(replacement, new Set(['entry-other']))
+  assert.match(guard.deny('sess-ok', search.name, replacement) ?? '', /归属其他插件/)
+  owners.set(replacement, new Set(['entry-mail']))
+  assert.equal(guard.deny('sess-ok', search.name, replacement), undefined)
+  const changedCapability = tool(search.name, false)
+  owners.set(changedCapability, new Set(['entry-mail']))
+  assert.match(guard.deny('sess-ok', search.name, changedCapability) ?? '', /只读/)
 })
 
 test('scheduled and manual publish persist memory provenance and reject stale memory results', async () => {

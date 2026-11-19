@@ -4,6 +4,8 @@
  *
  *   app → plugin   routing_bind      the session is the main conversation; narrow it before its first step
  *   plugin → app   routing_bound     done
+ *   app → plugin   routing_bind_source a data source session must be bound to the selected plugin's read-only tools
+ *   plugin → app   routing_source_bound explicit confirmation or refusal for that binding
  *   plugin → app   routing_decide    the agent committed a decision for a request; the app accepts or rejects it
  *   app → plugin   routing_decided   the app's answer: accepted, with what became of each action, or why not
  *   plugin → app   routing_fast      what the fast lane made of words said mid-turn, for the app's record
@@ -14,7 +16,9 @@ export const ROUTING_CHANNEL_VERSION = 1
 
 export type RoutingBind = { type: 'routing_bind', version: 1, id: string, sessionId: string }
 export type RoutingBindSource = { type: 'routing_bind_source', version: 1, id: string, sessionId: string, pluginName: string, ownerEntryIds: string[], allowedTools: string[] }
-export type RoutingBound = { type: 'routing_bound', version: 1, id: string, ok?: boolean, reason?: string }
+export type RoutingBound = { type: 'routing_bound', version: 1, id: string }
+/** The plugin's answer to a data source binding: always an explicit yes or no, never assumed. */
+export type RoutingSourceBound = { type: 'routing_source_bound', version: 1, id: string, ok: boolean, reason?: string }
 export type RoutingDecide = { type: 'routing_decide', version: 1, id: string, sessionId: string, requestId: string, plan: unknown }
 /** The app's answer to a decision: accepted, with what became of each action, or refused and why. */
 export type Decided = { accepted: true, receipts: Receipt[] } | { accepted: false, reason: string }
@@ -67,10 +71,13 @@ export function asBindSource(value: unknown): RoutingBindSource | null {
 }
 export function asBound(value: unknown): RoutingBound | null {
   const m = of(value, 'routing_bound')
-  if (!m || !id(m.id)) return null
-  const ok = m.ok === false ? false : true
+  return m && id(m.id) ? { type: 'routing_bound', version: 1, id: m.id } : null
+}
+export function asSourceBound(value: unknown): RoutingSourceBound | null {
+  const m = of(value, 'routing_source_bound')
+  if (!m || !id(m.id) || typeof m.ok !== 'boolean') return null
   const reason = typeof m.reason === 'string' ? m.reason.slice(0, MAX_REASON_CHARS) : undefined
-  return { type: 'routing_bound', version: 1, id: m.id, ok, ...(reason ? { reason } : {}) }
+  return { type: 'routing_source_bound', version: 1, id: m.id, ok: m.ok, ...(reason ? { reason } : {}) }
 }
 export function asDecide(value: unknown): RoutingDecide | null {
   const m = of(value, 'routing_decide')

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
 import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { t } from '../shared/i18n/translate.ts'
-import { asBound, asDecide, asFast, type Decided } from '../shared/request-routing/channel.ts'
+import { asBound, asDecide, asFast, asSourceBound, type Decided } from '../shared/request-routing/channel.ts'
 import type { RequestRuntime } from './request-runtime.ts'
 
 /**
@@ -12,16 +12,21 @@ import type { RequestRuntime } from './request-runtime.ts'
  * request runtime (request-runtime.ts), which is the authority on them.
  */
 const BIND_WAIT_MS = 3_000
+/** A data source binding may restart the selected plugin once to learn where its tools come from. */
+const SOURCE_BIND_WAIT_MS = 30_000
 
 /** The request runtime as the bridge uses it: each request taken as it is sent, each decision and fast-lane outcome passed on. */
 export type RoutingHandlers = Pick<RequestRuntime, 'receive' | 'decide' | 'fail' | 'noteFast' | 'endTurn'>
 
-export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: {
+export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS, sourceTimeoutMs = SOURCE_BIND_WAIT_MS }: {
   send: (message: object) => void
   handlers: RoutingHandlers
   timeoutMs?: number
+  sourceTimeoutMs?: number
 }) {
   const waiting = new Map<string, { resolve: () => void, reject: (error: Error) => void }>()
+  /** Data source bindings, answered only by an explicit `routing_source_bound`. */
+  const waitingSources = new Map<string, { resolve: () => void, reject: (error: Error) => void }>()
 
   /** Resolves once the plugin bound the session; rejects when it did not answer in time (the routing plugin is not loaded). */
   function bind(sessionId: string): Promise<void> {
@@ -38,17 +43,17 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
     }), { stage: 'connecting', identities: { requestId: id, sessionId } })
   }
 
-  /** Binds an unattended data source session to verified read-only tools owned by `pluginName`. */
+  /** Binds an unattended data source session to verified read-only tools owned by `pluginName`; refused, missing or late answers reject. */
   function bindSource(sessionId: string, binding: { pluginName: string, ownerEntryIds: readonly string[], allowedTools: readonly string[] }): Promise<void> {
     const id = randomUUID()
     return withOperation('task.route', () => new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
-        waiting.delete(id)
+        waitingSources.delete(id)
         emitDiagnostic({ event: 'operation.progress', operation: 'task.route', stage: 'unavailable', reason: 'timeout', identities: { requestId: id, sessionId } })
         reject(new Error(t('main.routing-channel.not.bound')))
-      }, timeoutMs)
-      const settle = () => { clearTimeout(timer); waiting.delete(id) }
-      waiting.set(id, { resolve: () => { settle(); resolve() }, reject: (error) => { settle(); reject(error) } })
+      }, sourceTimeoutMs)
+      const settle = () => { clearTimeout(timer); waitingSources.delete(id) }
+      waitingSources.set(id, { resolve: () => { settle(); resolve() }, reject: (error) => { settle(); reject(error) } })
       send({
         type: 'routing_bind_source',
         version: 1,
@@ -76,11 +81,13 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
 
   function receive(message: unknown) {
     const bound = asBound(message)
-    if (bound) {
-      const entry = waiting.get(bound.id)
+    if (bound) { waiting.get(bound.id)?.resolve(); return }
+    const sourceBound = asSourceBound(message)
+    if (sourceBound) {
+      const entry = waitingSources.get(sourceBound.id)
       if (!entry) return
-      if (bound.ok === false) entry.reject(new Error(bound.reason || t('main.routing-channel.not.bound')))
-      else entry.resolve()
+      if (sourceBound.ok) entry.resolve()
+      else entry.reject(new Error(sourceBound.reason || t('main.routing-channel.not.bound')))
       return
     }
     const decide = asDecide(message)
@@ -98,7 +105,7 @@ export function createRoutingDesk({ send, handlers, timeoutMs = BIND_WAIT_MS }: 
 
   /** dsh is going away: nothing will answer a bind. */
   function close() {
-    for (const entry of [...waiting.values()]) entry.reject(new Error(t('main.routing-channel.not.bound')))
+    for (const entry of [...waiting.values(), ...waitingSources.values()]) entry.reject(new Error(t('main.routing-channel.not.bound')))
   }
 
   return { bind, bindSource, receive, close }

@@ -284,6 +284,7 @@ export const testLevels = {
     'memory-transport',
     'asar-integrity',
     'dsh-mcp-import',
+    'feed-source-dsh',
     'fork-plugin',
     'images-bridge',
     'memory-embedder',

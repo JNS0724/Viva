@@ -1,0 +1,4 @@
+# The bundle layer this fixture adds (test/feed-source-dsh.test.ts).
+- insert:
+    - id: feed-source-fixture
+      name: feed-source-dsh-plugin

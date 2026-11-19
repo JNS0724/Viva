@@ -1,135 +1,121 @@
-import { FORBIDDEN_SOURCE_TOOLS } from './policy.ts'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/cordis-plugin-loader'
+import type { ToolDefinition, ToolsService } from '@deepseek-ai/dsh-tools'
+import { admitFeedSource } from './policy.ts'
 
-/**
- * Runtime ownership and read-only capability verification for plugin-backed data source tools.
- * Tracks which Cordis plugin fiber registered each global tool so a manifest cannot claim tools
- * registered by another plugin, and requires explicit read-only capability metadata on each tool.
- */
+/** Loader entry IDs, keyed by the exact definition registered with dsh. */
+type Lookup = (definition: ToolDefinition) => ReadonlySet<string> | undefined
+type Register = (this: { ctx: Context }, ...args: Parameters<ToolsService['register']>) => ReturnType<ToolsService['register']>
 
-export interface ToolRuntimeRecord {
-  definition: unknown
-  ownerEntryIds: ReadonlySet<string>
-  ownerNames: ReadonlySet<string>
+interface ToolPolicy {
+  pluginName: string
+  ownerEntryIds: readonly string[]
+  allowedTools: readonly string[]
 }
 
 export type VerifySourceToolsResult =
-  | { ok: true, tools: string[] }
-  | { ok: false, reason: string }
+  | { ok: true }
+  | { ok: false, code: 'unknown-provenance' | 'rejected', reason: string }
 
-const rec = (value: unknown): Record<string, unknown> =>
-  (value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {})
+const record = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' ? value as Record<string, unknown> : {}
 
-/**
- * Checks whether a registered tool definition explicitly declares read-only capability metadata
- * and does not declare destructive or mutating behavior.
- */
-export function isReadOnlyToolDefinition(definition: unknown): boolean {
-  const def = rec(definition)
-  const annotations = rec(def.annotations)
-  const meta = rec(def.meta)
-  if (def.readOnly === false || def.mutates === true) return false
+function isReadOnlyTool(definition: ToolDefinition): boolean {
+  const tool = record(definition)
+  const annotations = record(tool.annotations)
+  const meta = record(tool.meta)
+  if (tool.readOnly === false || tool.mutates === true) return false
   if (annotations.readOnlyHint === false || annotations.destructiveHint === true) return false
   if (meta.readOnly === false || meta.mutates === true) return false
-  return def.readOnly === true || annotations.readOnlyHint === true || meta.readOnly === true
+  return tool.readOnly === true || annotations.readOnlyHint === true || meta.readOnly === true
 }
 
-/** Extracts owning Cordis entry IDs and plugin names from a calling context's fiber ancestry. */
-export function ownersFromContext(callingCtx: unknown): { entryIds: Set<string>, names: Set<string> } {
-  const entryIds = new Set<string>()
-  const names = new Set<string>()
-  let fiber = rec(callingCtx).fiber as Record<string, unknown> | undefined
-  const seen = new Set<unknown>()
-  while (fiber && typeof fiber === 'object' && !seen.has(fiber)) {
-    seen.add(fiber)
-    const entry = rec(fiber.entry)
-    if (typeof entry.id === 'string' && entry.id) entryIds.add(entry.id)
-    if (typeof entry.name === 'string' && entry.name) names.add(entry.name)
-    const runtime = rec(fiber.runtime)
-    if (typeof runtime.name === 'string' && runtime.name) names.add(runtime.name)
-    const plugin = rec(runtime.plugin)
-    if (typeof plugin.name === 'string' && plugin.name) names.add(plugin.name)
-    fiber = fiber.parent as Record<string, unknown> | undefined
+/** Cordis links each fiber to its parent Context. An entry-less child still belongs to its loader ancestor. */
+function ownershipOf(ctx: Context): ReadonlySet<string> {
+  const entries = new Set<string>()
+  const seen = new Set<Context['fiber']>()
+  try {
+    for (let fiber = ctx.fiber; fiber && !seen.has(fiber); fiber = fiber.parent.fiber) {
+      seen.add(fiber)
+      if (fiber.entry) entries.add(fiber.entry.id)
+    }
+  } catch {
+    // A context that refuses inspection must never interrupt normal tool registration.
   }
-  return { entryIds, names }
+  return entries
 }
 
 /**
- * Wraps `toolsService.register` (on its prototype when shared across Cordis contexts) to track
- * runtime registration ownership for global tools. Returns a lookup helper and a cleanup disposer.
+ * dsh exposes tool definitions, while the registering Cordis context is only available during registration.
+ * Capture the entry IDs without changing the registration or its disposer. The weak map neither retains unloaded
+ * tools nor lets a different definition inherit the ownership of a previously registered name.
  */
-export function installToolOwnershipTracker(toolsService: unknown) {
-  const registry = new Map<string, ToolRuntimeRecord>()
-  const proto = toolsService && typeof toolsService === 'object' ? Object.getPrototypeOf(toolsService) : null
-  const target = proto && typeof proto.register === 'function' ? proto : (toolsService as Record<string, unknown> | null)
-  const original = target && typeof target.register === 'function'
-    ? target.register as (this: { ctx?: unknown }, definition: { name?: string }, options?: unknown) => unknown
-    : null
-
-  if (target && original) {
-    target.register = function patchedRegister(this: { ctx?: unknown }, definition: { name?: string }, options?: unknown) {
-      const dispose = original.call(this, definition, options)
-      const name = typeof definition?.name === 'string' ? definition.name : ''
-      if (name) {
-        const { entryIds, names } = ownersFromContext(this?.ctx)
-        const record: ToolRuntimeRecord = { definition, ownerEntryIds: entryIds, ownerNames: names }
-        registry.set(name, record)
-        if (typeof dispose === 'function') {
-          return () => {
-            if (registry.get(name) === record) registry.delete(name)
-            return (dispose as () => unknown)()
-          }
-        }
-      }
-      return dispose
-    }
+export function installToolProvenance(tools: ToolsService) {
+  const entries = new WeakMap<ToolDefinition, ReadonlySet<string>>()
+  const prototype = Object.getPrototypeOf(tools) as { register: Register }
+  const original = prototype.register
+  const register: Register = function (definition, options) {
+    const dispose = original.call(this, definition, options)
+    const owners = ownershipOf(this.ctx)
+    const previous = entries.get(definition)
+    // If a definition is shared between registrations, only ownership common to both can be proven.
+    entries.set(definition, previous ? new Set([...owners].filter(owner => previous.has(owner))) : owners)
+    return dispose
   }
-
+  prototype.register = register
   return {
-    lookup: (name: string): ToolRuntimeRecord | undefined => registry.get(name),
-    dispose: () => {
-      if (target && original && target.register !== original) target.register = original
-      registry.clear()
+    lookup: (definition: ToolDefinition) => entries.get(definition),
+    dispose() {
+      if (prototype.register === register) prototype.register = original
     },
   }
 }
 
-/**
- * Verifies that declared tools exist at runtime, are owned by the selected plugin bundle (via
- * Cordis entry ID or plugin name), and explicitly carry read-only capability metadata.
- */
-export function verifyPluginReadOnlyTools({
-  pluginName,
-  ownerEntryIds,
-  declaredTools,
-  lookupTool,
-}: {
-  pluginName: string
-  ownerEntryIds: readonly string[]
-  declaredTools: readonly string[]
-  lookupTool: (name: string) => ToolRuntimeRecord | undefined
-}): VerifySourceToolsResult {
-  if (!declaredTools.length) {
-    return { ok: false, reason: `插件 ${pluginName} 未声明任何只读工具` }
+function verifyTool(name: string, definition: ToolDefinition | undefined, pluginName: string, owners: ReadonlySet<string>, lookup: Lookup): VerifySourceToolsResult {
+  if (!definition) return { ok: false, code: 'rejected', reason: `工具 ${name} 当前未注册` }
+  const registeredBy = lookup(definition)
+  if (registeredBy?.size && ![...registeredBy].some(id => owners.has(id))) {
+    return { ok: false, code: 'rejected', reason: `工具 ${name} 归属其他插件，不能绑定到 ${pluginName}` }
   }
-  const expectedEntries = new Set(ownerEntryIds)
-  const verified: string[] = []
-  for (const name of declaredTools) {
-    if (FORBIDDEN_SOURCE_TOOLS.has(name)) {
-      return { ok: false, reason: `工具 ${name} 不允许在数据源会话中调用` }
-    }
-    const record = lookupTool(name)
-    if (!record) {
-      return { ok: false, reason: `工具 ${name} 未由所选插件 ${pluginName} 注册` }
-    }
-    const ownedByEntry = expectedEntries.size > 0 && [...record.ownerEntryIds].some((id) => expectedEntries.has(id))
-    const ownedByName = record.ownerNames.has(pluginName)
-    if (!ownedByEntry && !ownedByName) {
-      return { ok: false, reason: `工具 ${name} 归属其他插件，不能绑定到 ${pluginName}` }
-    }
-    if (!isReadOnlyToolDefinition(record.definition)) {
-      return { ok: false, reason: `工具 ${name} 未声明只读能力元数据，已拒绝绑定` }
-    }
-    verified.push(name)
+  if (!isReadOnlyTool(definition)) return { ok: false, code: 'rejected', reason: `工具 ${name} 未声明只读能力元数据，已拒绝绑定` }
+  if (!registeredBy?.size) return { ok: false, code: 'unknown-provenance', reason: `工具 ${name} 的注册来源未知` }
+  return { ok: true }
+}
+
+/** Verify every declared tool against the live global registry before the first model prompt. */
+export function verifyPluginReadOnlyTools(policy: ToolPolicy, resolve: (name: string) => ToolDefinition | undefined, lookup: Lookup): VerifySourceToolsResult {
+  const { pluginName, allowedTools } = policy
+  const owners = new Set(policy.ownerEntryIds)
+  const names = new Set(allowedTools)
+  if (!owners.size || !names.size) return { ok: false, code: 'rejected', reason: `插件 ${pluginName} 没有可用的只读工具` }
+  let unknown: Extract<VerifySourceToolsResult, { ok: false }> | undefined
+  for (const name of names) {
+    const admission = admitFeedSource(names, name)
+    if (!admission.allowed) return { ok: false, code: 'rejected', reason: admission.reason ?? '' }
+    const checked = verifyTool(name, resolve(name), pluginName, owners, lookup)
+    if (checked.ok) continue
+    if (checked.code === 'rejected') return checked
+    unknown ??= checked
   }
-  return { ok: true, tools: verified }
+  return unknown ?? { ok: true }
+}
+
+/** A long run may outlive a plugin reload. Check the definition dsh actually admitted for every call. */
+export function createSourceGuard(lookup: Lookup) {
+  const scopes = new Map<string, { pluginName: string, owners: ReadonlySet<string>, tools: ReadonlySet<string> }>()
+  return {
+    bind(sessionId: string, { pluginName, ownerEntryIds, allowedTools }: ToolPolicy) {
+      scopes.set(sessionId, { pluginName, owners: new Set(ownerEntryIds), tools: new Set(allowedTools) })
+    },
+    toolsOf: (sessionId: string) => scopes.get(sessionId)?.tools,
+    drop: (sessionId: string) => { scopes.delete(sessionId) },
+    deny(sessionId: string, name: string, definition: ToolDefinition | undefined): string | undefined {
+      const scope = scopes.get(sessionId)
+      if (!scope) return
+      const admission = admitFeedSource(scope.tools, name)
+      if (!admission.allowed) return admission.reason
+      const checked = verifyTool(name, definition, scope.pluginName, scope.owners, lookup)
+      return checked.ok ? undefined : checked.reason
+    },
+  }
 }
