@@ -3,7 +3,7 @@ import { run, type SmokeWindow } from './smoke-kit.ts'
 /** The real page DOM: list text and inline semantics survive without an extra wrapper around each item. */
 export async function checkMarkdownLists(win: SmokeWindow): Promise<string[]> {
   const result = await run(win, `(async () => {
-    const { renderMarkdown, caretHost, expandMarkdown } = await import('./view/markdown.js')
+    const { renderMarkdown, caretHost, revealMarkdown } = await import('./view/markdown.js')
     const inputs = [
       '- **重点** 和 \u0060code\u0060 [链接](https://example.com/)\\n- 下一项',
       '- 父项\\n  1. 子项一\\n  2. 子项二',
@@ -22,14 +22,18 @@ export async function checkMarkdownLists(win: SmokeWindow): Promise<string[]> {
     const prefix = '## 开头\\n\\n[入口](https://example.com/)\\n\\n- 原样'
     const target = renderMarkdown(prefix, options), heading = target.firstChild, link = target.querySelector('a')
     const button = document.createElement('button');target.append(button)
-    const complete = renderMarkdown(prefix+'\\n\\n结尾', options), expected = complete.innerHTML
-    expandMarkdown(target, complete);target.querySelector('a').click()
-    const cached = target.firstChild === heading && target.querySelector('a') === link && !target.contains(button) && target.innerHTML === expected && opened.length === 1 && opened[0] === 'https://example.com/'
+    const full = prefix+'\\n\\n结尾', expected = renderMarkdown(full, options).innerHTML
     const reference = renderMarkdown('说明 [目标][later]', options), beforeReference = reference.firstChild
-    const resolved = renderMarkdown('说明 [目标][later]\\n\\n[later]: https://example.com/target', options), expectedReference = resolved.innerHTML
-    expandMarkdown(reference, resolved)
-    const corrected = reference.firstChild !== beforeReference && reference.innerHTML === expectedReference && reference.querySelector('a')?.href === 'https://example.com/target'
-    return { lists, cached, corrected }
+    const referenceButton = document.createElement('button');reference.append(referenceButton)
+    const resolved = '说明 [目标][later]\\n\\n[later]: https://example.com/target', expectedReference = renderMarkdown(resolved, options).innerHTML
+    const host = document.createElement('div');host.hidden = true;host.append(target, reference);document.body.append(host)
+    try {
+      await revealMarkdown(target, button, full, options.openLink);target.querySelector('a').click()
+      const cached = target.firstChild === heading && target.querySelector('a') === link && !target.contains(button) && target.innerHTML === expected && opened.length === 1 && opened[0] === 'https://example.com/'
+      await revealMarkdown(reference, referenceButton, resolved, options.openLink)
+      const corrected = reference.firstChild !== beforeReference && reference.innerHTML === expectedReference && reference.querySelector('a')?.href === 'https://example.com/target'
+      return { lists, cached, corrected }
+    } finally { host.remove() }
   })()`) as { lists: Array<{ text: string, host: string, tail: string, strong: string | null, code: string | null, href: string | null, nested: number, paragraphs: number, tasks: boolean[] }>, cached: boolean, corrected: boolean }
   const seen = result.lists
   const failures: string[] = []

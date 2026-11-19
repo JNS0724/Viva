@@ -1,11 +1,6 @@
 import { t } from '../../shared/i18n/translate.ts'
-// The page imports marked by its file (it has no bundler, and the build copies what is imported this way,
-// scripts/build.ts); marked's types are those of its package, so they are taken from there.
-// @ts-expect-error the file has no types of its own beside it
-import { Lexer as UntypedLexer } from '../../../node_modules/marked/lib/marked.esm.js'
-import type { Lexer as MarkedLexer, Token, Tokens } from 'marked'
-
-const Lexer: typeof MarkedLexer = UntypedLexer
+import type { Token, Tokens } from 'marked'
+import { lexMarkdown } from './markdown-lexer.ts'
 import { h } from './dom.ts'
 import { takeReaderControl } from './scroll-follow.ts'
 
@@ -113,7 +108,7 @@ function blocks(tokens: readonly Token[] | undefined, ctx: Context, options = { 
  * @returns a `.msg-text.markdown` element
  */
 export function renderMarkdown(text: string, { openLink, image = null }: { openLink: Context['openLink'], image?: Context['image'] }): HTMLElement {
-  return h('div', { class: 'msg-text markdown' }, blocks(new Lexer({ gfm: true }).lex(text), { openLink, image }))
+  return h('div', { class: 'msg-text markdown' }, blocks(lexMarkdown(text), { openLink, image }))
 }
 
 /** A top-level block of an answer: the token marked made of it, and the nodes built for it. */
@@ -130,7 +125,7 @@ const lineEnds = (text: string) => text.replace(/\r\n?/g, '\n')
 
 /** marked's top-level tokens of `text` and the links they define, or null when their sources do not add up to it. */
 function lexed(text: string): { tokens: Token[], links: string } | null {
-  const tokens = new Lexer({ gfm: true }).lex(text) as Token[] & { links?: Record<string, unknown> }
+  const tokens = lexMarkdown(text) as Token[] & { links?: Record<string, unknown> }
   if (tokens.reduce((length, token) => length + token.raw.length, 0) !== text.length) return null
   return { tokens, links: JSON.stringify(tokens.links ?? {}) }
 }
@@ -244,20 +239,62 @@ export function streamMarkdown(previous: MarkdownStream | null, input: string, c
   return { el, text, blocks, links: read.links }
 }
 
-/**
- * Expand a finished answer without detaching its unchanged opening blocks. Parse the whole source first:
- * reference definitions later in the answer can change an earlier block. Only exactly equal blocks keep
- * their nodes, links and accessibility identities; everything from the first difference is replaced.
- * Both renders must use the same handlers (the answer's own openLink closure).
- */
-export function expandMarkdown(target: HTMLElement, complete: HTMLElement): void {
+function lexOffThread(text: string): Promise<readonly Token[]> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL('./markdown-worker.js', import.meta.url), { type: 'module' })
+    const stop = () => { clearTimeout(timer); worker.terminate() }
+    const fail = () => { stop(); reject(new Error('Markdown parsing failed')) }
+    const timer = setTimeout(fail, 10_000)
+    worker.onmessage = (event: MessageEvent<Token[]>) => { stop(); resolve(event.data) }
+    worker.onerror = event => { event.preventDefault(); fail() }
+    worker.onmessageerror = fail
+    worker.postMessage(text)
+  })
+}
+
+/** Parse the full source together so later reference definitions still affect
+ * the opening. Draw verified tokens in small frames and keep equal preview nodes. */
+export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string, openLink: Context['openLink']) {
+  if (target.getAttribute('aria-busy') === 'true') return
   takeReaderControl(target)
-  const previous = [...target.childNodes]
-  const next = [...complete.childNodes]
-  let keep = 0
-  while (keep < previous.length && keep < next.length && previous[keep].isEqualNode(next[keep])) keep++
-  while (target.childNodes.length > keep) target.lastChild?.remove()
-  target.append(...next.slice(keep))
+  target.setAttribute('aria-busy', 'true')
+  button.setAttribute('aria-disabled', 'true')
+  button.textContent = t('thread.expanding')
+  const moveFocus = () => {
+    if (document.activeElement !== button) return
+    target.tabIndex = -1
+    target.focus({ preventScroll: true })
+  }
+  try {
+    const tokens = await lexOffThread(text).catch(() => lexMarkdown(text))
+    const ctx = { openLink, image: null }
+    const previous = [...target.childNodes].filter(node => node !== button)
+    let keep = 0, cursor = 0, different = false
+    while (cursor < tokens.length) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      if (!target.isConnected || button.parentNode !== target) return
+      const until = performance.now() + 5
+      const completed = document.createDocumentFragment()
+      do {
+        const holder = h('div', null, block(tokens[cursor++]!, ctx, { tight: false }))
+        for (const node of [...holder.childNodes]) {
+          if (!different && previous[keep]?.isEqualNode(node)) { keep++; continue }
+          if (!different) {
+            different = true
+            for (const old of previous.slice(keep)) old.remove()
+          }
+          completed.append(node)
+        }
+      } while (cursor < tokens.length && performance.now() < until)
+      target.insertBefore(completed, button)
+    }
+    if (!different) for (const old of previous.slice(keep)) old.remove()
+    moveFocus()
+    button.remove()
+  } finally {
+    target.removeAttribute('aria-busy')
+    button.removeAttribute('aria-disabled')
+  }
 }
 
 /** Where a typing caret goes: after the last text in the answer, not below it. */

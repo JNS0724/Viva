@@ -321,6 +321,7 @@ export const en = {
   "dock.expand": "Expand background tasks",
   "task.list.collapse": "Collapse list",
   "thread.expand.remaining": "Expand full text (about {p0}K more characters)",
+  "thread.expanding": "Expanding answer…",
   "topic.current.earlier.messages": "{p0} earlier messages in this topic, in Review",
   "topic.context.used": "{p0}% used",
   "topic.context.remembered": "The assistant remembers {p0} messages in this topic",
