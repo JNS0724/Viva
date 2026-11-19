@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import {
   createCronScheduleRecord, createDailyScheduleRecord, createWeeklyScheduleRecord,
-  resolveRecurringOccurrence, ScheduleId,
+  isRecurringScheduleRecord, resolveRecurringOccurrence, ScheduleId,
 } from '@deepseek-ai/dsh-schedule'
 import type { ScheduleRecord } from '@deepseek-ai/dsh-schedule'
 import {
@@ -225,6 +225,10 @@ export function openFeedSourceStore({ db, now = Date.now, newId = () => `fs${cry
     return list()
       .filter((source) => source.status === 'active' && Date.parse(source.record.scheduledAt) <= at)
       .map((source) => {
+        if (!isRecurringScheduleRecord(source.record)) {
+          db.prepare("UPDATE feed_sources SET status = 'paused' WHERE id = ?").run(source.id)
+          return { key: `${source.id}@${source.record.scheduledAt}`, at: source.record.scheduledAt, source }
+        }
         const { occurrenceAt, nextScheduledAt } = resolveRecurringOccurrence(source.record, at)
         if (nextScheduledAt) {
           db.prepare('UPDATE feed_sources SET record = ? WHERE id = ?')
