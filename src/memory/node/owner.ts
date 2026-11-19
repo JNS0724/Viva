@@ -469,17 +469,31 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   async function registerDerived(input: DerivedSource, signal?: AbortSignal) {
     requireReady()
-    const prior = db.prepare('SELECT evidence FROM owner_derived WHERE message=?').get(input.messageId)
-    const files = prior ? (JSON.parse(String(prior.evidence)) as ReturnType<typeof dispatch.snapshot>).files ?? []
-      : input.senderSessionId ? dispatch.snapshot(input.senderSessionId).files ?? [] : []
-    const proof = await runtime.loadFileEvidenceCheck([...files, ...dispatch.snapshot(input.sessionId).files ?? []], signal)
+    function readInputs() {
+      const saved = db.prepare('SELECT * FROM owner_derived WHERE message=?').get(input.messageId)
+      const savedEvidence = saved ? JSON.parse(String(saved.evidence)) as ReturnType<typeof dispatch.snapshot> : undefined
+      const senderEvidence = !saved && input.senderSessionId ? dispatch.snapshot(input.senderSessionId) : undefined
+      const recipient = dispatch.snapshot(input.sessionId)
+      const files = [...((savedEvidence ?? senderEvidence)?.files ?? []), ...(recipient.files ?? [])]
+      return { saved, savedEvidence, senderEvidence, recipient, files }
+    }
+    let inputs = readInputs()
+    const files = inputs.files
+    let proof = await runtime.loadFileEvidenceCheck(files, signal)
+    inputs = readInputs()
+    // A concurrent lookup can attach a new file while the first observation is in flight.
+    // Reobserve the changed dependencies once. Physical and policy checks still use the final receipts.
+    if (files.length !== inputs.files.length || (files.length > 0 && JSON.stringify(files) !== JSON.stringify(inputs.files))) {
+      proof = await runtime.loadFileEvidenceCheck(inputs.files, signal)
+      inputs = readInputs()
+    }
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
     if (contextRecovery.retired(input.sessionId, input.messageId) || contextRecovery.retiredDerived(input.messageId)) throw new Error('Derived context was retired')
     const old = db.prepare('SELECT kind,hash,source FROM owner_messages WHERE id=?').get(input.messageId)
     if (old && old.kind !== 'derived' && old.kind !== 'host-derived') throw new Error('Derived identity conflicts')
     if (!old && input.inherited) throw new Error('Unregistered inherited derived context')
-    const saved = db.prepare('SELECT * FROM owner_derived WHERE message=?').get(input.messageId)
+    const { saved, savedEvidence, senderEvidence } = inputs
     if (!saved && input.senderSessionId) {
       requireContextGeneration(input.senderSessionId, input.senderContextGeneration)
       // Generation numbers alone do not prove when a queued cross-session delivery was
@@ -492,16 +506,14 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (input.nativeMessageDigest !== undefined && !/^[a-f0-9]{64}$/u.test(input.nativeMessageDigest)) throw new Error('Invalid native message digest')
     const contentIdentity = db.prepare('SELECT digest FROM owner_message_content WHERE message=?').get(input.messageId)
     if (contentIdentity && contentIdentity.digest !== hash(input.contentDigest)) throw new Error('Derived content identity conflicts')
-    let observed = dispatch.snapshot(input.sessionId)
-    if (!saved && input.senderSessionId) {
+    let observed = inputs.recipient
+    if (senderEvidence && input.senderSessionId) {
       const sender = input.senderSessionId
-      const evidence = dispatch.snapshot(sender)
       if (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(sender)
-        || !coordination.allowsSession(sender, sessionContext(sender).project, proof) || !dispatch.transferable(evidence, proof)) throw new Error('Sender memory context is unavailable')
-      observed = combineMemoryProvenance(observed, evidence)
+        || !coordination.allowsSession(sender, sessionContext(sender).project, proof) || !dispatch.transferable(senderEvidence, proof)) throw new Error('Sender memory context is unavailable')
+      observed = combineMemoryProvenance(observed, senderEvidence)
     }
-    const evidence = saved ? JSON.parse(saved.evidence as string) as typeof observed
-      : { ...observed, sources: [...new Set([...observed.sources, ...input.sourceIds])] }
+    const evidence = savedEvidence ?? { ...observed, sources: [...new Set([...observed.sources, ...input.sourceIds])] }
     const active = sessionContext(input.sessionId).foregroundTurn
     const sameLiveTurn = Boolean(active && !input.inherited && (!saved || saved.owner_epoch === epoch
       && saved.origin_session === input.sessionId && saved.origin_turn === active))

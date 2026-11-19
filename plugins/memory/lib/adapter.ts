@@ -44,6 +44,7 @@ import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort, withOpera
 import { observeDshDiagnostics } from './diagnostics.ts'
 
 import { createRequestBudget, RequestTimeout } from '../../../src/shared/request-budget.ts'
+import { NATIVE_OUTPUT_RECEIPTS } from '../../../src/shared/node/native-output-receipts.ts'
 import { currentToolBudget, executeToolCall, isMemoryTool, prepareToolCall, toolTimeoutResult } from '../../../src/shared/node/tool-call-budget.ts'
 
 function clearPreviousContext(agent: Agent) {
@@ -142,6 +143,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const activeTurns = new Map<string, number>()
   const transport = createMemoryTransport(owner)
   const outputAttempts = trackNativeOutputAttempts(owner.cachedGeneration, owner.finishNativeOutput)
+  ctx.on(NATIVE_OUTPUT_RECEIPTS, async session => { await owner.drainSession(session) })
   const toolReads = trackNativeToolReads(owner.finishNativeToolRead, {
     evidence: owner.nativeToolEvidence, archive: owner.inheritNativeToolRead,
   })

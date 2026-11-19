@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
+import { delayNativeOutputReceipts, DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
 import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { objectOf } from '../src/memory/contracts/unknown-value.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
@@ -33,6 +33,32 @@ function lastContext(llm: { requests: object[] }) {
     && JSON.stringify(request.messages.at(-1)).includes('<about-user>'))
   return JSON.stringify(foreground?.messages.at(-1) ?? '')
 }
+
+test('a resumed task publishes its committed answer after its native output receipt reaches the owner', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const harness = await setup(t)
+  const first = harness.bridge()
+  await first.start()
+  const task = await first.startTask()
+  assert.ok(task.ok)
+  await first.promptTask(task.taskId, '先记录昨天的进度')
+  await first.dispose()
+  const kept: string[] = []
+  const second = harness.bridge({ recordOutputs: async (session, outputs) => {
+    const accepted = []
+    for (const output of outputs) {
+      if (!output.native || !await second.memory.call('nativeOutputEvidence', { session, ...output.native })) continue
+      accepted.push(output)
+      kept.push(...output.blocks.map(block => block.text))
+    }
+    return accepted
+  } })
+  await second.start()
+  assert.ok((await second.resumeTask({ taskId: task.taskId })).ok)
+  const delayed = delayNativeOutputReceipts(t, second.pid, 150)
+  await second.promptTask(task.taskId, '后来呢')
+  assert.ok(delayed() > 0)
+  assert.ok(kept.some(text => text.includes('后来呢')), 'only owner-confirmed text can be published')
+})
 
 test('an idle interjection starts neither a fast request nor a routing decision', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, agent, ask, requests } = await setupMemory(t)

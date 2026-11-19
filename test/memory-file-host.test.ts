@@ -63,6 +63,32 @@ async function aborted(signal: AbortSignal) {
   })
 }
 
+test('a derived receipt observes files attached during registration and replay still rejects changed bytes', async t => {
+  const f = await fixture(t), session = f.session
+  const addRead = (id: string) => {
+    const packet = f.owner.runtime.handle({ op: 'file_read', session, id }, { session, conversation: session })
+    assert.equal(JSON.parse(packet).status, 'ok')
+  }
+  const first = { sessionId: session, messageId: randomUUID(), sourceIds: [f.sourceId] }
+  const pending = f.owner.registerDerived(first)
+  addRead(f.created.documentId)
+  await pending
+  assert.equal(f.owner.dispatch.snapshot(session).files?.length, 1)
+
+  const second = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Tea on Monday.', sources: f.documents.read(f.identity.workspace, f.created.path)!.sources, reads: [] })
+  const injection = { sessionId: session, messageId: randomUUID(), sourceIds: [f.sourceId], nativeUserSource: 'viva-memory' }
+  const receipt = f.owner.registerDerived(injection)
+  addRead(second.documentId)
+  await receipt
+  await f.owner.registerDerived(injection)
+  const stored = f.store.db.prepare('SELECT evidence FROM owner_derived WHERE message=?').get(injection.messageId)
+  assert.equal(JSON.parse(String(stored?.evidence)).files.length, 2)
+
+  writeFileSync(join(f.store.fileRoot, f.identity.workspace, second.path), 'unverified replacement')
+  await assert.rejects(f.owner.registerDerived(injection), /Derived dependencies unavailable/)
+})
+
 test('admitted routing evidence is withheld during a drained mutation and stays stale in a fresh session', async t => {
   const f = await fixture(t), current = (await f.client.readFile(f.identity))!
   const snapshot = async (session: string, prior?: NonNullable<HostMemoryApi['authorizedProvenance']['output']>) =>

@@ -32,7 +32,7 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   const memory = path.join(compiledRoot, 'src/memory')
   const diagnostics = path.join(compiledRoot, 'src/diagnostics')
   const shared = path.join(compiledRoot, 'src/shared')
-  const sharedBudgetFiles = ['request-budget.js', 'node/tool-call-budget.js'].map(file => path.join(shared, file))
+  const sharedFiles = ['request-budget.js', 'node/tool-call-budget.js', 'node/native-output-receipts.js'].map(file => path.join(shared, file))
   if (!existsSync(path.join(plugin, 'index.js')) || !existsSync(path.join(memory, 'node/index.js'))) throw new Error('Compile memory and its plugin before assembly')
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest
   const declared = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})])
@@ -40,10 +40,10 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     if (within(plugin, file)) return path.join(destination, path.relative(plugin, file))
     if (within(memory, file)) return path.join(destination, 'memory', path.relative(memory, file))
     if (within(diagnostics, file)) return path.join(destination, 'diagnostics', path.relative(diagnostics, file))
-    if (sharedBudgetFiles.includes(file)) return path.join(destination, 'shared', path.relative(shared, file))
+    if (sharedFiles.includes(file)) return path.join(destination, 'shared', path.relative(shared, file))
     throw new Error(`Memory plugin depends on a repository-only module: ${path.relative(compiledRoot, file)}`)
   }
-  const sources = [...files(plugin), ...files(memory), ...sharedBudgetFiles.filter(file => existsSync(file)), ...(existsSync(diagnostics) ? files(diagnostics) : [])].filter(file => file.endsWith('.js'))
+  const sources = [...files(plugin), ...files(memory), ...sharedFiles.filter(file => existsSync(file)), ...(existsSync(diagnostics) ? files(diagnostics) : [])].filter(file => file.endsWith('.js'))
   const sourceSet = new Set(sources.map(file => path.resolve(file)))
   const output = sources.map(file => {
     const target = targetOf(file)

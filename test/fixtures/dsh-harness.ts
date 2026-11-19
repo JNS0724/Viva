@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
+import { ChildProcess } from 'node:child_process'
+import { ownerRpcFrame } from '../../src/memory/contracts/owner-rpc.ts'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { TestContext } from 'node:test'
@@ -157,4 +159,21 @@ export async function eventually<T>(read: () => T, { timeoutMs = 15_000, interva
     if (value || Date.now() > deadline) return value
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
+}
+
+/** Simulate a slow owner receipt without delaying ACP output, turn completion, or other RPCs. */
+export function delayNativeOutputReceipts(t: TestContext, pid: () => number | null | undefined, delayMs: number) {
+  const emit = ChildProcess.prototype.emit
+  let count = 0
+  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    const frame = this.pid === pid() && event === 'message' ? ownerRpcFrame(args[0]) : null
+    const method = frame?.kind === 'request' && frame.method === 'adapter' ? objectOf(frame.input)?.method : null
+    if (method === 'finishNativeOutput') {
+      count++
+      setTimeout(() => Reflect.apply(emit, this, [event, ...args]), delayMs)
+      return true
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  return () => count
 }

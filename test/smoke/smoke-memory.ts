@@ -118,7 +118,13 @@ async function questionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await submit(win, '明天天气怎么样')
   await finishTurn(win)
   await wait(UI_WAIT_MS)
-  const lastReply = `[...document.querySelectorAll('.msg-agent .msg-text')].at(-1)?.textContent ?? ''`
+  // An incomplete turn ends with a note. Report that turn's outcome instead of
+  // picking the previous answer from elsewhere in the conversation.
+  const lastReply = `(() => {
+    const rows = [...document.querySelectorAll('#thread .msg-user, #thread .msg-agent .msg-text, #thread .msg-note')]
+    const turn = rows.slice(rows.findLastIndex(row => row.matches('.msg-user')) + 1)
+    return (turn.findLast(row => row.matches('.msg-text')) ?? turn.at(-1))?.textContent ?? ''
+  })()`
   const asked = await run(win, lastReply)
   expect(asked === '你想看哪个城市的天气？', 'the agent should ask which city, in its answer', asked)
   expect(!(await run(win, `Boolean(document.querySelector('.ask'))`)), 'the main conversation shows no question card')
