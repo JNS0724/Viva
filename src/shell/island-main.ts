@@ -93,7 +93,10 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
   }
   const menu = (island: DeskIsland) => Menu.buildFromTemplate(deskMenuTemplate({
     open: () => openWindow(island),
-    switchOff,
+    switchOff: () => {
+      island.closeInput()
+      switchOff()
+    },
     preview: preview?.()?.menu(),
   }))
 

@@ -513,6 +513,11 @@ function registerShellSettingsIpc() {
     await setDeskIsland(on)
     return (await backendConnection()).control('settings-view')
   })
+  ipcMain.handle('settings:reset-desk-place', async () => {
+    desk?.resetPlace()
+    if (!desk) await setShellPreference('deskPlaces', { last: null, places: {} })
+    return (await backendConnection()).control('settings-view')
+  })
 }
 
 /** Run from the repository, the app shows its own icon instead of Electron's. */

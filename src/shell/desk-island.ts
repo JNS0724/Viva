@@ -602,6 +602,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     /** The user's switch in settings, or 关闭桌面岛 in its menu. */
     setEnabled(value: boolean) {
       enabled = value
+      if (!value) closeInput()
       refresh()
     },
     /** For the smoke run, whose window is never in front: show the island as if it were away. */

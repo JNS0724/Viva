@@ -452,6 +452,22 @@ test('the right-click menu stays minimal: open the window or turn off the deskto
   assert.deepEqual(calls, ['open', 'off'])
 })
 
+test('switching off the desktop island closes an expanded input panel immediately', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  const env = fakes()
+  const desk = deskIsland(env)
+  desk.setView(view('idle'))
+  const [win] = env.windows
+  win.handlers['did-finish-load']()
+  assert.equal(desk.openInput(), true)
+  assert.equal(desk.inputOpen(), true)
+  assert.equal(win.visible, true)
+  desk.setEnabled(false)
+  assert.equal(desk.inputOpen(), false)
+  assert.equal(win.visible, false)
+  desk.destroy()
+})
+
 test('the debug menu previews eight states in a separate window and resumes the live island on exit', t => {
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes()
