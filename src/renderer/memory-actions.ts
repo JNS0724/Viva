@@ -38,9 +38,12 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   async function refreshDream(operation?: string) {
     clearTimeout(dreamTimer)
     const request = ++dreamRequest
+    const pending = pendingDreamOperation
     try {
-      const status = await (operation ? api.runDream(operation) : api.getDreamStatus())
-      if (operation === pendingDreamOperation || status.jobId === pendingDreamOperation) pendingDreamOperation = undefined
+      const status = await (operation ? api.runDream(operation) : api.getDreamStatus(pending))
+      // A joined request can have a different canonical job ID. The status
+      // lookup is scoped to the captured operation and never schedules work.
+      if (pending && pending === pendingDreamOperation && (operation === pending || status.jobId)) pendingDreamOperation = undefined
       if (request === dreamRequest && watchingDream) dispatch({ type: 'memory_dream_status', status })
     } catch {
       if (request === dreamRequest && watchingDream) {

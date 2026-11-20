@@ -29,7 +29,7 @@ export type SourceChangeInput = { operationId: string, conversation: string, ids
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
-  dreamStatus: Args<[], MemoryDreamStatus>
+  dreamStatus: Args<[operationId?: string], MemoryDreamStatus>
   requestDream: Args<[operationId?: string], MemoryDreamStatus>
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
   readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
@@ -106,7 +106,7 @@ const empty = args(z.tuple([]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
-  profile: empty, dreamStatus: empty, requestDream: args(z.tuple([z.uuid().optional()])),
+  profile: empty, dreamStatus: args(z.tuple([z.uuid().optional()])), requestDream: args(z.tuple([z.uuid().optional()])),
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),

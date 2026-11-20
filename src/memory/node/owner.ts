@@ -1195,7 +1195,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const [occurrence, sourceProject, targetProject, sessionProject] = command.input.args
         return coordination.allowsProjectHistory(occurrence, sourceProject, targetProject, sessionProject, proof)
       }
-      case 'dreamStatus': return runtime.dreamStatus()
+      case 'dreamStatus': return runtime.dreamStatus(...command.input.args)
       case 'requestDream': return runtime.requestDream(...command.input.args)
       case 'listFiles': return runtime.listFilesAsync(command.input.args[0], signal)
       case 'readFile': return runtime.readFileAsync(command.input.args[0], command.input.args[1], signal)

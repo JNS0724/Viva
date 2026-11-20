@@ -194,13 +194,15 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const retry = [...new Set(request.cursor?.retry ?? [])]
     if (retry.some(index => index >= offset)) return stale()
     const limit = request.limit ?? 25
+    const firstNewIndex = offset
     const end = Math.min(entries.length, offset + 100 - retry.length)
     const unread: number[] = []
     const items: MemoryFileSummary[] = []
     let partial = false
     while ((retry.length || offset < end) && items.length < limit) {
       if (options.exhausted?.()) { partial = true; break }
-      const indices = retry.splice(0, limit - items.length)
+      const indices = offset < end ? [offset++] : []
+      indices.push(...retry.splice(0, limit - items.length - indices.length))
       while (offset < end && indices.length < limit - items.length) indices.push(offset++)
       const candidates = indices.map(index => entries[index]!)
       const read = await options.load(candidates.flatMap(({ identity, path, physical }) => physical ? [{ workspace: identity.workspace, path }] : []))
@@ -208,7 +210,12 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       if (options.revision() !== revision) return stale()
       for (const [n, { identity, path, physical, allocation, detached }] of candidates.entries()) {
         const observed = physical ? read(identity.workspace, path) : null
-        if (observed === undefined) { unread.push(indices[n]!); continue }
+        if (observed === undefined) {
+          partial = true
+          // Offer each unknown row once more on this walk. A refresh starts a new walk.
+          if (indices[n]! >= firstNewIndex) unread.push(indices[n]!)
+          continue
+        }
         const view = observed?.kind === identity.kind && observed.id === identity.id ? observed : undefined
         const item = allocation ? dailyView(allocation, identity.id, view) : detached ? detachedDigestView(detached) : view
         if (!item || !allows(item) || !acceptsState(item.enabled)) continue
@@ -219,7 +226,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     // Preserve unobserved rows without replaying healthy results returned on the same page.
     unread.push(...retry)
     partial ||= unread.length > 0
-    const nextCursor = offset < entries.length || unread.length ? { snapshot, offset, ...(partial && { retry: unread }) } : null
+    const nextCursor = offset < entries.length || unread.length ? { snapshot, offset, ...(unread.length > 0 && { retry: unread }) } : null
     return { status: 'ok', snapshot, items, ...(partial && { partial }), nextCursor }
   }
   function validate(input: MemoryFileMutation, allows: Allows) {

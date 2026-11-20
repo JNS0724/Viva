@@ -561,7 +561,7 @@ test('receipt failure rejects covering barriers, writes later queued receipts an
   const adapter = createRemoteMemoryOwner({ ...connection, callAdapter(method, args, options) {
     if (method === 'finishNativeOutput') {
       calls.push(String(objectOf(args[0])?.id))
-      if (calls.length === 1) return Promise.reject(new Error('receipt deadline'))
+      if (calls.length === 1 || calls.length === 3) return Promise.reject(new Error('receipt deadline'))
     }
     return connection.callAdapter(method, args, options)
   } }, error => errors.push(error))
@@ -577,7 +577,12 @@ test('receipt failure rejects covering barriers, writes later queued receipts an
   assert.deepEqual(calls, [a.id, b.id])
   assert.equal(errors.length, 1)
   adapter.finishNativeOutput(c)
+  const failed = adapter.drainSession(session)
+  const d = receipt()
+  adapter.finishNativeOutput(d)
+  const overlapping = adapter.drainSession(session)
+  await Promise.all([assert.rejects(failed, /receipt deadline/), assert.rejects(overlapping, /receipt deadline/)])
   await adapter.drainSession(session)
-  assert.deepEqual(calls, [a.id, b.id, c.id])
+  assert.deepEqual(calls, [a.id, b.id, c.id, d.id])
   assert.equal(adapter.ready(), true)
 })

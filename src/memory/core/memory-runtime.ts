@@ -1107,7 +1107,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (closed) return null
     const detail = fileManagement.detail(identity, managementAllows, restrictionId, batch?.managementRead)
     if (detail?.enabled && path && fileIndex && !fileIndex.nodeAt(workspace, path) && batch?.read(workspace, path)?.currentMarkdown != null) {
-      scheduleStaleProjection(workspace, identity.id)
+      const key = publicationKey(workspace, identity.id)
+      const pending = effects.timing(INDEX_PUBLISH, key)
+      if (pending && pending.dueAt > now()) {
+        const job = effects.get(INDEX_PUBLISH, key)
+        if (job) effects.queue(INDEX_PUBLISH, key, job.payload)
+      } else if (!pending) scheduleStaleProjection(workspace, identity.id)
     }
     return detail
   }
@@ -1522,7 +1527,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     writeSourceFile,
     undoFile: (input: MemoryFileUndoRequest, committed?: FileMutationCommitted, waitForPublication = true) =>
       mutateManagedFile({ ...input, action: 'undo' }, committed, waitForPublication),
-    dreamStatus: (): MemoryDreamStatus => dream?.status() ?? { state: 'disabled', ...dreamHistory(store) },
+    dreamStatus: (operationId?: string): MemoryDreamStatus => dream?.status(operationId) ?? { state: 'disabled', ...dreamHistory(store) },
     requestDream: (operationId?: string): MemoryDreamStatus => dream?.request(operationId) ?? { state: 'disabled', ...dreamHistory(store) },
     runDocumentDream: () => { dream?.run(); return effects.wake() },
     readDocument: documents?.read,

@@ -384,6 +384,36 @@ test('file pagination verifies just this page and rejects cursors after a ledger
   assert.deepEqual(observed, [])
 })
 
+test('a full cursor of unreadable rows cannot strand a later healthy file', async t => {
+  const f = fixture(t), source = randomUUID()
+  f.memory.accept('Invoice schedule.', origin, source)
+  const { workspace, reference } = f.ref(source)
+  for (let i = 0; i <= 100; i++) {
+    const name = String(i).padStart(3, '0')
+    f.documents.commit({ operationId: name, workspace, path: `digest/wiki/${name}.md`,
+      action: 'CREATE', markdown: 'Invoice', expectedRevision: null, sources: [reference], reads: [] })
+  }
+  await f.memory.wake()
+  const skipped = new Set<string>()
+  let markBad = true
+  f.wrapPhysicalRead(read => (area, path, signal) => {
+    if (markBad) skipped.add(path)
+    if (skipped.has(path)) throw new RequestTimeout()
+    return read(area, path, signal)
+  })
+  const first = await f.memory.listFilesAsync({ kind: 'digest', limit: 100 })
+  assert.equal(first.nextCursor?.retry?.length, 100)
+  markBad = false
+  const second = await f.memory.listFilesAsync({ kind: 'digest', limit: 100, cursor: first.nextCursor! })
+  assert.ok(second.partial)
+  assert.ok(second.nextCursor)
+  assert.equal(second.nextCursor.retry, undefined)
+  const last = await f.memory.listFilesAsync({ kind: 'digest', limit: 100, cursor: second.nextCursor })
+  assert.equal(last.items.length, 1)
+  assert.ok(!skipped.has(last.items[0]!.path))
+  assert.equal(last.nextCursor, null)
+})
+
 test('model file reads recheck the accepted usage version after asynchronous verification', async t => {
   const f = fixture(t), source = randomUUID()
   f.memory.accept('Invoice includes a private approval stamp.', origin, source)
@@ -466,6 +496,29 @@ test('model lookups omit changed, missing and unreadable files while unrelated v
   assert.ok(f.fileReads.every(file => file.id === healthy.documentId))
   assert.equal(f.calls.length, 0)
   assert.equal(f.documents.registered(workspace).find(row => row.id === missing.documentId)?.path, missing.path)
+})
+
+test('opening a verified file brings its first publication forward from backoff', async t => {
+  const f = fixture(t), source = randomUUID(), path = 'digest/wiki/silver.md'
+  f.memory.accept('Silver ledger.', origin, source)
+  const { workspace, reference } = f.ref(source)
+  await f.memory.wake()
+  f.wrapPhysicalRead(read => (area, file, signal) => {
+    if (file === path) throw new RequestTimeout()
+    return read(area, file, signal)
+  })
+  const created = f.documents.commit({ operationId: 'silver', workspace, path, action: 'CREATE',
+    markdown: 'Silver ledger.', expectedRevision: null, sources: [reference], reads: [] })
+  const job = () => f.store.db.prepare("SELECT attempts FROM effects WHERE kind='memory.file-index-publish' AND key=?")
+    .get(JSON.stringify([workspace, created.documentId]))
+  await f.memory.wake()
+  assert.ok(Number(job()?.attempts) > 0)
+  f.wrapPhysicalRead(read => read)
+  const detail = await f.memory.readFileAsync({ kind: 'digest', workspace, id: created.documentId })
+  assert.equal(detail?.markdown, 'Silver ledger.')
+  await f.memory.wake()
+  assert.equal(job(), undefined)
+  assert.match(await f.memory.handleModelRequest({ op: 'recall', session: origin.session, query: 'Silver' }, origin, () => true), /Silver ledger/u)
 })
 
 test('a restored accepted revision becomes searchable again through targeted index repair', async t => {

@@ -346,3 +346,33 @@ test('reopening Dream only reads status and an explicit retry reuses the unconfi
   assert.equal(operations[0], operations[1])
   assert.notEqual(operations[1], operations[2])
 })
+
+test('passive confirmation of a joined Dream lets the next click start a fresh operation', async t => {
+  let state = reduce(initialState, { type: 'memory_open' })
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  const idle = { state: 'idle' as const, lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null }
+  const operations: string[] = []
+  const api = {
+    async getDreamStatus(id?: string) {
+      if (!id) return idle
+      assert.equal(id, operations[0])
+      return { ...idle, jobId: 'already-accepted-job' }
+    },
+    async runDream(id: string) {
+      operations.push(id)
+      if (operations.length === 1) throw new Error('lost after acceptance')
+      return idle
+    },
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
+  t.after(() => actions.watchDream(false))
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  actions.watchDream(false)
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  assert.equal(operations.length, 2)
+  assert.notEqual(operations[0], operations[1])
+})

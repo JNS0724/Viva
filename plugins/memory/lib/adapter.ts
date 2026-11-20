@@ -374,12 +374,10 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
         // A provider read may still be waiting for bytes when verification fails or the consumer closes.
         reading.abort()
         const cleanup = Promise.resolve().then(() => transport.run(origin, () => iterator.return?.(), reading.signal))
-        if (failed || options.signal?.aborted) {
-          // The original failure/cancellation is already terminal; a non-cooperative provider
-          // can leave return() waiting on its pending read. Keep its late rejection observed.
-          void cleanup.catch(() => {})
-        } else {
-          const budget = createRequestBudget(DEFAULT_TOOL_TIMEOUT_MS)
+        // Keep late failures observed even if cancellation wins before the wait starts.
+        void cleanup.catch(() => {})
+        if (!failed && !options.signal?.aborted) {
+          const budget = createRequestBudget(DEFAULT_TOOL_TIMEOUT_MS, options.signal)
           try { await budget.run(() => cleanup) } finally { budget.close() }
         }
       }

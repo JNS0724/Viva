@@ -117,7 +117,7 @@ export const IPC_ARGS = Object.freeze({
   'workdir:reveal': none,
 
   'memory:get': read(z.tuple([memoryReadOptions])),
-  'memory:dream-status': read(none),
+  'memory:dream-status': read(z.tuple([operationId.optional()])),
   'memory:run-dream': z.tuple([operationId]),
   'memory:list-files': read(z.tuple([memoryFileListRequest, memoryReadOptions])),
   'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional(), memoryReadOptions])),

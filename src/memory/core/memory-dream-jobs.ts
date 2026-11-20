@@ -119,12 +119,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   const schedule = () => effects.queue(DREAM, DAILY, null, nextDreamAt(now(), timezone, dreamTime))
   let active = false
   let waitingGeneration: number | null = null
-  const status = (): MemoryDreamStatus => {
+  const status = (operationId?: string): MemoryDreamStatus => {
+    const receipt = operationId && store.command(requestKey(operationId))
     const scheduled = effects.timing(DREAM, DAILY)
     return {
       state: active ? 'running' : scheduled?.generation === waitingGeneration ? 'waiting'
         : scheduled && scheduled.dueAt <= now() ? 'queued' : scheduled?.attempts ? 'retry' : 'idle',
-      ...dreamHistory(store),
+      ...dreamHistory(store), ...(receipt && { jobId: receipt.payload }),
     }
   }
   const refOf = (note: Note, view = policy.read(note.workspace, note.path)): FileRef => {
@@ -150,7 +151,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
       const matches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
       let yieldAt = performance.now() + 4
-      for (const row of documents.fileRegistry(workspace)) {
+      const restrictions = documents.sourceRestrictions(workspace)
+      const entries = restrictions.length ? documents.registered(workspace).filter(doc =>
+        !doc.sources.some(ref => documentSourceRestricted(ref, restrictions))) : documents.fileRegistry(workspace)
+      for (const row of entries) {
         if (performance.now() >= yieldAt) {
           await new Promise<void>(resolve => setTimeout(resolve, 0))
           signal?.throwIfAborted()

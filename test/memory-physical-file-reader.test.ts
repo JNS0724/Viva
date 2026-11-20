@@ -75,6 +75,40 @@ test('concurrent verification shares one physical read of a path and leaves room
   assert.equal((await independent)?.markdown, 'other')
 })
 
+test('a caller joining an in-flight read observes its original native deadline', async t => {
+  const { root, put } = fixture(t)
+  const path = 'digest/wiki/stalled.md'
+  put(path, 'stored')
+  let release!: () => void, entered!: () => void
+  const blocked = new Promise<void>(done => { release = done })
+  const started = new Promise<void>(done => { entered = done })
+  const native = new AbortController()
+  t.mock.method(AbortSignal, 'timeout', () => native.signal)
+  const original = promises.lstat
+  const stat = t.mock.method(promises, 'lstat', async (...args: Parameters<typeof original>) => {
+    entered()
+    await blocked
+    return Reflect.apply(original, promises, args)
+  })
+  syncBuiltinESMExports()
+  const read = createMemoryPhysicalFileReader(() => root)
+  try {
+    const first = assert.rejects(read(workspace, path), RequestTimeout)
+    await started
+    let rejected = false
+    const second = assert.rejects(read(workspace, path), RequestTimeout).then(() => { rejected = true })
+    native.abort()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.ok(rejected, 'the shared deadline settles a later caller while its own budget is still open')
+    await Promise.all([first, second])
+  } finally {
+    release()
+    read.close()
+    stat.mock.restore()
+    syncBuiltinESMExports()
+  }
+})
+
 test('stalled reads keep their slots until native I/O settles and queued reads time out', async t => {
   const { root, put } = fixture(t)
   const blocked = ['one', 'two', 'three'].map(name => `digest/wiki/${name}.md`)

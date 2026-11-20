@@ -189,11 +189,11 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       if (timedOut()) { stale = true; return null }
       const key = JSON.stringify([file.workspace, file.id, file.path, file.revision, file.usageVersion, file.policyToken])
       if (!checked.has(key)) {
-        const view = batch ? batch.read(file.workspace, file.path) : readable(file.workspace, file.path)
+        const view = batch ? batch.readObservation(file.workspace, file.path) : readable(file.workspace, file.path)
         if (!view || view.currentMarkdown === null || !sameVersion(file, view)) {
           stale = true
           checked.set(key, null)
-          if (usePublishedIndex && reportStale && (!batch || batch.observedRevision(file.workspace, file.path) !== undefined)) {
+          if (usePublishedIndex && reportStale && view !== undefined) {
             try { onStale?.(file) } catch { /* Publishing recovery is separate from the verified read. */ }
           }
         } else checked.set(key, allows(view) ? view : null)
@@ -704,7 +704,7 @@ ${file.description}`, file, view }] : []
     await loadFiles(batch, plan.candidates.rows, defaults.fileVerificationBudgetMs, input.signal)
     let result = nodeSearch(input, plan, batch)
     const size = candidateProbe(Math.min(defaults.searchMaxCandidates, plan.limit * defaults.searchCandidateMultiplier))
-    for (let offset = size; plan.candidates.incomplete && result.nodes.length < plan.limit && offset < 512 && performance.now() < until; offset += size) {
+    for (let offset = size; !closed && !input.signal?.aborted && plan.candidates.incomplete && result.nodes.length < plan.limit && offset < 512 && performance.now() < until; offset += size) {
       const page = index.nodeCandidates(plan.query, searchScope(input), size, offset)
       await loadFiles(batch, page.rows, until - performance.now(), input.signal)
       if (closed || input.signal?.aborted) break

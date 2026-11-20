@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { Worker } from 'node:worker_threads'
-import { DEFAULT_TOOL_TIMEOUT_MS } from '../src/shared/request-budget.ts'
+import { DEFAULT_TOOL_TIMEOUT_MS, INITIALIZATION_BUDGET_MS } from '../src/shared/request-budget.ts'
 import { acquireSessionRootLease } from '../plugins/memory/lib/native/session-root-lease.ts'
 import { Context } from '@deepseek-ai/cordis'
 import * as persistence from '../plugins/memory/persistence.ts'
@@ -103,4 +103,35 @@ test('standalone disposal can finish while a stuck lease still excludes a second
   const next = acquireSessionRootLease(config, () => {})
   await next.ready
   await next.close()
+})
+
+test('a ready message arriving after the startup deadline cannot acquire the root lease', { timeout: 10_000 }, async t => {
+  const { dir } = scratch(t, 'viva-late-lease-')
+  const config = { sessionsRoot: join(dir, 'sessions'), memoryRoot: join(dir, 'memory'), storageRoot: join(dir, 'storage') }
+  const arrived = signal()
+  let thread!: Worker
+  const emit = Worker.prototype.emit
+  const delayed = t.mock.method(Worker.prototype, 'emit', function(this: Worker, event: string | symbol, ...args: unknown[]) {
+    if (event === 'message') { thread = this; arrived.release(); return true }
+    return emit.call(this, event, ...args)
+  })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let lost = false
+  const lease = acquireSessionRootLease(config, () => { lost = true })
+  try {
+    await arrived.ready
+    const ended = new Promise<void>(resolve => thread.once('exit', () => resolve()))
+    const failure = assert.rejects(lease.ready, /timed out/)
+    t.mock.timers.tick(INITIALIZATION_BUDGET_MS)
+    emit.call(thread, 'message', 'ready')
+    await failure
+    await ended
+    assert.equal(lost, false)
+  } finally {
+    t.mock.timers.reset()
+    delayed.mock.restore()
+  }
+  // The failed caller need not close a lease it never acquired.
+  const next = acquireSessionRootLease(config, () => {})
+  try { await next.ready } finally { await next.close(); await lease.close() }
 })

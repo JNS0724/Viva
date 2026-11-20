@@ -248,7 +248,7 @@ export function renderStream(dom: Dom, state: State, handlers: Handlers, now = D
 
 /** Once-a-second refresh of the elapsed time in the island while the agent works. */
 export function renderTick(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
-  if ((!showsHome(state) || hubPage(state)) && isBusy(state)) renderIsland(dom.island, state, handlers, now)
+  if ((!showsHome(state) || hubPage(state)) && (isBusy(state) || state.phase === 'stopping')) renderIsland(dom.island, state, handlers, now)
 }
 
 onLocaleChange(() => {

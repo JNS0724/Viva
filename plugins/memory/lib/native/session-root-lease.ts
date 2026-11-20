@@ -30,12 +30,20 @@ export function acquireSessionRootLease(config: SessionRootLeaseConfig, onLost: 
       if (acquired && !closing) onLost()
     }))
     await new Promise<void>((resolve, reject) => {
-      thread.once('message', () => { acquired = true; resolve() })
+      thread.once('message', () => {
+        if (closing || startup.signal.aborted) return
+        acquired = true
+        resolve()
+      })
       thread.on('error', reject)
       void exited!.then(() => reject(new Error('Native session root lease exited during startup')))
     })
   }).catch(error => {
-    if (worker && !closing) void worker.terminate().catch(() => {})
+    if (worker && !closing) {
+      closing = true
+      worker.unref()
+      void worker.terminate().catch(() => {})
+    }
     throw error
   }).finally(() => startup.close())
 

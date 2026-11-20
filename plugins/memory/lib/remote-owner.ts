@@ -25,7 +25,9 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
   const views = new Map<string, View>()
   const checks = new Map<string, () => boolean | Promise<boolean>>()
   const sends = new Map<string, Send>()
-  type Receipts = { epoch: string, queue: Promise<void>, failure?: { error: unknown } }
+  type ReceiptFailure = { error: unknown, observedThrough?: number }
+  type Receipts = { epoch: string, queue: Promise<ReceiptFailure | undefined> }
+  let barrierSequence = 0
   const completions = new Map<string, Receipts>()
   let epoch: string | undefined
   let closed = false
@@ -80,16 +82,15 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
     const captured = scope.getStore()?.epoch ?? syncEpoch()
     if (!captured || !current(captured)) return
     const pending = completions.get(session)
-    const item: Receipts = pending?.epoch === captured ? pending : { epoch: captured, queue: Promise.resolve() }
+    const item: Receipts = pending?.epoch === captured ? pending : { epoch: captured, queue: Promise.resolve(undefined) }
     completions.set(session, item)
-    // Keep writing independent receipts in order. A barrier covering a failed receipt still fails closed.
-    const queue = item.queue.then(async () => {
-      try { await inEpoch(captured, () => call(method, args)) }
-      catch (error) { item.failure ??= { error }; report(error) }
+    const queue = item.queue.then(async (prior): Promise<ReceiptFailure | undefined> => {
+      try { await inEpoch(captured, () => call(method, args)); return prior }
+      catch (error) { report(error); return { error } }
     })
     item.queue = queue
-    void queue.then(() => {
-      if (!item.failure && item.queue === queue && completions.get(session) === item) completions.delete(session)
+    void queue.then(failure => {
+      if ((!failure || failure.observedThrough !== undefined) && item.queue === queue && completions.get(session) === item) completions.delete(session)
     })
   }
 
@@ -140,13 +141,15 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
   function completion(session: string) {
     const item = completions.get(session)
     if (!item || item.epoch !== syncEpoch()) return Promise.resolve()
-    // Detach this batch so a later operation can start again after the error has been observed.
+    const sequence = ++barrierSequence
     const queue = item.queue
-    return queue.then(() => {
-      if (item.failure) {
-        if (item.queue === queue && completions.get(session) === item) completions.delete(session)
-        throw item.failure.error
-      }
+    return queue.then(failure => {
+      if (item.queue === queue && completions.get(session) === item) completions.delete(session)
+      if (!failure) return
+      // All barriers already waiting when the failure is first delivered must
+      // see it, including one which also waits for a later successful receipt.
+      failure.observedThrough ??= barrierSequence
+      if (sequence <= failure.observedThrough) throw failure.error
     })
   }
 

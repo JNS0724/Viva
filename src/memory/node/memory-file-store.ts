@@ -105,7 +105,10 @@ export function createMemoryPhysicalFileReader(root: () => string) {
         active.set(key, operation)
       }
       if (operation.signal.aborted) throw new RequestTimeout()
-      return await budget.run(() => operation.result)
+      const timeout = () => budget.cancel(new RequestTimeout())
+      operation.signal.addEventListener('abort', timeout, { once: true })
+      try { return await budget.run(() => operation.result) }
+      finally { operation.signal.removeEventListener('abort', timeout) }
     } finally { budget.close() }
   }
   return Object.assign(read, { close: () => lifetime.abort(new Error('Memory file reader closed')) })

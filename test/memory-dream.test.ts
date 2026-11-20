@@ -74,7 +74,7 @@ function harness(t: TestContext, options: { units?: number, budget?: number, rea
       sources: notes.references(note.key), reads: [] })
   const run = async () => { jobs.run(); await effects.wake() }
   return { store, notes, documents, requests, addSource, add, seedDigest, run, defaultModel,
-    status: () => jobs.status(), request: (operationId?: string) => jobs.request(operationId), settle: () => effects.wake(),
+    status: (operationId?: string) => jobs.status(operationId), request: (operationId?: string) => jobs.request(operationId), settle: () => effects.wake(),
     setFixture(options: Parameters<typeof dreamModelStep>[2]) { fixtureOptions = options },
     setModel(next: DreamCalculate) { model = next },
     beforeMutation(next: () => void) { beforeMutation = next }, afterCommit(next: (receipt: DocumentReceipt) => void) { afterCommit = next },
@@ -102,6 +102,8 @@ test('manual Dream acknowledges immediately, joins the scheduled job and keeps a
   assert.equal(queued.state, 'queued')
   assert.equal(queued.jobId, operationId)
   assert.equal(h.request(joined).jobId, operationId)
+  assert.equal(h.status(joined).jobId, operationId)
+  assert.equal(h.status(randomUUID()).jobId, undefined)
   await started
   assert.equal(h.request().state, 'running')
   release()
@@ -116,6 +118,7 @@ test('manual Dream acknowledges immediately, joins the scheduled job and keeps a
   await h.settle()
   h.restart()
   assert.deepEqual(h.status(), { state: 'idle', lastCheckResult: 'empty', lastCheckedAt: done.lastProcessedAt + 60_000, lastProcessedAt: done.lastProcessedAt })
+  assert.deepEqual(h.status(joined), { ...h.status(), jobId: operationId })
   const retried = h.request(operationId)
   assert.deepEqual(retried, { ...done, jobId: operationId, completedAt: done.lastCheckedAt })
   assert.deepEqual(h.request(joined), retried)
