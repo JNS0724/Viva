@@ -24,6 +24,8 @@ export interface MemoryFileLink { path: string, line: number, label?: string, an
 export interface MemoryFileSnapshot extends MemoryFileIdentity {
   name: string
   description: string
+  /** Absent in older projections. */
+  tags?: string[]
   chunks: MemoryFileChunk[]
   links: MemoryFileLink[]
 }
@@ -40,6 +42,7 @@ export interface MemoryFileQueryScope {
 }
 export interface MemoryFilePage<T> { rows: T[], incomplete: boolean }
 export interface MemoryFileNode extends MemoryFileIdentity {
+  tags?: string[]
   name: string
   description: string
 }
@@ -54,6 +57,7 @@ export interface MemoryFileIndex {
   lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
   nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode>
   vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, limit: number, current?: () => boolean, deadline?: number): Promise<MemoryFilePage<MemoryFileHit> | null>
+  digestNodes(workspace: string): MemoryFileNode[]
   nodeAt(workspace: string, path: string): MemoryFileNode | null
   linkTargets(file: MemoryFileIdentity, limit: number): MemoryFilePage<string>
   linkingNodes(workspace: string, targets: readonly string[], limit: number): MemoryFilePage<MemoryFileNode>

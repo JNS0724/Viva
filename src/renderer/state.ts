@@ -159,6 +159,11 @@ const readyStartsNewTopic = (state: State, info: AgentInfo) => topicChanged(stat
 
 const ACTION_HANDLERS: ActionHandlers = {
   initialization_status: (state, { status, reason }) => ({ ...state, initialization: { status, reason: reason ?? null } }),
+  initialization_turn: (state, { turn }) => ({ ...state,
+    turn: { tools: 0, thoughts: 0, ...(state.turn?.id === turn.id && state.turn), id: turn.id, startedAt: turn.startedAt, by: turn.by },
+    phase: turn.stopping ? 'stopping' : state.phase === 'asking' || state.phase === 'waiting' ? state.phase : 'working',
+    ...(turn.stopping && { permission: null, question: null, secret: null }),
+  }),
   initialization_snapshot: (state, { snapshot }) => {
     const clean = { ...state, ...initialConversation, info: snapshot.info, conversationId: snapshot.info.conversationId ?? null,
       restored: null, restoredTrace: null, restoredTraceData: null, records: [], folds: [], topic: initialTopic,
@@ -170,7 +175,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,
-    ...(state.stopUnconfirmed && info.sessionId && info.sessionId !== state.info.sessionId && { stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null }),
+    ...(state.stopUnconfirmed && (info.mode === 'setup' || info.sessionId && info.sessionId !== state.info.sessionId) && { stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null }),
     phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
     error: !state.newTopicPending && state.phase === 'error' ? null : state.error,
   }),

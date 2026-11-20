@@ -541,7 +541,43 @@ test('a stopped foreground cannot write or send through the live relay while bac
   await assert.rejects(call('initializeSession', { sessionId: task, parentSessionId: foreground }), /foreground stopped/)
   await assert.rejects(call('prepareContextRecovery', { sessionId: task, nativeParentSessionId: foreground,
     baseSurfaceHash: '0'.repeat(64), candidates: [] }), /foreground stopped/)
+  await assert.rejects(call('bindContextRecovery', { sessionId: foreground }), /foreground stopped/)
+  await assert.rejects(call('commitContextRecovery', { sessionId: foreground }, 'check'), /foreground stopped/)
+  await assert.rejects(call('nativeToolEvidence', [{ session: task }, { session: foreground }]), /foreground stopped/)
+  await assert.rejects(call('finishNativeSpill', id, {}, foreground), /foreground stopped/)
   await assert.rejects(call('recordSendBody', id), /foreground stopped/)
   await call('settleSend', id)
   await receive(task)
+})
+
+test('receipt failure rejects covering barriers, writes later queued receipts and permits the next operation', async t => {
+  const { dir: root, defer } = scratch(t, 'memory-receipt-queue-')
+  const persistence = registerStandaloneOwner(root)
+  defer(persistence.close)
+  await persistence.start()
+  const connection = openPluginOwner({ root, callbacks: {} }, process)
+  const errors: unknown[] = []
+  const calls: string[] = []
+  const adapter = createRemoteMemoryOwner({ ...connection, callAdapter(method, args, options) {
+    if (method === 'finishNativeOutput') {
+      calls.push(String(objectOf(args[0])?.id))
+      if (calls.length === 1) return Promise.reject(new Error('receipt deadline'))
+    }
+    return connection.callAdapter(method, args, options)
+  } }, error => errors.push(error))
+  defer(adapter.close)
+  await connection.start()
+  const session = randomUUID()
+  const receipt = () => ({ id: randomUUID(), session, generation: 0, turn: 1, step: 1, floor: 0 })
+  const a = receipt(), b = receipt(), c = receipt()
+  adapter.finishNativeOutput(a)
+  adapter.finishNativeOutput(b)
+  const barriers = [adapter.drainSession(session), adapter.drainSession(session)]
+  for (const barrier of barriers) await assert.rejects(barrier, /receipt deadline/)
+  assert.deepEqual(calls, [a.id, b.id])
+  assert.equal(errors.length, 1)
+  adapter.finishNativeOutput(c)
+  await adapter.drainSession(session)
+  assert.deepEqual(calls, [a.id, b.id, c.id])
+  assert.equal(adapter.ready(), true)
 })

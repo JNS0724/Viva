@@ -43,7 +43,7 @@ import { createDiagnosticHub } from '../../../src/diagnostics/node/hub.ts'
 import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort, withOperation } from '../../../src/diagnostics/node/context.ts'
 import { observeDshDiagnostics } from './diagnostics.ts'
 
-import { createRequestBudget, RequestTimeout } from '../../../src/shared/request-budget.ts'
+import { createRequestBudget, DEFAULT_TOOL_TIMEOUT_MS, RequestTimeout } from '../../../src/shared/request-budget.ts'
 import { NATIVE_OUTPUT_RECEIPTS } from '../../../src/shared/node/native-output-receipts.ts'
 import { currentToolBudget, executeToolCall, isMemoryTool, prepareToolCall, toolTimeoutResult } from '../../../src/shared/node/tool-call-budget.ts'
 
@@ -356,15 +356,33 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const reading = new AbortController()
     const stream = transport.run(origin, next, reading.signal)
     const iterator = stream[Symbol.asyncIterator]()
+    let failed = false, exhausted = false
     try {
       yield* verifiedModelOutput(
-        () => owner.inEpoch(ownerEpoch, () => transport.run(origin, () => iterator.next(), reading.signal)),
+        async () => {
+          const item = await owner.inEpoch(ownerEpoch, () => transport.run(origin, () => iterator.next(), reading.signal))
+          exhausted = Boolean(item.done)
+          return item
+        },
         () => ready() ? owner.inEpoch(ownerEpoch, () => owner.call('outputCurrent', [origin], { signal: options.signal })) : Promise.resolve(false),
       )
+    } catch (error) {
+      failed = true
+      throw error
     } finally {
-      // A provider read may still be waiting for bytes when verification fails or the consumer closes.
-      reading.abort()
-      await transport.run(origin, () => iterator.return?.(), reading.signal)
+      if (!exhausted) {
+        // A provider read may still be waiting for bytes when verification fails or the consumer closes.
+        reading.abort()
+        const cleanup = Promise.resolve().then(() => transport.run(origin, () => iterator.return?.(), reading.signal))
+        if (failed || options.signal?.aborted) {
+          // The original failure/cancellation is already terminal; a non-cooperative provider
+          // can leave return() waiting on its pending read. Keep its late rejection observed.
+          void cleanup.catch(() => {})
+        } else {
+          const budget = createRequestBudget(DEFAULT_TOOL_TIMEOUT_MS)
+          try { await budget.run(() => cleanup) } finally { budget.close() }
+        }
+      }
     }
   }, { prepend: true })
   ctx.on('system-prompt/assemble', (_presentation, { agent, toolSet, signal }, next) => {

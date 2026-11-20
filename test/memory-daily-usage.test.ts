@@ -66,7 +66,7 @@ const stopInput = (file: MemoryFileDetail) => ({ operationId: randomUUID(), iden
 async function retireStoppedOriginal(f: Awaited<ReturnType<typeof fixture>>, first: { messageId: string, content: string }) {
   const ticket = await f.owner.prepareContextRecovery({ sessionId: f.session, baseSurfaceHash: 'stopped-surface', candidates: [first] })
   assert.deepEqual(ticket.retainedMessageIds, [])
-  const bound = { ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
+  const bound = { sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
   f.owner.bindContextRecovery(bound)
   await f.owner.commitContextRecovery({ ...bound, baseSurfaceHash: ticket.baseSurfaceHash, persisted: true }, () => true)
 }

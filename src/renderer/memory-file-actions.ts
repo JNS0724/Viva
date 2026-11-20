@@ -13,18 +13,21 @@ const SEARCH_DEBOUNCE_MS = 200
 export function createMemoryPageReads(waitMs = MEMORY_READ_BUDGET_MS) {
   let pending = 0
   const waiters = new Set<() => void>()
-  return function readPage<T>(current: () => boolean, read: (options?: Required<MemoryReadOptions>) => Promise<T>): Promise<T> {
+  const wakeWaiters = () => { for (const wake of waiters) wake() }
+  function readPage<T>(current: () => boolean, read: (options?: Required<MemoryReadOptions>) => Promise<T>): Promise<T> {
     function start(options?: Required<MemoryReadOptions>) {
       const result = read(options)
       pending++
-      const release = () => { pending--; for (const wake of waiters) wake() }
+      const release = () => { pending--; wakeWaiters() }
       void result.then(release, release)
       return result
     }
+    if (!current()) return Promise.reject(new RequestTimeout())
     if (pending < MEMORY_PAGE_READ_LIMIT) return start()
     const budget = createRequestBudget(waitMs)
     return budget.run(async () => {
       while (pending >= MEMORY_PAGE_READ_LIMIT) {
+        if (!current()) throw new RequestTimeout()
         let wake!: () => void
         const available = new Promise<void>(resolve => { wake = resolve })
         waiters.add(wake)
@@ -34,6 +37,7 @@ export function createMemoryPageReads(waitMs = MEMORY_READ_BUDGET_MS) {
       return start({ budgetMs: budget.remainingMs() })
     }).finally(() => budget.close())
   }
+  return Object.assign(readPage, { wakeWaiters })
 }
 
 export function createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'showToast' | 'errorMessage'>, readPage = createMemoryPageReads()) {
@@ -53,6 +57,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
   function cancelReads() {
     listRequest++
     detailRequest++
+    readPage.wakeWaiters()
     clearTimeout(searchTimer)
   }
 

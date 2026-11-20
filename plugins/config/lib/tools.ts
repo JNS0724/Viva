@@ -1,5 +1,5 @@
 import { APP_WRITE_TIMEOUT_MS } from '../../../src/shared/request-budget.ts'
-import { LONG_TOOL_TIMEOUT_MS } from '../../../src/shared/node/tool-call-budget.ts'
+import { LONG_TOOL_TIMEOUT_MS } from '../../../src/shared/request-budget.ts'
 /**
  * The tools the model configures the app with. Each names the operation the app performs (config contract,
  * lib/channel.js); `mutating` ones are asked of the user first through dsh's approval card, with `reason`

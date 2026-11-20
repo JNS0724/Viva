@@ -450,13 +450,21 @@ test('the backend expires Stop while dsh is suspended and recovery only accepts 
   assert.ok(start)
   assert.equal(await app.call('agent:cancel', { ...start.context as object, turnId: randomUUID() }), false)
   assert.equal(await app.call('agent:cancel', { ...start.context as object, sessionId: 'other', turnId: start.turnId }), false)
+  const snapshot = () => app.call<IpcResults['agent:snapshot']>('agent:snapshot')
+  const active = snapshot()
+  assert.equal(active.activeTurn?.id, start.turnId)
+  const save = { streamGeneration: active.streamGeneration, eventCursor: active.cutoverCursor, context: active.context }
+  app.call('history:save', [{ role: 'user', text: question, receipt: null }], save)
+  const reloadedActive = snapshot()
+  assert.ok(!reloadedActive.replay.some(event => (event as HostEvent).type === 'turn_started'))
   const before = app.events.length
-  assert.equal(await cancelCurrent(app), true)
+  assert.equal(await app.call('agent:cancel', { ...reloadedActive.context, turnId: reloadedActive.activeTurn?.id }), true)
+  assert.equal(snapshot().activeTurn?.stopping, true)
   assert.ok(app.events.slice(before).some(event => event.type === 'turn_stopping'))
   assert.ok(await eventually(() => app.events.slice(before).some(event => event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed'), { timeoutMs: 12_000 }))
   assert.throws(() => app.call('agent:prompt', '旧执行端仍不可接单'), /执行端未确认停止/)
-  const snapshot = () => app.call<IpcResults['agent:snapshot']>('agent:snapshot')
   const stopped = snapshot()
+  assert.equal(stopped.activeTurn, null)
   assert.equal(stopped.stopUnconfirmed, true)
   assert.deepEqual(stopped.context, start.context)
   assert.ok(stopped.replay.some(event => (event as HostEvent).stopReason === 'cancel_unconfirmed'))
@@ -2514,4 +2522,34 @@ test('upgrading retires an old Dream question before related recall in a real fo
     assert.ok(!documents.pending(file.identity.workspace).some(work => work.operationId === workId
       && (work.status === 'pending_clarification' || work.status === 'ready')))
   } finally { memory.close() }
+})
+
+test('removing the last model from an unconfirmed stop enters setup without retaining the retired session', { timeout: 40_000 }, async t => {
+  let waiting = false, release!: () => void
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const app = await setup(t, request => {
+    if (questionOf(request.messages) !== 'hold for setup') return null
+    waiting = true
+    return { text: 'obsolete output', waitFor: hold }
+  })
+  const pending = app.ask('hold for setup').catch(() => {})
+  app.defer(release)
+  assert.ok(await eventually(() => waiting))
+  const pid = app.agentPid()
+  assert.ok(pid)
+  const paused = await pauseOwnedProcess(pid)
+  app.defer(() => paused.resume())
+  assert.equal(await cancelCurrent(app), true)
+  const snapshot = () => app.call<IpcResults['agent:snapshot']>('agent:snapshot')
+  assert.ok(await eventually(() => snapshot().stopUnconfirmed, { timeoutMs: 12_000 }))
+  await paused.resume()
+  release()
+  await pending
+  const providers = app.call<{ providers: { id: string }[] }>('models:get').providers
+  assert.equal(providers.length, 1)
+  await app.call('models:remove', providers[0]!.id)
+  assert.equal(snapshot().info.mode, 'setup')
+  assert.equal(snapshot().stopUnconfirmed, false)
+  await app.call('settings:clear-key')
+  assert.equal(snapshot().activeTurn, null)
 })

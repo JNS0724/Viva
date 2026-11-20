@@ -42,6 +42,7 @@ export interface ActionPayloads extends ConversationPayloads {
   diagnostics_debug_expired: {}
   ready: { info: Info }
   initialization_status: { status: 'loading' | 'ready' | 'failed', reason?: import('./initialization-actions.ts').InitializationFailure }
+  initialization_turn: { turn: import('../shared/renderer-sync.ts').ActiveTurnSnapshot }
   initialization_snapshot: { snapshot: import('../shared/renderer-sync.ts').RendererSnapshot }
   config_applied: { info: Partial<Info> }
   history_loaded: { conversationId?: string | null, messages: readonly SavedMessage[], records?: readonly unknown[], savedAt?: number, folds?: State['folds'], parentId?: string | null, createdAt?: number | null }

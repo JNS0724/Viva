@@ -191,28 +191,36 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const stale = (): MemoryFileListResult => ({ status: 'stale', snapshot, items: [], nextCursor: null })
     let offset = request.cursor?.offset ?? 0
     if (request.cursor && (request.cursor.snapshot !== snapshot || offset > entries.length)) return stale()
+    const retry = [...new Set(request.cursor?.retry ?? [])]
+    if (retry.some(index => index >= offset)) return stale()
     const limit = request.limit ?? 25
-    const end = Math.min(entries.length, offset + Math.max(limit, 100))
-    let partial = false
+    const end = Math.min(entries.length, offset + 100 - retry.length)
+    const unread: number[] = []
     const items: MemoryFileSummary[] = []
-    while (offset < end && items.length < limit) {
+    let partial = false
+    while ((retry.length || offset < end) && items.length < limit) {
       if (options.exhausted?.()) { partial = true; break }
-      const candidates = entries.slice(offset, Math.min(end, offset + limit - items.length))
+      const indices = retry.splice(0, limit - items.length)
+      while (offset < end && indices.length < limit - items.length) indices.push(offset++)
+      const candidates = indices.map(index => entries[index]!)
       const read = await options.load(candidates.flatMap(({ identity, path, physical }) => physical ? [{ workspace: identity.workspace, path }] : []))
       options.signal?.throwIfAborted()
       if (options.revision() !== revision) return stale()
-      for (const { identity, path, physical, allocation, detached } of candidates) {
+      for (const [n, { identity, path, physical, allocation, detached }] of candidates.entries()) {
         const observed = physical ? read(identity.workspace, path) : null
-        if (observed === undefined) { partial = true; continue }
+        if (observed === undefined) { unread.push(indices[n]!); continue }
         const view = observed?.kind === identity.kind && observed.id === identity.id ? observed : undefined
         const item = allocation ? dailyView(allocation, identity.id, view) : detached ? detachedDigestView(detached) : view
         if (!item || !allows(item) || !acceptsState(item.enabled)) continue
         const title = titleOf(item)
         if (!query || `${title}\n${item.path}`.normalize('NFKC').toLowerCase().includes(query)) items.push(summary(item, title))
       }
-      offset += candidates.length
     }
-    return { status: 'ok', snapshot, items, ...(partial && { partial }), nextCursor: offset < entries.length ? { snapshot, offset } : null }
+    // Preserve unobserved rows without replaying healthy results returned on the same page.
+    unread.push(...retry)
+    partial ||= unread.length > 0
+    const nextCursor = offset < entries.length || unread.length ? { snapshot, offset, ...(partial && { retry: unread }) } : null
+    return { status: 'ok', snapshot, items, ...(partial && { partial }), nextCursor }
   }
   function validate(input: MemoryFileMutation, allows: Allows) {
     const command = memoryFileMutation.parse(input), view = resolve(command.identity, allows)

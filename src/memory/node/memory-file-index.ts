@@ -7,9 +7,9 @@ import { transaction, truncateMemoryJournal } from './sqlite.ts'
 
 const same = (a: MemoryFileVersion, b: MemoryFileVersion) => a.revision === b.revision && a.usageVersion === b.usageVersion && a.policyToken === b.policyToken
 const key = (ref: MemoryFileChunkRef) => JSON.stringify([ref.workspace, ref.fileId, ref.ordinal, ref.revision, ref.usageVersion, ref.policyToken])
-const identity = ({ chunks: _chunks, links: _links, name: _name, description: _description, ...file }: MemoryFileSnapshot): MemoryFileIdentity => file
+const identity = ({ chunks: _chunks, links: _links, name: _name, description: _description, tags: _tags, ...file }: MemoryFileSnapshot): MemoryFileIdentity => file
 const node = (file: MemoryFileSnapshot): MemoryFileNode => ({
-  ...identity(file), name: file.name, description: file.description,
+  ...identity(file), name: file.name, description: file.description, ...(file.tags && { tags: file.tags }),
 })
 const page = <T>(rows: T[], limit: number): MemoryFilePage<T> => ({
   rows: rows.slice(0, limit), incomplete: rows.length > limit,
@@ -357,9 +357,11 @@ ${file.description}`))
   return {
     accept, snapshot, chunks, lexical, beginVectors, vectorState, stageVectors, finishVectors, vector,
     lexicalCandidates, nodeCandidates, vectorCandidates, nodeAt, linkTargets, linkingNodes,
+    digestNodes: workspace => db.prepare("SELECT payload FROM memory_file_index_lookup WHERE workspace=? AND kind='digest'").all(workspace)
+      .map(row => JSON.parse(String(row.payload)) as MemoryFileNode),
     files: workspaces => db.prepare('SELECT payload FROM memory_file_index_lookup WHERE workspace IN (SELECT value FROM json_each(?)) ORDER BY workspace,id')
       .all(JSON.stringify(workspaces)).map(row => {
-        const { name: _name, description: _description, ...file } = JSON.parse(String(row.payload)) as MemoryFileNode
+        const { name: _name, description: _description, tags: _tags, ...file } = JSON.parse(String(row.payload)) as MemoryFileNode
         return file
       }),
     remove(file) { return transaction(db, () => { const old=snapshot(file.workspace,file.id); if (!old || old.path !== file.path || !same(old,file)) return false; erase(old); return true }) },

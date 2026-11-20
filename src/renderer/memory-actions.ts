@@ -39,10 +39,8 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
     clearTimeout(dreamTimer)
     const request = ++dreamRequest
     try {
-      // A lost acknowledgement is recovered by looking up the same durable request.
-      const pending = operation ?? pendingDreamOperation
-      const status = await (pending ? api.runDream(pending) : api.getDreamStatus())
-      if (pendingDreamOperation === pending) pendingDreamOperation = undefined
+      const status = await (operation ? api.runDream(operation) : api.getDreamStatus())
+      if (operation === pendingDreamOperation || status.jobId === pendingDreamOperation) pendingDreamOperation = undefined
       if (request === dreamRequest && watchingDream) dispatch({ type: 'memory_dream_status', status })
     } catch {
       if (request === dreamRequest && watchingDream) {

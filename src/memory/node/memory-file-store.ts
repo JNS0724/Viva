@@ -1,5 +1,6 @@
+import { memoryWorkerEnvironment } from './memory-worker-environment.ts'
 import { createHash, randomUUID } from 'node:crypto'
-import { fork, type ChildProcess } from 'node:child_process'
+import { fork, type ChildProcess, type ForkOptions } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
@@ -7,6 +8,7 @@ import {
 } from 'node:fs'
 import { lstat, open, readdir, realpath, unlink } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
 import { dailyPath, digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument } from '../core/memory-document.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
@@ -28,58 +30,107 @@ const PHYSICAL_FILE_TIMEOUT_MS = 250
 const PHYSICAL_FILE_CONCURRENCY = 3
 const RECOVERY_READ_TIMEOUT_MS = 2_000
 
-// This slow path is used only when all normal reads are overdue in native IO.
-// A single disposable process gives an independent file a separate libuv pool.
-function recoveryReader() {
-  let child: ChildProcess | undefined
-  let reading: { key: string, result: Promise<MemoryPhysicalFile | null>, exited: Promise<void> } | undefined
+type ForkReadWorker = (entry: string, args: string[], options: ForkOptions) => ChildProcess
+
+// Only a saturated native pool starts this worker. Reuse its separate libuv pool
+// for the rest of the batch; a wedged read or cancellation retires the process.
+function recoveryReader(forkWorker: ForkReadWorker) {
+  let worker: { child: ChildProcess, directory: string, exited: Promise<void> } | undefined
+  let tail = Promise.resolve()
+  let idle: ReturnType<typeof setTimeout> | undefined
+  const retryAfter = new Map<string, number>()
   let closed = false
-  return {
-    async read(directory: string, workspace: string, path: string, key: string, signal: AbortSignal) {
-      while (reading) {
-        if (reading.key === key) return reading.result
-        await reading.exited
-        signal.throwIfAborted()
-      }
+
+  function start(directory: string) {
+    const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
+    const entry = fileURLToPath(new URL(`./memory-file-catalog-worker${suffix}`, import.meta.url))
+    const child = forkWorker(entry, [directory, '--read-files'], {
+      execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'advanced',
+      env: memoryWorkerEnvironment(), stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    })
+    child.on('error', () => {}) // An error between requests is followed by close.
+    const exited = new Promise<void>(resolve => child.once('close', () => {
+      if (worker?.child === child) worker = undefined
+      resolve()
+    }))
+    return { child, directory, exited }
+  }
+
+  async function readOne(directory: string, workspace: string, path: string, key: string, signal: AbortSignal) {
+    signal.throwIfAborted()
+    if (closed) throw new Error('Memory file reader closed')
+    const now = performance.now()
+    for (const [file, until] of retryAfter) if (until <= now) retryAfter.delete(file)
+    if (retryAfter.has(key)) throw new RequestTimeout()
+    clearTimeout(idle)
+    if (worker && (worker.directory !== directory || !worker.child.connected || worker.child.killed)) {
+      worker.child.kill('SIGKILL')
+      await worker.exited
+      signal.throwIfAborted()
       if (closed) throw new Error('Memory file reader closed')
-      const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
-      const entry = fileURLToPath(new URL(`./memory-file-catalog-worker${suffix}`, import.meta.url))
-      const worker = fork(entry, [directory, workspace, path], {
-        execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'advanced',
-        env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
-        stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-      })
-      child = worker
-      const result = new Promise<MemoryPhysicalFile | null>((resolve, reject) => {
-        const timer = setTimeout(() => { reject(new RequestTimeout()); worker.kill('SIGKILL') }, RECOVERY_READ_TIMEOUT_MS)
-        worker.once('message', (file: MemoryPhysicalFile | { missing: true } | { unavailable: true }) => {
-          if ('missing' in file) resolve(null)
+    }
+    const active = worker ??= start(directory)
+    const { child } = active
+    const stop = () => child.kill('SIGKILL')
+    const cancelled = () => {
+      if (signal.reason instanceof RequestTimeout) retryAfter.set(key, performance.now() + PHYSICAL_FILE_TIMEOUT_MS)
+      stop()
+    }
+    signal.addEventListener('abort', cancelled, { once: true })
+    type Result = MemoryPhysicalFile | { missing: true } | { unavailable: true } | { timedOut: true }
+    try {
+      return await new Promise<MemoryPhysicalFile | null>((resolve, reject) => {
+        const timedOut = () => {
+          retryAfter.set(key, performance.now() + RECOVERY_READ_TIMEOUT_MS)
+          stop()
+          reject(new RequestTimeout())
+        }
+        const timer = setTimeout(timedOut, RECOVERY_READ_TIMEOUT_MS)
+        timer.unref()
+        function cleanup() {
+          clearTimeout(timer)
+          child.off('message', reply)
+          child.off('error', fail)
+          child.off('close', ended)
+        }
+        function fail(error: Error) { cleanup(); stop(); reject(error) }
+        function ended() { cleanup(); reject(signal.reason ?? new Error('Memory file worker closed')) }
+        function reply(file: Result) {
+          cleanup()
+          if ('timedOut' in file) timedOut()
+          else if ('missing' in file) resolve(null)
           else if ('unavailable' in file || file.path !== path) reject(new Error('Memory file unavailable'))
           else resolve(file)
-        })
-        worker.once('error', reject)
-        worker.once('close', () => {
-          clearTimeout(timer)
-          child = undefined
-          reading = undefined
-          reject(new Error('Memory file worker closed'))
-        })
+        }
+        child.once('message', reply)
+        child.once('error', fail)
+        child.once('close', ended)
+        child.send({ workspace, path }, error => { if (error) fail(error) })
       })
-      const exited = new Promise<void>(resolve => worker.once('close', resolve))
-      reading = { key, result, exited }
+    } finally {
+      signal.removeEventListener('abort', cancelled)
+      if (child.killed) await active.exited
+      else if (worker === active) { idle = setTimeout(stop, RECOVERY_READ_TIMEOUT_MS); idle.unref() }
+    }
+  }
+
+  return {
+    read(directory: string, workspace: string, path: string, key: string, signal: AbortSignal) {
+      const result = tail.then(() => readOne(directory, workspace, path, key, signal))
+      tail = result.then(() => {}, () => {})
       return result
     },
-    close() { closed = true; child?.kill('SIGKILL') },
+    close() { closed = true; clearTimeout(idle); worker?.child.kill('SIGKILL') },
   }
 }
 
 /** Native I/O can outlive its caller. Hold the slot until the operation actually ends,
  * so multiple timeouts cannot fill the owner's filesystem thread pool. */
-export function createMemoryPhysicalFileReader(root: () => string) {
+export function createMemoryPhysicalFileReader(root: () => string, forkWorker: ForkReadWorker = fork) {
   const active = new Map<string, Promise<MemoryPhysicalFile | null>>()
   const available = new Set<() => void>()
   const overdue = new Set<string>()
-  const recovery = recoveryReader()
+  const recovery = recoveryReader(forkWorker)
   async function inspect(workspace: string, path: string, signal: AbortSignal): Promise<MemoryPhysicalFile | null> {
     const directory = resolve(root())
     const parts = [workspace, ...path.split('/')]
@@ -126,11 +177,11 @@ export function createMemoryPhysicalFileReader(root: () => string) {
       || !(dailyPath.safeParse(path).success || digestPath.safeParse(path).success)) throw new MemoryFileError('path')
     const key = JSON.stringify([workspace, path])
     if (overdue.has(key)) throw new RequestTimeout()
-    const saturated = overdue.size >= PHYSICAL_FILE_CONCURRENCY
-    const budget = createRequestBudget(saturated ? RECOVERY_READ_TIMEOUT_MS : PHYSICAL_FILE_TIMEOUT_MS, signal)
+    const queued = !active.has(key) && active.size >= PHYSICAL_FILE_CONCURRENCY
+    const budget = createRequestBudget(queued ? DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs : PHYSICAL_FILE_TIMEOUT_MS, signal)
     try {
-      if (saturated) return await budget.run(() => recovery.read(root(), workspace, path, key, budget.signal))
       while (!active.has(key) && active.size >= PHYSICAL_FILE_CONCURRENCY) {
+        if (overdue.size >= PHYSICAL_FILE_CONCURRENCY) return await budget.run(() => recovery.read(root(), workspace, path, key, budget.signal))
         let wake: () => void = () => {}
         const waiting = new Promise<void>(resolve => { wake = resolve; available.add(wake) })
         try { await budget.run(() => waiting) } finally { available.delete(wake) }
@@ -141,7 +192,10 @@ export function createMemoryPhysicalFileReader(root: () => string) {
         // Coalesced I/O has its own deadline. One cancelled lookup must not
         // cancel verification for another caller still waiting on this path.
         const nativeSignal = AbortSignal.timeout(PHYSICAL_FILE_TIMEOUT_MS)
-        const stalled = () => overdue.add(key)
+        const stalled = () => {
+          overdue.add(key)
+          if (overdue.size >= PHYSICAL_FILE_CONCURRENCY) for (const wake of available) wake()
+        }
         nativeSignal.addEventListener('abort', stalled, { once: true })
         operation = inspect(workspace, path, nativeSignal).catch(error => {
           if (nativeSignal.aborted) throw new RequestTimeout()

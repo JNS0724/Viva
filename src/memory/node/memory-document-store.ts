@@ -61,6 +61,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     CREATE TABLE IF NOT EXISTS memory_document_revisions (
       operation TEXT PRIMARY KEY, document TEXT NOT NULL, before TEXT, after TEXT, at INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS memory_document_revision_by_document ON memory_document_revisions(document);
     CREATE TABLE IF NOT EXISTS memory_document_receipts (
       operation TEXT PRIMARY KEY, input TEXT NOT NULL, receipt TEXT NOT NULL
     );
@@ -779,10 +780,14 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     workspace(scope)
     const row=rowById(id)
     if (!row || row.workspace!==scope || row.forgotten || !row.enabled || !currentSources(scope,refsOf(row)) || restricted(scope,refsOf(row),id) || !journal.visible(scope,row.path)) return null
-    const history=db.prepare('SELECT after FROM memory_document_revisions WHERE document=? AND after IS NOT NULL ORDER BY rowid DESC').all(id)
-      .map(item=>JSON.parse(String(item.after)) as DocumentSnapshot)
-      .find(item=>item.revision===row.revision && item.usageVersion===row.usage_version && memoryFileRevision(item.markdown)===row.revision)
-    return history ? {...history,path:row.path,enabled:Boolean(row.enabled),sources:refsOf(row),corrections:correctionsOf(row)} : null
+    const history = db.prepare('SELECT after FROM memory_document_revisions WHERE document=? AND after IS NOT NULL ORDER BY rowid DESC')
+    for (const revision of history.iterate(id)) {
+      const snapshot = JSON.parse(String(revision.after)) as DocumentSnapshot
+      if (snapshot.revision === row.revision && snapshot.usageVersion === row.usage_version && memoryFileRevision(snapshot.markdown) === row.revision) {
+        return { ...snapshot, path: row.path, enabled: Boolean(row.enabled), sources: refsOf(row), corrections: correctionsOf(row) }
+      }
+    }
+    return null
   }
   function reconcileEdit(input: DocumentExternalEdit): DocumentReceipt | null {
     workspace(input.workspace)

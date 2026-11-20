@@ -57,10 +57,12 @@ export function createNativeSpills(db: DatabaseSync) {
       db.prepare('INSERT INTO owner_native_spills VALUES (?,?,NULL,0)').run(id, JSON.stringify(intent.parse(value)))
       return id
     },
-    finish(id: string, receipt: NativeSpillFile) {
+    finish(id: string, receipt: NativeSpillFile, session: string) {
       const row = lookup.get(id), encoded = JSON.stringify(file.parse(receipt))
       if (!row || row.erased || row.file !== null && row.file !== encoded) throw new Error('Native spill receipt changed identity')
-      const proof = intent.parse(JSON.parse(String(row.intent))).publication
+      const saved = intent.parse(JSON.parse(String(row.intent)))
+      if (saved.call.session !== session) throw new Error('Native spill receipt changed session')
+      const proof = saved.publication
       if (proof && (proof.target !== receipt.path || proof.stage.dev !== receipt.dev || proof.stage.ino !== receipt.ino)) throw new Error('Native spill publication changed its reserved inode')
       db.prepare('UPDATE owner_native_spills SET file=? WHERE id=?').run(encoded, id)
     },

@@ -218,6 +218,10 @@ An optional recall timeout may omit newly retrieved memory for that turn. When a
 
 ## Circuit breakers and recovery
 
+When a native output receipt fails, operations waiting on that receipt report the failure. Subsequent receipts can still be written in session order. Final replies that require owner verification have the five-second RPC budget plus one second for the relay. Reloading a window during a turn restores its ID, start time and stopping state.
+
+When all three ordinary file reads run overdue, queued requests can switch to a reusable reader process started on demand. An ordinary file read waits up to 250 ms, a fallback read up to two seconds, and a non-injection verification batch has a 2.5-second budget. Automatic injection keeps its overall 200 ms deadline. Passive Dream refreshes only query status. A further user click can retry the original operation ID.
+
 | Failure signal | Response and recovery condition |
 |---|---|
 | A file or directory stops progressing | Isolate that range and retry with backoff. An incomplete scan cannot publish a deletion or move. |

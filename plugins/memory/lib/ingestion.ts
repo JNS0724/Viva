@@ -216,7 +216,7 @@ export function createSessionIngestion(owner: IngestionOwner, flush: (session: S
         if (!marker) {
           if (memorySessionSurfaceHash(session) !== ticket.baseSurfaceHash) throw new Error('Session surface changed during context recovery')
           const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds, ticket.replacementMessageId)
-          ticket = await owner.bindContextRecovery({ ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
+          ticket = await owner.bindContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
           if (!stillSafe() || memorySessionSurfaceHash(session) !== ticket.baseSurfaceHash) throw new Error('Session surface changed before context replacement')
           session.append([plan.input])
           marker = recoveryEvent(session.snapshotEvents(), ticket)
@@ -226,7 +226,7 @@ export function createSessionIngestion(owner: IngestionOwner, flush: (session: S
         const persistedEvents = session.snapshotEvents()
         if (await flush(session) !== true) throw new Error('Session has no durable persistence acknowledgment')
         if (memorySessionSurfaceHash(session) !== replaced) throw new Error('Session surface changed before durable recovery acknowledgment')
-        await owner.commitContextRecovery({ ticketId: ticket.ticketId, baseSurfaceHash: ticket.baseSurfaceHash,
+        await owner.commitContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, baseSurfaceHash: ticket.baseSurfaceHash,
           replacementMessageId: ticket.replacementMessageId, replacementHash: ticket.replacementHash, persisted: true },
         () => stillSafe() && memorySessionSurfaceHash(session) === replaced)
         if (!stillSafe() || memorySessionSurfaceHash(session) !== replaced) throw new Error('Native context changed during recovery commit')

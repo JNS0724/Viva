@@ -1030,6 +1030,7 @@ const initialization = createInitializationActions({
   failed: reason => dispatch({ type: 'initialization_status', status: 'failed', reason }),
   install: snapshot => { dispatch({ type: 'initialization_snapshot', snapshot }); dom.follower.jumpToLatest() },
   initialized: () => agentEvents!.initialize(),
+  restoreTurn: turn => dispatch({ type: 'initialization_turn', turn }),
   deliver: value => agentEvents!.receive(value),
   observe: event => api.reportDiagnostic(event),
 })

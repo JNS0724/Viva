@@ -52,7 +52,7 @@ test('a foreground clarification publishes its own final words when the native o
   await agent.prompt('海棠城项目约定')
   assert.match(replies(events).join(''), /海棠城项目约定/)
   const start = events.length
-  const delayed = delayNativeOutputReceipts(t, agent.pid, 150)
+  const delayed = delayNativeOutputReceipts(t, agent.pid, 1250)
   await agent.prompt('明天天气怎么样')
   assert.ok(delayed() > 0, 'the owner receipt crossed the delayed RPC boundary')
   const latest = events.slice(start)

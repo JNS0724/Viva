@@ -219,7 +219,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The user's MCP servers. */
   let personal!: ReturnType<typeof createPersonal>
   /** The foreground turn in progress. */
-  let turn = { active: false, startedAt: 0, id: '' }
+  let turn = { active: false, startedAt: 0, id: '', by: '', stopping: false }
   const foregroundRequests = createForegroundRequests()
   const pendingHumanPrompts = new Map<string, { fingerprint: string, turnId: string, context(): ConversationContext, sources: readonly string[], started(): boolean, promise: Promise<IpcResults['agent:prompt']> }>()
   let closed = false
@@ -377,7 +377,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (left) endRequests({ type: 'turn_end', stopReason: 'cancelled' }, left)
     },
     onCrash: ({ message }, delay) => {
-      turn = { active: false, startedAt: 0, id: '' }
+      turn = { active: false, startedAt: 0, id: '', by: '', stopping: false }
       emitDiagnosticFailure('process', message, { stage: 'closed' })
       emitToRenderer({ type: 'error', message: delay === null
         ? t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message })
@@ -728,7 +728,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (typeof taskId === 'string' && unattended.owns(taskId)) return unattended.receive({ ...event, taskId } satisfies TaskEvent)
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
-        if (event.type === 'turn_stopping') retireForegroundRequests()
+        if (event.type === 'turn_stopping') { turn.stopping = true; retireForegroundRequests() }
         if (event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed') {
           const selected = sessions.current()
           if (selected.sessionId) {
@@ -881,7 +881,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         || agent.isSwitching() || turn.active || !held()) return false
       const claim = foregroundRequests.reserveReport(reports.map(item => item.reportId))
       if (!claim) return false
-      turn = { active: true, startedAt: Date.now(), id: randomUUID() }
+      turn = { active: true, by: 'task', stopping: false, startedAt: Date.now(), id: randomUUID() }
       emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'task', context })
       void agent.prompt(note, [], { request: false, held: () => claim.current() && held() }).catch((err: Error) => {
         if (!claim.current() || dsh.current !== agent || !sameContext(context, sessions.context())) return
@@ -926,6 +926,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     if (dsh.isQuitting()) return null
     const config = currentConfig()
     if (config.problem) {
+      stoppedContext = null
       const info = setupInfo(config)
       emitToRenderer({ type: 'ready', info })
       return info
@@ -953,6 +954,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** A new key (or none) means a different agent, so the conversation starts over. */
   async function restartWithNewConversation() {
     await stopBridge()
+    stoppedContext = null
     sessions.reset()
     return startBridge()
   }
@@ -1024,6 +1026,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         createdAt: found.conversation.createdAt, parentId: found.conversation.parentId,
         messages: found.messages, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
       return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null), context, history, stopUnconfirmed: Boolean(stoppedContext),
+        activeTurn: turn.active && !stoppedContext ? { id: turn.id, by: turn.by, startedAt: turn.startedAt, stopping: turn.stopping } : null,
         info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
     })
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
@@ -1300,7 +1303,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       for (const sourceId of operation) { await recordDeliveredSource(sourceId); assertAdmitted() }
     }
     assertAdmitted()
-    turn = { active: true, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }
+    turn = { active: true, by: 'user', stopping: false, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }
     emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'user', context: sessions.context() })
     const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()

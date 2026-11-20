@@ -70,9 +70,12 @@ test('a derived receipt observes files attached during registration and replay s
     assert.equal(JSON.parse(packet).status, 'ok')
   }
   const first = { sessionId: session, messageId: randomUUID(), sourceIds: [f.sourceId] }
+  const origin = { session }, signal = new AbortController().signal
+  const sending = f.owner.loadOutputProof(origin, signal)
   const pending = f.owner.registerDerived(first)
   addRead(f.created.documentId)
   await pending
+  assert.equal(f.owner.outputCurrent(origin, await sending), true)
   assert.equal(f.owner.dispatch.snapshot(session).files?.length, 1)
 
   const second = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
@@ -87,6 +90,20 @@ test('a derived receipt observes files attached during registration and replay s
 
   writeFileSync(join(f.store.fileRoot, f.identity.workspace, second.path), 'unverified replacement')
   await assert.rejects(f.owner.registerDerived(injection), /Derived dependencies unavailable/)
+})
+
+test('an explicit remember archives file evidence with the write receipt, including recovery without index publication', async t => {
+  const f = await fixture(t)
+  const text = 'Tea is served on Monday.'
+  const source = f.store.readSource(f.sourceId)!
+  const proof = { id: f.sourceId, token: memorySourceToken(source), spans: [{ start: source.text!.indexOf(text), end: source.text!.length }] }
+  const operation = randomUUID()
+  const first = await f.owner.runtime.writeSourceFile(operation, proof, f.session, result => {
+    assert.equal(f.owner.dispatch.snapshot(f.session).files?.at(-1)?.id, result.identity.id)
+  }, () => true, false)
+  const restored = randomUUID()
+  await f.owner.runtime.writeSourceFile(operation, proof, restored, () => {}, () => true, false)
+  assert.equal(f.owner.dispatch.snapshot(restored).files?.[0]?.id, first.identity.id)
 })
 
 test('admitted routing evidence is withheld during a drained mutation and stays stale in a fresh session', async t => {
@@ -1376,7 +1393,7 @@ for (const derived of [true, false]) test(`retired native ${derived ? 'generated
   f.owner.acquireSend(randomUUID(), { session: reader }, packet).settled()
   if (derived) await f.owner.registerDerived({ sessionId: reader, messageId: 'assistant-manual-copy', sourceIds: [] })
   const ticket = await f.owner.prepareContextRecovery({ sessionId: reader, baseSurfaceHash: 'old-native-surface', candidates: [] })
-  const ack = { ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
+  const ack = { sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
   f.owner.bindContextRecovery(ack)
   await f.owner.commitContextRecovery({ ...ack, baseSurfaceHash: ticket.baseSurfaceHash, persisted: true }, () => true)
   assert.deepEqual(f.owner.dispatch.snapshot(reader).fileSources ?? [], [])

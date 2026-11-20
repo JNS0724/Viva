@@ -40,7 +40,7 @@ for (const boundary of ['empty', 'partial', 'staged', 'linked', 'published', 're
     let file = null
     if (boundary === 'published' || boundary === 'receipted') {
       const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, body, () => true)
-      if (boundary === 'receipted') { file = saved.receipt; spills.finish(id, file) }
+      if (boundary === 'receipted') { file = saved.receipt; spills.finish(id, file, intent.call.session) }
     } else {
       if (boundary !== 'empty') await reserved.handle.writeFile(boundary === 'partial' ? body.slice(0, 9) : body)
       await reserved.handle.sync()
@@ -71,7 +71,8 @@ test('changed spill inode, unknown hardlink, and missing opaque path proof remai
     call: { id: randomUUID(), session: 'session', callId: 'root', generation: 0, turn: 1, step: 1, seq: 3, digest: 'b'.repeat(64) } }
   const reserved = await reserveNativeSpill(intent, 'run_code.txt'), id = spills.begin(reserved.intent)
   const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, body, () => true)
-  spills.finish(id, saved.receipt)
+  assert.throws(() => spills.finish(id, saved.receipt, 'other'), /changed session/)
+  spills.finish(id, saved.receipt, intent.call.session)
   const target = spills.affected([intent.call], [])[0]!
   assert.equal(typeof saved.receipt.ino, 'string')
   const unknown = join(sessionDir(root, intent.call.session), 'unknown-independent-link')
@@ -111,7 +112,7 @@ test('native catalog acknowledgement waits for affected spill retirement after t
     intent = reserved.intent
     spillId = owner.beginNativeSpill(intent)
     const saved = await publishGovernedNativeSpill(reserved.handle, intent, body, () => true)
-    owner.finishNativeSpill(spillId, saved.receipt)
+    owner.finishNativeSpill(spillId, saved.receipt, intent.call.session)
     owner.finishNativeToolRead(call, { seq: 4, digest: 'd'.repeat(64) })
     const detail = memoryFileDetail.parse(await owner.handleHost('readFile', { args: [file.identity] }))
     await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: file.identity, version: detail.version })
@@ -153,7 +154,7 @@ test('spill read-back archives its exact source proof before use and rejects a l
     const reserved = await reserveNativeSpill({ call, root: await realpath(directory), hash: createHash('sha256').update(body).digest('hex'), bytes: Buffer.byteLength(body) }, 'memory_read.txt')
     const id = owner.beginNativeSpill(reserved.intent)
     const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, body, () => true)
-    owner.finishNativeSpill(id, saved.receipt)
+    owner.finishNativeSpill(id, saved.receipt, reserved.intent.call.session)
     function execution(name: string) {
       owner.initializeSession({ sessionId: name })
       const native = Session.create(SessionId(name)), tools: ResolvedToolSet = { dispose() {}, view: () => new Map() }
@@ -169,6 +170,7 @@ test('spill read-back archives its exact source proof before use and rejects a l
     let permit = owner.admitNativeSpillRead(id, scope)
     assert.equal(permit.current(), true)
     assert.ok(owner.nativeToolEvidence([scope.call]).some(proof => proof.fileRanges.length > 0))
+    assert.throws(() => owner.nativeToolEvidence([{ ...scope.call, session: 'other' }]), /changed call identity/)
     assert.ok(owner.dispatch.snapshot('consumer').files?.length)
     run.abort()
     assert.equal(permit.current(), false, 'an actual body cancellation retires read-back even without an FS signal')

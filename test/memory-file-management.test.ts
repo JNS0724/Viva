@@ -152,6 +152,23 @@ test('paged title and path filters continue after bounded empty pages without ex
   assert.deepEqual(byPath.items.map(row => row.identity.id), ['item-007'])
 })
 
+test('a later page retries an unobserved file without dropping or duplicating its healthy siblings', async () => {
+  const f = fixture()
+  f.docs.splice(0, 1, ...['a', 'b', 'c'].map(id => ({ ...f.doc, id, path: `digest/wiki/${id}.md` })))
+  let blocked = true
+  const options = { revision: () => 1, async load() {
+    return (workspace: string, path: string) => blocked && path.endsWith('/a.md') ? undefined : f.policy.managementRead(workspace, path)
+  } }
+  const first = await f.service.listPage({ limit: 2 }, allow, [], options)
+  assert.deepEqual(first.items.map(item => item.identity.id), ['b', 'c'])
+  assert.ok(first.partial && first.nextCursor)
+  memoryFileListResult.parse(first)
+  blocked = false
+  const rest = await f.service.listPage({ limit: 2, cursor: first.nextCursor }, allow, [], options)
+  assert.deepEqual(rest.items.map(item => item.identity.id), ['a'])
+  assert.equal(rest.nextCursor, null)
+})
+
 test('management filters apply before paging and input rejects asserted authorization or internal paths', () => {
   const f = fixture(); f.doc.enabled = false
   assert.equal(f.service.list({ state: 'disabled', query: 'original' }, allow).items.length, 1)

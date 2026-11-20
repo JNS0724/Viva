@@ -8,7 +8,7 @@ export const memoryFileIdentity = z.strictObject({ kind: z.enum(['daily', 'diges
 export const memoryFileVersion = z.strictObject({ contentRevision: opaque, usageVersion: z.number().int().nonnegative(), policyToken: opaque })
 export const memoryFileRestrictionId = z.uuid()
 export const memoryFileUseRestriction = z.strictObject({ id: memoryFileRestrictionId, version: memoryFileVersion })
-export const memoryFileCursor = z.strictObject({ snapshot: opaque, offset: z.number().int().nonnegative() })
+export const memoryFileCursor = z.strictObject({ snapshot: opaque, offset: z.number().int().nonnegative(), retry: z.array(z.number().int().nonnegative()).max(100).optional() })
 export const memoryFileListRequest = z.strictObject({ kind: z.enum(['daily', 'digest']).optional(),
   state: z.enum(['all', 'enabled', 'disabled']).optional(), query: z.string().max(500).optional(),
   limit: z.number().int().min(1).max(100).optional(), cursor: memoryFileCursor.optional() })

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { Worker } from 'node:worker_threads'
+import { DEFAULT_TOOL_TIMEOUT_MS } from '../src/shared/request-budget.ts'
+import { acquireSessionRootLease } from '../plugins/memory/lib/native/session-root-lease.ts'
 import { Context } from '@deepseek-ai/cordis'
 import * as persistence from '../plugins/memory/persistence.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -65,4 +68,39 @@ test('standalone cold startup never publishes a provider with the wrong memory o
   const next = new Context(), valid = await next.plugin(persistence, { ...config, memoryRoot: join(dir, 'other-memory') })
   defer(() => valid.dispose())
   assert.ok(next.get('sessionPersistence'), 'failed activation released its session lifecycle lease')
+})
+
+test('standalone disposal can finish while a stuck lease still excludes a second owner', async t => {
+  const { dir } = scratch(t, 'viva-stalled-root-lease-')
+  const config = { sessionsRoot: join(dir, 'sessions'), memoryRoot: join(dir, 'memory'), storageRoot: join(dir, 'storage') }
+  const lease = acquireSessionRootLease(config, () => assert.fail('closing is intentional'))
+  await lease.ready
+  // Keep the real lock held while simulating a worker which cannot accept a message or terminate yet.
+  const stopped = signal()
+  let thread: Worker | undefined
+  const post = t.mock.method(Worker.prototype, 'postMessage', () => {})
+  const terminate = t.mock.method(Worker.prototype, 'terminate', function(this: Worker) {
+    thread = this
+    return stopped.ready.then(() => 0)
+  })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const closing = lease.close()
+    t.mock.timers.tick(DEFAULT_TOOL_TIMEOUT_MS)
+    await closing
+    assert.ok(thread)
+    const competing = acquireSessionRootLease(config, () => {})
+    await assert.rejects(competing.ready, /active owner/)
+    await competing.close()
+  } finally {
+    t.mock.timers.reset()
+    post.mock.restore()
+    terminate.mock.restore()
+    stopped.release()
+    if (thread) await thread.terminate()
+    else await lease.close()
+  }
+  const next = acquireSessionRootLease(config, () => {})
+  await next.ready
+  await next.close()
 })

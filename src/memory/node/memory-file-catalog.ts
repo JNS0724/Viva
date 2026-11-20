@@ -1,3 +1,4 @@
+import { memoryWorkerEnvironment } from './memory-worker-environment.ts'
 import { fork, type ChildProcess, type ForkOptions } from 'node:child_process'
 import { lstatSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -77,7 +78,7 @@ export function openMemoryFileCatalog({ root, timeoutMs = 5_000, forkWorker = fo
       let complete: boolean | undefined
       const child = forkWorker(entry, [location, workspace], {
         execPath: process.execPath, execArgv: [], windowsHide: true,
-        env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
+        env: memoryWorkerEnvironment(),
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       })
       let settled = false

@@ -37,6 +37,7 @@ export type IslandView = {
   summary?: string,
   /** An error that ended a turn with a reply kept in part (turn-outcome.ts), rather than a failure. */
   incomplete?: boolean,
+  stopUnconfirmed?: boolean,
   /** The task it speaks for, when a task (not the conversation) has the island. */
   task?: string,
   taskId?: string,
@@ -155,8 +156,8 @@ export function islandView(state: State): IslandView {
  */
 function mainView(state: State, background: IslandBackground | null): IslandView {
   const base: IslandBase = { mood: catMood(state), recent: recentSteps(state) }
-  if (state.stopUnconfirmed) return { ...base, form: 'error', tone: 'error', label: t('conversation.stop.unconfirmed') }
-  if (state.phase === 'stopping') return { ...base, form: 'working', tone: 'working', label: t('conversation.stop.pending') }
+  if (state.stopUnconfirmed) return { ...base, form: 'error', tone: 'error', stopUnconfirmed: true, label: t('conversation.stop.unconfirmed') }
+  if (state.phase === 'stopping') return { ...base, form: 'working', tone: 'working', startedAt: state.turn?.startedAt ?? null, label: t('conversation.stop.pending') }
   if (state.phase === 'waiting' && state.permission) {
     return { ...base, form: 'waiting', tone: 'waiting', label: PROMPT_HEADS.permission, permission: permissionView(state.permission) }
   }

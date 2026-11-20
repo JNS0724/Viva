@@ -4,8 +4,6 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolDispatchExecution, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { DEFAULT_TOOL_TIMEOUT_MS, createRequestBudget, RequestTimeout } from '../request-budget.ts'
 
-export const LONG_TOOL_TIMEOUT_MS = 60_000
-
 // The native DSH tools belong to the installed SDK. App-owned tools declare their budgets when registered.
 const nativeBudgets = new Map<string, number>([
   ['read', 10_000], ['read_image', 10_000], ['glob', 30_000], ['grep', 30_000],

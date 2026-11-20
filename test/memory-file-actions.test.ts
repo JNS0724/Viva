@@ -51,6 +51,16 @@ test('a partial list stays marked through pagination and clears after a complete
   assert.equal(f.file().partial, false)
 })
 
+test('a completed retry page clears the partial indicator while keeping healthy results', () => {
+  const f = harness({})
+  const page = pageOf([detailOf('healthy')], { snapshot: 'unchanged', offset: 2, retry: [0] })
+  f.dispatch({ type: 'memory_files_listed', query: '', page: { ...page, partial: true }, more: false })
+  assert.equal(f.file().partial, true)
+  f.dispatch({ type: 'memory_files_listed', query: '', page: pageOf([detailOf('recovered')]), more: true })
+  assert.equal(f.file().partial, false)
+  assert.deepEqual(f.file().items.map(item => item.title), ['healthy', 'recovered'])
+})
+
 test('permanent file forget requires capability and current explicit confirmation before preserving one retry identity', async () => {
   const old = detailOf('private'), allowed = { ...old, actions: { ...old.actions, forget: true } }
   const other = detailOf('from-same-source')
@@ -600,4 +610,18 @@ test('an expired page read does not start later when a physical slot is released
   held.resolve()
   await Promise.all([first, second])
   assert.equal(started, false)
+})
+
+test('leaving a page ends its queued read even while both active slots stay occupied', async t => {
+  const reads = createMemoryPageReads(), held = deferred<void>()
+  t.after(() => held.resolve())
+  const active = [reads(() => true, () => held.promise), reads(() => true, () => held.promise)]
+  let visible = true
+  const blocked = reads(() => visible, async () => assert.fail('stale page started reading'))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  visible = false
+  reads.wakeWaiters()
+  await assert.rejects(blocked, /timed out/)
+  held.resolve()
+  await Promise.all(active)
 })

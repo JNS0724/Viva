@@ -424,7 +424,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const batch = filePolicy?.readBatch()
     const input = publicationPayload.safeParse(job.payload)
     if (batch && input.success && effects.holds(job)) {
-      const budget = createRequestBudget(350)
+      const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs)
       try {
         const targets = publicationTargets(input.data.workspace, input.data.ids, paths)
           .filter(target => physicalRevision(target.workspace, target.id, target.path))
@@ -606,7 +606,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   async function loadFileEvidenceCheck(refs: readonly MemoryFileDependency[], signal?: AbortSignal): Promise<FileEvidenceCurrent> {
     signal?.throwIfAborted()
     if (!refs.length) return (latest, _, sources) => !closed && !signal?.aborted && !latest.length && !sources.length
-    const budget = createRequestBudget(350, signal)
+    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs, signal)
     const batch = filePolicy?.readBatch(signal, refs.length + 512)
     if (!batch) { budget.close(); return () => false }
     try {
@@ -727,7 +727,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       }
     }
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
-    store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics,
+    store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics, digestNodes: fileIndex?.digestNodes,
     readPhysicalFile: resources.readPhysicalFile,
     settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: fileSourceAllowsUse,
@@ -1085,7 +1085,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       .filter(path => project || path.startsWith('digest/personal/')).map(path => ({ workspace, path })))
     const batch = filePolicy.readBatch(signal, files.length + 512)
     if (!batch) return fileProfile(project)
-    const budget = createRequestBudget(350, signal)
+    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs, signal)
     try {
       await budget.run(() => batch.load(files, budget.signal))
     } catch (error) {
@@ -1100,7 +1100,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (!filePolicy || !resources.readPhysicalFile) return fileManagement.list(input, managementAllows)
     const scope = new Set(fileWorkspaces())
     const committed = input.kind === 'digest' ? [] : notes?.storage.fileRegistry() ?? []
-    const budget = createRequestBudget(350, signal)
+    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs, signal)
     try {
       return await fileManagement.listPage(input, view => !closed && scope.has(view.workspace), committed, {
         revision: store.revision, signal, exhausted: () => budget.signal.aborted,
@@ -1205,7 +1205,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       return result ? retainFileReadPacket(request.session, result) : textOf({ status: 'unavailable' })
     }
     if (request.op === 'node_search') {
-      const result = fileRetrieval?.nodeSearch({ query: request.query, limit: request.limit, allows: view => fileAllowsOrigin(view, origin, scope) })
+      const result = fileRetrieval?.nodeSearch({ workspaces: visibleWorkspaces(origin), query: request.query, limit: request.limit, allows: view => fileAllowsOrigin(view, origin, scope) })
       return result ? retainNodeSearchPacket(request.session, result) : textOf({ status: 'unavailable' })
     }
     if (request.op === 'clarify') return textOf({ status: 'rejected', reason: 'expired-ref' })
@@ -1217,7 +1217,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     }
     if (request.op === 'context') {
       const result = request.question.trim() && !looksSecret(request.question)
-        ? fileRetrieval?.searchCached({ query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128, allows: view => fileAllowsOrigin(view, origin, scope) }) : null
+        ? fileRetrieval?.searchCached({ workspaces: visibleWorkspaces(origin), query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128, allows: view => fileAllowsOrigin(view, origin, scope) }) : null
       return fileContext(request, result ?? null)
     }
     return textOf({ status: 'rejected', reason: 'no-explicit-user-source' })
@@ -1260,47 +1260,42 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   async function writeSourceFile(operationId: string, proof: DocumentSourceRef, session: string, committed: FileMutationCommitted,
     current: () => boolean, waitForPublication = true): Promise<MemoryFileMutationResult> {
     if (!documents || !filePolicy) throw domainError('not.found')
-    const storage = documents
+    const storage = documents, policy = filePolicy
     const source = store.readSource(proof.id)
     if (!source) throw domainError('not.found')
     const workspace = resources.sourceWorkspace(source)
     const response = await runDocumentMutation(() => {
       if (closed || !current()) throw domainError('not.found')
+      const latest = store.readSource(proof.id)
+      if (!latest?.text || latest.withdrawn || !fileSourceAllowsUse(latest.id)
+        || resources.sourceToken(latest) !== proof.token || proof.spans?.length !== 1 || documentReferencesRestricted([proof])) throw domainError('revision.conflict')
+      const span = proof.spans[0]!
+      const text = latest.text.slice(span.start, span.end)
+      if (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end > latest.text.length
+        || span.start >= span.end || !text.trim() || text.length > MAX_MESSAGE_CHARS || /[\u0000\uD800-\uDFFF]/u.test(text)
+        || (latest.author !== 'user' && latest.author !== 'answer') || looksSecret(text)) throw domainError('invalid.text')
+      const markdown = formatMemoryDocument({ metadata: { name: [...text.split(/\r?\n/u, 1)[0]!].slice(0, 100).join('') }, body: text })
       const already = storage.receipt(workspace, operationId)
-      let receipt = already
-      if (!receipt) {
-        const latest = store.readSource(proof.id)
-        if (!latest?.text || latest.withdrawn || !fileSourceAllowsUse(latest.id)
-          || resources.sourceToken(latest) !== proof.token || proof.spans?.length !== 1 || documentReferencesRestricted([proof])) throw domainError('revision.conflict')
-        const span = proof.spans[0]!
-        const text = latest.text.slice(span.start, span.end)
-        if (!Number.isSafeInteger(span.start) || !Number.isSafeInteger(span.end) || span.start < 0 || span.end > latest.text.length
-          || span.start >= span.end || !text.trim() || text.length > MAX_MESSAGE_CHARS || /[\u0000\uD800-\uDFFF]/u.test(text)
-          || (latest.author !== 'user' && latest.author !== 'answer') || looksSecret(text)) throw domainError('invalid.text')
-        receipt = storage.commit({ operationId, workspace, path: `digest/personal/remember-${memoryHash(operationId)}.md`,
-          expectedRevision: null, action: 'CREATE',
-          markdown: formatMemoryDocument({ metadata: { name: [...text.split(/\r?\n/u, 1)[0]!].slice(0, 100).join('') }, body: text }),
-          sources: [proof], reads: [] })
-      }
-      if (!receipt.revision || receipt.action !== 'CREATE') throw domainError('operation.conflict')
+      const receipt = already ?? storage.commit({ operationId, workspace, path: `digest/personal/remember-${memoryHash(operationId)}.md`,
+        expectedRevision: null, action: 'CREATE', markdown, sources: [proof], reads: [] })
+      if (receipt.revision !== memoryHash(markdown) || receipt.action !== 'CREATE') throw domainError('operation.conflict')
+      const file = { path: receipt.path, revision: receipt.revision, markdown }
+      // The journal just accepted these exact bytes. Record their dependency with the
+      // operation receipt, including on replay, before publishing the index asynchronously.
+      const view = policy.read(workspace, file.path, new Set(), (area, path) => area === workspace && path === file.path ? file : null)
+      if (!view || view.id !== receipt.documentId || view.usageVersion !== receipt.usageVersion) throw domainError('revision.conflict')
       const result: MemoryFileMutationResult = { operationId, identity: { kind: 'digest', workspace, id: receipt.documentId },
         contentRevision: receipt.revision, usageVersion: receipt.usageVersion, action: 'CREATE' }
       if (!already) documentChanged(receipt)
-      committed(result)
+      store.tx(() => {
+        retainFileReads(session, { files: [fileDependency(view)], sourceIds: [proof.id] })
+        committed(result)
+      })
       return result
     })
     dream?.run()
     void effects.wake()
     if (waitForPublication) await searchableReceipt(response)
-    if (waitForPublication && !closed && current()) {
-      const path = resolveFileId(workspace, response.identity.id)
-      if (path) {
-        const batch = filePolicy.readBatch()
-        await batch?.load([{ workspace, path }])
-        const view = !closed && current() && batch?.read(workspace, path)
-        if (view && view.revision === response.contentRevision) retainFileReads(session, { files: [fileDependency(view)], sourceIds: [proof.id] })
-      }
-    }
     return response
   }
 
@@ -1508,7 +1503,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       })
       const batch = filePolicy.readBatch(signal)
       if (batch) {
-        const budget = createRequestBudget(350, signal)
+        const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs, signal)
         try { await budget.run(() => batch.load(locations, budget.signal)) }
         finally { budget.close() }
         if (batch.incomplete()) throw new RequestTimeout()

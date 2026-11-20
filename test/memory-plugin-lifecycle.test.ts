@@ -122,7 +122,7 @@ test('real adapter reload recovers loaded pending contexts and isolates an unflu
         candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })
       if (session !== prepared) {
         const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds)
-        offline.bindContextRecovery({ ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
+        offline.bindContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
       }
     }
   } finally { await offline.close() }

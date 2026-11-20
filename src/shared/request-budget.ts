@@ -54,6 +54,7 @@ export function createRequestBudget(milliseconds: number, parent?: AbortSignal) 
 }
 
 export const DEFAULT_TOOL_TIMEOUT_MS = 5_000
+export const LONG_TOOL_TIMEOUT_MS = 60_000
 export const APP_WRITE_TIMEOUT_MS = 30_000
 export const MEMORY_READ_BUDGET_MS = 10_000
 export const MEMORY_PAGE_READ_LIMIT = 2

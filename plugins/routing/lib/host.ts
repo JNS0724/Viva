@@ -3,7 +3,7 @@
  * answers every decision passed to it, accepted with a receipt for each action, or refused with the reason.
  */
 import { randomUUID } from 'node:crypto'
-import { LONG_TOOL_TIMEOUT_MS } from '../../../src/shared/node/tool-call-budget.ts'
+import { LONG_TOOL_TIMEOUT_MS } from '../../../src/shared/request-budget.ts'
 import { RequestTimeout } from '../../../src/shared/request-budget.ts'
 import { asBind, asBindSource, asDecided, type Decided, type FastOutcome } from '../../../src/shared/request-routing/channel.ts'
 

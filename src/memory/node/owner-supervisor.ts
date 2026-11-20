@@ -1,3 +1,4 @@
+import { memoryWorkerEnvironment } from './memory-worker-environment.ts'
 import { fork, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -137,8 +138,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   function spawn(): Instance {
     const child = fork(workerEntry(), ['--memory-owner-ipc'], {
       execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'advanced',
-      env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
-        TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR, USERPROFILE: process.env.USERPROFILE, TZ: process.env.TZ },
+      env: memoryWorkerEnvironment(),
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     })
     emitDiagnostic({ event: 'process.start', operation: 'memory.owner', stage: previousEpoch ? 'recovering' : 'connecting' })
@@ -286,7 +286,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
       preserveActiveTurns = false
       if (!instance || instance.retiring() || closing) return
       await instance.ready
-      if (current === instance && !closing && !instance.retiring()) await instance.peer.call('adapterExited', {})
+      if (current === instance && !closing && !instance.retiring()) await instance.peer.call('adapterExited', {}, { budgetMs: DRAIN_BUDGET_MS })
     },
     nativeMaintenancePending: () => callCurrent<boolean>('nativeMaintenancePending', {}, { budgetMs: Math.min(options.timeoutMs ?? STARTUP_BUDGET_MS, OWNER_RPC_MAX_BUDGET_MS) }),
     subscribe(listener: (event: MemoryOwnerEvent) => void) {

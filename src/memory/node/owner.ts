@@ -220,8 +220,19 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     visited.delete(session)
     return false
   }
-  function loadSessionFileProof(session: string, signal?: AbortSignal, parent?: string) {
+  async function observeFileInputs(read: () => MemoryFileDependency[], signal?: AbortSignal) {
     signal?.throwIfAborted()
+    const initial = read()
+    const proof = await runtime.loadFileEvidenceCheck(initial, signal)
+    const latest = read()
+    if (initial.length === latest.length && (!initial.length || JSON.stringify(initial) === JSON.stringify(latest))) {
+      return proof
+    }
+    // A concurrent lookup can attach dependencies while disk observation is in flight.
+    // Reobserve once. The caller validates the resulting proof against the final live state.
+    return runtime.loadFileEvidenceCheck(latest, signal)
+  }
+  function sessionFileInputs(session: string, parent?: string) {
     const pending = parent ? [session, parent] : [session], visited = new Set<string>(), refs: MemoryFileDependency[] = []
     for (let index = 0; index < pending.length; index++) {
       const current = pending[index]!
@@ -230,7 +241,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       refs.push(...dispatch.snapshot(current).files ?? [])
       if (db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(current)) pending.push(...contextChildren(current))
     }
-    return runtime.loadFileEvidenceCheck(refs, signal)
+    return refs
+  }
+  function loadSessionFileProof(session: string, signal?: AbortSignal, parent?: string) {
+    return observeFileInputs(() => sessionFileInputs(session, parent), signal)
   }
   function requireContextGeneration(session: string, generation?: number) {
     if ((generation ?? 0) !== contextRecovery.contextGeneration(session)) throw new Error('Memory context generation changed')
@@ -477,16 +491,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const files = [...((savedEvidence ?? senderEvidence)?.files ?? []), ...(recipient.files ?? [])]
       return { saved, savedEvidence, senderEvidence, recipient, files }
     }
-    let inputs = readInputs()
-    const files = inputs.files
-    let proof = await runtime.loadFileEvidenceCheck(files, signal)
-    inputs = readInputs()
-    // A concurrent lookup can attach a new file while the first observation is in flight.
-    // Reobserve the changed dependencies once. Physical and policy checks still use the final receipts.
-    if (files.length !== inputs.files.length || (files.length > 0 && JSON.stringify(files) !== JSON.stringify(inputs.files))) {
-      proof = await runtime.loadFileEvidenceCheck(inputs.files, signal)
-      inputs = readInputs()
-    }
+    const proof = await observeFileInputs(() => readInputs().files, signal)
+    const inputs = readInputs()
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
     if (contextRecovery.retired(input.sessionId, input.messageId) || contextRecovery.retiredDerived(input.messageId)) throw new Error('Derived context was retired')

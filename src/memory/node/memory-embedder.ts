@@ -1,3 +1,4 @@
+import { memoryWorkerEnvironment } from './memory-worker-environment.ts'
 import { fork } from 'node:child_process'
 import { diagnosticBinding, diagnosticContext, emitDiagnostic, withOperation } from '../../diagnostics/node/context.ts'
 import { parseDiagnosticContext } from '../../diagnostics/contracts.ts'
@@ -73,7 +74,7 @@ export function createMemoryEmbedder({ modelRoot, runtimeRoot, timeoutMs = INFER
     const entry = fileURLToPath(new URL(`./memory-embedder-worker${suffix}`, import.meta.url))
     const worker = fork(entry, [path.resolve(modelRoot), ...(runtimeRoot ? [path.resolve(runtimeRoot)] : [])], {
       execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'json',
-      env: { ELECTRON_RUN_AS_NODE: '1', SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR },
+      env: memoryWorkerEnvironment(),
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     })
     child = worker

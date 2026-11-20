@@ -1,3 +1,4 @@
+import { RequestTimeout } from '../../shared/request-budget.ts'
 import { constants } from 'node:fs'
 import { lstat, open, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -98,14 +99,16 @@ async function inspect(root: string, workspace: string, send: NonNullable<typeof
 
 // This entry has no owner, database, or write capability. Losing its parent ends the scan.
 process.once('disconnect', () => process.exit(0))
-const [root, workspace, path] = process.argv.slice(2)
-if (root && workspace && /^[a-f0-9]{64}$/u.test(workspace) && process.send) {
+const [root, workspace] = process.argv.slice(2)
+if (root && process.send) {
   const send = process.send.bind(process)
-  if (path) {
+  if (workspace === '--read-files') {
     const read = createMemoryPhysicalFileReader(() => root)
-    try {
-      const file = await read(workspace, path)
-      send(file ?? { missing: true }, error => process.exit(error ? 1 : 0))
-    } catch { send({ unavailable: true }, error => process.exit(error ? 1 : 0)) }
-  } else await inspect(root, workspace, send)
+    process.on('message', async (request: { workspace: string, path: string }) => {
+      try {
+        const file = await read(request.workspace, request.path)
+        send(file ?? { missing: true })
+      } catch (error) { send(error instanceof RequestTimeout ? { timedOut: true } : { unavailable: true }) }
+    })
+  } else if (workspace && /^[a-f0-9]{64}$/u.test(workspace)) await inspect(root, workspace, send)
 }

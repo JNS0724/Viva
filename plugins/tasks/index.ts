@@ -2,7 +2,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createTasksChannel } from './lib/channel.ts'
-import { LONG_TOOL_TIMEOUT_MS } from '../../src/shared/node/tool-call-budget.ts'
+import { LONG_TOOL_TIMEOUT_MS } from '../../src/shared/request-budget.ts'
 export const name = 'viva-tasks'
 export const inject = ['tools']
 export const Config = z.object({})

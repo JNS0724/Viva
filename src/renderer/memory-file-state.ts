@@ -63,7 +63,9 @@ export const MEMORY_FILE_ACTIONS = {
   memory_files_loading: (state) => withFiles(state, { loading: true, listError: null }),
   memory_files_listed: (state, { query, page, more }) => query === state.memory.files.query ? withFiles(state, {
     items: more ? [...state.memory.files.items, ...page.items] : page.items,
-    nextCursor: page.nextCursor, partial: Boolean(page.partial || more && state.memory.files.partial), loaded: true, loading: false, listError: null,
+    nextCursor: page.nextCursor,
+    partial: Boolean(page.partial || more && state.memory.files.partial && state.memory.files.nextCursor?.retry === undefined),
+    loaded: true, loading: false, listError: null,
   }) : state,
   memory_files_list_failed: (state, { message }) => withFiles(state, { loading: false, listError: message }),
   memory_file_select: (state, { selection }) => withFiles(state, { selection, detail: null, detailError: null, editor: null, writeError: null,

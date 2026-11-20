@@ -13,12 +13,15 @@ import type { MemoryNotes } from './ports/notes.ts'
 import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
 import type { MemoryStore, MemorySource } from './ports/store.ts'
 import type { DocumentCorrection, DocumentReceipt, DocumentSourceRef, MemoryDocuments, ReadMemoryPhysicalFile } from './ports/documents.ts'
+import type { MemoryFileIndex } from './ports/file-index.ts'
+import { memorySearchTokens } from './search-tokens.ts'
 import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import { todayAt } from './memory-calendar.ts'
 import { parseMemoryDocument, updateMemoryFrontmatter } from './memory-document.ts'
-import { createMemoryDreamTools, dreamChangesConclusion, memoryDocumentLinks, MemoryDreamStaleError } from './memory-dream-tools.ts'
-import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources, MEMORY_DOCUMENT_READ_CONCURRENCY } from './memory-document-read-policy.ts'
+import { createMemoryDreamTools, dreamNodeMetadata, dreamChangesConclusion, memoryDocumentLinks, MemoryDreamStaleError } from './memory-dream-tools.ts'
+import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
+import type { DreamSearchPage } from './memory-dream-tools.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-document-read-policy.ts'
 import { documentSourceRestricted, projectDocumentSource } from './memory-document-restrictions.ts'
@@ -90,12 +93,12 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Four-stage document jobs. Storage and provider message/reasoning state stay behind their respective ports. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate, readPhysicalFile, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate, readPhysicalFile, digestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
-  readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
+  digestNodes?: MemoryFileIndex['digestNodes'], readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(diagnosticPort)
@@ -138,41 +141,86 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   }
   const allSources = mergeDocumentSources
   const policy = createMemoryDocumentReadPolicy({ notes, documents, hash: identity.hash, refsCurrent, materialAllowed, reference, readPhysicalFile })
-  const scopedDocuments = (workspace: string) => ({
-    read: (path: string) => policy.read(workspace, path),
-    list: () => policy.list(workspace, 'digest'),
-    async load(required: string[], search: boolean, signal?: AbortSignal) {
-      const candidates = search ? policy.paths(workspace, 'digest') : []
-      const needed = new Set(required)
-      const observations = new Map<string, MemoryDocumentReadBatch>()
-      const byPath = (path: string) => ({ workspace, path })
-      async function page(paths: string[], optional: boolean) {
-        signal?.throwIfAborted()
-        const batch = await loadFiles(paths.map(byPath), signal, optional)
-        if (batch) for (const path of paths) observations.set(path, batch)
-      }
-      if (readPhysicalFile) {
-        await page([...needed], false)
-        // A large workspace must not restart at its first node whenever a single
-        // page's deadline expires. Only previously observed and requested paths
-        // are mandatory; unverified search candidates cannot contribute content.
-        const optional = candidates.filter(path => !needed.has(path))
-        for (let offset = 0; offset < optional.length; offset += MEMORY_DOCUMENT_READ_CONCURRENCY) {
-          await page(optional.slice(offset, offset + MEMORY_DOCUMENT_READ_CONCURRENCY), true)
+  const scopedDocuments = (workspace: string) => {
+    // The canonical journal fills gaps for legacy or not-yet-published nodes.
+    // These hints only select paths for verification. They never reach a tool.
+    const legacy = new Map<string, { revision: string, path: string, name: string, terms: string[] }>()
+    async function candidates(query: string, signal?: AbortSignal) {
+      const terms = new Set(memorySearchTokens(query, false))
+      const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
+      const matches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
+      let yieldAt = performance.now() + 4
+      for (const row of documents.fileRegistry(workspace)) {
+        if (performance.now() >= yieldAt) {
+          await new Promise<void>(resolve => setTimeout(resolve, 0))
+          signal?.throwIfAborted()
+          yieldAt = performance.now() + 4
         }
+        if (row.state !== 'active') continue
+        const node = published.get(row.id)
+        let words: string[] | undefined, name: string | undefined
+        if (node?.tags && node.revision === row.revision && node.usageVersion === row.usageVersion && node.path === row.path) {
+          name = node.name || row.path.split('/').at(-1)!.replace(/\.md$/u, '')
+          words = memorySearchTokens([name, node.description, ...node.tags].join(' '), true)
+        } else {
+          const cached = legacy.get(row.id)
+          if (cached?.revision === row.revision && cached.path === row.path) { words = cached.terms; name = cached.name }
+          else {
+            const accepted = documents.acceptedSnapshot(workspace, row.id)
+            if (accepted) {
+              const metadata = dreamNodeMetadata(accepted)
+              words = memorySearchTokens([metadata.name, metadata.description, ...metadata.tags].join(' '), true)
+              name = metadata.name
+              legacy.set(row.id, { revision: row.revision, path: row.path, name, terms: words })
+            }
+          }
+        }
+        // Prioritize exact names and multi-term hits before the physical verification limit.
+        const score = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
+          ? [...new Set(words.filter(word => terms.has(word)))].length : 0
+        if (!words || score > 0) matches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score })
       }
-      const observation = (path: string) => readPhysicalFile
-        ? observations.get(path)?.readObservation(workspace, path) : policy.read(workspace, path)
-      const read = (path: string) => {
-        const view = observation(path)
-        if (view === undefined) throw new RequestTimeout()
-        return view
-      }
-      for (const path of needed) read(path)
-      return { read, list: () => candidates.flatMap(path => observation(path) ?? []) }
-    },
-    locatorRetired: (path: string) => documents.locatorRetired(workspace, path),
-  })
+      return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    }
+    return {
+      read: (path: string) => policy.read(workspace, path),
+      list: () => policy.list(workspace, 'digest'),
+      async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
+        signal?.throwIfAborted()
+        const matches = search ? await candidates(search.query, signal) : []
+        const limit = Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
+        const fingerprint = search ? identity.hash(JSON.stringify(matches)) : ''
+        const offset = search?.page?.fingerprint === fingerprint ? search.page.offset : 0
+        const selected = matches.slice(offset, offset + limit).map(match => match.path)
+        const locations = (paths: string[]) => paths.map(path => ({ workspace, path }))
+        const requiredSet = new Set(required)
+        const mandatory = await loadFiles(locations([...requiredSet]), signal)
+        const optional = await loadFiles(locations(selected.filter(path => !requiredSet.has(path))), signal, true)
+        const observation = (path: string) => {
+          const batch = requiredSet.has(path) ? mandatory : optional
+          return batch ? batch.readObservation(workspace, path) : policy.read(workspace, path)
+        }
+        const read = (path: string) => {
+          const view = observation(path)
+          if (view === undefined) throw new RequestTimeout()
+          return view
+        }
+        for (const path of requiredSet) read(path)
+        let unread = false
+        const list = selected.flatMap(path => {
+          const view = observation(path)
+          if (view === undefined) unread = true
+          return view ?? []
+        })
+        // Only advance over a fully observed page. A changed candidate set
+        // restarts discovery, while late body reads cannot authorize a CREATE.
+        const nextOffset = unread ? offset : offset + selected.length
+        const partial = unread || nextOffset < matches.length
+        return { read, list: () => list, partial, next: partial ? { fingerprint, offset: nextOffset } : undefined }
+      },
+      locatorRetired: (path: string) => documents.locatorRetired(workspace, path),
+    }
+  }
   type Location = { workspace: string, path: string }
   function dependencies(files: readonly FileRef[]): Location[] {
     return files.flatMap(file => [file, ...file.reads.flatMap(ref => {
@@ -190,7 +238,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   async function loadFiles(files: Location[], signal?: AbortSignal, partial = false) {
     const batch = policy.readBatch(signal, files.length + 512)
     if (!batch) return
-    const budget = createRequestBudget(350, signal)
+    const budget = createRequestBudget(defaults.fileVerificationBudgetMs, signal)
     try { await budget.run(() => batch.load(files, budget.signal)) }
     catch (error) {
       if (!partial || signal?.aborted || !(error instanceof RequestTimeout)) throw error
@@ -211,9 +259,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     return check()
   }
   async function advanceOwnReads(plan: DreamPlan, workspace: string, receipt: DocumentReceipt) {
-    const files = plan.files.filter(file => file.workspace === workspace)
-    const observed = await loadFiles([{ workspace, path: receipt.path }, ...files])
-    if (observed?.incomplete()) throw new RequestTimeout()
+    const files = plan.files.filter(file => file.workspace === workspace
+      && (receipt.action === 'CORRECT' || file.reads.some(ref => ref.id === receipt.documentId)))
+    if (!files.length) return
+    const observed = await loadFiles([{ workspace, path: receipt.path }, ...files], undefined, true)
     const latest = documents.read(workspace, receipt.path, { physical: observed?.physical(workspace, receipt.path) })
     if (!latest || latest.id !== receipt.documentId || latest.revision !== receipt.revision || latest.usageVersion !== receipt.usageVersion) return
     for (const file of files) {
@@ -325,7 +374,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const current = (batch?: MemoryDocumentReadBatch) => effects.holds(job) && refs.every(ref => fileCurrent(ref, batch)) && extractedReadsCurrent(refs, batch)
           && seen.every(snapshot => (batch ?? policy).read(workspace, snapshot.path)?.policyToken === snapshot.policyToken)
         const observe = observeReadset(() => dependencies(refs), current)
-        if (!await verified(observe)) { progress(job, 'source_changed', 'extract'); plan.retryExtraction = true; return }
+        const inputsCurrent = async () => {
+          try { return await verified(observe) }
+          catch (error) {
+            if (!(error instanceof RequestTimeout)) throw error
+            return false
+          }
+        }
+        if (!await inputsCurrent()) { progress(job, 'source_changed', 'extract'); plan.retryExtraction = true; return }
         const rememberFiles = (oversized = false) => {
           for (const file of refs) if (!plan.files.some(previous => previous.key === file.key)) plan.files.push(oversized ? { ...file, oversized: true } : file)
         }
@@ -352,24 +408,29 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             const result = await calculateStage({ job, stage: 'extract', system: DREAM_EXTRACT_SYSTEM, input,
               sourceIds: () => sources.map(ref => ref.id), current, observe })
             if (result === undefined) { progress(job, 'unavailable', 'extract', attempt); stopPass = true; plan.retryExtraction = true; return }
-            if (!await verified(observe)) { progress(job, 'source_changed', 'extract', attempt); plan.retryExtraction = true; return }
+            if (!await inputsCurrent()) { progress(job, 'source_changed', 'extract', attempt); plan.retryExtraction = true; return }
             try { units = parseDreamUnits(parse(result), new Set(batch.map(note => note.path)), dreamUnits - count) }
             catch { invalid = true; progress(job, 'validation_failed', 'extract', attempt) }
           } catch (error) {
-            if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded' && await verified(observe)) {
+            if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded' && await inputsCurrent()) {
               progress(job, 'oversized', 'extract', attempt)
               if (batch.length > 1) await split()
               // Its persisted note revision is reconsidered when its content changes.
               else rememberFiles(true)
               return
             }
+            if (error instanceof RequestTimeout) { plan.retryExtraction = true; return }
             if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'extract', attempt)
             stopPass = true
             plan.retryExtraction = true
             return
           }
         }
-        if (!units || !await verified(observe)) { stopPass = true; plan.retryExtraction = true; return }
+        if (!units || !await inputsCurrent()) {
+          stopPass = !units
+          plan.retryExtraction = true
+          return
+        }
         rememberFiles()
         for (const unit of units) extracted.push({ workspace, unit })
         count = plan.units.length + workspaces.reduce((sum, scope) => sum + mergeDreamUnits(extracted.filter(item => item.workspace === scope).map(item => item.unit)).length, 0)
@@ -446,10 +507,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       try { output = parse(raw) }
       catch (error) { progress(job, 'validation_failed', 'integrate', attempt); throw error }
       const deferred = deferredReply.safeParse(output)
-      if (deferred.success) return skip()
+      if (deferred.success) return tools.searchIncomplete() ? 'retry' : skip()
       let draft: ReturnType<typeof tools.finish>
       try {
-        const checked = await scope.load([...tools.checkedPaths(), ...item.unit.paths], false)
+        const checked = await scope.load([...tools.checkedPaths(), ...item.unit.paths], null)
         draft = tools.finish(output, checked.read)
       }
       catch (error) { progress(job, 'validation_failed', 'integrate', attempt); throw error }
@@ -544,12 +605,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     return 'retry'
   }
   async function tag(job: Effect, plan: DreamPlan) {
+    let retry = false
     for (const item of plan.tags) {
       if (item.attempted || !effects.holds(job)) continue
-      // The attempt ledger below is durable before model IO, including across a plan replay.
+      const batch = await loadFiles([item], undefined, true)
+      const targetView = batch ? batch.readObservation(item.workspace, item.path) : policy.read(item.workspace, item.path)
+      if (targetView === undefined) { retry = true; continue }
+      // Only a conclusive observation consumes this stage. The ledger below is
+      // durable before model I/O, including across a plan replay.
       item.attempted = true
-      const batch = await loadFiles([item])
-      const targetView = (batch ?? policy).read(item.workspace, item.path)
       const target = targetView?.backing
       if (!targetView || targetView.applicability.state !== 'current') continue
       if (!target || target.revision !== item.revision || !refsCurrent(target.sources)) continue
@@ -596,6 +660,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       await advanceOwnReads(plan, item.workspace, receipt)
       persist(job, plan)
     }
+    return retry
   }
   async function runJob(job: Effect): Promise<Outcome> {
     if (notes.needsRecovery() || documents.needsRecovery()) await mutate(() => {
@@ -626,19 +691,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       }
     }
     if (priorPlan !== JSON.stringify(plan)) persist(job, plan)
-    const verifiedPlan = await loadFiles(plan.files)
-    if (verifiedPlan?.incomplete()) return 'retry'
-    if (plan.files.some(file => !fileCurrent(file, verifiedPlan))) {
+    const verifiedPlan = await loadFiles(plan.files, undefined, true)
+    const unknown = new Set(plan.files.filter(file => verifiedPlan && verifiedPlan.readObservation(file.workspace, file.path) === undefined))
+    if (plan.files.some(file => !unknown.has(file) && !fileCurrent(file, verifiedPlan))) {
       if (effects.holds(job)) effects.amend(job, {})
       return 'retry'
     }
-    let retry = false, wait = false, unitTimedOut = false
+    let retry = unknown.size > 0, wait = false, unitTimedOut = false
     for (const item of plan.units) {
       if (item.state === 'deferred' || documents.retiredClarification(item.workspace, item.operationId)) {
         item.state = 'done'
         persist(job, plan)
       }
-      if (item.state === 'done') continue
+      if (item.state === 'done' || [...unknown].some(file => file.workspace === item.workspace && item.unit.paths.includes(file.path))) continue
       try {
         const outcome = await integrate(job, plan, item)
         if (outcome === 'done') { item.state = outcome; persist(job, plan) }
@@ -653,10 +718,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       }
     }
     if (unitTimedOut) retry = true
-    else await tag(job, plan)
-    const checkpoint = await loadFiles(plan.files)
+    else if (await tag(job, plan)) retry = true
+    const checkpoint = await loadFiles(plan.files, undefined, true)
     if (!effects.holds(job)) return 'done'
-    if (checkpoint?.incomplete()) retry = true
+    if (checkpoint && plan.files.some(file => checkpoint.readObservation(file.workspace, file.path) === undefined)) retry = true
     if (retry || wait) {
       // Successful paths can checkpoint independently; the durable plan still retains failed units for retries.
       transaction(() => checkpointFiles(plan, now(), checkpoint))

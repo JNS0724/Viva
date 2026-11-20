@@ -98,12 +98,13 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       policyToken: view.policyToken, kind: view.kind, ...(view.day ? { day: view.day } : {}), updatedAt: view.updatedAt,
       sources: view.sourceTokens, name: usableMetadata && typeof parsed.metadata.name === 'string' ? parsed.metadata.name : '',
       description: usableMetadata && typeof parsed.metadata.description === 'string' ? parsed.metadata.description : '',
+      ...(view.kind === 'digest' && usableMetadata && { tags: Array.isArray(parsed.metadata.memory_tags) ? parsed.metadata.memory_tags.filter((tag): tag is string => typeof tag === 'string') : [] }),
       chunks: parsed.chunks.filter(chunk => Boolean(chunk.text.trim())), links: parsed.links,
     }
   }
   function publishSnapshot(snapshot: MemoryFileSnapshot) {
     const old = index.snapshot(snapshot.workspace, snapshot.id)
-    if (old && sameVersion(old, snapshot) && old.updatedAt === snapshot.updatedAt && old.day === snapshot.day) return false
+    if (old && sameVersion(old, snapshot) && old.updatedAt === snapshot.updatedAt && old.day === snapshot.day && (!snapshot.tags || old.tags)) return false
     return index.accept(snapshot, old) ? true : null
   }
   function published(accepted: number, removed: number) {
@@ -142,7 +143,8 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       try {
         const old = index.nodeAt(view.workspace, view.path)
         if (view.currentMarkdown === null) continue
-        if (old && sameVersion(old, view) && old.updatedAt === view.updatedAt && old.day === view.day) {
+        if (old && sameVersion(old, view) && old.updatedAt === view.updatedAt && old.day === view.day
+          && (view.kind !== 'digest' || view.applicability.state !== 'current' || old.tags)) {
           visible.add(identityKey(view))
           continue
         }
@@ -273,7 +275,9 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   async function loadFiles(batch: MemoryDocumentReadBatch, files: readonly Pick<MemoryFileIdentity, 'workspace' | 'path'>[], milliseconds: number, signal?: AbortSignal) {
     if (!files.length || milliseconds <= 0 || signal?.aborted) return
     const budget = createRequestBudget(milliseconds, signal)
-    try { await batch.load(files, budget.signal) } finally { budget.close() }
+    try { await budget.run(() => batch.load(files, budget.signal)) }
+    catch (error) { if (!(error instanceof RequestTimeout) && !signal?.aborted) throw error }
+    finally { budget.close() }
   }
   function scopedController(signal?: AbortSignal, { keepWarm = false, deadline = true } = {}) {
     const controller = new AbortController()
@@ -417,8 +421,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     if (usePublishedIndex) {
       const page = index.lexicalCandidates(query, scope, candidateProbe(candidates))
       const reasons = page.mode === 'fallback' ? ['full-text-fallback'] : []
-      if (page.incomplete) reasons.push('candidate-limit')
-      return { scope, allowed: undefined, limit, candidates, lexical: page.rows, reasons, startedAt }
+      return { scope, allowed: undefined, limit, candidates, lexical: page.rows, lexicalIncomplete: page.incomplete, reasons, startedAt }
     }
     sync()
     const allowed = authorized(request.allows, scope)
@@ -446,31 +449,33 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       || request.automatic && performance.now() - startedAt >= defaults.automaticContextBudgetMs)
     const checks = verifier(request.allows, timedOut, batch, reportStale)
     const authorizedHits = (rows: readonly MemoryFileHit[]) => {
-      const valid: MemoryFileHit[] = []
+      const hits: MemoryFileHit[] = []
       for (const hit of rows) {
         if (timedOut()) break
-        if (checks.verify(hit.file)) valid.push(hit)
-        if (valid.length === candidates) break
+        if (checks.verify(hit.file)) {
+          if (hits.length === candidates) return { hits, truncated: true }
+          hits.push(hit)
+        }
       }
-      return valid
+      return { hits, truncated: false }
     }
     const qualified = qualifyCandidates(request, lexical, vector)
     const safeLexical = authorizedHits(qualified.lexical)
     const safeVector = authorizedHits(qualified.vector)
-    const ranked = fuseMemoryFileHits(safeLexical, safeVector).filter(hit => hit.score >= (request.minScore ?? defaults.searchMinScore))
+    const ranked = fuseMemoryFileHits(safeLexical.hits, safeVector.hits).filter(hit => hit.score >= (request.minScore ?? defaults.searchMinScore))
     const context = request.contextKey ? hash(JSON.stringify([request.contextKey, request.query, request.from, request.through, request.asOf,
       request.minScore, allowed?.map(file => [file.workspace,file.id,file.revision,file.usageVersion,file.policyToken]) ?? scope.workspaces])) : null
     const seen = context ? returned.get(context) ?? new Set<string>() : new Set<string>()
     const remaining = ranked.filter(hit => !seen.has(memoryFileChunkKey(hit.ref)))
     const selected = selectMemoryFileHits(ranked, { limit, seen })
-    return { checks, timedOut, ranked, context, seen, remaining, selected, limited: safeLexical.length === candidates || safeVector.length === candidates }
+    return { checks, timedOut, ranked, context, seen, remaining, selected, lexicalFull: safeLexical.hits.length === candidates, limited: safeLexical.truncated || safeVector.truncated }
   }
   function finishSearch(request: FileSearchRequest, plan: ReturnType<typeof beginSearch>, vector: MemoryFileHit[], batch?: MemoryDocumentReadBatch): FileSearchResult {
     const { scope, allowed, limit, reasons } = plan
     if (closed || request.signal?.aborted) return unavailable('cancelled')
     const { checks, timedOut, ranked, context, seen, remaining, selected, limited } = selectSearch(request, plan, vector, batch)
     const read = batch?.read ?? readable
-    if (limited && !reasons.includes('candidate-limit')) reasons.push('candidate-limit')
+    if ((limited || plan.lexicalIncomplete) && !reasons.includes('candidate-limit')) reasons.push('candidate-limit')
     if (checks.incomplete() || timedOut()) reasons.push('file-changed')
     const views: MemoryDocumentView[] = []
     const hits: FileSearchHit[] = []
@@ -540,7 +545,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       const verificationBudget = (automatic: number, manual: number) => request.automatic
         ? Math.min(automatic, defaults.automaticContextBudgetMs - 15 - (performance.now() - startedAt)) : manual
       const loadingLexical = batch && loadFiles(batch, qualifyCandidates(request, plan.lexical, []).lexical.map(hit => hit.file),
-        verificationBudget(85, 350), request.signal)
+        verificationBudget(85, defaults.fileVerificationBudgetMs), request.signal)
       let vector: MemoryFileHit[] = []
       if (embedder && (allowed?.length ?? scope.workspaces.length)) {
         observation.progress({ stage: 'vector', metrics: { count: allowed?.length ?? candidates } })
@@ -579,26 +584,25 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       if (batch) {
         await loadingLexical
         const qualified = qualifyCandidates(request, [], vector).vector
-        await loadFiles(batch, qualified.map(hit => hit.file), verificationBudget(30, 250), request.signal)
+        await loadFiles(batch, qualified.map(hit => hit.file), verificationBudget(30, defaults.fileVerificationBudgetMs), request.signal)
         if (!closed && !request.signal?.aborted) {
-          let { selected } = selectSearch(request, plan, vector, batch, false)
+          let selection = selectSearch(request, plan, vector, batch, false)
           const size = candidateProbe(candidates)
-          const stopAt = performance.now() + verificationBudget(35, 150)
-          const refill = plan.reasons.includes('candidate-limit')
-          for (let offset = size; refill && selected.length < plan.limit && offset < 512 && performance.now() < stopAt; offset += size) {
+          const stopAt = performance.now() + verificationBudget(35, defaults.fileVerificationBudgetMs)
+          for (let offset = size; plan.lexicalIncomplete && !selection.lexicalFull && selection.selected.length < plan.limit && offset < 512 && performance.now() < stopAt; offset += size) {
             const page = index.lexicalCandidates(memoryFileLexicalQuery(request.query), scope, size, offset)
             plan.lexical.push(...page.rows)
             await loadFiles(batch, qualifyCandidates(request, page.rows, []).lexical.map(hit => hit.file),
               stopAt - performance.now(), request.signal)
             if (closed || request.signal?.aborted) return unavailable('cancelled')
-            selected = selectSearch(request, plan, vector, batch, false).selected
-            if (!page.incomplete) break
+            plan.lexicalIncomplete = page.incomplete
+            selection = selectSearch(request, plan, vector, batch, false)
           }
-          const neighbors = selected.flatMap(hit => {
+          const neighbors = selection.selected.flatMap(hit => {
             const { incoming, outgoing } = publishedLinks(hit.file, scope)
             return [...incoming.rows, ...outgoing.rows]
           })
-          await loadFiles(batch, neighbors, verificationBudget(35, 150), request.signal)
+          await loadFiles(batch, neighbors, verificationBudget(35, defaults.fileVerificationBudgetMs), request.signal)
         }
       }
       observation.progress({ stage: 'fusion', metrics: { count: vector.length } })
@@ -655,7 +659,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       const path = input.workspace && input.path ? resolveAlias?.(workspace, input.path) ?? input.path : input.id && resolveId(workspace, input.id)
       return path ? [{ workspace, path }] : []
     })
-    await loadFiles(batch, files, 350, input.signal)
+    await loadFiles(batch, files, defaults.fileVerificationBudgetMs, input.signal)
     return read(input, batch)
   }
   function planNodeSearch(input: NodeSearchInput) {
@@ -687,8 +691,8 @@ ${file.description}`, file, view }] : []
   async function nodeSearchAsync(input: NodeSearchInput, batch = usePublishedIndex ? policy.readBatch?.(input.signal) : undefined) {
     if (!batch || closed || input.signal?.aborted) return nodeSearch(input)
     const plan = planNodeSearch(input)
-    const until = performance.now() + 350
-    await loadFiles(batch, plan.candidates.rows, 350, input.signal)
+    const until = performance.now() + defaults.fileVerificationBudgetMs
+    await loadFiles(batch, plan.candidates.rows, defaults.fileVerificationBudgetMs, input.signal)
     let result = nodeSearch(input, plan, batch)
     const size = candidateProbe(Math.min(defaults.searchMaxCandidates, plan.limit * defaults.searchCandidateMultiplier))
     for (let offset = size; plan.candidates.incomplete && result.nodes.length < plan.limit && offset < 512 && performance.now() < until; offset += size) {

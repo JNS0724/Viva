@@ -53,7 +53,7 @@ export function trackNativeSpills(ctx: Context, owner: SpillWriter, tools: Retur
       try { id = await owner.beginNativeSpill(reserved.intent) }
       catch (error) { await reserved.handle.close(); throw error }
       const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, input.content, current)
-      await owner.finishNativeSpill(id, saved.receipt)
+      await owner.finishNativeSpill(id, saved.receipt, call.session)
       if (!current()) throw new Error('Native spill execution retired during publication')
       return saved.ref
     }

@@ -25,7 +25,8 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
   const views = new Map<string, View>()
   const checks = new Map<string, () => boolean | Promise<boolean>>()
   const sends = new Map<string, Send>()
-  const completions = new Map<string, { epoch: string, queue: Promise<unknown> }>()
+  type Receipts = { epoch: string, queue: Promise<void>, failure?: { error: unknown } }
+  const completions = new Map<string, Receipts>()
   let epoch: string | undefined
   let closed = false
 
@@ -79,10 +80,17 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
     const captured = scope.getStore()?.epoch ?? syncEpoch()
     if (!captured || !current(captured)) return
     const pending = completions.get(session)
-    const queue = (pending?.epoch === captured ? pending.queue : Promise.resolve()).then(() => inEpoch(captured, () => call(method, args)))
-    const item = { epoch: captured, queue }
+    const item: Receipts = pending?.epoch === captured ? pending : { epoch: captured, queue: Promise.resolve() }
     completions.set(session, item)
-    void queue.then(() => { if (completions.get(session) === item) completions.delete(session) }, report)
+    // Keep writing independent receipts in order. A barrier covering a failed receipt still fails closed.
+    const queue = item.queue.then(async () => {
+      try { await inEpoch(captured, () => call(method, args)) }
+      catch (error) { item.failure ??= { error }; report(error) }
+    })
+    item.queue = queue
+    void queue.then(() => {
+      if (!item.failure && item.queue === queue && completions.get(session) === item) completions.delete(session)
+    })
   }
 
   async function readContext(session: string, options?: OwnerCallOptions) {
@@ -131,7 +139,15 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
 
   function completion(session: string) {
     const item = completions.get(session)
-    return item && item.epoch === syncEpoch() ? item.queue : Promise.resolve()
+    if (!item || item.epoch !== syncEpoch()) return Promise.resolve()
+    // Detach this batch so a later operation can start again after the error has been observed.
+    const queue = item.queue
+    return queue.then(() => {
+      if (item.failure) {
+        if (item.queue === queue && completions.get(session) === item) completions.delete(session)
+        throw item.failure.error
+      }
+    })
   }
 
   return {

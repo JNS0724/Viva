@@ -1,3 +1,4 @@
+import { LONG_TOOL_TIMEOUT_MS } from '../../src/shared/request-budget.ts'
 /**
  * viva-routing (docs/agent-routing-design.md): the main agent routes every request of the conversation; the work goes
  * to tasks. The app binds the main session before each prompt and puts each request under its header
@@ -28,7 +29,7 @@ import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
 import { routingModelHistory } from './lib/model-history.ts'
 import { completeFastRouting } from './lib/model-call.ts'
-import { enableMainToolBudgets, executeToolCall, isMemoryTool, LONG_TOOL_TIMEOUT_MS } from '../../src/shared/node/tool-call-budget.ts'
+import { enableMainToolBudgets, executeToolCall, isMemoryTool } from '../../src/shared/node/tool-call-budget.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']

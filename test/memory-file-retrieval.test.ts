@@ -596,6 +596,31 @@ test('published search skips failed and stale candidates beside an independent m
   assert.deepEqual(checks, [target.path])
 })
 
+test('published lexical refill stops once the verified candidate cap is full and clears an exhausted page', async t => {
+  const documents = Array.from({ length: 40 }, (_, n) => view(`document-${String(n).padStart(2, '0')}`, 'needle'))
+  const f = setup(t, documents)
+  const offsets: number[] = []
+  const retrieval = createMemoryFileRetrieval({ index: { ...f.index, lexicalCandidates(query, scope, limit, offset) {
+    offsets.push(offset ?? 0)
+    return f.index.lexicalCandidates(query, scope, limit, offset)
+  } }, policy: f.policy, workspaces: () => [workspace], hash, usePublishedIndex: true })
+  t.after(() => retrieval.close())
+  retrieval.publishFiles(documents)
+  const batch = { load: async () => {}, read: f.policy.read, readObservation: f.policy.read,
+    physical: () => null, managementObservation: () => null, managementRead: () => null, observedRevision: () => undefined, incomplete: () => false }
+  const highScore = await retrieval.search({ query: 'needle', allows, limit: 1, minScore: 1 }, batch)
+  assert.deepEqual(offsets, [0])
+  assert.equal(highScore.hits.length, 0)
+  assert.ok(highScore.reasons.includes('candidate-limit'))
+
+  offsets.length = 0
+  const lastId = f.index.lexicalCandidates('needle', { workspaces: [workspace] }, 40).rows.at(-1)!.file.id
+  const complete = await retrieval.search({ query: 'needle', allows: view => view.id === lastId, limit: 1 }, batch)
+  assert.deepEqual(offsets, [0, 32])
+  assert.deepEqual(complete.hits.map(hit => hit.id), [lastId])
+  assert.ok(!complete.reasons.includes('candidate-limit'))
+})
+
 test('published relations only verify indexed edges and their trusted rename aliases', t => {
   const oldPath = 'digest/wiki/old.md'
   const root = view('root', `[[${oldPath}]] [[digest/wiki/hidden.md]] [[digest/wiki/stale.md]]`)

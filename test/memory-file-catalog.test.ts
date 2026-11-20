@@ -110,11 +110,11 @@ test('concurrent verification shares one physical read of a path and leaves room
   assert.equal((await independent)?.markdown, 'other')
 })
 
-test('three overdue physical files leave a healthy file verifiable in an independent reader', async t => {
+test('queued healthy files share a recovery worker; a cancelled or stalled recovery cannot occupy its lane', async t => {
   const { root, put } = fixture(t)
   const blocked = ['one', 'two', 'three'].map(name => `digest/wiki/${name}.md`)
   const paths = new Set(blocked.map(path => put(path, 'unreadable')))
-  const healthy = 'digest/wiki/healthy.md'
+  const healthy = 'digest/wiki/healthy.md', slow = 'digest/wiki/slow.md'
   put(healthy, 'available')
   let release!: () => void
   const gate = new Promise<void>(done => { release = done })
@@ -124,11 +124,41 @@ test('three overdue physical files leave a healthy file verifiable in an indepen
     return Reflect.apply(original, promises, args)
   })
   syncBuiltinESMExports()
-  const read = createMemoryPhysicalFileReader(() => root)
+  let forks = 0
+  let sent!: () => void
+  const waiting = new Promise<void>(done => { sent = done })
+  const read = createMemoryPhysicalFileReader(() => root, (entry, args, options) => {
+    const child = fork(entry, args, options), send = child.send
+    forks++
+    t.mock.method(child, 'send', function (this: typeof child, ...parts: Parameters<typeof send>) {
+      const request = parts[0] as { path?: string }
+      if (request.path === slow) { sent(); return true }
+      if (request.path === 'digest/wiki/fourth.md') {
+        setImmediate(() => child.emit('message', { timedOut: true }))
+        return true
+      }
+      return Reflect.apply(send, this, parts) as boolean
+    })
+    return child
+  })
   try {
-    await Promise.all(blocked.map(path => assert.rejects(read(workspace, path), /timed out/u)))
-    // The caller's deadline can be the timer immediately preceding the native IO deadline.
-    await delay(20)
+    const stalled = blocked.map(path => assert.rejects(read(workspace, path), /timed out/u))
+    // Enqueued before the three native deadlines fire.
+    const available = read(workspace, healthy)
+    await Promise.all(stalled)
+    assert.equal((await available)?.markdown, 'available')
+    assert.equal((await read(workspace, healthy))?.markdown, 'available')
+    assert.equal(forks, 1, 'rescue reads reuse their independent process')
+    const controller = new AbortController()
+    const pending = assert.rejects(read(workspace, slow, controller.signal), /cancelled/)
+    await waiting
+    controller.abort(new Error('cancelled'))
+    await pending
+    assert.equal((await read(workspace, healthy))?.markdown, 'available')
+    assert.equal(forks, 2)
+    await assert.rejects(read(workspace, 'digest/wiki/fourth.md'), /timed out/)
+    await assert.rejects(read(workspace, 'digest/wiki/fourth.md'), /timed out/)
+    assert.equal(forks, 2, 'a previously wedged rescue path cannot repeatedly spawn a process')
     assert.equal((await read(workspace, healthy))?.markdown, 'available')
   } finally {
     release()

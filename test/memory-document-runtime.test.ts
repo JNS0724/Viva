@@ -1,3 +1,4 @@
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -334,8 +335,15 @@ test('a stalled page observation returns within the page budget and can be retri
   const entry = f.documents.commit({ operationId: 'lemon', workspace, path: 'digest/wiki/lemon.md',
     expectedRevision: null, markdown: 'Lemon tree schedule.', sources: [reference], reads: [], action: 'CREATE' })
   await f.memory.wake()
-  f.wrapPhysicalRead(() => () => new Promise(() => {}))
-  const incomplete = await f.memory.listFilesAsync({ kind: 'digest' })
+  let started!: () => void
+  const reading = new Promise<void>(resolve => { started = resolve })
+  f.wrapPhysicalRead(() => () => { started(); return new Promise(() => {}) })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = f.memory.listFilesAsync({ kind: 'digest' })
+  await reading
+  t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs)
+  const incomplete = await pending
+  t.mock.timers.reset()
   assert.ok(incomplete.partial)
   assert.deepEqual(incomplete.items, [])
   f.wrapPhysicalRead(read => read)
