@@ -7,7 +7,7 @@ import { transaction, truncateMemoryJournal } from './sqlite.ts'
 
 const same = (a: MemoryFileVersion, b: MemoryFileVersion) => a.revision === b.revision && a.usageVersion === b.usageVersion && a.policyToken === b.policyToken
 const key = (ref: MemoryFileChunkRef) => JSON.stringify([ref.workspace, ref.fileId, ref.ordinal, ref.revision, ref.usageVersion, ref.policyToken])
-const identity = ({ name: _name, description: _description, tags: _tags, ...file }: MemoryFileNode): MemoryFileIdentity => file
+const identity = ({ name: _name, description: _description, ...file }: MemoryFileNode): MemoryFileIdentity => file
 const node = (file: MemoryFileSnapshot): MemoryFileNode => {
   const { chunks: _chunks, ...meta } = file
   return { ...meta }

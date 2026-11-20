@@ -2,7 +2,7 @@ import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceCut, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DeferredDocumentWork, DocumentTagAttempt, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
+import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceCut, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument, readMemoryLines, memoryDocumentLines } from '../core/memory-document.ts'
 import type { MemorySource } from '../contracts/records.ts'
@@ -60,22 +60,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     CREATE INDEX IF NOT EXISTS memory_document_revision_by_document ON memory_document_revisions(document);
     CREATE TABLE IF NOT EXISTS memory_document_receipts (
       operation TEXT PRIMARY KEY, input TEXT NOT NULL, receipt TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS memory_document_deferred (
-      operation TEXT PRIMARY KEY, workspace TEXT NOT NULL, input TEXT NOT NULL, state TEXT NOT NULL, payload TEXT
-    );
-    CREATE TABLE IF NOT EXISTS memory_document_answers (
-      operation TEXT PRIMARY KEY, input TEXT NOT NULL, deferred TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS memory_document_answer_dependencies (
-      source TEXT NOT NULL, answer TEXT NOT NULL, proof TEXT NOT NULL,
-      PRIMARY KEY(source, answer, proof)
-    );
-    CREATE INDEX IF NOT EXISTS memory_document_answers_by_source
-      ON memory_document_answer_dependencies(answer);
-
-    CREATE TABLE IF NOT EXISTS memory_document_tag_attempts (
-      operation TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL, state TEXT NOT NULL, reason TEXT
     );
     CREATE TABLE IF NOT EXISTS memory_document_restores (
       operation TEXT PRIMARY KEY, document TEXT NOT NULL, workspace TEXT NOT NULL, path TEXT NOT NULL,
@@ -204,9 +188,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       if (!unchanged) db.prepare('INSERT INTO memory_document_revisions(operation,document,before,after,at) VALUES(?,?,?,?,?)')
         .run(data.receipt.operationId, data.receipt.documentId, data.before ? encode(data.before) : null, data.after ? encode(data.after) : null, now())
       db.prepare('INSERT INTO memory_document_receipts(operation,input,receipt) VALUES(?,?,?)').run(data.receipt.operationId, data.input, encode(data.receipt))
-      if (data.receipt.action === 'TAG') db.prepare("UPDATE memory_document_tag_attempts SET state='completed',reason=NULL WHERE workspace=? AND operation=?")
-        .run(data.workspace, data.receipt.operationId)
-      db.prepare("UPDATE memory_document_deferred SET state='resolved',payload=NULL WHERE operation=? AND workspace=? AND state='ready'").run(data.receipt.operationId, data.workspace)
       if (!unchanged) {
         index?.queue({ workspace: data.workspace, id: data.receipt.documentId,
           anchors: [...data.before?.corrections ?? [], ...data.after?.corrections ?? []].map(item => indexAnchorId(item.sourceDocumentId)),
@@ -298,12 +279,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     if (rowByPath(input.workspace, input.path) && !before) throw new Error('memory-document-unavailable')
     if ((before?.revision ?? null) !== input.expectedRevision) throw new Error('memory-document-version')
     if ((input.action === 'CREATE') !== !before) throw new Error('memory-document-action')
-    if (input.action === 'TAG' && before) {
-      const oldDocument = parseMemoryDocument(before.markdown), nextDocument = parseMemoryDocument(input.markdown)
-      const { memory_tags: _oldTags, ...oldMetadata } = oldDocument.metadata
-      const { memory_tags: tags, ...nextMetadata } = nextDocument.metadata
-      if (oldDocument.body !== nextDocument.body || !isDeepStrictEqual(oldMetadata, nextMetadata) || !Array.isArray(tags) || tags.some(tag => typeof tag !== 'string' || !tag.trim()) || !isDeepStrictEqual(before.sources, input.sources)) throw new Error('memory-tag-content-change')
-    }
     if (before && before.sources.some(ref => !input.sources.some(next => next.id === ref.id && next.token === ref.token && (!next.spans || ref.spans && ref.spans.every(part => next.spans!.some(span => span.start <= part.start && span.end >= part.end)))))) throw new Error('memory-document-source-loss')
     if (input.action === 'CORRECT' && !input.corrections?.length) throw new Error('memory-correction-required')
     if (input.action !== 'CORRECT' && input.corrections?.length) throw new Error('memory-correction-action')
@@ -352,7 +327,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       const operation = readReceipt(current.workspace, item.operation)
       if (!operation || !item.before) return null
       const original = JSON.parse(item.before) as DocumentSnapshot
-      if (['ENABLE', 'DISABLE', 'TAG'].includes(operation.action)) { cursor = original; continue }
+      if (['ENABLE', 'DISABLE'].includes(operation.action)) { cursor = original; continue }
       if (!['REFINE', 'CORRECT'].includes(operation.action) || !currentSources(current.workspace, original.sources)
         || after.corrections.some(item => item.operationId === operation.operationId && !item.text)) return null
       return { history: item, original }
@@ -682,9 +657,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     const scrub = (snapshot: DocumentSnapshot | null) => snapshot && { ...snapshot, corrections: snapshot.corrections.map(eraseOldQuotation) }
     transaction(db, () => {
       db.prepare('INSERT OR IGNORE INTO memory_document_erasures(source) VALUES(?)').run(sourceId)
-      const dependentReads = new Set((db.prepare('SELECT * FROM memory_documents').all() as unknown as Row[])
-        .filter(row => contains(refsOf(row)) || correctionsOf(row).some(item => contains(item.anchorSources ?? [])))
-        .map(row => row.id))
       // A prepared plan is itself a plaintext replica. Discard only this journal's affected plans;
       // stage their target for erasure rather than letting invalid recovery restore forgotten text.
       const unpublished = new Map<string, string>()
@@ -735,7 +707,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
           const record = db.prepare('INSERT OR IGNORE INTO memory_document_erased_locators VALUES (?,?)')
           record.run(row.workspace, memoryFileRevision(row.path))
         }
-        db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(row.workspace, row.path)
         db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', encode(sanitized.map(item => ({ ...item, text: '', condition: '', time: '' }))), row.id)
         db.prepare('INSERT OR IGNORE INTO memory_document_purges(document,workspace,path,sources,expected_revision,retire_path) VALUES(?,?,?,?,?,?)')
           .run(row.id, row.workspace, row.path, row.sources, unpublished.get(row.id) ?? null, cut ? 1 : 0)
@@ -750,12 +721,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         } else if (contains([...anchorRefs(before), ...anchorRefs(after)])) {
           db.prepare('UPDATE memory_document_revisions SET before=?,after=? WHERE operation=?')
             .run(before ? encode(scrub(before)) : null, after ? encode(scrub(after)) : null, rev.operation)
-        }
-      }
-      for (const row of db.prepare('SELECT operation,payload FROM memory_document_deferred WHERE payload IS NOT NULL').all() as Array<{ operation: string, payload: string }>) {
-        const work = JSON.parse(row.payload) as DeferredDocumentWork
-        if (contains(work.sources) || work.answer?.source.id === sourceId || work.reads.some(read => dependentReads.has(read.id))) {
-          db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE operation=?").run(row.operation)
         }
       }
     })
@@ -799,86 +764,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
           condition: projectErasedLocators(scope, item.condition), time: projectErasedLocators(scope, item.time) }]
       })
   }
-  function workCurrent(work: DeferredDocumentWork): boolean {
-    return currentSources(work.workspace, work.sources) && !restricted(work.workspace, work.sources) && (!work.answer || currentSources(work.workspace, [work.answer.source]) && !restricted(work.workspace, [work.answer.source])) && currentReads(work.workspace, work.reads) && work.files.every(file => journal.visible(work.workspace, file.path) && journal.files(work.workspace).read(file.path)?.revision === file.revision)
-  }
-  function deferred(scope: string, operation: string): DeferredDocumentWork | null {
-    workspace(scope)
-    const row = db.prepare('SELECT payload,state FROM memory_document_deferred WHERE operation=? AND workspace=?').get(operation, scope) as { payload: string | null, state: DeferredDocumentWork['status'] } | undefined
-    if (!row?.payload) return null
-    const result = { ...JSON.parse(row.payload) as DeferredDocumentWork, status: row.state }
-    if (!['expired', 'resolved'].includes(result.status) && !workCurrent(result)) {
-      db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE operation=?").run(operation)
-      return null
-    }
-    return result
-  }
-  function defer(request: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork {
-    const input = { ...request, reads: readVersions(request.reads) }
-    workspace(input.workspace)
-    const prior = db.prepare('SELECT input FROM memory_document_deferred WHERE operation=?').get(input.operationId) as { input: string } | undefined
-    if (prior) {
-      if (prior.input !== hash(input)) throw new Error('memory-request-input-mismatch')
-      const existing = deferred(input.workspace, input.operationId)
-      if (!existing) throw new Error('memory-clarification-expired')
-      return existing
-    }
-    const result: DeferredDocumentWork = { ...input, status: 'pending_clarification' }
-    if (!workCurrent(result)) throw new Error('memory-document-source-version')
-    transaction(db, () => {
-      if (previousOperationId) {
-        const old = deferred(input.workspace, previousOperationId)
-        if (!old || old.status !== 'ready' || !old.answer || !input.sources.some(ref => ref.id === old.answer!.source.id && ref.token === old.answer!.source.token)) throw new Error('memory-clarification-expired')
-        db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE operation=?").run(previousOperationId)
-      }
-      db.prepare('INSERT INTO memory_document_deferred(operation,workspace,input,state,payload) VALUES(?,?,?,?,?)')
-        .run(input.operationId, input.workspace, hash(input), result.status, encode(result))
-    })
-    return result
-  }
-  function pending(scope: string) {
-    workspace(scope)
-    return (db.prepare("SELECT operation FROM memory_document_deferred WHERE workspace=? AND state IN ('pending_clarification','ready') ORDER BY rowid").all(scope) as Array<{ operation: string }>)
-      .flatMap(row => deferred(scope, row.operation) ?? [])
-  }
-  function answer(input: { operationId: string, workspace: string, deferredId: string, source: DocumentSourceRef, text: string }) {
-    workspace(input.workspace)
-    const prior = db.prepare('SELECT input,deferred FROM memory_document_answers WHERE operation=?').get(input.operationId) as { input: string, deferred: string } | undefined
-    if (prior && prior.input !== hash(input)) throw new Error('memory-request-input-mismatch')
-    const work = deferred(input.workspace, input.deferredId)
-    if (!work || !['pending_clarification', 'ready'].includes(work.status) || !currentSources(input.workspace, [input.source]) || !input.text.trim() || source(input.source.id)?.text !== input.text) throw new Error('memory-clarification-expired')
-    if (prior) return work
-    if (work.status !== 'pending_clarification') throw new Error('memory-clarification-already-answered')
-    const result: DeferredDocumentWork = { ...work, status: 'ready', answer: { operationId: input.operationId, source: input.source, text: input.text } }
-    transaction(db, () => {
-      db.prepare('INSERT INTO memory_document_answers(operation,input,deferred) VALUES(?,?,?)').run(input.operationId, hash(input), input.deferredId)
-      const dependency = db.prepare('INSERT OR IGNORE INTO memory_document_answer_dependencies VALUES(?,?,?)')
-      for (const { id, token, spans } of work.sources) dependency.run(id, input.source.id, encode({ id, token, spans }))
-      db.prepare("UPDATE memory_document_deferred SET state='ready',payload=? WHERE operation=?").run(encode(result), input.deferredId)
-    })
-    return result
-  }
-  function dependentAnswerIds(sourceId: string, cut?: DocumentSourceCut): string[] {
-    const rows = db.prepare('SELECT answer,proof FROM memory_document_answer_dependencies WHERE source=? ORDER BY rowid')
-      .all(sourceId) as Array<{ answer: string, proof: string }>
-    return [...new Set(rows.flatMap(row => !cut || documentSourceRestricted(JSON.parse(row.proof) as DocumentSourceRef, [cut]) ? [row.answer] : []))]
-  }
-  function answerDependencies(answerId: string): DocumentSourceRef[] {
-    const rows = db.prepare('SELECT proof FROM memory_document_answer_dependencies WHERE answer=? ORDER BY rowid')
-      .all(answerId) as Array<{ proof: string }>
-    return rows.map(row => JSON.parse(row.proof) as DocumentSourceRef)
-  }
-  function expire(scope: string, operation: string) {
-    workspace(scope)
-    db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE workspace=? AND operation=? AND state IN ('pending_clarification','ready')").run(scope, operation)
-  }
-  function resolve(scope: string, operation: string) {
-    workspace(scope)
-    const row = db.prepare('SELECT state FROM memory_document_deferred WHERE operation=? AND workspace=?').get(operation, scope) as { state: string } | undefined
-    if (!row || row.state === 'resolved') return
-    if (!readReceipt(scope, operation) || row.state !== 'ready') throw new Error('memory-clarification-expired')
-    db.prepare("UPDATE memory_document_deferred SET state='resolved',payload=NULL WHERE operation=?").run(operation)
-  }
   function readReceipt(scope: string, operation: string): DocumentReceipt | null {
     workspace(scope)
     const row = db.prepare('SELECT receipt FROM memory_document_receipts WHERE operation=?').get(operation) as { receipt: string } | undefined
@@ -890,38 +775,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     return Boolean(db.prepare("SELECT 1 FROM memory_document_erasures WHERE source IN (?,?) OR source LIKE 'locators:%'").get(sourceId, `file:${sourceId}`)
       || db.prepare("SELECT 1 FROM memory_document_purges WHERE document=? AND sources='[]'").get(sourceId))
       || locatorCopiesPending(false) || (db.prepare('SELECT removed FROM memory_document_restores').all() as Array<{removed:string}>).some(row => (JSON.parse(row.removed) as string[]).includes(sourceId)) || (db.prepare('SELECT sources FROM memory_document_purges').all() as Array<{sources: string}>).some(row => (JSON.parse(row.sources) as DocumentSourceRef[]).some(ref => ref.id === sourceId))
-  }
-  function tagAttempt(scope: string, operation: string): DocumentTagAttempt | null {
-    workspace(scope)
-    const row = db.prepare('SELECT operation AS operationId,workspace,path,revision,state,reason FROM memory_document_tag_attempts WHERE workspace=? AND operation=?').get(scope, operation) as (DocumentTagAttempt & { reason: string | null }) | undefined
-    if (!row) return null
-    const { reason, ...rest } = row
-    return { ...rest, ...(reason ? { reason } : {}) }
-  }
-  function settleInterruptedTagAttempts() {
-    transaction(db, () => {
-      // Older versions could record a failure after the document commit already succeeded.
-      db.prepare(`UPDATE memory_document_tag_attempts SET state='completed',reason=NULL WHERE state<>'completed'
-        AND EXISTS (SELECT 1 FROM memory_document_receipts r WHERE r.operation=memory_document_tag_attempts.operation
-          AND json_extract(r.receipt,'$.action')='TAG')`).run()
-      db.prepare("UPDATE memory_document_tag_attempts SET state='failed',reason=coalesce(reason,'interrupted') WHERE state='attempted'").run()
-    })
-  }
-  function recordTagAttempt(input: DocumentTagAttempt) {
-    workspace(input.workspace)
-    digestPath.parse(input.path)
-    const previous = tagAttempt(input.workspace, input.operationId)
-    if (previous) {
-      if (previous.path !== input.path || previous.revision !== input.revision) throw new Error('memory-request-input-mismatch')
-      if (previous.state !== 'attempted' && previous.state !== input.state) throw new Error('memory-tag-attempt-terminal')
-      db.prepare('UPDATE memory_document_tag_attempts SET state=?,reason=? WHERE operation=?').run(input.state, input.reason ?? null, input.operationId)
-      return
-    }
-    if (input.state !== 'attempted') throw new Error('memory-tag-attempt-missing')
-    const current = read(input.workspace, input.path)
-    if (current?.revision !== input.revision) throw new Error('memory-document-version')
-    db.prepare('INSERT INTO memory_document_tag_attempts(operation,workspace,path,revision,state,reason) VALUES(?,?,?,?,?,?)')
-      .run(input.operationId, input.workspace, input.path, input.revision, input.state, input.reason ?? null)
   }
   function deleteFile(scope: string, id: string, expectedUsageVersion: number) {
     return transaction(db, () => {
@@ -938,7 +791,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       db.prepare("UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources='[]',corrections=? WHERE id=?")
         .run(encode(supersessions), id)
       db.prepare('UPDATE memory_document_revisions SET before=NULL,after=NULL WHERE document=?').run(id)
-      db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(scope, row.path)
       db.prepare('INSERT OR IGNORE INTO memory_document_erasures VALUES(?)').run(`file:${id}`)
       useRestrictions.removeTarget({ kind: 'digest', workspace: scope, key: id })
       return row.usage_version + 1
@@ -961,10 +813,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   if (!deferRecovery) recover()
   return {
-    retireClarifications() {
-      db.prepare("UPDATE memory_document_deferred SET state='expired',payload=NULL WHERE state IN ('pending_clarification','ready')").run()
-    },
-    retiredClarification: (scope, id) => Boolean(db.prepare("SELECT 1 FROM memory_document_deferred WHERE workspace=? AND operation=? AND state='expired'").get(scope, id)),
     acceptedSnapshot,
     registered: scope => (db.prepare('SELECT * FROM memory_documents WHERE workspace=? ORDER BY id').all(scope) as Row[])
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
@@ -994,7 +842,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       journal.recover(operationId, managed)
       return journal.state(operationId) === 'cancelled' ? 'cancelled' : undefined
     },
-    sourceRestrictions, settleInterruptedTagAttempts, recordTagAttempt, tagAttempt, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
-    read, list, commit, deleteFile, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions, defer, deferred, pending, answer, dependentAnswerIds, answerDependencies, resolve, expire,
+    sourceRestrictions, receipt: readReceipt, hasPendingCleanup, pendingCleanup, projectErasedLocators, locatorRetired, preserveAuthoredLocatorSources,
+    read, list, commit, deleteFile, writeManual, undoCandidate, undo, setEnabled, withdraw: sourceId => removeEvidence(sourceId), eraseSource: cut => removeEvidence(cut.id, cut), supersessions,
   }
 }

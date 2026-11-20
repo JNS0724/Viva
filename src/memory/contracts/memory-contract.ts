@@ -1,9 +1,8 @@
 import { z } from 'zod'
 import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 
-export const MEMORY_CONTRACT = 9
+export const MEMORY_CONTRACT = 10
 export const MEMORY_QUESTION_PREFIX = 'memory-clarify:'
-export const MEMORY_FILE_QUESTION_PREFIX = `${MEMORY_QUESTION_PREFIX}file:`
 export const operationId = z.uuid()
 export const memoryScope = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user') }),
@@ -24,15 +23,8 @@ export const memoryRequest = z.discriminatedUnion('op', [
   z.object({ op: z.literal('file_read'), session, id: z.string().min(1).max(200), start_line: z.number().int().positive().optional(), end_line: z.number().int().positive().optional(), evidence: z.boolean().optional() }),
   z.object({ op: z.literal('node_search'), session, query, limit: z.number().int().positive().max(50).optional() }),
   z.object({ op: z.literal('remember'), session, text }),
-  z.object({ op: z.literal('clarify'), session, ref: z.uuid() }),
 ])
 export type MemoryRequest = z.infer<typeof memoryRequest>
-export const memoryClarificationResult = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ready-file'), question: z.object({
-    id: z.string().startsWith(MEMORY_FILE_QUESTION_PREFIX), question: z.string().min(1), options: z.tuple([]),
-  }) }),
-  z.object({ status: z.literal('rejected'), reason: z.string() }),
-])
 export const memoryCompute = z.object({
   id: operationId, sourceId: operationId, stage: z.enum(['question', 'note', 'dream']),
   generation: z.number().int().positive(), provider: z.string().min(1), model: z.string().min(1),

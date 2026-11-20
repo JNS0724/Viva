@@ -22,7 +22,6 @@ import type { MemoryHistoryOccurrence } from '../core/coordination.ts'
 import { MemoryDomainError } from '../core/presentation.ts'
 import { createMemorySendFence, type SendAdmission } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
-import { MEMORY_FILE_QUESTION_PREFIX } from '../contracts/memory-contract.ts'
 import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed, MemoryProject } from '../contracts/host.ts'
 import type { MemoryOperationOutcome, MemoryHostEffect, MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryFileMutationResult, MemoryManagedFileIdentity, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
@@ -63,7 +62,6 @@ function hostDiagnosticOperation(method: HostMemoryCommand['method']): Diagnosti
     case 'prepareSourceChange': case 'commitSourceChange': case 'pendingHostEffects': case 'ackHostEffect': case 'forgetFile': return 'memory.forget'
     case 'createFile': case 'editFile': case 'setFileEnabled': case 'setProfile': case 'setOnboarding': case 'getOperation': return 'memory.write'
     case 'undoFile': return 'memory.undo'
-    case 'cancelFileClarification': return 'memory.clarify'
     case 'recoverContext': return 'memory.recover'
     case 'rebuildIndexes': return 'memory.index'
     case 'sourceAlias': case 'bindWireAlias': return 'memory.intake'
@@ -1025,7 +1023,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       case 'getOperation': { completeFileEffects(); const item = operation(command.input.operationId); return item ? outcome(item) : null }
       case 'pendingHostEffects': completeFileEffects(); return pendingHostEffects()
       case 'nativeOutputEvidence': return nativeOutputs.outputEvidence(command.input.session, command.input.seq, command.input.digest)
-      case 'cancelFileClarification': return false
       case 'ackHostEffect': {
         const saved = db.prepare('SELECT payload FROM owner_host_effects WHERE id=?').get(command.input.effectId)
         if (!saved) throw new Error('Unknown host effect')
@@ -1089,7 +1086,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     switch (command.method) {
       case 'acceptQuestionAnswer': {
         const input = command.input, sourceId = input.operationId
-        if (input.questionId.startsWith(MEMORY_FILE_QUESTION_PREFIX)) throw new Error('Question is no longer authorized')
         const existing = store.readSource(sourceId)
         if (existing) {
           if (existing.erasure || existing.hash !== memoryHash(input.text) || existing.author !== 'answer' || existing.questionId !== input.questionId
@@ -1113,7 +1109,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         })
         return { sourceId }
       }
-      case 'clarificationQuestion': return null
       case 'authorizeGeneralQuestion': {
         const [session, hostTurn, cards, conversation, context, project, phase] = command.input.args
         const turn = sessionContext(session).foregroundTurn

@@ -346,17 +346,15 @@ try {
     .filter(note => venueDaily().some(file => file.endsWith(String(note.path).split('/').join(path.sep)))))
   await until(() => {
     const notes = inputNotes()
-    return venueModel.report().stages.includes('tag') && notes.length > 0 && notes.every(note => note.revision === note.processed)
-  }, 'the skipped and accepted candidates reach the durable input checkpoint')
+    return venueModel.report().stages.includes('consolidate') && notes.length > 0 && notes.every(note => note.revision === note.processed)
+  }, 'the consolidated candidate reaches the durable input checkpoint')
   const [archive] = collectMarkdown(dataRoot).filter(file => file.endsWith(venue.target.split('/').join(path.sep)))
   assert.ok(archive)
   const digest = readFileSync(archive, 'utf8')
-  assert.ok(digest.includes(venue.summary) && digest.includes('memory_tags:'))
+  assert.ok(digest.includes(venue.summary))
   assert.equal(parseMemoryDocument(digest).metadata.description, venue.summary)
   const dream = venueModel.report()
-  assert.deepEqual(dream.stages, ['extract', 'integrate:skip', 'integrate:create', 'tag'])
-  assert.deepEqual(new Set(dream.tools), new Set(['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update']))
-  assert.equal(readDream(db => db.prepare("SELECT count(*) AS n FROM memory_document_deferred WHERE state IN ('pending_clarification','ready')").get()?.n), 0)
+  assert.deepEqual(dream.stages, ['consolidate'])
   await send(page, `查一下 ${venue.topic}`, '查到了：')
   assert.equal(await page.getByPlaceholder('Type your answer', { exact: true }).count(), 0)
   const checkpoint = inputNotes()
@@ -366,7 +364,7 @@ try {
     ipcParent: false, nativeRemember: true, nativeRecall: true, injection: true, dailyNotes: beforeRestart,
     standaloneFileCommands: true, sameSessionDailyUpdate: true, recoveredGeneration, fileDeletionPreservesChat: true,
     standaloneOwnerRestart: true, restart: true,
-    dream: { stages: dream.stages, tools: dream.tools, checkpoint },
+    dream: { stages: dream.stages, checkpoint },
     relatedRecallDoesNotAsk: true, modelRequests: llm.requests.length, pageErrors: errors }
   writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))

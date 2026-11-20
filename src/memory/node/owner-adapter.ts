@@ -1,4 +1,3 @@
-import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryRequest } from '../contracts/memory-contract.ts'
 import type { NativeToolReadCut, NativeToolReadScope } from './native-tool-reads.ts'
 import type { openMemoryOwner } from './owner.ts'
@@ -37,7 +36,6 @@ export type OwnerAdapterApi = Pick<Owner,
   settleSend(id: string): void
   setRoute(route: { provider: string, model: string } | null): void
   reconcileActiveTurns(turns: readonly OwnerActiveTurn[]): void
-  computeTool(jobId: string, input: Parameters<MemoryComputeTools['executeTool']>[0]): ReturnType<MemoryComputeTools['executeTool']>
 }
 
 export type OwnerAdapterCaller = {

@@ -9,14 +9,13 @@ import { memoryOwnerState, type HostMemoryApi, type HostMemoryMethod,
   type MemoryOwnerChange, type MemoryOwnerContextUsed, type MemoryOwnerProjection, type MemoryOwnerState } from '../contracts/host.ts'
 import { type MemoryOwnerSendRevoked, OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
-import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryCompute } from '../contracts/memory-contract.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 
 export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerChange | MemoryOwnerContextUsed | MemoryOwnerProjection | MemoryOwnerSendRevoked
 export type MemoryOwnerCallbacks = {
-  compute?(input: { job: MemoryCompute, tools?: MemoryComputeTools['tools'] }, signal: AbortSignal): Promise<string>
+  compute?(input: { job: MemoryCompute }, signal: AbortSignal): Promise<string>
   quiesce?(input: { session?: string }, signal: AbortSignal): Promise<void>
   checkRecovery?(input: { checkId: string }, signal: AbortSignal): Promise<boolean>
   drainSends?(input: { epoch: string }): Promise<void>

@@ -19,7 +19,7 @@ import { memoryProjectScope } from '../src/memory/node/project-scope.ts'
 import { DEEPSEEK_DEFAULT } from '../src/backend/model-providers.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import type { MemoryFileDetail } from '../src/memory/contracts/file-management.ts'
-import { DREAM_EXTRACT_SYSTEM, DREAM_INTEGRATE_SYSTEM, DREAM_VERIFY_SYSTEM, DREAM_TAG_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { fileSnapshot, readLiveMemoryKey } from './live-memory.ts'
 import { memoryOwnerCaller } from '../test/fixtures/memory-owner-caller.ts'
 import { memorySemanticCases } from './memory-semantic-cases.ts'
@@ -38,8 +38,7 @@ type CaseResult = { id: string, phases: PhaseResult[], error?: string }
 
 function processingStage(job: MemoryCompute) {
   if (job.stage === 'note') return 'note'
-  return new Map([[DREAM_EXTRACT_SYSTEM, 'extract'], [DREAM_INTEGRATE_SYSTEM, 'integrate'],
-    [DREAM_VERIFY_SYSTEM, 'verify'], [DREAM_TAG_SYSTEM, 'tag']]).get(job.system) ?? job.stage
+  return job.system === DREAM_CONSOLIDATE_SYSTEM ? 'consolidate' : job.stage
 }
 
 function gitFixture(directory: string) {
@@ -205,7 +204,7 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
     let computations = 0
     const owner = openMemoryOwner({ root: path.join(directory, 'memory'), dailyNotes: { noteInterval: 5, timezone: 'UTC' },
       route: () => ({ ...DEEPSEEK_DEFAULT }), quiesce: async () => {},
-      async compute(job, signal, tools) {
+      async compute(job, signal) {
         assert.ok(currentPhase, 'A model computation must belong to an explicit phase')
         if (++computations > (recoveryFrom ? 12 : 64)) throw new Error('Evaluation exceeded its fixed per-case model-job budget')
         const entry: JobRecord = { id: job.id, generation: job.generation, stage: processingStage(job), system: job.system, input: job.input, startedAt: new Date().toISOString() }
@@ -213,20 +212,8 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
         save()
         process.stdout.write(`[semantic] ${fixture.id}/${currentPhase.id}: ${entry.stage}\n`)
         try {
-          const auditedTools = tools ? { ...tools, executeTool: async (invocation: Parameters<typeof tools.executeTool>[0]) => {
-            record({ kind: 'tool-call', ...origin.getStore(), invocation })
-            try {
-              const result = await tools.executeTool(invocation)
-              record({ kind: 'tool-result', ...origin.getStore(), result })
-              return result
-            } catch (error) {
-              record({ kind: 'tool-error', ...origin.getStore(), callId: invocation.callId,
-                error: error instanceof Error ? error.message.replaceAll(key, '[credential]') : 'Unknown tool error' })
-              throw error
-            }
-          } } : undefined
           entry.output = await origin.run({ caseId: fixture.id, phaseId: currentPhase.id, jobId: job.id, generation: job.generation },
-            () => completeMemoryModel(ctx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : []), ...(recoveryDeadline ? [recoveryDeadline] : [])]), auditedTools))
+            () => completeMemoryModel(ctx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : []), ...(recoveryDeadline ? [recoveryDeadline] : [])])))
           return entry.output
         } catch (error) {
           entry.error = error instanceof Error ? error.message.replaceAll(key, '[credential]') : 'Unknown model failure'
@@ -304,7 +291,6 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
           snapshot.files = await fileSnapshot(memoryOwnerCaller(owner))
           for (const workspace of new Set(snapshot.files.map(file => file.identity.workspace))) {
             snapshot.documents.push(...owner.runtime.listDocuments?.(workspace) ?? [])
-            snapshot.pending.push(...owner.runtime.pendingDocumentClarifications?.(workspace) ?? [])
           }
           for (const file of snapshot.files) assert.ok(file.sources.length > 0 && file.sources.every(source => sourceIds.has(source.sourceId)),
             'Every accepted file must retain only admitted synthetic user evidence')

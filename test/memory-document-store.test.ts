@@ -218,24 +218,21 @@ test('disable propagates through exact source spans without blocking unrelated t
   assert(documents.read(workspace, clone.path))
 })
 
-test('withdraw stages cleanup inside transaction and erases history and pending clarification bodies', t => {
+test('withdraw stages cleanup inside transaction and erases history', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)
-  documents.defer({ operationId: 'question', workspace, unit: { name: '居住地', bucket: 'personal', summary: '深圳', paths: ['daily/2026-11-16.md'] }, reason: '哪里', sources: f.input.sources, reads: [], files: [] })
   f.sources.delete('s1')
   f.db.exec('BEGIN IMMEDIATE')
   documents.withdraw('s1')
   f.db.exec('COMMIT')
   assert.equal(documents.read(workspace, path), null)
   assert(documents.hasPendingCleanup('s1'))
-  assert.equal(documents.pending(workspace).length, 0)
   assert.throws(() => documents.undo({ operationId: 'undo-deleted', workspace, documentId: first.documentId, revision: first.revision!, usageVersion: first.usageVersion }), /version/)
   const revisions = f.db.prepare('SELECT before,after FROM memory_document_revisions').all()
   assert(revisions.every(row => row.before === null && row.after === null))
   documents.recover()
   assert.equal(documents.hasPendingCleanup('s1'), false)
   assert.equal(existsSync(join(f.root, workspace, path)), false)
-  assert.equal(f.db.prepare('SELECT payload FROM memory_document_deferred').get()?.payload, null)
 })
 
 test('withdrawing the source of a correction quotation erases it without removing an independent replacement', t => {
@@ -253,20 +250,12 @@ test('withdrawing the source of a correction quotation erases it without removin
   assert.equal(supersession.anchorSources, undefined)
   assert.deepEqual(documents.supersessions(workspace, path, { includeEvidence: true })[0]?.anchorSources, f.input.sources)
   assert.equal(documents.undoCandidate(workspace, replacement.documentId)?.changeId, 'correct-external')
-  const snapshot = documents.read(workspace, target)!
-  const work = documents.defer({ operationId: 'deferred-after-correction', workspace, reason: 'Confidential condition',
-    unit: { name: 'Address', bucket: 'personal', summary: 'Check the address', paths: [] },
-    reads: [snapshot], files: [], sources: snapshot.sources })
-  assert.deepEqual(work.reads, [{ id: snapshot.id, revision: snapshot.revision, usageVersion: snapshot.usageVersion }])
-  assert.doesNotMatch(String(f.db.prepare('SELECT payload FROM memory_document_deferred').get()?.payload), /Old private quotation text/)
   f.sources.delete('s1')
   documents.withdraw('s1')
   const reopened = f.create()
   assert.equal(reopened.read(workspace, target)?.markdown, current)
   assert.equal(reopened.acceptedSnapshot(workspace, replacement.documentId)?.markdown, current)
   assert.equal(reopened.undoCandidate(workspace, replacement.documentId), null)
-  assert.equal(reopened.deferred(workspace, work.operationId), null)
-  assert.equal(f.db.prepare('SELECT payload FROM memory_document_deferred').get()?.payload, null)
   const tombstone = reopened.supersessions(workspace, path)[0]!
   assert.equal(tombstone.sourceDocumentId, original.documentId)
   assert.deepEqual([tombstone.text, tombstone.time, tombstone.condition], ['', '', ''])
@@ -278,21 +267,6 @@ test('withdrawing the source of a correction quotation erases it without removin
     f.db.prepare('SELECT plan FROM memory_file_intents').all(),
   ])
   assert.doesNotMatch(replicas, /Old private quotation text|Confidential condition|Private timeframe/)
-})
-
-test('deferred work only resumes on a current idempotent answer; changed nodes expire old questions', t => {
-  const f = fixture(t), documents = f.create()
-  documents.commit(f.input)
-  const snapshot = documents.read(workspace, path)!
-  documents.defer({ operationId: 'question', workspace, unit: { name: '居住地', bucket: 'personal', summary: '深圳', paths: ['daily/2026-11-16.md'] }, reason: '哪里', sources: f.input.sources, reads: [snapshot], files: [] })
-  assert.equal(documents.pending(workspace)[0]?.status, 'pending_clarification')
-  const answer = { operationId: 'answer', workspace, deferredId: 'question', source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' }
-  assert.equal(documents.answer(answer).status, 'ready')
-  assert.deepEqual(documents.answer(answer), documents.answer(answer))
-  assert.throws(() => documents.answer({ ...answer, text: '北京' }), /input-mismatch/)
-  documents.commit({ ...f.input, operationId: 'refine', action: 'REFINE', expectedRevision: snapshot.revision, markdown: '# 地点\n深圳' })
-  assert.equal(documents.deferred(workspace, 'question'), null)
-  assert.throws(() => documents.answer({ ...answer, operationId: 'later' }), /expired/)
 })
 
 test('journal namespaces isolate recovery callbacks while sharing file exclusion', t => {
@@ -396,33 +370,6 @@ test('a changed daily dependency cancels prepared digest recovery without advanc
   assert.equal(existsSync(join(f.root, workspace, path)), false)
 })
 
-test('clarification becomes resolved atomically with its resulting digest revision', t => {
-  const f = fixture(t), documents = f.create()
-  documents.commit(f.input)
-  const before = documents.read(workspace, path)!
-  documents.defer({ operationId: 'resolution', workspace, unit: { name: '位置', bucket: 'personal', summary: '地点', paths: ['daily/2026-11-16.md'] }, reason: '位置不清楚', sources: f.input.sources, reads: [before], files: [] })
-  documents.answer({ operationId: 'answer', workspace, deferredId: 'resolution', source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' })
-  documents.commit({ ...f.input, operationId: 'resolution', action: 'REFINE', expectedRevision: before.revision, markdown: '明确的新位置', sources: [...before.sources, { id: 's2', token: 'v2' }], reads: [before] })
-  documents.resolve(workspace, 'resolution')
-  documents.resolve(workspace, 'resolution')
-  assert.equal(documents.pending(workspace).length, 0)
-  assert.equal(f.db.prepare("SELECT state FROM memory_document_deferred WHERE operation='resolution'").get()?.state, 'resolved')
-})
-
-test('tag failures remain durable terminal attempts and are erased with their document', t => {
-  const f = fixture(t), documents = f.create()
-  const first = documents.commit(f.input)
-  const attempt = { operationId: 'tag', workspace, path, revision: first.revision!, state: 'attempted' as const }
-  documents.recordTagAttempt(attempt)
-  documents.recordTagAttempt({ ...attempt, state: 'failed', reason: 'invalid-output' })
-  assert.equal(f.create().tagAttempt(workspace, 'tag')?.state, 'failed')
-  assert.throws(() => documents.recordTagAttempt({ ...attempt, state: 'completed' }), /terminal/)
-  f.sources.delete('s1')
-  documents.withdraw('s1')
-  documents.recover()
-  assert.equal(documents.tagAttempt(workspace, 'tag'), null)
-})
-
 test('enabling one restriction keeps an independent overlapping restriction active', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)
@@ -432,27 +379,6 @@ test('enabling one restriction keeps an independent overlapping restriction acti
   documents.setEnabled({ operationId: 'enable1', workspace, documentId: first.documentId, expectedRevision: first.revision!, expectedUsageVersion: first.usageVersion + 1, enabled: true })
   assert.equal(documents.read(workspace, path), null)
   assert(documents.read(workspace, path, { includeDisabled: true }))
-})
-
-test('a follow-up clarification consumes the prior answer atomically and preserves its provenance', t => {
-  const f = fixture(t), documents = f.create()
-  const original = { operationId: 'first-question', workspace, unit: { name: '位置', bucket: 'personal' as const, summary: '位置不清楚', paths: ['daily/2026-11-16.md'] }, reason: '哪里', sources: f.input.sources, reads: [], files: [] }
-  documents.defer(original)
-  documents.answer({ operationId: 'first-answer', workspace, deferredId: original.operationId, source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' })
-  const followup = { ...original, operationId: 'followup', reason: '何时搬家', sources: [...original.sources, { id: 's2', token: 'v2' }] }
-  assert.equal(documents.defer(followup, original.operationId).status, 'pending_clarification')
-  assert.equal(documents.deferred(workspace, original.operationId), null)
-  assert.deepEqual(documents.defer(followup, original.operationId), documents.deferred(workspace, followup.operationId))
-  assert.equal(documents.pending(workspace).length, 1)
-  assert.throws(() => documents.answer({ operationId: 'old-answer-again', workspace, deferredId: original.operationId, source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' }), /expired/)
-})
-
-test('Auto Tag can only change entity tags, never content or provenance', t => {
-  const f = fixture(t), documents = f.create()
-  const first = documents.commit(f.input)
-  assert.throws(() => documents.commit({ ...f.input, operationId: 'tag-body', action: 'TAG', expectedRevision: first.revision, markdown: '---\nmemory_tags: [上海]\n---\n上海' }), /tag-content-change/)
-  const tagged = documents.commit({ ...f.input, operationId: 'tag-safe', action: 'TAG', expectedRevision: first.revision, markdown: '---\nmemory_tags: [深圳]\n---\n' + f.input.markdown })
-  assert.equal(documents.read(workspace, path)?.revision, tagged.revision)
 })
 
 for (const point of ['intent', 'replace'] as const) test(`forgetting an abandoned ${point} draft preserves the independently sourced committed version`, t => {
@@ -511,13 +437,11 @@ test('an external conflict during abandoned-draft restoration remains pending wi
   assert(another)
 })
 
-test('undo after restart skips automatic tags and usage changes to revert the semantic correction', t => {
+test('undo after restart skips usage changes to revert the semantic correction', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)
   const corrected = documents.commit({ ...f.input, operationId: 'correct', action: 'CORRECT', expectedRevision: first.revision, markdown: '上海', sources: [...f.input.sources, { id: 's2', token: 'v2' }], corrections: [{ path, revision: first.revision!, startLine: 2, endLine: 2, text: '深圳', condition: '居住地', time: '搬家后' }] })
-  const current = documents.read(workspace, path)!
-  const tagged = documents.commit({ operationId: 'tag', workspace, path, action: 'TAG', expectedRevision: corrected.revision, markdown: '---\nmemory_tags: [上海]\n---\n上海', sources: current.sources, reads: [current] })
-  const stopped = documents.setEnabled({ operationId: 'stop', workspace, documentId: first.documentId, expectedRevision: tagged.revision!, expectedUsageVersion: tagged.usageVersion, enabled: false })
+  const stopped = documents.setEnabled({ operationId: 'stop', workspace, documentId: first.documentId, expectedRevision: corrected.revision!, expectedUsageVersion: corrected.usageVersion, enabled: false })
   const reopened = f.create()
   assert.deepEqual(reopened.undoCandidate(workspace, first.documentId), { changeId: 'correct', revision: stopped.revision, usageVersion: stopped.usageVersion })
   reopened.undo({ operationId: 'undo', workspace, documentId: first.documentId, revision: stopped.revision!, usageVersion: stopped.usageVersion, expectedChangeId: 'correct' })
@@ -548,37 +472,6 @@ test('a locked WAL keeps replica cleanup pending until a later checkpoint succee
     assert.equal(documents.pendingCleanup(), 0)
   } finally { reader.close() }
 })
-
-test('policy expiration needs no commit receipt, is idempotent and cannot expire another workspace or resolved work', t => {
-  const f = fixture(t), documents = f.create()
-  documents.commit(f.input)
-  const before = documents.read(workspace, path)!
-  const proposal = { operationId: 'policy-question', workspace,
-    unit: { name: '位置', bucket: 'personal' as const, summary: '地点', paths: ['daily/2026-11-16.md'] },
-    reason: '需要确认', sources: f.input.sources, reads: [before], files: [] }
-  documents.defer(proposal)
-  documents.expire(memoryFileRevision('other'), proposal.operationId)
-  assert.equal(documents.deferred(workspace, proposal.operationId)?.status, 'pending_clarification')
-  documents.expire(workspace, proposal.operationId)
-  documents.expire(workspace, proposal.operationId)
-  assert.equal(documents.deferred(workspace, proposal.operationId), null)
-  assert.equal(documents.receipt(workspace, proposal.operationId), null)
-  assert.equal(f.db.prepare('SELECT state,payload FROM memory_document_deferred WHERE operation=?').get(proposal.operationId)?.state, 'expired')
-
-  documents.defer({ ...proposal, operationId: 'ready-question' })
-  documents.answer({ operationId: 'ready-answer', workspace, deferredId: 'ready-question', source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' })
-  documents.expire(workspace, 'ready-question')
-  assert.equal(documents.deferred(workspace, 'ready-question'), null)
-  assert.throws(() => documents.resolve(workspace, 'ready-question'), /expired/)
-
-  documents.defer({ ...proposal, operationId: 'completed-question' })
-  documents.answer({ operationId: 'completed-answer', workspace, deferredId: 'completed-question', source: { id: 's2', token: 'v2' }, text: '更正：我搬到上海了。' })
-  documents.commit({ ...f.input, operationId: 'completed-question', action: 'REFINE', expectedRevision: before.revision,
-    markdown: '明确的新位置', sources: [...before.sources, { id: 's2', token: 'v2' }], reads: [before] })
-  documents.expire(workspace, 'completed-question')
-  assert.equal(f.db.prepare("SELECT state FROM memory_document_deferred WHERE operation='completed-question'").get()?.state, 'resolved')
-})
-
 
 test('undo candidates bind the latest semantic change, stop at undo and never expose old Markdown', t => {
   const f = fixture(t), documents = f.create()

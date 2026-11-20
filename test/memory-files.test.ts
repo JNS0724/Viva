@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openMemoryFileStore, MemoryFileError } from '../src/memory/node/memory-file-store.ts'
 import { formatMemoryDocument, memoryDocumentLines, parseMemoryDocument, readMemoryLines, updateMemoryFrontmatter } from '../src/memory/core/memory-document.ts'
-import { parseDreamUnits, parseIntegrateReceipt, validMemoryPath } from '../src/memory/contracts/memory-file-contract.ts'
+import { parseDreamOperations, validMemoryPath } from '../src/memory/contracts/memory-file-contract.ts'
 
 const a = 'daily/2026-11-15/project.md'
 const b = 'daily/2026-11-15/decision.md'
@@ -111,39 +111,22 @@ test('line reads preserve original CRLF and frontmatter offsets', () => {
   }
 })
 
-test('dream merges the same abstraction across files without requiring one user-source anchor', () => {
-  const input = { units: [
-    { name: 'Rebuild', bucket: 'procedure', summary: 'short', paths: [a] },
-    { name: 'rebuild', bucket: 'wiki', summary: 'longer description', paths: [b, a] },
-  ] }
-  const copy = structuredClone(input)
-  assert.deepEqual(parseDreamUnits(input, new Set([a, b]), 5), [{ name: 'Rebuild', bucket: 'procedure',
-    summary: 'longer description', paths: [b, a].sort() }])
-  assert.deepEqual(input, copy)
-})
-
-test('dream validates source membership and budget, handles unknown bucket like ReMe', () => {
-  const unit = { name: 'abstract', bucket: 'unknown', summary: 'reusable decision', paths: [a] }
-  assert.equal(parseDreamUnits({ units: [unit] }, new Set([a]), 5)[0]?.bucket, 'wiki')
-  assert.throws(() => parseDreamUnits({ units: [unit] }, new Set([b]), 5), /unknown-dream-source/)
-  assert.throws(() => parseDreamUnits({ units: [unit] }, new Set([a]), 0))
-  assert.throws(() => parseDreamUnits({ units: [{ ...unit, paths: [] }] }, new Set([a]), 5))
-  assert.throws(() => parseDreamUnits({ units: [{ ...unit, paths: [target] }] }, new Set([target]), 5))
-  assert.throws(() => parseDreamUnits({ units: [{ ...unit, summary: ' ' }] }, new Set([a]), 5))
-  assert.throws(() => parseDreamUnits({ units: [] }, new Set(), -1))
-  assert.deepEqual(parseDreamUnits({ units: [] }, new Set(), 0), [])
-})
-
-test('integrate requires one actual digest target, four actions and no skip', () => {
-  for (const action of ['CREATE', 'CORROBORATE', 'REFINE', 'CORRECT']) {
-    const receipt = { action, target_path: target, note: 'saved' }
-    assert.deepEqual(parseIntegrateReceipt(receipt, [target, target]), receipt)
-    assert.throws(() => parseIntegrateReceipt(receipt, []), /integrate-target-mismatch/)
-    assert.throws(() => parseIntegrateReceipt(receipt, [target, 'digest/wiki/other.md']), /integrate-target-mismatch/)
-    assert.throws(() => parseIntegrateReceipt(receipt, ['digest/wiki/other.md']), /integrate-target-mismatch/)
-  }
-  assert.throws(() => parseIntegrateReceipt({ action: 'SKIP', target_path: target, note: 'skip' }, [target]))
-  assert.throws(() => parseIntegrateReceipt({ action: 'CREATE', target_path: a, note: 'bad' }, [a]))
+test('dream consolidation validates paths, source membership, target uniqueness and budget', () => {
+  const op = { action: 'CREATE' as const, path: target, name: 'Rebuild', description: 'Safe rebuild',
+    body: 'Rebuild safely', dailyPaths: [a, a], sourceIds: ['s1', 's1'] }
+  assert.deepEqual(parseDreamOperations({ operations: [op] }, new Set([a, b]), new Set(['s1']), 5), [{
+    ...op, dailyPaths: [a], sourceIds: ['s1'],
+  }])
+  assert.throws(() => parseDreamOperations({ operations: [op, { ...op, action: 'REFINE' }] }, new Set([a]), new Set(['s1']), 5), /duplicate-dream-target/)
+  assert.throws(() => parseDreamOperations({ operations: [op] }, new Set([b]), new Set(['s1']), 5), /unknown-dream-daily/)
+  assert.throws(() => parseDreamOperations({ operations: [op] }, new Set([a]), new Set(['s2']), 5), /unknown-dream-source/)
+  assert.throws(() => parseDreamOperations({ operations: [op] }, new Set([a]), new Set(['s1']), 0))
+  assert.throws(() => parseDreamOperations({ operations: [{ ...op, dailyPaths: [] }] }, new Set([a]), new Set(['s1']), 5))
+  assert.throws(() => parseDreamOperations({ operations: [{ ...op, sourceIds: [] }] }, new Set([a]), new Set(['s1']), 5))
+  assert.throws(() => parseDreamOperations({ operations: [{ ...op, path: a }] }, new Set([a]), new Set(['s1']), 5))
+  assert.throws(() => parseDreamOperations({ operations: [{ ...op, body: ' ' }] }, new Set([a]), new Set(['s1']), 5))
+  assert.throws(() => parseDreamOperations({ operations: [] }, new Set(), new Set(), -1))
+  assert.deepEqual(parseDreamOperations({ operations: [] }, new Set(), new Set(), 0), [])
 })
 
 

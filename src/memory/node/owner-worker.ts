@@ -3,7 +3,7 @@ import path from 'node:path'
 import { z } from 'zod'
 import { parseDiagnosticContext, safeDiagnosticEvent, type DiagnosticPort } from '../../diagnostics/contracts.ts'
 import { diagnosticContext, diagnosticPort, installDiagnosticPort, newDiagnosticContext, withRemoteOperation } from '../../diagnostics/node/context.ts'
-import { MemoryComputeError, type MemoryComputeTools } from '../contracts/compute.ts'
+import { MemoryComputeError } from '../contracts/compute.ts'
 import { MEMORY_HOST_PROTOCOL } from '../contracts/host.ts'
 import { isDailyMemoryStage, memoryComputeFailure, memoryRequest } from '../contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
@@ -36,7 +36,6 @@ let route: z.output<typeof routeSchema> | null = null
 let effectsRevision = 0
 let lastState = ''
 const sessions = new AsyncLocalStorage<string | undefined>()
-const computeTools = new Map<string, MemoryComputeTools>()
 type Grant = { origin: OwnerSendOrigin, lifetime: AbortController, permit?: ReturnType<Owner['acquireSend']> }
 const permits = new Map<string, Grant>()
 const adapterExecutions = new Set<Promise<unknown>>()
@@ -79,10 +78,9 @@ async function boot(raw: unknown, signal: AbortSignal) {
     ...settings,
     diagnostics: diagnosticPort,
     route: () => route,
-    compute: async (job, signal, tools) => {
-      if (tools) computeTools.set(job.id, tools)
+    compute: async (job, signal) => {
       try {
-        return await peer.call<string>('compute', { job, ...(tools ? { tools: tools.tools } : {}) }, {
+        return await peer.call<string>('compute', { job }, {
           signal, budgetMs: Math.min(OWNER_RPC_MAX_BUDGET_MS, isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000),
         })
       } catch (error) {
@@ -92,7 +90,7 @@ async function boot(raw: unknown, signal: AbortSignal) {
         if (reason === 'oversize-reply' || reason === 'missing-reply' || reason === 'context-window-exceeded') throw new MemoryComputeError(reason)
         if (signal?.aborted) throw new MemoryComputeError('aborted')
         throw new MemoryComputeError('call-failed')
-      } finally { computeTools.delete(job.id) }
+      }
     },
     quiesce: () => peer.call<void>('quiesce', { session: sessions.getStore() }),
     onContextUsed: notice => notify({ type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: owner!.epoch, ...notice }),
@@ -225,11 +223,6 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
       if (route && (route.provider !== previous?.provider || route.model !== previous.model)) void current.runtime.wake()
     },
     reconcileActiveTurns: turns => current.reconcileActiveTurns(z.array(turnSchema).max(10_000).parse(turns)),
-    computeTool: (jobId, input) => {
-      const tools = computeTools.get(jobId)
-      if (!tools) throw new Error('Memory computation tools are unavailable')
-      return tools.executeTool(input, signal)
-    },
   }
   if (!Object.hasOwn(handlers, method)) throw new Error('Unknown memory adapter method')
   return Reflect.apply(handlers[method as keyof OwnerAdapterApi], undefined, args)

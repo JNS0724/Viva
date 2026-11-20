@@ -23,7 +23,6 @@ export interface MemoryFileChunk {
 export interface MemoryFileSnapshot extends MemoryFileIdentity {
   name: string
   description: string
-  tags?: string[]
   chunks: MemoryFileChunk[]
 }
 export interface MemoryFileChunkRef extends MemoryFileVersion { workspace: string, fileId: string, ordinal: number }
@@ -39,7 +38,6 @@ export interface MemoryFileQueryScope {
 }
 export interface MemoryFilePage<T> { rows: T[], incomplete: boolean }
 export interface MemoryFileNode extends MemoryFileIdentity {
-  tags?: string[]
   name: string
   description: string
 }

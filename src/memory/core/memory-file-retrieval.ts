@@ -90,16 +90,14 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       policyToken: view.policyToken, kind: view.kind, ...(view.day ? { day: view.day } : {}), updatedAt: view.updatedAt,
       sources: view.sourceTokens, name: usableMetadata && typeof parsed.metadata.name === 'string' ? parsed.metadata.name : '',
       description: usableMetadata && typeof parsed.metadata.description === 'string' ? parsed.metadata.description : '',
-      ...(view.kind === 'digest' && usableMetadata && { tags: Array.isArray(parsed.metadata.memory_tags) ? parsed.metadata.memory_tags.filter((tag): tag is string => typeof tag === 'string') : [] }),
       chunks: parsed.chunks.filter(chunk => Boolean(chunk.text.trim())),
     }
   }
-  const unchangedNode = (old: MemoryFileNode | null, next: IndexedVersion & { updatedAt: number, day?: string }, expectTags: boolean) =>
-    Boolean(old && sameVersion(old, next) && old.updatedAt === next.updatedAt && old.day === next.day
-      && (expectTags ? old.tags !== undefined : old.tags === undefined))
+  const unchangedNode = (old: MemoryFileNode | null, next: IndexedVersion & { updatedAt: number, day?: string }) =>
+    Boolean(old && sameVersion(old, next) && old.updatedAt === next.updatedAt && old.day === next.day)
   function publishSnapshot(snapshot: MemoryFileSnapshot) {
     const old = index.snapshot(snapshot.workspace, snapshot.id)
-    if (unchangedNode(old, snapshot, snapshot.tags !== undefined)) return false
+    if (unchangedNode(old, snapshot)) return false
     return index.accept(snapshot, old) ? true : null
   }
   function published(accepted: number, removed: number) {
@@ -147,7 +145,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       try {
         const old = index.nodeAt(view.workspace, view.path)
         if (view.currentMarkdown === null) continue
-        if (unchangedNode(old, view, view.kind === 'digest' && view.applicability.state === 'current')) {
+        if (unchangedNode(old, view)) {
           visible.add(identityKey(view))
           continue
         }

@@ -92,13 +92,13 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   let owner: ReturnType<typeof createRemoteMemoryOwner>
   const connection = openPluginOwner({ root, hostNamespace: config.host ? 'viva' : undefined, embedding, dailyNotes: config.dailyNotes ?? true,
     callbacks: {
-      compute: async ({ job, tools }, signal) => {
+      compute: async ({ job }, signal) => {
         const ownerEpoch = owner.epoch
         if (!ownerEpoch || readyEpoch !== ownerEpoch) throw new MemoryComputeError('call-failed')
         const deadline = AbortSignal.timeout(isDailyMemoryStage(job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : 115_000)
         const combined = AbortSignal.any([lifetime.signal, deadline, signal])
         return owner.inEpoch(ownerEpoch, () => caller.run({ jobId: job.id, ownerEpoch },
-          () => completeMemoryModel(ctx, job, combined, tools ? { tools, executeTool: input => owner.call('computeTool', [job.id, input], { signal: combined }) } : undefined))).catch(error => {
+          () => completeMemoryModel(ctx, job, combined))).catch(error => {
           if (error instanceof MemoryComputeError) throw error
           if (combined.aborted) throw new MemoryComputeError(combined.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted')
           throw memoryProviderFailure(objectOf(error)?.code) ?? new MemoryComputeError('call-failed')
