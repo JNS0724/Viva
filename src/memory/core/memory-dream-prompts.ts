@@ -5,6 +5,7 @@ export const DREAM_CONSOLIDATE_SYSTEM = [
   'Preserve attribution, negation, dates, conditions, uncertainty and unrelated existing details. Do not invent facts, paths or source IDs.',
   'When questionUnavailable is true, do not infer a missing question or referent; skip ambiguous claims.',
   'Prefer REFINE on an existing digest from existingDigests when it covers the same abstraction. Use CREATE with path digest/personal|procedure|wiki/<name>.md only when no existing digest covers the same abstraction.',
+  'When referencing or incorporating material from another digest in existingDigests, either REFINE it or link it explicitly via [[digest/...md]]; never link paths outside dailyPaths or existingDigests.',
   'Return only JSON {"operations":[{"action":"CREATE|REFINE","path":"digest/...md","name":"...","description":"...","body":"...","dailyPaths":["daily/...md"],"sourceIds":["..."]}]}.',
   'Use only supplied dailyPaths and sourceIds; obey maxOperations and emit at most one operation per target path. Return {"operations":[]} when there is no reusable material.',
 ].join('\n')

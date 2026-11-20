@@ -51,6 +51,7 @@ type PreparedOperation = {
   markdown: string
   evidence: DocumentSourceRef[]
   reads: Array<{ id: string, revision: string, usageVersion: number }>
+  linkedPaths: string[]
   files: Array<{ path: string, revision: string }>
 }
 
@@ -80,9 +81,13 @@ function digestNameAndDescription(path: string, markdown: string) {
 
 function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
   const existingLinks = before ? documentLinks(before.markdown) : []
-  const required = unique([...existingLinks, ...operation.dailyPaths])
-  const present = new Set(documentLinks(operation.body).map(link => link.split('#')[0]!))
-  const missing = required.filter(link => !present.has(link.split('#')[0]!))
+  const bodyLinks = documentLinks(operation.body)
+  const presentExact = new Set(bodyLinks)
+  const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
+  const missingExisting = existingLinks.filter(link => !presentExact.has(link))
+  for (const link of missingExisting) presentPaths.add(link.split('#')[0]!)
+  const missingDaily = operation.dailyPaths.filter(path => !presentPaths.has(path))
+  const missing = unique([...missingExisting, ...missingDaily])
   let body = operation.body.trimEnd()
   if (missing.length) {
     const lines = missing.map(link => `- [[${link}]]`).join('\n')
@@ -94,6 +99,16 @@ function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentV
     metadata: { ...previousMetadata, name: operation.name, description: operation.description },
     body,
   })
+}
+
+function shrinkCandidateDigests(digests: readonly MemoryDocumentView[]): MemoryDocumentView[] {
+  if (!digests.length) return []
+  const underCap = digests.filter(doc => doc.markdown.length <= defaults.dreamFileChars)
+  if (underCap.length < digests.length) return underCap
+  const dropCount = Math.max(1, Math.ceil(digests.length / 2))
+  const bySize = [...digests].sort((a, b) => b.markdown.length - a.markdown.length || b.path.localeCompare(a.path))
+  const drop = new Set(bySize.slice(0, dropCount).map(doc => doc.path))
+  return digests.filter(doc => !drop.has(doc.path))
 }
 
 /** Day grouping and UTF-8 budget. Oversized single files remain standalone, never silently disappear. */
@@ -316,17 +331,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         })
         const restrictions = documents.sourceRestrictions(workspace)
         const recalled = await recallCandidateDigests(workspace, seen.map(view => view.markdown).join('\n'))
-        const existingByPath = new Map(recalled.digests.map(doc => [doc.path, doc]))
-        const digestReads = recalled.digests.flatMap(doc => [...(doc.backing ? [doc.backing] : []), ...doc.supporting])
+        let activeDigests = recalled.digests
 
         const batchSourceMap = new Map<string, DocumentSourceRef>()
         for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources))) batchSourceMap.set(ref.id, ref)
-        const allReadSourceMap = new Map(batchSourceMap)
-        for (const doc of recalled.digests) {
-          for (const ref of mergeDocumentSources([...allReadSourceMap.values(), ...doc.sourceTokens, ...doc.correctionSources ?? []])) {
-            allReadSourceMap.set(ref.id, ref)
-          }
-        }
         const questionContexts = new Map<string, DocumentSourceRef[]>()
         const canonicalSources: Array<{
           sourceId: string, author: MemorySource['author'], text: string,
@@ -343,10 +351,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             && (!context.refs.length || refsCurrent(context.refs))
             && allowsText(original.question!, original)
             && context.refs.every(dep => { const item = source(dep.id); return Boolean(item?.text && allowsText(item.text, item)) })
-          if (questionAllowed) {
-            questionContexts.set(ref.id, context.refs)
-            for (const dep of mergeDocumentSources([...allReadSourceMap.values(), ...context.refs])) allReadSourceMap.set(dep.id, dep)
-          }
+          if (questionAllowed) questionContexts.set(ref.id, context.refs)
           canonicalSources.push({
             sourceId: original.id, author: original.author,
             text: project(projectDocumentSource(original.text, ref, restrictions)),
@@ -356,25 +361,34 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           })
         }
 
+        const activeDigestReads = () => activeDigests.flatMap(doc => [...(doc.backing ? [doc.backing] : []), ...doc.supporting])
+        const activeReadSources = () => mergeDocumentSources([
+          ...batchSourceMap.values(),
+          ...[...questionContexts.values()].flat(),
+          ...activeDigests.flatMap(doc => [...doc.sourceTokens, ...(doc.correctionSources ?? [])]),
+        ])
         const committedPaths = new Set<string>()
-        const current = (observed?: MemoryDocumentReadBatch) => effects.holds(job)
-          && fileRefs.every(ref => fileCurrent(ref, observed))
-          && readsCurrent(fileRefs, observed)
-          && seen.every(snapshot => (observed ?? policy).read(workspace, snapshot.path)?.policyToken === snapshot.policyToken)
-          && refsCurrent([...allReadSourceMap.values()])
-          && [...allReadSourceMap.values()].every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })
-          && [...questionContexts].every(([id, expected]) => {
-            const latest = notes.sourceQuestionContext(id)
-            return latest.current && JSON.stringify(latest.refs) === JSON.stringify(expected)
-          })
-          && recalled.digests.every(doc => committedPaths.has(doc.path) || (observed ?? policy).read(workspace, doc.path)?.policyToken === doc.policyToken)
-          && digestReads.every(doc => {
-            if (committedPaths.has(doc.path)) return true
-            const latest = documents.read(workspace, doc.path, { physical: observed?.physical(workspace, doc.path) })
-            return latest?.id === doc.id && latest.revision === doc.revision && latest.usageVersion === doc.usageVersion
-          })
-        const locations = () => [...dependencies(fileRefs), ...recalled.digests.map(doc => ({ workspace, path: doc.path })),
-          ...digestReads.map(doc => ({ workspace, path: doc.path }))]
+        const current = (observed?: MemoryDocumentReadBatch) => {
+          const readSources = activeReadSources()
+          return effects.holds(job)
+            && fileRefs.every(ref => fileCurrent(ref, observed))
+            && readsCurrent(fileRefs, observed)
+            && seen.every(snapshot => (observed ?? policy).read(workspace, snapshot.path)?.policyToken === snapshot.policyToken)
+            && refsCurrent(readSources)
+            && readSources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })
+            && [...questionContexts].every(([id, expected]) => {
+              const latest = notes.sourceQuestionContext(id)
+              return latest.current && JSON.stringify(latest.refs) === JSON.stringify(expected)
+            })
+            && activeDigests.every(doc => committedPaths.has(doc.path) || (observed ?? policy).read(workspace, doc.path)?.policyToken === doc.policyToken)
+            && activeDigestReads().every(doc => {
+              if (committedPaths.has(doc.path)) return true
+              const latest = documents.read(workspace, doc.path, { physical: observed?.physical(workspace, doc.path) })
+              return latest?.id === doc.id && latest.revision === doc.revision && latest.usageVersion === doc.usageVersion
+            })
+        }
+        const locations = () => [...dependencies(fileRefs), ...activeDigests.map(doc => ({ workspace, path: doc.path })),
+          ...activeDigestReads().map(doc => ({ workspace, path: doc.path }))]
         const observe = observeReadset(locations, current)
         const inputsCurrent = async () => {
           try { return await verified(observe) }
@@ -397,112 +411,155 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         let prepared: PreparedOperation[] | undefined
         let retryHint: string | undefined
 
-        for (let attempt = 0; attempt < 2 && !prepared; attempt++) {
-          const remaining = dreamUnits - operationsUsed
-          const input = {
-            maxOperations: remaining,
-            notes: batch.map((note, index) => {
-              const snapshot = seen[index]!
-              const name = parseMemoryDocument(snapshot.markdown).metadata.name
-              const chars = [...snapshot.markdown]
-              return {
-                path: note.path,
-                title: typeof name === 'string' ? name : '',
-                markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
-                sourceIds: fileRefs[index]!.sources.map(ref => ref.id),
-                applicability: snapshot.applicability,
-                replacements: snapshot.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })),
-              }
-            }),
-            canonicalSources,
-            existingDigests: recalled.digests.map(doc => {
-              const { name, description } = digestNameAndDescription(doc.path, doc.markdown)
-              return { path: doc.path, name, description, markdown: doc.markdown }
-            }),
-            ...(retryHint ? { retry: retryHint } : {}),
-          }
-          if (batch.length > 1 && dreamBatchBytes && new TextEncoder().encode(JSON.stringify(input)).length > dreamBatchBytes) {
-            await split()
-            return
-          }
-          try {
-            const raw = await calculateStage({
-              job, stage: 'consolidate', system: DREAM_CONSOLIDATE_SYSTEM, input,
-              sourceIds: () => [...allReadSourceMap.keys()], current, observe,
-            })
-            if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; retry = true; return }
-            if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
-            try {
-              const operations = parseDreamOperations(parse(raw), changedPaths, allowedSourceIds, remaining)
-              const validated: PreparedOperation[] = []
-              for (const operation of operations) {
-                const opFiles = operation.dailyPaths.map(path => noteByPath.get(path)!)
-                const opFileSourceMap = new Map(mergeDocumentSources(opFiles.flatMap(file => file.sources)).map(ref => [ref.id, ref]))
-                const opRefs = operation.sourceIds.map(id => {
-                  const ref = opFileSourceMap.get(id)
-                  if (!ref) throw new Error('dream-source-outside-daily')
-                  return ref
-                })
-                if (opRefs.some(ref => documentSourceRestricted(ref, restrictions))) throw new Error('dream-source-restricted')
-                let before: MemoryDocumentView | null = null
-                if (operation.action === 'CREATE') {
-                  if (recalled.incomplete) throw new Error('dream-candidates-incomplete')
-                  if (documents.locatorRetired(workspace, operation.path)
-                    || documents.read(workspace, operation.path, { includeDisabled: true }) !== null
-                    || policy.read(workspace, operation.path) !== null) {
-                    throw new Error('dream-target-unavailable')
-                  }
-                } else {
-                  before = existingByPath.get(operation.path) ?? null
-                  if (!before || !before.backing) throw new Error('dream-refine-target-missing')
+        consolidate: while (true) {
+          const existingByPath = new Map(activeDigests.map(doc => [doc.path, doc]))
+          for (let attempt = 0; attempt < 2 && !prepared; attempt++) {
+            const remaining = dreamUnits - operationsUsed
+            const input = {
+              maxOperations: remaining,
+              notes: batch.map((note, index) => {
+                const snapshot = seen[index]!
+                const name = parseMemoryDocument(snapshot.markdown).metadata.name
+                const chars = [...snapshot.markdown]
+                return {
+                  path: note.path,
+                  title: typeof name === 'string' ? name : '',
+                  markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
+                  sourceIds: fileRefs[index]!.sources.map(ref => ref.id),
+                  applicability: snapshot.applicability,
+                  replacements: snapshot.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })),
                 }
-                const markdown = formatDigestMarkdown(operation, before)
-                const evidence = mergeDocumentSources([
-                  ...(before?.sourceTokens ?? []),
-                  ...opRefs,
-                  ...opRefs.flatMap(ref => questionContexts.get(ref.id) ?? []),
-                ])
-                if (!evidence.length || !refsCurrent(evidence)
-                  || evidence.some(ref => documentSourceRestricted(ref, restrictions))
-                  || !materialAllowed(markdown, evidence)
-                  || project(markdown) !== markdown) {
-                  throw new Error('dream-material-rejected')
-                }
-                const opReads = before
-                  ? [...(before.backing ? [before.backing] : []), ...before.supporting]
-                    .map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion }))
-                  : []
-                validated.push({
-                  operation, before, markdown, evidence, reads: opReads,
-                  files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
-                })
-              }
-              prepared = validated
-            } catch (error) {
-              const reason = error instanceof Error ? error.message : 'invalid-output'
-              if (reason === 'dream-candidates-incomplete') { retry = true; return }
-              retryHint = 'The prior JSON had an invalid shape, target path, budget, or source reference. Correct it using only the supplied inputs.'
-              progress(job, 'validation_failed', 'consolidate', attempt)
+              }),
+              canonicalSources,
+              existingDigests: activeDigests.map(doc => {
+                const { name, description } = digestNameAndDescription(doc.path, doc.markdown)
+                return { path: doc.path, name, description, markdown: doc.markdown }
+              }),
+              ...(retryHint ? { retry: retryHint } : {}),
             }
-          } catch (error) {
-            if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded' && await inputsCurrent()) {
-              progress(job, 'oversized', 'consolidate', attempt)
-              if (batch.length > 1) await split()
-              else {
-                oversizedAny = true
-                transaction(() => {
-                  const file = fileRefs[0]!
-                  if (fileCurrent(file)) notes.markProcessed(file.key, file.checkpoint)
-                })
+            if (batch.length > 1 && dreamBatchBytes && new TextEncoder().encode(JSON.stringify(input)).length > dreamBatchBytes) {
+              if (activeDigests.some(doc => doc.markdown.length > defaults.dreamFileChars)) {
+                activeDigests = shrinkCandidateDigests(activeDigests)
+                retryHint = undefined
+                continue consolidate
               }
+              await split()
               return
             }
-            if (error instanceof RequestTimeout) { retry = true; return }
-            if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
-            stopPass = true
-            retry = true
-            return
+            try {
+              const raw = await calculateStage({
+                job, stage: 'consolidate', system: DREAM_CONSOLIDATE_SYSTEM, input,
+                sourceIds: () => activeReadSources().map(ref => ref.id), current, observe,
+              })
+              if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; retry = true; return }
+              if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
+              try {
+                const operations = parseDreamOperations(parse(raw), changedPaths, allowedSourceIds, remaining)
+                const validated: PreparedOperation[] = []
+                const plannedByPath = new Map<string, { evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }>()
+                for (const operation of operations) {
+                  const opFiles = operation.dailyPaths.map(path => noteByPath.get(path)!)
+                  const opFileSourceMap = new Map(mergeDocumentSources(opFiles.flatMap(file => file.sources)).map(ref => [ref.id, ref]))
+                  const opRefs = operation.sourceIds.map(id => {
+                    const ref = opFileSourceMap.get(id)
+                    if (!ref) throw new Error('dream-source-outside-daily')
+                    return ref
+                  })
+                  if (opRefs.some(ref => documentSourceRestricted(ref, restrictions))) throw new Error('dream-source-restricted')
+                  let before: MemoryDocumentView | null = null
+                  if (operation.action === 'CREATE') {
+                    if (recalled.incomplete) throw new Error('dream-candidates-incomplete')
+                    if (documents.locatorRetired(workspace, operation.path)
+                      || documents.read(workspace, operation.path, { includeDisabled: true }) !== null
+                      || policy.read(workspace, operation.path) !== null) {
+                      throw new Error('dream-target-unavailable')
+                    }
+                  } else {
+                    before = existingByPath.get(operation.path) ?? null
+                    if (!before || !before.backing) throw new Error('dream-refine-target-missing')
+                  }
+                  const markdown = formatDigestMarkdown(operation, before)
+                  const beforeLinkPaths = new Set(before ? documentLinks(before.markdown).map(link => link.split('#')[0]!) : [])
+                  const referencedDigests: MemoryDocumentView[] = []
+                  const referencedPlanned: Array<{ evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }> = []
+                  const linkedPaths = new Set<string>()
+                  for (const link of documentLinks(markdown)) {
+                    const targetPath = link.split('#')[0]!
+                    if (targetPath === operation.path) continue
+                    if (dailyPath.safeParse(targetPath).success) {
+                      if (!operation.dailyPaths.includes(targetPath) && !beforeLinkPaths.has(targetPath)) {
+                        throw new Error('dream-ungrounded-link')
+                      }
+                      continue
+                    }
+                    const recalledDigest = existingByPath.get(targetPath)
+                    const planned = plannedByPath.get(targetPath)
+                    if (recalledDigest) { referencedDigests.push(recalledDigest); linkedPaths.add(targetPath) }
+                    if (planned) { referencedPlanned.push(planned); linkedPaths.add(targetPath) }
+                    if (!recalledDigest && !planned && !beforeLinkPaths.has(targetPath)) throw new Error('dream-ungrounded-link')
+                  }
+                  const boundDigests = unique([...(before ? [before] : []), ...referencedDigests])
+                  const evidence = mergeDocumentSources([
+                    ...boundDigests.flatMap(doc => [...doc.sourceTokens, ...(doc.correctionSources ?? [])]),
+                    ...referencedPlanned.flatMap(item => item.evidence),
+                    ...opRefs,
+                    ...opRefs.flatMap(ref => questionContexts.get(ref.id) ?? []),
+                  ])
+                  if (!evidence.length || !refsCurrent(evidence)
+                    || evidence.some(ref => documentSourceRestricted(ref, restrictions))
+                    || !materialAllowed(markdown, evidence)
+                    || project(markdown) !== markdown) {
+                    throw new Error('dream-material-rejected')
+                  }
+                  const opReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
+                  for (const doc of boundDigests) {
+                    for (const read of [...(doc.backing ? [doc.backing] : []), ...doc.supporting]) {
+                      opReadsMap.set(read.id, { id: read.id, revision: read.revision, usageVersion: read.usageVersion })
+                    }
+                  }
+                  for (const item of referencedPlanned) {
+                    for (const read of item.reads) opReadsMap.set(read.id, read)
+                  }
+                  const opReads = [...opReadsMap.values()]
+                  plannedByPath.set(operation.path, { evidence, reads: opReads })
+                  validated.push({
+                    operation, before, markdown, evidence, reads: opReads, linkedPaths: [...linkedPaths],
+                    files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
+                  })
+                }
+                prepared = validated
+              } catch (error) {
+                const reason = error instanceof Error ? error.message : 'invalid-output'
+                if (reason === 'dream-candidates-incomplete') { retry = true; return }
+                retryHint = 'The prior JSON had an invalid shape, target path, budget, or source reference. Correct it using only the supplied inputs.'
+                progress(job, 'validation_failed', 'consolidate', attempt)
+              }
+            } catch (error) {
+              if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded' && await inputsCurrent()) {
+                progress(job, 'oversized', 'consolidate', attempt)
+                if (activeDigests.length > 0 && (batch.length === 1 || activeDigests.some(doc => doc.markdown.length > defaults.dreamFileChars))) {
+                  activeDigests = shrinkCandidateDigests(activeDigests)
+                  retryHint = undefined
+                  continue consolidate
+                }
+                if (batch.length > 1) await split()
+                else {
+                  oversizedAny = true
+                  transaction(() => {
+                    const file = fileRefs[0]!
+                    if (fileCurrent(file)) notes.markProcessed(file.key, file.checkpoint)
+                  })
+                }
+                return
+              }
+              if (error instanceof RequestTimeout) { retry = true; return }
+              if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
+              stopPass = true
+              retry = true
+              return
+            }
           }
+          break consolidate
         }
 
         if (!prepared || !await inputsCurrent()) {
@@ -511,9 +568,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           return
         }
 
+        const committedReads = new Map<string, { id: string, revision: string, usageVersion: number }>()
+        const committedByPath = new Map<string, { id: string, revision: string, usageVersion: number }>()
         for (const item of prepared) {
           if (!await inputsCurrent()) { retry = true; return }
           const operationId = `dream:${identity.newId()}`
+          const reads = new Map(item.reads.map(ref => [ref.id, committedReads.get(ref.id) ?? ref]))
+          for (const linkedPath of item.linkedPaths) {
+            const committedTarget = committedByPath.get(linkedPath)
+            if (committedTarget) reads.set(committedTarget.id, committedTarget)
+          }
           try {
             const receipt = await mutate(() => {
               if (!current()) throw new MemoryDreamStaleError()
@@ -521,11 +585,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 operationId, workspace, path: item.operation.path,
                 expectedRevision: item.before?.revision ?? null,
                 markdown: item.markdown, action: item.operation.action,
-                sources: item.evidence, reads: item.reads, corrections: [], files: item.files,
+                sources: item.evidence, reads: [...reads.values()], corrections: [], files: item.files,
               })
             })
             operationsUsed++
             committedPaths.add(item.operation.path)
+            if (receipt.revision !== null) {
+              const nextRead = { id: receipt.documentId, revision: receipt.revision, usageVersion: receipt.usageVersion }
+              committedReads.set(receipt.documentId, nextRead)
+              committedByPath.set(item.operation.path, nextRead)
+            }
             committed(receipt)
             diagnostics.emit({
               event: 'operation.progress', operation: 'memory.write', stage: 'applied',

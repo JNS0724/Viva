@@ -413,3 +413,136 @@ test('only exact backend-issued file references are excluded from credential ins
   assert.equal(looksSecret(inspectMemoryDocumentText(`See [[${valid}]]`, [valid])), false)
   assert.equal(looksSecret(inspectMemoryDocumentText(`api_key=sk-1234567890abcdef1234567890 [[${valid}]]`, [valid])), true)
 })
+
+test('new digest linking a recalled digest inherits its sources so withdrawing the cited source erases it', async t => {
+  const h = harness(t)
+  const sourceA = h.addSource('Keep the blue binder on shelf 2.', { session: randomUUID() })
+  const workspace = memorySourceWorkspace(sourceA)
+  h.documents.commit({
+    operationId: randomUUID(), workspace, path: 'digest/wiki/binder.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Binder', description: 'blue binder location' }, body: 'The blue binder is on shelf 2.' }),
+    sources: [h.sourceRef(sourceA)], reads: [],
+  })
+  const dailyB = h.add('Review the blue binder checklist.', 'Binder Checklist')
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }>, existingDigests: Array<{ path: string }> }
+    assert.ok(input.existingDigests.some(doc => doc.path === 'digest/wiki/binder.md'))
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/wiki/shelf-summary.md',
+        name: 'Shelf Summary',
+        description: 'Summary referencing the blue binder',
+        body: 'Checklist uses the blue binder from [[digest/wiki/binder.md]].',
+        dailyPaths: [input.notes[0]!.path],
+        sourceIds: input.notes[0]!.sourceIds,
+      }],
+    })
+  })
+  await h.run()
+  const created = h.documents.read(workspace, 'digest/wiki/shelf-summary.md')
+  assert.ok(created)
+  assert.deepEqual(new Set(created.sources.map(ref => ref.id)), new Set([sourceA.id, dailyB.source.id]))
+  h.documents.withdraw(sourceA.id)
+  assert.equal(h.documents.read(workspace, 'digest/wiki/binder.md'), null)
+  assert.equal(h.documents.read(workspace, 'digest/wiki/shelf-summary.md'), null)
+})
+
+test('ungrounded digest wikilinks outside recalled candidates are rejected', async t => {
+  const h = harness(t)
+  const daily = h.add('Weekly sync moved to Thursday.', 'Sync')
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/wiki/sync.md',
+        name: 'Sync',
+        description: 'Weekly sync time',
+        body: 'See [[digest/wiki/unrecalled-secret.md]] for context.',
+        dailyPaths: [input.notes[0]!.path],
+        sourceIds: input.notes[0]!.sourceIds,
+      }],
+    })
+  })
+  await h.run()
+  assert.equal(h.documents.list(daily.note.workspace).length, 0)
+  assert.equal(h.status().state, 'retry')
+})
+
+test('context overflow caused by oversized candidate digests shrinks candidates and processes the short daily note', async t => {
+  const h = harness(t)
+  const sourceA = h.addSource('Archive reference for Friday meeting.', { session: randomUUID() })
+  const workspace = memorySourceWorkspace(sourceA)
+  h.documents.commit({
+    operationId: randomUUID(), workspace, path: 'digest/wiki/huge-archive.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({
+      metadata: { name: 'Meeting Friday Archive', description: 'Meeting every Friday archive' },
+      body: 'Meeting every Friday. '.repeat(4500),
+    }),
+    sources: [h.sourceRef(sourceA)], reads: [],
+  })
+  const daily = h.add('Meeting every Friday.', 'Meeting')
+  const observedDigestCounts: number[] = []
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }>, existingDigests: Array<{ path: string }> }
+    observedDigestCounts.push(input.existingDigests.length)
+    if (JSON.stringify(input).length > 30_000) throw new MemoryComputeError('context-window-exceeded')
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/personal/friday-meeting.md',
+        name: 'Friday Meeting',
+        description: 'Recurring Friday meeting',
+        body: 'Meeting happens every Friday.',
+        dailyPaths: [input.notes[0]!.path],
+        sourceIds: input.notes[0]!.sourceIds,
+      }],
+    })
+  })
+  await h.run()
+  assert.deepEqual(observedDigestCounts, [1, 0])
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+  const created = h.documents.read(workspace, 'digest/personal/friday-meeting.md')
+  assert.ok(created)
+  assert.match(created.markdown, /Meeting happens every Friday\./u)
+  assert.equal(daily.note.workspace, workspace)
+})
+
+test('REFINE preserves distinct section anchors on the same file while matching required daily links by path', async t => {
+  const h = harness(t)
+  const sourceA = h.addSource('Seasonal guide covers spring and autumn.', { session: randomUUID() })
+  const workspace = memorySourceWorkspace(sourceA)
+  h.documents.commit({
+    operationId: randomUUID(), workspace, path: 'digest/wiki/seasonal.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({
+      metadata: { name: 'Seasonal Plan', description: 'Seasonal guide links' },
+      body: 'Follow [[digest/wiki/guide.md#Spring]] and [[digest/wiki/guide.md#Autumn]].',
+    }),
+    sources: [h.sourceRef(sourceA)], reads: [],
+  })
+  const daily = h.add('Seasonal plan updated with spring overview.', 'Seasonal')
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    const dailyPath = input.notes[0]!.path
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: 'digest/wiki/seasonal.md',
+        name: 'Seasonal Plan',
+        description: 'Updated seasonal guide links',
+        body: `Updated spring notes from [[digest/wiki/guide.md#Spring]] and [[${dailyPath}#Overview]].`,
+        dailyPaths: [dailyPath],
+        sourceIds: input.notes[0]!.sourceIds,
+      }],
+    })
+  })
+  await h.run()
+  const updated = h.documents.read(workspace, 'digest/wiki/seasonal.md')
+  assert.ok(updated)
+  assert.ok(updated.markdown.includes('[[digest/wiki/guide.md#Spring]]'))
+  assert.ok(updated.markdown.includes('[[digest/wiki/guide.md#Autumn]]'))
+  assert.ok(updated.markdown.includes(`[[${daily.note.path}#Overview]]`))
+  assert.equal(updated.markdown.includes(`[[${daily.note.path}]]`), false)
+})
