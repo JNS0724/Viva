@@ -439,12 +439,8 @@ test('model file reads recheck the accepted usage version after asynchronous ver
   assert.equal(f.fileReads.length, 0)
 })
 
-test('idle wakes retire legacy scan jobs and leave unregistered Markdown and external edits untouched', async t => {
-  const f = fixture(t, resources => {
-    resources.effects.queue('memory.file-scan', 'all', {})
-    resources.effects.queue('memory.file-rescan', 'periodic', {})
-    resources.effects.queue('memory.file-rescan', 'unfinished-manual-scan', {})
-  })
+test('idle wakes leave unregistered Markdown and external edits untouched without scanning', async t => {
+  const f = fixture(t)
   const sourceId = randomUUID()
   f.memory.accept('Cobalt bills go through finance.', origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
@@ -459,7 +455,6 @@ test('idle wakes retire legacy scan jobs and leave unregistered Markdown and ext
   for (let hour = 0; hour < 4; hour++) {
     f.advance(3_600_000)
     await f.memory.wake()
-    assert.deepEqual(f.store.db.prepare("SELECT kind FROM effects WHERE kind IN ('memory.file-scan','memory.file-rescan')").all(), [])
   }
   assert.deepEqual(opened, [])
   assert.equal(f.calls.length, 0)
@@ -516,7 +511,7 @@ test('opening a verified file brings its first publication forward from backoff'
   f.wrapPhysicalRead(read => read)
   const detail = await f.memory.readFileAsync({ kind: 'digest', workspace, id: created.documentId })
   assert.equal(detail?.markdown, 'Silver ledger.')
-  await f.memory.wake()
+  for (let attempt = 0; attempt < 50 && job(); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
   assert.equal(job(), undefined)
   assert.match(await f.memory.handleModelRequest({ op: 'recall', session: origin.session, query: 'Silver' }, origin, () => true), /Silver ledger/u)
 })
@@ -536,7 +531,7 @@ test('a restored accepted revision becomes searchable again through targeted ind
   // The read schedules a targeted repair outside the caller's latency budget.
   await new Promise(resolve => setTimeout(resolve, 0))
   await f.memory.wake()
-  const indexed = () => f.store.db.prepare('SELECT 1 FROM memory_file_index_lookup WHERE workspace=? AND id=?').get(workspace, receipt.documentId)
+  const indexed = () => f.store.db.prepare('SELECT 1 FROM memory_file_index_nodes WHERE workspace=? AND id=?').get(workspace, receipt.documentId)
   assert.equal(indexed(), undefined)
   const pending = () => f.store.db.prepare("SELECT 1 FROM effects WHERE kind='memory.file-index-publish' AND key=?")
     .get(JSON.stringify([workspace, receipt.documentId]))
@@ -597,30 +592,6 @@ test('native file recall deduplicates within a trusted turn and resets for the n
   assert.equal((await recall('1')).status, 'exhausted')
   assert.equal((await recall('2')).status, 'ok')
   assert.equal((await recall('1', 'other-session')).status, 'ok')
-})
-
-test('a current link target takes precedence over an alias recorded by an older release', async t => {
-  const f = fixture(t), sourceId = randomUUID()
-  f.memory.accept('星河旧项目和星河新项目使用不同流程。', origin, sourceId)
-  const { workspace, reference } = f.ref(sourceId)
-  const first = f.documents.commit({ operationId: 'path-first', workspace, path: 'digest/wiki/old.md',
-    expectedRevision: null, action: 'CREATE', markdown: '星河旧项目', sources: [reference], reads: [] })
-  const moved = 'digest/wiki/moved.md'
-  renameSync(join(f.store.fileRoot, workspace, first.path), join(f.store.fileRoot, workspace, moved))
-  f.store.tx(() => {
-    f.store.db.prepare('UPDATE memory_documents SET path=? WHERE id=?').run(moved, first.documentId)
-    f.store.db.prepare('INSERT INTO memory_document_aliases(workspace,path,document) VALUES(?,?,?)').run(workspace, first.path, first.documentId)
-  })
-  const second = f.documents.commit({ operationId: 'path-second', workspace, path: first.path,
-    expectedRevision: null, action: 'CREATE', markdown: '星河新项目', sources: [reference], reads: [] })
-  const linked = f.documents.commit({ operationId: 'path-link', workspace, path: 'digest/wiki/link.md',
-    expectedRevision: null, action: 'CREATE', markdown: '星河流程入口 [[digest/wiki/old.md]]', sources: [reference], reads: [] })
-  await f.memory.wake()
-  const result = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '流程入口' }, origin))
-  const hit = result.notes.find((item: {id:string}) => item.id === linked.documentId)
-  assert(hit)
-  assert.deepEqual(hit.outlinks.neighbors.map((item: {id:string}) => item.id), [second.documentId])
-  assert.equal(JSON.parse(f.memory.handle({ op: 'file_read', session: origin.session, id: second.documentId }, origin)).text, '星河新项目')
 })
 
 test('a correction and its undo immediately republish the unchanged anchor file', async t => {

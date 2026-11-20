@@ -54,6 +54,7 @@ const docs: MemoryDocumentView[] = Array.from({ length: 32 }, (_, i) => {
 })
 const retrieval = createMemoryFileRetrieval({ index: openMemoryFileIndex({ db }), hash, workspaces: () => [workspace],
   policy: { list: () => docs, read: (_, name) => docs.find(doc => doc.path === name) ?? null }, diagnostics: diagnosticPort })
+retrieval.sync()
 type Mode = 'enabled' | 'disabled'
 let measuredMode: Mode | undefined
 const phaseTimes = { launch: { enabled: [] as number[], disabled: [] as number[] }, finish: { enabled: [] as number[], disabled: [] as number[] } }

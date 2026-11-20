@@ -57,7 +57,7 @@ interface NoteRow { key: string, day: string, workspace: string, path: string, r
 type Note = NoteRow & { file_revision: string, title: string, markdown: string, document: string, fileRevision: string }
 type Data = { refs: SourceRef[], indexKeys?: string[] } & (
   | { kind: 'turn', row: TurnRow }
-  | { kind: 'note', key: string, day: string, workspace: string, path: string | null, revision: number, expectedRevision: number | null, policyToken: string, generation: number, at: number, rows: string[], contributed: boolean, fileRevision: string | null, previousRefs: SourceRef[], remove?: boolean, clearAliases?: boolean }
+  | { kind: 'note', key: string, day: string, workspace: string, path: string | null, revision: number, expectedRevision: number | null, policyToken: string, generation: number, at: number, rows: string[], contributed: boolean, fileRevision: string | null, previousRefs: SourceRef[], remove?: boolean, reallocatePath?: boolean }
   | { kind: 'purge', id: number, dialog: DialogPurge }
   | { kind: 'restore', key: string, path: string, revision: string, markdown: string }
 )
@@ -71,7 +71,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     CREATE TABLE IF NOT EXISTS memory_note_erasures (source TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS memory_deleted_daily_notes (note TEXT PRIMARY KEY, base TEXT NOT NULL, public_id TEXT NOT NULL UNIQUE);
     CREATE INDEX IF NOT EXISTS memory_deleted_daily_notes_base ON memory_deleted_daily_notes(base);
-    CREATE TABLE IF NOT EXISTS memory_note_aliases (workspace TEXT NOT NULL,path TEXT NOT NULL,note TEXT NOT NULL,PRIMARY KEY(workspace,path));
     CREATE TABLE IF NOT EXISTS memory_note_turns (
       id TEXT PRIMARY KEY, note TEXT NOT NULL, session TEXT NOT NULL, day TEXT NOT NULL,
       workspace TEXT NOT NULL, sources TEXT NOT NULL, source_tokens TEXT NOT NULL, assistant_sources TEXT NOT NULL, assistant_digest TEXT, assistant_valid INTEGER NOT NULL DEFAULT 1, question_sources TEXT NOT NULL, question_valid INTEGER NOT NULL, written INTEGER NOT NULL DEFAULT 0
@@ -155,7 +154,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         if (data.path) db.prepare(`INSERT INTO memory_daily_notes(key,day,workspace,path,file_revision,revision,updated_at) VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(key) DO UPDATE SET path=excluded.path,file_revision=excluded.file_revision,revision=excluded.revision,updated_at=excluded.updated_at`)
           .run(data.key, data.day, data.workspace, data.path, data.fileRevision!, data.revision, data.at)
-        if (data.clearAliases) db.prepare('DELETE FROM memory_note_aliases WHERE note=?').run(data.key)
         if (data.contributed || data.remove) {
           db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(data.key)
           if (!data.remove) for (const ref of data.refs) db.prepare('INSERT INTO memory_note_sources(note,source,token,spans) VALUES(?,?,?,?)').run(data.key, ref.id, ref.token, ref.spans ? JSON.stringify(ref.spans) : null)
@@ -173,10 +171,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       }
     },
   })
-  // Existing aliases and completed receipts remain readable. Incomplete legacy
-  // edits and renames must never apply or roll back files changed by the user.
-  db.prepare(`UPDATE memory_file_intents SET state='cancelled', plan=NULL WHERE namespace='notes'
-    AND plan IS NOT NULL AND json_extract(plan,'$.data.kind') IN ('edit','rename')`).run()
   function read(key: string, physical?: MemoryPhysicalFile | null): Note | undefined {
     const row = rawNote(key)
     if (!row?.file_revision || !journal.visible(row.workspace, row.path)) return
@@ -391,7 +385,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         if (row) enqueue({ ...row, id: '' }, 'assistant')
       }
       db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(key)
-      db.prepare('DELETE FROM memory_note_aliases WHERE note=?').run(key)
       const remainingRestrictions = note && useRestrictions.forTarget({ kind: 'daily', workspace: note.workspace, key })
         .some(restriction => restriction.sources.some(ref => ref.id !== sourceId))
       if (note && (cut || remainingRestrictions)) {
@@ -421,7 +414,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       db.prepare("INSERT INTO memory_note_purges(workspace,note,path,expected_revision,session,turn,mode) VALUES(?,?,?,?,?,'','file')")
         .run(workspace, key, row.file_revision ? row.path : null, row.file_revision, session)
       db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(key)
-      db.prepare('DELETE FROM memory_note_aliases WHERE note=?').run(key)
       db.prepare('DELETE FROM memory_daily_notes WHERE key=?').run(key)
       useRestrictions.removeTarget({ kind: 'daily', workspace, key })
       return row.revision + 1
@@ -438,15 +430,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     advanceUseVersion: (key: string, revision: number, at: number) => db.prepare('UPDATE memory_daily_notes SET revision=revision+1,updated_at=? WHERE key=? AND revision=?')
       .run(at, key, revision).changes === 1,
     usePolicyToken, deleteFile,
-    resolveFileAlias(workspace: string, path: string) {
-      if (db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(workspace, path)) return path
-      const row = db.prepare(`SELECT n.path FROM memory_note_aliases a JOIN memory_daily_notes n ON n.key=a.note
-        WHERE a.workspace=? AND a.path=? AND n.workspace=a.workspace`).get(workspace, path)
-      return row ? String(row.path) : null
-    },
-    fileAliases: (workspace: string, path: string) => db.prepare(`SELECT a.path FROM memory_daily_notes n JOIN memory_note_aliases a
-      ON a.note=n.key AND a.workspace=n.workspace WHERE n.workspace=? AND n.path=?`).all(workspace, path).map(row => String(row.path)),
-    aliases: () => db.prepare('SELECT workspace,path,note AS id FROM memory_note_aliases').all().map(row => ({workspace:String(row.workspace),path:String(row.path),id:String(row.id)})),
     registeredAt: (workspace: string, path: string) => db.prepare(
       'SELECT key,file_revision FROM memory_daily_notes WHERE workspace=? AND path=? AND file_revision IS NOT NULL'
     ).get(workspace, path) as { key: string, file_revision: string } | undefined,
@@ -548,15 +531,15 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         if (current?.fileRevision !== expected?.fileRevision || current?.revision !== expected?.revision) throw new Error('memory-file-version')
         const edit = changes(first.workspace)
         let path: string | null = null, fileRevision: string | null = null
-        const clearAliases = reply.status === 'write' && Boolean(allocation && (options.rebuild || !current)
+        const reallocatePath = reply.status === 'write' && Boolean(allocation && (options.rebuild || !current)
           && requiresOpaqueLocator(first.workspace, key) && !canonicalLocator(allocation.path, first.day, key))
         if (reply.status === 'write') {
           // The locator is stable and contains no model-generated title or stopped prose.
-          path = !clearAliases && allocation ? allocation.path : `${dailyPathBase(first.day, key)}.md`
+          path = !reallocatePath && allocation ? allocation.path : `${dailyPathBase(first.day, key)}.md`
           const base = path.slice(0, -3)
-          if (allocation && !clearAliases && !current && edit.files.read(path)) throw new Error('memory-file-version')
+          if (allocation && !reallocatePath && !current && edit.files.read(path)) throw new Error('memory-file-version')
           let suffix = 1
-          while ((!allocation || clearAliases) && (edit.files.read(path) || db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(first.workspace, path))) {
+          while ((!allocation || reallocatePath) && (edit.files.read(path) || db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(first.workspace, path))) {
             path = `${base}-${suffix++}.md`
           }
           const old = current && !options.rebuild ? parseMemoryDocument(edit.files.read(current.path)!.markdown).metadata : {}
@@ -571,7 +554,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         }
         return { workspace: first.workspace, changes: [...edit.edits.values()], data: {
           kind: 'note', indexKeys: [...edit.indexKeys], key, day: first.day, workspace: first.workspace, path, revision: Math.max(generation, (allocation?.revision ?? 0) + 1), expectedRevision: allocation?.revision ?? null, policyToken: usePolicyToken(first.workspace), generation, at, rows: rows.map(row => row.id),
-          contributed: reply.status === 'write', refs, previousRefs: current ? references(key) : [], fileRevision, clearAliases, remove: Boolean(options.rebuild && reply.status === 'skip' && current),
+          contributed: reply.status === 'write', refs, previousRefs: current ? references(key) : [], fileRevision, reallocatePath, remove: Boolean(options.rebuild && reply.status === 'skip' && current),
         } }
       })
     },

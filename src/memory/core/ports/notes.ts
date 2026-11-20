@@ -34,9 +34,6 @@ export interface MemoryNotes {
     advanceUseVersion(key: string, revision: number, at: number): boolean;
     usePolicyToken(workspace: string): string;
     pendingCleanup(): number;
-    resolveFileAlias(workspace: string, path: string): string | null;
-    fileAliases(workspace: string, path: string): string[];
-    aliases(): Array<{ workspace: string, path: string, id: string }>;
     registeredAt(workspace: string, path: string): { key: string, file_revision: string } | undefined;
     registeredForSources(ids: readonly string[]): Array<{ workspace: string, path: string }>;
     registered(): Array<NoteRow & { sources: DocumentSourceRef[], state: 'active' | 'withdrawing' }>;

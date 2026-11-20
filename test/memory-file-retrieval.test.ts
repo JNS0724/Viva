@@ -21,13 +21,14 @@ function view(id: string, text: string, extra: Partial<MemoryDocumentView> = {})
     policyToken:hash(markdown),updatedAt:1,markdown,currentMarkdown:markdown,sources:[],sourceTokens:[{id:`source-${id}`,token:'v1'}],
     backing:null,supporting:[],applicability:{state:'current',supersessions:[]},...extra }
 }
-function setup(t: test.TestContext, initial: MemoryDocumentView[], embedder?: MemoryEmbedder, diagnostics?: DiagnosticPort) {
+function setup(t: test.TestContext, initial: MemoryDocumentView[], embedder?: MemoryEmbedder, diagnostics?: DiagnosticPort, { sync = true }: { sync?: boolean } = {}) {
   const db=new DatabaseSync(':memory:')
   const index=openMemoryFileIndex({db})
   const views=new Map(initial.map(item=>[item.id,item]))
   const policy={read: (scope:string,path:string)=>[...views.values()].find(item=>item.workspace===scope && item.path===path) ?? null,
     list: (scope:string)=>[...views.values()].filter(item=>item.workspace===scope)}
   const retrieval=createMemoryFileRetrieval({index,policy,workspaces:()=>[workspace],hash,embedder,diagnostics})
+  if (sync) retrieval.sync()
   t.after(()=>{retrieval.close();db.close()})
   return {db,index,views,policy,retrieval}
 }
@@ -71,18 +72,18 @@ test('automatic context returns lexical evidence before cold passage encoding an
   assert.equal(strong.hits[0]?.id, 'weekly')
 })
 
-test('explicit recall during Dream returns lexical results without starting a cold embedding job', async t => {
+test('explicit recall returns lexical results without starting a cold embedding job', async t => {
   const { embedder, calls } = encoder()
   const { retrieval } = setup(t, [view('weekly', 'weekly report')], embedder)
-  const result = await retrieval.search({ query: 'weekly report', publishedVectorsOnly: true, allows })
+  const result = await retrieval.search({ query: 'weekly report', allows })
   assert.deepEqual(result.hits.map(hit => hit.id), ['weekly'])
   assert.ok(result.partial)
   assert.ok(result.reasons.includes('semantic-index-incomplete'))
   assert.equal(calls.length, 0)
 })
 
-for (const mode of [{ automatic: true }, { publishedVectorsOnly: true }]) test(
-  `slow query falls back to lexical evidence for ${Object.keys(mode)[0]} reads`, async t => {
+for (const mode of [{ automatic: true }, {}]) test(
+  `slow query falls back to lexical evidence for ${Object.keys(mode)[0] ?? 'explicit'} reads`, async t => {
   const { embedder } = encoder()
   const run = embedder.embedBatch
   let finish!: () => void, querySignal: AbortSignal | undefined
@@ -92,7 +93,6 @@ for (const mode of [{ automatic: true }, { publishedVectorsOnly: true }]) test(
     return run(inputs, signal)
   }
   const { retrieval } = setup(t, [view('a', 'needle'), view('b', 'other')], embedder)
-  retrieval.sync()
   assert.ok(await retrieval.prepareVectors())
   t.mock.timers.enable({ apis: ['setTimeout'] })
   try {
@@ -120,11 +120,11 @@ test('a new file in a hot index is embedded after the timed-out query releases t
     } finally { busy = false }
   }
   const { retrieval, views, index } = setup(t, [view('old', 'old note')], embedder)
-  retrieval.sync()
   assert.ok(await retrieval.prepareVectors())
   views.set('new', view('new', 'needle'))
   t.mock.timers.enable({ apis: ['setTimeout'] })
   try {
+    retrieval.sync()
     const pending = retrieval.search({ automatic: true, query: 'needle', allows })
     t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticQueryTimeoutMs)
     assert.equal((await pending).hits[0]?.id, 'new')
@@ -137,21 +137,21 @@ test('a new file in a hot index is embedded after the timed-out query releases t
   } finally { release() }
 })
 
-test('retrieval diagnostics identify lexical, vector, fusion and relations without copying query or evidence', async t => {
+test('retrieval diagnostics identify lexical, vector and fusion without copying query or evidence', async t => {
   const events: DiagnosticEvent[] = []
   const model = encoder()
   const f = setup(t, [view('private-document', 'needle PRIVATE_BODY_CANARY')], model.embedder,
     recordingDiagnosticPort(event => { events.push(event); return undefined }))
+  assert.ok(await f.retrieval.prepareVectors())
   const result = await f.retrieval.search({ query: 'needle PRIVATE_QUERY_CANARY', allows })
   assert.ok(result.hits.length)
-  assert.deepEqual(events.filter(event => event.event === 'operation.progress' && event.operation === 'memory.recall').map(event => event.stage), ['lexical', 'vector', 'fusion', 'relations'])
+  assert.deepEqual(events.filter(event => event.event === 'operation.progress' && event.operation === 'memory.recall').map(event => event.stage), ['lexical', 'vector', 'fusion'])
   assert.ok(events.some(event => event.operation === 'memory.index' && event.stage === 'checkpoint' && event.metrics?.ok === true))
   assert.equal(events.at(-1)?.outcome, 'completed')
   assert.equal(events.at(-1)?.metrics?.count, result.hits.length)
   assert.equal(JSON.stringify(events).includes('PRIVATE_'), false)
   f.retrieval.read({ id: 'private-document', allows })
   f.retrieval.nodeSearch({ query: 'PRIVATE_NODE_QUERY', allows })
-  f.retrieval.relations({ workspace, path: 'digest/wiki/private-document.md', allows })
   f.retrieval.reindex()
   assert.ok(events.some(event => event.operation === 'memory.index' && event.stage === 'rebuild'))
   assert.equal(JSON.stringify(events).includes('PRIVATE_'), false)
@@ -167,7 +167,6 @@ test('a failed retrieval observer preserves synchronous cached and asynchronous 
   assert.equal((await f.retrieval.search({ query: 'needle', allows })).hits.length, 1)
   assert.equal(f.retrieval.read({ id: 'document', allows })?.id, 'document')
   assert.equal(f.retrieval.nodeSearch({ query: 'document', allows }).nodes.length, 1)
-  assert.ok(f.retrieval.relations({ workspace, path: 'digest/wiki/document.md', allows }))
   f.retrieval.reindex()
   const controller = new AbortController(); controller.abort()
   assert.equal((await f.retrieval.search({ query: 'needle', allows, signal: controller.signal })).status, 'unavailable')
@@ -201,44 +200,35 @@ test('superseded prose and stale metadata are never current search or node match
   assert.ok(retrieval.read({id:'old',allows,evidence:true})!.text.includes('Shanghai'))
 })
 
-test('relations return at most ten permitted neighbors and no hidden counts or summaries', async t=>{
-  const peers=Array.from({length:13},(_,i)=>view(`peer-${i}`,'[[digest/wiki/root.md]]'))
-  const root=view('root',peers.map(item=>`[[${item.path}]]`).join('\n'))
-  const {retrieval}=setup(t,[root,...peers])
-  const result=retrieval.relations({workspace,path:root.path,allows:item=>item.id!=='peer-12'})!
-  assert.equal(result.outlinks.visibleCount,12);assert.equal(result.inlinks.visibleCount,12)
-  assert.equal(result.outlinks.neighbors.length,10);assert.equal(result.inlinks.partial,true)
-  assert.ok(!JSON.stringify(result).includes('peer-12'))
-  assert.equal(result.files.length,13)
-})
-
-test('context dedup distinguishes empty and exhausted and invalidates on query, authorization and revision', async t=>{
+test('context dedup distinguishes empty and exhausted and invalidates on query, turn and revision', async t=>{
   const a=view('a','needle'), b=view('b','needle')
   const {retrieval,views}=setup(t,[a,b])
   const request={query:'needle',allows,contextKey:'session-turn'}
   assert.equal((await retrieval.search(request)).hits.length,2)
   assert.equal((await retrieval.search(request)).status,'exhausted')
   assert.equal((await retrieval.search({...request,query:'missing'})).status,'empty')
-  assert.equal((await retrieval.search({...request,allows:item=>item.id==='a'})).hits.length,1)
   views.set('a',{...a,policyToken:'new-state',usageVersion:2})
-  assert.equal((await retrieval.search(request)).hits.length,2)
+  retrieval.sync()
+  assert.deepEqual((await retrieval.search(request)).hits.map(hit=>hit.id),['a'])
+  assert.equal((await retrieval.search({...request,contextKey:'next-turn'})).hits.length,2)
   assert.equal((await retrieval.search({query:'needle',allows})).hits.length,2)
 })
 
 test('reindex uses accepted snapshots without rereading newly edited domain documents', t=>{
   const a=view('a','accepted needle')
-  const {retrieval,index,views}=setup(t,[a]);retrieval.sync()
+  const {retrieval,index,views}=setup(t,[a])
   views.set('a',view('a','unaccepted external edit'))
   const result=retrieval.reindex();assert.equal(result.lexical,true)
-  assert.ok(index.snapshot(workspace,'a')!.chunks[0]!.text.includes('accepted needle'))
-  assert.equal(index.lexical('needle',index.files([workspace]),5).hits.length,1)
-  retrieval.sync();assert.ok(index.snapshot(workspace,'a')!.chunks[0]!.text.includes('external edit'))
+  assert.ok(index.chunks(index.files([workspace]))[0]!.text.includes('accepted needle'))
+  assert.equal(index.lexicalCandidates('needle',{workspaces:[workspace]},5).rows.length,1)
+  retrieval.sync();assert.ok(index.chunks(index.files([workspace]))[0]!.text.includes('external edit'))
   views.delete('a');retrieval.sync();assert.equal(index.files([workspace]).length,0)
 })
 
 test('local multi-passage vectors persist and hot search only embeds its query', async t=>{
   const {embedder,calls}=encoder()
   const {retrieval,index}=setup(t,[view('long','needle '+('word '.repeat(1000)))],embedder)
+  assert.equal(await retrieval.prepareVectors(),true)
   const first=await retrieval.search({query:'needle',allows})
   assert.equal(first.status,'ok');assert.equal(index.vectorState().active,true)
   assert.ok(calls.flat().filter(input=>input.kind==='passage').length>1)
@@ -250,12 +240,13 @@ test('local multi-passage vectors persist and hot search only embeds its query',
 
 test('vector space changes disable the old space until all new passages finish', async t=>{
   const {embedder}=encoder();const {retrieval,index}=setup(t,[view('a','needle')],embedder)
-  await retrieval.search({query:'needle',allows})
+  assert.equal(await retrieval.prepareVectors(),true)
   assert.equal(index.vectorState().active,true)
   let observedDisabled=false
   const second:MemoryEmbedder={dimensions:384,fingerprint:'changed-space',close(){},async embedBatch(inputs){observedDisabled ||= !index.vectorState().active;return inputs.map(()=>unit(0))}}
   const other=createMemoryFileRetrieval({index,policy:{read:()=>view('a','needle'),list:()=>[view('a','needle')]},workspaces:()=>[workspace],hash,embedder:second})
   t.after(()=>other.close())
+  assert.equal(await other.prepareVectors(),true)
   await other.search({query:'needle',allows})
   assert.equal(observedDisabled,true);assert.match(index.vectorState().space!.fingerprint,/changed-space/u)
 })
@@ -267,18 +258,19 @@ test('source changes while encoding reject late vectors and return no stale resu
   let calls = 0
   const embedder:MemoryEmbedder={dimensions:384,fingerprint:'slow',close(){},async embedBatch(inputs){calls++;entered();await gate;return inputs.map(()=>unit(0))}}
   const a=view('a','needle '+ 'x'.repeat(9950)),{retrieval,views,index}=setup(t,[a],embedder)
-  const pending=retrieval.search({query:'needle',allows});await ready
-  views.delete('a');finish()
-  const result=await pending
-  assert.equal(result.status,'unavailable');assert.deepEqual(result.hits,[])
+  const pending=retrieval.prepareVectors();await ready
+  views.delete('a');retrieval.sync();finish()
+  assert.equal(await pending,false)
+  assert.equal((await retrieval.search({query:'needle',allows})).status,'empty')
   assert.equal(index.vectorState().active,false)
-  assert.equal(index.missingVectors(index.vectorState().generation).length,1)
+  assert.equal(index.missingVectors(index.vectorState().generation).length,0)
   assert.equal(calls,1, 'a revoked source must not enter another passage batch')
 })
 
 test('broken or unavailable embeddings degrade to full text without claiming a semantic hit', async t=>{
   const embedder:MemoryEmbedder={dimensions:384,fingerprint:'broken',close(){},async embedBatch(){return null}}
   const {retrieval}=setup(t,[view('a','needle')],embedder)
+  assert.equal(await retrieval.prepareVectors(),false)
   const result=await retrieval.search({query:'needle',allows})
   assert.equal(result.status,'ok');assert.deepEqual(result.hits.map(hit=>hit.id),['a'])
   assert.ok(result.reasons.includes('semantic-index-incomplete'))
@@ -308,12 +300,11 @@ test('RRF uses fixed single-lane rank scores and removes generic function words 
 test('file service applies shared diverse selection after context dedup and uses rank-score thresholds on fallback', t => {
   const long = view('long', '# First\nneedle one\n# Second\nneedle two\n# Third\nneedle three\n')
   const { retrieval, index } = setup(t, [long, view('other', 'needle other'), view('third', 'needle third')])
-  retrieval.sync()
   const chunks = index.chunks(index.files([workspace]))
   const longChunks = chunks.filter(chunk => chunk.file.id === 'long')
   assert.equal(longChunks.length, 3)
   const others = chunks.filter(chunk => chunk.file.id !== 'long').sort((a,b)=>a.file.id.localeCompare(b.file.id))
-  index.lexical = () => ({ hits: [...longChunks, ...others].map((chunk,index)=>({ ...chunk, score: 100-index })), mode: 'fts' })
+  index.lexicalCandidates = () => ({ rows: [...longChunks, ...others].map((chunk,index)=>({ ...chunk, score: 100-index })), incomplete: false, mode: 'fts' })
   const first = retrieval.searchCached({ query: 'needle', limit: 2, contextKey: 'same-question', allows })
   assert.deepEqual(first.hits.map(item=>item.id), ['long', 'other'])
   assert.ok(Math.abs(first.hits[0]!.score-0.3/61)<1e-15)
@@ -330,11 +321,10 @@ test('cancelled worker waits terminate even if an encoder ignores its abort sign
   const embedder: MemoryEmbedder = { dimensions: 384, fingerprint: 'ignores-cancel', close() {}, embedBatch() { entered(); return new Promise(() => {}) } }
   const { retrieval, index } = setup(t, [view('a', 'needle')], embedder)
   const controller = new AbortController()
-  const pending = retrieval.search({ query: 'needle', allows, signal: controller.signal })
+  const pending = retrieval.prepareVectors(controller.signal)
   await started
   controller.abort()
-  const result = await pending
-  assert.equal(result.status, 'unavailable')
+  assert.equal(await pending, false)
   assert.equal(index.vectorState().active, false)
 })
 
@@ -344,9 +334,10 @@ test('corrupt cached vectors trigger rebuild and failed repair falls back with a
   const embedder: MemoryEmbedder = { dimensions: 384, fingerprint: original.embedder.fingerprint, close() {},
     embedBatch: (inputs, signal) => unavailable ? Promise.resolve(null) : original.embedder.embedBatch(inputs, signal) }
   const { retrieval, db } = setup(t, [view('a', 'needle')], embedder)
-  await retrieval.search({ query: 'needle', allows })
+  assert.equal(await retrieval.prepareVectors(), true)
   db.exec("UPDATE memory_file_index_vectors SET vector = x'01'")
   unavailable = true
+  assert.equal(await retrieval.prepareVectors(), false)
   const result = await retrieval.search({ query: 'needle', allows })
   assert.equal(result.status, 'ok')
   assert.ok(result.reasons.includes('semantic-index-incomplete'))
@@ -375,22 +366,6 @@ test('synchronous recall shares filtering and readsets and declares that semanti
   const full = await retrieval.search(request)
   assert.deepEqual(cached.files, full.files)
   assert.deepEqual(cached.sourceIds, full.sourceIds)
-})
-
-test('link neighbors and path reads resolve trusted rename aliases without changing logical identity', t => {
-  const oldPath = 'digest/wiki/old.md'
-  const renamed = view('stable-id', 'needle', { path: 'digest/wiki/new.md' })
-  const root = view('root', `[[${oldPath}]]`)
-  const { index, policy } = setup(t, [root, renamed])
-  const retrieval = createMemoryFileRetrieval({ index, policy, workspaces: () => [workspace], hash,
-    resolveAlias: (scope, path) => scope === workspace && path === oldPath ? renamed.path : null })
-  t.after(() => retrieval.close())
-  const outgoing = retrieval.relations({ workspace, path: root.path, allows })!
-  assert.equal(outgoing.outlinks.visibleCount, 1)
-  assert.equal(outgoing.outlinks.neighbors[0]!.id, 'stable-id')
-  const incoming = retrieval.relations({ workspace, path: oldPath, allows })!
-  assert.equal(incoming.inlinks.neighbors[0]!.id, 'root')
-  assert.equal(retrieval.read({ workspace, path: oldPath, allows })!.path, renamed.path)
 })
 
 
@@ -447,57 +422,78 @@ test('indexedScores never enables missing, rebuilt or foreign vector spaces', as
 })
 
 
-test('output budget keeps an oversized locator readable without consuming its context result', t => {
+test('output budget omits an oversized hit without consuming its context result', t => {
   const { retrieval } = setup(t, [view('a', 'needle '.repeat(1100))])
   const request = { query: 'needle', allows, contextKey: 'budget-context', maxChars: 800 }
   const small = retrieval.searchCached(request)
   const publicJson = ({ files: _files, sourceIds: _sources, ...result }: typeof small) => JSON.stringify(result)
   assert.ok(publicJson(small).length <= request.maxChars)
   assert.equal(small.status, 'ok')
-  assert.equal(small.hits[0]!.text, '')
-  assert.equal(small.hits[0]!.readRequired, true)
+  assert.equal(small.hits.length, 0)
+  assert.equal(small.partial, true)
   assert.ok(small.reasons.includes('output-budget'))
-  const locator = small.hits[0]!
-  assert.ok(retrieval.read({ id: locator.id, startLine: locator.startLine, endLine: locator.endLine, allows })!.text.includes('needle'))
   const full = retrieval.searchCached({ ...request, maxChars: 12_000 })
   assert.ok(full.hits[0]!.text.includes('needle'))
-  assert.equal(full.hits[0]!.readRequired, undefined)
   assert.equal(retrieval.searchCached({ ...request, maxChars: 12_000 }).status, 'exhausted')
 })
 
-test('budget includes escaped JSON, applicability and neighbor summaries and marks only complete hits seen', t => {
-  const root = view('a', 'needle '.repeat(25) + '\n[[digest/wiki/b.md]]')
-  const peer = view('b', 'companion details')
-  const hugeDescription = 'details "with escapes" '.repeat(200)
-  peer.markdown = peer.currentMarkdown = peer.markdown.replace('b description', hugeDescription)
-  peer.revision = peer.policyToken = hash(peer.markdown)
-  const { retrieval } = setup(t, [root, peer])
-  const result = retrieval.searchCached({ query: 'needle', allows, maxChars: 850, contextKey: 'neighbors-budget' })
+test('output budget skips an oversized leading hit to deliver shorter matches and preserves retry behavior', t => {
+  const oversized = view('oversized', 'needle '.repeat(1100))
+  const concise = view('concise', 'needle on one line')
+  const { retrieval } = setup(t, [oversized, concise])
+  assert.deepEqual(retrieval.searchCached({ query: 'needle', allows }).hits.map(hit => hit.id), ['oversized', 'concise'])
+  const request = { query: 'needle', allows, contextKey: 'mixed-budget-context', maxChars: 5872 }
+  const first = retrieval.searchCached(request)
+  const publicJson = ({ files: _files, sourceIds: _sources, ...result }: typeof first) => JSON.stringify(result)
+  assert.ok(publicJson(first).length <= request.maxChars)
+  assert.equal(first.status, 'ok')
+  assert.deepEqual(first.hits.map(hit => hit.id), ['concise'])
+  assert.equal(first.partial, true)
+  assert.ok(first.reasons.includes('output-budget'))
+
+  const retrySameBudget = retrieval.searchCached(request)
+  assert.equal(retrySameBudget.status, 'ok')
+  assert.deepEqual(retrySameBudget.hits, [])
+  assert.equal(retrySameBudget.partial, true)
+  assert.ok(retrySameBudget.reasons.includes('output-budget'))
+
+  const retryLargerBudget = retrieval.searchCached({ ...request, maxChars: 12_000 })
+  assert.equal(retryLargerBudget.status, 'ok')
+  assert.deepEqual(retryLargerBudget.hits.map(hit => hit.id), ['oversized'])
+  assert.equal(retrieval.searchCached({ ...request, maxChars: 12_000 }).status, 'exhausted')
+})
+
+test('budget includes escaped JSON and applicability and marks only complete hits seen', t => {
+  const root = view('a', 'needle "with escapes" '.repeat(25))
+  const { retrieval } = setup(t, [root])
+  const result = retrieval.searchCached({ query: 'needle', allows, maxChars: 400, contextKey: 'escaped-budget' })
   const { files: _files, sourceIds: _sources, ...publicResult } = result
-  assert.ok(JSON.stringify(publicResult).length <= 850)
+  assert.ok(JSON.stringify(publicResult).length <= 400)
   assert.ok(result.reasons.includes('output-budget'))
-  assert.ok(result.hits[0]!.readRequired)
-  assert.ok(retrieval.searchCached({ query: 'needle', allows, maxChars: 20_000, contextKey: 'neighbors-budget' }).hits.every(hit => !hit.readRequired))
+  assert.equal(result.hits.length, 0)
+  assert.equal(retrieval.searchCached({ query: 'needle', allows, maxChars: 20_000, contextKey: 'escaped-budget' }).hits.length, 1)
   assert.throws(() => retrieval.searchCached({ query: 'needle', allows, maxChars: 10 }), /invalid-memory-file-output-budget/u)
 })
 
 
-test('output locator retains supersession applicability and never hides a replacement warning', t => {
+test('output budget retains supersession applicability on delivered hits and drops over-budget hits safely', t => {
   const old = view('old', 'needle '.repeat(1100))
   old.applicability = { state: 'unavailable', supersessions: [{ path: old.path, revision: old.revision, startLine: 5, endLine: 5,
     text: 'retired fragment', condition: 'only before transfer', time: 'past', sourceDocumentId: old.id,
     documentId: 'missing-replacement', replacementRevision: 'gone', operationId: 'corrected' }] }
   const { retrieval } = setup(t, [old])
-  const result = retrieval.searchCached({ query: 'needle', allows, maxChars: 1000, contextKey: 'warning-budget' })
-  assert.equal(result.hits[0]!.readRequired, true)
-  assert.deepEqual(result.hits[0]!.applicability, { state: 'unavailable', supersessions: [{ startLine: 5, endLine: 5, replacementUnavailable: true }] })
-  assert.ok(result.reasons.includes('output-budget'))
+  const small = retrieval.searchCached({ query: 'needle', allows, maxChars: 1000, contextKey: 'warning-budget' })
+  assert.equal(small.hits.length, 0)
+  assert.ok(small.reasons.includes('output-budget'))
+  const full = retrieval.searchCached({ query: 'needle', allows, maxChars: 12_000, contextKey: 'warning-budget' })
+  assert.deepEqual(full.hits[0]!.applicability, { state: 'unavailable', supersessions: [{ startLine: 5, endLine: 5, replacementUnavailable: true }] })
 })
 
 test('file vector space follows adapter-declared dimensions and invalidates a changed width even with the same model fingerprint', async t => {
   const model = (dimensions: number): MemoryEmbedder => ({ fingerprint: 'alternate-model', dimensions, close() {},
     async embedBatch(inputs) { return inputs.map(() => { const vector = new Float32Array(dimensions); vector[0] = 1; return vector }) } })
   const { retrieval, index, policy } = setup(t, [view('small', 'needle')], model(2))
+  assert.equal(await retrieval.prepareVectors(), true)
   const first = await retrieval.search({ query: 'needle', allows })
   assert.equal(first.status, 'ok')
   assert.equal(index.vectorState().space?.dimensions, 2)
@@ -505,6 +501,8 @@ test('file vector space follows adapter-declared dimensions and invalidates a ch
   const oldGeneration = index.vectorState().generation
   const next = createMemoryFileRetrieval({ index, policy, workspaces: () => [workspace], hash, embedder: model(3) })
   t.after(() => next.close())
+  next.sync()
+  assert.equal(await next.prepareVectors(), true)
   await next.search({ query: 'needle', allows })
   assert.equal(index.vectorState().space?.dimensions, 3)
   assert.ok(index.vectorState().generation > oldGeneration)
@@ -516,6 +514,7 @@ for (const invalidKind of ['passage', 'query'] as const) test(`an adapter return
   const embedder: MemoryEmbedder = { fingerprint: `invalid-${invalidKind}`, dimensions: 2, close() {},
     async embedBatch(inputs) { return inputs.map(input => Float32Array.from(input.kind === invalidKind ? [1, 0, 0] : [1, 0])) } }
   const { retrieval, index } = setup(t, [view('safe', 'needle')], embedder)
+  assert.equal(await retrieval.prepareVectors(), invalidKind !== 'passage')
   const result = await retrieval.search({ query: 'needle', allows })
   assert.equal(result.status, 'ok')
   assert.deepEqual(result.hits.map(hit => hit.id), ['safe'])
@@ -536,6 +535,7 @@ test('persistent passage preparation retains safe titles and headings through to
   } }
   const document = view('Context title', '# Only in staging\n\n' + 'Background recording. '.repeat(80) + 'needle at the tail')
   const { retrieval, index } = setup(t, [document], embedder)
+  assert.equal(await retrieval.prepareVectors(), true)
   const result = await retrieval.search({ query: 'needle', allows })
   assert.equal(result.status, 'ok')
   assert.equal(index.vectorState().active, true)
@@ -551,6 +551,7 @@ test('a tokenizer that cannot fit the contextual prefix degrades without encodin
     return batch.map(input => { if (input.kind === 'passage') inputs.push(input.text); return input.text.length > 150 ? null : unit(0) })
   } }
   const { retrieval, index } = setup(t, [view(name, 'needle')], embedder)
+  assert.equal(await retrieval.prepareVectors(), false)
   const result = await retrieval.search({ query: 'needle', allows })
   assert.equal(result.status, 'ok')
   assert.ok(result.reasons.includes('semantic-index-incomplete'))
@@ -564,11 +565,11 @@ test('published search skips failed and stale candidates beside an independent m
   const stopped = view('stopped', 'needle needle needle')
   const target = view('target', 'needle in a current file')
   const unrelated = Array.from({ length: 120 }, (_, i) => view(`unrelated-${i}`, 'different material'))
-  const f = setup(t, [stale, stopped, target, ...unrelated])
+  const f = setup(t, [stale, stopped, target, ...unrelated], undefined, undefined, { sync: false })
   const checks: string[] = []
   const invalidations: string[] = []
   let enabled = true
-  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash, usePublishedIndex: true,
+  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash,
     onStale: file => { invalidations.push(file.id) },
     policy: {
       read(scope, path) {
@@ -598,12 +599,12 @@ test('published search skips failed and stale candidates beside an independent m
 
 test('published lexical refill stops once the verified candidate cap is full and clears an exhausted page', async t => {
   const documents = Array.from({ length: 40 }, (_, n) => view(`document-${String(n).padStart(2, '0')}`, 'needle'))
-  const f = setup(t, documents)
+  const f = setup(t, documents, undefined, undefined, { sync: false })
   const offsets: number[] = []
   const retrieval = createMemoryFileRetrieval({ index: { ...f.index, lexicalCandidates(query, scope, limit, offset) {
     offsets.push(offset ?? 0)
     return f.index.lexicalCandidates(query, scope, limit, offset)
-  } }, policy: f.policy, workspaces: () => [workspace], hash, usePublishedIndex: true })
+  } }, policy: f.policy, workspaces: () => [workspace], hash })
   t.after(() => retrieval.close())
   retrieval.publishFiles(documents)
   const batch = { load: async () => {}, read: f.policy.read, readObservation: f.policy.read,
@@ -621,41 +622,9 @@ test('published lexical refill stops once the verified candidate cap is full and
   assert.ok(!complete.reasons.includes('candidate-limit'))
 })
 
-test('published relations only verify indexed edges and their trusted rename aliases', t => {
-  const oldPath = 'digest/wiki/old.md'
-  const root = view('root', `[[${oldPath}]] [[digest/wiki/hidden.md]] [[digest/wiki/stale.md]]`)
-  const target = view('renamed', 'target')
-  const hidden = view('hidden', '[[digest/wiki/root.md]]')
-  const stale = view('stale', '[[digest/wiki/root.md]]')
-  const unrelated = view('unrelated', 'anything')
-  const f = setup(t, [root, target, hidden, stale, unrelated])
-  const checks: string[] = []
-  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash, usePublishedIndex: true,
-    resolveAlias: (_, path) => path === oldPath ? target.path : null,
-    aliasesFor: (_, path) => path === target.path ? [oldPath] : [],
-    policy: {
-      read(scope, path) { checks.push(path); return f.policy.read(scope, path) },
-      list() { assert.fail('published relations must not walk authoritative files') },
-    },
-  })
-  t.after(() => retrieval.close())
-  retrieval.publishFiles([root, target, hidden, stale, unrelated])
-  f.views.set(stale.id, view(stale.id, 'lost binding'))
-  checks.length = 0
-  const visible = retrieval.relations({ workspace, path: root.path, allows: view => view.id !== hidden.id })!
-  assert.deepEqual(visible.outlinks.neighbors.map(item => item.id), [target.id])
-  assert.equal(visible.outlinks.visibleCount, 1)
-  assert.equal(visible.inlinks.visibleCount, 0)
-  assert.deepEqual(visible.sourceIds, ['source-root', 'source-renamed'])
-  assert.deepEqual(new Set(checks), new Set([root.path, target.path, hidden.path, stale.path]))
-  const back = retrieval.relations({ workspace, path: oldPath, allows })!
-  assert.deepEqual(back.inlinks.neighbors.map(item => item.id), [root.id])
-})
-
 test('the automatic context deadline leaves a cold query worker warming until its own inference deadline', async t => {
   const { embedder } = encoder()
   const { retrieval } = setup(t, [view('a', 'needle')], embedder)
-  retrieval.sync()
   assert.ok(await retrieval.prepareVectors())
   const caller = new AbortController()
   let signal: AbortSignal | undefined, release!: () => void
@@ -676,7 +645,6 @@ test('the automatic context deadline leaves a cold query worker warming until it
 test('vector preparation allows a corpus to exceed one inference deadline across completed batches', async t => {
   const { embedder } = encoder()
   const { retrieval, index } = setup(t, [view('a', 'first'), view('b', 'second'), view('c', 'third')], embedder)
-  retrieval.sync()
   t.mock.timers.enable({ apis: ['setTimeout'] })
   embedder.embedBatch = async (inputs, signal) => {
     t.mock.timers.tick(4_000)
@@ -685,4 +653,63 @@ test('vector preparation allows a corpus to exceed one inference deadline across
   }
   assert.equal(await retrieval.prepareVectors(), true)
   assert.equal(index.vectorState().active, true)
+})
+
+test('manual reindex during an in-flight query resumes vector preparation when the query finishes', async t => {
+  const { embedder } = encoder()
+  const run = embedder.embedBatch
+  let enteredQuery!: () => void, releaseQuery!: () => void, rebuiltDone!: () => void
+  const queryStarted = new Promise<void>(resolve => { enteredQuery = resolve })
+  const queryGate = new Promise<void>(resolve => { releaseQuery = resolve })
+  const rebuiltReady = new Promise<void>(resolve => { rebuiltDone = resolve })
+  embedder.embedBatch = async (inputs, signal) => {
+    if (inputs[0]?.kind === 'query') { enteredQuery(); await queryGate }
+    return run(inputs, signal)
+  }
+  const doc = view('a', 'needle')
+  const { retrieval, index } = setup(t, [doc], embedder)
+  t.after(releaseQuery)
+  assert.equal(await retrieval.prepareVectors(), true)
+  assert.equal(index.vectorState().active, true)
+  const finish = index.finishVectors
+  let targetGeneration = -1
+  index.finishVectors = (generation, expected) => {
+    const ok = finish(generation, expected)
+    if (ok && generation === targetGeneration) rebuiltDone()
+    return ok
+  }
+  const pendingSearch = retrieval.search({ query: 'needle', allows })
+  await queryStarted
+  const rebuilt = retrieval.reindex()
+  targetGeneration = rebuilt.vectorGeneration
+  assert.equal(retrieval.publishFiles([{ workspace, path: doc.path }]).accepted, 0)
+  assert.equal(await retrieval.prepareVectors(), false)
+  assert.equal(index.vectorState().generation, rebuilt.vectorGeneration)
+  assert.equal(index.vectorState().active, false)
+  releaseQuery()
+  await pendingSearch
+  await rebuiltReady
+  assert.equal(index.vectorState().generation, rebuilt.vectorGeneration)
+  assert.equal(index.vectorState().active, true)
+  assert.deepEqual(index.missingVectors(rebuilt.vectorGeneration), [])
+})
+
+test('republishing an unchanged superseded digest returns zero accepted and skips redundant vector checks', async t => {
+  const { embedder } = encoder()
+  const superseded = view('superseded-address', 'Old address.\nCurrent contact note.')
+  superseded.currentMarkdown = superseded.markdown.replace('Old address.', ' '.repeat('Old address.'.length))
+  superseded.applicability = { state: 'superseded', supersessions: [] }
+  const { retrieval, index } = setup(t, [superseded], embedder, undefined, { sync: false })
+  let vectorChecks = 0
+  const begin = index.beginVectors
+  index.beginVectors = space => { vectorChecks++; return begin(space) }
+  assert.deepEqual(retrieval.publishFiles([{ workspace, path: superseded.path }]), { accepted: 1, removed: 0 })
+  assert.equal(await retrieval.prepareVectors(), true)
+  const checksAfterFirst = vectorChecks
+  assert.ok(checksAfterFirst >= 1)
+  for (let round = 0; round < 2; round++) {
+    assert.deepEqual(retrieval.publishFiles([{ workspace, path: superseded.path }]), { accepted: 0, removed: 0 })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(vectorChecks, checksAfterFirst)
+  }
 })
