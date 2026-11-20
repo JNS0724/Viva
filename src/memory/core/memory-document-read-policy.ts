@@ -8,8 +8,8 @@ import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryD
 import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
 
-type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
-type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'aliases' | 'projectErasedLocators'>>
+type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'>
+type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'projectErasedLocators'>>
 type FileLocation = { workspace: string, path: string }
 type PhysicalSnapshot = (workspace: string, path: string) => MemoryPhysicalFile | null
 const locationKey = (workspace: string, path: string) => JSON.stringify([workspace, path])
@@ -81,7 +81,7 @@ export function mergeDocumentSources(refs: readonly DocumentSourceRef[]): Docume
 /** Source and prose validation is shared with write jobs; backend-issued hashes are
  * removed only from their exact trusted path/metadata positions for credential checks. */
 export function createMemoryDocumentEvidence({ notes, documents, hash, source, readable, allowsText }: {
-  notes: Pick<MemoryNotes, 'snapshot' | 'registeredForSources'> & Partial<Pick<MemoryNotes, 'aliases'>>, documents: ReadDocuments, hash(text: string): string,
+  notes: Pick<MemoryNotes, 'snapshot' | 'registeredForSources'>, documents: ReadDocuments, hash(text: string): string,
   source(id: string): MemorySource | undefined, readable(id: string): boolean,
   allowsText(text: string, source: MemorySource): boolean,
 }) {
@@ -99,8 +99,7 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
       const original = source(ref.id)
       return original ? [hash(JSON.stringify([original.scope, original.context, original.project ?? null]))] : []
     })])]
-    const paths = [...scoped.map(note => note.path), ...(notes.aliases?.() ?? []).filter(alias => workspaces.includes(alias.workspace)).map(alias => alias.path),
-      ...workspaces.flatMap(workspace => documents.aliases?.(workspace).map(alias => alias.path) ?? []), ...workspaces.flatMap(workspace => documents.registered(workspace).map(doc => doc.path)),
+    const paths = [...scoped.map(note => note.path), ...workspaces.flatMap(workspace => documents.registered(workspace).map(doc => doc.path)),
       ...refs.flatMap(ref => { const original = source(ref.id); return original?.session ? [`session/dialog/${hash(original.session)}.jsonl`] : [] })]
     const prose = inspectMemoryDocumentText(text, paths, refs.flatMap(ref => { const original = source(ref.id)
       return original?.session ? [{ key: 'session_id', value: original.session }] : [] }))

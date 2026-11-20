@@ -27,8 +27,6 @@ export const testLevels = {
     'memory-file-ranking',
     'memory-embedding-assets',
     'memory-embedding-recipe',
-    'memory-file-rename',
-    'memory-file-edit',
     'memory-file-read-boundaries',
     'memory-note-fence',
     'memory-file-passages',

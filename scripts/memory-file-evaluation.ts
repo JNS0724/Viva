@@ -45,7 +45,7 @@ export function auditEvaluationResult(result: FileSearchResult, authorized: read
   for (const hit of result.hits) {
     const view = find(hit.workspace, hit.id)
     if (!view || view.path !== hit.path || view.revision !== hit.revision) unauthorized.push(`hit:${hit.id}`)
-    if (!view?.currentMarkdown || !hit.text || hit.readRequired
+    if (!view?.currentMarkdown || !hit.text
       || !readMemoryLines(view.currentMarkdown, hit.startLine, hit.endLine).includes(hit.text.replace(/(?:\r\n|\r|\n)$/u, ''))) invalidSlices.push(hit.id)
     if (view) {
       requireDependency(view, true)
@@ -59,15 +59,6 @@ export function auditEvaluationResult(result: FileSearchResult, authorized: read
           : { ...base, replacementUnavailable: true }
       }) }
       if (!isDeepStrictEqual(hit.applicability, expected)) unauthorized.push(`applicability:${hit.id}`)
-    }
-    for (const neighbor of [...hit.inlinks.neighbors, ...hit.outlinks.neighbors]) {
-      const adjacent = find(neighbor.workspace, neighbor.id)
-      if (adjacent) requireDependency(adjacent, true)
-      const metadata = adjacent?.applicability.state === 'current' && adjacent.currentMarkdown
-        ? parseMemoryDocument(adjacent.currentMarkdown).metadata : {}
-      const expected = adjacent && { id: adjacent.id, workspace: adjacent.workspace, path: adjacent.path,
-        name: typeof metadata.name === 'string' ? metadata.name : '', description: typeof metadata.description === 'string' ? metadata.description : '' }
-      if (!isDeepStrictEqual(neighbor, expected)) unauthorized.push(`neighbor:${neighbor.id}`)
     }
   }
   for (const dependency of result.files) {
@@ -205,7 +196,10 @@ export async function runMemoryFileEvaluation(modelRoot: string, runtimeRoot: st
         return view && allows(view) && (!file.day || (!query.from || file.day>=query.from) && (!query.through || file.day<=query.through))
           && (query.asOf===undefined || !file.updatedAt || file.updatedAt<=query.asOf)
       })
-      const lexical=index.lexical(memoryFileLexicalQuery(query.text),allowed,evaluationGates.candidatesPerLane).hits
+      const allowedVersions = new Set(allowed.map(file => JSON.stringify([file.workspace, file.id, file.path, file.revision, file.usageVersion, file.policyToken])))
+      const lexical=index.lexicalCandidates(memoryFileLexicalQuery(query.text),{workspaces:[workspace('public')],from:query.from,through:query.through,asOf:query.asOf},512)
+        .rows.filter(hit=>allowedVersions.has(JSON.stringify([hit.file.workspace,hit.file.id,hit.file.path,hit.file.revision,hit.file.usageVersion,hit.file.policyToken])))
+        .slice(0,evaluationGates.candidatesPerLane)
       const queryEmbedding=await embedder.embedBatch([{kind:'query',text:query.text}])
       assert.ok(queryEmbedding?.[0],`embedding failed for frozen query ${query.id}`)
       const scores=retrieval.indexedScores(queryEmbedding[0],allowed)
@@ -239,8 +233,7 @@ export async function runMemoryFileEvaluation(modelRoot: string, runtimeRoot: st
           candidateRecall:query.evidence.some(label=>covered(candidates,label)),allEvidenceHit5:query.evidence.length>0 && query.evidence.every(label=>covered(summaries,label)),
           top:summaries,candidateIds:candidates.map(hit=>hit.id)}]
       })) as Record<'lexical'|'vector'|'fused',{hit1:boolean,hit5:boolean,candidateRecall:boolean,allEvidenceHit5:boolean,top:HitSummary[],candidateIds:string[]}>
-      const leaks=(query.forbidden ?? []).filter(label=>actualHits.some(hit=>hit.id===label.id || hit.text.includes(label.quote)
-        || [...hit.inlinks.neighbors,...hit.outlinks.neighbors].some(neighbor=>ids.get(neighbor.id)===label.id)))
+      const leaks=(query.forbidden ?? []).filter(label=>actualHits.some(hit=>hit.id===label.id || hit.text.includes(label.quote)))
       cases.push({id:query.id,kind:query.kind,group:query.group,text:query.text,evidence:query.evidence,forbidden:query.forbidden,
         from:query.from,through:query.through,asOf:query.asOf,lanes:measures,serviceStatus:actual.status,reasons:actual.reasons,
         elapsedMs:queryTimes.at(-1)!,safetyLeaks:leaks,unauthorizedExposures:audited.unauthorized})

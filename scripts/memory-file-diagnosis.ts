@@ -58,7 +58,7 @@ try {
       const scores = retrieval.indexedScores(vector, files)
       const ranked = chunks.flatMap(chunk => { const score = scores.get(memoryFileChunkKey(chunk.ref)); return score === undefined ? [] : [{ ...chunk, score }] })
         .sort((a, b) => b.score - a.score || memoryFileChunkKey(a.ref).localeCompare(memoryFileChunkKey(b.ref)))
-      const lexical = index.lexical(memoryFileLexicalQuery(variant.query), files, 25).hits
+      const lexical = index.lexicalCandidates(memoryFileLexicalQuery(variant.query), { workspaces: [workspace] }, 25).rows
       const fused = fuseMemoryFileHits(lexical, ranked.slice(0, 25))
       const selected = selectMemoryFileHits(fused, { limit: 5, minScore: 0 })
       const isEvidence = (chunk: { file: {id:string}, text:string }) => ids.get(chunk.file.id) === label.id && chunk.text.includes(label.quote)

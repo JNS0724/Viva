@@ -11,7 +11,7 @@ export function registerMemoryTools(ctx: Context, request: (input: MemoryRequest
     { op: 'remember', description: '保存用户本轮要求保留的原文片段。text 必须在当前真实用户原文中精确出现，并完整保留时间、条件、归属和例外。不能把改写、模型建议或外部材料当作用户原话。',
       parameters: { text: { type: 'string', required: true } },
       input: (session: string, args: { text: string }): MemoryRequest => ({ op: 'remember', session, ...args }) },
-    { op: 'recall', description: '搜索授权的 daily/digest 记忆文件，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope=project 查询当前工作区项目。notes 含命中片段、完整文件行号和可见关联节点，可用 memory_read 读取完整依据。notes.score 是固定加权倒数排名融合的排序分数，请保留返回顺序。核验时查看用户原文和 applicability 的替代状态、时间及条件。partial/reasons 表示结果不完整。若当前用户任务缺少必要信息，可以直接就当前任务提问。',
+    { op: 'recall', description: '搜索授权的 daily/digest 记忆文件，支持关键词、自然语言和历史日期 asOf（YYYY-MM-DD）。scope=project 查询当前工作区项目。notes 含命中片段和完整文件行号，可用 memory_read 读取完整依据。notes.score 是固定加权倒数排名融合的排序分数，请保留返回顺序。核验时查看用户原文和 applicability 的替代状态、时间及条件。partial/reasons 表示结果不完整。若当前用户任务缺少必要信息，可以直接就当前任务提问。',
       parameters: { query: { type: 'string', required: true }, asOf: { type: 'string' }, scope: { type: 'string', enum: ['project'] }, deep: { type: 'boolean' }, limit: { type: 'integer' }, min_score: { type: 'number' }, start_date: { type: 'string' }, end_date: { type: 'string' } },
       input: (session: string, args: { query: string, asOf?: string, scope?: 'project', deep?: boolean, limit?: number, min_score?: number, start_date?: string, end_date?: string }): MemoryRequest => ({ op: 'recall', session, ...args }) },
     { op: 'read', description: '按记忆搜索返回的文件 id 读取原文行。start_line/end_line 是完整 Markdown 文件的独立行号。默认返回可用于当前问题的内容；evidence=true 返回有替代状态、适用时间和条件的原文依据，不能把已被更正的内容当作现状。停用、遗忘或无权内容不会返回。',

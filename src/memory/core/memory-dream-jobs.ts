@@ -143,9 +143,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   const allSources = mergeDocumentSources
   const policy = createMemoryDocumentReadPolicy({ notes, documents, hash: identity.hash, refsCurrent, materialAllowed, reference, readPhysicalFile })
   const scopedDocuments = (workspace: string) => {
-    // The canonical journal fills gaps for legacy or not-yet-published nodes.
+    // The canonical journal fills gaps for not-yet-published nodes.
     // These hints only select paths for verification. They never reach a tool.
-    const legacy = new Map<string, { revision: string, path: string, name: string, terms: string[] }>()
+    const unpublished = new Map<string, { revision: string, path: string, name: string, terms: string[] }>()
     async function candidates(query: string, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
@@ -163,11 +163,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (row.state !== 'active') continue
         const node = published.get(row.id)
         let words: string[] | undefined, name: string | undefined
-        if (node?.tags && node.revision === row.revision && node.usageVersion === row.usageVersion && node.path === row.path) {
+        if (node && node.revision === row.revision && node.usageVersion === row.usageVersion && node.path === row.path) {
           name = node.name || row.path.split('/').at(-1)!.replace(/\.md$/u, '')
-          words = memorySearchTokens([name, node.description, ...node.tags].join(' '), true)
+          words = memorySearchTokens([name, node.description, ...(node.tags ?? [])].join(' '), true)
         } else {
-          const cached = legacy.get(row.id)
+          const cached = unpublished.get(row.id)
           if (cached?.revision === row.revision && cached.path === row.path) { words = cached.terms; name = cached.name }
           else {
             const accepted = documents.acceptedSnapshot(workspace, row.id)
@@ -175,7 +175,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               const metadata = dreamNodeMetadata(accepted)
               words = memorySearchTokens([metadata.name, metadata.description, ...metadata.tags].join(' '), true)
               name = metadata.name
-              legacy.set(row.id, { revision: row.revision, path: row.path, name, terms: words })
+              unpublished.set(row.id, { revision: row.revision, path: row.path, name, terms: words })
             }
           }
         }

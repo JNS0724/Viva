@@ -101,11 +101,8 @@ export interface DeferredDocumentWork {
 export interface DocumentTagAttempt { workspace: string, operationId: string, path: string, revision: string, state: 'attempted' | 'failed' | 'completed', reason?: string }
 export interface MemoryDocuments {
   acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
-  aliases(workspace: string): Array<{ path: string, id: string }>
   workspaces(): string[]
   indexFile(workspace: string, id: string): { path: string, revision: string, state: 'active' | 'disabled' | 'forgotten' } | null
-  resolveFileAlias(workspace: string, path: string): string | null
-  fileAliases(workspace: string, path: string): string[]
   /** Body-free correction edges, including tombstones that still hide an old claim. */
   indexDependencies(workspace: string): Array<{ replacementId: string, anchorId: string, anchorSourceIds: string[] }>
   deleteFile(workspace: string, id: string, expectedUsageVersion: number): number

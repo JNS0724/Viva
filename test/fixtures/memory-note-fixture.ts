@@ -14,7 +14,7 @@ export function noteSource(store: MemoryStore, overrides: Partial<MemorySource> 
   return source
 }
 
-/** Recreate a rename already committed by an older release, including its day index and alias. */
+/** Recreate a path move already committed on disk and in the daily notes ledger. */
 export function legacyDailyRename(store: MemoryStore, note: { workspace: string, day: string, key: string, path: string }, to: string) {
   const root = join(store.fileRoot, note.workspace)
   mkdirSync(dirname(join(root, to)), { recursive: true })
@@ -23,6 +23,5 @@ export function legacyDailyRename(store: MemoryStore, note: { workspace: string,
   writeFileSync(index, readFileSync(index, 'utf8').replaceAll(note.path, to))
   store.tx(() => {
     store.db.prepare('UPDATE memory_daily_notes SET path=?, revision=revision+1 WHERE key=?').run(to, note.key)
-    store.db.prepare('INSERT INTO memory_note_aliases VALUES(?,?,?)').run(note.workspace, note.path, note.key)
   })
 }

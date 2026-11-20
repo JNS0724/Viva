@@ -36,7 +36,7 @@
   },
   "viva": {
     "contract": {
-      "memory": 8
+      "memory": 9
     }
   },
   "license": "MIT",

@@ -20,14 +20,11 @@ export interface MemoryFileChunk {
   headingPath: string[]
   searchText: string
 }
-export interface MemoryFileLink { path: string, line: number, label?: string, anchor?: string }
 export interface MemoryFileSnapshot extends MemoryFileIdentity {
   name: string
   description: string
-  /** Absent in older projections. */
   tags?: string[]
   chunks: MemoryFileChunk[]
-  links: MemoryFileLink[]
 }
 export interface MemoryFileChunkRef extends MemoryFileVersion { workspace: string, fileId: string, ordinal: number }
 export interface MemoryFilePassage extends MemoryFileChunk { ref: MemoryFileChunkRef, file: MemoryFileIdentity }
@@ -50,17 +47,14 @@ export interface MemoryFileIndex {
   accept(snapshot: MemoryFileSnapshot, expected: MemoryFileVersion | null): boolean
   remove(identity: MemoryFileIdentity): boolean
   files(workspaces: readonly string[]): MemoryFileIdentity[]
-  snapshot(workspace: string, id: string): MemoryFileSnapshot | null
+  snapshot(workspace: string, id: string): MemoryFileNode | null
   chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[]
-  lexical(query: string, authorized: readonly MemoryFileIdentity[], limit: number): { hits: MemoryFileHit[], mode: 'fts' | 'fallback' }
   /** Candidate pages contain trusted projections. Current access and revision are checked by core. */
   lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
   nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode>
   vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, limit: number, current?: () => boolean, deadline?: number): Promise<MemoryFilePage<MemoryFileHit> | null>
   digestNodes(workspace: string): MemoryFileNode[]
   nodeAt(workspace: string, path: string): MemoryFileNode | null
-  linkTargets(file: MemoryFileIdentity, limit: number): MemoryFilePage<string>
-  linkingNodes(workspace: string, targets: readonly string[], limit: number): MemoryFilePage<MemoryFileNode>
   beginVectors(space: MemoryVectorSpace): number
   vectorState(): MemoryVectorState
   missingVectors(generation: number): MemoryFilePassage[]

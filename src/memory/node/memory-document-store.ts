@@ -49,7 +49,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   checkpoint?: (point: FileCheckpoint, path?: string) => void,
 }): MemoryDocuments {
   db.exec(`PRAGMA secure_delete=ON;
-    CREATE TABLE IF NOT EXISTS memory_document_aliases (workspace TEXT NOT NULL,path TEXT NOT NULL,document TEXT NOT NULL,PRIMARY KEY(workspace,path));
     CREATE TABLE IF NOT EXISTS memory_documents (
       id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
       usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
@@ -181,7 +180,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
           let path = `${base}.md`, suffix = 1
           while (rowByPath(data.workspace, path) && rowByPath(data.workspace, path)?.id !== data.document) path = `${base}-${suffix++}.md`
           db.prepare('UPDATE memory_documents SET path=? WHERE id=?').run(path, data.document)
-          db.prepare('DELETE FROM memory_document_aliases WHERE document=?').run(data.document)
           for (const row of db.prepare("SELECT operation,receipt FROM memory_document_receipts WHERE json_extract(receipt,'$.documentId')=?").all(data.document)) {
             const receipt = JSON.parse(String(row.receipt)) as DocumentReceipt
             db.prepare('UPDATE memory_document_receipts SET receipt=? WHERE operation=?').run(encode({ ...receipt, path }), row.operation)
@@ -219,10 +217,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       }
     },
   })
-  // Old external-edit intents have no application write to replay. Retire the
-  // reservation before recovery without touching either physical version.
-  db.prepare(`UPDATE memory_file_intents SET state='cancelled', plan=NULL WHERE namespace='documents'
-    AND plan IS NOT NULL AND json_type(plan,'$.data.externalEdit')='object'`).run()
   function replay(operation: string, input: unknown): DocumentReceipt | undefined {
     const row = db.prepare('SELECT input,receipt FROM memory_document_receipts WHERE operation=?').get(operation) as { input: string, receipt: string } | undefined
     if (!row) return
@@ -740,9 +734,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         else {
           const record = db.prepare('INSERT OR IGNORE INTO memory_document_erased_locators VALUES (?,?)')
           record.run(row.workspace, memoryFileRevision(row.path))
-          for (const alias of db.prepare('SELECT path FROM memory_document_aliases WHERE document=?').all(row.id)) {
-            record.run(row.workspace, memoryFileRevision(String(alias.path)))
-          }
         }
         db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(row.workspace, row.path)
         db.prepare('UPDATE memory_documents SET forgotten=1,enabled=0,usage_version=usage_version+1,sources=?,corrections=? WHERE id=?').run('[]', encode(sanitized.map(item => ({ ...item, text: '', condition: '', time: '' }))), row.id)
@@ -948,7 +939,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
         .run(encode(supersessions), id)
       db.prepare('UPDATE memory_document_revisions SET before=NULL,after=NULL WHERE document=?').run(id)
       db.prepare('DELETE FROM memory_document_tag_attempts WHERE workspace=? AND path=?').run(scope, row.path)
-      db.prepare('DELETE FROM memory_document_aliases WHERE document=?').run(id)
       db.prepare('INSERT OR IGNORE INTO memory_document_erasures VALUES(?)').run(`file:${id}`)
       useRestrictions.removeTarget({ kind: 'digest', workspace: scope, key: id })
       return row.usage_version + 1
@@ -976,8 +966,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     },
     retiredClarification: (scope, id) => Boolean(db.prepare("SELECT 1 FROM memory_document_deferred WHERE workspace=? AND operation=? AND state='expired'").get(scope, id)),
     acceptedSnapshot,
-    aliases: scope => db.prepare('SELECT path,document AS id FROM memory_document_aliases WHERE workspace=?').all(scope)
-      .map(row => ({ path: String(row.path), id: String(row.id) })),
     registered: scope => (db.prepare('SELECT * FROM memory_documents WHERE workspace=? ORDER BY id').all(scope) as Row[])
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, sources: refsOf(row), state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),
@@ -993,14 +981,6 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
       return row?.workspace === scope ? { path: row.path, revision: row.revision,
         state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' } : null
     },
-    resolveFileAlias(scope, path) {
-      if (rowByPath(scope, path)) return path
-      const row = db.prepare(`SELECT d.path FROM memory_document_aliases a JOIN memory_documents d ON d.id=a.document
-        WHERE a.workspace=? AND a.path=? AND d.workspace=a.workspace`).get(scope, path)
-      return row ? String(row.path) : null
-    },
-    fileAliases: (scope, path) => db.prepare(`SELECT a.path FROM memory_documents d JOIN memory_document_aliases a
-      ON a.document=d.id AND a.workspace=d.workspace WHERE d.workspace=? AND d.path=?`).all(scope, path).map(row => String(row.path)),
     indexDependencies: scope => (db.prepare("SELECT corrections FROM memory_documents WHERE workspace=? AND corrections<>'[]'").all(scope) as Pick<Row, 'corrections'>[])
       .flatMap(row => (JSON.parse(row.corrections) as DocumentSupersession[]).map(item => ({
         replacementId: item.documentId, anchorId: indexAnchorId(item.sourceDocumentId), anchorSourceIds: [...item.anchorSources ?? [], ...item.erasedAnchorSources ?? []].map(ref => ref.id),

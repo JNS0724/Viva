@@ -290,9 +290,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   // Only the trusted owner host API calls this management surface. Model requests retain
   // their narrower scoped fileAllowsOrigin checks and ordinary model read policy.
   const managementAllows = (view: MemoryDocumentView) => !closed && fileWorkspaces().includes(view.workspace)
-  function resolveFileAlias(workspace: string, path: string) {
-    return path.startsWith('daily/') ? notes?.storage.resolveFileAlias(workspace, path) ?? null : documents?.resolveFileAlias(workspace, path) ?? null
-  }
   const noteFileId = (key: string) => `daily:${memoryHash(key)}`
   function resolveFileId(workspace: string, id: string) {
     if (!id.startsWith('daily:')) return documents?.indexFile(workspace, id)?.path ?? null
@@ -301,12 +298,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (published && registered && noteFileId(registered.key) === id) return published.path
     return notes?.storage.allocations().find(note => note.workspace === workspace && noteFileId(note.key) === id)?.path ?? null
   }
-  function aliasesFor(workspace: string, path: string): string[] {
-    return path.startsWith('daily/') ? notes?.storage.fileAliases(workspace, path) ?? [] : documents?.fileAliases(workspace, path) ?? []
-  }
   const fileRetrieval = filePolicy && fileIndex ? createMemoryFileRetrieval({ index: fileIndex, policy: filePolicy,
-    workspaces: fileWorkspaces, hash: memoryHash, embedder, now, resolveAlias: resolveFileAlias, diagnostics,
-    resolveId: resolveFileId, usePublishedIndex: true, aliasesFor,
+    workspaces: fileWorkspaces, hash: memoryHash, embedder, now, diagnostics,
+    resolveId: resolveFileId,
     onStale(file) { scheduleStaleProjection(file.workspace, file.id) },
   }) : null
   function retainFileReads(session: string, result: { files: MemoryFileDependency[], sourceIds: string[] }) {
@@ -514,8 +508,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   documents?.recover()
   // Retire work queued by older versions before this owner can admit a turn.
   store.tx(() => {
-    effects.cancelStarting('memory.file-scan', '')
-    effects.cancelStarting('memory.file-rescan', '')
     documents?.retireClarifications()
     store.dispatch.retireFileClarifications()
   })
@@ -1111,7 +1103,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const pending = effects.timing(INDEX_PUBLISH, key)
       if (pending && pending.dueAt > now()) {
         const job = effects.get(INDEX_PUBLISH, key)
-        if (job) effects.queue(INDEX_PUBLISH, key, job.payload)
+        if (job) {
+          effects.queue(INDEX_PUBLISH, key, job.payload)
+          void effects.wake()
+        }
       } else if (!pending) scheduleStaleProjection(workspace, identity.id)
     }
     return detail
@@ -1129,7 +1124,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!query) return textOf({ status: 'rejected', reason: 'invalid-date' })
       if (!current()) return textOf({ status: 'unavailable' })
       const batch = filePolicy?.readBatch(signal)
-      return fileRetrieval.search({ ...query, signal, publishedVectorsOnly: dream?.isRunning() }, batch).then(result => {
+      return fileRetrieval.search({ ...query, signal }, batch).then(result => {
         if (!current()) return textOf({ status: 'unavailable' })
         return filePacket(request.session, result, batch)
       })

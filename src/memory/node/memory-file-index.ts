@@ -7,10 +7,11 @@ import { transaction, truncateMemoryJournal } from './sqlite.ts'
 
 const same = (a: MemoryFileVersion, b: MemoryFileVersion) => a.revision === b.revision && a.usageVersion === b.usageVersion && a.policyToken === b.policyToken
 const key = (ref: MemoryFileChunkRef) => JSON.stringify([ref.workspace, ref.fileId, ref.ordinal, ref.revision, ref.usageVersion, ref.policyToken])
-const identity = ({ chunks: _chunks, links: _links, name: _name, description: _description, tags: _tags, ...file }: MemoryFileSnapshot): MemoryFileIdentity => file
-const node = (file: MemoryFileSnapshot): MemoryFileNode => ({
-  ...identity(file), name: file.name, description: file.description, ...(file.tags && { tags: file.tags }),
-})
+const identity = ({ name: _name, description: _description, tags: _tags, ...file }: MemoryFileNode): MemoryFileIdentity => file
+const node = (file: MemoryFileSnapshot): MemoryFileNode => {
+  const { chunks: _chunks, ...meta } = file
+  return { ...meta }
+}
 const page = <T>(rows: T[], limit: number): MemoryFilePage<T> => ({
   rows: rows.slice(0, limit), incomplete: rows.length > limit,
 })
@@ -18,18 +19,12 @@ const limitOf = (limit: number) => Number.isSafeInteger(limit) && limit > 0 ? li
 
 /** Accepted projections are the only inputs. This adapter deliberately has no filesystem dependency. */
 export function openMemoryFileIndex({ db, checkpoint = () => {} }: { db: DatabaseSync, now?: () => number, checkpoint?: (point: string) => void }): MemoryFileIndex {
-  const lookupMissing = ['memory_file_index_lookup', 'memory_file_index_links'].some(table =>
-    !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table))
   db.exec(`PRAGMA secure_delete=ON;
-    CREATE TABLE IF NOT EXISTS memory_file_index_nodes(workspace TEXT NOT NULL,id TEXT NOT NULL,path TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(workspace,id),UNIQUE(workspace,path));
+    CREATE TABLE IF NOT EXISTS memory_file_index_nodes(rowid INTEGER PRIMARY KEY,workspace TEXT NOT NULL,id TEXT NOT NULL,path TEXT NOT NULL,kind TEXT NOT NULL,day TEXT,updated_at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,id),UNIQUE(workspace,path));
     CREATE TABLE IF NOT EXISTS memory_file_index_chunks(rowid INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,file_id TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,file_id,ordinal));
     CREATE TABLE IF NOT EXISTS memory_file_index_vectors(generation INTEGER NOT NULL,ref TEXT NOT NULL,passage INTEGER NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(generation,ref,passage));
     CREATE TABLE IF NOT EXISTS memory_file_index_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS memory_file_index_withdrawn(source TEXT PRIMARY KEY);
-    CREATE TABLE IF NOT EXISTS memory_file_index_lookup(rowid INTEGER PRIMARY KEY,workspace TEXT NOT NULL,id TEXT NOT NULL,path TEXT NOT NULL,kind TEXT NOT NULL,day TEXT,updated_at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,id),UNIQUE(workspace,path));
-    CREATE TABLE IF NOT EXISTS memory_file_index_links(workspace TEXT NOT NULL,file_id TEXT NOT NULL,target TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(workspace,file_id,target));
-    CREATE INDEX IF NOT EXISTS memory_file_index_link_target ON memory_file_index_links(workspace,target,file_id);
-    CREATE INDEX IF NOT EXISTS memory_file_index_link_order ON memory_file_index_links(workspace,file_id,ordinal);
   `)
   const meta = (name: string) => db.prepare('SELECT value FROM memory_file_index_meta WHERE key=?').get(name)?.value as string | undefined
   const setMeta = (name: string, value: string) => db.prepare('INSERT OR REPLACE INTO memory_file_index_meta VALUES(?,?)').run(name, value)
@@ -39,22 +34,6 @@ export function openMemoryFileIndex({ db, checkpoint = () => {} }: { db: Databas
   const token = (value: string) => 't' + createHmac('sha256', salt).update(value).digest('hex')
   const termsOf = (text: string) => memorySearchTokens(text, true).map(token).join(' ')
   const queryOf = (text: string) => [...new Set(memorySearchTokens(text, false))].map(token).join(' OR ')
-  const snapshots = () => db.prepare('SELECT payload FROM memory_file_index_nodes ORDER BY workspace,id').all().map(row => JSON.parse(String(row.payload)) as MemoryFileSnapshot)
-  function recordLookup(file: MemoryFileSnapshot) {
-    const row = db.prepare('INSERT INTO memory_file_index_lookup(workspace,id,path,kind,day,updated_at,payload) VALUES(?,?,?,?,?,?,?)')
-      .run(file.workspace, file.id, file.path, file.kind, file.day ?? null, file.updatedAt, JSON.stringify(node(file)))
-    const insertLink = db.prepare('INSERT OR IGNORE INTO memory_file_index_links VALUES(?,?,?,?)')
-    for (const [ordinal, link] of file.links.entries()) insertLink.run(file.workspace, file.id, link.path, ordinal)
-    return row.lastInsertRowid
-  }
-  // Old stores only have full projections. Backfill SQL lookup rows once; all of them
-  // can be recovered from accepted projections without opening a memory file.
-  if (lookupMissing || !meta('lookup-v1')) transaction(db, () => {
-    db.exec('DELETE FROM memory_file_index_links; DELETE FROM memory_file_index_lookup')
-    for (const file of snapshots()) recordLookup(file)
-    setMeta('lookup-v1', '1')
-    setMeta('fts-dirty', '1')
-  })
   let lexicalReady = false
   function initializeFts(reset = false): boolean {
     try {
@@ -73,7 +52,7 @@ export function openMemoryFileIndex({ db, checkpoint = () => {} }: { db: Databas
             insertChunk.run(Number(row.rowid), termsOf(chunk.searchText))
           }
           const insertNode = db.prepare('INSERT INTO memory_file_index_node_fts(rowid,terms) VALUES(?,?)')
-          for (const row of db.prepare("SELECT rowid,payload FROM memory_file_index_lookup WHERE kind='digest'").iterate()) {
+          for (const row of db.prepare("SELECT rowid,payload FROM memory_file_index_nodes WHERE kind='digest'").iterate()) {
             const entry = JSON.parse(String(row.payload)) as MemoryFileNode
             insertNode.run(Number(row.rowid), termsOf(`${entry.name}
 ${entry.description}`))
@@ -89,7 +68,7 @@ ${entry.description}`))
   lexicalReady = initializeFts()
   const snapshot = (workspace: string, id: string) => {
     const row = db.prepare('SELECT payload FROM memory_file_index_nodes WHERE workspace=? AND id=?').get(workspace, id)
-    return row ? JSON.parse(String(row.payload)) as MemoryFileSnapshot : null
+    return row ? JSON.parse(String(row.payload)) as MemoryFileNode : null
   }
   const vectorState = (): MemoryVectorState => JSON.parse(meta('vectors')!) as MemoryVectorState
   const saveState = (state: MemoryVectorState) => { setMeta('vectors', JSON.stringify(state)) }
@@ -100,26 +79,29 @@ ${entry.description}`))
     if (truncateMemoryJournal(db)) db.prepare("DELETE FROM memory_file_index_meta WHERE key='erase-pending'").run()
   }
   function passages(file: MemoryFileSnapshot): MemoryFilePassage[] {
-    return file.chunks.map((chunk, ordinal) => ({ ...chunk, file: identity(file), ref: {workspace: file.workspace, fileId: file.id, ordinal, revision: file.revision, usageVersion: file.usageVersion, policyToken: file.policyToken} }))
+    const base = identity(file)
+    return file.chunks.map((chunk, ordinal) => ({ ...chunk, file: base, ref: {workspace: file.workspace, fileId: file.id, ordinal, revision: file.revision, usageVersion: file.usageVersion, policyToken: file.policyToken} }))
   }
-  const allChunks = () => snapshots().flatMap(passages)
+  const allChunks = () => db.prepare('SELECT payload FROM memory_file_index_chunks ORDER BY workspace,file_id,ordinal')
+    .all().map(row => JSON.parse(String(row.payload)) as MemoryFilePassage)
   function chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[] {
     const allowed = new Map(authorized.map(file => [JSON.stringify([file.workspace,file.id]), file]))
-    return snapshots().filter(file => { const a = allowed.get(JSON.stringify([file.workspace,file.id])); return a && a.path === file.path && same(a,file) }).flatMap(passages)
+    return allChunks().filter(chunk => {
+      const entry = allowed.get(JSON.stringify([chunk.file.workspace, chunk.file.id]))
+      return Boolean(entry && entry.path === chunk.file.path && same(entry, chunk.file))
+    })
   }
-  function erase(file: MemoryFileSnapshot) {
-    const rows = db.prepare('SELECT rowid FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').all(file.workspace,file.id)
+  function erase(file: Pick<MemoryFileIdentity, 'workspace' | 'id'>) {
+    const rows = db.prepare('SELECT rowid,payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').all(file.workspace, file.id)
     if (lexicalReady) try {
       for (const row of rows) db.prepare('DELETE FROM memory_file_index_fts WHERE rowid=?').run(Number(row.rowid))
-      db.prepare('DELETE FROM memory_file_index_node_fts WHERE rowid IN (SELECT rowid FROM memory_file_index_lookup WHERE workspace=? AND id=?)')
+      db.prepare('DELETE FROM memory_file_index_node_fts WHERE rowid IN (SELECT rowid FROM memory_file_index_nodes WHERE workspace=? AND id=?)')
         .run(file.workspace, file.id)
     } catch { lexicalReady = false; setMeta('fts-dirty','1'); db.exec('DROP TABLE IF EXISTS memory_file_index_fts; DROP TABLE IF EXISTS memory_file_index_node_fts') }
     if (!lexicalReady) { setMeta('fts-dirty','1'); db.exec('DROP TABLE IF EXISTS memory_file_index_fts; DROP TABLE IF EXISTS memory_file_index_node_fts') }
-    for (const chunk of passages(file)) db.prepare('DELETE FROM memory_file_index_vectors WHERE ref=?').run(key(chunk.ref))
+    for (const row of rows) db.prepare('DELETE FROM memory_file_index_vectors WHERE ref=?').run(key((JSON.parse(String(row.payload)) as MemoryFilePassage).ref))
     db.prepare('DELETE FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').run(file.workspace,file.id)
     db.prepare('DELETE FROM memory_file_index_nodes WHERE workspace=? AND id=?').run(file.workspace,file.id)
-    db.prepare('DELETE FROM memory_file_index_links WHERE workspace=? AND file_id=?').run(file.workspace,file.id)
-    db.prepare('DELETE FROM memory_file_index_lookup WHERE workspace=? AND id=?').run(file.workspace,file.id)
     dirty()
   }
   function validate(file: MemoryFileSnapshot) {
@@ -130,20 +112,26 @@ ${entry.description}`))
   function accept(file: MemoryFileSnapshot, expected: MemoryFileVersion | null) {
     validate(file)
     return transaction(db, () => {
-      const old = snapshot(file.workspace,file.id)
-      if (old ? !expected || !same(old,expected) : expected !== null) return false
+      const old = snapshot(file.workspace, file.id)
+      if (old ? !expected || !same(old, expected) : expected !== null) return false
       if (file.sources.some(ref => db.prepare('SELECT 1 FROM memory_file_index_withdrawn WHERE source=?').get(ref.id))) return false
-      if (old && JSON.stringify(old) === JSON.stringify(file)) return true
+      const entry = passages(file)
+      const nextNode = JSON.stringify(node(file))
+      const nextChunks = entry.map(chunk => JSON.stringify(chunk))
+      if (old && JSON.stringify(old) === nextNode) {
+        const storedChunks = db.prepare('SELECT payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=? ORDER BY ordinal').all(file.workspace, file.id)
+        if (storedChunks.length === nextChunks.length && storedChunks.every((row, i) => String(row.payload) === nextChunks[i])) return true
+      }
       if (old) erase(old)
-      db.prepare('INSERT INTO memory_file_index_nodes VALUES(?,?,?,?)').run(file.workspace,file.id,file.path,JSON.stringify(file))
-      const lookupId = recordLookup(file)
+      const inserted = db.prepare('INSERT INTO memory_file_index_nodes(workspace,id,path,kind,day,updated_at,payload) VALUES(?,?,?,?,?,?,?)')
+        .run(file.workspace, file.id, file.path, file.kind, file.day ?? null, file.updatedAt, nextNode)
       if (lexicalReady && file.kind === 'digest') try {
-        db.prepare('INSERT INTO memory_file_index_node_fts(rowid,terms) VALUES(?,?)').run(lookupId, termsOf(`${file.name}
+        db.prepare('INSERT INTO memory_file_index_node_fts(rowid,terms) VALUES(?,?)').run(inserted.lastInsertRowid, termsOf(`${file.name}
 ${file.description}`))
       } catch { lexicalReady = false; setMeta('fts-dirty','1') }
-      for (const chunk of passages(file)) {
-        const row = db.prepare('INSERT INTO memory_file_index_chunks(workspace,file_id,ordinal,payload) VALUES(?,?,?,?)').run(file.workspace,file.id,chunk.ref.ordinal,JSON.stringify(chunk))
-        if (lexicalReady) try { db.prepare('INSERT INTO memory_file_index_fts(rowid,terms) VALUES(?,?)').run(row.lastInsertRowid,termsOf(chunk.searchText)) } catch { lexicalReady = false; setMeta('fts-dirty','1') }
+      for (const [ordinal, payload] of nextChunks.entries()) {
+        const row = db.prepare('INSERT INTO memory_file_index_chunks(workspace,file_id,ordinal,payload) VALUES(?,?,?,?)').run(file.workspace, file.id, ordinal, payload)
+        if (lexicalReady) try { db.prepare('INSERT INTO memory_file_index_fts(rowid,terms) VALUES(?,?)').run(row.lastInsertRowid, termsOf(entry[ordinal]!.searchText)) } catch { lexicalReady = false; setMeta('fts-dirty','1') }
       }
       if (!lexicalReady) setMeta('fts-dirty','1')
       return true
@@ -164,23 +152,6 @@ ${file.description}`))
       return {...chunk,score}
     }).filter(hit => hit.score > 0).sort((a,b) => b.score-a.score || key(a.ref).localeCompare(key(b.ref)))
   }
-  function lexical(query: string, authorized: readonly MemoryFileIdentity[], limit: number): {hits: MemoryFileHit[],mode:'fts'|'fallback'} {
-    const candidates = chunks(authorized), terms = [...new Set(memorySearchTokens(query,false))]
-    if (!terms.length || !limitOf(limit)) return {hits:[],mode:lexicalReady?'fts':'fallback'}
-    if (lexicalReady) try {
-      const allowed = new Map(candidates.map(chunk => [key(chunk.ref),chunk]))
-      // No SQL LIMIT before authorization: inaccessible records cannot exhaust the requested quota.
-      const rows = db.prepare('SELECT c.payload,bm25(memory_file_index_fts) AS rank FROM memory_file_index_fts JOIN memory_file_index_chunks c ON c.rowid=memory_file_index_fts.rowid WHERE memory_file_index_fts MATCH ? ORDER BY rank,c.rowid').all(terms.map(token).join(' OR '))
-      const hits: MemoryFileHit[] = []
-      for (const row of rows) {
-        const stored = JSON.parse(String(row.payload)) as MemoryFilePassage, chunk = allowed.get(key(stored.ref))
-        if (chunk) hits.push({...chunk,score:-Number(row.rank)})
-        if (hits.length === limit) break
-      }
-      return {hits,mode:'fts'}
-    } catch { lexicalReady = false; setMeta('fts-dirty','1') }
-    return {hits:fallback(query,candidates).slice(0,limitOf(limit)),mode:'fallback'}
-  }
   function scopeArgs(scope: MemoryFileQueryScope) {
     return [JSON.stringify(scope.workspaces), scope.from ?? null, scope.through ?? null, scope.asOf ?? null]
   }
@@ -188,7 +159,7 @@ ${file.description}`))
     AND (n.kind <> 'daily' OR n.day IS NULL OR n.day >= coalesce(?,n.day))
     AND (n.kind <> 'daily' OR n.day IS NULL OR n.day <= coalesce(?,n.day))
     AND (n.updated_at = 0 OR n.updated_at <= coalesce(?,n.updated_at))`
-  const chunksInScope = `JOIN memory_file_index_lookup n ON c.workspace=n.workspace AND c.file_id=n.id WHERE ${withinScope}`
+  const chunksInScope = `JOIN memory_file_index_nodes n ON c.workspace=n.workspace AND c.file_id=n.id WHERE ${withinScope}`
   function passagePage(scope: MemoryFileQueryScope, limit: number, offset: number) {
     const rows = db.prepare(`SELECT c.payload FROM memory_file_index_chunks c ${chunksInScope}
       ORDER BY c.workspace,c.file_id,c.ordinal LIMIT ? OFFSET ?`).all(...scopeArgs(scope), limit + 1, offset)
@@ -211,37 +182,34 @@ ${file.description}`))
     if (!match || !limitOf(limit)) return { rows: [], incomplete: false }
     if (lexicalReady) try {
       const rows = db.prepare(`SELECT n.payload FROM memory_file_index_node_fts
-        JOIN memory_file_index_lookup n ON n.rowid=memory_file_index_node_fts.rowid
+        JOIN memory_file_index_nodes n ON n.rowid=memory_file_index_node_fts.rowid
         WHERE ${withinScope} AND memory_file_index_node_fts MATCH ?
         ORDER BY bm25(memory_file_index_node_fts),n.workspace,n.id LIMIT ? OFFSET ?`).all(...scopeArgs(scope), match, limit + 1, offset)
       return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
     } catch { lexicalReady = false; setMeta('fts-dirty','1') }
-    const rows = db.prepare(`SELECT n.payload FROM memory_file_index_lookup n WHERE ${withinScope} AND n.kind='digest'
+    const rows = db.prepare(`SELECT n.payload FROM memory_file_index_nodes n WHERE ${withinScope} AND n.kind='digest'
       ORDER BY n.workspace,n.id LIMIT ? OFFSET ?`).all(...scopeArgs(scope), limit + 1, offset)
     return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
   }
   function nodeAt(workspace: string, path: string) {
-    const row = db.prepare('SELECT payload FROM memory_file_index_lookup WHERE workspace=? AND path=?').get(workspace, path)
+    const row = db.prepare('SELECT payload FROM memory_file_index_nodes WHERE workspace=? AND path=?').get(workspace, path)
     return row ? JSON.parse(String(row.payload)) as MemoryFileNode : null
   }
-  function linkTargets(file: MemoryFileIdentity, limit: number) {
-    const rows = db.prepare('SELECT target FROM memory_file_index_links WHERE workspace=? AND file_id=? ORDER BY ordinal LIMIT ?')
-      .all(file.workspace,file.id,limit + 1)
-    return page(rows.map(row => String(row.target)), limit)
-  }
-  function linkingNodes(workspace: string, targets: readonly string[], limit: number) {
-    const rows = db.prepare(`SELECT n.payload FROM memory_file_index_lookup n JOIN (
-        SELECT DISTINCT file_id FROM memory_file_index_links WHERE workspace=? AND target IN (SELECT value FROM json_each(?))
-        ORDER BY file_id LIMIT ?
-      ) l ON n.workspace=? AND n.id=l.file_id ORDER BY n.id`).all(workspace,JSON.stringify(targets),limit + 1,workspace)
-    return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
+  const validVector = (vector: Float32Array, dimensions: number) => vector.length === dimensions && [...vector].every(Number.isFinite) && vector.some(v => v !== 0)
+  function vectorsValid(state: MemoryVectorState) {
+    if (!state.space) return false
+    for (const row of db.prepare('SELECT vector FROM memory_file_index_vectors WHERE generation=?').iterate(state.generation)) {
+      const data = row.vector as Uint8Array
+      if (data.byteLength % 4 !== 0 || !validVector(new Float32Array(Uint8Array.from(data).buffer), state.space.dimensions)) return false
+    }
+    return true
   }
   function validSpace(space: MemoryVectorSpace) { if (!space.fingerprint || !Number.isSafeInteger(space.dimensions) || space.dimensions < 1) throw new Error('invalid-vector-space') }
   function beginVectors(space: MemoryVectorSpace) {
     validSpace(space)
     return transaction(db, () => {
       const state = vectorState()
-      if (state.space?.fingerprint === space.fingerprint && state.space.dimensions === space.dimensions) return state.generation
+      if (state.space?.fingerprint === space.fingerprint && state.space.dimensions === space.dimensions && vectorsValid(state)) return state.generation
       db.exec('DELETE FROM memory_file_index_vectors'); dirty()
       saveState({space,generation:state.generation+1,active:false})
       return state.generation+1
@@ -253,7 +221,6 @@ ${file.description}`))
       return data.byteLength % 4 ? new Float32Array() : new Float32Array(Uint8Array.from(data).buffer)
     })
   }
-  const validVector = (vector: Float32Array, dimensions: number) => vector.length === dimensions && [...vector].every(Number.isFinite) && vector.some(v => v !== 0)
   const covered = (ref: MemoryFileChunkRef, state: MemoryVectorState) => { const rows = vectors(ref,state); return rows.length > 0 && rows.every(v => validVector(v,state.space!.dimensions)) }
   function stageVectors(generation: number, records: readonly {ref: MemoryFileChunkRef,vectors:readonly Float32Array[]}[]) {
     return transaction(db, () => {
@@ -300,7 +267,7 @@ ${file.description}`))
     if (!matchesVectorSpace(state, space, query)) return null
     if (!limitOf(limit)) return { rows: [], incomplete: false }
     const chunksPage = db.prepare(`SELECT c.file_id,c.ordinal,json_extract(c.payload,'$.ref') AS ref
-      FROM memory_file_index_chunks c JOIN memory_file_index_lookup n ON n.workspace=c.workspace AND n.id=c.file_id
+      FROM memory_file_index_chunks c JOIN memory_file_index_nodes n ON n.workspace=c.workspace AND n.id=c.file_id
       WHERE c.workspace=? AND (c.file_id,c.ordinal) > (?,?)
       AND (n.kind <> 'daily' OR n.day IS NULL OR n.day >= coalesce(?,n.day))
       AND (n.kind <> 'daily' OR n.day IS NULL OR n.day <= coalesce(?,n.day))
@@ -355,19 +322,25 @@ ${file.description}`))
     return { rows, incomplete }
   }
   return {
-    accept, snapshot, chunks, lexical, beginVectors, vectorState, stageVectors, finishVectors, vector,
-    lexicalCandidates, nodeCandidates, vectorCandidates, nodeAt, linkTargets, linkingNodes,
-    digestNodes: workspace => db.prepare("SELECT payload FROM memory_file_index_lookup WHERE workspace=? AND kind='digest'").all(workspace)
+    accept, snapshot, chunks, beginVectors, vectorState, stageVectors, finishVectors, vector,
+    lexicalCandidates, nodeCandidates, vectorCandidates, nodeAt,
+    digestNodes: workspace => db.prepare("SELECT payload FROM memory_file_index_nodes WHERE workspace=? AND kind='digest'").all(workspace)
       .map(row => JSON.parse(String(row.payload)) as MemoryFileNode),
-    files: workspaces => db.prepare('SELECT payload FROM memory_file_index_lookup WHERE workspace IN (SELECT value FROM json_each(?)) ORDER BY workspace,id')
-      .all(JSON.stringify(workspaces)).map(row => {
-        const { name: _name, description: _description, tags: _tags, ...file } = JSON.parse(String(row.payload)) as MemoryFileNode
-        return file
-      }),
+    files: workspaces => db.prepare('SELECT payload FROM memory_file_index_nodes WHERE workspace IN (SELECT value FROM json_each(?)) ORDER BY workspace,id')
+      .all(JSON.stringify(workspaces)).map(row => identity(JSON.parse(String(row.payload)) as MemoryFileNode)),
     remove(file) { return transaction(db, () => { const old=snapshot(file.workspace,file.id); if (!old || old.path !== file.path || !same(old,file)) return false; erase(old); return true }) },
     missingVectors(generation) { const state=vectorState(); return state.generation !== generation || !state.space ? [] : allChunks().filter(chunk => !covered(chunk.ref,state)) },
     reindex() { lexicalReady=initializeFts(true); const state=vectorState(); transaction(db, () => { db.exec('DELETE FROM memory_file_index_vectors'); dirty(); saveState({...state,generation:state.generation+1,active:false}) }); return {lexical:lexicalReady,vectorGeneration:state.generation+1} },
-    withdraw(sourceId) { transaction(db, () => { db.prepare('INSERT OR IGNORE INTO memory_file_index_withdrawn VALUES(?)').run(sourceId); for (const file of snapshots()) if (file.sources.some(ref => ref.id === sourceId)) erase(file); dirty() }) },
+    withdraw(sourceId) {
+      transaction(db, () => {
+        db.prepare('INSERT OR IGNORE INTO memory_file_index_withdrawn VALUES(?)').run(sourceId)
+        for (const row of db.prepare('SELECT payload FROM memory_file_index_nodes ORDER BY workspace,id').all()) {
+          const file = JSON.parse(String(row.payload)) as MemoryFileNode
+          if (file.sources.some(ref => ref.id === sourceId)) erase(file)
+        }
+        dirty()
+      })
+    },
     recover, pendingCleanup: () => meta('erase-pending') ? 1 : 0,
   }
 }
