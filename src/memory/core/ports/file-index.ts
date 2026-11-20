@@ -73,20 +73,3 @@ export interface MemoryFileIndex {
   recover(): void
   pendingCleanup(): number
 }
-export interface MemoryCatalogObservation { path: string, revision: string }
-export interface MemoryCatalogFile extends MemoryCatalogObservation { markdown: string }
-export type MemoryCatalogChange =
-  | { kind: 'unchanged', identity: MemoryFileIdentity, file: MemoryCatalogObservation }
-  | { kind: 'modified', identity: MemoryFileIdentity, file: MemoryCatalogObservation }
-  | { kind: 'missing', identity: MemoryFileIdentity }
-  | { kind: 'added', file: MemoryCatalogObservation }
-  | { kind: 'rename', identity: MemoryFileIdentity, file: MemoryCatalogObservation }
-  | { kind: 'quarantined', path: string, reason: 'ambiguous-rename' | 'duplicate-content' | 'symlink' | 'invalid-path' | 'unreadable' | 'scan-unavailable' }
-export interface MemoryFileCatalog {
-  scan(workspace: string, accepted: readonly MemoryFileIdentity[]): Promise<MemoryCatalogChange[]>
-  /** Verify a single observation without blocking other owner requests. Null means absent. */
-  read(workspace: string, path: string, signal?: AbortSignal): Promise<MemoryCatalogFile | null>
-  /** Strict same-turn fence before material is sent or an accepted change is committed. */
-  readAtCommit(workspace: string, path: string): MemoryCatalogFile | null
-  close(): void
-}

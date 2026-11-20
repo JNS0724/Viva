@@ -269,8 +269,7 @@ export const testLevels = {
     'trace-model-calls',
   ],
   integration: [
-    'memory-file-catalog',
-    'memory-file-maintenance',
+    'memory-physical-file-reader',
     'memory-availability',
     'diagnostics-export',
     'diagnostics-process-pause',

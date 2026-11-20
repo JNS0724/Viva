@@ -9,8 +9,7 @@ import { openMemoryNotes } from './memory-note-store.ts'
 import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
-import { openMemoryFileCatalog } from './memory-file-catalog.ts'
-import { createMemoryPhysicalFileReader } from './memory-file-store.ts'
+import { createMemoryPhysicalFileReader, readMemoryFileAtCommit } from './memory-file-store.ts'
 import { erasedDocumentSource } from '../core/memory-document-restrictions.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
@@ -24,6 +23,7 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
   const jobs = createEffects(options)
   const publications = createEffects(options)
   let publicationPass: Promise<void> | undefined
+  const readPhysicalFile = createMemoryPhysicalFileReader(() => store.fileRoot)
   const effects: typeof jobs = {
     ...jobs,
     runs(kind, run, delay) { (publicationEffectKinds.has(kind) ? publications : jobs).runs(kind, run, delay) },
@@ -37,20 +37,19 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
       // A note or Dream job may have committed an index change during this wake.
       await publicationPass
     },
-    close() { publications.close(); jobs.close() },
+    close() { readPhysicalFile.close(); publications.close(); jobs.close() },
   }
-  const readPhysicalFile = createMemoryPhysicalFileReader(() => store.fileRoot)
   const resources: MemoryRuntimeResources = {
     sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
     identity: { newId: randomUUID, hash: memoryHash },
     effects,
     openFileRestrictions: () => openMemoryFileRestrictions(store.db),
     openFileIndex: () => openMemoryFileIndex({ db: store.db, now }),
-    openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot, readPhysicalFile }),
+    readFileRevisionAtCommit: (workspace, path) => readMemoryFileAtCommit(store.fileRoot, workspace, path)?.revision,
     readPhysicalFile,
-    openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted, deferRecovery: external?.deferRecovery, index: external?.index }),
-    openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed, erasures: store.fileErasures,
-      externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
+    openNotes: (readable, currentJob, options) => openMemoryNotes(store, readable, undefined, currentJob, options),
+    openDocuments: (readable, onCommitted, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, erasures: store.fileErasures,
+      managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
       expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned, index: policy?.index,
       manual: policy?.manualCurrent && { current: policy.manualCurrent, token: memorySourceToken, workspace: memorySourceWorkspace,
         commit: store.insertManualFileSource, retainsText: store.manualFileRetainsText },

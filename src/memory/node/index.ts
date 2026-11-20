@@ -12,4 +12,3 @@ export { openMemoryOwner } from './owner.ts'
 export { memoryProjectScope } from './project-scope.ts'
 
 export { openMemoryFileIndex } from './memory-file-index.ts'
-export { openMemoryFileCatalog } from './memory-file-catalog.ts'

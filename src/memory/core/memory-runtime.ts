@@ -34,8 +34,6 @@ import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
 import type { DiagnosticOutcome, DiagnosticReason } from '../../diagnostics/contracts.ts'
 import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
 import { createMemoryDreamJobs, dreamHistory } from './memory-dream-jobs.ts'
-import type { ExternalEditPolicy } from './memory-file-maintenance.ts'
-import { createMemoryFileMaintenance, currentExternalEdit } from './memory-file-maintenance.ts'
 import { createMemoryFileManagement } from './memory-file-management.ts'
 import type { FileSearchResult } from './memory-file-retrieval.ts'
 import { createMemoryFileRetrieval } from './memory-file-retrieval.ts'
@@ -211,31 +209,28 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
   }
   let documentStorageReady = false
-  function renamedDocument() {
+  function documentVisibilityChanged() {
     store.nextRevision()
     if (documentStorageReady) validateDispatch()
   }
   let documentsReady = false
   let queueRestrictedRebuilds: (() => void) | undefined
-  const externalPolicy = (): ExternalEditPolicy => ({ documents: documents!,
-    source: id => store.readSource(id) ?? undefined, sourceToken: resources.sourceToken, sourceWorkspace: resources.sourceWorkspace,
-    readable: id => !closed && fileSourceCurrent(id), hash: memoryHash })
   documents = resources.openDocuments(id => fileSourceCurrent(id), receipt => {
     store.nextRevision()
     // The journal receipt and the derived rebuilds must survive the same transaction.
     if (receipt.action === 'DISABLE') queueRestrictedRebuilds?.()
     if (documentsReady) validateDispatch()
-  }, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()),
+  }, {
     managementCurrent: (before, guard, after, staged) => filePolicy?.managementCurrent(before, guard.policyToken, after, staged) === true,
     expandRestrictions: refs => manualFileCopyRefs(refs, store, resources.sourceToken),
-    locatorCleaned: renamedDocument,
+    locatorCleaned: documentVisibilityChanged,
     manualCurrent: source => !closed && source.author === 'manual' && source.id === source.operation
       && !store.readSource(source.id) && !store.deliveredSource(source.id) && !store.sourceExcluded(source.id) && !sourceBlocked(source)
       && source.text !== null && source.length === source.text.length && source.hash === memoryHash(source.text) && !looksSecret(source.text)
       ,
     index: indexChanges, deferRecovery: true })
   const notes = createMemoryNoteJobs({
-    store, effects, now, diagnostics, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, renamedDocument, { current: input => currentExternalEdit(input, externalPolicy()), committed: renamedDocument, noteCommitted: renamedDocument, index: indexChanges, deferRecovery: true }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
+    store, effects, now, diagnostics, capture: Boolean(dailyNotes), mutate: runDocumentMutation, openNotes: (readable, currentJob) => resources.openNotes(readable, currentJob, { onCommitted: documentVisibilityChanged, index: indexChanges, deferRecovery: true }), settings: typeof dailyNotes === 'object' ? dailyNotes : undefined,
     readable: id => fileSourceCurrent(id),
     eligible: source => !closed && !mutation && !sourceBlocked(source) && canCommit(source),
     allowsDerived: ids => !documentSourcesRestricted(ids),
@@ -260,7 +255,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   })
 
   const fileIndex = resources.openFileIndex()
-  const fileCatalog = resources.openFileCatalog()
   const documentEvidence = notes && documents ? createMemoryDocumentEvidence({ notes: notes.storage, documents, hash: memoryHash,
       readable: id => fileSourceCurrent(id), source: id => store.readSource(id) ?? undefined,
       allowsText: (text) => !looksSecret(text),
@@ -330,20 +324,21 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       try {
         store.tx(() => {
           for (const [key, file] of staleProjections) {
-            if (!effects.get(INDEX_PUBLISH, key)) queueFilePublication(file)
+            if (!effects.get(INDEX_PUBLISH, key)) stagePublication(file.workspace, file.id, [file.id], true)
           }
         })
+        void effects.wake()
       } catch (error) {
         diagnostics.emit({ event: 'operation.progress', operation: 'memory.index', stage: 'queued', reason: safeDiagnosticReason(error) })
       } finally { staleProjections.clear() }
     }, 0)
   }
   function publicationKey(workspace: string, id: string) { return JSON.stringify([workspace, id]) }
-  const publicationPayload = z.object({ workspace: z.string().regex(/^[a-f0-9]{64}$/u), ids: z.array(z.string()) })
-  function stagePublication(workspace: string, id: string, ids: Iterable<string>) {
+  const publicationPayload = z.object({ workspace: z.string().regex(/^[a-f0-9]{64}$/u), ids: z.array(z.string()), repairOnly: z.boolean().optional() })
+  function stagePublication(workspace: string, id: string, ids: Iterable<string>, repairOnly = false) {
     const key = publicationKey(workspace, id)
     const previous = publicationPayload.safeParse(effects.get(INDEX_PUBLISH, key)?.payload)
-    effects.queue(INDEX_PUBLISH, key, { workspace, ids: [...new Set([...ids, ...(previous.success ? previous.data.ids : [])])] })
+    effects.queue(INDEX_PUBLISH, key, { workspace, ...(repairOnly ? { repairOnly: true } : {}), ids: [...new Set([...ids, ...(previous.success ? previous.data.ids : [])])] })
   }
   function queueFilePublication({ workspace, id, anchors = [], sources = [] }: Parameters<MemoryFileIndexChanges['queue']>[0]) {
     if (!fileRetrieval) return
@@ -392,22 +387,23 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (!fileRetrieval || !effects.holds(job)) return unresolved
     const parsed = publicationPayload.safeParse(job.payload)
     if (!parsed.success) { effects.finishGeneration(job); return unresolved }
-    const { workspace, ids } = parsed.data
+    const { workspace, ids, repairOnly } = parsed.data
     const targets = publicationTargets(workspace, ids, paths).flatMap(({ id, path }) => {
       const observation = batch ? batch.readObservation(workspace, path) : filePolicy?.read(workspace, path)
       const view = observation ?? null
-      // A known valid body can be invisible by policy. A missing or changed body
-      // is unverified, and the same generation still owes publication after it returns.
-      if (!view) {
-        const revision = physicalRevision(workspace, id, path)
-        if (revision) {
-          try {
-            const observed = batch ? batch.observedRevision(workspace, path) : fileCatalog?.readAtCommit(workspace, path)?.revision
-            if (observed !== revision) unresolved.add(id)
-            if (batch && observation === undefined) { unresolved.add(id); return [] }
-          }
-          catch { unresolved.add(id) }
+      // An inconclusive read leaves the projection alone. A write owes durable
+      // publication, while a read-triggered repair finishes after this observation.
+      const revision = !view && physicalRevision(workspace, id, path)
+      if (revision && batch && observation === undefined) {
+        if (!repairOnly) unresolved.add(id)
+        return []
+      }
+      if (revision && !repairOnly) {
+        try {
+          const observed = batch ? batch.observedRevision(workspace, path) : resources.readFileRevisionAtCommit(workspace, path)
+          if (observed !== revision) unresolved.add(id)
         }
+        catch { unresolved.add(id) }
       }
       return [{ workspace, path, view }]
     })
@@ -425,14 +421,20 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const input = publicationPayload.safeParse(job.payload)
     if (batch && input.success && effects.holds(job)) {
       const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs)
+      const entries = publicationTargets(input.data.workspace, input.data.ids, paths)
+      const repair = input.data.repairOnly && entries[0]
+      const stillCurrent = repair && fileRetrieval?.watchProjection(repair.workspace, repair.path)
       try {
-        const targets = publicationTargets(input.data.workspace, input.data.ids, paths)
-          .filter(target => physicalRevision(target.workspace, target.id, target.path))
+        const targets = entries.filter(target => physicalRevision(target.workspace, target.id, target.path))
         await budget.run(() => batch.load(targets, budget.signal))
       } catch (error) {
         if (!(error instanceof RequestTimeout)) throw error
       }
       finally { budget.close() }
+      if (!closed && stillCurrent && !stillCurrent()) {
+        effects.finishGeneration(job)
+        return new Set<string>()
+      }
     }
     return closed ? new Set<string>() : publishFileEffect(job, paths, batch)
   }
@@ -510,8 +512,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   queueRestrictedRebuilds = notes?.queueRestrictedRebuilds
   notes?.storage.recover()
   documents?.recover()
-  // Upgrade old Dream work before exposing the file catalog or admitting a foreground turn.
-  store.tx(() => { documents?.retireClarifications(); store.dispatch.retireFileClarifications() })
+  // Retire work queued by older versions before this owner can admit a turn.
+  store.tx(() => {
+    effects.cancelStarting('memory.file-scan', '')
+    effects.cancelStarting('memory.file-rescan', '')
+    documents?.retireClarifications()
+    store.dispatch.retireFileClarifications()
+  })
   documentsReady = true
   documentStorageReady = true
   deferIndexPublication = false
@@ -742,30 +749,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     mutate: runDocumentMutation,
     calculate: calculateDocument,
   }) : null
-  const fileMaintenance = notes && documents && fileCatalog && documentEvidence ? createMemoryFileMaintenance({
-    notes: notes.storage, documents, catalog: fileCatalog, effects, commands: store, identity: resources.identity, now,
-    source: id => store.readSource(id) ?? undefined, sourceToken: resources.sourceToken, sourceWorkspace: resources.sourceWorkspace,
-    readable: id => !closed && fileSourceAllowsUse(id), materialAllowed: documentEvidence.materialAllowed,
-    calculate: request => calculateDocument({ ...request, stage: 'verify' }), mutate: runDocumentMutation,
-    changed() { publish(store.revision()); notes.refreshRestrictions() },
-    observedMissing(file) {
-      const id = file.kind === 'daily' ? noteFileId(file.id) : file.id
-      const published = fileIndex?.nodeAt(file.workspace, file.path)
-      if (published?.id === id && published.revision === file.revision && published.usageVersion === file.usageVersion) {
-        // A completed scan supplies the durable trigger even without a foreground lookup.
-        store.tx(() => { stagePublication(file.workspace, id, [id]) })
-      }
-    },
-    observedUnchanged(file) {
-      const id = file.kind === 'daily' ? noteFileId(file.id) : file.id
-      const published = fileIndex?.snapshot(file.workspace, id)
-      if (published?.path === file.path && published.revision === file.revision && published.usageVersion === file.usageVersion) return
-      // Restored bytes can now satisfy a write previously put off for retry.
-      store.tx(() => { stagePublication(file.workspace, id, [id]) })
-      void effects.wake()
-    },
-  }) : null
-  fileMaintenance?.start()
   effects.runs(DOCUMENT_CLEANUP, async jobs => {
     // Recovery may also finish a prepared revision, so it shares the physical send fence.
     const revision = store.revision(), pending = documents?.pendingCleanup()
@@ -1121,7 +1104,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const path = batch && fileWorkspaces().includes(workspace) ? resolveFileId(workspace, identity.id) : null
     if (path && batch) await batch.load([{ workspace, path }])
     signal?.throwIfAborted()
-    return closed ? null : fileManagement.detail(identity, managementAllows, restrictionId, batch?.managementRead)
+    if (closed) return null
+    const detail = fileManagement.detail(identity, managementAllows, restrictionId, batch?.managementRead)
+    if (detail?.enabled && path && fileIndex && !fileIndex.nodeAt(workspace, path) && batch?.read(workspace, path)?.currentMarkdown != null) {
+      scheduleStaleProjection(workspace, identity.id)
+    }
+    return detail
   }
 
   function recallScope(request: RecallRequest, origin: Origin) {
@@ -1570,8 +1558,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     handle,
     handleModelRequest,
     rebuildIndexes,
-    rescanFiles: fileMaintenance?.rescan,
-    fileScanStatus: fileMaintenance?.status,
     computeCurrent,
     computeAdmission, observeComputeAdmission,
     authorizeGeneralQuestion,
@@ -1620,7 +1606,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       store.setMeta('onboarding', status)
       return status
     },
-    close() { closed = true; clearTimeout(staleProjectionTimer); staleProjections.clear(); fileMaintenance?.close(); fileRetrieval?.close(); embedder?.close(); effects.close(); store.close() }
+    close() { closed = true; clearTimeout(staleProjectionTimer); staleProjections.clear(); fileRetrieval?.close(); embedder?.close(); effects.close(); store.close() }
   }
 }
 export type MemoryRuntime = ReturnType<typeof createMemoryRuntime>

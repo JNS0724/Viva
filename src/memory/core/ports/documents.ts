@@ -99,27 +99,8 @@ export interface DeferredDocumentWork {
   answer?: { operationId: string, source: DocumentSourceRef, text: string }
 }
 export interface DocumentTagAttempt { workspace: string, operationId: string, path: string, revision: string, state: 'attempted' | 'failed' | 'completed', reason?: string }
-export interface DocumentRename { operationId: string, workspace: string, id: string, from: string, to: string, revision: string, usageVersion: number }
-export interface DocumentExternalEdit {
-  path: string
-  operationId: string
-  workspace: string
-  id: string
-  expectedRevision: string
-  expectedUsageVersion: number
-  observedRevision: string
-  sources: DocumentSourceRef[]
-  action?: 'REFINE' | 'CORRECT'
-  reads?: DocumentReadRef[]
-  files?: Array<{ path: string, revision: string }>
-  corrections?: DocumentCorrection[]
-  policyToken: string
-}
 export interface MemoryDocuments {
-  reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined
-  reconcileEdit(input: DocumentExternalEdit): DocumentReceipt | null
   acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
-  reconcileRename(input: DocumentRename): boolean
   aliases(workspace: string): Array<{ path: string, id: string }>
   workspaces(): string[]
   indexFile(workspace: string, id: string): { path: string, revision: string, state: 'active' | 'disabled' | 'forgotten' } | null

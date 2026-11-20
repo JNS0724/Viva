@@ -34,9 +34,6 @@ export interface MemoryNotes {
     advanceUseVersion(key: string, revision: number, at: number): boolean;
     usePolicyToken(workspace: string): string;
     pendingCleanup(): number;
-    reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined;
-    reconcileEdit(input: import('./documents.ts').DocumentExternalEdit): boolean;
-    reconcileRename(input: import('./documents.ts').DocumentRename): boolean;
     resolveFileAlias(workspace: string, path: string): string | null;
     fileAliases(workspace: string, path: string): string[];
     aliases(): Array<{ workspace: string, path: string, id: string }>;

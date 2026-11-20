@@ -129,6 +129,15 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       return published(accepted, removed)
     }
   }
+  // A dependent write can publish this path under another effect key while a
+  // lazy repair is reading the file. Only repair the projection we observed.
+  function watchProjection(workspace: string, path: string) {
+    const before = index.nodeAt(workspace, path)
+    return () => {
+      const current = index.nodeAt(workspace, path)
+      return before && current ? sameVersion(before, current) : before === current
+    }
+  }
   function publishFiles(files: readonly { workspace: string, path: string }[]) {
     if (closed) return { accepted: 0, removed: 0 }
     const publications = files.map(file => ({ ...file, view: policy.read(file.workspace, file.path) }))
@@ -729,7 +738,7 @@ ${file.description}`, file, view }] : []
     const result = expand(file, authorized(input.allows, scope), checks.verify)
     return { inlinks: result.inlinks, outlinks: result.outlinks, ...readSet([view, ...result.dependencies]) }
   }
-  return {sync,publishFiles,preparePublication,search,searchCached,readAsync,nodeSearchAsync,
+  return {sync,publishFiles,preparePublication,watchProjection,search,searchCached,readAsync,nodeSearchAsync,
     read: (input: Parameters<typeof read>[0]) => observeDiagnosticSync(diagnostics, 'memory.recall', () => read(input), { stage: 'received', identities: { resourceId: input.id } }),
     nodeSearch: (input: Parameters<typeof nodeSearch>[0]) => observeDiagnosticSync(diagnostics, 'memory.recall', observation => {
       const result = nodeSearch(input)

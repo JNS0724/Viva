@@ -107,14 +107,14 @@
     {
       "en": "docs/memory-owner-isolation.md",
       "zh": "docs/memory-owner-isolation.zh-CN.md",
-      "enHash": "ade39bb0ff5144a1e221facba59cf662544af7ff11af16e8d58324cba8308db3",
-      "zhHash": "37e74fd08af16abdd089401fc3d12fefb30910c68ec1236df3e273ca3da27c80"
+      "enHash": "0395f952fb7a164de160b2b365c7e84b96f7d0ca7d1b2af05d9ce0e1530adfc7",
+      "zhHash": "5d70c488ecb8a481617aa96a7ddc782aa5231d24c536f434140ed29abdd96b2a"
     },
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "2b8b756678c4db72a731e54bb065f3a453571c8183814a15d6fe51e711e1a7d2",
-      "zhHash": "04e76e0e35886d866d000473d4ef991b3dc8a425cc2def676751d83723ba796c"
+      "enHash": "b12bc7dbedc82ad4a540149208eff0ca6759b9e3302b609ab50553c34fbf0d43",
+      "zhHash": "b9b0a5f14f4f78e0577046349400bf4a7d908b6ea01b1d05b566ec2b425886cc"
     },
     {
       "en": "docs/logging-design.md",

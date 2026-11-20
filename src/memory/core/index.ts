@@ -11,4 +11,4 @@ export type { MemoryDocuments } from './ports/documents.ts'
 
 export { createMemoryDocumentReadPolicy } from './memory-document-read-policy.ts'
 export { parseMemoryMarkdown } from './memory-markdown.ts'
-export type { MemoryFileIndex, MemoryFileCatalog } from './ports/file-index.ts'
+export type { MemoryFileIndex } from './ports/file-index.ts'

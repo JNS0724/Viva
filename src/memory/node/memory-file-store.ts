@@ -43,8 +43,8 @@ function recoveryReader(forkWorker: ForkReadWorker) {
 
   function start(directory: string) {
     const suffix = import.meta.url.endsWith('.ts') ? '.ts' : '.js'
-    const entry = fileURLToPath(new URL(`./memory-file-catalog-worker${suffix}`, import.meta.url))
-    const child = forkWorker(entry, [directory, '--read-files'], {
+    const entry = fileURLToPath(new URL(`./memory-file-reader-worker${suffix}`, import.meta.url))
+    const child = forkWorker(entry, [directory], {
       execPath: process.execPath, execArgv: [], windowsHide: true, serialization: 'advanced',
       env: memoryWorkerEnvironment(), stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     })
@@ -131,6 +131,7 @@ export function createMemoryPhysicalFileReader(root: () => string, forkWorker: F
   const available = new Set<() => void>()
   const overdue = new Set<string>()
   const recovery = recoveryReader(forkWorker)
+  const lifetime = new AbortController()
   async function inspect(workspace: string, path: string, signal: AbortSignal): Promise<MemoryPhysicalFile | null> {
     const directory = resolve(root())
     const parts = [workspace, ...path.split('/')]
@@ -172,13 +173,15 @@ export function createMemoryPhysicalFileReader(root: () => string, forkWorker: F
   }
 
   const read: ReadMemoryPhysicalFile = async (workspace, path, signal) => {
+    lifetime.signal.throwIfAborted()
     if (!/^[a-f0-9]{64}$/u.test(workspace)
       || !memoryFilePath.safeParse(path).success
       || !(dailyPath.safeParse(path).success || digestPath.safeParse(path).success)) throw new MemoryFileError('path')
     const key = JSON.stringify([workspace, path])
     if (overdue.has(key)) throw new RequestTimeout()
     const queued = !active.has(key) && active.size >= PHYSICAL_FILE_CONCURRENCY
-    const budget = createRequestBudget(queued ? DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs : PHYSICAL_FILE_TIMEOUT_MS, signal)
+    const caller = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal
+    const budget = createRequestBudget(queued ? DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs : PHYSICAL_FILE_TIMEOUT_MS, caller)
     try {
       while (!active.has(key) && active.size >= PHYSICAL_FILE_CONCURRENCY) {
         if (overdue.size >= PHYSICAL_FILE_CONCURRENCY) return await budget.run(() => recovery.read(root(), workspace, path, key, budget.signal))
@@ -191,7 +194,7 @@ export function createMemoryPhysicalFileReader(root: () => string, forkWorker: F
       if (!operation) {
         // Coalesced I/O has its own deadline. One cancelled lookup must not
         // cancel verification for another caller still waiting on this path.
-        const nativeSignal = AbortSignal.timeout(PHYSICAL_FILE_TIMEOUT_MS)
+        const nativeSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(PHYSICAL_FILE_TIMEOUT_MS)])
         const stalled = () => {
           overdue.add(key)
           if (overdue.size >= PHYSICAL_FILE_CONCURRENCY) for (const wake of available) wake()
@@ -214,7 +217,10 @@ export function createMemoryPhysicalFileReader(root: () => string, forkWorker: F
       return await budget.run(() => operation)
     } finally { budget.close() }
   }
-  return Object.assign(read, { close: recovery.close })
+  return Object.assign(read, { close() {
+    lifetime.abort(new Error('Memory file reader closed'))
+    recovery.close()
+  } })
 }
 
 const ABANDONED_TEMP = /^\.viva-memory-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/u
@@ -280,10 +286,22 @@ export async function removeAbandonedMemoryTemps(root: string, signal: AbortSign
   }
 }
 
+/** Synchronous compatibility check at the commit boundary for trusted write paths. */
+export function readMemoryFileAtCommit(root: string, workspace: string, path: string): MemoryPhysicalFile | null {
+  if (!/^[a-f0-9]{64}$/u.test(workspace)) throw new MemoryFileError('path')
+  const directory = join(root, workspace)
+  try {
+    if (lstatSync(root).isSymbolicLink() || lstatSync(directory).isSymbolicLink()) throw new MemoryFileError('path')
+    return openMemoryFileStore(directory, { create: false }).read(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
 /**
  * File primitive for a single backend owner. Synchronous IO makes version-check + rename
- * indivisible to other callbacks in that owner. External editors are reconciled by R2's
- * journal; this primitive is NOT a cross-process compare-and-swap or multi-file transaction.
+ * indivisible to other callbacks in that owner. The expected revision guards each write.
  * The caller binds this root to an authorized scope; a model never supplies the root.
  */
 export function openMemoryFileStore(root: string, { sessions = false, create = true } = {}) {
