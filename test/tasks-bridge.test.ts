@@ -7,7 +7,7 @@ import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fi
  * conversation, and a task Viva quit on is taken up again at the next launch.
  */
 
-const taskReplies = (events, taskId) => replies(events.filter(e => e.type === 'task_update' && e.taskId === taskId)).join('')
+const taskReplies = (events: Parameters<typeof replies>[0], taskId: string) => replies(events.filter(e => e.type === 'task_update' && e.taskId === taskId)).join('')
 
 test('after a relaunch, a task left unfinished is taken up again, remembering what it had', { timeout: DSH_TIMEOUT_MS }, async (t) => {
   const { events, llm, bridge } = await setup(t)
@@ -42,9 +42,10 @@ test('a task starts in a fresh session of its own, on the model the conversation
   const agent = bridge()
   const info = await agent.start()
   const other = info.models.find((model) => model.value !== info.modelValue)
+  assert.ok(other)
   await agent.setConfig('model', other.value)
   await agent.prompt('记住这个暗号：蓝色鲸鱼')
-  const mainModel = llm.requests.at(-1).model
+  const mainModel = llm.requests.at(-1)?.model
 
   const started = await agent.startTask()
   assert.equal(started.ok, true, JSON.stringify(started))
@@ -53,6 +54,7 @@ test('a task starts in a fresh session of its own, on the model the conversation
 
   assert.ok(taskReplies(events, started.taskId).includes('午饭吃什么'), 'it answers as a task')
   const asked = llm.requests.find((request) => JSON.stringify(request).includes('午饭吃什么'))
+  assert.ok(asked)
   assert.ok(!JSON.stringify(asked).includes('蓝色鲸鱼'), 'fresh: the conversation does not come along, the brief says what to do')
   assert.equal(asked.model, mainModel, 'on the model picked for the conversation, not the profile\'s first')
   assert.equal(events.filter((e) => e.type === 'turn_end').length, 1, 'the main conversation saw only its own turn')
@@ -63,6 +65,7 @@ test('a task started before anything was said is still on the model the conversa
   const agent = bridge()
   const info = await agent.start()
   const other = info.models.find((model) => model.value !== info.modelValue)
+  assert.ok(other)
   await agent.setConfig('model', other.value)
 
   const started = await agent.startTask()
@@ -70,6 +73,6 @@ test('a task started before anything was said is still on the model the conversa
   await agent.promptTask(started.taskId, '午饭吃什么')
   await agent.prompt('你好')
 
-  const modelOf = (words) => llm.requests.find((request) => JSON.stringify(request).includes(words))?.model
+  const modelOf = (words: string) => llm.requests.find((request) => JSON.stringify(request).includes(words))?.model
   assert.equal(modelOf('午饭吃什么'), modelOf('你好'), 'the task is on the model picked for the conversation')
 })

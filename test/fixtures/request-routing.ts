@@ -28,12 +28,12 @@ export function testRequests({ tasks = NO_TASKS }: { tasks?: RequestTasks } = {}
  * a turn says reaching the window only through it, never from ACP's text. With `says`, each operation shows that
  * answer (one attempt, settled, then flushed as committed); without, it shows nothing.
  */
-export function withPluginSide<T extends NodeJS.EventEmitter>(child: T, { says }: { says?: string } = {}): T {
+export function withPluginSide<T extends NodeJS.EventEmitter>(child: T, { says }: { says?: string } = {}) {
   const reply = (message: object) => setImmediate(() => child.emit('message', message))
   const answered = new Map<string, Array<{ key: string, blocks: Array<{ type: 'text', text: string }> }>>()
-  Object.assign(child, {
+  const connected = Object.assign(child, {
     connected: true,
-    send: (message: { type?: string, id?: string, operation?: string, sessionId?: string }, callback?: (error: Error | null) => void) => {
+    send: (message: { type?: string, id?: string, operation?: string, sessionId?: string }, callback?: (error: Error | null) => void): boolean => {
       const operation = String(message.operation)
       if (message.type === 'routing_bind') reply({ type: 'routing_bound', version: 1, id: message.id })
       if (message.type === 'assistant_stream_bind') {
@@ -55,5 +55,5 @@ export function withPluginSide<T extends NodeJS.EventEmitter>(child: T, { says }
     },
   })
   reply({ type: 'assistant_stream_ready', version: 1 })
-  return child
+  return connected
 }

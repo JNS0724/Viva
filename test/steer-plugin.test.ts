@@ -1,3 +1,4 @@
+import { recordingActions } from './fixtures/recording-config.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
@@ -8,7 +9,7 @@ import { INTERJECTION_MARK } from '../src/backend/steer-channel.ts'
 const NOTE = '插话：收件人改成李四'
 
 test('words sent while a turn runs reach the model in that turn, which ends once', { timeout: DSH_TIMEOUT_MS }, async (t) => {
-  const { events, llm, bridge } = await setup(t, { configActions: { listServers: () => [], prepareServer: () => {} } })
+  const { events, llm, bridge } = await setup(t, { configActions: recordingActions().actions })
   const agent = bridge()
   await agent.start()
 
@@ -16,6 +17,7 @@ test('words sent while a turn runs reach the model in that turn, which ends once
   const turn = agent.prompt('帮我接入演示服务')
   const card = await eventually(() => events.find((event) => event.type === 'permission'))
   assert.deepEqual(await agent.steer(NOTE), { ok: true })
+  assert.ok(card && typeof card.requestId === 'string')
   agent.respondPermission(card.requestId, 'reject-once')
   await turn
 

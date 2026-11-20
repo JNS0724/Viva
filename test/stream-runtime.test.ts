@@ -1,3 +1,5 @@
+import { decodeUpdate } from '../src/renderer/agent-event-decoder.ts'
+import { objectOf } from '../src/shared/unknown-value.ts'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
@@ -12,8 +14,8 @@ test('real dsh forwards first live text before a delayed SSE response finishes; 
     let body = ''; for await (const chunk of req) body += chunk
     const request = JSON.parse(body), model = request.model
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    const send = (delta, stop = null) => res.write(`data: ${JSON.stringify({ id: 'stream-test', object: 'chat.completion.chunk', created: 1, model, choices: [{ index: 0, delta, finish_reason: stop }] })}\n\n`)
-    const chunk = (content, stop = null) => send({ content }, stop)
+    const send = (delta: object, stop: string | null = null) => res.write(`data: ${JSON.stringify({ id: 'stream-test', object: 'chat.completion.chunk', created: 1, model, choices: [{ index: 0, delta, finish_reason: stop }] })}\n\n`)
+    const chunk = (content: string, stop: string | null = null) => send({ content }, stop)
     // The main conversation routes each request first; the answer after it is what streams late.
     const route = routeDelta(request)
     if (route) { send(route); send({}, 'tool_calls'); res.end('data: [DONE]\n\n'); return }
@@ -25,13 +27,15 @@ test('real dsh forwards first live text before a delayed SSE response finishes; 
     if (res.destroyed) return
     chunk('', 'stop'); completedAt = Date.now(); res.end('data: [DONE]\n\n')
   })
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const provider = { id: 'stream-test', name: 'stream-test', api: 'openai-completions', baseURL: `http://127.0.0.1:${server.address().port}/v1`, models: [{ id: 'stream-test' }], key: 'test-only' }
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const provider = { id: 'stream-test', name: 'stream-test', api: 'openai-completions', baseURL: `http://127.0.0.1:${address.port}/v1`, models: [{ id: 'stream-test' }], key: 'test-only' }
   const { bridge, events, defer } = await startHarness(t, { models: () => ({ providers: piAiProviders([provider]), deepseek: false, defaultModel: { provider: provider.id, model: 'stream-test' } }), env: { DEEPSEEK_API_KEY: '', ...providerEnv([provider]) } })
   defer(() => { server.closeAllConnections(); server.close() })
   const agent = bridge(); await agent.start()
   const turn = agent.prompt('验证真实增量')
-  const first = await eventually(() => events.find(event => event.update?.sessionUpdate === 'viva_stream' && event.update.kind === 'delta'), { intervalMs: 10 })
+  const first = await eventually(() => events.find(event => objectOf(event.update)?.sessionUpdate === 'viva_stream' && objectOf(event.update)?.kind === 'delta'), { intervalMs: 10 })
   assert.ok(first, 'first delta reaches Viva')
   assert.equal(completedAt, 0, 'server is still holding the rest of the answer')
   assert.equal(events.some(event => event.type === 'turn_end'), false)
@@ -39,13 +43,18 @@ test('real dsh forwards first live text before a delayed SSE response finishes; 
   assert.equal(replies(events).join(''), '第一段第二段')
   assert.equal(events.filter(event => event.type === 'turn_end').length, 1)
   let state = reduce(initialState, { type: 'user_prompt', text: 'q', at: 0 })
-  for (const event of events) if (event.update) state = reduce(state, { type: 'acp_update', update: event.update, at: 1 })
-  assert.equal(state.messages.at(-1).text, '第一段第二段')
+  for (const event of events) {
+    if (!event.update) continue
+    const update = decodeUpdate(event.update)
+    assert.ok(update)
+    state = reduce(state, { type: 'acp_update', update, at: 1 })
+  }
+  assert.equal(state.messages.at(-1)?.text, '第一段第二段')
 
   const before = events.length
   const cancelled = agent.prompt('取消部分输出')
-  await eventually(() => events.slice(before).some(event => event.update?.kind === 'delta'), { intervalMs: 10 })
+  await eventually(() => events.slice(before).some(event => objectOf(event.update)?.kind === 'delta'), { intervalMs: 10 })
   await agent.cancel(); await cancelled
   assert.equal(replies(events.slice(before)).join(''), '第一段')
-  assert.equal(events.at(-1).stopReason, 'cancelled')
+  assert.equal(events.at(-1)?.stopReason, 'cancelled')
 })
