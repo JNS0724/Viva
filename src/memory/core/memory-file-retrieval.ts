@@ -409,7 +409,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   function finishSearch(request: FileSearchRequest, plan: ReturnType<typeof beginSearch>, vector: MemoryFileHit[], batch?: MemoryDocumentReadBatch): FileSearchResult {
     const { limit, reasons } = plan
     if (closed || request.signal?.aborted) return unavailable('cancelled')
-    const { checks, timedOut, ranked, context, seen, remaining, selected, limited } = selectSearch(request, plan, vector, batch)
+    const { checks, timedOut, ranked, context, seen, remaining, limited } = selectSearch(request, plan, vector, batch)
     const read = batch?.read ?? readable
     if ((limited || plan.lexicalIncomplete) && !reasons.includes('candidate-limit')) reasons.push('candidate-limit')
     if (checks.incomplete() || timedOut()) reasons.push('file-changed')
@@ -422,7 +422,11 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const fits = (proposed: FileSearchHit[]) => request.maxChars === undefined || JSON.stringify({
       status: 'ok', hits: proposed, reasons: [...reasons, 'output-budget'], partial: true,
     }).length <= request.maxChars
-    for (const hit of selected) {
+    const candidates = remaining.length
+      ? (limit === 1 ? remaining : selectMemoryFileHits(ranked, { limit: remaining.length, seen }))
+      : []
+    for (const hit of candidates) {
+      if (hits.length >= limit) break
       const view = checks.verify(hit.file)
       if (!view) continue
       if (checks.incomplete() && !reasons.includes('file-changed')) reasons.push('file-changed')
@@ -436,7 +440,6 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         continue
       }
       budgetLimited = true
-      break
     }
     if (budgetLimited) reasons.push('output-budget')
     if (context) {

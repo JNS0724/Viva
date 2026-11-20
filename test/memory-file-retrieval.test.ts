@@ -437,6 +437,32 @@ test('output budget omits an oversized hit without consuming its context result'
   assert.equal(retrieval.searchCached({ ...request, maxChars: 12_000 }).status, 'exhausted')
 })
 
+test('output budget skips an oversized leading hit to deliver shorter matches and preserves retry behavior', t => {
+  const oversized = view('oversized', 'needle '.repeat(1100))
+  const concise = view('concise', 'needle on one line')
+  const { retrieval } = setup(t, [oversized, concise])
+  assert.deepEqual(retrieval.searchCached({ query: 'needle', allows }).hits.map(hit => hit.id), ['oversized', 'concise'])
+  const request = { query: 'needle', allows, contextKey: 'mixed-budget-context', maxChars: 5872 }
+  const first = retrieval.searchCached(request)
+  const publicJson = ({ files: _files, sourceIds: _sources, ...result }: typeof first) => JSON.stringify(result)
+  assert.ok(publicJson(first).length <= request.maxChars)
+  assert.equal(first.status, 'ok')
+  assert.deepEqual(first.hits.map(hit => hit.id), ['concise'])
+  assert.equal(first.partial, true)
+  assert.ok(first.reasons.includes('output-budget'))
+
+  const retrySameBudget = retrieval.searchCached(request)
+  assert.equal(retrySameBudget.status, 'ok')
+  assert.deepEqual(retrySameBudget.hits, [])
+  assert.equal(retrySameBudget.partial, true)
+  assert.ok(retrySameBudget.reasons.includes('output-budget'))
+
+  const retryLargerBudget = retrieval.searchCached({ ...request, maxChars: 12_000 })
+  assert.equal(retryLargerBudget.status, 'ok')
+  assert.deepEqual(retryLargerBudget.hits.map(hit => hit.id), ['oversized'])
+  assert.equal(retrieval.searchCached({ ...request, maxChars: 12_000 }).status, 'exhausted')
+})
+
 test('budget includes escaped JSON and applicability and marks only complete hits seen', t => {
   const root = view('a', 'needle "with escapes" '.repeat(25))
   const { retrieval } = setup(t, [root])

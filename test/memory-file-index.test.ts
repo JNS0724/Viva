@@ -149,3 +149,23 @@ test('semantic candidates include an older match outside the recent and lexical 
   assert.equal(result?.incomplete, true)
   assert.deepEqual(result?.rows.map(hit => hit.file.id), ['older'])
 })
+
+test('persisted multi-chunk passages store only file identity without repeating chunks', t => {
+  const { db, index } = fixture(t)
+  const chunks = Array.from({ length: 8 }, (_, ordinal) => {
+    const text = `section ${ordinal} tea`
+    return { text, searchText: text, headingPath: [`H${ordinal}`], startLine: ordinal + 1, endLine: ordinal + 1, startOffset: 0, endOffset: text.length }
+  })
+  const multi = file('multi', '', { name: 'multi-name', description: 'multi-desc', chunks })
+  assert.equal(index.accept(multi, null), true)
+  const rows = db.prepare('SELECT payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=? ORDER BY ordinal').all(workspace, 'multi')
+  assert.equal(rows.length, chunks.length)
+  for (const row of rows) {
+    const payload = JSON.parse(String(row.payload)) as { file: Record<string, unknown> }
+    assert.equal('chunks' in payload.file, false)
+    assert.equal('name' in payload.file, false)
+    assert.equal('description' in payload.file, false)
+    assert.equal('tags' in payload.file, false)
+  }
+  assert.equal(index.chunks([multi]).length, chunks.length)
+})

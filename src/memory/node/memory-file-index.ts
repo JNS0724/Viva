@@ -79,7 +79,7 @@ ${entry.description}`))
     if (truncateMemoryJournal(db)) db.prepare("DELETE FROM memory_file_index_meta WHERE key='erase-pending'").run()
   }
   function passages(file: MemoryFileSnapshot): MemoryFilePassage[] {
-    const base = identity(file)
+    const base = identity(node(file))
     return file.chunks.map((chunk, ordinal) => ({ ...chunk, file: base, ref: {workspace: file.workspace, fileId: file.id, ordinal, revision: file.revision, usageVersion: file.usageVersion, policyToken: file.policyToken} }))
   }
   const allChunks = () => db.prepare('SELECT payload FROM memory_file_index_chunks ORDER BY workspace,file_id,ordinal')
