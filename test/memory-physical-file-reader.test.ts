@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fork } from 'node:child_process'
+import { RequestTimeout } from '../src/shared/request-budget.ts'
 import promises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { mkdirSync, writeFileSync, symlinkSync } from 'node:fs'
@@ -32,6 +32,8 @@ test('exact-path verification checks the current hash, missing files, unsafe pat
   assert.equal((await read(workspace, path))?.revision, memoryFileRevision('second revision'))
   assert.equal(readMemoryFileAtCommit(root, workspace, path)?.revision, memoryFileRevision('second revision'))
   assert.equal(await read(workspace, 'digest/wiki/missing.md'), null)
+  put('digest/wiki/oversize.md', 'x'.repeat(4 * 1024 * 1024 + 1))
+  await assert.rejects(read(workspace, 'digest/wiki/oversize.md'), /memory-file-not-file/)
   const external = join(root, 'outside.md')
   writeFileSync(external, 'outside the workspace')
   symlinkSync(external, join(root, workspace, 'digest/wiki/link.md'))
@@ -73,11 +75,11 @@ test('concurrent verification shares one physical read of a path and leaves room
   assert.equal((await independent)?.markdown, 'other')
 })
 
-test('queued healthy files share a recovery worker; a cancelled or stalled recovery cannot occupy its lane', async t => {
+test('stalled reads keep their slots until native I/O settles and queued reads time out', async t => {
   const { root, put } = fixture(t)
   const blocked = ['one', 'two', 'three'].map(name => `digest/wiki/${name}.md`)
-  const paths = new Set(blocked.map(path => put(path, 'unreadable')))
-  const healthy = 'digest/wiki/healthy.md', slow = 'digest/wiki/slow.md'
+  const paths = new Set(blocked.map(path => put(path, 'blocked')))
+  const healthy = 'digest/wiki/healthy.md'
   put(healthy, 'available')
   let release!: () => void
   const gate = new Promise<void>(done => { release = done })
@@ -87,42 +89,20 @@ test('queued healthy files share a recovery worker; a cancelled or stalled recov
     return Reflect.apply(original, promises, args)
   })
   syncBuiltinESMExports()
-  let forks = 0
-  let sent!: () => void
-  const waiting = new Promise<void>(done => { sent = done })
-  const read = createMemoryPhysicalFileReader(() => root, (entry, args, options) => {
-    const child = fork(entry, args, options), send = child.send
-    forks++
-    t.mock.method(child, 'send', function (this: typeof child, ...parts: Parameters<typeof send>) {
-      const request = parts[0] as { path?: string }
-      if (request.path === slow) { sent(); return true }
-      if (request.path === 'digest/wiki/fourth.md') {
-        setImmediate(() => child.emit('message', { timedOut: true }))
-        return true
-      }
-      return Reflect.apply(send, this, parts) as boolean
-    })
-    return child
-  })
+  let started = 0
+  const read = createMemoryPhysicalFileReader(() => { started++; return root })
   try {
-    const stalled = blocked.map(path => assert.rejects(read(workspace, path), /timed out/u))
-    // Enqueued before the three native deadlines fire.
-    const available = read(workspace, healthy)
-    await Promise.all(stalled)
-    assert.equal((await available)?.markdown, 'available')
+    const first = assert.rejects(read(workspace, blocked[0]!), RequestTimeout)
     assert.equal((await read(workspace, healthy))?.markdown, 'available')
-    assert.equal(forks, 1, 'rescue reads reuse their independent process')
-    const controller = new AbortController()
-    const pending = assert.rejects(read(workspace, slow, controller.signal), /cancelled/)
-    await waiting
-    controller.abort(new Error('cancelled'))
-    await pending
-    assert.equal((await read(workspace, healthy))?.markdown, 'available')
-    assert.equal(forks, 2)
-    await assert.rejects(read(workspace, 'digest/wiki/fourth.md'), /timed out/)
-    await assert.rejects(read(workspace, 'digest/wiki/fourth.md'), /timed out/)
-    assert.equal(forks, 2, 'a previously wedged rescue path cannot repeatedly spawn a process')
-    assert.equal((await read(workspace, healthy))?.markdown, 'available')
+    const others = blocked.slice(1).map(path => assert.rejects(read(workspace, path), RequestTimeout))
+    await Promise.all([first, ...others, assert.rejects(read(workspace, healthy), RequestTimeout)])
+    await assert.rejects(read(workspace, blocked[0]!), RequestTimeout)
+    await assert.rejects(read(workspace, healthy), RequestTimeout)
+    assert.equal(started, 4, 'caller timeouts must not start more native reads')
+    const retry = read(workspace, healthy)
+    release()
+    assert.equal((await retry)?.markdown, 'available')
+    assert.equal(started, 5)
   } finally {
     release()
     read.close()

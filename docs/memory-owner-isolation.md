@@ -21,7 +21,7 @@ Ship memory as the `viva-memory` dsh plugin. In the Agent process, the plugin re
 | Viva backend | Supervise dsh and the owner independently. Route management UI calls directly to the owner over asynchronous IPC and end foreground waits at their deadlines. |
 | dsh / Agent | Own native sessions, model transport, tool adapters, and user cancellation. Execute Dream model calls asynchronously and correlate their results by job and instance generation. |
 | Memory owner | Act as sole writer for a memory root. Own SQLite, authorization, committed file versions, Dream jobs and operation receipts. Serve queries while waiting for the model or asynchronous file reads. |
-| File reader and embedder | The owner starts a fallback reader on demand for individual registered paths when ordinary reads stall. The embedder computes vectors in its own process. |
+| Embedder | Computes vectors in its own process. The owner verifies registered files using asynchronous local reads. |
 
 ### Viva desktop
 
@@ -220,7 +220,7 @@ An optional recall timeout may omit newly retrieved memory for that turn. When a
 
 When a native output receipt fails, operations waiting on that receipt report the failure. Subsequent receipts can still be written in session order. Final replies that require owner verification have the five-second RPC budget plus one second for the relay. Reloading a window during a turn restores its ID, start time and stopping state.
 
-When all three ordinary file reads run overdue, queued requests can switch to a reusable reader process started on demand. An ordinary file read waits up to 250 ms, a fallback read up to two seconds, and a non-injection verification batch has a 2.5-second budget. Automatic injection keeps its overall 200 ms deadline. Passive Dream refreshes only query status. A further user click can retry the original operation ID.
+The owner allows three physical file reads at once. Each caller has 250 ms for queueing and reading combined. A timed-out native read occupies its slot until it actually finishes. If all slots stay blocked, new reads time out too. The non-injection verification batch has a 2.5-second budget. Automatic injection keeps its overall 200 ms deadline. Passive Dream refreshes only query status. A further user click can retry the original operation ID.
 
 | Failure signal | Response and recovery condition |
 |---|---|
