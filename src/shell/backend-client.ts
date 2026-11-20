@@ -11,7 +11,7 @@ import { createRequestBudget, MEMORY_READ_BUDGET_MS, INITIALIZATION_BUDGET_MS } 
 import { t } from '../shared/i18n/translate.ts'
 import {
   type Answer, bearer, decodeValue, encodeValue, type FailedMessage, type HostCall, isBytes, type ReadyMessage,
-  MAX_JSON_BYTES, SEQ_HEADER, sseReader, type StartMessage, TOKEN_HEADER,
+  MAX_JSON_BYTES, readBudgetPosition, SEQ_HEADER, sseReader, type StartMessage, TOKEN_HEADER,
 } from '../backend/wire.ts'
 
 /**
@@ -137,16 +137,21 @@ export function connect({ port, token }: { port: number, token: string }): Conne
 
   return {
     async rpc(channel, args) {
-      if (channel === 'memory:get' || channel === 'agent:snapshot') {
-        const limit = channel === 'memory:get' ? MEMORY_READ_BUDGET_MS : INITIALIZATION_BUDGET_MS
-        const requested = (args[0] as { budgetMs?: number } | undefined)?.budgetMs ?? limit
+      const position = readBudgetPosition(channel)
+      if (position !== undefined) {
+        const isMemoryRead = channel !== 'agent:snapshot'
+        const limit = isMemoryRead ? MEMORY_READ_BUDGET_MS : INITIALIZATION_BUDGET_MS
+        const requested = (args[position] as { budgetMs?: number } | undefined)?.budgetMs ?? limit
         if (!Number.isFinite(requested) || requested <= 0 || requested > limit) throw new Error('Invalid request budget')
         const lifetime = createRequestBudget(requested)
         try {
-          return await withOperation(channel === 'memory:get' ? 'memory.get' : 'startup', () => lifetime.run(() => call(`/rpc/${encodeURIComponent(channel)}`,
-            [{ budgetMs: lifetime.remainingMs() }], true, lifetime.signal)), { identities: { methodId: channel } })
+          return await withOperation(isMemoryRead ? diagnosticOperationForChannel(channel) : 'startup', () => lifetime.run(() => {
+            const sent = Array.from({ length: position }, (_, i) => args[i])
+            sent.push({ budgetMs: lifetime.remainingMs() })
+            return call(`/rpc/${encodeURIComponent(channel)}`, encodeValue(sent) as unknown[], true, lifetime.signal)
+          }), { identities: { methodId: channel } })
         } catch (error) {
-          if (channel !== 'memory:get') throw error
+          if (!isMemoryRead) throw error
           const code = lifetime.signal.aborted ? 'timeout' : error && typeof error === 'object' && 'code' in error ? error.code : 'unavailable'
           throw new Error(t(code === 'timeout' ? 'memory.read.timeout' : code === 'busy' ? 'memory.read.busy' : 'memory.read.unavailable'))
         } finally { lifetime.close() }

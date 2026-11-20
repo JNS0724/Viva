@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { fork } from 'node:child_process'
+import { ChildProcess, fork } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { once } from 'node:events'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
-import { MEMORY_EMBEDDING_DIMENSIONS } from '../src/memory/node/memory-embedder.ts'
+import { MEMORY_EMBEDDING_DIMENSIONS, MEMORY_EMBEDDING_MAX_CHARS } from '../src/memory/node/memory-embedder.ts'
 import { embeddingFixture } from './fixtures/memory-embedding-assets.ts'
+import { eventually } from './fixtures/eventually.ts'
 
 test('local worker keeps each prefix and rejects overlong rows without losing the rest of the batch', async t => {
   const { embedder } = await embeddingFixture(t)
@@ -21,14 +22,29 @@ test('local worker keeps each prefix and rejects overlong rows without losing th
   assert.equal(result[1], null)
   assert.equal(result[2]?.length, MEMORY_EMBEDDING_DIMENSIONS)
   assert.equal(result[2]?.[1], 1)
+  assert.equal(await embedder.embedBatch([{ kind: 'query', text: 'a'.repeat(MEMORY_EMBEDDING_MAX_CHARS + 1) }]), null)
+  assert.deepEqual(await embedder.embedBatch([{ kind: 'query', text: 'too long for the tokenizer' }]), [null])
+  assert.equal((await embedder.embedBatch([{ kind: 'query', text: 'still available' }]))?.[0]?.[0], 1)
 })
 
-test('closing a failed local worker leaves the caller alive and further requests fall back', async t => {
+test('a failed recovery probe renews cooldown before a subsequent successful probe', async t => {
   const { embedder } = await embeddingFixture(t)
-  assert.equal(await embedder.embedBatch([{ kind: 'query', text: 'stop worker' }]), null)
-  assert.equal(await embedder.embedBatch([{ kind: 'query', text: 'fall back during the cooldown' }]), null)
+  t.mock.timers.enable({ apis: ['Date'] })
+  const fail = () => embedder.embedBatch([{ kind: 'query', text: 'stop worker' }])
+  const embed = () => embedder.embedBatch([{ kind: 'query', text: 'available fact' }])
+  assert.equal(await fail(), null)
+  assert.equal(await embed(), null)
+
+  t.mock.timers.tick(30_000)
+  const probe = fail()
+  assert.equal(await embed(), null)
+  assert.equal(await probe, null)
+  assert.equal(await embed(), null)
+
+  t.mock.timers.tick(30_000)
+  assert.equal((await embed())?.[0]?.[0], 1)
   embedder.close()
-  assert.equal(await embedder.embedBatch([{ kind: 'query', text: 'closed' }]), null)
+  assert.equal(await embed(), null)
 })
 
 test('aborting a pending embedding retires that worker and lets a new request run', async t => {
@@ -38,8 +54,50 @@ test('aborting a pending embedding retires that worker and lets a new request ru
   assert.equal(await embedder.embedBatch([{ kind: 'query', text: 'busy' }]), null)
   controller.abort()
   assert.equal(await pending, null)
-  const result = await embedder.embedBatch([{ kind: 'query', text: 'retry after abort' }])
+  const result = await eventually(() => embedder.embedBatch([{ kind: 'query', text: 'retry after abort' }]), { timeoutMs: 2000, intervalMs: 10 })
   assert.equal(result?.[0]?.[0], 1)
+})
+
+test('a timed-out worker holds the sole slot until exit, then one recovery probe can run', { timeout: 10_000 }, async t => {
+  const events: DiagnosticEvent[] = []
+  t.after(installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event); return undefined })))
+  const { embedder } = await embeddingFixture(t)
+  const embed = () => embedder.embedBatch([{ kind: 'query', text: 'available fact' }])
+  assert.equal((await embed())?.[0]?.[0], 1)
+
+  // Model a child that has received termination but has not yet exited. This
+  // checks the slot invariant on Windows without timing a native child pause.
+  const kill = ChildProcess.prototype.kill
+  let stopping: ChildProcess | undefined
+  let permitExit = false
+  t.mock.method(ChildProcess.prototype, 'kill', function (this: ChildProcess, signal?: NodeJS.Signals | number) {
+    if (permitExit) return kill.call(this, signal)
+    stopping = this
+    return true
+  })
+  t.after(() => { if (stopping) kill.call(stopping, 'SIGKILL') })
+  const starts = () => events.filter(event => event.operation === 'embedding' && event.event === 'process.start')
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+  const pending = embedder.embedBatch([{ kind: 'query', text: 'hang worker' }])
+  t.mock.timers.tick(6000)
+  assert.equal(await pending, null)
+  const oldWorker = stopping
+  assert.ok(oldWorker)
+  assert.ok(events.some(event => event.event === 'retry.scheduled' && event.reason === 'timeout'))
+
+  t.mock.timers.tick(30_000)
+  assert.equal(await embed(), null, 'a cooled-down worker still holds the slot until exit')
+  assert.equal(starts().length, 1)
+  assert.ok(events.some(event => event.stage === 'draining' && event.reason === 'busy'))
+  const exited = once(oldWorker, 'exit')
+  permitExit = true
+  kill.call(oldWorker, 'SIGKILL')
+  await exited
+
+  const probe = embed()
+  assert.equal(await embed(), null, 'only one recovery probe runs')
+  assert.equal((await probe)?.[0]?.[0], 1)
+  assert.deepEqual(starts().map(event => event.stage), ['connecting', 'recovering'])
 })
 
 test('worker load and inference emit bounded metadata while malformed diagnostic replies cannot retire valid business work', async t => {

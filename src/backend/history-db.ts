@@ -457,6 +457,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return row ? toConversation(row) : null
   }
 
+  /** An unconfirmed native turn must not be reopened from a later cold launch. */
+  function detachNativeSession(conversationId: string, expectedSessionId: string) {
+    db.prepare('UPDATE conversations SET session_id = NULL WHERE id = ? AND session_id = ?')
+      .run(conversationId, expectedSessionId)
+  }
+
   /** An unsaved conversation; it reaches the database with its first message. */
   function create({ sessionId = null, mode = null, model = null, cwd = null, parentId = null, topicId = null }: Partial<Pick<Conversation, 'sessionId' | 'mode' | 'model' | 'cwd' | 'parentId' | 'topicId'>> = {}): Conversation {
     const at = now()
@@ -475,13 +481,13 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   /** keepEmpty retains the identity of a conversation hosting standalone background tasks. */
   function save<C extends Partial<Conversation> & { id: string }>(conversation: C, input: unknown,
-    { keepEmpty = false, copy }: { keepEmpty?: boolean, copy?: { from: string, count: number } } = {}): C | Conversation {
+    { keepEmpty = false, copy, sourceSession = conversation.sessionId }: { keepEmpty?: boolean, sourceSession?: string | null, copy?: { from: string, count: number } } = {}): C | Conversation {
     const id = assertId(conversation.id)
     const incoming = normalizeMessages(input)
     if (incoming.length === 0 && !keepEmpty) return conversation
     const at = now()
     return transaction(() => {
-      const messages = redactMessages(id, incoming, conversation.sessionId, copy)
+      const messages = redactMessages(id, incoming, sourceSession, copy)
       const existing = sql.anyConversation.get(id)
       sql.upsert.run({
         id,
@@ -496,7 +502,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         // Only taken when the segment is first written: an update keeps the topic it has.
         topicId: existing ? null : topicFor(id, conversation),
       })
-      syncMessages(id, messages, conversation.sessionId, at, copy)
+      syncMessages(id, messages, sourceSession, at, copy)
       if (memoryRanges.any()) memoryRanges.bindSaved(id)
       return toConversation(sql.conversation.get(id) ?? { ...existing, ...conversation })
     })
@@ -721,7 +727,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
-    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, eraseMemoryCopies, eraseFileRanges,
+    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
     create, save, get, workspaceOf: (id: string) => {

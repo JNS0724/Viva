@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createMemorySendFence } from '../src/memory/core/send-fence.ts'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import { verifiedModelOutput } from '../plugins/memory/lib/stream-output.ts'
 import { createMemoryTransport } from '../plugins/memory/lib/transport.ts'
 
 async function fixture(t: import('node:test').TestContext, status = 200, recordBody?: () => void) {
@@ -79,4 +81,41 @@ test('an opaque fetch cannot consume prompt bytes before proving a physical boun
     assert.equal(fence.pending(), 0)
     await fence.mutate(() => undefined)
   } finally { transport.dispose(); globalThis.fetch = original; await fence.close() }
+})
+
+test('a burst of text is delivered in bounded verified batches and never crosses a reasoning block', async () => {
+  async function* chunks(): AsyncGenerator<StreamChunk> {
+    for (let i = 0; i < 512; i++) yield { type: 'text-delta', index: 0, text: String.fromCharCode(65 + i % 26) }
+    yield { type: 'reasoning-delta', index: 1, text: 'think' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  const input = chunks()
+  const output: StreamChunk[] = []
+  let checked = 0
+  for await (const item of verifiedModelOutput(() => input.next(), async () => {
+    checked++
+    await new Promise<void>(resolve => setImmediate(resolve))
+    return true
+  })) output.push(item)
+  assert.ok(checked < 32)
+  assert.equal(output.filter(item => item.type === 'text-delta').map(item => item.text).join(''),
+    Array.from({ length: 512 }, (_, i) => String.fromCharCode(65 + i % 26)).join(''))
+  assert.deepEqual(output.slice(-2), [{ type: 'reasoning-delta', index: 1, text: 'think' }, { type: 'finish', reason: { kind: 'stop' } }])
+})
+
+test('already buffered text and tool output stay private after revocation between deliveries', async () => {
+  async function* chunks(): AsyncGenerator<StreamChunk> {
+    yield { type: 'text-delta', index: 0, text: 'visible' }
+    yield { type: 'text-delta', index: 0, text: 'withheld' }
+    yield { type: 'block-start', index: 1, blockType: 'tool-call' }
+  }
+  const source = chunks()
+  let allowed = true
+  const stream = verifiedModelOutput(() => source.next(), async () => {
+    await new Promise<void>(resolve => setImmediate(resolve))
+    return allowed
+  })
+  assert.deepEqual((await stream.next()).value, { type: 'text-delta', index: 0, text: 'visible' })
+  allowed = false
+  await assert.rejects(stream.next(), /Memory context changed/)
 })

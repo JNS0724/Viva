@@ -18,7 +18,7 @@ export type PrepareMemoryContextRecovery = {
   /** Original native message content, used transiently to authenticate its existing owner identity. */
   candidates: readonly { messageId: string, content: string, contentDigest?: string, inherited?: true }[]
 }
-export type BindMemoryContextRecovery = { ticketId: string, replacementMessageId: string, replacementHash: string }
+export type BindMemoryContextRecovery = { sessionId: string, ticketId: string, replacementMessageId: string, replacementHash: string }
 export type CommitMemoryContextRecovery = BindMemoryContextRecovery & { baseSurfaceHash: string, persisted: true }
 export interface MemoryContextRecoveryOwner {
   contextGeneration(sessionId: string): number
@@ -26,5 +26,5 @@ export interface MemoryContextRecoveryOwner {
   needsContextRecovery(sessionId: string): boolean
   prepareContextRecovery(input: PrepareMemoryContextRecovery): Promise<MemoryContextRecoveryTicket>
   bindContextRecovery(input: BindMemoryContextRecovery): MemoryContextRecoveryTicket
-  commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean): Promise<MemoryContextRecoveryTicket>
+  commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean | Promise<boolean>): Promise<MemoryContextRecoveryTicket>
 }

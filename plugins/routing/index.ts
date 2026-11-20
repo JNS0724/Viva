@@ -1,3 +1,4 @@
+import { LONG_TOOL_TIMEOUT_MS } from '../../src/shared/request-budget.ts'
 /**
  * viva-routing (docs/agent-routing-design.md): the main agent routes every request of the conversation; the work goes
  * to tasks. The app binds the main session before each prompt and puts each request under its header
@@ -21,13 +22,14 @@ import { COMMIT_DESCRIPTION, COMMIT_PARAMETERS, MAX_NOTICE_CHARS } from './lib/c
 import { deferCode, fastInput, fastNotice, fastPlan, fastTasks, parseFastDecision, type FastHandover } from './lib/fast-lane.ts'
 import type { FastOutcome } from '../../src/shared/request-routing/channel.ts'
 import { atStep, claimFast, decide, decisionProblem, EMPTY_LEDGER, hasOpenWork, mayShow, register, repairs, settleFast, statusOfPlan, type Ledger, type RequestStatus } from './lib/ledger.ts'
-import { admit, grantsOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
+import { admit, grantsOf, layerOf, MAIN_SCOPE, ROUTE_TOOL, type Grant } from './lib/policy.ts'
 import { createSourceGuard, installToolProvenance, verifyPluginReadOnlyTools, type VerifySourceToolsResult } from './lib/source-tools.ts'
 import { createHostChannel } from './lib/host.ts'
 import { SUBAGENT_TOOLS } from '../../src/shared/subagent-tools.ts'
 import { stepNote, withIncoming } from './lib/recent-tasks.ts'
 import { routingModelHistory } from './lib/model-history.ts'
 import { completeFastRouting } from './lib/model-call.ts'
+import { enableMainToolBudgets, executeToolCall, isMemoryTool } from '../../src/shared/node/tool-call-budget.ts'
 
 export const name = 'viva-routing'
 export const inject = ['agents', 'tools', 'llm']
@@ -83,6 +85,9 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   function narrow(agent: Agent) {
     if (!mains.has(String(agent.session.id)) || narrowed.has(agent)) return
     narrowed.add(agent)
+    enableMainToolBudgets(agent, notice => {
+      if (port.connected) port.send?.(notice, () => {})
+    })
     agent.ctx.tools.restrict({ allow: MAIN_SCOPE.filter(tool => tool !== ROUTE_TOOL && ctx.tools.get(tool)) })
     agent.ctx.tools.register(routeTool())
     agent.ctx.plugin(persona, { prefix: config.prefix, suffix: config.suffix ?? '' })
@@ -208,9 +213,16 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
     return decision.allowed ? next() : { kind: 'deny', reason: decision.reason ?? '' }
   }, { prepend: true })
 
+  ctx.on('tools/execute', (exec, next) => {
+    if (!mains.has(String(exec.agent?.session.id ?? '')) || isMemoryTool(exec.name)) return next()
+    const layer = layerOf(exec.name)
+    return executeToolCall(exec, next, { declared: ctx.tools.get(exec.name, exec.agent, exec.toolSet)?.timeoutMs,
+      mutates: layer === 'app-change' || layer === 'route', cooperativeReceipt: exec.name === ROUTE_TOOL })
+  })
+
   /** commit_route, registered on each main agent: the plan goes to the app, which decides it (lib/host.ts). */
   const routeTool = () => defineTool({
-    name: ROUTE_TOOL, description: COMMIT_DESCRIPTION, parameters: COMMIT_PARAMETERS,
+    name: ROUTE_TOOL, timeoutMs: LONG_TOOL_TIMEOUT_MS, description: COMMIT_DESCRIPTION, parameters: COMMIT_PARAMETERS,
     output: { schema: { type: 'object', additionalProperties: false, properties: { text: { type: 'string', required: true } } }, render: (_args, value) => [{ type: 'text', text: value.text }] },
     execute: async (args, exec) => {
       if (!exec.agent) throw new Error('missing agent')

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { startFakeLlm } from './fixtures/fake-llm.ts'
-import { DSH_TIMEOUT_MS, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, startHarness } from './fixtures/dsh-harness.ts'
 
 test('real dsh: a session nobody watches runs at the level picked; what that level would ask is refused, not waited for', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { events, bridge, workspace } = await startHarness(t, { permission: 'read-only' })

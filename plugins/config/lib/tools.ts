@@ -1,3 +1,5 @@
+import { APP_WRITE_TIMEOUT_MS } from '../../../src/shared/request-budget.ts'
+import { LONG_TOOL_TIMEOUT_MS } from '../../../src/shared/request-budget.ts'
 /**
  * The tools the model configures the app with. Each names the operation the app performs (config contract,
  * lib/channel.js); `mutating` ones are asked of the user first through dsh's approval card, with `reason`
@@ -9,6 +11,7 @@ import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools'
 export type ConfigTool = {
   name: string
   op: string
+  timeoutMs?: number
   description: string
   parameters: ParameterSchemaSpec
 } & ({ mutating: false } | { mutating: true, reason: (args: Record<string, any>) => string })
@@ -25,7 +28,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_mcp_add',
-    op: 'mcp_add',
+    op: 'mcp_add', timeoutMs: APP_WRITE_TIMEOUT_MS,
     mutating: true,
     description: '为用户接入一个 MCP 服务器（本地命令，或 HTTP 地址），让你获得它提供的工具。'
       + '服务需要令牌或密钥时，只在 secrets 里写变量名（本地服务器写环境变量名，HTTP 服务器写请求头名），用户会在窗口里的安全输入框填写；'
@@ -42,7 +45,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_mcp_update',
-    op: 'mcp_update',
+    op: 'mcp_update', timeoutMs: APP_WRITE_TIMEOUT_MS,
     mutating: true,
     description: '修改用户已接入的一个 MCP 服务器，不用删了重加：只写要改的项，没写的保持不变，已保存的密钥也保持不变。'
       + '要新增或更换密钥时，只在 secrets 里写名字，用户会在窗口里填写；绝不要在对话里要密钥的值。这一轮结束后生效。',
@@ -58,7 +61,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_mcp_import',
-    op: 'mcp_import',
+    op: 'mcp_import', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     mutating: false,
     description: '把用户自己的 dsh 里配好的 MCP 服务器整体搬到这里，密钥一起带过来，用户不用重新填写，也不需要确认。'
         + '直接调用本工具，不要先执行命令列目录或读取配置文件；路径检查和配置读取由本工具完成。'
@@ -70,7 +73,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_mcp_remove',
-    op: 'mcp_remove',
+    op: 'mcp_remove', timeoutMs: APP_WRITE_TIMEOUT_MS,
     mutating: true,
     description: '移除用户的一个 MCP 服务器。',
     parameters: { name: NAME },
@@ -85,7 +88,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_skill_create',
-    op: 'skill_create',
+    op: 'skill_create', timeoutMs: APP_WRITE_TIMEOUT_MS,
     mutating: true,
     description: '把一套做法存成用户的新 skill，以后遇到同类事就按它做。用户说「以后都这样做」「存成 skill」时使用。',
     parameters: {
@@ -97,7 +100,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_skill_install',
-    op: 'skill_install',
+    op: 'skill_install', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     mutating: true,
     description: '安装用户电脑上已有的 skill：含 SKILL.md 的文件夹，或一个 .md 文件。',
     parameters: { path: { type: 'string', required: true, description: '文件夹或文件的完整路径' } },
@@ -105,7 +108,7 @@ export const CONFIG_TOOLS: readonly ConfigTool[] = Object.freeze<ConfigTool[]>([
   },
   {
     name: 'viva_skill_remove',
-    op: 'skill_remove',
+    op: 'skill_remove', timeoutMs: APP_WRITE_TIMEOUT_MS,
     mutating: true,
     description: '删除用户的一个 skill（移到废纸篓，可以找回）。',
     parameters: { id: { type: 'string', required: true, description: 'viva_skill_list 列出的 id' } },

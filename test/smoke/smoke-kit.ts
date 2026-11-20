@@ -39,6 +39,7 @@ export interface SmokeHooks {
   desk: () => SmokeDesk
   model: () => SmokeModel | null
   agentPid: () => Promise<number | null>
+  memoryOwnerPid: () => Promise<number | null>
   /** The backend process, to kill and see started again. */
   backendPid: () => Promise<number | null>
   cwd: string

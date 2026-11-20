@@ -15,11 +15,12 @@ type Running = { attemptId: string, marker: Marker, attempt?: NativeOutputAttemp
 
 /** Connects the live loop's own output attempt to its eventual durable event. */
 export function trackNativeOutputAttempts(
-  contextGeneration: (session: string) => number,
+  contextGeneration: (session: string) => number | undefined,
   finish: (attempt: NativeOutputAttempt, terminal?: NativeOutputTerminal) => void,
 ) {
-  const attempts = new WeakMap<Session, Running>()
+  let attempts = new WeakMap<Session, Running>()
   return {
+    reset() { attempts = new WeakMap() },
     current: (session: Session) => attempts.get(session)?.attempt,
     prepare(session: Session) {
       const current = attempts.get(session)
@@ -40,7 +41,9 @@ export function trackNativeOutputAttempts(
     frame(session: Session, frame: AssistantStreamFrame) {
       if (frame.type === 'start') {
         const sessionId = String(session.id)
-        const marker = { id: randomUUID(), generation: contextGeneration(sessionId), turn: frame.turn, step: frame.step }
+        const generation = contextGeneration(sessionId)
+        if (generation === undefined) { attempts.delete(session); return }
+        const marker = { id: randomUUID(), generation, turn: frame.turn, step: frame.step }
         attempts.set(session, { attemptId: frame.attemptId, marker, events: new Map() })
         return
       }

@@ -361,3 +361,56 @@ test('an inactive saved segment still has its cutoff after other segments have b
   for (let i = 0; i < 130; i++) stream.save('other-' + i, mark)
   assert.deepEqual(stream.snapshot(context.conversationId, context).replay, [])
 })
+
+test('a stopped conversation with an evicted unsaved tail can recover from its durable checkpoint', t => {
+  const stream = backendStream(t)
+  for (let i = 0; i < 1025; i++) stream.send({ type: 'update', context, chunk: i })
+  stream.send({ type: 'turn_end', context, stopReason: 'cancel_unconfirmed' })
+  assert.throws(() => stream.snapshot(context.conversationId, context), /unreplayable gap/)
+  const view = stream.snapshot(context.conversationId, context, true)
+  assert.deepEqual(view.replay, [])
+  assert.equal(view.stoppedReplayLost, true)
+  const state = reduce(initialState, { type: 'initialization_snapshot', snapshot: { ...snapshot(), ...view, stopUnconfirmed: true } })
+  assert.equal(state.stoppedReplayLost, true)
+  assert.equal(state.stopUnconfirmed, true)
+})
+
+test('a checkpointed waiting turn remains cancellable after reload and later buffered events win', async t => {
+  const activeTurn = { id: 'checkpointed-turn', by: 'user', startedAt: 100, stopping: false }
+  const history = { id: context.conversationId, updatedAt: 200, createdAt: 1, parentId: null,
+    messages: [{ role: 'user', text: 'ask a question' }], folds: [] }
+  let state: State = initialState
+  let ended = false
+  const pushEnd = { ...push(1), type: 'turn_end' }
+  const coordinator = createInitializationActions({
+    snapshot: async () => ({ ...snapshot(), activeTurn, history }),
+    install: view => { state = reduce(state, { type: 'initialization_snapshot', snapshot: view }) },
+    restoreTurn: turn => { state = reduce(state, { type: 'initialization_turn', turn }) },
+    deliver: value => {
+      if ((value as { type: string }).type === 'turn_end') {
+        ended = true
+        state = reduce(state, { type: 'turn_end', stopReason: 'cancelled', at: 300 })
+      }
+    },
+    pause() {}, initialized() {}, loading() {}, failed(reason) { assert.fail(reason) },
+  })
+  t.after(coordinator.close)
+  assert.ok(await coordinator.initialize())
+  state = reduce(state, { type: 'waits_restored', at: 210, questions: [{
+    questionId: 'q', questions: [{ id: 'city', question: 'Which city?', options: [] }],
+  }] })
+  assert.equal(state.phase, 'asking')
+  assert.equal(state.turn?.startedAt, 100)
+  let cancelled: unknown
+  const actions = createConversationActions({ api: { cancel: async target => { cancelled = target; return true },
+    prompt: async () => {}, steer: async () => ({ ok: true }), answerQuestion: async () => true, provideSecrets: async () => true },
+    getState: () => state, dispatch: action => { state = reduce(state, action) },
+    showToast() {}, errorMessage: String, beforePrompt() {}, keepPicture() {} })
+  await actions.cancel()
+  assert.deepEqual(cancelled, { ...context, turnId: activeTurn.id })
+  const reloaded = coordinator.initialize()
+  coordinator.receive(pushEnd)
+  assert.ok(await reloaded)
+  assert.equal(ended, true)
+  assert.equal(state.turn, null)
+})

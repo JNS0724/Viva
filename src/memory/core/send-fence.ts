@@ -14,17 +14,17 @@ export interface MemorySendPermit {
   settled(): void
 }
 
-export function createMemorySendFence({ epoch, admit, now = Date.now, diagnostics: providedDiagnostics = NO_DIAGNOSTICS }: {
-  epoch: string, admit(origin: { session: string, contextGeneration?: number } | { jobId: string }): SendAdmission | null, now?: () => number, diagnostics?: DiagnosticPort,
+export function createMemorySendFence<Proof = never>({ epoch, admit, now = Date.now, diagnostics: providedDiagnostics = NO_DIAGNOSTICS }: {
+  epoch: string, admit(origin: { session: string, contextGeneration?: number } | { jobId: string }, proof?: Proof): SendAdmission | null, now?: () => number, diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(providedDiagnostics)
   let mutation = 0
   const attempts = new Map<string, { controller: AbortController, done: Promise<void>, finish(): void }>()
   let paused = false, closed = false
   let serial: Promise<unknown> = Promise.resolve()
-  function acquire(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string, ownerEpoch = epoch): MemorySendPermit {
+  function acquire(id: string, origin: { session: string, contextGeneration?: number } | { jobId: string }, payload: string, ownerEpoch = epoch, proof?: Proof): MemorySendPermit {
     if (closed || paused || ownerEpoch !== epoch || attempts.has(id)) throw new MemorySendDenied()
-    const admission = admit(origin)
+    const admission = admit(origin, proof)
     if (!admission?.current() || admission.deadline !== null && admission.deadline <= now()) throw new MemorySendDenied()
     const controller = new AbortController()
     const identities = { requestId: id, ownerEpoch: epoch, ...('session' in origin ? { sessionId: origin.session } : { jobId: origin.jobId }) }

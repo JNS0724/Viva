@@ -7,10 +7,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { stepsFrom } from '../plugins/trace/lib/steps.ts'
 import { openTraceDb } from '../plugins/trace/lib/store.ts'
 import { readSessionTrace } from '../src/backend/dsh-log.ts'
-import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, startHarness } from './fixtures/dsh-harness.ts'
 
 /** The trace plugin: what it keeps from dsh's events, its store, and the app reading it instead of dsh's log. */
-const event = (type, seq, data) => ({ type, seq, time: 1000 + seq, data })
+const event = (type: string, seq: number, data: object) => ({ type, seq, time: 1000 + seq, data })
 
 test('steps keep thoughts and tool calls with their outcome, and full arguments for the detail view', () => {
   const steps = stepsFrom([
@@ -35,7 +35,7 @@ test('the store keeps steps per session, updates a finished tool, and refuses a 
   const db = openTraceDb({ file })
   db.recordSteps('s-1', [{ seq: 3, at: 1003, kind: 'tool', callId: 'c1', name: 'read', args: {}, status: 'in_progress' }])
   db.recordSteps('s-1', [{ seq: 3, at: 1003, kind: 'tool', callId: 'c1', name: 'read', args: {}, status: 'completed' }])
-  assert.deepEqual(db.stepsOf('s-1').map((step) => step.status), ['completed'])
+  assert.deepEqual(db.stepsOf('s-1').map((step) => step.kind === 'tool' && step.status), ['completed'])
   assert.deepEqual([db.hasSession('s-1'), db.hasSession('s-2'), db.stepsOf('s-1', 1000).length], [true, false, 0])
   db.close()
 
@@ -50,6 +50,7 @@ test('inside dsh the plugin records each turn, and the app reads it without dsh 
   const agent = bridge()
   const { sessionId } = await agent.start()
 
+  assert.ok(sessionId)
   await agent.prompt('查一下 张三')
 
   const db = openTraceDb({ file: path.join(userData, 'trace.db') })
@@ -58,11 +59,12 @@ test('inside dsh the plugin records each turn, and the app reads it without dsh 
   await eventually(() => db.callsOf(sessionId).length > 0)
   const recordedCall = db.callsOf(sessionId)[0]
   const recordedDetail = db.callOf(sessionId, recordedCall.turn, recordedCall.step)
-  assert.ok(recordedDetail && recordedDetail.request.messages.length > 0)
+  assert.ok(recordedDetail?.request && recordedDetail.request.messages.length > 0)
   assert.ok(recordedDetail.request.provider.length > 0)
   // The main conversation routes the request first (commit_route), then looks it up.
   const steps = db.stepsOf(sessionId)
-  assert.deepEqual(steps.map((step) => [step.kind, step.name, step.status]), [['tool', 'commit_route', 'completed'], ['tool', 'memory_recall', 'completed']])
+  assert.deepEqual(steps.map((step) => step.kind === 'tool' && [step.kind, step.name, step.status]), [['tool', 'commit_route', 'completed'], ['tool', 'memory_recall', 'completed']])
+  assert.ok(steps[1].kind === 'tool')
   assert.deepEqual(steps[1].args, { query: '张三' })
   const { trace, available } = await readSessionTrace({ dshHome: path.join(userData, 'no-dsh-here'), traceDb: db, sessionIds: [sessionId], until: Date.now() })
   assert.equal(available, true, 'no dsh log was needed')

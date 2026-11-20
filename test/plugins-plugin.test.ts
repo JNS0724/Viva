@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { getDshRuntimeVersion } from '@deepseek-ai/dsh-app-boot'
-import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.ts'
 import { changeView, inspectionView, pluginsView } from '../src/backend/plugins-ipc.ts'
 import { specFit } from '../src/backend/plugin-catalog.ts'
 import { pluginStanding } from '../src/renderer/capabilities-state.ts'
@@ -74,6 +74,13 @@ test('plugin preflight matches the live dsh version gate and allows an optional 
   await agent.start()
   const fixtureManifest = JSON.parse(fs.readFileSync(path.join(FIXTURE, 'package.json'), 'utf8')) as {
     peerDependencies: Record<string, string>
+  }
+  // This temporary local plugin resolves peer imports from its real path.
+  // Give it the same installed host peers as the checked-in fixture.
+  const peers = path.join(dir, 'node_modules', '@deepseek-ai')
+  fs.mkdirSync(peers, { recursive: true })
+  for (const peer of Object.keys(fixtureManifest.peerDependencies)) {
+    fs.symlinkSync(path.join(ROOT, 'node_modules', peer), path.join(dir, 'node_modules', peer), 'junction')
   }
   const fixture = (folder: string, fields: object) => {
     const dest = path.join(dir, folder)

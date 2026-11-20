@@ -1,13 +1,17 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { ChildProcess } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { delayNativeOutputReceipts, DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
+import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
+import { objectOf } from '../src/memory/contracts/unknown-value.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 
-/** Actual DSH child owns storage, ingestion, computation, tools and dispatch. The host only calls RPC. */
+/** The real DSH adapter and the separate storage owner communicate through the backend relay. */
 async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]) {
   const harness = await setup(t, options)
   const agent = harness.bridge({ memoryRequired: true })
@@ -30,6 +34,32 @@ function lastContext(llm: { requests: object[] }) {
   return JSON.stringify(foreground?.messages.at(-1) ?? '')
 }
 
+test('a resumed task publishes its committed answer after its native output receipt reaches the owner', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const harness = await setup(t)
+  const first = harness.bridge()
+  await first.start()
+  const task = await first.startTask()
+  assert.ok(task.ok)
+  await first.promptTask(task.taskId, '先记录昨天的进度')
+  await first.dispose()
+  const kept: string[] = []
+  const second = harness.bridge({ recordOutputs: async (session, outputs) => {
+    const accepted = []
+    for (const output of outputs) {
+      if (!output.native || !await second.memory.call('nativeOutputEvidence', { session, ...output.native })) continue
+      accepted.push(output)
+      kept.push(...output.blocks.map(block => block.text))
+    }
+    return accepted
+  } })
+  await second.start()
+  assert.ok((await second.resumeTask({ taskId: task.taskId })).ok)
+  const delayed = delayNativeOutputReceipts(t, second.pid, 150)
+  await second.promptTask(task.taskId, '后来呢')
+  assert.ok(delayed() > 0)
+  assert.ok(kept.some(text => text.includes('后来呢')), 'only owner-confirmed text can be published')
+})
+
 test('an idle interjection starts neither a fast request nor a routing decision', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, agent, ask, requests } = await setupMemory(t)
   await ask('先看看这份报告')
@@ -48,6 +78,34 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
   assert.ok(replies(events).join('').includes('你好'))
 })
 
+test('automatic context reuses the admitted step and a missing evidence receipt lets the foreground continue', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { agent, call, ask, llm, events } = await setupMemory(t)
+  await call('setProfile', { args: [{ role: 'injection-receipt-test' }, randomUUID()] })
+  const pid = agent.pid(), emit = ChildProcess.prototype.emit
+  let admitted = false, lookup = false, extraSessionReads = 0
+  let lostReceiptBudget: number | undefined
+  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'request' && frame.method === 'adapter') {
+      const call = objectOf(frame.input), input = Array.isArray(call?.args) ? objectOf(call.args[0]) : null
+      if (call?.method === 'receiveSource' && input?.admitted === true) admitted = true
+      if (admitted && !lookup && call?.method === 'sessionView') extraSessionReads++
+      if (call?.method === 'modelRequest' && input?.op === 'context') lookup = true
+      if (lookup && lostReceiptBudget === undefined && call?.method === 'registerDerived' && input?.nativeUserSource === 'viva-memory') {
+        lostReceiptBudget = frame.budgetMs
+        return true // The owner never acknowledges this optional evidence write.
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  await ask('照常回复这一条消息')
+  assert.ok(admitted && lookup)
+  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 100)
+  assert.equal(extraSessionReads, 0)
+  assert.match(replies(events).join(''), /照常回复这一条消息/)
+  assert.doesNotMatch(JSON.stringify(llm.requests), /injection-receipt-test/)
+})
+
 test('the plugin injects manual profile and recalls file memory with exact evidence after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { llm, call, ask, agent, bridge } = await setupMemory(t)
   await call('setProfile', { args: [{ role: '后端负责人' }, randomUUID()] })
@@ -58,11 +116,13 @@ test('the plugin injects manual profile and recalls file memory with exact evide
   assert.match(lastContext(llm), /周报每周五下班前交给张三/)
   assert.ok(llm.requests.every(request => !JSON.stringify(request).includes('dsh_session_log')))
   const epoch = agent.memory.state()!.epoch
+  const dsh = agent.pid()
   await agent.dispose()
   const restarted = bridge({ memoryRequired: true })
   await restarted.start()
   assert.ok(await eventually(() => restarted.memory.ready()))
-  assert.notEqual(restarted.memory.state()!.epoch, epoch)
+  assert.notEqual(restarted.pid(), dsh)
+  assert.equal(restarted.memory.state()!.epoch, epoch)
   assert.deepEqual(await restarted.memory.call('createFile', { args: [input] }), created)
   assert.ok((await restarted.memory.call('readFile', { args: [created.identity] }))?.markdown.includes(input.text))
 })

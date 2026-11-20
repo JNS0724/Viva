@@ -95,6 +95,38 @@ export function bindDiagnosticPort(port: DiagnosticPort | undefined, operation: 
 }
 
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+const member = <T extends string>(values: readonly T[], value: unknown): value is T => typeof value === 'string' && (values as readonly string[]).includes(value)
+const OUTCOMES = ['completed', 'failed', 'timed_out', 'cancelled', 'late_completed'] as const
+declare const validated: unique symbol
+export type ValidatedDiagnosticEvent = DiagnosticEvent & { readonly [validated]: true }
+export function safeDiagnosticEvent(raw: unknown, header?: Pick<DiagnosticEvent, 'event' | 'operation'>): ValidatedDiagnosticEvent | undefined {
+  try {
+    if (!record(raw)) return
+    // Read each envelope field once: a getter must not change a validated name before it is copied.
+    const event = header ? header.event : raw.event, operation = header ? header.operation : raw.operation
+    if (!member(EVENTS, event) || !member(OPERATIONS, operation)) return
+    const result: DiagnosticEvent = { event, operation }
+    const debug = raw.debug, stage = raw.stage, reason = raw.reason, outcome = raw.outcome
+    if (debug === true) result.debug = true
+    if (member(STAGES, stage)) result.stage = stage
+    if (member(REASONS, reason)) result.reason = reason
+    if (member(OUTCOMES, outcome)) result.outcome = outcome
+    let identities: DiagnosticFields['identities']
+    let metrics: DiagnosticFields['metrics']
+    const rawIdentities = raw.identities, rawMetrics = raw.metrics
+    if (record(rawIdentities)) for (const key of ID_KEYS) {
+      const value = rawIdentities[key]
+      if (typeof value === 'string' && value.length <= 512 || typeof value === 'number' && Number.isSafeInteger(value)) { identities ??= {}; identities[key] = value }
+    }
+    if (record(rawMetrics)) for (const key of METRIC_KEYS) {
+      const value = rawMetrics[key]
+      if (typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) { metrics ??= {}; metrics[key] = value }
+    }
+    if (identities) result.identities = identities
+    if (metrics) result.metrics = metrics
+    return result as ValidatedDiagnosticEvent
+  } catch { return undefined }
+}
 const traceIdPattern = /^[a-f0-9]{32}$/
 const spanIdPattern = /^[a-f0-9]{16}$/
 /** Wire spans are 64-bit IDs. On disk both IDs are 128-bit aliases. */

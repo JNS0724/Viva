@@ -145,9 +145,12 @@ export async function checkSchedules(win: SmokeWindow, outDir: string): Promise<
   await until(win, `Boolean(${row('active')})`, 'resumed')
   await capture(win, outDir, 'schedule-next')
 
-  await until(win, `Boolean(${row('new')})`, 'due, it ran, and its answer is new in 动态', RUN_TIMEOUT_MS)
-  const count = String(await run(win, `${q('#feed-count')}.hidden ? '' : ${q('#feed-count')}.textContent`))
+  const deliveryDeadline = Date.now() + RUN_TIMEOUT_MS
+  // Opening 动态 reloads its contents. Observe the live notification before any navigation.
+  const count = await until(win, `!${q('#feed-count')}.hidden && ${q('#feed-count')}.textContent`, 'the new schedule result counted in the title bar', RUN_TIMEOUT_MS)
   if (count !== '1') failures.push(`the title bar should count the one new item: ${JSON.stringify(count)}`)
+  await run(win, `if (${q(PAGE)}.hidden) ${q('#open-feed')}.click()`)
+  await until(win, `!${q(PAGE)}.hidden && Boolean(${row('new')})`, 'due, it ran, and its answer is new in 动态', deliveryDeadline - Date.now())
   await run(win, `${row('new')}.click()`)
   await until(win, q(`${PAGE} .fu-draft`), 'its answer')
   const answer = String(await run(win, `${q(`${PAGE} .fu-draft`)}.textContent`))

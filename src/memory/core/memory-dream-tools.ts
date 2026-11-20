@@ -107,7 +107,7 @@ export function dreamChangesConclusion(before: string, after: string, dailyPaths
   return index !== prior.length
 }
 
-function metadataSummary(snapshot: DreamDocumentSnapshot) {
+export function dreamNodeMetadata(snapshot: Pick<DreamDocumentSnapshot, 'markdown' | 'path'>) {
   const { metadata } = parseMemoryDocument(snapshot.markdown)
   const name = typeof metadata.name === 'string' ? metadata.name : snapshot.path.split('/').at(-1)!.replace(/\.md$/u, '')
   const description = typeof metadata.description === 'string' ? metadata.description : ''
@@ -122,7 +122,7 @@ export function searchMemoryNodes<S extends DreamDocumentSnapshot>(snapshots: re
   const terms = [...new Set(memorySearchTokens(input.query, false))]
   if (!terms.length) return []
   const nodes = snapshots.filter(snapshot => digestPath.safeParse(snapshot.path).success && (!snapshot.applicability || snapshot.applicability.state === 'current')).map(snapshot => {
-    const summary = metadataSummary(snapshot)
+    const summary = dreamNodeMetadata(snapshot)
     const tokens = memorySearchTokens([summary.name, summary.description, ...summary.tags].join(' '), true)
     return { snapshot, summary, tokens }
   })
@@ -148,9 +148,13 @@ export type DreamDraftResult<S extends DreamDocumentSnapshot> = {
 /** Isolated per-unit draft and readset. This module never opens files or invokes the model.
  * The caller independently reviews changes to existing conclusions against canonical user
  * sources and revalidates the authorized dependency set for every commit. */
+/** Opaque to the model; a repeated query continues only the same candidate set. */
+export type DreamSearchPage = { fingerprint: string, offset: number }
+type DreamFiles<S> = { partial?: boolean, next?: DreamSearchPage, read(path: string): S | null, list(): readonly S[] }
+
 export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, documents, onRead = () => {}, allowsDraftMaterial }: {
   unit: DreamUnit,
-  documents: { list(): readonly S[], read(path: string): S | null, locatorRetired?: (path: string) => boolean },
+  documents: DreamFiles<S> & { locatorRetired?: (path: string) => boolean, load?(paths: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal): Promise<DreamFiles<S>> },
   onRead?: (snapshot: S) => void,
   /** Early repair feedback only. The caller must still revalidate material and evidence before commit. */
   allowsDraftMaterial?: (markdown: string) => boolean,
@@ -159,13 +163,15 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
   const bodyReads = new Set<string>()
   let target: { path: string, before: S | null, markdown: string } | null = null
   let searched = false
-  const current = () => [...observed.values()].every(snapshot => {
-    const latest = documents.read(snapshot.path)
+  const incompleteSearches = new Map<string, DreamSearchPage | undefined>()
+  const current = (read = documents.read) => [...observed.values()].every(snapshot => {
+    const latest = read(snapshot.path)
     return latest?.revision === snapshot.revision && latest?.usageVersion === snapshot.usageVersion && latest?.policyToken === snapshot.policyToken
       && JSON.stringify(latest?.sources) === JSON.stringify(snapshot.sources)
       && JSON.stringify(latest?.applicability) === JSON.stringify(snapshot.applicability)
-  }) && (!target || target.before !== null || documents.read(target.path) === null)
-  const assertCurrent = () => { if (!current()) throw new MemoryDreamStaleError() }
+  }) && (!target || target.before !== null || read(target.path) === null)
+  const checkedPaths = () => [...observed.keys(), ...(target ? [target.path] : [])]
+  const assertCurrent = (lookup = documents.read) => { if (!current(lookup)) throw new MemoryDreamStaleError() }
   function observe(snapshot: S) {
     const previous = observed.get(snapshot.path)
     if (previous && (previous.revision !== snapshot.revision || previous.usageVersion !== snapshot.usageVersion || previous.policyToken !== snapshot.policyToken)) throw new MemoryDreamStaleError()
@@ -177,8 +183,8 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     }
     return observed.get(snapshot.path)!
   }
-  function read(path: string) {
-    const snapshot = documents.read(path)
+  function read(path: string, lookup = documents.read) {
+    const snapshot = lookup(path)
     if (!snapshot || snapshot.applicability?.state === 'unavailable') return reject('memory-dream-document-unavailable')
     return observe(snapshot)
   }
@@ -189,10 +195,11 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     }
     return links
   }
-  function draft(path: string, markdown: string) {
+  function draft(path: string, markdown: string, lookup = documents.read) {
     if (!searched) return reject('memory-dream-search-required')
     if (target && target.path !== path) return reject('memory-dream-single-target-required')
-    const before = target?.before ?? documents.read(path)
+    const before = target?.before ?? lookup(path)
+    if (!before && incompleteSearches.size) return reject('memory-dream-search-incomplete')
     if (!before && documents.locatorRetired?.(path)) return reject('memory-dream-target-unavailable')
     if (before && !bodyReads.has(path)) return reject('memory-dream-read-target-first')
     // Parse before mutating draft state; an invalid attempt does not poison later corrections.
@@ -206,27 +213,36 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
     const refs = [...observed.values()].flatMap(snapshot => snapshot.sources)
     return [...new Map(refs.map(ref => [JSON.stringify([ref.namespace, ref.sourceId, ref.occurrenceId, ref.revision]), ref])).values()]
   }
-  const executeTool: MemoryToolExecutor = async invocation => {
-    assertCurrent()
+  const executeTool: MemoryToolExecutor = async (invocation, signal) => {
+    signal?.throwIfAborted()
     try {
       const schema = inputSchemas[invocation.name as ToolName]
       if (!schema || !Object.hasOwn(inputSchemas, invocation.name)) return reject('memory-dream-tool-not-allowed')
       const parsed = schema.safeParse(invocation.input)
       if (!parsed.success) return reject('memory-dream-invalid-tool-input')
+      const paths = checkedPaths()
+      if ('path' in parsed.data) paths.push(parsed.data.path)
+      const search = invocation.name === 'node_search' ? inputSchemas.node_search.parse(invocation.input) : null
+      const files = documents.load ? await documents.load(paths, search && { ...search, page: incompleteSearches.get(search.query) }, signal) : documents
+      assertCurrent(files.read)
       let result: unknown
       switch (invocation.name) {
         case 'node_search': {
           const input = inputSchemas.node_search.parse(invocation.input)
-          result = searchMemoryNodes(documents.list(), input.query, input.limit).map(({ snapshot, summary, score }) => {
+          result = searchMemoryNodes(files.list(), input.query, input.limit).map(({ snapshot, summary, score }) => {
             observe(snapshot)
             return { path: snapshot.path, revision: snapshot.revision, ...summary, score, ...(snapshot.applicability ? { applicability: snapshot.applicability } : {}) }
           })
+          if (files.partial) {
+            incompleteSearches.set(input.query, files.next)
+            result = { partial: true, nodes: result }
+          } else incompleteSearches.delete(input.query)
           searched = true
           break
         }
         case 'read': {
           const { path, start_line = 1, end_line } = inputSchemas.read.parse(invocation.input)
-          const snapshot = target?.path === path ? { ...target.before, path, markdown: target.markdown } : read(path)
+          const snapshot = target?.path === path ? { ...target.before, path, markdown: target.markdown } : read(path, files.read)
           const total = memoryDocumentLines(snapshot.markdown).length
           if (start_line > total || end_line !== undefined && end_line < start_line) return reject('memory-dream-line-range')
           const end = Math.min(end_line ?? total, total)
@@ -236,32 +252,32 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
         }
         case 'frontmatter_read': {
           const { path } = inputSchemas.frontmatter_read.parse(invocation.input)
-          const snapshot = target?.path === path ? target.before : read(path)
+          const snapshot = target?.path === path ? target.before : read(path, files.read)
           result = { path, metadata: parseMemoryDocument(target?.path === path ? target.markdown : snapshot!.markdown).metadata,
             ...(snapshot?.applicability ? { applicability: snapshot.applicability } : {}) }
           break
         }
         case 'write': {
           const { path, markdown } = inputSchemas.write.parse(invocation.input)
-          result = draft(path, markdown)
+          result = draft(path, markdown, files.read)
           break
         }
         case 'edit': {
           const { path, old_text, new_text } = inputSchemas.edit.parse(invocation.input)
-          const markdown = target?.path === path ? target.markdown : read(path).markdown
+          const markdown = target?.path === path ? target.markdown : read(path, files.read).markdown
           const index = markdown.indexOf(old_text)
           if (index === -1 || markdown.indexOf(old_text, index + 1) !== -1) return reject('memory-dream-edit-not-unique')
-          result = draft(path, markdown.slice(0, index) + new_text + markdown.slice(index + old_text.length))
+          result = draft(path, markdown.slice(0, index) + new_text + markdown.slice(index + old_text.length), files.read)
           break
         }
         case 'frontmatter_update': {
           const { path, patch } = inputSchemas.frontmatter_update.parse(invocation.input)
-          const markdown = target?.path === path ? target.markdown : read(path).markdown
-          result = draft(path, updateMemoryFrontmatter(markdown, patch))
+          const markdown = target?.path === path ? target.markdown : read(path, files.read).markdown
+          result = draft(path, updateMemoryFrontmatter(markdown, patch), files.read)
           break
         }
       }
-      assertCurrent()
+      assertCurrent(files.read)
       return { callId: invocation.callId, state: 'completed', content: JSON.stringify(result), sources: sources() }
     } catch (error) {
       if (!(error instanceof DreamToolError)) throw error
@@ -272,9 +288,10 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
       return { callId: invocation.callId, state: 'rejected', content, sources: sources() }
     }
   }
-  function finish(value: unknown): DreamDraftResult<S> {
-    assertCurrent()
+  function finish(value: unknown, lookup = documents.read): DreamDraftResult<S> {
+    assertCurrent(lookup)
     if (!target) return reject('memory-dream-missing-draft')
+    if (!target.before && incompleteSearches.size) return reject('memory-dream-search-incomplete')
     const receipt = parseIntegrateReceipt(value, [target.path])
     if ((receipt.action === 'CREATE') !== (target.before === null)) return reject('memory-dream-action-target-mismatch')
     if (receipt.action === 'CREATE' && !target.path.startsWith(`digest/${unit.bucket}/`)) return reject('memory-dream-create-bucket')
@@ -283,7 +300,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
       || typeof final.metadata.description !== 'string' || !final.metadata.description.trim()) return reject('memory-dream-summary-required')
     const links = unitSourceLinks(target.markdown)
     for (const source of unit.paths) {
-      read(source)
+      read(source, lookup)
     }
     if (target.before) {
       for (const link of memoryDocumentLinks(target.before.markdown)) if (!links.has(link)) return reject('memory-dream-existing-link-removed')
@@ -291,8 +308,8 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ unit, 
         if (!Object.hasOwn(final.metadata, key)) return reject('memory-dream-existing-metadata-removed')
       }
     }
-    assertCurrent()
+    assertCurrent(lookup)
     return { receipt, path: target.path, before: target.before, markdown: target.markdown, reads: [...observed.values()] }
   }
-  return { tools: memoryDreamToolDefinitions, executeTool, finish, reads: () => [...observed.values()], current }
+  return { tools: memoryDreamToolDefinitions, executeTool, finish, searchIncomplete: () => incompleteSearches.size > 0, reads: () => [...observed.values()], checkedPaths, current }
 }

@@ -23,6 +23,7 @@ const record = z.looseObject({})
 const images = z.array(z.looseObject({ id })).max(MAX_IMAGES)
 const bytes = z.union([z.instanceof(Uint8Array), z.instanceof(ArrayBuffer)])
 const none = z.tuple([])
+const memoryReadOptions = z.strictObject({ budgetMs: z.number().positive().max(10_000) }).optional()
 const QUERY = 'query'
 /** A channel that only reads (QUERY_CHANNELS below): said here, where the channel is defined, not in a list apart. */
 const read = <T extends z.ZodType>(schema: T): T => schema.describe(QUERY) as T
@@ -43,9 +44,10 @@ export const IPC_ARGS = Object.freeze({
   'agent:info': read(none),
   'agent:snapshot': read(z.tuple([z.strictObject({ budgetMs: z.number().positive().max(30_000) }).optional()])),
   'agent:waits': read(none),
-  'agent:prompt': z.tuple([text, images.optional(), z.union([operationId, z.array(operationId).max(24)]).optional(), id.optional()]),
+  'agent:prompt': z.tuple([text, images.optional(), z.union([operationId, z.array(operationId).max(24)]).optional(), id.optional(), operationId.optional()]),
   'agent:steer': z.tuple([text, operationId.optional()]),
-  'agent:cancel': none,
+  'agent:cancel': z.tuple([z.strictObject({ conversationId: id.nullable(), sessionId: id.min(1), turnId: operationId })]),
+  'agent:recover': none,
   'agent:new-session': none,
   'agent:set-config': z.tuple([id, id]),
   'agent:permission': z.tuple([id, id.nullable()]),
@@ -114,11 +116,11 @@ export const IPC_ARGS = Object.freeze({
   'workdir:forget': z.tuple([path]),
   'workdir:reveal': none,
 
-  'memory:get': read(z.tuple([z.strictObject({ budgetMs: z.number().positive().max(10_000) }).optional()])),
-  'memory:dream-status': read(none),
-  'memory:run-dream': none,
-  'memory:list-files': read(z.tuple([memoryFileListRequest])),
-  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
+  'memory:get': read(z.tuple([memoryReadOptions])),
+  'memory:dream-status': read(z.tuple([operationId.optional()])),
+  'memory:run-dream': z.tuple([operationId]),
+  'memory:list-files': read(z.tuple([memoryFileListRequest, memoryReadOptions])),
+  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional(), memoryReadOptions])),
   'memory:set-file-enabled': z.tuple([memoryFileSetEnabledRequest]),
   'memory:undo-file': z.tuple([memoryFileUndoRequest]),
   'memory:create-file': z.tuple([memoryFileCreateRequest]),

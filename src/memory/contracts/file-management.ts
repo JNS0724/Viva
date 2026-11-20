@@ -8,7 +8,7 @@ export const memoryFileIdentity = z.strictObject({ kind: z.enum(['daily', 'diges
 export const memoryFileVersion = z.strictObject({ contentRevision: opaque, usageVersion: z.number().int().nonnegative(), policyToken: opaque })
 export const memoryFileRestrictionId = z.uuid()
 export const memoryFileUseRestriction = z.strictObject({ id: memoryFileRestrictionId, version: memoryFileVersion })
-export const memoryFileCursor = z.strictObject({ snapshot: opaque, offset: z.number().int().nonnegative() })
+export const memoryFileCursor = z.strictObject({ snapshot: opaque, offset: z.number().int().nonnegative(), retry: z.array(z.number().int().nonnegative()).max(100).optional() })
 export const memoryFileListRequest = z.strictObject({ kind: z.enum(['daily', 'digest']).optional(),
   state: z.enum(['all', 'enabled', 'disabled']).optional(), query: z.string().max(500).optional(),
   limit: z.number().int().min(1).max(100).optional(), cursor: memoryFileCursor.optional() })
@@ -23,7 +23,7 @@ export const memoryFileDetail = memoryFileSummary.extend({ markdown: z.string(),
   stoppedSnapshot: z.strictObject({ restrictionId: memoryFileRestrictionId, markdown: z.string().nullable(), sources: z.array(memorySourceReference) }).optional(),
 })
 export const memoryFileListResult = z.strictObject({ status: z.enum(['ok', 'stale']), snapshot: opaque,
-  items: z.array(memoryFileSummary).max(100), nextCursor: memoryFileCursor.nullable() })
+  items: z.array(memoryFileSummary).max(100), partial: z.boolean().optional(), nextCursor: memoryFileCursor.nullable() })
 const mutation = { operationId: z.uuid(), identity: memoryFileIdentity, version: memoryFileVersion }
 export const memoryFileSetEnabledRequest = z.strictObject({ ...mutation, enabled: z.boolean(), restrictionId: memoryFileRestrictionId.optional() })
 const manual = { text: z.string().min(1).max(MAX_MESSAGE_CHARS), title: z.string().max(200).optional() }

@@ -22,10 +22,11 @@ test('failed owner initialization releases its diagnostic file and restores the 
   const captured: DiagnosticEvent[] = []
   const restore = installDiagnosticPort(recordingDiagnosticPort(event => { captured.push(event); return undefined }))
   const cleanups: Array<() => unknown> = []
-  const scope = { logger: { exporter() {} }, on() {}, effect(execute: () => () => unknown) { const cleanup = execute(); cleanups.push(cleanup); return cleanup } } as unknown as Context
+  const scope = { logger: { exporter() {} }, tools: { register() {} }, inject() {}, on() {},
+    effect(execute: () => () => unknown) { const cleanup = execute(); cleanups.push(cleanup); return cleanup } } as unknown as Context
   t.after(async () => { restore(); await first.close(); rmSync(root, { recursive: true, force: true }) })
   await assert.rejects(memoryPlugin.apply(scope, { dataRoot: root }), /active owner/)
-  assert.equal(cleanups.length, 1, 'diagnostic cleanup exists before owner construction can fail')
+  assert.equal(cleanups.length, 2, 'diagnostic and owner cleanup exist before the child can fail')
   await Promise.all(cleanups.map(cleanup => cleanup()))
   const inventory = JSON.parse(readFileSync(join(root, 'diagnostics', 'inventory.json'), 'utf8')) as { slots: Array<{ closed: boolean }> }
   assert.ok(inventory.slots.every(slot => slot.closed))
@@ -70,7 +71,7 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
   assert.equal(ctx.tools.get('memory_recall'), undefined, 'fiber-owned tools are unregistered')
   const second = await mount()
   assert.notEqual(second.owner.epoch, epoch)
-  assert.ok(second.owner.runtime.readFile(entry.identity)?.markdown.includes(input.text))
+  assert.ok((await second.owner.handleHost('readFile', { args: [entry.identity] }))?.markdown.includes(input.text))
   assert.deepEqual(await second.owner.handleHost('createFile', { args: [input] }), entry)
   await second.fiber.dispose()
   assert.equal(globalThis.fetch, originalFetch)
@@ -109,27 +110,33 @@ test('real adapter reload recovers loaded pending contexts and isolates an unflu
     return { fiber, owner }
   }
   const first = await mount()
-  first.owner.dispatch.recordFiles(String(invalidated.id), [{ workspace: 'a'.repeat(64), id: 'no-longer-available', path: 'memory/removed.md',
-    revision: 'old-file-revision', usageVersion: 1, policyToken: 'old-policy', sourceRanges: [{ sourceId: 'retired-source' }] }])
-  for (const session of [healthy, prepared, bad]) {
-    const ticket = await first.owner.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
-      candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })
-    if (session !== prepared) {
-      const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds)
-      first.owner.bindContextRecovery({ ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
-    }
-  }
   await first.fiber.dispose()
+  // Seed the same durable recovery situations while the standalone process is stopped.
+  const offline = openMemoryOwner({ root, route: () => null, compute: () => null, quiesce: async () => {}, dailyNotes: false })
+  try {
+    await offline.recover()
+    offline.dispatch.recordFiles(String(invalidated.id), [{ workspace: 'a'.repeat(64), id: 'no-longer-available', path: 'memory/removed.md',
+      revision: 'old-file-revision', usageVersion: 1, policyToken: 'old-policy', sourceRanges: [{ sourceId: 'retired-source' }] }])
+    for (const session of [healthy, prepared, bad]) {
+      const ticket = await offline.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
+        candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })
+      if (session !== prepared) {
+        const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds)
+        offline.bindContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
+      }
+    }
+  } finally { await offline.close() }
   broken = String(bad.id)
   const restarted = await mount()
   assert.equal(restarted.owner.ready(), true, 'one failed session must not prevent the plugin from becoming available')
-  assert.equal(restarted.owner.contextGeneration(String(healthy.id)), 1)
-  assert.equal(restarted.owner.contextGeneration(String(prepared.id)), 1)
-  assert.equal(restarted.owner.contextGeneration(String(invalidated.id)), 1, 'stale file receipts trigger recovery before old derived history is replayed')
+  assert.equal(await restarted.owner.contextGeneration(String(healthy.id)), 1)
+  assert.equal(await restarted.owner.contextGeneration(String(prepared.id)), 1)
+  assert.equal(await restarted.owner.contextGeneration(String(invalidated.id)), 1, 'stale file receipts trigger recovery before old derived history is replayed')
   assert.doesNotMatch(JSON.stringify(healthy.deriveMessages()), /Old generated context/)
   assert.match(JSON.stringify(healthy.snapshotEvents()), /Old generated context/)
-  const permit = restarted.owner.acquireSend('healthy-after-reload', { session: String(healthy.id), contextGeneration: 1 }, 'reconstructed'); permit.settled()
-  assert.equal(restarted.owner.contextGeneration(String(bad.id)), 0)
-  assert.throws(() => restarted.owner.acquireSend('unflushed-after-reload', { session: String(bad.id), contextGeneration: 0 }, 'old'), /generation/)
+  const permit = await restarted.owner.acquireSend(randomUUID(), { session: String(healthy.id), contextGeneration: 1 }, '0'.repeat(64))
+  permit.settled()
+  assert.equal(await restarted.owner.contextGeneration(String(bad.id)), 0)
+  await assert.rejects(restarted.owner.acquireSend(randomUUID(), { session: String(bad.id), contextGeneration: 0 }, '1'.repeat(64)), /generation/)
   await restarted.fiber.dispose()
 })

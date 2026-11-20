@@ -1,3 +1,4 @@
+import { OWNER_RPC_DEFAULT_BUDGET_MS } from '../memory/contracts/owner-rpc.ts'
 import { randomUUID } from 'node:crypto'
 import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -23,12 +24,15 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
  * comes only from the plugin, which decides what may be shown (the main agent's routing steps are not). ACP's copy of
  * the text is never replayed; an operation whose output the plugin did not confirm ends in an error.
  */
-export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1000 }: {
+export function createAssistantStream({ send, emit, recordOutputs, timeoutMs }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
   recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
   timeoutMs?: number,
 }) {
+  const bindTimeout = timeoutMs ?? 1000
+  // A proof-bearing flush crosses the owner RPC before dsh can acknowledge the stream.
+  const flushTimeout = timeoutMs ?? (recordOutputs ? OWNER_RPC_DEFAULT_BUDGET_MS + bindTimeout : bindTimeout)
   let ready = false
   const instance = randomUUID()
   let sequence = 0
@@ -46,7 +50,7 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1
     operations.set(sessionId, operation)
     if (ready) {
       operation.live = await new Promise<boolean>(resolve => {
-        const timer = setTimeout(() => { operation.resolve = undefined; resolve(false) }, timeoutMs)
+        const timer = setTimeout(() => { operation.resolve = undefined; resolve(false) }, bindTimeout)
         operation.resolve = live => { clearTimeout(timer); operation.resolve = undefined; resolve(live) }
         send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId, ...(recordOutputs ? { proofs: true } : {}) })
       })
@@ -108,7 +112,7 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs = 1
       if (operations.get(operation.sessionId) !== operation) return
       if (operation.live) {
         await new Promise<boolean>(resolve => {
-          const timer = setTimeout(() => { operation.flushed = undefined; resolve(false) }, timeoutMs)
+          const timer = setTimeout(() => { operation.flushed = undefined; resolve(false) }, flushTimeout)
           operation.flushed = ok => { clearTimeout(timer); operation.flushed = undefined; resolve(ok) }
           send({ type: 'assistant_stream_flush', version: 1, operation: operation.id })
         })

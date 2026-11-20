@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { answerFor, DECLINED } from '../plugins/questions/lib/channel.ts'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
 import type { createAcpBridge } from '../src/backend/acp-bridge.ts'
 import { objectOf } from '../src/shared/unknown-value.ts'
 import { CITY_QUESTION } from './fixtures/fake-llm.ts'

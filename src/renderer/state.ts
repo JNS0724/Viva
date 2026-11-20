@@ -159,10 +159,15 @@ const readyStartsNewTopic = (state: State, info: AgentInfo) => topicChanged(stat
 
 const ACTION_HANDLERS: ActionHandlers = {
   initialization_status: (state, { status, reason }) => ({ ...state, initialization: { status, reason: reason ?? null } }),
+  initialization_turn: (state, { turn }) => ({ ...state,
+    turn: { tools: 0, thoughts: 0, ...(state.turn?.id === turn.id && state.turn), id: turn.id, startedAt: turn.startedAt, by: turn.by },
+    phase: turn.stopping ? 'stopping' : state.phase === 'asking' || state.phase === 'waiting' ? state.phase : 'working',
+    ...(turn.stopping && { permission: null, question: null, secret: null }),
+  }),
   initialization_snapshot: (state, { snapshot }) => {
     const clean = { ...state, ...initialConversation, info: snapshot.info, conversationId: snapshot.info.conversationId ?? null,
       restored: null, restoredTrace: null, restoredTraceData: null, records: [], folds: [], topic: initialTopic,
-      switching: false, newTopicPending: false }
+      switching: false, newTopicPending: false, stopUnconfirmed: snapshot.stopUnconfirmed === true, stoppedReplayLost: snapshot.stoppedReplayLost === true }
     const saved = snapshot.history
     return saved ? ACTION_HANDLERS.history_loaded!(clean, { conversationId: saved.id, messages: saved.messages,
       records: saved.records, savedAt: saved.updatedAt, folds: [...saved.folds], parentId: saved.parentId, createdAt: saved.createdAt }) : clean
@@ -170,6 +175,7 @@ const ACTION_HANDLERS: ActionHandlers = {
   ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,
+    ...(state.stopUnconfirmed && (info.mode === 'setup' || info.sessionId && info.sessionId !== state.info.sessionId) && { stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null }),
     phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
     error: !state.newTopicPending && state.phase === 'error' ? null : state.error,
   }),
@@ -189,12 +195,12 @@ const ACTION_HANDLERS: ActionHandlers = {
   },
 
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
-  steer_resent: (state, { at }) => ({
+  steer_resent: (state, { at, turnId }) => ({
     ...state,
     phase: 'working',
     error: null,
     island: false,
-    turn: { startedAt: at, tools: 0, thoughts: 0 },
+    turn: { startedAt: at, tools: 0, thoughts: 0, ...(turnId && { id: turnId }) },
   }),
 
   error: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'error' }), switching: state.newTopicPending && state.switching }),

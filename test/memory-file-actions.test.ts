@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createMemoryActions } from '../src/renderer/memory-actions.ts'
-import { createMemoryFileActions } from '../src/renderer/memory-file-actions.ts'
+import { createMemoryFileActions, createMemoryPageReads } from '../src/renderer/memory-file-actions.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import type { MemoryFileDetailView } from '../src/shared/ipc-results.ts'
 import type { MemoryFileListResult, MemoryFileWriteResult } from '../src/memory/contracts/file-management.ts'
+import { MEMORY_READ_BUDGET_MS } from '../src/shared/request-budget.ts'
 
 const version = (id: string) => ({ contentRevision: `body-${id}`, usageVersion: 4, policyToken: `policy-${id}` })
 const detailOf = (id: string, kind: 'daily' | 'digest' = 'digest'): MemoryFileDetailView => ({
@@ -37,6 +38,27 @@ function deferred<T>() {
 /** The mutation fixture returns only a receipt, just like the owner. */
 const mutationReceipt = (operationId: string, detail: MemoryFileDetailView, action: 'ENABLE' | 'DISABLE' | 'UNDO' | 'CREATE' | 'EDIT' | 'FORGET') => ({
   operationId, identity: detail.identity, usageVersion: detail.version.usageVersion + 1, contentRevision: detail.version.contentRevision, action,
+})
+
+test('a partial list stays marked through pagination and clears after a complete refresh', () => {
+  const f = harness({})
+  const listed = (page: MemoryFileListResult, more: boolean) => f.dispatch({ type: 'memory_files_listed', query: '', page, more })
+  listed({ ...pageOf([detailOf('one')]), partial: true }, false)
+  listed(pageOf([detailOf('two')]), true)
+  assert.deepEqual(f.file().items.map(item => item.title), ['one', 'two'])
+  assert.equal(f.file().partial, true)
+  listed(pageOf([detailOf('one')]), false)
+  assert.equal(f.file().partial, false)
+})
+
+test('a completed retry page clears the partial indicator while keeping healthy results', () => {
+  const f = harness({})
+  const page = pageOf([detailOf('healthy')], { snapshot: 'unchanged', offset: 2, retry: [0] })
+  f.dispatch({ type: 'memory_files_listed', query: '', page: { ...page, partial: true }, more: false })
+  assert.equal(f.file().partial, true)
+  f.dispatch({ type: 'memory_files_listed', query: '', page: pageOf([detailOf('recovered')]), more: true })
+  assert.equal(f.file().partial, false)
+  assert.deepEqual(f.file().items.map(item => item.title), ['healthy', 'recovered'])
 })
 
 test('permanent file forget requires capability and current explicit confirmation before preserving one retry identity', async () => {
@@ -145,16 +167,56 @@ test('a changed file version requires a new review and operation before deletion
   assert.deepEqual(requests.map(request => request.version), [old.version, latest.version])
 })
 
-test('loading About You refreshes the file list after the profile', async () => {
+test('About You can search files while the profile request is still outstanding', async () => {
   const file = detailOf('useful')
-  const calls: string[] = []
+  const profile = deferred<typeof getMemory>()
+  const queries: string[] = []
   const f = harness({
-    getMemory: async () => { calls.push('profile'); return getMemory },
-    listMemoryFiles: async () => { calls.push('file list'); return pageOf([file]) },
+    getMemory: () => profile.promise,
+    listMemoryFiles: async ({ query }) => { queries.push(query ?? ''); return pageOf([file]) },
   })
-  await f.all.loadMemory()
-  assert.deepEqual(calls, ['profile', 'file list'])
+  const loading = f.all.loadMemory()
+  await Promise.resolve()
   assert.equal(f.file().items[0]?.identity.id, file.identity.id)
+  f.all.searchMemoryFiles('useful')
+  await f.all.reloadMemoryFileList()
+  assert.deepEqual(queries, ['', 'useful'])
+  profile.resolve(getMemory)
+  await loading
+  f.all.closeProfile()
+})
+
+test('a change during profile loading refreshes files immediately and discards the old profile reply', async () => {
+  const first = deferred<typeof getMemory>()
+  let profiles = 0, lists = 0
+  const f = harness({
+    getMemory: () => ++profiles === 1 ? first.promise : Promise.resolve(getMemory),
+    listMemoryFiles: async () => pageOf([detailOf(String(++lists))]),
+  })
+  const loading = f.all.loadMemory()
+  await Promise.resolve()
+  f.all.onMemoryChanged({})
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(f.file().items[0]?.identity.id, '2')
+  assert.equal(profiles, 1)
+  first.resolve(getMemory)
+  assert.equal(await loading, true)
+  assert.equal(profiles, 2)
+  assert.equal(lists, 2)
+})
+
+test('Dream change notifications during a slow file list coalesce into one fresh list', async () => {
+  const first = deferred<MemoryFileListResult>()
+  let lists = 0
+  const f = harness({ getMemory: async () => getMemory,
+    listMemoryFiles: async () => ++lists === 1 ? first.promise : pageOf([detailOf('current')]) })
+  await f.all.loadMemory()
+  for (let i = 0; i < 5; i++) f.all.onMemoryChanged({})
+  assert.equal(lists, 1)
+  first.resolve(pageOf([detailOf('stale')]))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(lists, 2)
+  assert.deepEqual(f.file().items.map(item => item.identity.id), ['current'])
 })
 
 test('an old pagination cursor reloads the first page instead of appending obsolete file identities', async () => {
@@ -171,6 +233,31 @@ test('an old pagination cursor reloads the first page instead of appending obsol
   await f.actions.loadMoreMemoryFiles()
   assert.deepEqual(requests.map(request => request.cursor), [undefined, cursor, undefined])
   assert.deepEqual(f.file().items.map(item => item.identity.id), ['new'])
+})
+
+test('a title search follows empty pages and stops when the query changes', async () => {
+  const requests: Array<Parameters<AgentApi['listMemoryFiles']>[0]> = []
+  const cursor = { snapshot: 'snapshot', offset: 100 }
+  const abandoned = deferred<MemoryFileListResult>()
+  const f = harness({ async listMemoryFiles(request) {
+    requests.push(request)
+    if (request.query === 'first' && request.cursor) return pageOf([detailOf('later-result')])
+    if (request.query === 'abandoned' && request.cursor) return abandoned.promise
+    return pageOf([], cursor)
+  } })
+  f.dispatch({ type: 'memory_files_query', query: 'first' })
+  await f.actions.refreshFiles()
+  assert.deepEqual(requests.map(request => request.cursor), [undefined, cursor])
+  assert.deepEqual(f.file().items.map(item => item.identity.id), ['later-result'])
+
+  f.dispatch({ type: 'memory_files_query', query: 'abandoned' })
+  const pending = f.actions.refreshFiles()
+  await Promise.resolve()
+  f.dispatch({ type: 'memory_files_query', query: 'new' })
+  abandoned.resolve(pageOf([], { ...cursor, offset: 200 }))
+  await pending
+  assert.equal(requests.length, 4)
+  assert.equal(f.file().items.length, 0)
 })
 
 test('detail version and panel generation both reject late data after a selection change or close', async () => {
@@ -453,4 +540,88 @@ test('a durable create result after close and reopen cannot steal the current se
   assert.equal(f.file().writing, false)
   assert.equal(f.file().detail, current)
   assert.deepEqual(f.notices, [])
+})
+
+test('the first unfiltered page can change revision and skip an entire filtered page', async () => {
+  const requests: Parameters<AgentApi['listMemoryFiles']>[0][] = []
+  const cursor = { snapshot: 'snapshot', offset: 100 }
+  const f = harness({ async listMemoryFiles(request) {
+    requests.push(request)
+    if (requests.length === 1) return { status: 'stale', snapshot: 'old', items: [], nextCursor: null }
+    return request.cursor ? pageOf([detailOf('visible')]) : pageOf([], cursor)
+  } })
+  await f.actions.refreshFiles()
+  assert.deepEqual(requests.map(request => request.cursor), [undefined, undefined, cursor])
+  assert.deepEqual(f.file().items.map(item => item.identity.id), ['visible'])
+})
+
+test('a file detail refresh shares pending work and leaves the second owner read slot for the profile', async () => {
+  const item = detailOf('active')
+  const loading = deferred<MemoryFileDetailView>()
+  let details = 0, lists = 0
+  const f = harness({ getMemory: async () => getMemory,
+    listMemoryFiles: async () => { lists++; return pageOf([item]) },
+    readMemoryFile: async () => ++details === 2 ? loading.promise : item })
+  await f.actions.showMemoryFile({ identity: item.identity })
+  const first = f.actions.refreshFiles()
+  const second = f.actions.refreshFiles()
+  assert.equal(details, 2)
+  assert.equal(lists, 0)
+  loading.resolve(item)
+  await Promise.all([first, second])
+  assert.equal(details, 3)
+  assert.equal(lists, 0)
+  await f.actions.showMemoryFile(null)
+  assert.equal(lists, 1)
+})
+
+test('returning to the list can use the first released slot while the old detail read is still running', async () => {
+  const item = detailOf('active'), profile = deferred<typeof getMemory>(), old = deferred<MemoryFileDetailView>()
+  let profiles = 0, details = 0, lists = 0
+  let listBudget: number | undefined
+  const f = harness({
+    getMemory: () => { profiles++; return profile.promise },
+    readMemoryFile: async () => ++details === 1 ? item : old.promise,
+    listMemoryFiles: async (_query, options) => { lists++; listBudget = options?.budgetMs; return pageOf([item]) },
+  })
+  await f.all.showMemoryFile({ identity: item.identity })
+  f.all.onMemoryChanged({})
+  await Promise.resolve()
+  assert.equal(details, 2)
+  assert.equal(profiles, 1)
+  const back = f.all.showMemoryFile(null)
+  assert.equal(f.file().selection, null)
+  assert.equal(lists, 0, 'the old detail and profile are occupying both owner slots')
+  profile.resolve(getMemory)
+  await back
+  assert.equal(lists, 1)
+  assert.ok(listBudget !== undefined && listBudget > 0 && listBudget < MEMORY_READ_BUDGET_MS)
+  assert.equal(f.file().listError, null)
+  assert.equal(f.file().items[0]?.identity.id, item.identity.id)
+  old.resolve(item)
+})
+
+test('an expired page read does not start later when a physical slot is released', async t => {
+  const reads = createMemoryPageReads(20), held = deferred<void>()
+  t.after(() => held.resolve())
+  const first = reads(() => true, () => held.promise), second = reads(() => true, () => held.promise)
+  let started = false
+  await assert.rejects(reads(() => true, async () => { started = true }), /timed out/)
+  held.resolve()
+  await Promise.all([first, second])
+  assert.equal(started, false)
+})
+
+test('leaving a page ends its queued read even while both active slots stay occupied', async t => {
+  const reads = createMemoryPageReads(), held = deferred<void>()
+  t.after(() => held.resolve())
+  const active = [reads(() => true, () => held.promise), reads(() => true, () => held.promise)]
+  let visible = true
+  const blocked = reads(() => visible, async () => assert.fail('stale page started reading'))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  visible = false
+  reads.wakeWaiters()
+  await assert.rejects(blocked, /timed out/)
+  held.resolve()
+  await Promise.all(active)
 })

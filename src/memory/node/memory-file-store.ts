@@ -1,17 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   realpathSync, readdirSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs'
+import { lstat, open, readdir, realpath, unlink } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { dailyPath, digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument } from '../core/memory-document.ts'
-
-export interface MemoryFileSnapshot {
-  path: string
-  revision: string
-  markdown: string
-}
+import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
+import type { MemoryPhysicalFile, ReadMemoryPhysicalFile } from '../core/ports/documents.ts'
 
 export class MemoryFileError extends Error {
   code: 'path' | 'version' | 'not-file'
@@ -24,39 +21,182 @@ export class MemoryFileError extends Error {
 
 export const memoryFileRevision = (text: string) => createHash('sha256').update(text).digest('hex')
 
-/** Call only while holding the exclusive memory owner lock. Temporary writes may
- * survive process death between syncing the file and replacing the destination. */
-export function removeAbandonedMemoryTemps(root: string) {
-  if (!existsSync(root) || lstatSync(root).isSymbolicLink()) return
-  function clean(directory: string) {
+const MAX_PHYSICAL_FILE_BYTES = 4 * 1024 * 1024
+const PHYSICAL_FILE_TIMEOUT_MS = 250
+const PHYSICAL_FILE_CONCURRENCY = 3
+
+/** Native I/O can outlive its caller. Hold the slot until the operation actually ends,
+ * so multiple timeouts cannot fill the owner's filesystem thread pool. */
+export function createMemoryPhysicalFileReader(root: () => string) {
+  const active = new Map<string, { signal: AbortSignal, result: Promise<MemoryPhysicalFile | null> }>()
+  const available = new Set<() => void>()
+  const lifetime = new AbortController()
+  async function inspect(workspace: string, path: string, signal: AbortSignal): Promise<MemoryPhysicalFile | null> {
+    const directory = resolve(root())
+    const parts = [workspace, ...path.split('/')]
+    const target = join(directory, ...parts)
+    async function safeStat() {
+      let cursor = directory
+      let info = await lstat(cursor)
+      for (const part of parts) {
+        signal.throwIfAborted()
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new MemoryFileError('path')
+        cursor = join(cursor, part)
+        info = await lstat(cursor)
+      }
+      signal.throwIfAborted()
+      if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_PHYSICAL_FILE_BYTES) throw new MemoryFileError('not-file')
+      return info
+    }
+    const expected = await safeStat()
+    const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    try {
+      signal.throwIfAborted()
+      const stat = await handle.stat()
+      signal.throwIfAborted()
+      if (!stat.isFile() || stat.dev !== expected.dev || stat.ino !== expected.ino || stat.size > MAX_PHYSICAL_FILE_BYTES) throw new MemoryFileError('version')
+      const bytes = Buffer.allocUnsafe(stat.size + 1)
+      let offset = 0
+      while (offset < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset)
+        signal.throwIfAborted()
+        if (!bytesRead) break
+        offset += bytesRead
+      }
+      const after = await safeStat()
+      if (offset !== stat.size || after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size
+        || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) throw new MemoryFileError('version')
+      const markdown = bytes.subarray(0, offset).toString('utf8')
+      return { path, revision: memoryFileRevision(markdown), markdown }
+    } finally { await handle.close() }
+  }
+
+  const read: ReadMemoryPhysicalFile = async (workspace, path, signal) => {
+    lifetime.signal.throwIfAborted()
+    if (!/^[a-f0-9]{64}$/u.test(workspace)
+      || !memoryFilePath.safeParse(path).success
+      || !(dailyPath.safeParse(path).success || digestPath.safeParse(path).success)) throw new MemoryFileError('path')
+    const key = JSON.stringify([workspace, path])
+    const caller = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal
+    const budget = createRequestBudget(PHYSICAL_FILE_TIMEOUT_MS, caller)
+    try {
+      while (!active.has(key) && active.size >= PHYSICAL_FILE_CONCURRENCY) {
+        let wake: () => void = () => {}
+        const waiting = new Promise<void>(resolve => { wake = resolve; available.add(wake) })
+        try { await budget.run(() => waiting) } finally { available.delete(wake) }
+      }
+      budget.remainingMs()
+      let operation = active.get(key)
+      if (!operation) {
+        // Coalesced I/O has its own deadline. One cancelled lookup must not
+        // cancel verification for another caller still waiting on this path.
+        const nativeSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(PHYSICAL_FILE_TIMEOUT_MS)])
+        const result = inspect(workspace, path, nativeSignal).catch(error => {
+          if (nativeSignal.aborted) throw new RequestTimeout()
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+          throw error
+        }).finally(() => {
+          active.delete(key)
+          for (const wake of available) wake()
+        })
+        // An expiring budget can reject before it starts observing the native operation.
+        void result.catch(() => {})
+        operation = { signal: nativeSignal, result }
+        active.set(key, operation)
+      }
+      if (operation.signal.aborted) throw new RequestTimeout()
+      const timeout = () => budget.cancel(new RequestTimeout())
+      operation.signal.addEventListener('abort', timeout, { once: true })
+      try { return await budget.run(() => operation.result) }
+      finally { operation.signal.removeEventListener('abort', timeout) }
+    } finally { budget.close() }
+  }
+  return Object.assign(read, { close: () => lifetime.abort(new Error('Memory file reader closed')) })
+}
+
+const ABANDONED_TEMP = /^\.viva-memory-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/u
+
+/** Best-effort cleanup under the owner lock. A write renames or discards its unique
+ * temporary file in one synchronous turn, before cleanup can act on the listing. */
+export async function removeAbandonedMemoryTemps(root: string, signal: AbortSignal) {
+  async function entries(directory: string) {
+    if (signal.aborted) return []
+    try {
+      const status = await lstat(directory)
+      if (signal.aborted || !status.isDirectory()) return []
+      const physical = await realpath(directory)
+      if (signal.aborted || physical !== directory) return []
+      return await readdir(directory, { withFileTypes: true })
+    } catch { return [] }
+  }
+
+  async function clean(directory: string) {
     let changed = false
-    for (const item of readdirSync(directory, { withFileTypes: true })) {
+    for (const item of await entries(directory)) {
+      if (signal.aborted) return
       const target = join(directory, item.name)
-      if (item.isDirectory() && !item.name.startsWith('.')) clean(target)
-      else if (item.isFile() && /^\.viva-memory-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/u.test(item.name)) {
-        unlinkSync(target)
-        changed = true
+      if (item.isDirectory() && !item.name.startsWith('.')) {
+        await clean(target)
+      } else if (item.isFile() && ABANDONED_TEMP.test(item.name)) {
+        try {
+          // Recheck after enumeration, including ancestor symlinks and junctions.
+          const status = await lstat(target)
+          if (signal.aborted || !status.isFile()) continue
+          const physical = await realpath(target)
+          if (signal.aborted || physical !== target) continue
+          await unlink(target)
+          changed = true
+        } catch { /* An unreadable or disappearing file can wait for another startup. */ }
       }
     }
-    if (changed) syncDirectory(directory)
+    if (!changed || signal.aborted || process.platform === 'win32') return
+    try {
+      if (await realpath(directory) !== directory || signal.aborted) return
+      const handle = await open(directory, 'r')
+      try { if (!signal.aborted) await handle.sync() } finally { await handle.close() }
+    } catch { /* An interrupted sync may leave the temp for a later retry. */ }
   }
-  for (const workspace of readdirSync(root, { withFileTypes: true })) {
+
+  // Windows TEMP can use an 8.3 alias. Canonicalize the trusted root once so
+  // descendant comparisons use the same spelling as fs.promises.realpath.
+  const supplied = resolve(root)
+  let location = supplied
+  if (process.platform === 'win32') {
+    try {
+      for (let cursor = supplied; ; cursor = dirname(cursor)) {
+        if (signal.aborted || (await lstat(cursor)).isSymbolicLink()) return
+        if (dirname(cursor) === cursor) break
+      }
+      location = await realpath(supplied)
+    } catch { return }
+  }
+  for (const workspace of await entries(location)) {
+    if (signal.aborted) return
     if (!workspace.isDirectory() || !/^[0-9a-f]{64}$/u.test(workspace.name)) continue
-    for (const area of ['daily', 'digest', 'session']) {
-      const directory = join(root, workspace.name, area)
-      if (existsSync(directory) && lstatSync(directory).isDirectory()) clean(directory)
-    }
+    for (const area of ['daily', 'digest', 'session']) await clean(join(location, workspace.name, area))
+  }
+}
+
+/** Synchronous compatibility check at the commit boundary for trusted write paths. */
+export function readMemoryFileAtCommit(root: string, workspace: string, path: string): MemoryPhysicalFile | null {
+  if (!/^[a-f0-9]{64}$/u.test(workspace)) throw new MemoryFileError('path')
+  const directory = join(root, workspace)
+  try {
+    if (lstatSync(root).isSymbolicLink() || lstatSync(directory).isSymbolicLink()) throw new MemoryFileError('path')
+    return openMemoryFileStore(directory, { create: false }).read(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
   }
 }
 
 /**
  * File primitive for a single backend owner. Synchronous IO makes version-check + rename
- * indivisible to other callbacks in that owner. External editors are reconciled by R2's
- * journal; this primitive is NOT a cross-process compare-and-swap or multi-file transaction.
+ * indivisible to other callbacks in that owner. The expected revision guards each write.
  * The caller binds this root to an authorized scope; a model never supplies the root.
  */
-export function openMemoryFileStore(root: string, { sessions = false } = {}) {
-  const created = mkdirSync(root, { recursive: true })
+export function openMemoryFileStore(root: string, { sessions = false, create = true } = {}) {
+  const created = create ? mkdirSync(root, { recursive: true }) : undefined
   if (created && process.platform !== 'win32') {
     let current = resolve(root)
     const first = resolve(created)
@@ -93,7 +233,7 @@ export function openMemoryFileStore(root: string, { sessions = false } = {}) {
     return current
   }
 
-  function read(path: string): MemoryFileSnapshot | null {
+  function read(path: string): MemoryPhysicalFile | null {
     const target = locate(path)
     let markdown: string
     try { markdown = readFileSync(target, 'utf8') }
@@ -104,7 +244,7 @@ export function openMemoryFileStore(root: string, { sessions = false } = {}) {
     return { path, revision: memoryFileRevision(markdown), markdown }
   }
 
-  function write(path: string, markdown: string, expectedRevision: string | null): MemoryFileSnapshot {
+  function write(path: string, markdown: string, expectedRevision: string | null): MemoryPhysicalFile {
     // Validate before creating directories or a temporary file.
     if (!path.endsWith('.jsonl')) parseMemoryDocument(markdown)
     const previous = read(path)

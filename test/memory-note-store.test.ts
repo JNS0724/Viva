@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { join } from 'node:path'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
@@ -12,7 +12,7 @@ import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/sou
 import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { scratch } from './fixtures/scratch.js'
-import { noteSource } from './fixtures/memory-note-fixture.ts'
+import { legacyDailyRename, noteSource } from './fixtures/memory-note-fixture.ts'
 import { runToCrash } from './fixtures/memory-crash-process.ts'
 import type { TestContext } from 'node:test'
 
@@ -40,6 +40,8 @@ test('deleting a daily file survives interrupted cleanup and preserves dialog, s
   assert.ok(notes.commit(siblingKey, notes.pending(siblingKey), { status: 'write', title: note.title, markdown: 'Independent note.' },
     1, Date.now(), notes.snapshot([sibling.id]), undefined))
   const kept = notes.read(siblingKey)!
+  assert.deepEqual({ ...notes.registeredAt(note.workspace, note.path) }, { key, file_revision: note.fileRevision })
+  assert.deepEqual(notes.registeredForSources([source.id, source.id]), [{ workspace: note.workspace, path: note.path }])
   const workspaceRoot = join(store.fileRoot, note.workspace)
   const dialog = join(workspaceRoot, 'session/dialog', memoryFileRevision('session') + '.jsonl')
   const originalDialog = readFileSync(dialog, 'utf8')
@@ -47,6 +49,8 @@ test('deleting a daily file survives interrupted cleanup and preserves dialog, s
   assert.throws(() => notes.deleteFile(note.workspace, key, note.revision + 1), /version/)
   assert.equal(notes.deleteFile(note.workspace, key, note.revision), note.revision + 1)
   assert.equal(notes.read(key), undefined)
+  assert.equal(notes.registeredAt(note.workspace, note.path), undefined)
+  assert.deepEqual(notes.registeredForSources([source.id, sibling.id]), [{ workspace: kept.workspace, path: kept.path }])
   assert.equal(notes.needsRecovery(), false)
   const id = `daily:${memoryFileRevision(key)}`
   assert.equal(notes.deletedFileCleanupPending(note.workspace, id), true)
@@ -491,9 +495,7 @@ test('a different registered identity at a former managed path is never erased b
   notes.commit(otherKey, notes.pending(otherKey), { status: 'write', title: 'Independent', markdown: 'New independent content.' }, 2, Date.now(), notes.snapshot([independent.id]), undefined)
   const other = notes.read(otherKey)!
   store.tx(() => notes.withdraw(source.id))
-  renameSync(join(store.fileRoot, old.workspace, other.path), join(store.fileRoot, old.workspace, old.path))
-  assert.equal(notes.reconcileRename({ operationId: 'different-owner', workspace: old.workspace, id: otherKey, from: other.path,
-    to: old.path, revision: other.fileRevision, usageVersion: other.revision }), true)
+  legacyDailyRename(store, other, old.path)
   notes.recover()
   assert.equal(notes.read(otherKey)?.markdown, 'New independent content.')
   assert.equal(notes.pendingCleanup(), 0)
@@ -528,7 +530,7 @@ test('successive range purges recover in source-version order without persisting
   const key = notes.pendingGroups().find(group => group.session === 'sequential')!.note
   const erasing = openMemoryNotes(store, id => Boolean(store.readSource(id)?.text), point => {
     if (point === 'intent') throw new Error('interrupted purge')
-  }, undefined, undefined, undefined, undefined, { deferRecovery: true })
+  }, undefined, { deferRecovery: true })
   function erase(start: number, end: number) {
     const current = store.readSource(source.id)!
     const cut = { id: source.id, token: memorySourceToken(current), length: text.length, version: current.version,

@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import promises from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
+import { removeAbandonedMemoryTemps } from '../src/memory/node/memory-file-store.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
 import { createNativeOutputJournal } from '../src/memory/node/native-output-journal.ts'
 import { scratch } from './fixtures/scratch.js'
+import { eventually } from './fixtures/eventually.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
 import type { MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 
@@ -19,6 +24,80 @@ function fixture(t: import('node:test').TestContext, hostNamespace?: string, opt
 const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>['receiveSource']>[0]> = {}) => ({
   sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1,
   admitted: true, inherited: false, ...overrides,
+})
+
+test('owner recovery and close do not wait for a stalled abandoned-temp directory read', { timeout: 15_000 }, async t => {
+  const { dir, defer } = scratch(t, 'memory-owner-temps-')
+  const root = await promises.realpath(dir)
+  const workspace = join(root, 'memory-files', 'a'.repeat(64))
+  const digest = join(workspace, 'digest')
+  const daily = join(workspace, 'daily')
+  mkdirSync(digest, { recursive: true })
+  mkdirSync(daily)
+  const orphan = join(digest, `.viva-memory-${randomUUID()}.tmp`)
+  const unreadable = join(daily, `.viva-memory-${randomUUID()}.tmp`)
+  writeFileSync(orphan, 'abandoned file')
+  writeFileSync(unreadable, 'unreadable area')
+
+  function gate() {
+    let resolve!: () => void
+    const promise = new Promise<void>(done => { resolve = done })
+    return { promise, resolve }
+  }
+  const entered = gate()
+  const release = gate()
+  const returned = gate()
+  const readdir = promises.readdir
+  const mocked = t.mock.method(promises, 'readdir', (...args: Parameters<typeof readdir>) => {
+    if (args[0] === daily) return Promise.reject(Object.assign(new Error('Unreadable directory'), { code: 'EIO' }))
+    if (args[0] !== digest) return Reflect.apply(readdir, promises, args)
+    entered.resolve()
+    return release.promise.then(() => Reflect.apply(readdir, promises, args)).finally(returned.resolve)
+  })
+  syncBuiltinESMExports()
+  const options = { root, compute: () => null, route: () => null, quiesce: async () => {} }
+  try {
+    const owner = openMemoryOwner(options)
+    defer(() => owner.close())
+    await Promise.all([owner.recover(), entered.promise])
+    assert.equal(owner.ready(), true)
+    assert.equal(existsSync(orphan), true)
+    await owner.close()
+    release.resolve()
+    await returned.promise
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(existsSync(orphan), true, 'the closed owner cannot proceed to unlink')
+  } finally {
+    release.resolve()
+    mocked.mock.restore()
+    syncBuiltinESMExports()
+  }
+
+  const replacement = openMemoryOwner(options)
+  defer(() => replacement.close())
+  await replacement.recover()
+  assert.equal(await eventually(() => !existsSync(orphan) && !existsSync(unreadable)), true)
+})
+
+test('abandoned-temp cleanup only touches strict names in managed directories', async t => {
+  const { dir } = scratch(t, 'memory-owner-temp-paths-')
+  const root = join(realpathSync(dir), 'memory-files')
+  const workspace = join(root, 'a'.repeat(64))
+  const outside = join(dir, 'outside')
+  const digest = join(workspace, 'digest')
+  const hidden = join(digest, '.private')
+  const unmanaged = join(workspace, 'unmanaged')
+  for (const directory of [outside, hidden, unmanaged]) mkdirSync(directory, { recursive: true })
+  symlinkSync(outside, join(workspace, 'daily'), 'junction')
+  symlinkSync(outside, join(digest, 'foreign'), 'junction')
+  const temp = `.viva-memory-${randomUUID()}.tmp`
+  const removed = join(digest, temp)
+  const preserved = [outside, hidden, unmanaged].map(directory => join(directory, temp))
+  preserved.push(join(digest, '.viva-memory-invalid.tmp'))
+  for (const file of [removed, ...preserved]) writeFileSync(file, 'fixture')
+  await removeAbandonedMemoryTemps(root, new AbortController().signal)
+  assert.equal(existsSync(removed), false)
+  for (const file of preserved) assert.equal(existsSync(file), true, file)
 })
 
 test('host preferences, a derived index rebuild and its WAL cleanup preserve a foreground send', async t => {

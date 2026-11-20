@@ -1,17 +1,8 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { createAcpBridge } from '../src/backend/acp-bridge.ts'
-import { installedDshVersion, PERSONA, resolvePlugins } from '../src/backend/app-plugins.ts'
-import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
-import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
-import { startFakeLlm } from './fixtures/fake-llm.ts'
+import { startHarness } from './fixtures/dsh-harness.ts'
 import { randomUUID } from 'node:crypto'
-import { testRequests } from './fixtures/request-routing.ts'
 
 /**
  * A background task's result into the main conversation, on the real dsh with Viva's plugins (system-design §11.5):
@@ -23,35 +14,15 @@ const SLOW = '慢一点回答'
 const token = () => randomUUID().replaceAll('-', '')
 const note = (taskId: string, secret: string, inTurn = true) => noteFor([{ taskId, title: '整理发布说明', status: 'done', host: 'c1', output: '写好了', token: secret }], { inTurn })
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms))
-type Event = { type: string, reportId?: string }
 
 async function harness(t: TestContext) {
-  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'viva-steer-reports-'))
-  const workspace = path.join(dir, 'workspace')
-  fs.mkdirSync(workspace)
   // The slow question's first answer takes 3 s: time to steer into it, and to stop it, while it is out.
-  const llm = await startFakeLlm({ decideFirst: (raw: object) => {
+  const h = await startHarness(t, { decideFirst: (raw: object) => {
     const said = JSON.stringify((raw as { messages?: unknown[] }).messages)
     return said.includes(SLOW) && !said.includes('第一段回答') && !said.includes('回报凭据') ? { text: '第一段回答', delayMs: 3000 } : null
   } })
-  const dshHome = path.join(dir, 'dsh-home')
-  const { plugins, problems } = resolvePlugins({ codeRoot: root, userData: path.join(dir, 'userData'), dshVersion: installedDshVersion(root) })
-  assert.deepEqual(problems, [])
-  const profile = 'viva-steer-reports-test'
-  ensureDshProfile({ dshHome, profile, plugins, persona: PERSONA })
-  const runtime = dshRuntime({ env: process.env, execPath: process.execPath })
-  const events: Event[] = []
-  const bridge = createAcpBridge({ routing: testRequests(), dshBin: path.join(root, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), nodeBin: runtime.nodeBin, cwd: workspace, profile,
-    overlay: vivaLayerFile(dshHome), prewarmSessions: false,
-    env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
-    emit: (event: Event) => { events.push(event) },
-  })
-  t.after(async () => {
-    await bridge.dispose()
-    await llm.close()
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-  })
+  const { llm, events } = h
+  const bridge = h.bridge()
   await bridge.start()
   /** Waits until the plugin said this of a report. */
   async function heard(type: string, reportId: string, timeoutMs = 10_000) {

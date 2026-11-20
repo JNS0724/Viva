@@ -9,6 +9,7 @@ export interface SeededItem { title: string, body: string }
  */
 export interface AutomationDriver {
   agentPid: () => Promise<number | null>
+  memoryOwnerPid: () => Promise<number | null>
   /** The backend process's pid, for a smoke run that checks it is started again (backend-keeper.ts). */
   backendPid: () => number | null
   desk: () => ReturnType<typeof createDeskIsland> | null

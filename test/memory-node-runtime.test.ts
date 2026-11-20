@@ -140,3 +140,68 @@ test('closing a runtime retires a late note calculation before it can read close
   finish('{"status":"write","title":"Garden","markdown":"I keep a garden."}')
   await running
 })
+
+test('a committed write keeps its publication work across restart and retries without rewriting the file', async t => {
+  const f = fixture(t)
+  let clock = Date.parse('2026-11-19T06:00:00Z')
+  const now = () => clock
+  const { runtime, store } = f.start({ now })
+  const workspace = runtime.manualFileWorkspace()
+  const reader = { session: 'publication-reader', conversation: null }
+  const recall = (owner: typeof runtime, word: string) => owner.handle({ op: 'recall', session: reader.session, query: word }, reader)
+  const unrelated = { operationId: randomUUID(), text: 'keep tangerine receipts searchable' }
+  await runtime.writeManagedFile(unrelated.operationId, workspace, unrelated, () => {})
+  await runtime.wake()
+
+  const pending = { operationId: randomUUID(), text: 'magenta observations from the archive' }
+  store.db.exec(`CREATE TRIGGER reject_publication BEFORE INSERT ON memory_file_index_nodes
+    BEGIN SELECT RAISE(ABORT, 'fixture-index-publication-failure'); END`)
+  let receipts = 0
+  await assert.rejects(runtime.writeManagedFile(pending.operationId, workspace, pending, () => { receipts++ }), /fixture-index-publication-failure/u)
+  assert.equal(receipts, 1, 'the owner can durably record its write and invalidations before publication succeeds')
+  assert.equal(runtime.listFiles({ kind: 'digest' }).items.length, 2)
+  assert.match(recall(runtime, 'tangerine'), /tangerine/u)
+  assert.doesNotMatch(recall(runtime, 'magenta'), /magenta/u)
+  assert.match(store.db.prepare("SELECT payload FROM effects WHERE kind='memory.file-index-publish'").get()?.payload as string, /"ids"/u)
+  store.db.exec('DROP TRIGGER reject_publication')
+  clock += 60_000
+
+  const restarted = f.start({ now }).runtime
+  assert.match(recall(restarted, 'tangerine'), /tangerine/u, 'existing projections remain readable during recovery')
+  await restarted.wake()
+  assert.match(recall(restarted, 'magenta'), /magenta/u)
+  const replay = await restarted.writeManagedFile(pending.operationId, workspace, undefined, () => { receipts++ })
+  assert.equal(receipts, 2)
+  assert.ok(replay)
+  assert.equal(restarted.listFiles({ kind: 'digest' }).items.length, 2)
+})
+
+test('pending Dream computation leaves committed publication and cleanup runnable', async t => {
+  const store = openMemoryStore(':memory:')
+  const { effects } = openMemoryRuntimeResources({ store })
+  let entered!: () => void, release!: () => void, cleaned!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const completed = new Promise<void>(resolve => { cleaned = resolve })
+  t.after(() => { release(); effects.close(); store.close() })
+  effects.runs('memory.dream', async () => { entered(); await hold; return new Map([['daily', 'done']]) })
+  const order: string[] = []
+  for (const kind of ['memory.file-index-publish', 'memory.document-cleanup']) {
+    effects.runs(kind, async () => {
+      order.push(kind)
+      if (kind === 'memory.document-cleanup') cleaned()
+      return new Map([['B', 'done']])
+    })
+  }
+  effects.queue('memory.dream', 'daily', null)
+  const dream = effects.wake()
+  await started
+  effects.queue('memory.file-index-publish', 'B', null)
+  effects.queue('memory.document-cleanup', 'B', null)
+  const writes = effects.wake()
+  await completed
+  assert.deepEqual(order, ['memory.file-index-publish', 'memory.document-cleanup'])
+  release()
+  await Promise.all([dream, writes])
+  assert.equal(effects.list().length, 0)
+})

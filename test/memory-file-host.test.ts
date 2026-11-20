@@ -5,9 +5,13 @@ import type { TestContext } from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { maskTextSpans } from '../src/memory/contracts/text-spans.ts'
 import { withRequestSource } from '../src/shared/request-routing/header.ts'
-import { join } from 'node:path'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fork } from 'node:child_process'
+import { once } from 'node:events'
+import { createOwnerRpcPeer } from '../src/memory/node/owner-rpc-peer.ts'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
+import { eventually } from './fixtures/eventually.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
@@ -47,7 +51,7 @@ async function fixture(t: TestContext, text = 'The report is due Friday. Tea is 
   const client = createVivaMemoryClient(call)
   const identity = { kind: 'digest' as const, workspace, id: created.documentId }
   const resumeOldErasure = (request: Parameters<typeof client.forgetFile>[0]) => resumeLegacyFileErasure(owner, store.db, request)
-  return { resumeOldErasure, get owner() { return owner }, client, store, documents, created, identity, session, sourceId,
+  return { defer, resumeOldErasure, get owner() { return owner }, client, store, documents, created, identity, session, sourceId,
     async reopen(beforeRecovery?: () => void) { await owner.close(); owner = openMemoryOwner(options); beforeRecovery?.(); await owner.recover() } }
 }
 
@@ -58,6 +62,49 @@ async function aborted(signal: AbortSignal) {
     signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
   })
 }
+
+test('a derived receipt observes files attached during registration and replay still rejects changed bytes', async t => {
+  const f = await fixture(t), session = f.session
+  const addRead = (id: string) => {
+    const packet = f.owner.runtime.handle({ op: 'file_read', session, id }, { session, conversation: session })
+    assert.equal(JSON.parse(packet).status, 'ok')
+  }
+  const first = { sessionId: session, messageId: randomUUID(), sourceIds: [f.sourceId] }
+  const origin = { session }, signal = new AbortController().signal
+  const sending = f.owner.loadOutputProof(origin, signal)
+  const pending = f.owner.registerDerived(first)
+  addRead(f.created.documentId)
+  await pending
+  assert.equal(f.owner.outputCurrent(origin, await sending), true)
+  assert.equal(f.owner.dispatch.snapshot(session).files?.length, 1)
+
+  const second = f.documents.commit({ operationId: randomUUID(), workspace: f.identity.workspace, path: 'digest/wiki/tea.md',
+    expectedRevision: null, action: 'CREATE', markdown: 'Tea on Monday.', sources: f.documents.read(f.identity.workspace, f.created.path)!.sources, reads: [] })
+  const injection = { sessionId: session, messageId: randomUUID(), sourceIds: [f.sourceId], nativeUserSource: 'viva-memory' }
+  const receipt = f.owner.registerDerived(injection)
+  addRead(second.documentId)
+  await receipt
+  await f.owner.registerDerived(injection)
+  const stored = f.store.db.prepare('SELECT evidence FROM owner_derived WHERE message=?').get(injection.messageId)
+  assert.equal(JSON.parse(String(stored?.evidence)).files.length, 2)
+
+  writeFileSync(join(f.store.fileRoot, f.identity.workspace, second.path), 'unverified replacement')
+  await assert.rejects(f.owner.registerDerived(injection), /Derived dependencies unavailable/)
+})
+
+test('an explicit remember archives file evidence with the write receipt, including recovery without index publication', async t => {
+  const f = await fixture(t)
+  const text = 'Tea is served on Monday.'
+  const source = f.store.readSource(f.sourceId)!
+  const proof = { id: f.sourceId, token: memorySourceToken(source), spans: [{ start: source.text!.indexOf(text), end: source.text!.length }] }
+  const operation = randomUUID()
+  const first = await f.owner.runtime.writeSourceFile(operation, proof, f.session, result => {
+    assert.equal(f.owner.dispatch.snapshot(f.session).files?.at(-1)?.id, result.identity.id)
+  }, () => true, false)
+  const restored = randomUUID()
+  await f.owner.runtime.writeSourceFile(operation, proof, restored, () => {}, () => true, false)
+  assert.equal(f.owner.dispatch.snapshot(restored).files?.[0]?.id, first.identity.id)
+})
 
 test('admitted routing evidence is withheld during a drained mutation and stays stale in a fresh session', async t => {
   const f = await fixture(t), current = (await f.client.readFile(f.identity))!
@@ -585,7 +632,7 @@ test('forgetting a digest drains transport, cleans Node replicas and preserves d
   assert.equal(existsSync(join(root, f.created.path)), false)
   assert.match(f.documents.receipt(f.identity.workspace, f.created.operationId)!.path, /digest\/wiki\/erased-/)
   assert.equal(existsSync(join(root, dailyPath)), false)
-  assert.equal(existsSync(orphan), false)
+  assert.equal(await eventually(() => !existsSync(orphan)), true)
   assert.equal(readFileSync(foreign, 'utf8'), 'Unmanaged temporary file')
   const serialized = readFileSync(transcript, 'utf8')
   assert.match(serialized, /Tea is served on Monday/)
@@ -925,6 +972,33 @@ test('manual lineage erases copied wording even through a second digest, preserv
   assert.equal(await f.client.readFile(cloneIdentity), null)
   assert.equal(f.store.readSource(edit.operationId)?.text?.trim(), '')
   assert.equal((await f.client.readFile(independent.identity))!.editor?.text, edit.text, 'identical explicit input is a separate proof, never a content blacklist')
+})
+
+test('a committed missing file cannot block owner restart, independent reads or durable invalidation', async t => {
+  const f = await fixture(t)
+  const healthy = await f.client.createFile({ operationId: randomUUID(), text: 'kumquat survives' })
+  const original = (await f.client.readFile(f.identity))!
+  f.owner.dispatch.recordFiles(f.session, [{ workspace: f.identity.workspace, id: f.identity.id, path: original.path,
+    revision: original.version.contentRevision, usageVersion: original.version.usageVersion, policyToken: original.version.policyToken,
+    sourceRanges: [{ sourceId: f.sourceId, spans: [{ start: 0, end: 25 }] }] }])
+  const command = { operationId: randomUUID(), identity: f.identity, version: original.version, text: 'citrine update' }
+  // Crash between the file journal commit and the owner operation/outbox transaction.
+  f.store.db.exec(`CREATE TRIGGER interrupt_owner_receipt BEFORE UPDATE ON owner_operations
+    WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'fixture interrupted owner receipt'); END`)
+  await assert.rejects(f.client.editFile(command), /interrupted owner receipt/u)
+  f.store.db.exec('DROP TRIGGER interrupt_owner_receipt')
+  const path = join(f.store.fileRoot, f.identity.workspace, original.path)
+  await f.reopen(() => renameSync(path, path + '.unavailable'))
+  assert.equal(f.owner.ready(), true)
+  assert.match((await f.client.readFile(healthy.identity))!.markdown, /kumquat/u)
+  const query = await f.owner.runtime.handleModelRequest({ op: 'recall', session: f.session, query: 'kumquat' },
+    { session: f.session, conversation: f.session }, () => true)
+  assert.match(query, /kumquat/u)
+  const effects = await f.owner.handleHost('pendingHostEffects', {}) as MemoryHostEffect[]
+  assert.equal(effects.filter(effect => effect.causeOperationId === command.operationId).length, 1)
+  renameSync(path + '.unavailable', path)
+  assert.equal((await f.client.editFile(command)).action, 'EDIT')
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM memory_document_revisions WHERE operation=?').get(command.operationId)?.n, 1)
 })
 
 test('a manual file replays after replacement and atomically publishes its evidence and receipt', async t => {
@@ -1319,7 +1393,7 @@ for (const derived of [true, false]) test(`retired native ${derived ? 'generated
   f.owner.acquireSend(randomUUID(), { session: reader }, packet).settled()
   if (derived) await f.owner.registerDerived({ sessionId: reader, messageId: 'assistant-manual-copy', sourceIds: [] })
   const ticket = await f.owner.prepareContextRecovery({ sessionId: reader, baseSurfaceHash: 'old-native-surface', candidates: [] })
-  const ack = { ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
+  const ack = { sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
   f.owner.bindContextRecovery(ack)
   await f.owner.commitContextRecovery({ ...ack, baseSurfaceHash: ticket.baseSurfaceHash, persisted: true }, () => true)
   assert.deepEqual(f.owner.dispatch.snapshot(reader).fileSources ?? [], [])
@@ -1412,4 +1486,76 @@ test('a disjoint read after partial erasure cannot strand a later independent co
   assert.equal(groups.length, 1)
   assert.equal(notes.pending(groups[0]!.note)[0]?.assistant, '')
   assert.match(f.owner.runtime.handle({ op: 'file_read', session: reader, id: kept.documentId }, f.owner.sessionContext(reader)), /Tea is served on Monday/)
+})
+
+test('physical sends recheck external edits and a stalled file leaves other sessions and grants available', { timeout: 15_000 }, async t => {
+  const f = await fixture(t)
+  const a = await f.client.createFile({ operationId: randomUUID(), text: 'Aster send evidence' })
+  const b = await f.client.createFile({ operationId: randomUUID(), text: 'Birch send evidence' })
+  const path = join(f.store.fileRoot, a.identity.workspace, (await f.client.readFile(a.identity))!.path)
+  const original = readFileSync(path, 'utf8')
+  const reader = (id: string) => {
+    const session = randomUUID()
+    f.owner.initializeSession({ sessionId: session })
+    f.owner.runtime.handle({ op: 'file_read', session, id }, f.owner.sessionContext(session))
+    assert.equal(f.owner.dispatch.snapshot(session).files?.[0]?.id, id)
+    return session
+  }
+  const sessionA = reader(a.identity.id), sessionB = reader(b.identity.id)
+  await f.owner.close()
+  const child = fork(new URL('./fixtures/memory-send-read-stall.ts', import.meta.url), ['--memory-owner-ipc', path], {
+    execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, silent: true,
+  })
+  const exited = once(child, 'exit')
+  const peer = createOwnerRpcPeer({ send: frame => { child.send(frame) } })
+  function notice(value: string) {
+    return new Promise<void>(resolve => {
+      const observe = (message: unknown) => {
+        if (message === value) { child.off('message', observe); resolve() }
+      }
+      child.on('message', observe)
+    })
+  }
+  const armed = notice('file-blocked'), entered = notice('verification-stalled')
+  child.on('message', peer.receive)
+  f.defer(async () => { peer.close(); child.kill('SIGKILL'); await exited })
+  await peer.call('boot', { root: dirname(f.store.fileRoot), hostNamespace: 'viva-test', preserveActiveTurns: true })
+  const adapter = (method: string, ...args: unknown[]) => peer.call('adapter', { method, args }, { budgetMs: 2_000 })
+  const acquire = (id: string, session: string) => adapter('acquireSend', id, { session }, 'a'.repeat(64))
+  const first = randomUUID()
+  await acquire(first, sessionA)
+  writeFileSync(path, 'changed after original grant')
+  await assert.rejects(adapter('recordSendBody', first), /expired/)
+  await adapter('settleSend', first)
+  writeFileSync(path, original)
+  const second = randomUUID()
+  await acquire(second, sessionA)
+  child.send('block-file')
+  await armed
+  const denied = assert.rejects(adapter('recordSendBody', second), /timed out/)
+  await entered
+  const independent = randomUUID()
+  await acquire(independent, sessionB)
+  await adapter('recordSendBody', independent)
+  await adapter('settleSend', independent)
+  const detail = await peer.call<HostMemoryApi['readFile']['output']>('host', { method: 'readFile', input: { args: [b.identity] } })
+  assert.match(detail!.markdown, /Birch send evidence/)
+  await denied
+  const third = randomUUID()
+  await assert.rejects(acquire(third, sessionA), /timed out/)
+  await assert.rejects(adapter('recordSendBody', third), /expired/)
+  await adapter('settleSend', second)
+
+  // Completed-turn capture must still retain each independent user message
+  // when an earlier tool read can no longer justify retaining its generated reply.
+  for (const session of [sessionA, sessionB]) {
+    const message = randomUUID(), at = Date.now()
+    await adapter('receiveSource', { sessionId: session, messageId: message, text: 'My next independent question.', at,
+      timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+    await adapter('completeTurn', { sessionId: session, turn: 1, eventSeq: 4, sourceIds: [message],
+      assistant: 'A reply based on the earlier file.', completed: true, at, timezone: 'UTC' })
+    const captured = f.store.db.prepare('SELECT sources, assistant_digest FROM memory_note_turns WHERE id=?').get(message)
+    assert.deepEqual(JSON.parse(String(captured?.sources)), [message])
+    assert.equal(Boolean(captured?.assistant_digest), session === sessionB)
+  }
 })

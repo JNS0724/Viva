@@ -597,6 +597,7 @@ app.whenReady().then(async () => {
   eraseFeedDrafts = islandDrafts.eraseFeedDrafts
   installAutomationDriver(automationMode, {
     agentPid: async () => (await backendConnection()).control<number | null>('agent-pid'),
+    memoryOwnerPid: async () => (await backendConnection()).control<number | null>('automation.memory-owner-pid'),
     backendPid: () => keeper.running()?.pid ?? null,
     desk: () => desk,
     seedFeed: async (item) => (await backendConnection()).control<void>('automation.seed-feed', item),

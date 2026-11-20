@@ -8,16 +8,13 @@ export function createVivaMemoryClient(call: HostMemoryCaller, readBatch: Memory
   const method = <M extends HostMemoryMethod>(name: M) => (...args: HostMemoryApi[M]['input'] extends { args: infer A extends unknown[] } ? A : never) =>
     call(name, { args } as unknown as HostMemoryApi[M]['input'])
   return {
-    readPage: (project?: MemoryProject, options?: { budgetMs?: number, signal?: AbortSignal }) => readBatch(async read => {
-      const profile = await read('profile', { args: [] })
-      const onboarding = await read('onboarding', { args: [] })
-      const cleanupPending = await read('cleanupPending', { args: [] })
-      const revision = await read('revision', { args: [] })
-      const fileProfile = await read('fileProfile', { args: [project] })
-      return { profile, onboarding, cleanupPending, revision, fileProfile }
-    }, options),
+    readPage: (project?: MemoryProject, options?: { budgetMs?: number, signal?: AbortSignal }) =>
+      readBatch(read => read('profilePage', { args: project ? [project] : [] }), options),
     dreamStatus: method('dreamStatus'), requestDream: method('requestDream'),
-    listFiles: method('listFiles'), readFile: method('readFile'),
+    listFiles: (request: HostMemoryApi['listFiles']['input']['args'][0], options?: Parameters<MemoryReadBatch>[1]) =>
+      readBatch(read => read('listFiles', { args: [request] }), options),
+    readFile: (identity: HostMemoryApi['readFile']['input']['args'][0], restriction?: string, options?: Parameters<MemoryReadBatch>[1]) =>
+      readBatch(read => read('readFile', { args: [identity, restriction] }), options),
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     fileOperation: (operationId: string) => call('getOperation', { operationId }),

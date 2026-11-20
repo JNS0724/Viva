@@ -1,6 +1,13 @@
 import type { MemorySource } from '../../contracts/records.ts'
 import type { DigestAction, DreamUnit } from '../../contracts/memory-file-contract.ts'
 
+export interface MemoryPhysicalFile {
+  path: string
+  revision: string
+  markdown: string
+}
+export type ReadMemoryPhysicalFile = (workspace: string, path: string, signal?: AbortSignal) => Promise<MemoryPhysicalFile | null>
+
 /** Opaque canonical source versions, issued by the Node adapter, never by a model. */
 export interface DocumentSourceRef { id: string, token: string, spans?: Array<{ start: number, end: number }> }
 export interface DocumentSourceCut extends DocumentSourceRef {
@@ -11,6 +18,11 @@ export interface DocumentSourceCut extends DocumentSourceRef {
   hash: string
 }
 export interface DocumentReadRef { id: string, revision: string, usageVersion: number }
+export interface DocumentFileRegistration extends DocumentReadRef {
+  workspace: string
+  path: string
+  state: 'active' | 'disabled' | 'forgotten'
+}
 /** Exact old fragment and applicability supplied by semantic verification, then checked against the read snapshot. */
 export interface DocumentCorrection {
   path: string
@@ -87,31 +99,19 @@ export interface DeferredDocumentWork {
   answer?: { operationId: string, source: DocumentSourceRef, text: string }
 }
 export interface DocumentTagAttempt { workspace: string, operationId: string, path: string, revision: string, state: 'attempted' | 'failed' | 'completed', reason?: string }
-export interface DocumentRename { operationId: string, workspace: string, id: string, from: string, to: string, revision: string, usageVersion: number }
-export interface DocumentExternalEdit {
-  path: string
-  operationId: string
-  workspace: string
-  id: string
-  expectedRevision: string
-  expectedUsageVersion: number
-  observedRevision: string
-  sources: DocumentSourceRef[]
-  action?: 'REFINE' | 'CORRECT'
-  reads?: DocumentReadRef[]
-  files?: Array<{ path: string, revision: string }>
-  corrections?: DocumentCorrection[]
-  policyToken: string
-}
 export interface MemoryDocuments {
-  reconciliationState(operationId: string, kind: 'edit' | 'rename'): string | undefined
-  reconcileEdit(input: DocumentExternalEdit): DocumentReceipt | null
   acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
-  reconcileRename(input: DocumentRename): boolean
   aliases(workspace: string): Array<{ path: string, id: string }>
   workspaces(): string[]
+  indexFile(workspace: string, id: string): { path: string, revision: string, state: 'active' | 'disabled' | 'forgotten' } | null
+  resolveFileAlias(workspace: string, path: string): string | null
+  fileAliases(workspace: string, path: string): string[]
+  /** Body-free correction edges, including tombstones that still hide an old claim. */
+  indexDependencies(workspace: string): Array<{ replacementId: string, anchorId: string, anchorSourceIds: string[] }>
   deleteFile(workspace: string, id: string, expectedUsageVersion: number): number
-  registered(workspace: string): Array<DocumentReadRef & { workspace: string, path: string, sources: DocumentSourceRef[], state: 'active' | 'disabled' | 'forgotten' }>
+  registered(workspace: string): Array<DocumentFileRegistration & { sources: DocumentSourceRef[] }>
+  /** Registry metadata for management, including forgotten entries only while a restriction remains. */
+  fileRegistry(workspace: string): DocumentFileRegistration[]
   settleInterruptedTagAttempts(): void
   recordTagAttempt(input: DocumentTagAttempt): void
   tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
@@ -129,17 +129,17 @@ export interface MemoryDocuments {
   projectErasedLocators(workspace: string, markdown: string): string
   locatorRetired(workspace: string, path: string): boolean
   preserveAuthoredLocatorSources(cuts: readonly DocumentSourceCut[], sources: readonly MemorySource[]): void
-  read(workspace: string, path: string, options?: { includeDisabled?: boolean }): DocumentSnapshot | null
+  read(workspace: string, path: string, options?: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt
   writeManual(input: DocumentManualWrite): DocumentReceipt
-  undoCandidate(workspace: string, documentId: string): DocumentUndoCandidate | null
+  undoCandidate(workspace: string, documentId: string, accepted?: DocumentSnapshot): DocumentUndoCandidate | null
   undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number, expectedChangeId?: string, expectedPolicyToken?: string }): DocumentReceipt
   setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean, expectedPolicyToken?: string }): DocumentReceipt
   /** Caller excludes the canonical source before invoking physical cleanup. */
   withdraw(sourceId: string): string[]
   eraseSource(cut: DocumentSourceCut): string[]
-  supersessions(workspace: string, path: string, options?: { includeEvidence?: boolean }): DocumentSupersession[]
+  supersessions(workspace: string, path: string, options?: { includeEvidence?: boolean, physical?: MemoryPhysicalFile | null }): DocumentSupersession[]
   defer(input: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork
   deferred(workspace: string, operationId: string): DeferredDocumentWork | null
   retireClarifications(): void

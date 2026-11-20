@@ -13,6 +13,7 @@ interface Operation {
   released: boolean
   foreground: boolean
   prompting: boolean
+  cancelling?: boolean
   context: ConversationContext | null
   stream?: Awaited<ReturnType<Streams['begin']>>
   observation: ReturnType<typeof beginDiagnosticOperation>
@@ -81,7 +82,8 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       operation.observation.progress({ stage: 'sending' })
       const sent = connection().prompt({ sessionId, prompt })
       onStart?.()
-      const response = await sent
+      const reply = await sent
+      const response: PromptResponse = operation.cancelling ? { stopReason: 'cancelled' } : reply
       outcome = response.stopReason === 'cancelled' ? 'cancelled' : 'completed'
       if (!current(sessionId, operation)) return
       const finalReply = await streams.complete(operation.stream)
@@ -93,7 +95,10 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
         try { await streams.complete(operation.stream) }
         catch { /* Recovery cannot prevent the original prompt failure from settling. */ }
       }
-      if (current(sessionId, operation)) onError(error)
+      if (current(sessionId, operation)) {
+        if (operation.cancelling) onEnd({ stopReason: 'cancelled' })
+        else onError(error)
+      }
     } finally {
       const late = operation.prompting && operation.released
       operation.observation.end(late ? 'late_completed' : outcome, { stage: 'settled', ...(late ? { reason: 'late' as const } : {}) })
@@ -111,14 +116,20 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     return true
   }
 
-  async function cancelInTime(sessionId: string, onForced: () => void) {
+  async function cancelInTime(sessionId: string, onForced: () => void, options: {
+    onRequested?: () => void, onPreparingCancelled?: () => void, graceMs?: number,
+  } = {}) {
     const operation = running.get(sessionId)
-    if (!operation) return
+    if (!operation || operation.released) return false
+    if (operation.cancelling) return true
+    operation.cancelling = true
     cancelPermissions(sessionId)
-    if (cancelPreparing(sessionId, onForced)) return
+    options.onRequested?.()
+    if (cancelPreparing(sessionId, options.onPreparingCancelled ?? onForced)) return true
     await stopInTime({
       cancel: () => connection().cancel({ sessionId }),
       stillRunning: () => current(sessionId, operation) && !closed,
+      graceMs: options.graceMs,
       giveUp: () => {
         operation.observation.progress({ stage: 'waiting', reason: 'timeout' })
         if (operation.stream) streams.finish(operation.stream)
@@ -126,6 +137,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
         onForced()
       },
     })
+    return true
   }
   return {
     run, cancelInTime, cancelPreparing,
@@ -134,7 +146,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     context: (id: string) => { const context = running.get(id)?.context; return context ? { ...context } : null },
     turn(id: string) {
       const operation = running.get(id)
-      return operation && !operation.released ? operation.id : undefined
+      return operation && !operation.released && !operation.cancelling ? operation.id : undefined
     },
     userTurn(id: string) {
       const operation = running.get(id)

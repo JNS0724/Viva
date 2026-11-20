@@ -60,8 +60,9 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   const dropStarting = db.prepare('DELETE FROM effects WHERE kind = ? AND substr(key, 1, length(?)) = ?')
   const dropDone = db.prepare('DELETE FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const putOff = db.prepare('UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE kind = ? AND key = ? AND generation = ?')
-  const due = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY due_at, rowid')
-  const next = db.prepare('SELECT MIN(due_at) AS at FROM effects WHERE due_at > ?')
+  const registered = 'kind IN (SELECT value FROM json_each(?))'
+  const due = db.prepare(`SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE due_at <= ? AND ${registered} ORDER BY due_at, rowid`)
+  const next = db.prepare(`SELECT MIN(due_at) AS at FROM effects WHERE due_at > ? AND ${registered}`)
   const all = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects ORDER BY rowid')
   const holding = db.prepare('SELECT 1 AS held FROM effects WHERE kind = ? AND key = ? AND generation = ?')
   const one = db.prepare('SELECT kind, key, payload, generation, due_at, attempts FROM effects WHERE kind = ? AND key = ?')
@@ -133,7 +134,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
   /** One pass: every effect due, kind by kind; then the next wake for the soonest one put off. */
   async function pass(at: number) {
     if (closed) return
-    const rows = due.all(at) as Row[]
+    const rows = due.all(at, JSON.stringify([...runners.keys()])) as Row[]
     const byKind = new Map<string, Effect[]>()
     for (const row of rows) {
       try {
@@ -192,7 +193,7 @@ export function createEffects({ db, apply = (_kind, _data, write) => ({ value: w
     try {
       // A deadline may have passed while an asynchronous runner was working.
       // Leave effects already offered in that pass waiting for their external wake.
-      at = (next.get(lastPassAt) as { at: number | null }).at
+      at = (next.get(lastPassAt, JSON.stringify([...runners.keys()])) as { at: number | null }).at
     } catch (err) {
       onError(err)
       failedPasses = 1

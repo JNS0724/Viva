@@ -78,10 +78,10 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
     const ticket = await owner.prepareContextRecovery({ sessionId: parentId, baseSurfaceHash,
       candidates: memoryRecoveryCandidates(session).map(({ text, ...item }) => ({ ...item, content: text })) })
     const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds)
-    owner.bindContextRecovery({ ticketId: ticket.ticketId, replacementMessageId: plan.message.id, replacementHash: plan.replacementHash })
+    owner.bindContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: plan.message.id, replacementHash: plan.replacementHash })
     markerSeq = session.append([plan.input])[0]!.seq
     await write(session)
-    await owner.commitContextRecovery({ ticketId: ticket.ticketId, baseSurfaceHash, replacementMessageId: plan.message.id, replacementHash: plan.replacementHash, persisted: true }, () => true)
+    await owner.commitContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, baseSurfaceHash, replacementMessageId: plan.message.id, replacementHash: plan.replacementHash, persisted: true }, () => true)
     const prefix = session.snapshotEvents()
     const child = Session.fromRestore(forkId, buildForkSeed(prefix, prefix.at(-1)!.seq),
       { ...session.header, id: forkId, isSeeded: true }, SessionLogOffset(prefix.length), 'detached')

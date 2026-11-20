@@ -76,6 +76,7 @@ test('a failed reopen of About You offers an operable retry after a previous loa
   dispatch({ type: 'memory_dream_status', status: { state: 'idle', lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null } })
   const failed = draw(state.memory, actions as Handlers)
   assert.ok(failed.some(node => node.attrs['data-dream-state'] === 'idle'))
+  assert.ok(failed.some(node => node.attrs.name === 'memory-files-search'))
   assert.ok(failed.some(node => node.attrs.role === 'alert' && node.textContent.includes('Disconnected from owner')))
   assert.ok(!failed.some(node => node.textContent === '正在加载记忆…'))
   const retry = failed.find(node => node.tag === 'button' && node.textContent === '重新加载')
@@ -84,7 +85,7 @@ test('a failed reopen of About You offers an operable retry after a previous loa
   assert.equal(await retry.listeners.click(), true)
   assert.equal(state.memory.loadError, null)
   assert.equal(state.memory.files.loaded, true)
-  assert.equal(fileLists, 2)
+  assert.equal(fileLists, 3)
 })
 
 test('file details distinguish linked and unlocated sources without promoting the note text to evidence', t => {
@@ -255,7 +256,7 @@ test('the intro saves only the profile fields and lists sites and documents in t
   assert.match(introPrompt({ sources: ['https://wiki.example'], docs: [{ path: '/w/我的资料/周报.md' }] }), /- https:\/\/wiki\.example\n- \/w\/我的资料\/周报\.md$/)
 })
 
-test('index rebuild runs once at a time and reports success and incomplete resets', async () => {
+test('index rebuild runs once at a time and reports scheduled work and incomplete resets', async () => {
   type Result = Awaited<ReturnType<AgentApi['rebuildMemoryIndexes']>>
   let state: State = initialState
   const requests: ((result: Result) => void)[] = []
@@ -274,7 +275,7 @@ test('index rebuild runs once at a time and reports success and incomplete reset
   requests[0]!({ fullText: false, semantic: false, files: { lexical: true, vectorGeneration: 1 } })
   await first
   assert.equal(state.memory.rebuildingIndexes, false)
-  assert.deepEqual(toasts, ['已重建文件记忆的全文索引。'])
+  assert.deepEqual(toasts, ['已开始重建索引，后台会补齐缺失的全文和语义索引。'])
 
   const retry = actions.rebuildMemoryIndexes()
   requests[1]!({ fullText: false, semantic: false, files: { lexical: false, vectorGeneration: 2 } })
@@ -293,7 +294,12 @@ test('Dream ignores a stale status read after a manual request and coalesces rap
   let resolveRead!: (value: typeof idle) => void, resolveStart!: () => void, starts = 0
   const api = {
     getDreamStatus: () => new Promise<typeof idle>(resolve => { resolveRead = resolve }),
-    async runDream() { starts++; await new Promise<void>(resolve => { resolveStart = resolve }); return { ...idle, state: 'running' as const } },
+    async runDream(operationId: string) {
+      assert.match(operationId, /^[0-9a-f-]{36}$/u)
+      starts++
+      await new Promise<void>(resolve => { resolveStart = resolve })
+      return { ...idle, state: 'running' as const }
+    },
   }
   const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
   t.after(() => actions.watchDream(false))
@@ -311,4 +317,62 @@ test('Dream ignores a stale status read after a manual request and coalesces rap
   assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent.includes('正在整理')))
   const unchanged = reduce(state, { type: 'memory_dream_status', status: state.memory.dream })
   assert.equal(unchanged, state)
+})
+
+test('reopening Dream only reads status and an explicit retry reuses the unconfirmed operation', async t => {
+  let state = reduce(initialState, { type: 'memory_open' })
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  const idle = { state: 'idle' as const, lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null }
+  const operations: string[] = []
+  let reads = 0
+  const api = { getDreamStatus: async () => { reads++; return idle }, async runDream(id: string) {
+    operations.push(id)
+    if (operations.length === 1) throw new Error('lost reply')
+    return { ...idle, jobId: id, completedAt: 42 }
+  } }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
+  t.after(() => actions.watchDream(false))
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  actions.watchDream(false)
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  assert.equal(reads, 2)
+  assert.equal(operations.length, 2)
+  await actions.runDream()
+  assert.equal(operations.length, 3)
+  assert.equal(operations[0], operations[1])
+  assert.notEqual(operations[1], operations[2])
+})
+
+test('passive confirmation of a joined Dream lets the next click start a fresh operation', async t => {
+  let state = reduce(initialState, { type: 'memory_open' })
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  const idle = { state: 'idle' as const, lastCheckResult: null, lastCheckedAt: null, lastProcessedAt: null }
+  const operations: string[] = []
+  const api = {
+    async getDreamStatus(id?: string) {
+      if (!id) return idle
+      assert.equal(id, operations[0])
+      return { ...idle, jobId: 'already-accepted-job' }
+    },
+    async runDream(id: string) {
+      operations.push(id)
+      if (operations.length === 1) throw new Error('lost after acceptance')
+      return idle
+    },
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false })
+  t.after(() => actions.watchDream(false))
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  actions.watchDream(false)
+  actions.watchDream(true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await actions.runDream()
+  assert.equal(operations.length, 2)
+  assert.notEqual(operations[0], operations[1])
 })

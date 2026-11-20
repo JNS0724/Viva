@@ -1,46 +1,17 @@
-import { COMPONENTS, EVENTS, ID_KEYS, METRIC_KEYS, OPERATIONS, REASONS, STAGES, parseDiagnosticLinks } from '../contracts.ts'
+import { COMPONENTS, EVENTS, ID_KEYS, OPERATIONS, STAGES, parseDiagnosticLinks, safeDiagnosticEvent, type ValidatedDiagnosticEvent } from '../contracts.ts'
 import { BUILD_COMMIT } from '../build-info.ts'
 import type { DiagnosticEvent, DiagnosticFields, DiagnosticContext, DiagnosticComponent, DiagnosticLink } from '../contracts.ts'
 import { diagnosticAlias, newDiagnosticIdentity } from './identity.ts'
 import type { DiagnosticIdentity } from './identity.ts'
 
+export { safeDiagnosticEvent } from '../contracts.ts'
+
 const object = (v: unknown): v is Record<string, unknown> => Boolean(v) && typeof v === 'object' && !Array.isArray(v)
 const member = <T extends string>(values: readonly T[], value: unknown): value is T => typeof value === 'string' && (values as readonly string[]).includes(value)
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9a-zA-Z.-]+)?$/
-const OUTCOMES = ['completed', 'failed', 'timed_out', 'cancelled', 'late_completed'] as const
 const version = (value: unknown) => typeof value === 'string' && value.length <= 48 && VERSION.test(value) ? value : 'unknown'
-declare const validated: unique symbol
 const captured = Symbol('captured diagnostic event')
-export type ValidatedDiagnosticEvent = DiagnosticEvent & { readonly [validated]: true }
 export type CapturedDiagnosticEvent = DiagnosticEvent & { readonly [captured]: true }
-export function safeDiagnosticEvent(raw: unknown, header?: Pick<DiagnosticEvent, 'event' | 'operation'>): ValidatedDiagnosticEvent | undefined {
-  try {
-    if (!object(raw)) return
-    // Read each envelope field once: a getter must not change a validated name before it is copied.
-    const event = header ? header.event : raw.event, operation = header ? header.operation : raw.operation
-    if (!member(EVENTS, event) || !member(OPERATIONS, operation)) return
-    const result: DiagnosticEvent = { event, operation }
-    const debug = raw.debug, stage = raw.stage, reason = raw.reason, outcome = raw.outcome
-    if (debug === true) result.debug = true
-    if (member(STAGES, stage)) result.stage = stage
-    if (member(REASONS, reason)) result.reason = reason
-    if (member(OUTCOMES, outcome)) result.outcome = outcome
-    let identities: DiagnosticFields['identities']
-    let metrics: DiagnosticFields['metrics']
-    const rawIdentities = raw.identities, rawMetrics = raw.metrics
-    if (object(rawIdentities)) for (const key of ID_KEYS) {
-      const value = rawIdentities[key]
-      if (typeof value === 'string' && value.length <= 512 || typeof value === 'number' && Number.isSafeInteger(value)) { identities ??= {}; identities[key] = value }
-    }
-    if (object(rawMetrics)) for (const key of METRIC_KEYS) {
-      const value = rawMetrics[key]
-      if (typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) { metrics ??= {}; metrics[key] = value }
-    }
-    if (identities) result.identities = identities
-    if (metrics) result.metrics = metrics
-    return result as ValidatedDiagnosticEvent
-  } catch { return undefined }
-}
 /** Capture only aliases before retaining metadata. Raw text lives on this call's stack only. */
 export function createDiagnosticCapture() {
   let correlation: DiagnosticIdentity | undefined

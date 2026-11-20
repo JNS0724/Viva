@@ -87,9 +87,14 @@ export function createNativeToolReads(db: DatabaseSync) {
   function evidence(calls: readonly NativeToolCall[]) {
     const result = new Map<string, MemoryErasureEvidence>()
     const rows = db.prepare('SELECT evidence FROM owner_native_tool_reads WHERE call=?')
-    for (const call of calls) for (const row of rows.all(call.id)) {
-      const value = memoryErasureEvidenceSchema.parse(JSON.parse(String(row.evidence)))
-      result.set(JSON.stringify(value), value)
+    for (const call of calls) {
+      const prior = existing.get(call.id)
+      if (!prior) continue
+      if (prior.identity !== JSON.stringify(nativeToolCallShape.parse(call))) throw new Error('Native tool evidence changed call identity')
+      for (const row of rows.all(call.id)) {
+        const value = memoryErasureEvidenceSchema.parse(JSON.parse(String(row.evidence)))
+        result.set(JSON.stringify(value), value)
+      }
     }
     return [...result.values()]
   }

@@ -2,11 +2,10 @@ import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createTasksChannel } from './lib/channel.ts'
+import { LONG_TOOL_TIMEOUT_MS } from '../../src/shared/request-budget.ts'
 export const name = 'viva-tasks'
 export const inject = ['tools']
 export const Config = z.object({})
-/** How long a change to a schedule may take before the tool says it timed out. */
-const ACTION_WAIT_MS = 60_000
 export function apply(ctx: Context, _config: object, port: NodeJS.Process = process) {
   if (typeof port.send !== 'function') return
   const channel = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) })
@@ -31,7 +30,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     execute: async (args, exec) => ({ text: await channel.request({ ...args, op: 'get' }, String(exec.agent?.session.id ?? ''), exec.signal) }),
   }))
   const act = (request: object, exec: { agent?: { session: { id: unknown } }, signal?: AbortSignal }) =>
-    channel.request(request, String(exec.agent?.session.id ?? ''), exec.signal, ACTION_WAIT_MS)
+    channel.request(request, String(exec.agent?.session.id ?? ''), exec.signal, LONG_TOOL_TIMEOUT_MS)
   // Schedules (system-design §12.2): a time and a prompt, run with read-only tools when due, its answer in 动态.
   // A rule from flat arguments, as dsh-schedule takes it; the app checks it again (tasks-channel.ts).
   const ruleOf = (args: Record<string, unknown>) => {
@@ -50,7 +49,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     expression: { type: 'string', description: 'kind=cron 时：五段 cron 表达式' },
   } as const
   ctx.tools.register(defineTool({
-    name: 'schedule_create',
+    name: 'schedule_create', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     description: '用户要你在某个时间或定期做一件事（提醒、起草、汇总、查资料）时，提出一个定时任务：到点时 prompt 会在独立会话里以只读工具运行，回答出现在 Viva 的「动态」并通知用户。'
       + 'prompt 要自成一体：写清要做什么、用到的文件路径和输出要求，因为运行时看不到这段对话；纯提醒就写「用一句话提醒用户……」。'
       + '这只是提议：卡片出现在对话里，用户同意后才保存。提出后用一句话告诉用户，然后结束这一轮。',
@@ -63,17 +62,17 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
     description: '列出 Viva 里已保存的定时任务（未结束的）：id、标题、提示词、下次时间、是否暂停。用户问定了哪些、要改或删某个时先调用它拿 id。',
     parameters: {},
     output,
-    execute: async (_args, exec) => ({ text: await act({ op: 'schedule_list' }, exec) }),
+    execute: async (_args, exec) => ({ text: await channel.request({ op: 'schedule_list' }, String(exec.agent?.session.id ?? ''), exec.signal) }),
   }))
   ctx.tools.register(defineTool({
-    name: 'schedule_update',
+    name: 'schedule_update', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     description: '按用户的话修改一个定时任务：改标题、提示词或时间（时间参数同 schedule_create，给了 kind 才改时间），或 paused=true 暂停、false 恢复。先用 schedule_list 拿 id。',
     parameters: { id: { type: 'string', required: true, description: '定时任务 id' }, title: { type: 'string', description: '新标题' }, prompt: { type: 'string', description: '新提示词' }, paused: { type: 'boolean', description: 'true 暂停，false 恢复' }, ...timeParameters },
     output,
     execute: async (args, exec) => ({ text: await act({ op: 'schedule_update', id: args.id, ...(args.title ? { title: args.title } : {}), ...(args.prompt ? { prompt: args.prompt } : {}), ...(typeof args.paused === 'boolean' ? { paused: args.paused } : {}), ...(args.kind ? { rule: ruleOf(args) } : {}) }, exec) }),
   }))
   ctx.tools.register(defineTool({
-    name: 'schedule_delete',
+    name: 'schedule_delete', timeoutMs: LONG_TOOL_TIMEOUT_MS,
     description: '按用户的话删除一个定时任务。先用 schedule_list 拿 id。',
     parameters: { id: { type: 'string', required: true, description: '定时任务 id' } },
     output,

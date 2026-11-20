@@ -47,7 +47,7 @@ export interface AskedQuestion { questionId: string, questions: readonly Questio
 export interface AskedPermission { requestId: string, title: string, kind: string, toolCallId: string | null, rawInput: unknown, options: readonly PermissionOption[] }
 export interface AskedSecret { requestId: string, server: string, names: readonly string[] }
 export interface ConversationState {
-  phase: 'idle' | 'working' | 'waiting' | 'asking' | 'error'
+  phase: 'idle' | 'working' | 'waiting' | 'asking' | 'stopping' | 'error'
   messages: readonly ConversationMessage[]
   thoughts: readonly StreamText[]
   tools: Readonly<Record<string, ConversationTool>>
@@ -56,7 +56,9 @@ export interface ConversationState {
   permission: AskedPermission | null
   question: AskedQuestion | null
   secret: AskedSecret | null
-  turn: { startedAt: number, tools: number, thoughts: number, by?: string, messageCount?: number } | null
+  turn: { startedAt: number, tools: number, thoughts: number, by?: string, messageCount?: number, id?: string } | null
+  stoppedReplayLost: boolean
+  stopUnconfirmed: boolean
   lastReceipt: TurnReceipt | null
   /**
    * Whether the last turn's 已完成 is still news (done-notice-actions.ts): fresh as it ends, still once her done pose
@@ -90,13 +92,13 @@ export interface ForegroundWaits {
 
 /** Only conversation payloads. Task identity and stream order belong to separate task actions. */
 export interface ConversationPayloads {
-  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean, feedItemId?: string }
+  user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean, feedItemId?: string, turnId?: string }
   prompt_admitted: { sourceId: string, accepted: boolean }
   user_steer: { text: string, sourceId?: string, via?: string | null }
   steer_failed: { id: string | undefined }
   steer_delivery: { sourceId: string, delivery: 'pending' | 'not-sent' | 'sent' }
-  steer_resent: { at: number }
-  agent_turn_started: { at: number, by?: string | null }
+  steer_resent: { at: number, turnId?: string }
+  agent_turn_started: { at: number, by?: string | null, turnId?: string }
   acp_update: { update: ConversationUpdate, at: number }
   permission_request: PermissionRequest & { at: number }
   permission_resolved: { requestId: string, optionId: string | null, at: number }
@@ -109,6 +111,9 @@ export interface ConversationPayloads {
   secret_resolved: { requestId: string, provided: boolean, at: number }
   secret_closed: { requestId: string }
   waits_restored: Partial<ForegroundWaits> & { at: number }
+  turn_stopping: { confirmed?: boolean }
+  turn_stop_rejected: { turnId: string, phase: ConversationState['phase'] }
+  turn_recovered: {}
   turn_end: { stopReason?: string, finalReply?: boolean, at: number }
   done_still: {}
   done_shown: {}

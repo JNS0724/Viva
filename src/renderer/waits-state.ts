@@ -17,6 +17,7 @@ const answered = (state: State, kind: string, ref: unknown) => state.timeline.so
 
 export const WAITS_ACTIONS= {
   waits_restored: (state, { permissions = [], questions = [], secrets = [], at }) => {
+    if (state.phase === 'stopping' || state.stopUnconfirmed) return state
     const approvals = (permissions)
       .filter((wait) => state.permission?.requestId !== wait.requestId && !answered(state, 'decision', wait.requestId))
       .reduce<State>((current, wait) => reduceConversation(current, { ...wait, type: 'permission_request', at }), state)

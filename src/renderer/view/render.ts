@@ -59,10 +59,11 @@ let renderedTopicInputs: unknown[] = []
 function renderTopicLabelIfChanged(area: HTMLElement | null, state: State, handlers: Handlers) {
   if (!area) return
   const ready = !setupView(state.info) && state.info.mode !== 'connecting'
-  const inputs = [localeRevision(), state.topic, state.usage, state.messages.length, state.earlier.segments, ready, isBusy(state), state.switching, state.newTopicPending]
+  const busy = isBusy(state) || state.phase === 'stopping' || state.stopUnconfirmed
+  const inputs = [localeRevision(), state.topic, state.usage, state.messages.length, state.earlier.segments, ready, busy, state.switching, state.newTopicPending]
   if (inputs.every((value, i) => value === renderedTopicInputs[i])) return
   renderedTopicInputs = inputs
-  renderTopicLabel(area, state, handlers, { ready, busy: isBusy(state) })
+  renderTopicLabel(area, state, handlers, { ready, busy })
 }
 
 let renderedPermissionInputs: unknown[] = []
@@ -186,16 +187,19 @@ function renderComposerAvailability(dom: Dom, setup: SetupCopy | null, switching
 
 /** While the agent works the button stops it, unless there are words to send into the turn. */
 export function renderSendButton(dom: Dom, state: State) {
-  const stops = isBusy(state) && !dom.input.value.trim() && !Number(dom.composer.dataset.attachments ?? 0)
-  if (dom.sendBtn.dataset.busy === String(stops) && dom.sendBtn.dataset.locale === String(localeRevision())) return
+  const stopping = state.phase === 'stopping'
+  const stops = stopping || isBusy(state) && !dom.input.value.trim() && !Number(dom.composer.dataset.attachments ?? 0)
+  if (dom.sendBtn.dataset.busy === String(stops) && dom.sendBtn.dataset.stopping === String(stopping) && dom.sendBtn.dataset.locale === String(localeRevision())) return
   dom.sendBtn.dataset.locale = String(localeRevision())
   dom.sendBtn.dataset.busy = String(stops)
-  dom.sendBtn.setAttribute('aria-label', stops ? t("island-dom.stop") : t("render.send"))
+  dom.sendBtn.dataset.stopping = String(stopping)
+  dom.sendBtn.setAttribute('aria-label', stopping ? t("conversation.stop.pending") : stops ? t("island-dom.stop") : t("render.send"))
   dom.sendBtn.replaceChildren(icon(stops ? 'stop' : 'send', 22))
 }
 
 function renderComposer(dom: Dom, state: State, handlers: Handlers) {
   renderComposerAvailability(dom, setupView(state.info), state.initialization.status !== 'ready' || state.switching || state.newTopicPending, { asking: Boolean(state.question), busy: isBusy(state), failed: state.newTopicPending && !state.switching })
+  if (state.phase === 'stopping' || state.stopUnconfirmed) dom.sendBtn.disabled = true
   renderSendButton(dom, state)
   renderWorkDir(dom, state, handlers, document.documentElement.dataset.platform ?? 'darwin')
   renderTopicLabelIfChanged(dom.ctxArea, state, handlers)
@@ -207,7 +211,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 /** Cards are conversation content even when no foreground user bubble was created. */
 export const showsHome = (state: State) => state.messages.length === 0 && state.earlier.segments.length === 0
   && cardedTasks(state).length === 0
-  && !state.newTopicPending && state.phase !== 'error'
+  && !state.newTopicPending && !state.stopUnconfirmed && state.phase !== 'stopping' && state.phase !== 'error'
 
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */
 export function render(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
@@ -244,7 +248,7 @@ export function renderStream(dom: Dom, state: State, handlers: Handlers, now = D
 
 /** Once-a-second refresh of the elapsed time in the island while the agent works. */
 export function renderTick(dom: Dom, state: State, handlers: Handlers, now = Date.now()) {
-  if ((!showsHome(state) || hubPage(state)) && isBusy(state)) renderIsland(dom.island, state, handlers, now)
+  if ((!showsHome(state) || hubPage(state)) && (isBusy(state) || state.phase === 'stopping')) renderIsland(dom.island, state, handlers, now)
 }
 
 onLocaleChange(() => {

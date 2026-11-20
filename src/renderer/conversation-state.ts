@@ -16,7 +16,7 @@ import { closeLast, closeStreams } from './streams.ts'
  */
 export const initialConversation: Readonly<ConversationState> = Object.freeze({
   phase: 'idle', messages: [], thoughts: [], tools: {}, modelCalls: {}, timeline: [], permission: null, question: null,
-  secret: null, turn: null, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null, usage: null,
+  secret: null, turn: null, stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null, doneNotice: 'fresh', completedTurn: null, error: null, usage: null,
 })
 
 const TOOL_FIELDS = ['title', 'kind', 'status', 'locations', 'rawInput', 'rawOutput'] as const
@@ -111,21 +111,21 @@ function updateConversation(view: ConversationView, update: AcpUpdate, at: numbe
 function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
   const last = messages[messages.length - 1]
   const problem = turnProblem(receipt.stopReason)
-  if (!problem && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
+  if (!problem && receipt.stopReason !== 'cancelled' && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
   const text = problem ?? (receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn"))
   return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
 }
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
 export const CONVERSATION_ACTIONS = {
-  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending, feedItemId }) => {
+  user_prompt: (view, { text, at, via = null, images = [], sourceId, pending, feedItemId, turnId }) => {
     const closed = closeStreams(view)
     const message = {
       id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(pending ? { pending } : {}),
       ...(feedItemId ? { feedItemId } : {}),
       open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
     }
-    return { ...closed, phase: 'working', error: null, messages: [...closed.messages, message], turn: { startedAt: at, tools: 0, thoughts: 0 } }
+    return { ...closed, phase: 'working', error: null, messages: [...closed.messages, message], turn: { startedAt: at, tools: 0, thoughts: 0, ...(turnId && { id: turnId }) } }
   },
 
   prompt_admitted: (view, { sourceId, accepted }) => ({
@@ -140,11 +140,11 @@ export const CONVERSATION_ACTIONS = {
    * A turn the app started, not the user: a background task ended and its result comes back (backend/task-reports.ts).
    * The conversation works as for any turn, with no words of the user's.
    */
-  agent_turn_started: (view, { by = null, at }) => ({
+  agent_turn_started: (view, { by = null, at, turnId }) => turnId && view.turn?.id === turnId ? view : ({
     ...closeStreams(view),
     phase: 'working',
     error: null,
-    turn: { startedAt: at, tools: 0, thoughts: 0, messageCount: view.messages.length, ...(by ? { by } : {}) },
+    turn: { startedAt: at, tools: 0, thoughts: 0, messageCount: view.messages.length, ...(by ? { by } : {}), ...(turnId && { id: turnId }) },
   }),
 
   /**
@@ -216,6 +216,12 @@ export const CONVERSATION_ACTIONS = {
 
   permission_closed: (view, { requestId }) => view.permission?.requestId !== requestId ? view : ({ ...view, permission: null, phase: view.phase === 'waiting' ? 'working' : view.phase }),
 
+  turn_stopping: (view, { confirmed }) => ({ ...view, phase: 'stopping',
+    ...(confirmed && { permission: null, question: null, secret: null }) }),
+  turn_stop_rejected: (view, { turnId, phase }) => view.phase === 'stopping' && view.turn?.id === turnId
+    ? { ...view, phase } : view,
+  turn_recovered: (view) => view.stopUnconfirmed ? { ...view, stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null } : view,
+
   turn_end: (view, { stopReason, finalReply, at }) => {
     const closed = closeStreams(view)
     const turn = closed.turn ?? { startedAt: at, tools: 0, thoughts: 0 }
@@ -224,7 +230,7 @@ export const CONVERSATION_ACTIONS = {
       && (!last || (last.role === 'assistant' && isSilentReply(last.text)))
     const reason = stopReason === 'end_turn' && finalReply === false && !silentTask ? 'no_response' : stopReason
     const receipt = { ms: Math.max(0, at - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason: reason }
-    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, lastReceipt: receipt, doneNotice: 'fresh' as const,
+    const ended = { ...closed, phase: 'idle' as const, permission: null, question: null, secret: null, turn: null, stopUnconfirmed: stopReason === 'cancel_unconfirmed', lastReceipt: receipt, doneNotice: 'fresh' as const,
       completedTurn: { startedAt: turn.startedAt, endedAt: at } }
     // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
     if (silentTask) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }

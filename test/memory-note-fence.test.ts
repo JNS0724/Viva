@@ -83,7 +83,7 @@ test('intake does not recover an unrelated pending daily commit and fenced job r
   const crashing=openMemoryNotes(store,()=>true,point=>{if(point==='intent')throw new Error('crash')})
   assert.throws(()=>crashing.commit(key,crashing.pending(key),{status:'write',title:'Notes',markdown:'Accepted pending text.'},1,1,crashing.snapshot([source.id]),undefined),/crash/)
   const later=noteSource(store,{session:'independent'})
-  const intake=openMemoryNotes(store,()=>true,undefined,undefined,undefined,undefined,undefined,{deferRecovery:true})
+  const intake=openMemoryNotes(store,()=>true,undefined,undefined,{deferRecovery:true})
   intake.add('independent','2026-11-14',[later],'')
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM memory_daily_notes').get()?.n,0,'intake cannot secretly finish a daily file mutation')
   const fence=createMemorySendFence({epoch:'test',admit:()=>({current:()=>true,deadline:null})})
@@ -145,13 +145,13 @@ test('normal daily commit callbacks roll back with metadata and run atomically d
   const {dir,defer}=scratch(t,'memory-note-commit-callback-'),store=openMemoryStore(join(dir,'memory.db'))
   defer(()=>store.close());store.db.exec('CREATE TABLE test_revisions(n INTEGER);INSERT INTO test_revisions VALUES(0)')
   const source=noteSource(store),notes=openMemoryNotes(store,()=>true),key=notes.add('session','2026-11-14',[source],'')!
-  const failed=openMemoryNotes(store,()=>true,undefined,undefined,undefined,undefined,undefined,{onCommitted(){
+  const failed=openMemoryNotes(store,()=>true,undefined,undefined,{onCommitted(){
     assert.equal(store.db.isTransaction,true);store.db.exec('UPDATE test_revisions SET n=n+1');throw new Error('callback')
   }})
   assert.throws(()=>failed.commit(key,failed.pending(key),{status:'write',title:'Notes',markdown:'Accepted text.'},1,1,failed.snapshot([source.id]),undefined),/callback/)
   assert.equal(store.db.prepare('SELECT n FROM test_revisions').get()?.n,0)
   assert.equal(failed.read(key),undefined)
-  const recovered=openMemoryNotes(store,()=>true,undefined,undefined,undefined,undefined,undefined,{onCommitted(){
+  const recovered=openMemoryNotes(store,()=>true,undefined,undefined,{onCommitted(){
     assert.equal(store.db.isTransaction,true);store.db.exec('UPDATE test_revisions SET n=n+1')
   }})
   assert.equal(recovered.read(key)?.markdown,'Accepted text.')

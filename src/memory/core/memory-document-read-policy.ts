@@ -1,14 +1,32 @@
+import { dailyPath, digestPath } from '../contracts/memory-file-contract.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemorySource } from './ports/store.ts'
 import { inspectMemoryDocumentText } from './memory-dream-material.ts'
-import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryDocuments } from './ports/documents.ts'
+import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
 
-type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
+type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'> & Partial<Pick<MemoryNotes, 'aliases'>>
 type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'aliases' | 'projectErasedLocators'>>
+type FileLocation = { workspace: string, path: string }
+type PhysicalSnapshot = (workspace: string, path: string) => MemoryPhysicalFile | null
+const locationKey = (workspace: string, path: string) => JSON.stringify([workspace, path])
+const MAX_READ_BATCH_FILES = 512
+export const MEMORY_DOCUMENT_READ_CONCURRENCY = 3
+
+export interface MemoryDocumentReadBatch {
+  load(files: readonly FileLocation[], phaseSignal?: AbortSignal): Promise<void>
+  read(workspace: string, path: string): MemoryDocumentView | null
+  physical(workspace: string, path: string): MemoryPhysicalFile | null
+  readObservation(workspace: string, path: string): MemoryDocumentView | null | undefined
+  managementRead(workspace: string, path: string): MemoryDocumentManagementView | null
+  managementObservation(workspace: string, path: string): MemoryDocumentManagementView | null | undefined
+  /** A confirmed missing file returns null; an unread or unavailable file returns undefined. */
+  observedRevision(workspace: string, path: string): string | null | undefined
+  incomplete(): boolean
+}
 
 /** A single authorized view used by dream and all file retrieval paths. The original is
  * retained for evidence validation; currentMarkdown masks replaced spans without changing
@@ -63,7 +81,7 @@ export function mergeDocumentSources(refs: readonly DocumentSourceRef[]): Docume
 /** Source and prose validation is shared with write jobs; backend-issued hashes are
  * removed only from their exact trusted path/metadata positions for credential checks. */
 export function createMemoryDocumentEvidence({ notes, documents, hash, source, readable, allowsText }: {
-  notes: ReadNotes, documents: ReadDocuments, hash(text: string): string,
+  notes: Pick<MemoryNotes, 'snapshot' | 'registeredForSources'> & Partial<Pick<MemoryNotes, 'aliases'>>, documents: ReadDocuments, hash(text: string): string,
   source(id: string): MemorySource | undefined, readable(id: string): boolean,
   allowsText(text: string, source: MemorySource): boolean,
 }) {
@@ -76,8 +94,7 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
     })
   }
   const materialAllowed = (text: string, refs: readonly DocumentSourceRef[]) => {
-    const ids = new Set(refs.map(ref => ref.id))
-    const scoped = notes.registered().filter(note => note.sources.some(ref => ids.has(ref.id)))
+    const scoped = notes.registeredForSources(refs.map(ref => ref.id))
     const workspaces = [...new Set([...scoped.map(note => note.workspace), ...refs.flatMap(ref => {
       const original = source(ref.id)
       return original ? [hash(JSON.stringify([original.scope, original.context, original.project ?? null]))] : []
@@ -110,7 +127,7 @@ function currentProjection(markdown: string, supersessions: readonly DocumentSup
     : markdown.slice(line.startOffset, line.contentEndOffset)) + markdown.slice(line.contentEndOffset, line.endOffset)).join('')
 }
 
-export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCurrent, materialAllowed, reference, inheritedUseRestricted = () => false }: {
+export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCurrent, materialAllowed, reference, inheritedUseRestricted = () => false, readPhysicalFile }: {
   notes: ReadNotes
   documents: ReadDocuments
   hash(text: string): string
@@ -119,18 +136,20 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
   materialAllowed(text: string, refs: readonly DocumentSourceRef[]): boolean
   reference(id: string): MemorySourceReference | null
   inheritedUseRestricted?(ref: DocumentSourceRef): boolean
+  readPhysicalFile?: ReadMemoryPhysicalFile
 }) {
-  function read(workspace: string, path: string, ancestors: ReadonlySet<string> = new Set()): MemoryDocumentView | null {
-    try { return readAccepted(workspace, path, ancestors) } catch { return null }
+  function read(workspace: string, path: string, ancestors: ReadonlySet<string> = new Set(), snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
+    try { return readAccepted(workspace, path, ancestors, false, undefined, snapshot) } catch { return null }
   }
-  function readAccepted(workspace: string, path: string, ancestors: ReadonlySet<string>, includeDisabled = false, acceptedDigest?: DocumentSnapshot): MemoryDocumentView | null {
-    const key = JSON.stringify([workspace, path])
+  function readAccepted(workspace: string, path: string, ancestors: ReadonlySet<string>, includeDisabled = false, acceptedDigest?: DocumentSnapshot, snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
+    const key = locationKey(workspace, path)
     if (ancestors.has(key)) return null
     const chain = new Set([...ancestors, key])
-    const registered = path.startsWith('daily/') ? notes.registered().find(item => item.workspace === workspace && item.path === path) : undefined
-    const note = registered ? notes.read(registered.key) : undefined
+    const registered = path.startsWith('daily/') ? notes.registeredAt(workspace, path) : undefined
+    const physical = snapshot?.(workspace, path)
+    const note = registered ? notes.read(registered.key, physical) : undefined
     if (note && note.fileRevision !== registered?.file_revision) return null
-    const digest = path.startsWith('digest/') ? acceptedDigest ?? documents.read(workspace, path, { includeDisabled }) : null
+    const digest = path.startsWith('digest/') ? acceptedDigest ?? documents.read(workspace, path, { includeDisabled, physical }) : null
     if (!note && !digest) return null
     const refs = note ? notes.references(note.key) : digest!.sources
     const restrictions = documents.sourceRestrictions(workspace)
@@ -145,7 +164,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     if (!refsCurrent(refs) || !materialAllowed(markdown, refs)) return null
     // A correction of this same logical document describes the previous revision, not
     // a reason to hide its newly corrected body. Other revisions remain anchored.
-    const relations = documents.supersessions(workspace, path, { includeEvidence: true }).filter(item => !(digest?.id === item.documentId
+    const relations = documents.supersessions(workspace, path, { includeEvidence: true, physical }).filter(item => !(digest?.id === item.documentId
       && digest.corrections.some(active => active.operationId === item.operationId)))
     const correctionSources: DocumentSourceRef[] = []
     const supersessions = relations.map(({ anchorSources, ...item }) => {
@@ -158,11 +177,11 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       correctionSources.push(...anchorSources)
       return item
     })
-    const candidates = documents.registered(workspace)
+    const candidates = supersessions.length ? documents.registered(workspace) : []
     const replacements = supersessions.map(item => {
       const entry = candidates.find(candidate => candidate.id === item.documentId && candidate.state === 'active')
-      const candidate = entry ? documents.read(workspace, entry.path) : null
-      return candidate?.corrections.some(active => active.operationId === item.operationId) ? read(workspace, candidate.path, chain) : null
+      const candidate = entry ? documents.read(workspace, entry.path, { physical: snapshot?.(workspace, entry.path) }) : null
+      return candidate?.corrections.some(active => active.operationId === item.operationId) ? read(workspace, candidate.path, chain, snapshot) : null
     })
     // A replacement may itself have been corrected. Bind its whole applicability chain
     // and expose only its current projection, never its unqualified original body.
@@ -192,25 +211,101 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       ...(correctionSources.length ? { correctionSources } : {}), backing: digest && { ...digest, markdown }, supporting,
       applicability: { state, supersessions } }
   }
-  function list(workspace: string, kind?: 'daily' | 'digest') {
+  function readBatch(signal?: AbortSignal, maxFiles = MAX_READ_BATCH_FILES): MemoryDocumentReadBatch | undefined {
+    const readPhysical = readPhysicalFile
+    if (!readPhysical) return
+    const loaded = new Map<string, MemoryPhysicalFile | null>()
+    let incomplete = false
+    const snapshot: PhysicalSnapshot = (workspace, path) => loaded.get(locationKey(workspace, path)) ?? null
+
+    const load = async (files: readonly FileLocation[], phaseSignal?: AbortSignal) => {
+      const active = signal && phaseSignal ? AbortSignal.any([signal, phaseSignal]) : signal ?? phaseSignal
+      let pending = [...files]
+      while (pending.length && !active?.aborted && loaded.size < maxFiles) {
+        const queue = new Map<string, FileLocation>()
+        for (const file of pending) {
+          const key = locationKey(file.workspace, file.path)
+          if (loaded.has(key) || queue.has(key)) continue
+          if (queue.size + loaded.size >= maxFiles) { incomplete = true; break }
+          // Legacy or invalid locators are conclusively unusable without physical I/O.
+          if (!/^[a-f0-9]{64}$/u.test(file.workspace)
+            || !(dailyPath.safeParse(file.path).success || digestPath.safeParse(file.path).success)) {
+            loaded.set(key, null)
+          } else queue.set(key, file)
+        }
+        const tasks = queue.entries()
+        await Promise.all(Array.from({ length: Math.min(queue.size, MEMORY_DOCUMENT_READ_CONCURRENCY) }, async () => {
+          for (const [key, file] of tasks) {
+            if (active?.aborted) break
+            try {
+              loaded.set(key, await readPhysical(file.workspace, file.path, active))
+            } catch {
+              incomplete = true
+            }
+          }
+        }))
+        pending = []
+        if (active?.aborted) break
+        for (const [key, { workspace, path }] of queue) {
+          const physical = loaded.get(key)
+          if (!physical) continue
+          try {
+            const corrections = documents.supersessions(workspace, path, { physical })
+            if (!corrections.length) continue
+            const ids = new Set(corrections.map(item => item.documentId))
+            for (const replacement of documents.registered(workspace)) {
+              if (replacement.state === 'active' && ids.has(replacement.id)) pending.push(replacement)
+            }
+          } catch { /* The final policy read will omit an unavailable correction. */ }
+        }
+      }
+      incomplete ||= Boolean(active?.aborted || pending.some(file => !loaded.has(locationKey(file.workspace, file.path))))
+    }
+    function observe<T>(workspace: string, path: string, build: (snapshot: PhysicalSnapshot) => T) {
+      if (signal?.aborted || !loaded.has(locationKey(workspace, path))) return undefined
+      if (!snapshot(workspace, path)) return null
+      let verified = true
+      const view = build((area, file) => {
+        if (!loaded.has(locationKey(area, file))) verified = false
+        return snapshot(area, file)
+      })
+      return verified ? view : undefined
+    }
+    const readObservation = (workspace: string, path: string) =>
+      observe(workspace, path, verified => read(workspace, path, new Set(), verified))
+    const managementObservation = (workspace: string, path: string) =>
+      observe(workspace, path, verified => managementRead(workspace, path, verified))
+    return {
+      load, managementObservation, readObservation, physical: snapshot,
+      read: (workspace, path) => readObservation(workspace, path) ?? null,
+      managementRead: (workspace, path) => managementObservation(workspace, path) ?? null,
+      observedRevision: (workspace, path) => {
+        const physical = loaded.get(locationKey(workspace, path))
+        return physical === null ? null : physical?.revision
+      },
+      incomplete: () => incomplete,
+    }
+  }
+  function paths(workspace: string, kind?: 'daily' | 'digest') {
     const paths = [
       ...(kind === 'digest' ? [] : notes.registered().filter(item => item.workspace === workspace).map(item => item.path)),
-      ...(kind === 'daily' ? [] : documents.registered(workspace).map(item => item.path)),
+      ...(kind === 'daily' ? [] : documents.registered(workspace).filter(item => item.state !== 'forgotten').map(item => item.path)),
     ]
-    return [...new Set(paths)].flatMap(path => read(workspace, path) ?? [])
+    return [...new Set(paths)]
   }
-  function managementRead(workspace: string, path: string): MemoryDocumentManagementView | null {
+  function list(workspace: string, kind?: 'daily' | 'digest') {
+    return paths(workspace, kind).flatMap(path => read(workspace, path) ?? [])
+  }
+  function managementRead(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentManagementView | null {
     try {
-      const view = readAccepted(workspace, path, new Set(), true)
+      const view = readAccepted(workspace, path, new Set(), true, undefined, snapshot)
       if (!view) return null
       const enabled = view.backing?.enabled ?? true
       return { ...view, enabled, currentMarkdown: enabled ? view.currentMarkdown : null }
     } catch { return null }
   }
   function managementList(workspace: string): MemoryDocumentManagementView[] {
-    const paths = [...notes.registered().filter(item => item.workspace === workspace).map(item => item.path),
-      ...documents.registered(workspace).filter(item => item.state !== 'forgotten').map(item => item.path)]
-    return [...new Set(paths)].flatMap(path => managementRead(workspace, path) ?? [])
+    return paths(workspace).flatMap(path => managementRead(workspace, path) ?? [])
   }
   function managementCurrent(before: DocumentSnapshot, policyToken: string, after: DocumentSnapshot, staged?: MemorySource): boolean {
     try {
@@ -222,5 +317,5 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       return view?.policyToken === policyToken && refsCurrent(existing) && materialAllowed(markdown, existing)
     } catch { return false }
   }
-  return { read, list, managementRead, managementList, managementCurrent }
+  return { read, readBatch, paths, list, managementRead, managementList, managementCurrent }
 }

@@ -40,7 +40,7 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
 
   for (const tool of CONFIG_TOOLS) {
     ctx.tools.register(defineTool({
-      name: tool.name,
+      name: tool.name, timeoutMs: tool.timeoutMs,
       description: tool.description,
       parameters: tool.parameters,
       output: {

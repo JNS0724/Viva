@@ -7,13 +7,14 @@ import { sameContext, type ConversationContext } from '../shared/conversation-co
 
 /** Conversation effects; the page supplies state and UI callbacks, never a document or the app entry. */
 type ConversationDeps = Pick<ActionDeps, 'getState' | 'dispatch' | 'errorMessage' | 'showToast'> & {
-  api: Pick<AgentApi, 'prompt' | 'steer' | 'answerQuestion' | 'provideSecrets'>
+  api: Pick<AgentApi, 'prompt' | 'steer' | 'answerQuestion' | 'provideSecrets'> & Partial<Pick<AgentApi, 'cancel' | 'recover'>>
+  saveBeforeRecovery?: () => Promise<void>
   beforePrompt: () => void
   keepPicture: (id: string) => void
   now?: () => number
 }
 
-export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, keepPicture, now = Date.now }: ConversationDeps) {
+export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, saveBeforeRecovery, keepPicture, now = Date.now }: ConversationDeps) {
   const steerLost = () => t("app.your.message.did.not.reach.the.assistant")
   const context = (): ConversationContext => ({ conversationId: getState().conversationId ?? getState().info.conversationId ?? null, sessionId: getState().info.sessionId ?? null })
   const belongsHere = (origin: ConversationContext) => sameContext(origin, context())
@@ -48,6 +49,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       return false
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
+    if (getState().phase === 'stopping' || getState().stopUnconfirmed) return false
     if (feedItemId && getState().feed.erasedIds.includes(feedItemId)) return false
     if (feedItemId && isBusy(getState())) {
       showToast(t('feed.continue.wait'))
@@ -59,8 +61,9 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     const origin = context(), epoch = ++sendEpoch
     beforePrompt()
     const operation = sourceId ?? globalThis.crypto.randomUUID()
-    dispatch({ type: 'user_prompt', text, at: now(), via, sourceId: operation })
-    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation)
+    const turnId = crypto.randomUUID()
+    dispatch({ type: 'user_prompt', text, at: now(), via, sourceId: operation, turnId })
+    api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation, undefined, turnId)
       .then(promptFinished(origin, epoch, [operation]), promptFailed(origin, epoch))
     return true
   }
@@ -81,7 +84,8 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
     for (const { id } of images) keepPicture(id)
     const operation = globalThis.crypto.randomUUID()
-    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, pending: Boolean(feed), ...(feed ? { feedItemId: feed.id } : {}) })
+    const turnId = crypto.randomUUID()
+    dispatch({ type: 'user_prompt', text, at: now(), via, images, sourceId: operation, turnId, pending: Boolean(feed), ...(feed ? { feedItemId: feed.id } : {}) })
     if (feed) {
       // The same conversation can replace its DSH session before a send. Resolve the message by its operation.
       const pendingHere = () => getState().messages.some(message => message.pending && message.sourceId === operation)
@@ -92,13 +96,13 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
         }
         feed.admitted?.(false, message)
       }
-      api.prompt(text, images, operation, feed.id).then(result => {
+      api.prompt(text, images, operation, feed.id, turnId).then(result => {
         if (result?.accepted === false) { refused(result.message); return }
         const accepted = !getState().feed.erasedIds.includes(feed.id)
         if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted })
         feed.admitted?.(accepted)
       }, error => refused(errorMessage(error)))
-    } else api.prompt(text, images, operation)
+    } else api.prompt(text, images, operation, undefined, turnId)
       .then(promptFinished(origin, epoch, [operation]), promptFailed(origin, epoch))
     return true
   }
@@ -146,9 +150,10 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
   }
 
   function resend(text: string, operation: string | string[], origin = context(), epoch = ++sendEpoch) {
-    dispatch({ type: 'steer_resent', at: now() })
+    const turnId = crypto.randomUUID()
+    dispatch({ type: 'steer_resent', at: now(), turnId })
     if (typeof operation === 'string') dispatch({ type: 'steer_delivery', sourceId: operation, delivery: 'pending' })
-    api.prompt(text, undefined, operation)
+    api.prompt(text, undefined, operation, undefined, turnId)
       .then(result => {
         const sources = typeof operation === 'string' ? [operation] : operation
         promptFinished(origin, epoch, sources)(result)
@@ -159,7 +164,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
   function sendAfterTurn(stopReason?: string) {
     // A cancelled turn may be retiring its dsh instance. Neither queued words nor a late idle
     // receipt may start another prompt against that instance or its replacement.
-    if (stopReason === 'cancelled') return clearAfterTurn()
+    if (stopReason === 'cancelled' || stopReason === 'cancel_unconfirmed') return clearAfterTurn()
     if (!afterTurn.length) return
     const pending = afterTurn.filter(item => canReply(item.origin, item.epoch))
     afterTurn = []
@@ -211,5 +216,34 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     }
   }
 
-  return { ask, answer, provideSecrets, sendAfterTurn, clearAfterTurn }
+  async function cancel() {
+    const state = getState(), origin = context()
+    const turnId = state.turn?.id
+    if (!api.cancel || !isBusy(state) || !origin.sessionId || !turnId) return
+    const restore = () => {
+      if (belongsHere(origin)) dispatch({ type: 'turn_stop_rejected', turnId, phase: state.phase })
+    }
+    dispatch({ type: 'turn_stopping' })
+    try {
+      if (!await api.cancel({ ...origin, sessionId: origin.sessionId, turnId })) restore()
+    } catch (error) {
+      restore()
+      if (belongsHere(origin) && getState().turn?.id === turnId) showToast(errorMessage(error))
+    }
+  }
+
+  let recovering = false
+  async function recover() {
+    if (recovering || selectionPending() || !getState().stopUnconfirmed || !api.recover) return
+    recovering = true
+    const conversation = context().conversationId
+    try {
+      if (saveBeforeRecovery) await saveBeforeRecovery()
+      if (!getState().stopUnconfirmed || context().conversationId !== conversation) return
+      if (await api.recover() && context().conversationId === conversation) dispatch({ type: 'turn_recovered' })
+    } catch (error) { showToast(errorMessage(error)) }
+    finally { recovering = false }
+  }
+
+  return { cancel, recover, ask, answer, provideSecrets, sendAfterTurn, clearAfterTurn }
 }

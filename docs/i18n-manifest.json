@@ -18,7 +18,7 @@
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
       "enHash": "3556a0f6e8031d81d0e727e45f423f7ef74efd217b1420301a266b3042e4b89c",
-      "zhHash": "ded06319995d7c0eca555170b9603cc1ee2ba72ac95bc2aeb059fd47dae57e22"
+      "zhHash": "76fa5215629d68f61800ab5f163497942f13c1966652865b959b143eb666a980"
     },
     {
       "en": "docs/live-check.md",
@@ -77,8 +77,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "58e68496277fff7d8457f5d44e0fe608c04c48e52501bee4f690173934e74947",
-      "zhHash": "7bca1bdb53f5caafcb1b40118c00a5fca9727d411af71df43d1f0367a7e9d344"
+      "enHash": "379275b1518ed47a657ee66c07b73b5d87f61cb2085b30145268df29889a9574",
+      "zhHash": "7924ce41308cf9b5196f52f8870257b9c2348375c8517c322fc099cca84708af"
     },
     {
       "en": "docs/architecture-health.md",
@@ -105,10 +105,16 @@
       "zhHash": "b605673f39e0ae5ffcc1bc7a6f1e199c3fdda8642fd3c3bfbb1c2b5556d4eaf1"
     },
     {
+      "en": "docs/memory-owner-isolation.md",
+      "zh": "docs/memory-owner-isolation.zh-CN.md",
+      "enHash": "b5781e74d50123ff146022f41b2f2619189c24f86c0d39f9689bc4e39619c09e",
+      "zhHash": "e80eea9d3c2aeecc61bcb81d56dd462b262e84ad7ad55b0ca90af14ab0a06a0a"
+    },
+    {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "2b8b756678c4db72a731e54bb065f3a453571c8183814a15d6fe51e711e1a7d2",
-      "zhHash": "04e76e0e35886d866d000473d4ef991b3dc8a425cc2def676751d83723ba796c"
+      "enHash": "b12bc7dbedc82ad4a540149208eff0ca6759b9e3302b609ab50553c34fbf0d43",
+      "zhHash": "b9b0a5f14f4f78e0577046349400bf4a7d908b6ea01b1d05b566ec2b425886cc"
     },
     {
       "en": "docs/logging-design.md",
@@ -122,6 +128,11 @@
     "build/icons/README.txt"
   ],
   "sourceReports": [
+    {
+      "path": "docs/qa-memory-latency-20261119.zh-CN.md",
+      "locale": "zh-CN",
+      "sha256": "41bf616506c196c8211171fd4233dc76aed6f70be79cd717dcb14ca7994bccf8"
+    },
     {
       "path": "docs/qa-desktop-island-interaction-20261108.md",
       "locale": "zh-CN",

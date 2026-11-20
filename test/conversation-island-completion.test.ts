@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { initialState, reduce } from './fixtures/task-window.ts'
+import { deskCard } from '../src/renderer/island-desk-card.ts'
 import { islandView } from '../src/renderer/island-view.ts'
 import { historyMessages, catMood } from '../src/renderer/selectors.ts'
 import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
@@ -112,4 +113,16 @@ test('task-result turns preserve intentional silence but flag unfinished work af
   state = reduce(state, { type: 'turn_end', stopReason: 'end_turn', finalReply: false, at: 120 })
   assert.equal(islandView(state).label, '未完成')
   assert.match(state.messages.at(-1)!.text, /没有生成最终回复/)
+})
+
+test('the island keeps elapsed time during Stop and opens recovery without offering another prompt', () => {
+  const stopping = reduce(start(), { type: 'turn_stopping', confirmed: true })
+  assert.equal(islandView(stopping).startedAt, 100)
+  assert.equal(catMood(stopping), 'thinking')
+  const stopped = reduce(stopping, { type: 'turn_end', at: 8100, stopReason: 'cancel_unconfirmed' })
+  const view = islandView(stopped)
+  assert.equal(view.mood, 'error')
+  assert.deepEqual(deskCard(view)?.actions.map(button => button.act.kind), ['open'])
+  const setup = reduce(stopped, { type: 'ready', info: { mode: 'setup', cwd: '/test', model: '', problem: 'no-key' } })
+  assert.equal(setup.stopUnconfirmed, false)
 })

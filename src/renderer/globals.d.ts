@@ -165,6 +165,7 @@ interface AgentApi extends DraftApi {
   moveImages: Invoke<'images:move'>
   steer: Invoke<'agent:steer'>
   cancel: Invoke<'agent:cancel'>
+  recover: Invoke<'agent:recover'>
   newSession: Invoke<'agent:new-session'>
   setConfig: Invoke<'agent:set-config'>
   respondPermission: Invoke<'agent:permission'>

@@ -2,7 +2,7 @@ import { createDshLifecycle, type DshLifetime } from './dsh-lifecycle.ts'
 import { emitDiagnostic, emitDiagnosticFailure } from '../diagnostics/node/context.ts'
 import { createConversationSession } from './conversation-session.ts'
 import { createForegroundRequests, ForegroundRequestRetired } from './foreground-requests.ts'
-import { sameContext } from '../shared/conversation-context.ts'
+import { sameContext, type ConversationContext } from '../shared/conversation-context.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 import type { IpcResults } from '../shared/ipc-results.ts'
 import { createConfigActions } from './config-actions.ts'
@@ -23,7 +23,7 @@ import path from 'node:path'
 import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { createMemoryHostClient } from './memory-host-client.ts'
-import { MemoryOwnerUnavailable } from './remote-memory-channel.ts'
+import { createDesktopMemoryOwner } from './desktop-memory-owner.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
 import { foregroundMemoryScope, memoryProjectScope } from './memory-project.ts'
 import { createMemoryHostRecovery } from './memory-host-recovery.ts'
@@ -160,16 +160,27 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let imageStore!: ReturnType<typeof createImageStore>
   /** The user's MCP servers, encrypted where they hold keys (mcp-config.ts). */
   let mcpStore!: ReturnType<typeof createMcpConfigStore>
-  /** Authenticated client of the plugin owner; Viva owns no memory storage or domain runtime. */
-  const memory = createMemoryHostClient((method, input) => {
-    const bridge = dsh.current
-    if (!bridge) return Promise.reject(new MemoryOwnerUnavailable())
-    return bridge.memory.call(method, input)
-  }, () => dsh.current?.memory.state(), (work, options) => {
-    const bridge = dsh.current
-    if (!bridge) return Promise.reject(new MemoryOwnerUnavailable())
-    return bridge.memory.readBatch(work, options)
+  const embeddingRoot = path.extname(APP_ROOT) === '.asar'
+    ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
+  const embedding = { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime') }
+  const memoryRoot = path.join(userData, 'memory')
+  const memoryOwner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes }, {
+    onReady: () => { scheduleRuns?.wake() },
+    onChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
+    onNotice: notice => {
+      if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
+      try { applyChange('memory.changed', { revision: notice.revision }, () => undefined) }
+      finally { emitToRenderer({ type: 'memory_changed' }) }
+    },
+    onProjection: () => emitToRenderer({ type: 'memory_changed' }),
+    onContextUsed: notice => {
+      const context = sessions.context()
+      if (notice.session === context.sessionId && notice.conversation === context.conversationId && notice.pushed.length) {
+        emitToRenderer({ type: 'memory_context', injected: [{ at: notice.at, pushed: notice.pushed }], context })
+      }
+    },
   })
+  const memory = createMemoryHostClient(memoryOwner.channel.call, memoryOwner.channel.state, memoryOwner.channel.readBatch)
   const memoryCoordination = memory
   /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
   let traceDb: ReturnType<typeof openTraceDb> | null = null
@@ -208,12 +219,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The user's MCP servers. */
   let personal!: ReturnType<typeof createPersonal>
   /** The foreground turn in progress. */
-  let turn = { active: false, startedAt: 0 }
+  let turn = { active: false, startedAt: 0, id: '', by: '', stopping: false }
   const foregroundRequests = createForegroundRequests()
-  const pendingHumanPrompts = new Map<string, { fingerprint: string, sources: readonly string[], started(): boolean, promise: Promise<IpcResults['agent:prompt']> }>()
+  const pendingHumanPrompts = new Map<string, { fingerprint: string, turnId: string, context(): ConversationContext, sources: readonly string[], started(): boolean, promise: Promise<IpcResults['agent:prompt']> }>()
   let closed = false
   const knownUnsentPrompts = new Set<string>()
-  let humanAdmission: { started: boolean, completed: Promise<void>[], delivered(): void, current(): boolean, recovered(): void } | null = null
+  let humanAdmission: { turnId: string, started: boolean, completed: Promise<void>[], delivered(): void, current(): boolean, recovered(): void } | null = null
   function retireForegroundRequests() {
     try {
       if (!closed) knownUnsentPrompts.clear()
@@ -227,12 +238,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     } finally { foregroundRequests.invalidate() }
   }
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
+  // The stopped session still owns its renderer history. Its native binding is retired.
+  let stoppedContext: ConversationContext | null = null
   const sessions = createConversationSession({
     history: () => historyDb,
     agent: () => dsh.current,
     info: () => lastInfo,
     setInfo: (info) => { lastInfo = info },
-    isBusy: () => turn.active,
+    isBusy: () => turn.active || stoppedContext !== null,
     carryRevision: () => historyDb.fileErasureRevision(),
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
@@ -241,6 +254,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       syncProjectView()
     },
   })
+
+  const rendererContext = () => stoppedContext?.conversationId === sessions.current().id ? stoppedContext : sessions.context()
 
   /** A push for the window, numbered by the event core (a transient one: what changes state goes through apply). */
   function emitToRenderer(event: HostEvent) {
@@ -300,10 +315,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
   const mayUseProjectEvidence = memoryCoordination.allowsEvidence
 
-  type DshContext = { config: Config, cwd: string, resumeSessionId: string | null }
+  type DshContext = { config: Config, cwd: string, resumeSessionId: string | null, carryHistory?: boolean }
   const dsh = createDshLifecycle({
-    beforeStart: async ({ config }: DshContext, isCold) => {
-      const memoryRoot = path.join(userData, 'memory')
+    beforeStart: ({ config }: DshContext, isCold) => memoryOwner.prepare(async () => {
       if (!fs.existsSync(path.join(memoryRoot, 'memory.db'))) return
       const { eraseColdNativeCopies, PendingNativePublication } = await import('../../plugins/memory/lib/native/maintenance.ts')
       const root = dshHomeOf(config)
@@ -325,7 +339,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (error instanceof PendingNativePublication) throw error
         emitDiagnostic({ event: 'operation.progress', operation: 'memory.forget', stage: 'waiting', reason: 'cleanup_pending' })
       }
-    },
+    }),
     create: ({ config, cwd }: DshContext, lifetime) => {
       return createBridge(config, cwd, lifetime)
     },
@@ -341,7 +355,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         await memory.recordSession(started.sessionId)
         await bindSessionProject(started.sessionId, project)
       }
-      if (sameProject && (rebuild || (!started.resumed && memory?.epoch() > 0 && historyDb.get(old.id)))) await storeSessionCarry(old.id)
+      if (sameProject && (context.carryHistory || rebuild || (!started.resumed && memory?.epoch() > 0 && historyDb.get(old.id)))) await storeSessionCarry(old.id)
+      stoppedContext = null
       emitToRenderer({ type: 'ready', info: sameProject ? info : { ...info, conversationId: sessions.current().id, topicId: sessions.topicId(), remembersHistory: false } })
       wakeEffects()
       syncProjectView()
@@ -362,7 +377,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (left) endRequests({ type: 'turn_end', stopReason: 'cancelled' }, left)
     },
     onCrash: ({ message }, delay) => {
-      turn = { active: false, startedAt: 0 }
+      turn = { active: false, startedAt: 0, id: '', by: '', stopping: false }
       emitDiagnosticFailure('process', message, { stage: 'closed' })
       emitToRenderer({ type: 'error', message: delay === null
         ? t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message })
@@ -489,9 +504,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     // With a company registry plugins cannot be kept to, dsh gets a pnpm that installs nothing (pnpm-launcher.ts).
     const refuse = () => { pnpmCommand = refusingLauncher({ dir: path.join(userData, 'bin'), message: t('main.plugin-source.unpinned') }) }
     try {
-      const embeddingRoot = path.extname(APP_ROOT) === '.asar' ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
       const { plugins, problems } = resolvePlugins({ codeRoot: CODE_ROOT, userData, dshVersion: installedDshVersion(APP_ROOT), permission: permissionNow(),
-        memory: { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime'), dailyNotes } })
+        memory: { ...embedding, dailyNotes } })
       pluginProblems = problems
       problems.forEach(({ name }) => emitDiagnostic({ event: 'operation.progress', operation: 'plugin', stage: 'unavailable', reason: 'validation_failed', identities: { resourceId: name } }))
       pnpmCommand = pnpmLauncher({ dir: path.join(userData, 'bin'), appRoot: APP_ROOT, runtime: config.runtime })
@@ -564,7 +578,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
 
   let memoryHostEffects: ReturnType<typeof createMemoryHostEffects> | undefined
   const memoryHostRecovery = createMemoryHostRecovery({
-    state: () => dsh.current?.memory.state(),
+    state: memoryOwner.channel.state,
     recover: async () => { await memoryWithdrawal.recover(); await memoryHostEffects?.recover() },
     onError: error => emitDiagnosticFailure('memory.recover', error, { stage: 'waiting' }),
   })
@@ -574,6 +588,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   function createBridge(config: Config, cwd: string, lifetime: DshLifetime): Bridge {
     return createAcpBridge({
       prewarmSessions: true, memoryRequired: true,
+      memoryOwner,
       dshBin: config.dshBin,
       nodeBin: config.nodeBin,
       ...prepareProfile(config),
@@ -581,7 +596,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
       mcpServers: () => personal.mcpServers(),
       configActions: configActions(config),
-      allowSession: async (id, _transportReady, _isTask, targetCwd) => memory.allowsSession(id, await memoryProjectFor(id, targetCwd)),
+      allowSession: async (id, transportReady, _isTask, targetCwd) => transportReady && await memory.allowsSession(id, await memoryProjectFor(id, targetCwd)),
       onSessionCreated: async (id, targetCwd, parent) => {
         await memory.recordSession(id)
         if (parent && !await memory.call('inheritFork', { args: [parent, id, await projectOfSession(parent), memoryProjectScope(targetCwd), true] })) throw new Error(t('main.memory.context.stale'))
@@ -619,19 +634,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         }
       },
       readyMemory: () => { scheduleRuns?.wake(); feedSourceRuns?.wake() },
-      memoryStateChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
-      memoryNotice: notice => {
-        if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
-        try { applyChange('memory.changed', { revision: notice.revision }, () => undefined) }
-        finally { emitToRenderer({ type: 'memory_changed' }) }
-      },
-      memoryProjection: () => emitToRenderer({ type: 'memory_changed' }),
-      memoryContextUsed: notice => {
-        const context = sessions.context()
-        if (notice.session === context.sessionId && notice.conversation === context.conversationId && notice.pushed.length) {
-          emitToRenderer({ type: 'memory_context', injected: [{ at: notice.at, pushed: notice.pushed }], context })
-        }
-      },
       allowGeneralQuestion: async (session, turn, cards, _waiting, phase) => turn ? memory.call('authorizeGeneralQuestion', { args: [session, turn, cards,
         session === sessions.current().sessionId ? sessions.current().id : historyDb.bySession(session)?.id ?? session,
         session === sessions.current().sessionId ? foregroundMemoryScope(currentMemoryProject()) : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
@@ -726,6 +728,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (typeof taskId === 'string' && unattended.owns(taskId)) return unattended.receive({ ...event, taskId } satisfies TaskEvent)
         const task = taskEventOf(event)
         if (task) return taskSignals.report(task)
+        if (event.type === 'turn_stopping') { turn.stopping = true; retireForegroundRequests() }
+        if (event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed') {
+          const selected = sessions.current()
+          if (selected.sessionId) {
+            stoppedContext = sessions.context()
+            try { historyDb.detachNativeSession(selected.id, selected.sessionId) }
+            catch (error) { emitDiagnosticFailure('conversation.cancel', error, { stage: 'checkpoint' }) }
+            sessions.select({ ...selected, sessionId: null })
+          }
+        }
         emitToRenderer(event)
         if (event.type === 'turn_end' || event.type === 'error') endRequests(event)
         if (event.type === 'turn_end') return signal({ kind: 'agent.turn_ended', stopReason: typeof event.stopReason === 'string' ? event.stopReason : undefined })
@@ -869,8 +881,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         || agent.isSwitching() || turn.active || !held()) return false
       const claim = foregroundRequests.reserveReport(reports.map(item => item.reportId))
       if (!claim) return false
-      turn = { active: true, startedAt: Date.now() }
-      emitToRenderer({ type: 'turn_started', by: 'task', context })
+      turn = { active: true, by: 'task', stopping: false, startedAt: Date.now(), id: randomUUID() }
+      emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'task', context })
       void agent.prompt(note, [], { request: false, held: () => claim.current() && held() }).catch((err: Error) => {
         if (!claim.current() || dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
@@ -910,19 +922,21 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     return dsh.current
   }
 
-  async function startBridge(): Promise<AgentInfo | null> {
+  async function startBridge({ carryHistory = false }: { carryHistory?: boolean } = {}): Promise<AgentInfo | null> {
     if (dsh.isQuitting()) return null
     const config = currentConfig()
     if (config.problem) {
+      stoppedContext = null
       const info = setupInfo(config)
       emitToRenderer({ type: 'ready', info })
       return info
     }
     fs.mkdirSync(config.cwd, { recursive: true })
     const context = sessions.startingIn(config.cwd)
-    if (memoryProjectScope(sessions.current().cwd)?.id !== memoryProjectScope(context.cwd)?.id) context.resumeSessionId = null
+    carryHistory ||= stoppedContext !== null
+    if (carryHistory || memoryProjectScope(sessions.current().cwd)?.id !== memoryProjectScope(context.cwd)?.id) context.resumeSessionId = null
     try {
-      const started = await dsh.start({ config, ...context })
+      const started = await dsh.start({ config, ...context, carryHistory })
       return started ? lastInfo : null
     } catch (err) {
       emitDiagnosticFailure('startup', err)
@@ -940,6 +954,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** A new key (or none) means a different agent, so the conversation starts over. */
   async function restartWithNewConversation() {
     await stopBridge()
+    stoppedContext = null
     sessions.reset()
     return startBridge()
   }
@@ -1004,13 +1019,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:info', () => lastInfo)
     ipcMain.handle('agent:snapshot', (): RendererSnapshot => {
       if (sessions.isChanging()) throw new Error('Conversation selection is changing; retry initialization')
-      const selected = sessions.current(), context = sessions.context()
+      const selected = sessions.current(), context = rendererContext()
       const found = historyDb.get(selected.id)
       // No await between the history read and publication cutoff: both share this boundary.
       const history = found ? { id: found.conversation.id, updatedAt: found.conversation.updatedAt,
         createdAt: found.conversation.createdAt, parentId: found.conversation.parentId,
         messages: found.messages, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
-      return { ...rendererStream.snapshot(selected.id, context), context, history,
+      return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null), context, history, stopUnconfirmed: Boolean(stoppedContext),
+        activeTurn: turn.active && !stoppedContext ? { id: turn.id, by: turn.by, startedAt: turn.startedAt, stopping: turn.stopping } : null,
         info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
     })
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
@@ -1021,13 +1037,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       emitToRenderer({ type: 'waits', ...(dsh.current?.sessionWaits() ?? { permissions: [], questions: [], secrets: [] }), context })
       return true
     })
-    ipcMain.handle('agent:prompt', (_event, text, images = [], operation, feedItemId) => {
+    ipcMain.handle('agent:prompt', (_event, text, images = [], operation, feedItemId, turnId) => {
       if (memoryBusy()) throw new Error(t('memory.read.unavailable'))
       if (sessions.isChanging()) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
       // With pictures the words may be left out.
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
       const pictures = imagesForPrompt(imageStore, images)
       const agent = requireBridge()
+      if (stoppedContext || agent.needsRecovery()) throw new Error(t('conversation.stop.unconfirmed'))
       // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
       // keeps sending off while it switches; this holds for every other way in (the desktop island) too.
       if (agent.isSwitching()) throw new Error(switchingMessage())
@@ -1038,7 +1055,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // canonical replay arrays still undergo the owner's exact source checks.
       const following = foregroundRequests.busy() && (Array.isArray(operation) || typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent')
       if ((turn.active || foregroundRequests.busy()) && !foregroundRequests.deferred() && !retrying && !following) throw new Error(t('main.main.wait.for.this.turn.to.finish.before'))
-      return sendHumanPrompt(question, pictures, operation, feedItemId)
+      return sendHumanPrompt(question, pictures, operation, feedItemId, turnId)
     })
     /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
     ipcMain.handle('agent:steer', async (_event, text, operation) => {
@@ -1058,8 +1075,32 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
       return deliverHumanSteer(words, deliveryId, agent, origin, held, selected)
     })
-    ipcMain.handle('agent:cancel', () => { retireForegroundRequests(); return dsh.current?.cancel() })
+    ipcMain.handle('agent:cancel', async (_event, target) => {
+      const agent = dsh.current
+      if (!agent || !sameContext(target, sessions.context())) return false
+      if (turn.active && turn.id !== target.turnId) return false
+      const queued = [...pendingHumanPrompts.values()].some(prompt => prompt.turnId === target.turnId
+        && !prompt.started() && sameContext(target, prompt.context()))
+      if (!turn.active && !queued) return false
+      if (await agent.cancel(target.sessionId)) return true
+      if (agent !== dsh.current || !sameContext(target, sessions.context()) || turn.active && turn.id !== target.turnId) return false
+      retireForegroundRequests()
+      if (turn.active) finishForegroundTurn()
+      emitToRenderer({ type: 'turn_end', stopReason: 'cancelled', context: sessions.context() })
+      return true
+    })
+    let foregroundRecovery: Promise<AgentInfo | null> | undefined
+    ipcMain.handle('agent:recover', async () => {
+      if (foregroundRecovery) return foregroundRecovery
+      if (!stoppedContext && !dsh.current?.needsRecovery()) return lastInfo
+      foregroundRecovery = (async () => {
+        await stopBridge()
+        return startBridge({ carryHistory: true })
+      })()
+      try { return await foregroundRecovery } finally { foregroundRecovery = undefined }
+    })
     ipcMain.handle('agent:new-session', async () => {
+      if (stoppedContext) throw new Error(t('conversation.stop.unconfirmed'))
       if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
       // The bridge's onSessionCreated binds owner metadata before returning the acquired session.
       // Repeating it after selection commits can turn a successful switch into an unrelated recovery failure.
@@ -1125,7 +1166,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   /** A retained prompt keeps its original selection and operation through a report turn. */
-  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string): Promise<IpcResults['agent:prompt']> {
+  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string, turnId: string = randomUUID()): Promise<IpcResults['agent:prompt']> {
     const agent = requireBridge()
     let origin = sessions.context()
     const retained = foregroundRequests.deferred()
@@ -1155,7 +1196,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const selected = () => generation() && dsh.current === agent && !sessions.isChanging() && !agent.isSwitching()
       && !dsh.isQuitting() && sameContext(origin, sessions.context())
     const lifetime = foregroundRequests.human(selected, async current => {
-      const own = { started: false, completed: [] as Promise<void>[], delivered() {
+      const own = { turnId, started: false, completed: [] as Promise<void>[], delivered() {
         own.started = true
         nativeStarted = true
         // This callback runs after connection.prompt. A failed receipt must not
@@ -1203,7 +1244,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
     const promise = admitted ?? lifetime
     if (admitted) void lifetime.then(accepted, refused)
-    const pending = { fingerprint, sources, started: () => nativeStarted, promise }
+    const pending = { fingerprint, turnId, context: () => origin, sources, started: () => nativeStarted, promise }
     pendingHumanPrompts.set(key, pending)
     void lifetime.finally(() => {
       if (pendingHumanPrompts.get(key) === pending) pendingHumanPrompts.delete(key)
@@ -1262,7 +1303,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       for (const sourceId of operation) { await recordDeliveredSource(sourceId); assertAdmitted() }
     }
     assertAdmitted()
-    turn = { active: true, startedAt: Date.now() }
+    turn = { active: true, by: 'user', stopping: false, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }
+    emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'user', context: sessions.context() })
     const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()
     const held = carried || feedCurrent || admission ? () => (!carried || historyDb.fileErasureRevision() === carryRevision)
@@ -1625,8 +1667,9 @@ ${question}` : question
       // A report waiting for this conversation (task-reports.ts) may go now.
       setCurrent: sessions.select,
       agentInfo: () => lastInfo,
+      historySourceSession: () => rendererContext().sessionId,
       validateSave: (id, mark) => {
-        if (mark && !sameContext(mark.context, sessions.context())) throw new Error('Conversation save belongs to an old selection')
+        if (mark && !sameContext(mark.context, rendererContext())) throw new Error('Conversation save belongs to an old selection')
         rendererStream.validateSave(id, mark)
       },
       historySaved: rendererStream.save,
@@ -1843,6 +1886,7 @@ ${question}` : question
   function close() {
     retireForegroundRequests()
     closed = true
+    void memoryOwner.close().catch(error => emitDiagnosticFailure('shutdown', error))
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
     memoryHostRecovery.close()
@@ -1876,6 +1920,7 @@ ${question}` : question
       if (added.made) feedChanged()
     },
     agentPid: () => dsh.current?.pid() ?? null,
+    memoryOwnerPid: memoryOwner.pid,
     publishAutomation: (value: unknown) => {
       if (!host.automation) throw new Error('Only available to external automation')
       if (!value || typeof value !== 'object') throw new Error('Invalid automation event')
@@ -1889,8 +1934,11 @@ ${question}` : question
     markQuitting() {
       dsh.markQuitting()
     },
-    /** Stops dsh, waiting at most a few seconds; the real release remains a barrier. */
-    stop: dsh.stopWithin,
+    /** Quitting stops both supervised processes. A regular dsh restart leaves the owner available. */
+    async stop() {
+      await dsh.stopWithin()
+      if (dsh.isQuitting()) await memoryOwner.close()
+    },
     close,
   }
 }

@@ -13,7 +13,7 @@ import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIden
 export const MEMORY_HOST_PROTOCOL = 3
 /** Business lifetime metadata, never part of the optional diagnostic envelope. */
 export const memoryHostRead = z.strictObject({ readBatchId: z.uuid(), budgetMs: z.number().positive().max(10_000) })
-export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile'])
+export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profilePage', 'profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile', 'listFiles', 'readFile'])
 export type MemoryProject = { kind: 'project', id: string }
 export type MemoryHistoryOccurrence = { segmentId: string, role: string, text: string, sourceId?: string | null, sessionId?: string | null }
 export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
@@ -29,8 +29,8 @@ export type SourceChangeInput = { operationId: string, conversation: string, ids
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
-  dreamStatus: Args<[], MemoryDreamStatus>
-  requestDream: Args<[], MemoryDreamStatus>
+  dreamStatus: Args<[operationId?: string], MemoryDreamStatus>
+  requestDream: Args<[operationId?: string], MemoryDreamStatus>
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
   readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
   setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
@@ -38,6 +38,7 @@ export interface HostMemoryApi {
   editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
   forgetFile: Args<[request: MemoryFileForgetRequest], MemoryFileMutationResult>
   undoFile: Args<[request: MemoryFileUndoRequest], MemoryFileMutationResult>
+  profilePage: Args<[project?: MemoryProject], { profile: MemoryProfile, onboarding: string, cleanupPending: number, revision: number, fileProfile: MemoryFileProfile }>
   profile: Args<[], MemoryProfile>
   fileProfile: Args<[project?: MemoryProject], MemoryFileProfile>
   revision: Args<[], number>
@@ -105,11 +106,11 @@ const empty = args(z.tuple([]))
 const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
 const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
-  profile: empty, dreamStatus: empty, requestDream: empty,
+  profile: empty, dreamStatus: args(z.tuple([z.uuid().optional()])), requestDream: args(z.tuple([z.uuid().optional()])),
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
   listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
-  fileProfile: args(z.tuple([project.optional()])),
+  profilePage: args(z.tuple([project.optional()])), fileProfile: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
   setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
   setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),

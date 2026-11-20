@@ -1,3 +1,4 @@
+import { RequestTimeout } from '../src/shared/request-budget.ts'
 import assert from 'node:assert/strict'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { test } from 'node:test'
@@ -70,7 +71,18 @@ test('automatic context returns lexical evidence before cold passage encoding an
   assert.equal(strong.hits[0]?.id, 'weekly')
 })
 
-test('slow hot query falls back to lexical evidence and its late vector cannot enter the completed turn', async t => {
+test('explicit recall during Dream returns lexical results without starting a cold embedding job', async t => {
+  const { embedder, calls } = encoder()
+  const { retrieval } = setup(t, [view('weekly', 'weekly report')], embedder)
+  const result = await retrieval.search({ query: 'weekly report', publishedVectorsOnly: true, allows })
+  assert.deepEqual(result.hits.map(hit => hit.id), ['weekly'])
+  assert.ok(result.partial)
+  assert.ok(result.reasons.includes('semantic-index-incomplete'))
+  assert.equal(calls.length, 0)
+})
+
+for (const mode of [{ automatic: true }, { publishedVectorsOnly: true }]) test(
+  `slow query falls back to lexical evidence for ${Object.keys(mode)[0]} reads`, async t => {
   const { embedder } = encoder()
   const run = embedder.embedBatch
   let finish!: () => void, querySignal: AbortSignal | undefined
@@ -84,7 +96,7 @@ test('slow hot query falls back to lexical evidence and its late vector cannot e
   assert.ok(await retrieval.prepareVectors())
   t.mock.timers.enable({ apis: ['setTimeout'] })
   try {
-    const pending = retrieval.search({ query: 'needle', automatic: true, allows })
+    const pending = retrieval.search({ query: 'needle', ...mode, allows })
     assert.ok(querySignal)
     t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticQueryTimeoutMs)
     const result = await pending
@@ -545,4 +557,132 @@ test('a tokenizer that cannot fit the contextual prefix degrades without encodin
   assert.equal(index.vectorState().active, false)
   assert.ok(inputs.every(text => text.startsWith(name.trim() + '\n\n')))
   assert.ok(inputs.length < 20)
+})
+
+test('published search skips failed and stale candidates beside an independent matching file', async t => {
+  const stale = view('stale', 'needle needle needle')
+  const stopped = view('stopped', 'needle needle needle')
+  const target = view('target', 'needle in a current file')
+  const unrelated = Array.from({ length: 120 }, (_, i) => view(`unrelated-${i}`, 'different material'))
+  const f = setup(t, [stale, stopped, target, ...unrelated])
+  const checks: string[] = []
+  const invalidations: string[] = []
+  let enabled = true
+  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash, usePublishedIndex: true,
+    onStale: file => { invalidations.push(file.id) },
+    policy: {
+      read(scope, path) {
+        checks.push(path)
+        if (!enabled && path === stopped.path) throw new Error('File unavailable')
+        return f.policy.read(scope, path)
+      },
+      list() { assert.fail('published reads must not walk authoritative files') },
+    },
+  })
+  t.after(() => retrieval.close())
+  assert.equal(retrieval.publishFiles([stale, stopped, target, ...unrelated]).accepted, 123)
+  f.views.set(stale.id, view(stale.id, 'external modification'))
+  enabled = false
+  checks.length = 0
+  const result = await retrieval.search({ query: 'needle', allows, limit: 1 })
+  assert.deepEqual(result.hits.map(hit => hit.id), [target.id])
+  assert.deepEqual(result.sourceIds, ['source-target'])
+  assert.ok(result.reasons.includes('file-changed'))
+  assert.equal(result.partial, true)
+  assert.deepEqual(new Set(invalidations), new Set([stale.id, stopped.id]))
+  assert.deepEqual(new Set(checks), new Set([stale.path, stopped.path, target.path]))
+  checks.length = 0
+  assert.deepEqual(retrieval.nodeSearch({ query: 'target', allows, limit: 1 }).nodes.map(hit => hit.id), [target.id])
+  assert.deepEqual(checks, [target.path])
+})
+
+test('published lexical refill stops once the verified candidate cap is full and clears an exhausted page', async t => {
+  const documents = Array.from({ length: 40 }, (_, n) => view(`document-${String(n).padStart(2, '0')}`, 'needle'))
+  const f = setup(t, documents)
+  const offsets: number[] = []
+  const retrieval = createMemoryFileRetrieval({ index: { ...f.index, lexicalCandidates(query, scope, limit, offset) {
+    offsets.push(offset ?? 0)
+    return f.index.lexicalCandidates(query, scope, limit, offset)
+  } }, policy: f.policy, workspaces: () => [workspace], hash, usePublishedIndex: true })
+  t.after(() => retrieval.close())
+  retrieval.publishFiles(documents)
+  const batch = { load: async () => {}, read: f.policy.read, readObservation: f.policy.read,
+    physical: () => null, managementObservation: () => null, managementRead: () => null, observedRevision: () => undefined, incomplete: () => false }
+  const highScore = await retrieval.search({ query: 'needle', allows, limit: 1, minScore: 1 }, batch)
+  assert.deepEqual(offsets, [0])
+  assert.equal(highScore.hits.length, 0)
+  assert.ok(highScore.reasons.includes('candidate-limit'))
+
+  offsets.length = 0
+  const lastId = f.index.lexicalCandidates('needle', { workspaces: [workspace] }, 40).rows.at(-1)!.file.id
+  const complete = await retrieval.search({ query: 'needle', allows: view => view.id === lastId, limit: 1 }, batch)
+  assert.deepEqual(offsets, [0, 32])
+  assert.deepEqual(complete.hits.map(hit => hit.id), [lastId])
+  assert.ok(!complete.reasons.includes('candidate-limit'))
+})
+
+test('published relations only verify indexed edges and their trusted rename aliases', t => {
+  const oldPath = 'digest/wiki/old.md'
+  const root = view('root', `[[${oldPath}]] [[digest/wiki/hidden.md]] [[digest/wiki/stale.md]]`)
+  const target = view('renamed', 'target')
+  const hidden = view('hidden', '[[digest/wiki/root.md]]')
+  const stale = view('stale', '[[digest/wiki/root.md]]')
+  const unrelated = view('unrelated', 'anything')
+  const f = setup(t, [root, target, hidden, stale, unrelated])
+  const checks: string[] = []
+  const retrieval = createMemoryFileRetrieval({ index: f.index, workspaces: () => [workspace], hash, usePublishedIndex: true,
+    resolveAlias: (_, path) => path === oldPath ? target.path : null,
+    aliasesFor: (_, path) => path === target.path ? [oldPath] : [],
+    policy: {
+      read(scope, path) { checks.push(path); return f.policy.read(scope, path) },
+      list() { assert.fail('published relations must not walk authoritative files') },
+    },
+  })
+  t.after(() => retrieval.close())
+  retrieval.publishFiles([root, target, hidden, stale, unrelated])
+  f.views.set(stale.id, view(stale.id, 'lost binding'))
+  checks.length = 0
+  const visible = retrieval.relations({ workspace, path: root.path, allows: view => view.id !== hidden.id })!
+  assert.deepEqual(visible.outlinks.neighbors.map(item => item.id), [target.id])
+  assert.equal(visible.outlinks.visibleCount, 1)
+  assert.equal(visible.inlinks.visibleCount, 0)
+  assert.deepEqual(visible.sourceIds, ['source-root', 'source-renamed'])
+  assert.deepEqual(new Set(checks), new Set([root.path, target.path, hidden.path, stale.path]))
+  const back = retrieval.relations({ workspace, path: oldPath, allows })!
+  assert.deepEqual(back.inlinks.neighbors.map(item => item.id), [root.id])
+})
+
+test('the automatic context deadline leaves a cold query worker warming until its own inference deadline', async t => {
+  const { embedder } = encoder()
+  const { retrieval } = setup(t, [view('a', 'needle')], embedder)
+  retrieval.sync()
+  assert.ok(await retrieval.prepareVectors())
+  const caller = new AbortController()
+  let signal: AbortSignal | undefined, release!: () => void
+  embedder.embedBatch = async (_inputs, infer) => { signal = infer; await new Promise<void>(resolve => { release = resolve }); return [unit(0)] }
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const pending = retrieval.search({ query: 'needle', automatic: true, allows, signal: caller.signal })
+  try {
+    assert.ok(signal)
+    caller.abort(new RequestTimeout())
+    t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
+    await pending
+    assert.equal(signal.aborted, false)
+    retrieval.close()
+    assert.equal(signal.aborted, true)
+  } finally { release() }
+})
+
+test('vector preparation allows a corpus to exceed one inference deadline across completed batches', async t => {
+  const { embedder } = encoder()
+  const { retrieval, index } = setup(t, [view('a', 'first'), view('b', 'second'), view('c', 'third')], embedder)
+  retrieval.sync()
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  embedder.embedBatch = async (inputs, signal) => {
+    t.mock.timers.tick(4_000)
+    assert.equal(signal?.aborted, false)
+    return inputs.map(() => unit(0))
+  }
+  assert.equal(await retrieval.prepareVectors(), true)
+  assert.equal(index.vectorState().active, true)
 })

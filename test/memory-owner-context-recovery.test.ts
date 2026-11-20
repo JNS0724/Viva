@@ -15,7 +15,7 @@ async function original(owner: ReturnType<typeof openMemoryOwner>, sessionId: st
   return { messageId, content: text }
 }
 function bind(owner: ReturnType<typeof openMemoryOwner>, ticket: MemoryContextRecoveryTicket) {
-  const input = { ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
+  const input = { sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
   owner.bindContextRecovery(input)
   return { ...input, baseSurfaceHash: ticket.baseSurfaceHash, persisted: true as const }
 }
@@ -43,6 +43,8 @@ test('context recovery drains physical permits and only replaces readsets after 
     assert.equal(owner.contextGeneration(session), 0)
     assert.throws(() => owner.acquireSend('pending', { session }, 'old'), /generation/)
     const ack = bind(owner, ticket)
+    assert.throws(() => owner.bindContextRecovery({ ...ack, sessionId: 'other' }), /Stale context recovery ticket/)
+    await assert.rejects(owner.commitContextRecovery({ ...ack, sessionId: 'other' }, () => true), /conflicts/)
     await assert.rejects(owner.commitContextRecovery({ ...ack, replacementHash: 'wrong' }, () => true), /conflicts/)
     await assert.rejects(owner.commitContextRecovery(ack, () => false), /Native context/)
     assert.equal(owner.contextGeneration(session), 0)

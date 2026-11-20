@@ -9,6 +9,7 @@ import type { DailyMemorySettings } from './memory-notes.ts'
 import type { MemoryProvenance, MemorySource, MemoryStore } from './ports/store.ts'
 import { todayAt } from './memory-calendar.ts'
 import type { DocumentSourceCut, DocumentSourceRef } from './ports/documents.ts'
+import type { FileEvidenceCurrent } from './memory-dispatch.ts'
 import type { MemorySpan } from '../contracts/memory-contract.ts'
 
 const DAILY = 'daily'
@@ -27,7 +28,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
   allowsReferences?: (refs: readonly DocumentSourceRef[]) => boolean,
   projectSource?: (source: MemorySource, ref: DocumentSourceRef) => { text: string, spans?: MemorySpan[] },
   projectText?: (workspace: string, text: string) => string,
-  assistantContextCurrent: (context: MemoryProvenance) => boolean,
+  assistantContextCurrent: (context: MemoryProvenance, acceptsFiles?: FileEvidenceCurrent) => boolean,
   calculate: Calculate,
   mutate?: <T>(write: () => T) => Promise<T>,
   diagnostics?: DiagnosticPort,
@@ -52,7 +53,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     else if (flush && !current.payload) effects.amend(current, { flush })
   }
   const wake = () => { void effects.wake() }
-  function record(session: string, ids: readonly string[], assistant: string) {
+  function record(session: string, ids: readonly string[], assistant: string, acceptsFiles?: FileEvidenceCurrent) {
     if (!capture) return
     const sources = [...new Set(ids)].flatMap(id => {
       const source = sourceOf(id)
@@ -66,7 +67,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     // Assistant replies may restate any context the session saw. Keep that provenance, never promote the reply to independent evidence.
     // This capture stores source IDs, not the precise ranges a file read may
     // have proved. Do not widen a surviving fragment into whole-source proof.
-    const contextCurrent = assistantContextCurrent(seen) && allowsDerived(dependencies) && dependencies.every(id => readable(id))
+    const contextCurrent = assistantContextCurrent(seen, acceptsFiles) && allowsDerived(dependencies) && dependencies.every(id => readable(id))
     // A generated response may contain protected material or opaque tool
     // metadata. Suppress that copy without discarding independent human input.
     const safeAssistant = contextCurrent && sources.every(item => allowsText(assistant, item)) ? assistant : ''

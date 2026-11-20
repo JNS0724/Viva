@@ -11,7 +11,8 @@ export function createNewTopicAction({ getState, dispatch, open, focus, jump, to
   return async () => {
     const state = getState()
     if (state.switching || state.workDir.switching || state.settings.busy || state.settings.permissionBusy || state.rewind.busy) return
-    if (isBusy(state)) { toast(t("new-topic-actions.stop.the.current.task.before.starting.a")); return }
+    if (state.stopUnconfirmed) { toast(t('conversation.stop.unconfirmed')); return }
+    if (state.phase === 'stopping' || isBusy(state)) { toast(t("new-topic-actions.stop.the.current.task.before.starting.a")); return }
     const started = performance.now()
     dispatch({ type: 'new_session_pending', at: Date.now() })
     jump()

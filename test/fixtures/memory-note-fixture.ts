@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { memoryHash } from '../../src/memory/node/memory-store.ts'
 import type { MemorySource, MemoryStore } from '../../src/memory/node/memory-store.ts'
@@ -10,4 +12,17 @@ export function noteSource(store: MemoryStore, overrides: Partial<MemorySource> 
     timezone: 'Asia/Shanghai', outcome: 'note-pending', withdrawn: false, ...overrides }
   store.insertSource(source)
   return source
+}
+
+/** Recreate a rename already committed by an older release, including its day index and alias. */
+export function legacyDailyRename(store: MemoryStore, note: { workspace: string, day: string, key: string, path: string }, to: string) {
+  const root = join(store.fileRoot, note.workspace)
+  mkdirSync(dirname(join(root, to)), { recursive: true })
+  renameSync(join(root, note.path), join(root, to))
+  const index = join(root, `daily/${note.day}.md`)
+  writeFileSync(index, readFileSync(index, 'utf8').replaceAll(note.path, to))
+  store.tx(() => {
+    store.db.prepare('UPDATE memory_daily_notes SET path=?, revision=revision+1 WHERE key=?').run(to, note.key)
+    store.db.prepare('INSERT INTO memory_note_aliases VALUES(?,?,?)').run(note.workspace, note.path, note.key)
+  })
 }

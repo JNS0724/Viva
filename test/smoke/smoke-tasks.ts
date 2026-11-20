@@ -25,6 +25,18 @@ const cardState = (title: string) => `(() => {
   const card = ${cardOf(title)}
   return card ? { status: card.dataset.status, text: card.textContent, buttons: [...card.querySelectorAll('button')].map((el) => el.textContent) } : null
 })()`
+/** A failed task cannot ask for approval. Preserve the card and its own result in the CI trace. */
+async function waitingForApproval(win: SmokeWindow, title: string) {
+  const card = await until(win, `(() => {
+    const card = ${cardState(title)}
+    return card && ['waiting', 'done', 'stopped', 'error'].includes(card.status) && card
+  })()`, `#${title} waiting on its approval`)
+  if (card.status === 'waiting') return card
+  await run(win, `(${cardOf(title)}).click()`)
+  const page = await run(win, pageState)
+  const result = page.title === `#${title}` ? page.said.at(-1) : undefined
+  throw new Error(`#${title} ended before approval (${card.status}): ${card.text}${result ? ` | ${result}` : ''}`)
+}
 /** The card once its task has ended, else nothing yet. */
 const doneCard = (title: string) => `(() => { const card = ${cardState(title)}; return card?.status === 'done' && card })()`
 /** A button on the task's view of the 后台 page, by what it says (an approval's, a question's choice). */
@@ -151,7 +163,7 @@ const BIG_ASK = '把全部文档整理好，顺手接入演示服务'
  */
 async function longJobSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await startInBackground(win, BIG_ASK)
-  await until(win, `(${cardOf(BIG_ASK)})?.dataset.status === 'waiting'`, 'the task waiting on its approval')
+  await waitingForApproval(win, BIG_ASK)
   const after = await run(win, `({
     busy: document.getElementById('send-btn').dataset.busy,
     asked: ${userTexts},
@@ -232,7 +244,7 @@ const ASKS_LATER = '接入演示服务，再问我城市'
  */
 async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expect) {
   await startInBackground(win, ASKS_LATER)
-  const asking = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'waiting' && card })()`, 'the task waiting on its approval')
+  const asking = await waitingForApproval(win, ASKS_LATER)
   expect(asking.text.includes('等你处理') && asking.text.includes('去处理') && asking.buttons.length === 0,
     'the task\'s line should say it waits and lead to where it is answered, with no buttons of its own', asking)
   await run(win, `(${cardOf(ASKS_LATER)}).scrollIntoView({ block: 'center' })`)

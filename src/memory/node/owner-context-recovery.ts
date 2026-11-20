@@ -136,7 +136,7 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
   function bindContextRecovery(input: BindMemoryContextRecovery): MemoryContextRecoveryTicket {
     requireReady()
     const item = saved(input.ticketId)
-    if (!input.replacementMessageId || !input.replacementHash || latest(item.sessionId)?.ticketId !== item.ticketId) throw new Error('Stale context recovery ticket')
+    if (input.sessionId !== item.sessionId || !input.replacementMessageId || !input.replacementHash || latest(item.sessionId)?.ticketId !== item.ticketId) throw new Error('Stale context recovery ticket')
     if (item.state !== 'prepared') {
       if (item.replacementMessageId !== input.replacementMessageId || item.replacementHash !== input.replacementHash) throw new Error('Context recovery replacement conflicts')
       return ticket(item)
@@ -146,13 +146,14 @@ export function createOwnerContextRecovery({ db, store, hash, mutate, requireRea
     persist(item)
     return ticket(item)
   }
-  async function commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean): Promise<MemoryContextRecoveryTicket> {
+  async function commitContextRecovery(input: CommitMemoryContextRecovery, stillCurrent: () => boolean | Promise<boolean>): Promise<MemoryContextRecoveryTicket> {
     requireReady()
-    return mutate(() => {
+    return mutate(async () => {
+      const confirmed = stillCurrent()
+      if (!(typeof confirmed === 'boolean' ? confirmed : await confirmed)) throw new Error('Native context changed before recovery commit')
       requireReady()
       const item = saved(input.ticketId)
-      if (!stillCurrent()) throw new Error('Native context changed before recovery commit')
-      if (input.persisted !== true || item.state === 'prepared' || item.baseSurfaceHash !== input.baseSurfaceHash
+      if (input.sessionId !== item.sessionId || input.persisted !== true || item.state === 'prepared' || item.baseSurfaceHash !== input.baseSurfaceHash
         || item.replacementMessageId !== input.replacementMessageId || item.replacementHash !== input.replacementHash
         || latest(item.sessionId)?.ticketId !== item.ticketId) throw new Error('Context recovery acknowledgement conflicts')
       if (item.state === 'committed') return ticket(item)

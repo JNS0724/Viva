@@ -288,3 +288,36 @@ test('an old steer receipt cannot resend words or mark a reused message id in th
   assert.equal(h.state().messages[0]?.failed, undefined)
   assert.deepEqual(h.toasts, [])
 })
+
+test('stop feedback appears before IPC and a late denial cannot reset a newer turn', async () => {
+  const reply = deferred<boolean>()
+  const captured: Array<Parameters<AgentApi['cancel']>[0]> = []
+  const h = harness({ cancel: target => { captured.push(target); return reply.promise } })
+  h.change({ conversationId: 'topic', info: { ...h.state().info, sessionId: 'active' } })
+  h.dispatch({ type: 'agent_turn_started', at: 200, turnId: 'first' })
+  const stopping = h.actions.cancel()
+  assert.equal(h.state().phase, 'stopping')
+  assert.deepEqual(captured, [{ conversationId: 'topic', sessionId: 'active', turnId: 'first' }])
+  assert.equal(h.actions.ask('preserve this unsent draft'), false)
+  h.dispatch({ type: 'agent_turn_started', at: 201, turnId: 'second' })
+  reply.resolve(false)
+  await stopping
+  assert.equal(h.state().phase, 'working')
+  assert.equal(h.state().turn?.id, 'second')
+})
+
+test('unconfirmed stop prevents sending until the user recovers the runtime', async () => {
+  const recovery = deferred<AgentInfo | null>()
+  const h = harness({ recover: () => recovery.promise })
+  h.change({ conversationId: 'topic', info: { ...h.state().info, sessionId: 'old' } })
+  h.dispatch({ type: 'agent_turn_started', at: 200, turnId: 'stuck' })
+  h.dispatch({ type: 'turn_stopping' })
+  h.dispatch({ type: 'turn_end', at: 8_200, stopReason: 'cancel_unconfirmed' })
+  assert.equal(h.state().phase, 'idle')
+  assert.equal(h.actions.ask('keep this draft editable'), false)
+  const recovering = h.actions.recover()
+  h.change({ info: { ...h.state().info, sessionId: 'replacement' } })
+  recovery.resolve(h.state().info)
+  await recovering
+  assert.equal(h.actions.ask('send the recovered draft'), true)
+})

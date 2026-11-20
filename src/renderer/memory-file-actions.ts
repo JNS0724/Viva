@@ -2,12 +2,45 @@ import type { MemoryManagedFileVersion, MemoryFileListResult } from '../memory/c
 import type { MemoryFileDetailView } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS } from '../shared/text-limits.ts'
 import { t } from '../shared/i18n/translate.ts'
+import { createRequestBudget, MEMORY_PAGE_READ_LIMIT, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
+import type { MemoryReadOptions } from '../shared/request-budget.ts'
 import { canEditMemoryFile, canForgetMemoryFile, memoryFilePageOpen, sameMemoryFile, sameMemoryFileSelection } from './memory-file-state.ts'
 import type { MemoryFileDraft, MemoryFileEditor, MemoryFileSelection } from './action-types.ts'
 
 const SEARCH_DEBOUNCE_MS = 200
 
-export function createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'showToast' | 'errorMessage'>) {
+/** Profile, list and detail IPC calls share the owner's bounded page-read capacity. */
+export function createMemoryPageReads(waitMs = MEMORY_READ_BUDGET_MS) {
+  let pending = 0
+  const waiters = new Set<() => void>()
+  const wakeWaiters = () => { for (const wake of waiters) wake() }
+  function readPage<T>(current: () => boolean, read: (options?: Required<MemoryReadOptions>) => Promise<T>): Promise<T> {
+    function start(options?: Required<MemoryReadOptions>) {
+      const result = read(options)
+      pending++
+      const release = () => { pending--; wakeWaiters() }
+      void result.then(release, release)
+      return result
+    }
+    if (!current()) return Promise.reject(new RequestTimeout())
+    if (pending < MEMORY_PAGE_READ_LIMIT) return start()
+    const budget = createRequestBudget(waitMs)
+    return budget.run(async () => {
+      while (pending >= MEMORY_PAGE_READ_LIMIT) {
+        if (!current()) throw new RequestTimeout()
+        let wake!: () => void
+        const available = new Promise<void>(resolve => { wake = resolve })
+        waiters.add(wake)
+        try { await budget.run(() => available) } finally { waiters.delete(wake) }
+      }
+      if (!current()) throw new RequestTimeout()
+      return start({ budgetMs: budget.remainingMs() })
+    }).finally(() => budget.close())
+  }
+  return Object.assign(readPage, { wakeWaiters })
+}
+
+export function createMemoryFileActions({ api, getState, dispatch, showToast, errorMessage }: Pick<ActionDeps, 'api' | 'getState' | 'dispatch' | 'showToast' | 'errorMessage'>, readPage = createMemoryPageReads()) {
   let listRequest = 0, detailRequest = 0, editorId = 0, forgetId = 0
   let searchTimer: ReturnType<typeof setTimeout> | undefined
   const state = () => getState().memory.files
@@ -24,6 +57,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
   function cancelReads() {
     listRequest++
     detailRequest++
+    readPage.wakeWaiters()
     clearTimeout(searchTimer)
   }
 
@@ -34,17 +68,33 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     dispatch({ type: 'memory_files_loading' })
     const current = () => active() && request === listRequest && state().query === query
     try {
-      const page = await api.listMemoryFiles({ query: query.trim(), ...(cursor ? { cursor } : {}) })
-      if (!current()) return
-      if (page.status === 'stale' && cursor) {
-        dispatch({ type: 'memory_files_invalidated' })
-        await refreshFiles()
+      const search = query.trim()
+      let next = cursor, more = Boolean(cursor), restarted = false
+      let detail: Promise<void> | undefined
+      while (current()) {
+        const page = await readPage(current, options => api.listMemoryFiles({ query: search, ...(next ? { cursor: next } : {}) }, options))
+        if (!current()) return
+        if (page.status === 'stale' && !restarted) {
+          dispatch({ type: 'memory_files_invalidated' })
+          const { selection } = state()
+          if (selection) detail = read(selection)
+          next = undefined
+          more = false
+          restarted = true
+          continue
+        }
+        if (page.status !== 'ok') throw new Error(t('main.memory.revision.conflict'))
+        if (!page.partial && !page.items.length && page.nextCursor) {
+          if (next && page.nextCursor.offset <= next.offset) throw new Error(t('main.memory.revision.conflict'))
+          next = page.nextCursor
+          continue
+        }
+        dispatch({ type: 'memory_files_listed', query, page, more })
+        await detail
         return
       }
-      if (page.status !== 'ok') throw new Error(t('main.memory.revision.conflict'))
-      dispatch({ type: 'memory_files_listed', query, page, more: Boolean(cursor) })
     } catch (error) {
-      if (current()) dispatch({ type: 'memory_files_list_failed', message: errorMessage(error) })
+      if (current()) dispatch({ type: 'memory_files_list_failed', message: error instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(error) })
     }
   }
 
@@ -53,20 +103,32 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     dispatch({ type: 'memory_file_loading' })
     const current = () => active() && request === detailRequest && sameMemoryFileSelection(state().selection, selection)
     try {
-      const detail = await api.readMemoryFile(selection.identity, selection.restrictionId)
+      const detail = await readPage(current, options => api.readMemoryFile(selection.identity, selection.restrictionId, options))
       if (!current()) return
       if (!detail || !sameMemoryFile(detail.identity, selection.identity)
         || detail.stoppedSnapshot?.restrictionId !== selection.restrictionId) throw new Error(t('main.memory.not.found'))
       dispatch({ type: 'memory_file_read', selection, detail })
     } catch (error) {
-      if (current()) dispatch({ type: 'memory_file_read_failed', selection, message: errorMessage(error) })
+      if (current()) dispatch({ type: 'memory_file_read_failed', selection, message: error instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(error) })
     }
   }
 
-  async function refreshFiles() {
-    if (!active()) return
-    const { selection } = state()
-    await Promise.all([list(), selection ? read(selection) : undefined])
+  let refresh: Promise<void> | undefined
+  let refreshAgain = false
+  function refreshFiles(): Promise<void> {
+    if (!active()) return Promise.resolve()
+    if (refresh) { refreshAgain = true; return refresh }
+    async function run() {
+      do {
+        refreshAgain = false
+        const { selection } = state()
+        // Profile summary and visible file contents have one read slot each.
+        if (selection) await read(selection)
+        else await list()
+      } while (refreshAgain && active())
+    }
+    refresh = run().finally(() => { refresh = undefined })
+    return refresh
   }
 
   async function write(target: MemoryFileDetailView, command: (operationId: string) => Promise<unknown>, message: string, restoredRestriction?: string) {
@@ -242,9 +304,9 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     },
     showMemoryFile(selection: MemoryFileSelection | null) {
       if (!active()) return
-      detailRequest++
+      cancelReads()
       dispatch({ type: 'memory_file_select', selection })
-      if (selection) return read(selection)
+      return selection ? read(selection) : list()
     },
     reloadMemoryFile() {
       const { selection } = state()

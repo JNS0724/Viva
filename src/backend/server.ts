@@ -80,6 +80,10 @@ async function start(message: StartMessage) {
       'mark-quitting': () => backend.markQuitting(),
       stop: () => backend.stop(),
       'agent-pid': () => backend.agentPid(),
+      'automation.memory-owner-pid': () => {
+        if (!message.automation) throw new Error('only for automation')
+        return backend.memoryOwnerPid()
+      },
       since: (seq) => backend.since(Number(seq)),
       'automation.seed-feed': (item) => seedFeed(message.automation, backend, item),
       'automation.publish-event': (event) => backend.publishAutomation(event),

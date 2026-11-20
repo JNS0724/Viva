@@ -1,10 +1,11 @@
+import { legacyDailyRename } from './fixtures/memory-note-fixture.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, readFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
@@ -66,7 +67,7 @@ const stopInput = (file: MemoryFileDetail) => ({ operationId: randomUUID(), iden
 async function retireStoppedOriginal(f: Awaited<ReturnType<typeof fixture>>, first: { messageId: string, content: string }) {
   const ticket = await f.owner.prepareContextRecovery({ sessionId: f.session, baseSurfaceHash: 'stopped-surface', candidates: [first] })
   assert.deepEqual(ticket.retainedMessageIds, [])
-  const bound = { ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
+  const bound = { sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: randomUUID(), replacementHash: randomUUID() }
   f.owner.bindContextRecovery(bound)
   await f.owner.commitContextRecovery({ ...bound, baseSurfaceHash: ticket.baseSurfaceHash, persisted: true }, () => true)
 }
@@ -246,16 +247,16 @@ test('withdrawing part of a stopped snapshot removes its body while retaining th
     enabled: true, restrictionId: prior.id }), { code: 'revision.conflict' })
 })
 
-async function renameDaily(f: Awaited<ReturnType<typeof fixture>>, initial: MemoryFileDetail, name: string) {
+/** Reopen the data layout of an older release that had already accepted a rename. */
+async function priorDailyRename(f: Awaited<ReturnType<typeof fixture>>, initial: MemoryFileDetail, name: string) {
   const notes = openMemoryNotes(f.store, id => Boolean(f.store.readSource(id)?.text))
   const allocation = notes.allocations().find(item => item.path === initial.path)!
-  const from = initial.path, to = `daily/${f.day}/${name}.md`, root = join(f.store.fileRoot, allocation.workspace)
-  renameSync(join(root, from), join(root, to))
-  assert.equal(notes.reconcileRename({ operationId: randomUUID(), workspace: allocation.workspace, id: allocation.key,
-    from, to, usageVersion: initial.version.usageVersion, revision: initial.version.contentRevision }), true)
+  const to = `daily/${f.day}/${name}.md`
+  legacyDailyRename(f.store, allocation, to)
+  await f.reopen()
   const renamed = await f.detail(initial.identity)
   assert.equal(renamed.path, to)
-  return { renamed, notes, allocation }
+  return { renamed, allocation }
 }
 
 function fixtureDocuments(f: Awaited<ReturnType<typeof fixture>>) {
@@ -267,7 +268,7 @@ function fixtureDocuments(f: Awaited<ReturnType<typeof fixture>>) {
 
 test('a prior external daily filename cannot carry stopped content into a later model projection', async t => {
   const f = await fixture(t), original = await f.add('PrivateExternalRename is a stopped marker.'), initial = await f.find()
-  const { renamed, notes, allocation } = await renameDaily(f, initial, 'PrivateExternalRename')
+  const { renamed, allocation } = await priorDailyRename(f, initial, 'PrivateExternalRename')
   await f.set(stopInput(renamed))
   await f.owner.runtime.wake()
   await retireStoppedOriginal(f, original)
@@ -276,7 +277,7 @@ test('a prior external daily filename cannot carry stopped content into a later 
   assert.deepEqual(rebuilt.identity, initial.identity)
   assert.notEqual(rebuilt.path, renamed.path)
   assert.doesNotMatch(rebuilt.path, /PrivateExternalRename/)
-  assert.ok(!notes.aliases().some(alias => alias.id === allocation.key))
+  assert.equal(f.store.db.prepare('SELECT 1 FROM memory_note_aliases WHERE note=?').get(allocation.key), undefined)
   const session = randomUUID()
   const packet = f.owner.runtime.handle({ op: 'recall', session, query: 'afternoon tea' }, { session, conversation: session })
   assert.match(packet, /afternoon tea/)
@@ -287,7 +288,7 @@ test('stopping a digest retires a daily alias carrying the shared stopped eviden
   const f = await fixture(t), privateText = 'PrivateSharedProject is temporarily confidential. '
   const { messageId } = await f.add(privateText + 'IndependentTea is on Monday.')
   const daily = await f.find()
-  const { renamed, notes, allocation } = await renameDaily(f, daily, 'PrivateSharedProject')
+  const { renamed, allocation } = await priorDailyRename(f, daily, 'PrivateSharedProject')
   const ref = f.store.readSource(messageId)!
   const digest = fixtureDocuments(f).commit({ workspace: daily.identity.workspace, operationId: randomUUID(), action: 'CREATE',
     path: 'digest/wiki/neutral.md', markdown: privateText, expectedRevision: null, reads: [],
@@ -298,7 +299,7 @@ test('stopping a digest retires a daily alias carrying the shared stopped eviden
   const rebuilt = await f.find()
   assert.deepEqual(rebuilt.identity, daily.identity)
   assert.notEqual(rebuilt.path, renamed.path)
-  assert.ok(!notes.aliases().some(alias => alias.id === allocation.key))
+  assert.equal(f.store.db.prepare('SELECT 1 FROM memory_note_aliases WHERE note=?').get(allocation.key), undefined)
   assert.match(rebuilt.markdown, /IndependentTea/)
   const reader = randomUUID()
   const packet = f.owner.runtime.handle({ op: 'recall', session: reader, query: 'IndependentTea' }, { session: reader, conversation: reader })

@@ -75,7 +75,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getSnapshot: (options) => ipcRenderer.invoke('agent:snapshot', ...options ? [options] : []),
   waits: () => ipcRenderer.invoke('agent:waits'),
   /** @param {{ id: string }[]} [images] pictures kept by keepImage, sent with the words */
-  prompt: (text, images = [], operation = undefined, feedItemId = undefined) => ipcRenderer.invoke('agent:prompt', text, images, operation, feedItemId),
+  prompt: (text, images = [], operation = undefined, feedItemId = undefined, turnId = undefined) => ipcRenderer.invoke('agent:prompt', text, images, operation, feedItemId, turnId),
   /** A pasted or dropped picture into the pictures folder: { id, mimeType, size } (main/image-store.js). */
   keepImage: (bytes) => ipcRenderer.invoke('images:keep', bytes),
   /** Settings' 贴过的图片: its size and place; open, empty or move it. */
@@ -87,7 +87,8 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   moveImages: () => ipcRenderer.invoke('images:move'),
   /** Words for the turn that is running (viva-steer): { ok, reason? }. */
   steer: (text, operation) => ipcRenderer.invoke('agent:steer', text, operation),
-  cancel: () => ipcRenderer.invoke('agent:cancel'),
+  cancel: (target) => ipcRenderer.invoke('agent:cancel', target),
+  recover: () => ipcRenderer.invoke('agent:recover'),
   newSession: () => ipcRenderer.invoke('agent:new-session'),
   setConfig: (configId, value) => ipcRenderer.invoke('agent:set-config', configId, value),
   respondPermission: (requestId, optionId) => ipcRenderer.invoke('agent:permission', requestId, optionId),
@@ -166,10 +167,10 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   diagnosticsStatus: () => ipcRenderer.invoke('diagnostics:status'),
   clearDiagnostics: () => ipcRenderer.invoke('diagnostics:clear'),
   debugDiagnostics: (enabled) => ipcRenderer.invoke('diagnostics:debug', enabled),
-  getDreamStatus: () => ipcRenderer.invoke('memory:dream-status'),
-  runDream: () => ipcRenderer.invoke('memory:run-dream'),
-  listMemoryFiles: (request) => ipcRenderer.invoke('memory:list-files', request),
-  readMemoryFile: (identity, restrictionId) => ipcRenderer.invoke('memory:read-file', identity, restrictionId),
+  getDreamStatus: (operationId) => ipcRenderer.invoke('memory:dream-status', operationId),
+  runDream: (operation) => ipcRenderer.invoke('memory:run-dream', operation),
+  listMemoryFiles: (request, options) => ipcRenderer.invoke('memory:list-files', request, ...options ? [options] : []),
+  readMemoryFile: (identity, restrictionId, options) => ipcRenderer.invoke('memory:read-file', identity, restrictionId, ...options ? [options] : []),
   setMemoryFileEnabled: (request) => ipcRenderer.invoke('memory:set-file-enabled', request),
   undoMemoryFile: (request) => ipcRenderer.invoke('memory:undo-file', request),
   createMemoryFile: (request) => ipcRenderer.invoke('memory:create-file', request),

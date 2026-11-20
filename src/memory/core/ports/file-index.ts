@@ -24,6 +24,8 @@ export interface MemoryFileLink { path: string, line: number, label?: string, an
 export interface MemoryFileSnapshot extends MemoryFileIdentity {
   name: string
   description: string
+  /** Absent in older projections. */
+  tags?: string[]
   chunks: MemoryFileChunk[]
   links: MemoryFileLink[]
 }
@@ -32,6 +34,18 @@ export interface MemoryFilePassage extends MemoryFileChunk { ref: MemoryFileChun
 export interface MemoryFileHit extends MemoryFilePassage { score: number }
 export interface MemoryVectorSpace { fingerprint: string, dimensions: number }
 export interface MemoryVectorState { space: MemoryVectorSpace | null, generation: number, active: boolean }
+export interface MemoryFileQueryScope {
+  workspaces: readonly string[]
+  from?: string
+  through?: string
+  asOf?: number
+}
+export interface MemoryFilePage<T> { rows: T[], incomplete: boolean }
+export interface MemoryFileNode extends MemoryFileIdentity {
+  tags?: string[]
+  name: string
+  description: string
+}
 export interface MemoryFileIndex {
   accept(snapshot: MemoryFileSnapshot, expected: MemoryFileVersion | null): boolean
   remove(identity: MemoryFileIdentity): boolean
@@ -39,6 +53,14 @@ export interface MemoryFileIndex {
   snapshot(workspace: string, id: string): MemoryFileSnapshot | null
   chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[]
   lexical(query: string, authorized: readonly MemoryFileIdentity[], limit: number): { hits: MemoryFileHit[], mode: 'fts' | 'fallback' }
+  /** Candidate pages contain trusted projections. Current access and revision are checked by core. */
+  lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
+  nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode>
+  vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, limit: number, current?: () => boolean, deadline?: number): Promise<MemoryFilePage<MemoryFileHit> | null>
+  digestNodes(workspace: string): MemoryFileNode[]
+  nodeAt(workspace: string, path: string): MemoryFileNode | null
+  linkTargets(file: MemoryFileIdentity, limit: number): MemoryFilePage<string>
+  linkingNodes(workspace: string, targets: readonly string[], limit: number): MemoryFilePage<MemoryFileNode>
   beginVectors(space: MemoryVectorSpace): number
   vectorState(): MemoryVectorState
   missingVectors(generation: number): MemoryFilePassage[]
@@ -50,15 +72,4 @@ export interface MemoryFileIndex {
   withdraw(sourceId: string): void
   recover(): void
   pendingCleanup(): number
-}
-export interface MemoryCatalogFile { path: string, revision: string, markdown: string }
-export type MemoryCatalogChange =
-  | { kind: 'unchanged', identity: MemoryFileIdentity, file: MemoryCatalogFile }
-  | { kind: 'modified', identity: MemoryFileIdentity, file: MemoryCatalogFile }
-  | { kind: 'missing', identity: MemoryFileIdentity }
-  | { kind: 'added', file: MemoryCatalogFile }
-  | { kind: 'rename', identity: MemoryFileIdentity, file: MemoryCatalogFile }
-  | { kind: 'quarantined', path: string, reason: 'ambiguous-rename' | 'duplicate-content' | 'symlink' | 'invalid-path' | 'unreadable' }
-export interface MemoryFileCatalog {
-  scan(workspace: string, accepted: readonly MemoryFileIdentity[]): MemoryCatalogChange[]
 }

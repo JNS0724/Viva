@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { createMemoryRuntime as createCoreMemoryRuntime } from '../core/memory-runtime.ts'
+import { createMemoryRuntime as createCoreMemoryRuntime, publicationEffectKinds } from '../core/memory-runtime.ts'
 import type { MemoryRuntimeResources } from '../core/ports/runtime.ts'
 import type { MemoryStore } from './memory-store.ts'
 import { memoryHash } from './memory-store.ts'
@@ -9,7 +9,7 @@ import { openMemoryNotes } from './memory-note-store.ts'
 import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
 import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
-import { openMemoryFileCatalog } from './memory-file-catalog.ts'
+import { createMemoryPhysicalFileReader, readMemoryFileAtCommit } from './memory-file-store.ts'
 import { erasedDocumentSource } from '../core/memory-document-restrictions.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
@@ -17,18 +17,40 @@ export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRu
 
 /** Open the platform resources consumed through explicit core ports. */
 export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore, now?: () => number }): MemoryRuntimeResources {
-  const effects = createEffects({ db: store.db, now, onError: error => emitDiagnosticFailure('effects', error) })
+  // Both runners use the same durable rows and generation checks. A pending model
+  // request cannot occupy the runner that publishes or cleans committed indexes.
+  const options = { db: store.db, now, onError: (error: unknown) => emitDiagnosticFailure('effects', error) }
+  const jobs = createEffects(options)
+  const publications = createEffects(options)
+  let publicationPass: Promise<void> | undefined
+  const readPhysicalFile = createMemoryPhysicalFileReader(() => store.fileRoot)
+  const effects: typeof jobs = {
+    ...jobs,
+    runs(kind, run, delay) { (publicationEffectKinds.has(kind) ? publications : jobs).runs(kind, run, delay) },
+    queue(kind, key, payload, dueAt) {
+      jobs.queue(kind, key, payload, dueAt)
+      // wake() schedules its pass in a microtask after the enclosing SQLite transaction.
+      if (publicationEffectKinds.has(kind)) publicationPass = publications.wake()
+    },
+    async wake() {
+      await Promise.all([publications.wake(), jobs.wake()])
+      // A note or Dream job may have committed an index change during this wake.
+      await publicationPass
+    },
+    close() { readPhysicalFile.close(); publications.close(); jobs.close() },
+  }
   const resources: MemoryRuntimeResources = {
     sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
     identity: { newId: randomUUID, hash: memoryHash },
     effects,
     openFileRestrictions: () => openMemoryFileRestrictions(store.db),
     openFileIndex: () => openMemoryFileIndex({ db: store.db, now }),
-    openFileCatalog: () => openMemoryFileCatalog({ root: store.fileRoot }),
-    openNotes: (readable, currentJob, onRenamed, external) => openMemoryNotes(store, readable, undefined, currentJob, onRenamed, external?.committed, external?.current, { onCommitted: external?.noteCommitted }),
-    openDocuments: (readable, onCommitted, onRenamed, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, onRenamed, erasures: store.fileErasures,
-      externalCurrent: policy?.current, managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
-      expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned,
+    readFileRevisionAtCommit: (workspace, path) => readMemoryFileAtCommit(store.fileRoot, workspace, path)?.revision,
+    readPhysicalFile,
+    openNotes: (readable, currentJob, options) => openMemoryNotes(store, readable, undefined, currentJob, options),
+    openDocuments: (readable, onCommitted, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, erasures: store.fileErasures,
+      managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
+      expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned, index: policy?.index,
       manual: policy?.manualCurrent && { current: policy.manualCurrent, token: memorySourceToken, workspace: memorySourceWorkspace,
         commit: store.insertManualFileSource, retainsText: store.manualFileRetainsText },
       source(id) {

@@ -227,7 +227,9 @@ export type CatMood = 'idle' | 'thinking' | 'typing' | 'confirm' | 'ask' | 'done
 export const isDoneNews = (state: Pick<State, 'lastReceipt' | 'doneNotice'>): boolean =>
   !!state.lastReceipt && state.lastReceipt.stopReason !== 'cancelled' && !turnProblem(state.lastReceipt.stopReason) && state.doneNotice !== 'seen'
 
-export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'lastReceipt' | 'doneNotice'>): CatMood {
+export function catMood(state: Pick<State, 'phase' | 'timeline' | 'tools' | 'messages' | 'lastReceipt' | 'doneNotice' | 'stopUnconfirmed'>): CatMood {
+  if (state.stopUnconfirmed) return 'error'
+  if (state.phase === 'stopping') return 'thinking'
   if (state.phase === 'waiting') return 'confirm'
   if (state.phase === 'asking') return 'ask'
   if (state.phase === 'error') return 'error'
@@ -244,6 +246,8 @@ export const setupProblem = (info: Pick<AgentInfo, 'problem'>): string => (info.
 
 /** Copy and tone for the avatar/status island. */
 export function statusView(state: State, now = Date.now()): { tone: string, label: string, event: string } {
+  if (state.stopUnconfirmed) return { tone: 'error', label: t('conversation.stop.unconfirmed'), event: '' }
+  if (state.phase === 'stopping') return { tone: 'working', label: t('conversation.stop.pending'), event: '' }
   if (state.phase === 'waiting') return { tone: 'waiting', label: PROMPT_HEADS.permission, event: truncate(state.permission?.title, EVENT_LIMIT) }
   if (state.phase === 'asking') return { tone: 'waiting', label: PROMPT_HEADS.question, event: truncate(state.question?.questions[0]?.question, EVENT_LIMIT) }
   if (state.phase === 'working') return { tone: 'working', label: t("island-view.working"), event: workingEvent(state, now) }

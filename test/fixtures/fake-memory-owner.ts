@@ -1,13 +1,13 @@
-import { memoryHostFailure } from '../../src/memory/contracts/domain-error.ts'
 import { readFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { parse } from 'yaml'
-import { openMemoryOwner } from '../../src/memory/node/owner.ts'
+import { openPluginOwner } from '../../plugins/memory/lib/standalone-owner.ts'
+import { createRemoteMemoryOwner } from '../../plugins/memory/lib/remote-owner.ts'
 import { objectOf } from '../../src/memory/contracts/unknown-value.ts'
-import { MEMORY_HOST_PROTOCOL } from '../../src/memory/contracts/host.ts'
+import { memoryOwnerState } from '../../src/memory/contracts/host.ts'
 import type { CommittedOutput } from '../../src/backend/assistant-stream.ts'
 
-/** Core-window smoke uses a scripted ACP driver, but the real standalone memory owner/RPC. */
+/** Core-window smoke uses a scripted ACP driver, but the real Viva memory owner/RPC. */
 export async function startFakeMemoryOwner() {
   const at = process.argv.indexOf('--patch')
   if (!process.send || at < 0 || !process.argv[at + 1]) return null
@@ -21,64 +21,56 @@ export async function startFakeMemoryOwner() {
   }
   const root = dataRoot(parse(readFileSync(process.argv[at + 1]!, 'utf8')))
   if (!root) return null
-  const send = (value: object) => { if (process.connected) process.send?.(value) }
-  let lastState = ''
-  let effectsRevision = 0
-  const state = (force = false) => {
-    const value = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch,
-      state: owner.status(), revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(), effectsRevision }
-    const encoded = JSON.stringify(value)
-    if (force || encoded !== lastState) { lastState = encoded; send(value) }
-  }
-  const owner = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null, dailyNotes: false,
-    onContextUsed: notice => send({ type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...notice }),
-    onProjectionChanged: () => send({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, revision: owner.runtime.revision() }),
-    quiesce: async () => {}, onChange: change => { state(); send({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, ...change }) }, onHostEffects: () => { effectsRevision++; state() } })
-  process.on('message', raw => {
-    const message = objectOf(raw)
-    if (message?.type !== 'memory_host_request' || typeof message.requestId !== 'string') return
-    void (async () => {
-      if (message.protocol !== MEMORY_HOST_PROTOCOL || message.epoch !== owner.epoch) throw new Error('Owner protocol mismatch')
-      const result = await owner.handleHost(message.method, message.input)
-      state()
-      send({ type: 'memory_host_result', epoch: owner.epoch, requestId: message.requestId, ok: true, result })
-    })().catch(error => send({ type: 'memory_host_result', epoch: owner.epoch, requestId: message.requestId, ok: false,
-      error: memoryHostFailure(error) }))
-  })
-  await owner.recover()
-  state()
-  process.channel?.unref()
-  let closed = false
-  process.once('beforeExit', () => { if (!closed) { closed = true; void owner.close() } })
   const turns = new Map<string, { turn: number, step: number }>()
+  const connection = openPluginOwner({ root, hostNamespace: 'viva', callbacks: {
+    drainSends: (input): Promise<void> => owner.drainSends(input.epoch),
+  } }, process)
+  const owner = createRemoteMemoryOwner(connection, () => {})
+  let reconciledEpoch: string | undefined
+  const unsubscribe = connection.subscribe(event => {
+    const parsed = memoryOwnerState.safeParse(event)
+    if (!parsed.success) return
+    const state = parsed.data
+    const send = () => connection.reconciled?.(state.epoch, state.state === 'ready' && reconciledEpoch === state.epoch)
+    if (state.state !== 'ready' || reconciledEpoch === state.epoch) { send(); return }
+    void owner.inEpoch(state.epoch, async () => {
+      await owner.call('reconcileActiveTurns', [[...turns].map(([sessionId, turn]) => ({ sessionId, turn: turn.turn }))])
+      if (!owner.ready() || owner.epoch !== state.epoch) return
+      reconciledEpoch = state.epoch
+      send()
+    }).catch(() => {})
+  })
+  await connection.start()
+  process.channel?.unref()
+  process.once('beforeExit', () => { unsubscribe(); void owner.close() })
   let ordinal = Date.now()
   return {
-    startOutput(sessionId: string) {
+    async startOutput(sessionId: string) {
       const turn = turns.get(sessionId)
       if (!turn) throw new Error('A scripted output requires an admitted live turn')
-      const generation = owner.contextGeneration(sessionId), seq = ++ordinal
+      const epoch = owner.epoch
+      const generation = await owner.contextGeneration(sessionId), seq = ++ordinal
       const output = { id: randomUUID(), session: sessionId, generation, turn: turn.turn, step: ++turn.step, floor: seq }
-      const permit = owner.acquireSend(randomUUID(), { session: sessionId, contextGeneration: generation, output }, 'scripted ACP fixture send')
-      try {
-        if (!permit.recordBody) throw new Error('The scripted send did not receive an owner output capability')
-        permit.recordBody()
-      } catch (error) { permit.settled(); throw error }
+      const bodyDigest = createHash('sha256').update('scripted ACP fixture send').digest('hex')
+      const permit = await owner.inEpoch(epoch, () => owner.acquireSend(randomUUID(), { session: sessionId, contextGeneration: generation, output }, bodyDigest))
+      try { await permit.recordBody() } catch (error) { permit.settled(); throw error }
       let finished = false
       return {
         signal: permit.signal,
-        settle(blocks: CommittedOutput['blocks']): NonNullable<CommittedOutput['native']> {
+        async settle(blocks: CommittedOutput['blocks']): Promise<NonNullable<CommittedOutput['native']>> {
           if (finished || permit.signal.aborted) throw new Error('The scripted output lease is no longer active')
           // This fixture has scripted stream events instead of a DSH provider log.
           // Bind the exact event body through the real owner before publishing its proof.
           const digest = createHash('sha256').update(JSON.stringify({ output, seq, blocks })).digest('hex')
-          owner.finishNativeOutput(output, { seq, kind: 'reply', digest })
+          await owner.inEpoch(epoch, () => owner.call('finishNativeOutput', [output, { seq, kind: 'reply', digest }]))
           finished = true
           permit.settled()
           return { seq, digest }
         },
-        abandon() {
+        async abandon() {
           if (finished) return
-          try { owner.finishNativeOutput(output) } finally { finished = true; permit.settled() }
+          try { await owner.inEpoch(epoch, () => owner.call('finishNativeOutput', [output])) }
+          finally { finished = true; permit.settled() }
         },
       }
     },

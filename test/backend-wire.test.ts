@@ -31,7 +31,7 @@ test('a page\'s call reaches its channel with its arguments, bytes uploaded firs
   assert.deepEqual(await connection.rpc('history:list', [5]), { limit: 5, items: ['a'] })
   assert.deepEqual(await connection.rpc('history:list', [undefined]), { items: ['a'] }, 'an argument left out stays left out, not null')
   assert.deepEqual(await connection.rpc('images:keep', [new Uint8Array(70_000)]), { isBuffer: true, length: 70_000 })
-  await assert.rejects(connection.rpc('agent:cancel', []), /^Error: nothing to cancel$/)
+  await assert.rejects(connection.rpc('agent:cancel', [{ sessionId: 'active', conversationId: null, turnId: '9b544223-b300-49f8-aa95-f829ebf92eab' }]), /^Error: nothing to cancel$/)
   await assert.rejects(connection.rpc('nope:never', []), /no channel nope:never/)
   const picture = await connection.image('viva-image://img/ok.png')
   assert.deepEqual([picture.status, [...new Uint8Array(await picture.arrayBuffer())]], [200, [1, 2, 3]])

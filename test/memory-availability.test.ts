@@ -11,7 +11,10 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
+import fs from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { scratch } from './fixtures/scratch.js'
+import type { HostMemoryApi, HostMemoryMethod } from '../src/memory/contracts/host.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
 
 const state = (epoch: string, status = 'ready') => ({ type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch, state: status, revision: 0, coreEpoch: 0 })
@@ -44,20 +47,17 @@ test('two expired callers retain actual read slots; late terminals settle before
   assert.deepEqual(f.channel.readState(), { batches: 0, executions: 0 })
 })
 
-test('a five-read page inherits one shrinking deadline and stops dispatching after expiry', async t => {
+test('the profile page has one owner round trip and discards a reply after its deadline', async t => {
   const f = channelFixture(); t.after(() => f.channel.close())
   const client = createVivaMemoryClient(f.channel.call, f.channel.readBatch)
-  const page = client.readPage(undefined, { budgetMs: 35 })
+  const project = { kind: 'project' as const, id: 'current' }
+  const page = client.readPage(project, { budgetMs: 35 })
   const expired = assert.rejects(page, RequestTimeout)
-  await tick(); f.answer(0, {})
   await tick()
-  assert.deepEqual(f.sent.map(message => message.method), ['profile', 'onboarding'])
-  const reads = f.sent.map(message => memoryHostRead.parse(message.read))
-  assert.equal(reads[0]!.readBatchId, reads[1]!.readBatchId)
-  assert.ok(reads[1]!.budgetMs < reads[0]!.budgetMs)
+  assert.deepEqual(f.sent.map(message => [message.method, message.input]), [['profilePage', { args: [project] }]])
+  assert.ok(memoryHostRead.parse(f.sent[0]!.read).budgetMs <= 35)
   await expired
-  f.answer(1, 'done'); await tick()
-  assert.equal(f.sent.length, 2, 'late completion must not dispatch cleanup/revision/fileProfile')
+  f.answer(0)
   assert.deepEqual(f.channel.readState(), { batches: 0, executions: 0 })
 })
 
@@ -118,7 +118,7 @@ test('budget cancellation rejects the caller, retains task rejection handling an
   budget.close()
 })
 
-test('dream model waits, repeated retry and persisted recovery never become a dependency of the five page reads', { timeout: 10_000 }, async t => {
+test('dream model waits, repeated retry and persisted recovery never become a dependency of a profile or foreground query', { timeout: 10_000 }, async t => {
   const { dir: root, defer } = scratch(t, 'memory-availability-dream-')
   let entered!: () => void, finish!: () => void
   let running!: Promise<void>
@@ -160,6 +160,11 @@ test('dream model waits, repeated retry and persisted recovery never become a de
     assert.equal(page.onboarding, 'pending')
     assert.equal(typeof page.revision, 'number')
     assert.equal(owner.ready(), true)
+    const list = await client.listFiles({ query: 'weekly' })
+    assert.ok(list.items.length > 0)
+    const recall = await owner.runtime.handleModelRequest({ op: 'recall', session: source.sessionId, query: 'weekly report' },
+      owner.sessionContext(source.sessionId), () => owner.ready())
+    assert.ok(JSON.parse(recall).notes.length > 0)
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     const started = new Promise<void>(resolve => { entered = resolve })
@@ -192,4 +197,101 @@ test('dream model waits, repeated retry and persisted recovery never become a de
   assert.equal(dreamCount, 3, 'the persisted retry resumes independently of management reads')
   finish(); await running
   t.diagnostic('replacement dream completed')
+})
+
+
+test('the file detail request preserves its optional restriction and cancels backend work on deadline', async t => {
+  const identity = { workspace: 'workspace', kind: 'digest', id: 'file' }
+  let input: unknown, lifetime: ReturnType<typeof createRequestBudget> | undefined
+  const { connection } = await backendWith(t, {
+    'memory:read-file': (_event, target, restriction) => {
+      input = [target, restriction]
+      lifetime = memoryReadContext.getStore()
+      return new Promise(() => {})
+    },
+  })
+  await assert.rejects(connection.rpc('memory:read-file', [identity, undefined, { budgetMs: 40 }]), {
+    message: translate('memory.read.timeout'),
+  })
+  assert.deepEqual(input, [identity, undefined])
+  assert.ok(lifetime)
+  if (!lifetime.signal.aborted) await new Promise<void>(resolve => lifetime!.signal.addEventListener('abort', () => resolve(), { once: true }))
+  assert.ok(lifetime.signal.aborted)
+})
+
+test('a direct desktop transport retains read capacity through cancellation until the owner physically settles', async () => {
+  const pending: Array<{ signal?: AbortSignal, settle(): void }> = []
+  const channel = createRemoteMemoryChannel({ callOwner: (_method, _input, options) => new Promise((_resolve, reject) => {
+    assert.equal(options.waitForCompletion, true)
+    pending.push({ signal: options.signal, settle: () => reject(new RequestTimeout()) })
+  }) })
+  try {
+    channel.receive(state('direct'))
+    const page = () => channel.readBatch(read => read('listFiles', { args: [{}] }), { budgetMs: 25 })
+    await assert.rejects(page(), RequestTimeout)
+    await assert.rejects(page(), RequestTimeout)
+    assert.ok(pending.every(call => call.signal?.aborted))
+    assert.deepEqual(channel.readState(), { batches: 2, executions: 2 })
+    await assert.rejects(page(), MemoryReadBusy)
+    pending.forEach(call => call.settle())
+    await tick()
+    assert.deepEqual(channel.readState(), { batches: 0, executions: 0 })
+  } finally { channel.close() }
+})
+
+test('a Dream provider grant and a late result each verify the current daily file while independent reads stay available', { timeout: 10_000 }, async t => {
+  const { dir: root, defer } = scratch(t, 'dream-send-verification-')
+  let report!: (id: string) => void, finish!: (result: string) => void
+  const requested = new Promise<string>(resolve => { report = resolve })
+  const provider = new Promise<string>(resolve => { finish = resolve })
+  const owner = openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'fixture', model: 'fixture' }), quiesce: async () => {},
+    compute: job => {
+      if (job.stage === 'note') return Promise.resolve('{"status":"write","title":"Friday","markdown":"The report is due Friday."}')
+      if (job.stage !== 'dream') return null
+      report(job.id)
+      return provider
+    },
+  })
+  defer(() => owner.close())
+  await owner.recover()
+  const client = createVivaMemoryClient(<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) =>
+    owner.handleHost(method, input) as Promise<HostMemoryApi[M]['output']>)
+  const independent = await client.createFile({ operationId: randomUUID(), text: 'Independently available memory' })
+  const session = randomUUID(), at = Date.now()
+  const received = await owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: 'The report is due Friday.', at,
+    timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
+  await owner.completeTurn({ sessionId: session, turn: 1, eventSeq: 3, sourceIds: [received.sourceId], assistant: 'Understood.', completed: true, at, timezone: 'UTC' })
+  await owner.runtime.wake()
+  const daily = (await client.listFiles({ kind: 'daily' })).items[0]!
+  const file = await fs.realpath(path.join(root, 'memory-files', daily.identity.workspace, daily.path))
+  const work = owner.runtime.runDocumentDream()
+  const origin = { jobId: await requested }, signal = new AbortController().signal
+  const permit = owner.acquireSend(randomUUID(), origin, 'provider attempt', await owner.loadOutputProof(origin, signal))
+  let release!: () => void, entered!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const blocked = new Promise<void>(resolve => { entered = resolve })
+  const original = fs.lstat
+  const mocked = t.mock.method(fs, 'lstat', async (...args: Parameters<typeof original>) => {
+    if (args[0] === file) { entered(); await gate }
+    return original(...args)
+  })
+  syncBuiltinESMExports()
+  try {
+    const denied = assert.rejects(owner.loadOutputProof(origin, signal), /timed out/)
+    await blocked
+    assert.match((await client.readFile(independent.identity))!.markdown, /Independently available memory/)
+    await denied
+  } finally {
+    release()
+    mocked.mock.restore()
+    syncBuiltinESMExports()
+    permit.settled()
+  }
+  await fs.writeFile(file, 'External edit after the admitted model request')
+  const proof = await owner.loadOutputProof(origin, signal)
+  assert.equal(owner.outputCurrent(origin, proof), false)
+  finish('{"units":[]}')
+  await work
+  assert.equal(owner.runtime.dreamStatus().lastProcessedAt, null)
 })

@@ -10,7 +10,13 @@ import type { trackNativeToolReads } from './tool-reads.ts'
 import { publishGovernedNativeSpill, reserveNativeSpill } from './governed-spills.ts'
 import { replaceServiceMethod } from './service-method.ts'
 
-export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMemoryOwner>, tools: ReturnType<typeof trackNativeToolReads>) {
+type Owner = ReturnType<typeof openMemoryOwner>
+type SpillWriter = Pick<Owner, 'ready'> & { contextGeneration(session: string): number | undefined } & {
+  [K in 'nativeSpillGoverned' | 'beginNativeSpill' | 'finishNativeSpill']:
+    (...args: Parameters<Owner[K]>) => ReturnType<Owner[K]> | Promise<ReturnType<Owner[K]>>
+}
+
+export function trackNativeSpills(ctx: Context, owner: SpillWriter, tools: ReturnType<typeof trackNativeToolReads>) {
   const settled = new AsyncLocalStorage<{ name: string, lease: NonNullable<ReturnType<typeof tools.settledSpill>> }>()
   ctx.on('tools/ptc-dispatch-log', (dispatch, next) => {
     const session = dispatch.agent?.session
@@ -33,18 +39,22 @@ export function trackNativeSpills(ctx: Context, owner: ReturnType<typeof openMem
       if (!call || !owner.ready() || call.generation !== owner.contextGeneration(call.session) || !(store instanceof LocalSpillStore)) {
         throw new Error('Native spill has no authenticated local execution')
       }
-      if (!owner.nativeSpillGoverned(call)) return save.call(store, input)
       const current = () => active && owner.ready() && call.generation === owner.contextGeneration(call.session) && (log ? log.current() : Boolean(session
         && input.source.kind === 'tool' && tools.spill(session, input.source.callId, input.source.toolName)?.id === call.id))
+      if (!await owner.nativeSpillGoverned(call)) {
+        if (!current()) throw new Error('Native spill execution retired before saving')
+        return save.call(store, input)
+      }
       await mkdir(store.root, { recursive: true, mode: 0o700 })
       const intent = { call, root: await realpath(store.root), bytes: Buffer.byteLength(input.content, 'utf8'),
         hash: createHash('sha256').update(input.content).digest('hex') }
       const reserved = await reserveNativeSpill(intent, input.suggestedName)
       let id: string
-      try { id = owner.beginNativeSpill(reserved.intent) }
+      try { id = await owner.beginNativeSpill(reserved.intent) }
       catch (error) { await reserved.handle.close(); throw error }
       const saved = await publishGovernedNativeSpill(reserved.handle, reserved.intent, input.content, current)
-      owner.finishNativeSpill(id, saved.receipt)
+      await owner.finishNativeSpill(id, saved.receipt, call.session)
+      if (!current()) throw new Error('Native spill execution retired during publication')
       return saved.ref
     }
     const restore = replaceServiceMethod(store, 'saveText', wrapped)

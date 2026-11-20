@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, ROOT, startHarness } from './fixtures/dsh-harness.ts'
 import { changeView, pluginsView } from '../src/backend/plugins-ipc.ts'
 
 const SOURCE_FIXTURE = path.join(ROOT, 'test', 'fixtures', 'plugins', 'feed-source-plugin')

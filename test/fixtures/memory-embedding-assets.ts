@@ -5,10 +5,11 @@ import { scratch } from './scratch.js'
 import { createMemoryEmbedder } from '../../src/memory/node/memory-embedder.ts'
 import { writeMemoryEmbeddingManifest, type MemoryEmbeddingEncoding, type MemoryEmbeddingPooling } from '../../src/memory/node/memory-embedding-assets.ts'
 
-export async function embeddingFixture(t: TestContext, options: {
+type EmbeddingFixtureOptions = {
   dimensions?: number, maxTokens?: number, prefixes?: 'e5' | 'none', runtimeLimit?: number, behavior?: string, pooling?: MemoryEmbeddingPooling,
-} = {}) {
-  const { dir: root, defer } = scratch(t, 'viva-memory-embedding-')
+}
+
+export async function prepareEmbeddingFixture(root: string, options: EmbeddingFixtureOptions = {}) {
   const modelRoot = path.join(root, 'model'), runtimeRoot = path.join(root, 'runtime')
   mkdirSync(path.join(modelRoot, 'onnx'), { recursive: true })
   writeFileSync(path.join(modelRoot, 'onnx/model_quantized.onnx'), 'test weights')
@@ -26,6 +27,12 @@ export async function embeddingFixture(t: TestContext, options: {
     queryPrefix: options.prefixes === 'none' ? '' : 'query: ',
     passagePrefix: options.prefixes === 'none' ? '' : 'passage: ' }
   const descriptor = await writeMemoryEmbeddingManifest(modelRoot, encoding)
+  return { modelRoot, runtimeRoot, encoding, descriptor }
+}
+
+export async function embeddingFixture(t: TestContext, options: EmbeddingFixtureOptions = {}) {
+  const { dir: root, defer } = scratch(t, 'viva-memory-embedding-')
+  const { modelRoot, runtimeRoot, encoding, descriptor } = await prepareEmbeddingFixture(root, options)
   const open = (selectedModelRoot = modelRoot) => {
     const embedder = createMemoryEmbedder({ modelRoot: selectedModelRoot, runtimeRoot })
     defer(() => embedder.close())

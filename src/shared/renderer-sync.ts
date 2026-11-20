@@ -10,11 +10,15 @@ export interface ConversationSnapshot {
   records?: readonly unknown[]
   folds: readonly unknown[]
 }
+export type ActiveTurnSnapshot = { id: string, by: string, startedAt: number, stopping: boolean }
 export interface RendererSnapshot {
   streamGeneration: string
   cutoverCursor: number
   context: ConversationContext
   info: AgentInfo
+  activeTurn?: ActiveTurnSnapshot | null
+  stoppedReplayLost?: boolean
+  stopUnconfirmed?: boolean
   history: ConversationSnapshot | null
   replay: readonly unknown[]
 }

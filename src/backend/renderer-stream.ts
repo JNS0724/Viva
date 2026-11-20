@@ -68,9 +68,14 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     if (mark) write.run('save', conversationId, mark.eventCursor)
     else removeSave.run(conversationId)
   }
-  function snapshot(conversationId: string, context: ConversationContext) {
+  function snapshot(conversationId: string, context: ConversationContext, stopped = false) {
     const cutoff = watermark('save', conversationId)
-    if (cutoff < Math.max(loss(key(context.sessionId, context.conversationId)), loss(key(context.sessionId, null)))) throw new Error('Conversation stream has an unreplayable gap')
+    if (cutoff < Math.max(loss(key(context.sessionId, context.conversationId)), loss(key(context.sessionId, null)))) {
+      // The execution is fenced. Its saved checkpoint and restart action remain usable
+      // even when this window missed more output than the replay buffer retains.
+      if (stopped) return { streamGeneration, cutoverCursor: eventCursor, replay: [], stoppedReplayLost: true }
+      throw new Error('Conversation stream has an unreplayable gap')
+    }
     return { streamGeneration, cutoverCursor: eventCursor,
       replay: held.filter(row => row.cursor > cutoff && belongsTo(row.routing, context)).map(row => JSON.parse(row.json) as unknown) }
   }

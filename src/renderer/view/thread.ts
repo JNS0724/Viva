@@ -486,6 +486,13 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     state.question ? part('question', [state.question, !container.classList?.contains('tp-thread')], () => questionCard(state.question!, handlers, !container.classList?.contains('tp-thread'))) : '',
     state.secret ? secretCard(state.secret, handlers) : '',
     state.phase === 'working' && !last?.open ? part('working', [currentAction(state)], () => workingRow(state)) : '',
+    state.phase === 'stopping' ? part('stopping', [], () =>
+      h('div', { class: 'msg-working', role: 'status', text: t('conversation.stop.pending') })) : '',
+    state.stopUnconfirmed ? part('recovery', [state.stoppedReplayLost], () =>
+      h('div', { class: 'msg-error', role: 'status' },
+        state.stoppedReplayLost ? h('div', { class: 'muted', text: t('conversation.stop.saved.only') }) : null,
+        h('div', { class: 'muted', text: t('conversation.stop.restart.tasks') }),
+        h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t('conversation.stop.recover'), onClick: handlers.recoverConversation }))) : '',
     state.phase === 'error' ? part('error', [state.error], () => errorRow(state.error ?? '')) : '',
   ].flat().filter(isContent)
   const changed = reconcileChildren(container, nodes)

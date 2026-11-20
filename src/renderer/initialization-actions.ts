@@ -1,16 +1,17 @@
 import { createRequestBudget, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
 import { belongsTo, isConversationEvent, type ContextEvent } from '../shared/conversation-context.ts'
-import { invalidatesConversationSnapshot, streamMark, type RendererSnapshot, type StreamMark } from '../shared/renderer-sync.ts'
+import { invalidatesConversationSnapshot, streamMark, type ActiveTurnSnapshot, type RendererSnapshot, type StreamMark } from '../shared/renderer-sync.ts'
 import type { DiagnosticEvent } from '../diagnostics/contracts.ts'
 
 export type InitializationFailure = 'timeout' | 'capacity' | 'age' | 'boundary' | 'gap' | 'unavailable'
 const foreground = (value: ContextEvent) => isConversationEvent(value) || value.type === 'ready' || value.type === 'workdir'
 
 /** Owns required startup state only. Optional memory, settings and feed reads never gate this handoff. */
-export function createInitializationActions({ snapshot, install, deliver, pause, initialized, failed, loading, observe = () => {},
+export function createInitializationActions({ snapshot, install, deliver, restoreTurn, pause, initialized, failed, loading, observe = () => {},
   budgetMs = INITIALIZATION_BUDGET_MS, maxEvents = 1024, maxBytes = 2 * 1024 * 1024, maxAgeMs = 15_000,
 }: {
   snapshot(options: { budgetMs: number }): Promise<RendererSnapshot>, install(value: RendererSnapshot): void, deliver(value: unknown): void,
+  restoreTurn?(turn: ActiveTurnSnapshot): void,
   pause(): void, initialized(): void, failed(reason: InitializationFailure): void, loading(): void,
   observe?: (event: DiagnosticEvent) => void,
   budgetMs?: number, maxEvents?: number, maxBytes?: number, maxAgeMs?: number,
@@ -104,6 +105,8 @@ export function createInitializationActions({ snapshot, install, deliver, pause,
       // Synchronous install/replay: callbacks from an older attempt cannot commit halfway through.
       initialized()
       for (const event of view.replay) deliver(event)
+      // This identity describes the cutoff, after replay and before any newer turn_end or start.
+      if (view.activeTurn) restoreTurn?.(view.activeTurn)
       for (const item of after) deliver(JSON.parse(item.json) as unknown)
       // A push arriving while this RPC was pending cannot prove that an unfamiliar owner is obsolete.
       for (const id of priorStreams) if (id !== mark.streamGeneration && (id === active?.streamGeneration || !pushedDuringRequest.has(id))) {

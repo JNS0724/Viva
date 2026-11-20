@@ -21,7 +21,7 @@ function fixture() {
   let restrictions: DocumentSourceRef[] = [], replacementVisible = true
   const allowed = new Set(['old', 'new'])
   const policy = createMemoryDocumentReadPolicy({ hash,
-    notes: { read: () => note, registered: () => [{ ...note, sources: [source], state: 'active' as const }], references: () => [source], snapshot: () => [source], sources: () => ['old'] },
+    notes: { read: () => note, registeredAt: (scope, path) => scope === note.workspace && path === note.path ? note : undefined, registered: () => [{ ...note, sources: [source], state: 'active' as const }], references: () => [source], snapshot: () => [source], sources: () => ['old'] },
     documents: {
       read: (_workspace, path) => [...replacementVisible ? [replacement] : [], ...extra].find(doc => doc.enabled && doc.path === path) ?? null,
       registered: () => [...replacementVisible ? [replacement] : [], ...extra].map(doc => ({ ...doc, state: doc.enabled ? 'active' as const : 'disabled' as const })), sourceRestrictions: () => restrictions,

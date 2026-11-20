@@ -2,8 +2,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.js'
+import { delayNativeOutputReceipts, DSH_TIMEOUT_MS, replies, startHarness } from './fixtures/dsh-harness.ts'
 import { MAIN_SCOPE } from '../plugins/routing/lib/policy.ts'
+import { initialState, reduce } from '../src/renderer/state.ts'
+import { decodeUpdate } from '../src/renderer/agent-event-decoder.ts'
 import { noteFor } from '../src/backend/task-reports.ts'
 
 /** viva-routing inside the real dsh, with the fake model (fake-llm.ts) routing as the main agent would. */
@@ -35,6 +37,32 @@ test('the main session is narrowed before its first step, under its own persona;
   assert.doesNotMatch(shown[0]!, /请求 ID|commit_route|"accepted"/)
   const sessionId = agent.currentSession()!
   assert.deepEqual(requests.endTurn({ sessionId, reason: 'unrouted' }), [], 'the request was decided')
+})
+
+test('a foreground clarification publishes its own final words when the native output receipt arrives late', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { events, bridge } = await startHarness(t)
+  const agent = bridge({ recordOutputs: async (session, outputs) => {
+    const accepted = []
+    for (const output of outputs) {
+      if (output.native && await agent.memory.call('nativeOutputEvidence', { session, ...output.native })) accepted.push(output)
+    }
+    return accepted
+  } })
+  await agent.start()
+  await agent.prompt('海棠城项目约定')
+  assert.match(replies(events).join(''), /海棠城项目约定/)
+  const start = events.length
+  const delayed = delayNativeOutputReceipts(t, agent.pid, 1250)
+  await agent.prompt('明天天气怎么样')
+  assert.ok(delayed() > 0, 'the owner receipt crossed the delayed RPC boundary')
+  const latest = events.slice(start)
+  let view = reduce(initialState, { type: 'user_prompt', text: '明天天气怎么样', at: 1 })
+  for (const event of latest) {
+    const update = decodeUpdate(event.update)
+    if (update) view = reduce(view, { type: 'acp_update', update, at: 2 })
+  }
+  assert.deepEqual(view.messages.filter(message => message.role === 'assistant').map(message => message.text), ['你想看哪个城市的天气？'])
+  assert.equal(latest.find(event => event.type === 'turn_end')?.finalReply, true)
 })
 
 test('a task is not narrowed and never sees commit_route; it works under the profile\'s persona', { timeout: DSH_TIMEOUT_MS }, async (t) => {

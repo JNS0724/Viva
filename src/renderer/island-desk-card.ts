@@ -85,7 +85,7 @@ function errorCard(view: IslandShown): DeskCard {
   const detail = view.detail ? (view.incomplete ? view.detail : userError(view.detail)) : ''
   return card(view.label, {
     body: detail ? [{ kind: 'text', text: detail }] : [],
-    actions: [{ text: t(view.incomplete ? 'desk-card.view.reply' : 'desk-card.view.in.viva'), role: 'blue', act: OPEN }, askMore()],
+    actions: [{ text: t(view.incomplete ? 'desk-card.view.reply' : 'desk-card.view.in.viva'), role: 'blue', act: OPEN }, ...(view.stopUnconfirmed ? [] : [askMore()])],
   })
 }
 

@@ -172,7 +172,7 @@ Plugins and the app talk over the IPC channel opened when dsh starts; each contr
 
 **Recheck when upgrading dsh.**
 
-- `viva-routing` depends on dsh's internal events, not a general ACP extension. dsh is pinned to `0.2.2-rc.2`, whose ACP adapter forwards only whole blocks. After an upgrade, rerun `test/stream-runtime.test.js` with real dsh and delayed SSE: the first text must arrive before the answer completes, and cancelling must keep the committed part. Then rerun `test/tasks-routing-dsh.test.ts`: the main session must be narrowed before its first step is assembled. If the streaming channel fails mid-call, that call's provisional content is withdrawn and the call ends in an error; ACP's text is never shown directly, or the routing steps' text would leak.
+- `viva-routing` depends on dsh's internal events, not a general ACP extension. dsh is pinned to `0.2.2-rc.2`, whose ACP adapter forwards only whole blocks. After an upgrade, rerun `test/stream-runtime.test.ts` with real dsh and delayed SSE: the first text must arrive before the answer completes, and cancelling must keep the committed part. Then rerun `test/tasks-routing-dsh.test.ts`: the main session must be narrowed before its first step is assembled. If the streaming channel fails mid-call, that call's provisional content is withdrawn and the call ends in an error; ACP's text is never shown directly, or the routing steps' text would leak.
 - Recheck the memory channel after upgrading DSH. A fresh search must omit a deleted file while its original chat and existing tasks still resume. Separately verify that withdrawing a chat source excludes it from subsequent requests.
 
 **Settled choices.**

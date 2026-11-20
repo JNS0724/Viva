@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.js'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
 
 /**
  * The fork plugin (prototype) inside the real dsh: going back to an earlier point of the conversation, and on
@@ -108,7 +108,7 @@ test('forked with no point given while a turn is under way, the new session leav
   // its end is not.
   const turn = agent.prompt('帮我接入演示服务')
   const card = await eventually(() => events.find((event) => event.type === 'permission'))
-  assert.ok(card, 'the turn waits on its approval card')
+  assert.ok(card && typeof card.requestId === 'string', 'the turn waits on its approval card')
 
   const forked = await agent.fork({})
   assert.equal(forked.ok, true, JSON.stringify(forked))

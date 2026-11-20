@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { NATIVE_OUTPUT_RECEIPTS } from '../../../src/shared/node/native-output-receipts.ts'
 
 type Block = { type: string, text?: unknown }
 type StoredEvent = { seq: number, type: string, data: { turn: number, step: number, message: { content: Block[] } } }
@@ -36,11 +37,13 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
   let generation = 0
   const wasShown = (binding: Binding, seq: number) => binding.shown.has(seq)
 
-  function flushed(operation: string | undefined) {
+  async function flushed(operation: string | undefined) {
     const bound = [...bindings].find(([, binding]) => binding.operation === operation)
     const binding = bound?.[1]
     const agent = bound && ctx.agents?.get(SessionId(bound[0]))
     if (!agent || !binding) return { messages: [], finalReply: false }
+    if (binding.proofs) await ctx.parallel(NATIVE_OUTPUT_RECEIPTS, bound[0])
+    if (bindings.get(bound[0]) !== binding) throw new Error('Assistant output binding changed')
     const answers = agent.session.snapshotEvents().filter(event => event.seq >= binding.from && event.type === 'assistant/message')
     const messages = [
       ...answers.map(event => ({
@@ -62,7 +65,9 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
 
   const receive = (message: Message) => {
     if (message?.type === 'assistant_stream_flush' && message.version === 1) {
-      send({ type: 'assistant_stream_flushed', version: 1, operation: message.operation, ...flushed(message.operation) })
+      const reply = { type: 'assistant_stream_flushed', version: 1, operation: message.operation }
+      // A flush without a confirmed receipt fails closed in the backend.
+      void flushed(message.operation).then(result => send({ ...reply, ...result }), () => send(reply))
       return
     }
     if (message?.type !== 'assistant_stream_bind' || message.version !== 1 || typeof message.sessionId !== 'string' || typeof message.operation !== 'string') return
