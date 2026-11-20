@@ -654,3 +654,62 @@ test('vector preparation allows a corpus to exceed one inference deadline across
   assert.equal(await retrieval.prepareVectors(), true)
   assert.equal(index.vectorState().active, true)
 })
+
+test('manual reindex during an in-flight query resumes vector preparation when the query finishes', async t => {
+  const { embedder } = encoder()
+  const run = embedder.embedBatch
+  let enteredQuery!: () => void, releaseQuery!: () => void, rebuiltDone!: () => void
+  const queryStarted = new Promise<void>(resolve => { enteredQuery = resolve })
+  const queryGate = new Promise<void>(resolve => { releaseQuery = resolve })
+  const rebuiltReady = new Promise<void>(resolve => { rebuiltDone = resolve })
+  embedder.embedBatch = async (inputs, signal) => {
+    if (inputs[0]?.kind === 'query') { enteredQuery(); await queryGate }
+    return run(inputs, signal)
+  }
+  const doc = view('a', 'needle')
+  const { retrieval, index } = setup(t, [doc], embedder)
+  t.after(releaseQuery)
+  assert.equal(await retrieval.prepareVectors(), true)
+  assert.equal(index.vectorState().active, true)
+  const finish = index.finishVectors
+  let targetGeneration = -1
+  index.finishVectors = (generation, expected) => {
+    const ok = finish(generation, expected)
+    if (ok && generation === targetGeneration) rebuiltDone()
+    return ok
+  }
+  const pendingSearch = retrieval.search({ query: 'needle', allows })
+  await queryStarted
+  const rebuilt = retrieval.reindex()
+  targetGeneration = rebuilt.vectorGeneration
+  assert.equal(retrieval.publishFiles([{ workspace, path: doc.path }]).accepted, 0)
+  assert.equal(await retrieval.prepareVectors(), false)
+  assert.equal(index.vectorState().generation, rebuilt.vectorGeneration)
+  assert.equal(index.vectorState().active, false)
+  releaseQuery()
+  await pendingSearch
+  await rebuiltReady
+  assert.equal(index.vectorState().generation, rebuilt.vectorGeneration)
+  assert.equal(index.vectorState().active, true)
+  assert.deepEqual(index.missingVectors(rebuilt.vectorGeneration), [])
+})
+
+test('republishing an unchanged superseded digest returns zero accepted and skips redundant vector checks', async t => {
+  const { embedder } = encoder()
+  const superseded = view('superseded-address', 'Old address.\nCurrent contact note.')
+  superseded.currentMarkdown = superseded.markdown.replace('Old address.', ' '.repeat('Old address.'.length))
+  superseded.applicability = { state: 'superseded', supersessions: [] }
+  const { retrieval, index } = setup(t, [superseded], embedder, undefined, { sync: false })
+  let vectorChecks = 0
+  const begin = index.beginVectors
+  index.beginVectors = space => { vectorChecks++; return begin(space) }
+  assert.deepEqual(retrieval.publishFiles([{ workspace, path: superseded.path }]), { accepted: 1, removed: 0 })
+  assert.equal(await retrieval.prepareVectors(), true)
+  const checksAfterFirst = vectorChecks
+  assert.ok(checksAfterFirst >= 1)
+  for (let round = 0; round < 2; round++) {
+    assert.deepEqual(retrieval.publishFiles([{ workspace, path: superseded.path }]), { accepted: 0, removed: 0 })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(vectorChecks, checksAfterFirst)
+  }
+})

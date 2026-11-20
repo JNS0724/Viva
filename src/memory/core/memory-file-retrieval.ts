@@ -94,9 +94,12 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       chunks: parsed.chunks.filter(chunk => Boolean(chunk.text.trim())),
     }
   }
+  const unchangedNode = (old: MemoryFileNode | null, next: IndexedVersion & { updatedAt: number, day?: string }, expectTags: boolean) =>
+    Boolean(old && sameVersion(old, next) && old.updatedAt === next.updatedAt && old.day === next.day
+      && (expectTags ? old.tags !== undefined : old.tags === undefined))
   function publishSnapshot(snapshot: MemoryFileSnapshot) {
     const old = index.snapshot(snapshot.workspace, snapshot.id)
-    if (old && sameVersion(old, snapshot) && old.updatedAt === snapshot.updatedAt && old.day === snapshot.day && (snapshot.kind !== 'digest' || old.tags)) return false
+    if (unchangedNode(old, snapshot, snapshot.tags !== undefined)) return false
     return index.accept(snapshot, old) ? true : null
   }
   function published(accepted: number, removed: number) {
@@ -144,8 +147,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       try {
         const old = index.nodeAt(view.workspace, view.path)
         if (view.currentMarkdown === null) continue
-        if (old && sameVersion(old, view) && old.updatedAt === view.updatedAt && old.day === view.day
-          && (view.kind !== 'digest' || view.applicability.state !== 'current' || old.tags)) {
+        if (unchangedNode(old, view, view.kind === 'digest' && view.applicability.state === 'current')) {
           visible.add(identityKey(view))
           continue
         }
@@ -237,7 +239,8 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     finally { signal.removeEventListener('abort', onAbort) }
   }
   async function prepareVectors(signal?: AbortSignal) {
-    if (!embedder || closed || preparing || activeQueries > 0 || signal?.aborted) return false
+    if (!embedder || closed || signal?.aborted) return false
+    if (preparing || activeQueries > 0) { vectorCheckPending = true; return false }
     clearTimeout(scheduledPreparation)
     scheduledPreparation = undefined
     const observation = beginDiagnosticOperation(diagnostics, 'memory.index', { stage: 'rebuild' })
@@ -630,7 +633,11 @@ ${file.description}`, file, view }] : []
     }, { stage: 'lexical' }),
     prepareVectors,indexedScores,
     reindex:()=>observeDiagnosticSync(diagnostics, 'memory.index', () => {
-      if (closed) throw new Error('memory-file-retrieval-closed'); return index.reindex()
+      if (closed) throw new Error('memory-file-retrieval-closed')
+      const result = index.reindex()
+      vectorCheckPending = true
+      publicationRevision++
+      return result
     }, { stage: 'rebuild' }),
     close(){closed=true;clearTimeout(scheduledPreparation);controllers.forEach(controller=>controller.abort());returned.clear()},
   }
