@@ -669,7 +669,7 @@ test('write-before-read and search-before-create guards reject uninspected opera
   assert.ok(h.documents.read(workspace, 'digest/wiki/existing.md')!.markdown.includes('Original with extra note.'))
 })
 
-test('reaching dreamUnits cap defers checkpointing even for a single multi-topic daily note until a pass finishes below the cap', async t => {
+test('hasMore defers checkpointing a single multi-topic daily note while exact-cap completion checkpoints without looping', async t => {
   const h = harness(t, { units: 1 })
   const note = h.add('Alpha topic: use strict lint rules. Beta topic: rotate keys monthly.', 'DailyTopics')
   let calls = 0
@@ -683,6 +683,7 @@ test('reaching dreamUnits cap defers checkpointing even for a single multi-topic
     const target = input.notes[0]!
     if (calls === 1) {
       return JSON.stringify({
+        hasMore: true,
         operations: [{
           action: 'CREATE',
           path: 'digest/wiki/alpha.md',
@@ -694,39 +695,72 @@ test('reaching dreamUnits cap defers checkpointing even for a single multi-topic
         }],
       })
     }
-    if (calls === 2) {
-      return JSON.stringify({
-        operations: [{
-          action: 'CREATE',
-          path: 'digest/wiki/beta.md',
-          name: 'Beta',
-          description: 'Beta key rotation',
-          body: 'Rotate keys monthly.',
-          dailyPaths: [target.path],
-          sourceIds: target.sourceIds,
-        }],
-      })
-    }
-    return JSON.stringify({ operations: [] })
+    // Second pass also hits maxOperations (1 === 1) but explicitly signals hasMore: false,
+    // so the batch checkpoints immediately without needing an extra pass or risking a retry loop.
+    return JSON.stringify({
+      hasMore: false,
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/wiki/beta.md',
+        name: 'Beta',
+        description: 'Beta key rotation',
+        body: 'Rotate keys monthly.',
+        dailyPaths: [target.path],
+        sourceIds: target.sourceIds,
+      }],
+    })
   })
 
   await h.run()
   assert.equal(calls, 1)
   assert.equal(h.status().state, 'retry')
   assert.equal(h.documents.list(note.note.workspace).length, 1)
-  // Single daily file must stay uncheckpointed because the pass hit maxOperations.
   assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
 
   await h.retry()
   assert.equal(calls, 2)
-  assert.equal(h.status().state, 'retry')
-  assert.equal(h.documents.list(note.note.workspace).length, 2)
-  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
-
-  await h.retry()
-  assert.equal(calls, 3)
   assert.equal(h.status().state, 'idle')
   assert.equal(h.documents.list(note.note.workspace).length, 2)
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+})
+
+test('reaching dreamUnits cap without hasMore still keeps uncovered files in a multi-file batch pending', async t => {
+  const h = harness(t, { units: 1 })
+  const first = h.add('Alpha topic: use strict lint rules.', 'Alpha')
+  const second = h.add('Beta topic: rotate keys monthly.', 'Beta')
+  let calls = 0
+  h.setModel(async request => {
+    calls++
+    const input = request.input as { maxOperations: number, existingDigestCount: number, notes: Array<{ path: string, title: string, sourceIds: string[] }> }
+    assert.equal(input.maxOperations, 1)
+    if (input.existingDigestCount > 0) {
+      await request.tools!.executeTool({ callId: `s-${calls}`, name: 'node_search', input: { query: input.notes[0]!.title } })
+    }
+    const target = input.notes[0]!
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: `digest/wiki/${target.title.toLowerCase()}.md`,
+        name: target.title,
+        description: `${target.title} rule`,
+        body: `${target.title} summary.`,
+        dailyPaths: [target.path],
+        sourceIds: target.sourceIds,
+      }],
+    })
+  })
+  await h.run()
+  assert.equal(calls, 1)
+  assert.equal(h.status().state, 'retry')
+  assert.equal(h.documents.list(first.note.workspace).length, 1)
+  const pending = h.notes.changedFiles('2026-11-15', '2026-11-16')
+  assert.equal(pending.length, 1)
+  assert.ok([first.key, second.key].includes(pending[0]!.key))
+
+  await h.retry()
+  assert.equal(calls, 2)
+  assert.equal(h.status().state, 'idle')
+  assert.equal(h.documents.list(first.note.workspace).length, 2)
   assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })
 

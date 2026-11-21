@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openMemoryFileStore, MemoryFileError } from '../src/memory/node/memory-file-store.ts'
 import { formatMemoryDocument, memoryDocumentLines, parseMemoryDocument, readMemoryLines, updateMemoryFrontmatter } from '../src/memory/core/memory-document.ts'
-import { parseDreamOperations, validMemoryPath } from '../src/memory/contracts/memory-file-contract.ts'
+import { parseDreamOperations, parseDreamPlan, validMemoryPath } from '../src/memory/contracts/memory-file-contract.ts'
 
 const a = 'daily/2026-11-15/project.md'
 const b = 'daily/2026-11-15/decision.md'
@@ -132,6 +132,15 @@ test('dream consolidation validates paths, source membership, target uniqueness 
   assert.throws(() => parseDreamOperations({ operations: [{ action: 'REFINE', path: target, name: 'Rebuild', description: 'Safe rebuild', dailyPaths: [a], sourceIds: ['s1'] }] }, new Set([a]), new Set(['s1']), 5))
   assert.throws(() => parseDreamOperations({ operations: [] }, new Set(), new Set(), -1))
   assert.deepEqual(parseDreamOperations({ operations: [] }, new Set(), new Set(), 0), [])
+  assert.deepEqual(parseDreamPlan({ operations: [op], hasMore: true }, new Set([a]), new Set(['s1']), 1), {
+    operations: [{ ...op, dailyPaths: [a], sourceIds: ['s1'] }], hasMore: true,
+  })
+  assert.deepEqual(parseDreamPlan({ operations: [op], hasMore: false }, new Set([a]), new Set(['s1']), 1), {
+    operations: [{ ...op, dailyPaths: [a], sourceIds: ['s1'] }], hasMore: false,
+  })
+  assert.deepEqual(parseDreamPlan({ operations: [], hasMore: true }, new Set([a]), new Set(['s1']), 1), {
+    operations: [], hasMore: false,
+  })
 })
 
 

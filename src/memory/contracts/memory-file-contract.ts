@@ -54,17 +54,25 @@ export const dreamOperationSchema = z.discriminatedUnion('action', [
 ])
 export type DreamOperation = z.output<typeof dreamOperationSchema>
 
-/** Validate every path, source ID and target uniqueness against the authorized batch inputs. */
-export function parseDreamOperations(
+export interface DreamPlan {
+  operations: DreamOperation[]
+  hasMore: boolean
+}
+
+/** Validate every path, source ID, target uniqueness, and optional continuation signal against batch inputs. */
+export function parseDreamPlan(
   value: unknown,
   allowedDailyPaths: ReadonlySet<string>,
   allowedSourceIds: ReadonlySet<string>,
   maxOperations: number,
-): DreamOperation[] {
+): DreamPlan {
   if (!Number.isSafeInteger(maxOperations) || maxOperations < 0) throw new Error('invalid-dream-budget')
-  const { operations } = z.strictObject({ operations: z.array(dreamOperationSchema).max(maxOperations) }).parse(value)
+  const { operations, hasMore = false } = z.strictObject({
+    operations: z.array(dreamOperationSchema).max(maxOperations),
+    hasMore: z.boolean().optional(),
+  }).parse(value)
   const targets = new Set<string>()
-  return operations.map(operation => {
+  const normalized = operations.map(operation => {
     if (targets.has(operation.path)) throw new Error('duplicate-dream-target')
     targets.add(operation.path)
     const dailyPaths = [...new Set(operation.dailyPaths)]
@@ -73,4 +81,14 @@ export function parseDreamOperations(
     if (sourceIds.some(id => !allowedSourceIds.has(id))) throw new Error('unknown-dream-source')
     return { ...operation, dailyPaths, sourceIds }
   })
+  return { operations: normalized, hasMore: hasMore && normalized.length > 0 }
+}
+
+export function parseDreamOperations(
+  value: unknown,
+  allowedDailyPaths: ReadonlySet<string>,
+  allowedSourceIds: ReadonlySet<string>,
+  maxOperations: number,
+): DreamOperation[] {
+  return parseDreamPlan(value, allowedDailyPaths, allowedSourceIds, maxOperations).operations
 }

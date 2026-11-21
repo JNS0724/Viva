@@ -3,7 +3,7 @@ import type { DiagnosticPort, DiagnosticReason, DiagnosticStage } from '../../di
 import { MemoryComputeError } from '../contracts/compute.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
-import { dailyPath, parseDreamOperations } from '../contracts/memory-file-contract.ts'
+import { dailyPath, parseDreamPlan } from '../contracts/memory-file-contract.ts'
 import type { DreamEdit, DreamOperation } from '../contracts/memory-file-contract.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryIdentity } from './ports/runtime.ts'
@@ -71,7 +71,7 @@ type PersistedBatch = {
   workspace: string
   fileRefs: FileRef[]
   operations: PersistedOperation[]
-  hitLimit: boolean
+  checkpointPaths: string[]
 }
 
 const DAILY = 'daily'
@@ -98,7 +98,7 @@ function pendingBatchOf(payload: unknown): PersistedBatch | null {
   if (!candidate || typeof candidate !== 'object') return null
   const batch = candidate as Partial<PersistedBatch>
   if (typeof batch.workspace !== 'string' || !Array.isArray(batch.fileRefs)
-    || !Array.isArray(batch.operations) || typeof batch.hitLimit !== 'boolean') {
+    || !Array.isArray(batch.operations) || !Array.isArray(batch.checkpointPaths)) {
     return null
   }
   return batch as PersistedBatch
@@ -512,7 +512,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       if (resumeOutcome === 'retry') return 'retry'
       if (pendingBatchOf(effects.get(DREAM, DAILY)?.payload)) {
         clearPendingBatch()
-        if (!pendingBatch.hitLimit) await checkpointFiles(pendingBatch.fileRefs)
+        const toCheckpoint = pendingBatch.fileRefs.filter(file => pendingBatch.checkpointPaths.includes(file.path))
+        if (toCheckpoint.length) await checkpointFiles(toCheckpoint)
       }
     }
 
@@ -657,7 +658,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const changedPaths = new Set(noteByPath.keys())
         const allowedSourceIds = new Set(batchSourceMap.keys())
         const remainingAtStart = dreamUnits - operationsUsed
-        let prepared: PreparedOperation[] | undefined
+        let prepared: { operations: PreparedOperation[], hasMore: boolean } | undefined
         let retryHint: string | undefined
 
         for (let attempt = 0; attempt < 2 && !prepared; attempt++) {
@@ -695,7 +696,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; retry = true; return }
             if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
             try {
-              const operations = parseDreamOperations(parse(raw), changedPaths, allowedSourceIds, remainingAtStart)
+              const plan = parseDreamPlan(parse(raw), changedPaths, allowedSourceIds, remainingAtStart)
+              const operations = plan.operations
               const validated: PreparedOperation[] = []
               const plannedByPath = new Map<string, { evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }>()
               for (const operation of operations) {
@@ -770,7 +772,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
                 })
               }
-              prepared = validated
+              prepared = { operations: validated, hasMore: plan.hasMore }
             } catch (error) {
               const reason = error instanceof Error ? error.message : 'invalid-output'
               if (reason === 'dream-search-incomplete') { retry = true; return }
@@ -805,8 +807,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           return
         }
 
-        const hitLimit = prepared.length > 0 && prepared.length >= remainingAtStart
-        const persistedOps: PersistedOperation[] = prepared.map(item => ({
+        const hitLimit = prepared.operations.length > 0 && prepared.operations.length >= remainingAtStart
+        const coveredPaths = new Set(prepared.operations.flatMap(item => item.operation.dailyPaths))
+        // Explicit hasMore defers the entire batch (including a single multi-topic daily note).
+        // Without hasMore, an exact-cap pass checkpoints covered files so it cannot loop forever,
+        // while keeping any unreferenced files in a multi-file batch pending for retry.
+        const checkpointRefs = prepared.hasMore
+          ? []
+          : hitLimit
+            ? fileRefs.filter(file => coveredPaths.has(file.path))
+            : fileRefs
+        const checkpointPaths = checkpointRefs.map(file => file.path)
+        const deferRetry = prepared.hasMore || checkpointRefs.length < fileRefs.length
+        const persistedOps: PersistedOperation[] = prepared.operations.map(item => ({
           operationId: `dream:${identity.newId()}`,
           action: item.operation.action,
           path: item.operation.path,
@@ -818,7 +831,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           files: item.files,
         }))
         if (persistedOps.length > 0) {
-          const nextPending: PersistedBatch = { workspace, fileRefs, operations: persistedOps, hitLimit }
+          const nextPending: PersistedBatch = { workspace, fileRefs, operations: persistedOps, checkpointPaths }
           if (!effects.amend(job, { pendingBatch: nextPending })) return
         }
 
@@ -871,14 +884,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         }
         if (persistedOps.length > 0) clearPendingBatch()
 
-        // When a pass reaches maxOperations, any file in the batch (including a single
-        // multi-topic daily note) may still have unconsolidated topics, so defer all
-        // checkpoints until a subsequent pass completes below the cap.
-        if (hitLimit) {
-          retry = true
-          return
-        }
-        await checkpointFiles(fileRefs)
+        if (deferRetry) retry = true
+        if (checkpointRefs.length) await checkpointFiles(checkpointRefs)
       }
 
       for (const batch of batchDreamNotes(candidates, dreamBatchBytes)) await consume(batch)
