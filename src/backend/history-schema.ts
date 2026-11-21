@@ -3,7 +3,6 @@ import { t } from '../shared/i18n/translate.ts'
 /** Validation shared by the history database and the IPC boundary. */
 import { checkImages, type ImageRef } from '../shared/images.ts'
 
-const MAX_MESSAGES = 5000
 const MAX_TEXT_CHARS = 200_000
 const MAX_STOP_REASON_CHARS = 40
 const MAX_TITLE_CHARS = 80
@@ -31,7 +30,7 @@ function normalizeReceipt(receipt: any): Receipt | null {
   return { ms, tools, thoughts, stopReason }
 }
 
-function normalizeMessage(message: any): StoredMessage {
+export function normalizeMessage(message: any): StoredMessage {
   if (!ROLES.has(message?.role)) throw new Error(t("main.history-schema.invalid.message.role", { role: message?.role }))
   if (typeof message.text !== 'string' || message.text.length > MAX_TEXT_CHARS) throw new Error(t("main.history-schema.invalid.message.text"))
   if (message.key !== undefined && (typeof message.key !== 'string' || !message.key || message.key.length > 1000)) throw new Error(t('main.history-schema.invalid.message.key'))
@@ -45,10 +44,9 @@ function normalizeMessage(message: any): StoredMessage {
   }
 }
 
-/** Keeps only what is persisted from a list of messages (renderer state or a file), or throws. */
+/** Keeps only what is persisted from a list of messages, or throws. */
 export function normalizeMessages(input: unknown): StoredMessage[] {
   if (!Array.isArray(input)) throw new Error(t("main.history-schema.history.must.be.a.list.of.messages"))
-  if (input.length > MAX_MESSAGES) throw new Error(t("main.history-schema.too.many.history.messages.maximum", { MAX_MESSAGES: MAX_MESSAGES }))
   return input.map(normalizeMessage)
 }
 

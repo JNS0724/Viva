@@ -189,8 +189,7 @@ test('new-topic readiness migrates the provisional draft and redirects late atta
   assert.deepEqual(store.snapshot().images, [image])
   assert.deepEqual(store.snapshot().files, [file])
   assert.equal(store.clear(sent), false, 'an earlier receipt cannot clear new attachments after migration')
-  const saved = reduce(state, { type: 'conversation_saved', id: 'segment-b' })
-  assert.equal(draftTarget(saved).key, ready.key)
+  assert.equal(draftTarget(state).key, ready.key)
   assert.equal(store.select('topic:topic-a').text, 'prepared input', 'migration never aliases the previous topic into the new one')
 })
 

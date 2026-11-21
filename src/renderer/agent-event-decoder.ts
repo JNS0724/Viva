@@ -230,7 +230,9 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   if (type === 'question_answered') {
     const answers = decodeAnswers(item.answers)
     return string(item.questionId) && answers && optional(item.sourceId, string) && optional(item.sourceIds, sourceMap)
-      ? { type, context, questionId: item.questionId, answers, sourceId: item.sourceId, ...(item.sourceIds ? { sourceIds: item.sourceIds } : {}) } : null
+      && (item.inHistory === undefined || typeof item.inHistory === 'boolean')
+      ? { type, context, questionId: item.questionId, answers, sourceId: item.sourceId,
+        ...(item.sourceIds ? { sourceIds: item.sourceIds } : {}), ...(item.inHistory ? { inHistory: true } : {}) } : null
   }
   if (type === 'question_closed') return string(item.questionId) ? { type, context, questionId: item.questionId } : null
   if (type === 'secret_request') { const parsed = secret(item); return parsed ? { type, context, ...parsed } : null }

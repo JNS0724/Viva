@@ -76,8 +76,6 @@ export const IPC_ARGS = Object.freeze({
   'models:discover': read(z.tuple([record, id.optional()])),
 
   'history:load': read(none),
-  'history:save': z.tuple([z.array(record).max(MAX_LIST), z.strictObject({ streamGeneration: z.string().min(1).max(128), eventCursor: count,
-    context: z.strictObject({ conversationId: id.nullable(), sessionId: id.nullable() }) }).optional()]),
   'history:list': read(z.tuple([count.optional()])),
   'history:search': read(z.tuple([text])),
   'history:resume-topic': z.tuple([id]),

@@ -206,12 +206,9 @@ test('the fake stream authenticates its final reply through the production owner
   const text = blocks.filter(block => objectOf(block)?.type === 'text').map(block => objectOf(block)?.text).join('')
   const key = updateOf(reply).key
   assert.equal(typeof key, 'string')
-  await call('history:save', [{ role: 'user', text: question, sourceId, receipt: null },
-    { role: 'assistant', text, key, receipt: null },
-    { role: 'assistant', text: 'An unpublished scripted reply', key: 'unknown-scripted-reply', receipt: null }])
   const history = JSON.stringify(call('history:load'))
-  assert.ok(history.includes('本周进展'), 'the authenticated reply survives history persistence')
-  assert.ok(!history.includes('An unpublished scripted reply'), 'unknown reply identities still fail the unchanged production history gate')
+  assert.ok(history.includes('本周进展'), 'the authenticated reply is persisted directly by the backend writer')
+  assert.ok(history.includes(question), 'the user prompt is persisted directly by the backend writer')
   const db = new DatabaseSync(path.join(dir, 'memory', 'memory.db'), { readOnly: true })
   try {
     const rows = db.prepare("SELECT a.identity,a.result,r.evidence FROM owner_native_output_attempts a JOIN owner_native_output_reads r ON r.attempt=a.id").all()

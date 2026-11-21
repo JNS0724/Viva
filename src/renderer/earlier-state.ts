@@ -28,6 +28,7 @@ export function reachedRecentEnd(earlier: State['earlier'], now = Date.now()): b
  */
 export function withCurrentKept(state: State, at = Date.now()): State['earlier'] {
   if (state.messages.length === 0) return state.earlier
+  const offset = state.historyOffset ?? 0
   const kept: Segment = {
     id: state.conversationId ?? `unsaved-${at}`,
     sourceSessionId: state.info.sessionId ?? null,
@@ -36,7 +37,7 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
     parentId: state.topic?.parentId ?? null,
     createdAt: at,
     messages: state.messages.map((message: ThreadMessage, seq: number) => ({
-      seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
+      seq: offset + seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
       ...(message.streamKey ? { key: message.streamKey } : {}),
       ...(message.feedItemId ? { feedItemId: message.feedItemId } : {}),
     })),
@@ -46,16 +47,6 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
 }
 
 export const EARLIER_ACTIONS= {
-  /** A first save may finish after its topic moved above the new draft; give that archived segment its real id. */
-  archived_conversation_saved: (state, { sessionId, id }) => {
-    if (!sessionId) return state
-    const pending = state.earlier.segments.find((segment: Segment) => segment.sourceSessionId === sessionId && String(segment.id).startsWith('unsaved-'))
-    if (!pending) return state
-    return withEarlier(state, { segments: state.earlier.segments.map((segment: Segment) => {
-      if (segment === pending) return { ...segment, id }
-      return segment.parentId === pending.id ? { ...segment, parentId: id } : segment
-    }) })
-  },
   earlier_loading: (state) => withEarlier(state, { loading: true }),
   /** A page of segments from before those shown; one already there is not shown twice. */
   earlier_loaded: (state, { segments, hasMore }) => {

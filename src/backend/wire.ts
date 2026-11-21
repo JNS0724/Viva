@@ -25,7 +25,7 @@ export function readBudgetPosition(channel: string) {
   return undefined
 }
 /** Shared optional-diagnostic budget; the original receiver body limit is unchanged. */
-/** Existing complete JSON body limit; history:save is the largest caller. */
+/** Existing complete JSON body limit for backend RPC payloads. */
 export const MAX_JSON_BYTES = 32 * 1024 * 1024
 
 /** What of the desktop the backend reads without waiting: kept in step by the shell (`POST /control/mirror`). */

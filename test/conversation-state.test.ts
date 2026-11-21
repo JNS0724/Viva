@@ -76,8 +76,8 @@ test('the conversation on screen goes by the same reducer, the window\'s own sta
 
 test('project switches and reconnects keep old messages in history outside the new topic', () => {
   const info = { mode: 'live', model: 'model', cwd: '/project-a', sessionId: 'session-a', conversationId: 'segment-a', topicId: 'topic-a' }
-  const started = reduce(reduce(initialState, { type: 'ready', info }), turn[0])
-  const before = reduce(started, { type: 'conversation_saved', id: info.conversationId })
+  const before = reduce(reduce(initialState, { type: 'ready', info }), turn[0])
+  assert.equal(before.conversationId, info.conversationId)
   const within = reduce(before, {
     type: 'workdir_switched', info: { ...info, cwd: '/project-a/nested', sessionId: 'session-a-2', conversationId: 'segment-a-2' },
   })

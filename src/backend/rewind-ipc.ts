@@ -13,6 +13,7 @@ import { sideEffectsOf } from './side-effects.ts'
 import type { ReadNativeTrace } from './dsh-log.ts'
 import type { StoredMessage } from './history-schema.ts'
 import type { MemoryHistoryEdit } from './memory-withdrawal.ts'
+import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 import { randomUUID } from 'node:crypto'
 
 const MAX_TEXT_CHARS = 20_000
@@ -96,8 +97,10 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       if (carried?.turns) {
         await deps.publishCarry?.(next, carried)
       }
-      const messages = db.get(next.id)?.messages.slice(0, keep) ?? []
-      return { ok: true, info: { ...started, conversationId: next.id }, conversation: { id: next.id, messages, ...withRecords(next.id) },
+      const offset = Math.max(0, keep - CONVERSATION_WINDOW_MESSAGES)
+      const messages = db.sliceMessages(next.id, offset, keep)
+      return { ok: true, info: { ...started, conversationId: next.id },
+        conversation: { id: next.id, messages, ...(offset > 0 ? { offset, total: keep } : {}), ...withRecords(next.id) },
         folds: db.foldsOf(next.id), ...(sourceId ? { sourceId } : {}), ...(edit ? { newSource: true } : {}) }
     })
   }
@@ -137,7 +140,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const path = foldedOff(id)
     if (!path) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
     const previous = current()
-    const { conversation, messages } = path.found
+    const { conversation } = path.found
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(conversation.sessionId, conversation.cwd)
       db.unfold(id)
@@ -145,10 +148,14 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       db.moveRecords({ from: previous.id, to: conversation.id, upTo: path.fold.at })
       select({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
       await deps.onContinuation?.(conversation, started)
+      const tail = db.getTail(conversation.id, CONVERSATION_WINDOW_MESSAGES)
+      const messages = tail?.messages ?? path.found.messages
+      const offset = tail?.offset ?? 0
+      const total = tail?.total ?? messages.length
       return {
         ok: true,
         info: { ...started, remembersHistory: started.resumed, conversationId: conversation.id },
-        conversation: { id, messages, ...withRecords(conversation.id) },
+        conversation: { id, messages, ...(offset > 0 ? { offset, total } : {}), ...withRecords(conversation.id) },
         folds: db.foldsOf(id),
       }
     })

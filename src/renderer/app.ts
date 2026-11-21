@@ -34,7 +34,7 @@ import { recordRendererTiming } from './performance-timing.ts'
 import { islandView } from './island-view.ts'
 import { answersFrom } from './question-state.ts'
 import { hubPage } from './hub-state.ts'
-import { historyMessages, setupView } from './selectors.ts'
+import { setupView } from './selectors.ts'
 import { initialState, isBusy, isRevealing, reduce } from './state.ts'
 import { createRewindActions } from './rewind-actions.ts'
 import { createTaskActions } from './task-actions.ts'
@@ -57,8 +57,8 @@ import { attachColumnResize } from './view/column-resize.ts'
 
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
-/** Moments when the conversation changes in a way worth keeping across launches. */
-const SAVE_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'steer_failed', 'steer_delivery', 'question_answered', 'turn_end', 'error'])
+/** Moments when backend-persisted conversation history changed and an open search should refresh. */
+const REFRESH_SEARCH_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)
@@ -116,8 +116,6 @@ const column = attachColumnResize(dom.main, [dom.leftGrip, dom.rightGrip])
 new ResizeObserver(column.fit).observe(dom.main)
 let pendingReveal: (() => void) | null = null
 let lastFrameAt = 0
-/** Nothing is saved until last launch's history has been read, so an early error can't overwrite it. */
-let historyReady = false
 let pendingRender: (() => void) | null = null
 /** What follows each render once the page is wired (the stars, below). */
 let afterRender: (() => void) | null = null
@@ -152,7 +150,7 @@ function dispatch(action: Action) {
   publishIsland()
   doneNotice?.check()
   afterRender?.()
-  if (SAVE_AFTER.has(action.type ?? '')) queueMicrotask(saveHistory)
+  if (REFRESH_SEARCH_AFTER.has(action.type ?? '')) queueMicrotask(() => { void historyActions.refreshIfOpen() })
   agentEvents?.stateChanged()
 }
 
@@ -239,24 +237,6 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
     if (ok) dom.follower.resetForPrompt({ anchor: false })
     if (!ok || !feedItemId) receipt(Boolean(ok))
   },
-}
-
-function saveHistory() {
-  void persistHistory().catch(err => console.error('[history] could not save the conversation:', errorMessage(err)))
-}
-
-async function persistHistory() {
-  if (!historyReady || state.stoppedReplayLost || state.initialization.status !== 'ready' || !agentEvents?.settled() || state.messages.length === 0) return
-  const mark = initialization.watermark()
-  if (!mark) return
-  const sessionId = state.info.sessionId
-  const topicStartedAt = state.topic.startedAt
-  const summary = await api.saveHistory(historyMessages(state, { keys: true }), { ...mark,
-    context: { conversationId: state.conversationId ?? state.info.conversationId ?? null, sessionId: state.info.sessionId ?? null } })
-  // A save from the topic just left must not attach its id to the new blank topic.
-  if (!state.newTopicPending && state.info.sessionId === sessionId && state.topic.startedAt === topicStartedAt) dispatch({ type: 'conversation_saved', id: summary.id })
-  else if (sessionId) dispatch({ type: 'archived_conversation_saved', sessionId, id: summary.id })
-  historyActions.refreshIfOpen()
 }
 
 /** At launch: the permission level picked, shown by the input (the rest of settings is read when they open). */
@@ -435,7 +415,7 @@ function revealRow(row: HTMLElement) {
 
 const conversationActions = createConversationActions({
   api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast,
-  beforePrompt: () => dom.follower.resetForPrompt(), saveBeforeRecovery: persistHistory, keepPicture: pictureKept,
+  beforePrompt: () => dom.follower.resetForPrompt(), keepPicture: pictureKept,
 })
 const { ask, answer, provideSecrets, sendAfterTurn } = conversationActions
 beforeSelection = conversationActions.clearAfterTurn
@@ -1025,7 +1005,7 @@ function handleEvent(event: AgentEvent) { agentEvents!.replay(event) }
 
 const initialization = createInitializationActions({
   snapshot: options => api.getSnapshot(options),
-  pause: () => { historyReady = false; agentEvents!.pause() },
+  pause: () => { agentEvents!.pause() },
   loading: () => dispatch({ type: 'initialization_status', status: 'loading' }),
   failed: reason => dispatch({ type: 'initialization_status', status: 'failed', reason }),
   install: snapshot => { dispatch({ type: 'initialization_snapshot', snapshot }); dom.follower.jumpToLatest() },
@@ -1036,13 +1016,11 @@ const initialization = createInitializationActions({
 })
 async function initializeConversation() {
   if (!await initialization.initialize() || !initialization.watermark()) return
-  historyReady = true
   dispatch({ type: 'initialization_status', status: 'ready' })
   if (!state.earlier.segments.length) void timelineActions.loadEarlier()
   if (state.conversationId) void historyActions.loadTrace(state.conversationId)
   capabilityActions.refreshCapabilities()
   void api.waits().catch((error: unknown) => console.error('[app] waits unavailable:', errorMessage(error)))
-  saveHistory()
 }
 
 async function boot() {

@@ -1,12 +1,18 @@
 import type { AgentInfo } from './agent-info.ts'
 import type { ConversationContext } from './conversation-context.ts'
 
+/** Maximum trailing messages included in a conversation snapshot or tail history load. */
+export const CONVERSATION_WINDOW_MESSAGES = 200
+
 export interface StreamMark { streamGeneration: string, eventCursor: number }
-export interface HistorySaveMark extends StreamMark { context: ConversationContext }
 export interface ConversationSnapshot {
   id: string, updatedAt: number, createdAt: number, parentId: string | null
   messages: readonly { role: string, text: string, receipt?: { ms: number, tools: number, thoughts: number, stopReason: string } | null,
     images?: readonly { id: string }[], key?: string, sourceId?: string, delivery?: 'pending' | 'not-sent' }[]
+  /** Number of persisted messages in this segment before `messages[0]`. */
+  offset?: number
+  /** Total persisted messages in this segment (`offset + messages.length`). */
+  total?: number
   records?: readonly unknown[]
   folds: readonly unknown[]
 }

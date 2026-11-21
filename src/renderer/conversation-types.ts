@@ -49,6 +49,8 @@ export interface AskedSecret { requestId: string, server: string, names: readonl
 export interface ConversationState {
   phase: 'idle' | 'working' | 'waiting' | 'asking' | 'stopping' | 'error'
   messages: readonly ConversationMessage[]
+  /** Earlier persisted messages omitted before `messages[0]` in the foreground sliding window. */
+  historyOffset?: number
   thoughts: readonly StreamText[]
   tools: Readonly<Record<string, ConversationTool>>
   modelCalls: Readonly<Record<string, ModelCallSummary>>
@@ -105,7 +107,7 @@ export interface ConversationPayloads {
   permission_closed: { requestId: string, at?: number }
   question_request: { questionId: string, questions: readonly QuestionItem[], at: number }
   question_pick: { id: string, label: string }
-  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number }
+  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number, inHistory?: boolean }
   question_closed: { questionId: string, at: number }
   secret_request: AskedSecret & { at: number }
   secret_resolved: { requestId: string, provided: boolean, at: number }

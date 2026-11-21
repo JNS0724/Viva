@@ -1,4 +1,5 @@
 import { objectOf } from '../../shared/unknown-value.ts'
+import { CONVERSATION_WINDOW_MESSAGES } from '../../shared/renderer-sync.ts'
 import { localeRevision } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { fileName, splitFiles } from '../../shared/attachments.ts'
@@ -393,16 +394,18 @@ function localizeAssistant(view: View, message: ThreadMessage): boolean {
  * How many of the conversation's messages are drawn at most: its latest. A topic a thousand turns long draws no
  * more than a short one; what is before is read in 回顾 (the line at the top), a part at a time.
  */
-export const THREAD_MAX = 200
+export const THREAD_MAX = CONVERSATION_WINDOW_MESSAGES
 /** The first message of the conversation drawn (by its place in `state.messages`). */
 export const threadStart = (state: Pick<State, 'messages'>) => Math.max(0, state.messages.length - THREAD_MAX)
 
 /** The line above what is drawn of a long conversation: how many are before it, read in 回顾 from the last of them. */
 function restLine(state: ThreadView, start: number, handlers: Handlers) {
-  const seq = state.messages.slice(0, start).filter((message) => !message.open).length - 1
+  const offset = state.historyOffset ?? 0
+  const hidden = offset + start
+  const seq = offset + state.messages.slice(0, start).filter((message) => !message.open).length - 1
   const segmentId = state.conversationId
   return h('button', {
-    class: 'timeline-more thread-rest', type: 'button', text: t("topic.current.earlier.messages", { p0: start }), disabled: !segmentId || seq < 0,
+    class: 'timeline-more thread-rest', type: 'button', text: t("topic.current.earlier.messages", { p0: hidden }), disabled: !segmentId || seq < 0,
     onClick: () => segmentId && handlers.jumpToHit({ segmentId: String(segmentId), seq }),
   })
 }
@@ -433,7 +436,9 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   const traceReady = state.restoredTrace === 'loaded'
   // The answer after the latest question; none while the agent has not started on it.
   const latestAnswer = last?.role === 'assistant' ? last.id : null
+  const offset = state.historyOffset ?? 0
   const start = threadStart(state)
+  const hidden = offset + start
   // Only what is drawn is built: the messages before `start` are neither drawn nor kept.
   const plain = state.messages.map((message, i) => {
     if (i < start) return null
@@ -454,7 +459,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     return [card]
   })
   const hostedBy = (i: number) => takeCards([state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? []),
-    ...anchors.filter(anchor => anchor.at === i + 1).map(anchor => anchor.taskId)])
+    ...anchors.filter(anchor => anchor.at === offset + i + 1).map(anchor => anchor.taskId)])
   // The cards of messages not drawn stay in sight, at the top of what is.
   const earlierCards = state.messages.slice(0, start).flatMap((_, i) => hostedBy(i))
   // A task's record goes after the message it came after (one after them all, or after a message gone: at the end);
@@ -467,19 +472,19 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   const proposalsAfter = (test: (at: number) => boolean) => hosts.filter(({ at }) => test(at))
     .map(({ card }) => part(`proposal:${card.id}`, [card], () => keepTyped(previous.get(`proposal:${card.id}`)?.view, proposalCard(card, handlers, now))))
   const views = messageEntries(state, plain, handlers, start).slice(start).map((entries, i) => {
-    const hosted = [...hostedBy(start + i), ...recordsAfter(start + i + 1), ...proposalsAfter((at) => at === start + i)]
+    const hosted = [...hostedBy(start + i), ...recordsAfter(hidden + i + 1), ...proposalsAfter((at) => at === start + i)]
     return hosted.length ? [...entries, ...hosted] : entries
   })
-  const divided = note && state.restored.count >= start
-    ? views.toSpliced(state.restored.count - start, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))])
+  const divided = note && state.restored.count >= hidden
+    ? views.toSpliced(state.restored.count - hidden, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))])
     : views
   const focus = editorFocus()
   const nodes = [
     initialization && initialization.status !== 'ready' ? part('initialization', [initialization], () => initializationNotice({ initialization }, handlers)) : '',
-    start > 0 ? part('thread-rest', [start, state.conversationId], () => restLine(state, start, handlers)) : '',
+    hidden > 0 ? part('thread-rest', [hidden, state.conversationId], () => restLine(state, start, handlers)) : '',
     ...earlierCards,
-    ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at === 0).map(anchor => anchor.taskId)]),
-    ...recordsAfter(start),
+    ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at <= offset).map(anchor => anchor.taskId)]),
+    ...recordsAfter(hidden),
     ...proposalsAfter((at) => at < start),
     ...divided.flat().filter(isContent),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',

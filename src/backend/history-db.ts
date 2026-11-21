@@ -6,7 +6,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
-import { assertId, autoTitle, normalizeMessages, normalizeTitle, type StoredMessage } from './history-schema.ts'
+import { assertId, autoTitle, normalizeMessage, normalizeMessages, normalizeTitle, type Receipt, type StoredMessage } from './history-schema.ts'
+import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 import { createHistoryGeneratedCopies } from './history-generated-copies.ts'
 import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
 import type { MemoryHostErasureRange } from '../memory/contracts/service.ts'
@@ -131,6 +132,15 @@ type Row = Record<string, any>
 type Statement = { get: (...params: any[]) => any, all: (...params: any[]) => any[], run: (...params: any[]) => { changes: number | bigint } }
 
 
+/** An incremental O(1) mutation applied by the backend foreground history writer. */
+export type HistoryMessageMutation =
+  | { kind: 'append_user', message: StoredMessage }
+  | { kind: 'upsert_assistant', message: StoredMessage, beforeKey?: string }
+  | { kind: 'remove_stream', key: string }
+  | { kind: 'append_note', message: StoredMessage }
+  | { kind: 'attach_receipt', receipt: Receipt, key?: string }
+  | { kind: 'remove_last_assistant', key?: string }
+
 /** A segment of the one timeline, as the app holds it: saved once it has messages. */
 export interface Conversation {
   id: string
@@ -227,6 +237,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   })
   db.exec(COUNT_MESSAGE_IDS)
   db.exec('CREATE INDEX IF NOT EXISTS messages_source ON messages(source_id) WHERE source_id IS NOT NULL')
+  db.exec('CREATE INDEX IF NOT EXISTS messages_key ON messages(conversation_id, source_key) WHERE source_key IS NOT NULL')
   const memoryRanges = createHistoryMemoryRanges(db)
   const generated = createHistoryGeneratedCopies(db, memoryRanges.affectsProof)
   const reviewing = reviewQueries(db, now)
@@ -259,6 +270,35 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? ORDER BY seq`),
     messages: db.prepare(`SELECT role, text, receipt, images, source_key, source_id, session_id,
       (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? ORDER BY seq`),
+    messageCount: db.prepare('SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?'),
+    tailMessages: db.prepare(`SELECT role, text, receipt, images, source_key, source_id, session_id,
+      (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? AND seq >= ? ORDER BY seq`),
+    sliceMessages: db.prepare(`SELECT role, text, receipt, images, source_key, source_id, session_id,
+      (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? AND seq >= ? AND seq < ? ORDER BY seq`),
+    messageBySource: db.prepare('SELECT seq, role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? AND source_id = ? ORDER BY seq DESC LIMIT 1'),
+    messageByKey: db.prepare('SELECT seq, role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? AND source_key = ? ORDER BY seq DESC LIMIT 1'),
+    lastMessage: db.prepare('SELECT seq, role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1'),
+    updateReceipt: db.prepare('UPDATE messages SET receipt = ? WHERE conversation_id = ? AND seq = ?'),
+    updateMessageSession: db.prepare('UPDATE messages SET session_id = ? WHERE conversation_id = ? AND source_id = ?'),
+    updateTitle: db.prepare('UPDATE conversations SET title = ? WHERE id = ? AND title_custom = 0'),
+    erasedSource: db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?'),
+    erasedSession: db.prepare('SELECT 1 FROM memory_erased_sessions WHERE id=?'),
+    erasedTaskBrief: db.prepare('SELECT 1 FROM memory_erased_task_briefs WHERE session=? AND digest=?'),
+    promptReserve: db.prepare(`INSERT INTO prompt_deliveries VALUES (?,'pending')
+      ON CONFLICT(source) DO UPDATE SET state='pending' WHERE state='not-sent'`),
+    promptSettle: db.prepare(`UPDATE prompt_deliveries SET state=? WHERE source=? AND state!='sent'`),
+    promptUndeliveredOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state!='sent'"),
+    promptPendingOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='pending'"),
+    promptNotSentOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='not-sent'"),
+    promptState: db.prepare('SELECT state FROM prompt_deliveries WHERE source=?'),
+    shiftMessagesUp: db.prepare('UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0'),
+    shiftStarsUp: db.prepare('UPDATE stars SET seq = -seq WHERE conversation_id = ? AND seq < 0'),
+    shiftMessagesDown: db.prepare('UPDATE messages SET seq = -seq - 2 WHERE conversation_id = ? AND seq < 0'),
+    shiftStarsDown: db.prepare('UPDATE stars SET seq = -seq - 2 WHERE conversation_id = ? AND seq < 0'),
+    shiftRecordsUp: db.prepare('UPDATE report_records SET after_seq = after_seq + 1 WHERE conversation_id = ? AND after_seq > ?'),
+    shiftRecordsDown: db.prepare('UPDATE report_records SET after_seq = after_seq - 1 WHERE conversation_id = ? AND after_seq > ?'),
+    shiftSidesUp: db.prepare("UPDATE conversations SET folded_at = folded_at + 1 WHERE folded_into = ? AND fold_kind = 'side' AND folded_at > ?"),
+    shiftSidesDown: db.prepare("UPDATE conversations SET folded_at = folded_at - 1 WHERE folded_into = ? AND fold_kind = 'side' AND folded_at > ?"),
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, COALESCE((SELECT MIN(seq) FROM messages WHERE conversation_id = ? AND source_id = ?),
@@ -327,14 +367,39 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
           sourceId = source
         }
       }
-      const erased = sourceId && db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?').get(sourceId)
-        || message.role !== 'user' && sessionId && db.prepare('SELECT 1 FROM memory_erased_sessions WHERE id=?').get(sessionId)
-        || sessionId && db.prepare('SELECT 1 FROM memory_erased_task_briefs WHERE session=? AND digest=?').get(sessionId, createHash('sha256').update(message.text).digest('hex'))
+      const erased = sourceId && sql.erasedSource.get(sourceId)
+        || message.role !== 'user' && sessionId && sql.erasedSession.get(sessionId)
+        || sessionId && sql.erasedTaskBrief.get(sessionId, createHash('sha256').update(message.text).digest('hex'))
       if (erased) return { ...message, text: '', images: undefined, receipt: null }
       const fallback = replicas.find(row => row?.source_id === sourceId)?.text
       const text = sourceId ? memoryRanges.forSave(sourceId, message.text, fallback) : undefined
       return text === undefined ? message : { ...message, text, receipt: null, sourceId }
     })
+  }
+
+  /** Single-message redaction for O(1) incremental writes; enforces the same erasure invariants as redactMessages. */
+  function redactSingle(id: string, input: StoredMessage, sessionId: string | null | undefined, existingRow?: Row): StoredMessage {
+    const replicaSession = existingRow?.session_id ?? sessionId
+    let message = generated.forSave(input, replicaSession)
+    let sourceId = message.sourceId
+    if (!sourceId && message.role === 'user' && memoryRanges.any()) {
+      if (typeof existingRow?.source_id === 'string' && memoryRanges.recognizes(existingRow.source_id, message.text)) {
+        sourceId = existingRow.source_id
+      } else {
+        for (const source of memoryRanges.replicaSources(id)) {
+          if (!memoryRanges.recognizes(source, message.text)) continue
+          if (sourceId) throw new Error('Ambiguous memory history replica')
+          sourceId = source
+        }
+      }
+    }
+    const erased = sourceId && sql.erasedSource.get(sourceId)
+      || message.role !== 'user' && sessionId && sql.erasedSession.get(sessionId)
+      || sessionId && sql.erasedTaskBrief.get(sessionId, createHash('sha256').update(message.text).digest('hex'))
+    if (erased) return { ...message, text: '', images: undefined, receipt: null }
+    const fallback = existingRow?.source_id === sourceId ? existingRow?.text : undefined
+    const text = sourceId ? memoryRanges.forSave(sourceId, message.text, fallback) : undefined
+    return text === undefined ? message : { ...message, text, receipt: null, sourceId }
   }
 
   /**
@@ -411,6 +476,31 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     return row ? { conversation: toConversation(row), messages: sql.messages.all(id).map(toMessage), records: recordsOf(row.id) } : null
   }
 
+  /** Latest `limit` messages of a segment plus total count and starting seq offset, in O(limit) time. */
+  function getTail(id: unknown, limit = CONVERSATION_WINDOW_MESSAGES) {
+    const cid = assertId(id)
+    const row = sql.conversation.get(cid)
+    if (!row) return null
+    const total = Number(sql.messageCount.get(cid)?.count ?? 0)
+    const size = Math.max(1, Math.trunc(limit) || CONVERSATION_WINDOW_MESSAGES)
+    const offset = Math.max(0, total - size)
+    return {
+      conversation: toConversation(row),
+      messages: sql.tailMessages.all(cid, offset).map(toMessage),
+      offset,
+      total,
+      records: recordsOf(row.id),
+    }
+  }
+
+  /** Messages in `[from, to)` by seq order, for windowed rewind responses without scanning earlier rows. */
+  function sliceMessages(id: unknown, from: number, to: number): StoredMessage[] {
+    const cid = assertId(id)
+    const start = Math.max(0, Math.trunc(from))
+    const end = Math.max(start, Math.trunc(to))
+    return start < end ? sql.sliceMessages.all(cid, start, end).map(toMessage) : []
+  }
+
   /** The task records a conversation shows, in their places (report_records). */
   const recordsOf = (id: string): ReportRecord[] => sql.records.all(id).map(toRecord)
 
@@ -455,6 +545,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   function bySession(sessionId: string): Conversation | null {
     const row = sql.bySession.get(sessionId)
     return row ? toConversation(row) : null
+  }
+
+  /** Updates a queued user message's session when a stale native session is reopened before prompt delivery. */
+  function rebindMessageSession(conversationId: string, sourceId: string, sessionId: string) {
+    sql.updateMessageSession.run(sessionId, assertId(conversationId), sourceId)
   }
 
   /** An unconfirmed native turn must not be reopened from a later cold launch. */
@@ -505,6 +600,143 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       syncMessages(id, messages, sourceSession, at, copy)
       if (memoryRanges.any()) memoryRanges.bindSaved(id)
       return toConversation(sql.conversation.get(id) ?? { ...existing, ...conversation })
+    })
+  }
+
+  /**
+   * Incremental O(1) write path for the backend foreground writer: applies a small batch of message mutations in one
+   * transaction without loading or diffing earlier rows in the segment.
+   */
+  function commit<C extends Partial<Conversation> & { id: string }>(
+    conversation: C,
+    ops: readonly HistoryMessageMutation[],
+    { sourceSession = conversation.sessionId }: { sourceSession?: string | null } = {},
+  ): C | Conversation {
+    const id = assertId(conversation.id)
+    if (ops.length === 0) return conversation
+    const at = now()
+    return transaction(() => {
+      let existing = sql.anyConversation.get(id)
+      const hasInsert = ops.some(op => op.kind === 'append_user' || op.kind === 'upsert_assistant' || op.kind === 'append_note')
+      if (!existing && !hasInsert) return conversation
+      const ensureRow = (titleCandidate?: StoredMessage) => {
+        const nextTitle = existing?.title_custom ? existing.title
+          : existing?.title ? existing.title
+            : titleCandidate ? autoTitle([titleCandidate]) : ''
+        sql.upsert.run({
+          id,
+          title: nextTitle,
+          createdAt: conversation.createdAt ?? at,
+          updatedAt: at,
+          sessionId: conversation.sessionId ?? null,
+          mode: conversation.mode ?? null,
+          model: conversation.model ?? null,
+          cwd: conversation.cwd ?? null,
+          parentId: conversation.parentId ?? null,
+          topicId: existing ? null : topicFor(id, conversation),
+        })
+        existing = { title: nextTitle, title_custom: existing?.title_custom ?? 0 }
+      }
+      const nextSeq = () => Number(sql.messageCount.get(id)?.count ?? 0)
+      const insertAt = (seq: number, message: StoredMessage) => {
+        const json = message.receipt ? JSON.stringify(message.receipt) : null
+        const pictures = message.images?.length ? JSON.stringify(message.images) : null
+        sql.insert.run(sql.nextMessageId.get().value, id, seq, message.role, message.text, json, pictures,
+          sourceSession ?? null, at, message.key ?? null, message.sourceId ?? null)
+      }
+      const deleteAt = (seq: number) => {
+        sql.dropStar.run(id, seq)
+        sql.dropMessage.run(id, seq)
+        sql.stageMessagePositions.run(id, seq + 1)
+        sql.shiftMessagesDown.run(id)
+        sql.stageStarPositions.run(id, seq + 1)
+        sql.shiftStarsDown.run(id)
+        sql.shiftRecordsDown.run(id, seq)
+        sql.shiftSidesDown.run(id, seq)
+      }
+      for (const op of ops) {
+        if (op.kind === 'append_user') {
+          const normalized = normalizeMessage({ ...op.message, role: 'user' })
+          const prior = normalized.sourceId ? sql.messageBySource.get(id, normalized.sourceId) : undefined
+          if (prior) { ensureRow(); continue }
+          const redacted = redactSingle(id, normalized, sourceSession)
+          ensureRow(redacted)
+          const last = sql.lastMessage.get(id)
+          const pictures = redacted.images?.length ? JSON.stringify(redacted.images) : null
+          // Rewind of a legacy message without sourceId pre-saves the edited user row; attach the new sourceId in place.
+          if (last && last.role === 'user' && !last.source_id && redacted.sourceId && last.text === redacted.text && last.images === pictures) {
+            sql.update.run('user', redacted.text, last.receipt, pictures, last.source_key ?? null, redacted.sourceId, id, last.seq)
+            continue
+          }
+          insertAt(nextSeq(), redacted)
+          if (!existing.title_custom && !existing.title && redacted.text) {
+            const title = autoTitle([redacted])
+            sql.updateTitle.run(title, id)
+            existing = { ...existing, title }
+          }
+          continue
+        }
+        if (op.kind === 'upsert_assistant') {
+          const normalized = normalizeMessage({ ...op.message, role: 'assistant' })
+          const prior = normalized.key ? sql.messageByKey.get(id, normalized.key) : undefined
+          const redacted = redactSingle(id, normalized, sourceSession, prior)
+          ensureRow()
+          const json = redacted.receipt ? JSON.stringify(redacted.receipt) : null
+          if (prior) {
+            sql.update.run('assistant', redacted.text, json, null, redacted.key ?? null, null, id, prior.seq)
+            continue
+          }
+          if (op.beforeKey) {
+            const anchor = sql.messageByKey.get(id, op.beforeKey)
+            if (anchor) {
+              sql.stageMessagePositions.run(id, anchor.seq)
+              sql.shiftMessagesUp.run(id)
+              sql.stageStarPositions.run(id, anchor.seq)
+              sql.shiftStarsUp.run(id)
+              sql.shiftRecordsUp.run(id, anchor.seq)
+              sql.shiftSidesUp.run(id, anchor.seq)
+              insertAt(anchor.seq, redacted)
+              continue
+            }
+          }
+          insertAt(nextSeq(), redacted)
+          continue
+        }
+        if (op.kind === 'remove_stream') {
+          const prior = sql.messageByKey.get(id, op.key)
+          if (prior) {
+            ensureRow()
+            deleteAt(prior.seq)
+          }
+          continue
+        }
+        if (op.kind === 'append_note') {
+          const normalized = normalizeMessage({ ...op.message, role: 'note' })
+          const redacted = redactSingle(id, normalized, sourceSession)
+          ensureRow()
+          insertAt(nextSeq(), redacted)
+          continue
+        }
+        if (op.kind === 'attach_receipt') {
+          const receipt = normalizeMessage({ role: 'note', text: '', receipt: op.receipt }).receipt
+          const target = op.key ? sql.messageByKey.get(id, op.key) : sql.lastMessage.get(id)
+          if (!target || target.role !== 'assistant' || !receipt) continue
+          if (target.text === '' || sourceSession && sql.erasedSession.get(sourceSession)) continue
+          ensureRow()
+          sql.updateReceipt.run(JSON.stringify(receipt), id, target.seq)
+          continue
+        }
+        if (op.kind === 'remove_last_assistant') {
+          const last = sql.lastMessage.get(id)
+          if (last && last.role === 'assistant' && (!op.key || last.source_key === op.key)) {
+            ensureRow()
+            deleteAt(last.seq)
+          }
+        }
+      }
+      if (memoryRanges.any()) memoryRanges.bindSaved(id)
+      const row = sql.conversation.get(id)
+      return row ? toConversation(row) : conversation
     })
   }
 
@@ -712,25 +944,23 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   function reservePromptDelivery(sources: readonly string[]) {
-    return transaction(() => sources.reduce((count, source) => count + Number(db.prepare(`INSERT INTO prompt_deliveries VALUES (?,'pending')
-      ON CONFLICT(source) DO UPDATE SET state='pending' WHERE state='not-sent'`).run(source).changes), 0))
+    return transaction(() => sources.reduce((count, source) => count + Number(sql.promptReserve.run(source).changes), 0))
   }
   function settlePromptDelivery(sources: readonly string[], delivered: boolean) {
-    return transaction(() => sources.reduce((count, source) => count + Number(db.prepare(`UPDATE prompt_deliveries SET state=? WHERE source=? AND state!='sent'`)
-      .run(delivered ? 'sent' : 'not-sent', source).changes), 0))
+    return transaction(() => sources.reduce((count, source) => count + Number(sql.promptSettle.run(delivered ? 'sent' : 'not-sent', source).changes), 0))
   }
-  const promptDeliverable = (source?: string | null) => !source || !db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state!='sent'").get(source)
-  const promptPending = (sources: readonly string[]) => sources.some(source => Boolean(db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='pending'").get(source)))
-  const promptUndelivered = (sources: readonly string[]) => sources.filter(source => Boolean(db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='not-sent'").get(source)))
+  const promptDeliverable = (source?: string | null) => !source || !sql.promptUndeliveredOne.get(source)
+  const promptPending = (sources: readonly string[]) => sources.some(source => Boolean(sql.promptPendingOne.get(source)))
+  const promptUndelivered = (sources: readonly string[]) => sources.filter(source => Boolean(sql.promptNotSentOne.get(source)))
   const promptDelivery = (source: string): 'pending' | 'not-sent' | 'sent' | undefined =>
-    (db.prepare('SELECT state FROM prompt_deliveries WHERE source=?').get(source) as { state: 'pending' | 'not-sent' | 'sent' } | undefined)?.state
+    (sql.promptState.get(source) as { state: 'pending' | 'not-sent' | 'sent' } | undefined)?.state
 
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
-    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, eraseMemoryCopies, eraseFileRanges,
+    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, rebindMessageSession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
-    create, save, get, workspaceOf: (id: string) => {
+    create, save, commit, get, getTail, sliceMessages, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null
     }, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,

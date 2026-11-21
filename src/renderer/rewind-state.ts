@@ -37,21 +37,23 @@ export const canRewindMessage = (state: Pick<State, 'phase' | 'conversationId' |
 export function rewindTarget(state: State, id: string): { words: string, occurrence: number, keep: number } | null {
   if (state.phase !== 'idle' || !state.conversationId || state.rewind.busy) return null
   const saved = state.messages.filter((message) => !message.open)
-  const keep = saved.findIndex((message) => message.id === id)
-  const message = saved[keep]
+  const localKeep = saved.findIndex((message) => message.id === id)
+  const message = saved[localKeep]
   if (!message || !startsTurn(message)) return null
-  const occurrence = saved.slice(keep + 1).filter((later) => later.role === 'user' && later.text === message.text).length
-  return { words: message.text, occurrence, keep }
+  const occurrence = saved.slice(localKeep + 1).filter((later) => later.role === 'user' && later.text === message.text).length
+  return { words: message.text, occurrence, keep: (state.historyOffset ?? 0) + localKeep }
 }
 
 /**
  * The folded paths by the message they hang after (its id; '' before everything): a fold at `at` follows the
  * `at`-th saved message.
  */
-export function foldAfter(state: Pick<State, 'messages' | 'folds'>): Record<string, Fold[]> {
+export function foldAfter(state: Pick<State, 'messages' | 'folds'> & { historyOffset?: number }): Record<string, Fold[]> {
   const saved = state.messages.filter((message) => !message.open)
+  const offset = state.historyOffset ?? 0
   return state.folds.reduce((byMessage: Record<string, Fold[]>, fold: Fold) => {
-    const key = fold.at === 0 ? '' : saved[fold.at - 1]?.id
+    const localAt = fold.at - offset
+    const key = fold.at === 0 && offset === 0 ? '' : localAt > 0 ? saved[localAt - 1]?.id : undefined
     return key === undefined ? byMessage : { ...byMessage, [key]: [...(byMessage[key] ?? []), fold] }
   }, {})
 }
@@ -78,19 +80,23 @@ export function rewindActions(newSession: (state: State, payload: PayloadFor<'ne
      * The agent went back: on screen are what came before that point, as it was, and the path left behind,
      * folded after it. The earlier timeline stays; the new words follow as the next question.
      */
-    rewound: (state, { conversation, info, folds }) => ({
-      ...newSession(state, { info: { ...state.info, ...info, remembersHistory: true } }),
-      earlier: state.earlier,
-      // Going back is within the topic.
-      topic: state.topic,
-      conversationId: conversation.id,
-      messages: conversation.messages.map((m, i: number) => ({
-        id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null,
-        ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
-      })),
-      // The task records of the part kept, and, back onto a path, those of that path (main/rewind-ipc.ts).
-      records: recordsFrom(conversation.records, state.erasedReportIds),
-      folds,
-    }),
+    rewound: (state, { conversation, info, folds }) => {
+      const offset = Math.max(0, Math.trunc(conversation.offset ?? 0) || 0)
+      return {
+        ...newSession(state, { info: { ...state.info, ...info, remembersHistory: true } }),
+        earlier: state.earlier,
+        // Going back is within the topic.
+        topic: state.topic,
+        conversationId: conversation.id,
+        historyOffset: offset,
+        messages: conversation.messages.map((m, i: number) => ({
+          id: m.key ? `stream:${m.key}:text` : `m${offset + i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null,
+          ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
+        })),
+        // The task records of the part kept, and, back onto a path, those of that path (main/rewind-ipc.ts).
+        records: recordsFrom(conversation.records, state.erasedReportIds),
+        folds,
+      }
+    },
   } satisfies ActionHandlers
 }

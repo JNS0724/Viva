@@ -26,8 +26,10 @@ function recordOf(value: unknown): ReportRecord | null {
  * The records drawn after `after` messages of the conversation on screen. One after more messages than there are (a
  * turn redone, an answer left out) is drawn after the last.
  */
-export const recordsAt = (state: Pick<State, 'records' | 'messages'>, after: number): readonly ReportRecord[] =>
-  state.records.filter((record) => Math.min(record.after, state.messages.length) === after)
+export const recordsAt = (state: Pick<State, 'records' | 'messages'> & { historyOffset?: number }, after: number): readonly ReportRecord[] => {
+  const total = (state.historyOffset ?? 0) + state.messages.length
+  return state.records.filter((record) => Math.min(record.after, total) === after)
+}
 
 /** The records of a conversation loaded, from what the backend sent. */
 export function withoutErasedReports(records: readonly ReportRecord[], erased: readonly string[]): readonly ReportRecord[] {
@@ -54,14 +56,16 @@ export const REPORT_ACTIONS= {
    */
   report_delivered: (state, { conversationId, sessionId, reportId, text, at, beforeSource }) => {
     if (!isRecordFor(state, conversationId, sessionId) || state.erasedReportIds.includes(reportId)) return state
-    const index = beforeSource ? state.messages.findIndex(message => message.sourceId === beforeSource) : -1
+    const offset = state.historyOffset ?? 0
+    const localIndex = beforeSource ? state.messages.findIndex(message => message.sourceId === beforeSource) : -1
+    const index = localIndex >= 0 ? offset + localIndex : -1
     const previous = state.records.find(record => record.reportId === reportId)
     if (previous) {
       if (index < 0 || index >= previous.after) return state
       return { ...state, records: state.records.map(record => record === previous ? { ...previous, after: index } : record) }
     }
     const closed = closeStreams(state)
-    const record = recordOf({ reportId, at, text, after: index >= 0 ? index : closed.messages.length })
+    const record = recordOf({ reportId, at, text, after: index >= 0 ? index : offset + closed.messages.length })
     return record ? { ...closed, records: [...closed.records, record] } : state
   },
   reports_removed: (state, { reportIds }) => {

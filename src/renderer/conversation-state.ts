@@ -38,12 +38,13 @@ function appendStream<T extends { open?: boolean, text: string }>(list: readonly
 }
 
 const bumpTurn = (turn: ConversationView['turn'], key: 'tools' | 'thoughts') => (turn ? { ...turn, [key]: turn[key] + 1 } : turn)
+const messageId = (view: Pick<ConversationView, 'historyOffset'>, index: number) => `m${(view.historyOffset ?? 0) + index}`
 
 function onMessageChunk(view: ConversationView, update: Extract<AcpUpdate, { sessionUpdate: 'agent_message_chunk' }>): ConversationView {
   const chunk = contentText(update.content)
   if (!chunk) return view
   const { list } = appendStream(view.messages, chunk, (i): ThreadMessage => ({
-    id: `m${i}`, role: 'assistant', text: chunk, shown: 0, open: true, receipt: null,
+    id: messageId(view, i), role: 'assistant', text: chunk, shown: 0, open: true, receipt: null,
   }))
   return { ...view, thoughts: closeLast(view.thoughts), messages: list }
 }
@@ -108,12 +109,12 @@ function updateConversation(view: ConversationView, update: AcpUpdate, at: numbe
   }
 }
 
-function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt): ThreadMessage[] {
+function attachReceipt(messages: readonly ThreadMessage[], receipt: Receipt, offset = 0): ThreadMessage[] {
   const last = messages[messages.length - 1]
   const problem = turnProblem(receipt.stopReason)
   if (!problem && receipt.stopReason !== 'cancelled' && last?.role === 'assistant') return [...messages.slice(0, -1), { ...last, receipt }]
   const text = problem ?? (receipt.stopReason === 'cancelled' ? t("state.this.turn.was.stopped") : t("state.no.text.response.this.turn"))
-  return [...messages, { id: `m${messages.length}`, role: 'note', text, open: false, receipt }]
+  return [...messages, { id: `m${offset + messages.length}`, role: 'note', text, open: false, receipt }]
 }
 
 /** The conversation's own actions: what is said, asked and done in it, and how its turns go. */
@@ -121,7 +122,7 @@ export const CONVERSATION_ACTIONS = {
   user_prompt: (view, { text, at, via = null, images = [], sourceId, pending, feedItemId, turnId }) => {
     const closed = closeStreams(view)
     const message = {
-      id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(pending ? { pending } : {}),
+      id: messageId(closed, closed.messages.length), role: 'user', text, ...(sourceId ? { sourceId } : {}), ...(pending ? { pending } : {}),
       ...(feedItemId ? { feedItemId } : {}),
       open: false, receipt: null, ...(via ? { via } : {}), ...(images.length ? { images } : {}),
     }
@@ -153,7 +154,7 @@ export const CONVERSATION_ACTIONS = {
    */
   user_steer: (view, { text, via = null, sourceId }) => {
     const closed = closeStreams(view)
-    const message = { id: `m${closed.messages.length}`, role: 'user', text, ...(sourceId ? { sourceId } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
+    const message = { id: messageId(closed, closed.messages.length), role: 'user', text, ...(sourceId ? { sourceId } : {}), open: false, receipt: null, steered: true, ...(via ? { via } : {}) }
     return { ...closed, messages: [...closed.messages, message] }
   },
 
@@ -234,7 +235,7 @@ export const CONVERSATION_ACTIONS = {
       completedTurn: { startedAt: turn.startedAt, endedAt: at } }
     // A task's result the model had nothing to add to: the turn leaves nothing in the conversation.
     if (silentTask) return { ...ended, messages: last?.role === 'assistant' ? closed.messages.slice(0, -1) : closed.messages }
-    return { ...ended, messages: attachReceipt(closed.messages, receipt) }
+    return { ...ended, messages: attachReceipt(closed.messages, receipt, closed.historyOffset ?? 0) }
   },
 
   /** Her done pose has played a while with nobody looking: it rests on its still, still 已完成. */

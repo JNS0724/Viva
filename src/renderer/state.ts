@@ -1,6 +1,7 @@
 import { handleAction, type ActionHandlers, type PayloadFor } from './action-types.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { retainedMessagePositions, retainedMessageBoundary } from '../shared/message-order.ts'
+import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 import { CONVERSATION_ACTIONS, initialConversation, reduceConversation, isConversationAction } from './conversation-state.ts'
 import { EARLIER_ACTIONS, initialEarlier, withCurrentKept } from './earlier-state.ts'
 import { recordsFrom, REPORT_ACTIONS } from './report-state.ts'
@@ -48,6 +49,8 @@ export const initialState = Object.freeze({
   /** idle; working on a turn; waiting on a permission; asking a question; or stopped by an error. */
   /** The conversation on screen: what was said and done, and where its turn is (conversation-state.ts). */
   ...initialConversation,
+  /** Number of persisted messages in the active segment before `messages[0]` (windowed load or sliding trim). */
+  historyOffset: 0,
   /** Background tasks' results the model read, each drawn after the messages before it (report-state.ts). */
   records: [] as readonly ReportRecord[],
   erasedReportIds: [] as readonly string[],
@@ -157,6 +160,51 @@ const topicChanged = (state: State, info: AgentInfo) =>
 const readyStartsNewTopic = (state: State, info: AgentInfo) => topicChanged(state, info)
   || (info.remembersHistory === false && Boolean(info.conversationId && state.conversationId && info.conversationId !== state.conversationId))
 
+/** Maximum in-memory foreground messages before trimming back to the visible window on idle turn_end. */
+export const CONVERSATION_WINDOW_LIMIT = CONVERSATION_WINDOW_MESSAGES + 50
+const TRACE_TIMELINE_LIMIT = 500
+const TRACE_TIMELINE_KEEP = 400
+
+/** Keeps a long-lived foreground session bounded in memory without shifting indices mid-turn or while editing a rewind. */
+export function trimConversationWindow(state: State): State {
+  if (state.phase !== 'idle' || state.rewind.editing) return state
+  let next = state
+  if (next.messages.length > CONVERSATION_WINDOW_LIMIT) {
+    const drop = next.messages.length - CONVERSATION_WINDOW_MESSAGES
+    let safe = 0
+    while (safe < drop && !next.messages[safe]!.open && !next.messages[safe]!.pending) safe += 1
+    if (safe > 0) {
+      const dropped = next.messages.slice(0, safe)
+      const carriedCards = dropped.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])]).filter((id): id is string => Boolean(id))
+      const taskCards = carriedCards.length ? [...new Set([...next.taskCards, ...carriedCards])] : next.taskCards
+      const proposals = next.proposals.length
+        ? (next.proposals as import('./proposal-types.ts').ProposalCard[]).map(card => ({
+          ...card,
+          after: card.after === undefined ? undefined : Math.max(0, card.after - safe),
+        }))
+        : next.proposals
+      next = {
+        ...next,
+        historyOffset: (next.historyOffset ?? 0) + safe,
+        messages: next.messages.slice(safe),
+        taskCards,
+        proposals,
+      }
+    }
+  }
+  if (next.timeline.length > TRACE_TIMELINE_LIMIT) {
+    const timeline = next.timeline.slice(-TRACE_TIMELINE_KEEP)
+    const keptThoughts = new Set(timeline.filter(item => item.kind === 'thought').map(item => item.ref))
+    const keptTools = new Set(timeline.filter(item => item.kind === 'tool').map(item => item.ref))
+    const keptModels = new Set(timeline.filter(item => item.kind === 'model').map(item => item.ref))
+    const thoughts = next.thoughts.filter(item => keptThoughts.has(item.id))
+    const tools = Object.fromEntries(Object.entries(next.tools).filter(([id]) => keptTools.has(id)))
+    const modelCalls = Object.fromEntries(Object.entries(next.modelCalls).filter(([id]) => keptModels.has(id)))
+    next = { ...next, timeline, thoughts, tools, modelCalls }
+  }
+  return next
+}
+
 const ACTION_HANDLERS: ActionHandlers = {
   initialization_status: (state, { status, reason }) => ({ ...state, initialization: { status, reason: reason ?? null } }),
   initialization_turn: (state, { turn }) => ({ ...state,
@@ -165,16 +213,17 @@ const ACTION_HANDLERS: ActionHandlers = {
     ...(turn.stopping && { permission: null, question: null, secret: null }),
   }),
   initialization_snapshot: (state, { snapshot }) => {
-    const clean = { ...state, ...initialConversation, info: snapshot.info, conversationId: snapshot.info.conversationId ?? null,
+    const clean = { ...state, ...initialConversation, historyOffset: 0, info: snapshot.info, conversationId: snapshot.info.conversationId ?? null,
       restored: null, restoredTrace: null, restoredTraceData: null, records: [], folds: [], topic: initialTopic,
       switching: false, newTopicPending: false, stopUnconfirmed: snapshot.stopUnconfirmed === true, stoppedReplayLost: snapshot.stoppedReplayLost === true }
     const saved = snapshot.history
-    return saved ? ACTION_HANDLERS.history_loaded!(clean, { conversationId: saved.id, messages: saved.messages,
+    return saved ? ACTION_HANDLERS.history_loaded!(clean, { conversationId: saved.id, messages: saved.messages, offset: saved.offset ?? 0,
       records: saved.records, savedAt: saved.updatedAt, folds: [...saved.folds], parentId: saved.parentId, createdAt: saved.createdAt }) : clean
   },
   ready: (state, { info }) => !state.newTopicPending && readyStartsNewTopic(state, info) ? ACTION_HANDLERS.new_session!(state, { info }) : ({
     ...state,
     info,
+    conversationId: !state.newTopicPending && typeof info.conversationId === 'string' ? info.conversationId : state.conversationId,
     ...(state.stopUnconfirmed && (info.mode === 'setup' || info.sessionId && info.sessionId !== state.info.sessionId) && { stopUnconfirmed: false, stoppedReplayLost: false, lastReceipt: null }),
     phase: !state.newTopicPending && state.phase === 'error' ? 'idle' : state.phase,
     error: !state.newTopicPending && state.phase === 'error' ? null : state.error,
@@ -191,7 +240,7 @@ const ACTION_HANDLERS: ActionHandlers = {
       && task.startedAt >= (state.turn?.startedAt ?? Infinity)
       && (task.status === 'running' || task.status === 'waiting'
         || !state.records.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= action.at)))
-    return reduceConversation(state, { ...action, type: 'turn_end', ...(delegated ? { finalReply: undefined } : {}) })
+    return trimConversationWindow(reduceConversation(state, { ...action, type: 'turn_end', ...(delegated ? { finalReply: undefined } : {}) }))
   },
 
   /** The turn ended just as words were said in it: they go as the next question, already in the thread. */
@@ -206,21 +255,24 @@ const ACTION_HANDLERS: ActionHandlers = {
   error: (state, action) => ({ ...reduceConversation(state, { ...action, type: 'error' }), switching: state.newTopicPending && state.switching }),
 
   /** A saved conversation, shown fully typed out; ignored once a new conversation has started. */
-  history_loaded: (state, { conversationId = null, messages, records = [], savedAt, folds = [], parentId = null, createdAt = null }) => {
-    if (state.messages.length > 0 || state.newTopicPending || !Array.isArray(messages) || (!messages.length && !conversationId)) return state
+  history_loaded: (state, { conversationId = null, messages, offset = 0, records = [], savedAt, folds = [], parentId = null, createdAt = null }) => {
+    if (state.messages.length > 0 || state.newTopicPending || !Array.isArray(messages) || (!messages.length && !offset && !conversationId)) return state
+    const base = Math.max(0, Math.trunc(offset) || 0)
+    const total = base + messages.length
     return {
       ...state,
       conversationId,
+      historyOffset: base,
       folds,
       topic: { ...initialTopic, parentId, startedAt: createdAt },
-      restoredTrace: messages.length ? 'loading' : null,
+      restoredTrace: total ? 'loading' : null,
       messages: messages.map((m: { role: string, text: string, receipt?: Receipt | null, images?: ReadonlyArray<{ id: string }>, key?: string, sourceId?: string, delivery?: 'pending' | 'not-sent' }, i: number) => ({
-        id: m.key ? `stream:${m.key}:text` : `m${i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
+        id: m.key ? `stream:${m.key}:text` : `m${base + i}`, ...(m.key ? { streamKey: m.key } : {}), role: m.role, text: m.text, shown: m.text.length, open: false, receipt: m.receipt ?? null, restored: true,
         ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
         ...(m.delivery ? { delivery: m.delivery, failed: m.delivery === 'not-sent' } : {}),
       })),
       records: recordsFrom(records, state.erasedReportIds),
-      restored: messages.length ? { count: messages.length, savedAt } : null,
+      restored: total ? { count: total, savedAt } : null,
     }
   },
 
@@ -244,8 +296,6 @@ const ACTION_HANDLERS: ActionHandlers = {
     const timeline = [...state.timeline, ...entries].sort((a, b) => a.at - b.at)
     return { ...state, timeline }
   },
-
-  conversation_saved: (state, { id }) => (state.conversationId === id ? state : { ...state, conversationId: id }),
 
   /** A new session goes on below what was said so far, which stays in the timeline above: a new topic. */
   new_session: (state, { info, at = null }) => ({
@@ -392,11 +442,13 @@ function reduceOnce(state: State, action: Action): State {
   const next = Object.hasOwn(ACTION_HANDLERS, action.type) ? handleAction(state, action, ACTION_HANDLERS)
     : isConversationAction(action) ? reduceConversation(state, action) : state
   const projected = oneHubPage(state, next, reduce)
-  if (projected.messages.length <= state.messages.length || !projected.records.length) return projected
+  if (projected.historyOffset !== state.historyOffset || projected.messages.length <= state.messages.length || !projected.records.length) return projected
   const positions = retainedMessagePositions(state.messages, projected.messages, (before, after) => before.id === after.id)
   if (!positions) return projected
+  const offset = projected.historyOffset ?? 0
   const records = projected.records.map(record => {
-    const after = retainedMessageBoundary(record.after, positions)
+    if (record.after <= offset) return record
+    const after = offset + retainedMessageBoundary(record.after - offset, positions)
     return after === record.after ? record : { ...record, after }
   })
   return records.some((record, index) => record !== projected.records[index]) ? { ...projected, records } : projected

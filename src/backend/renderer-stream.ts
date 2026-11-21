@@ -1,20 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { belongsTo, contextOf, isConversationEvent, type ConversationContext } from '../shared/conversation-context.ts'
-import { invalidatesConversationSnapshot, type StreamMark } from '../shared/renderer-sync.ts'
+import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 
-/** Publication, saved history and replay cutoffs share a synchronous boundary on this backend connection. */
+/** Publication, backend-persisted history cutoffs and replay share a synchronous boundary on this connection. */
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, inHistory?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
   db.exec('CREATE TEMP TABLE renderer_watermarks (kind TEXT, scope TEXT, cursor INTEGER NOT NULL, PRIMARY KEY(kind, scope)) WITHOUT ROWID')
   const read = db.prepare('SELECT cursor FROM temp.renderer_watermarks WHERE kind = ? AND scope = ?')
   const write = db.prepare('INSERT INTO temp.renderer_watermarks VALUES (?, ?, ?) ON CONFLICT(kind, scope) DO UPDATE SET cursor = MAX(cursor, excluded.cursor)')
-  const removeSave = db.prepare("DELETE FROM temp.renderer_watermarks WHERE kind = 'save' AND scope = ?")
   const watermark = (kind: 'loss' | 'save', scope: string): number => Number(read.get(kind, scope)?.cursor ?? 0)
   const key = (session: string | null, conversation: string | null) => JSON.stringify([session, conversation])
   // Streaming chunks normally evict consecutive rows for one scope; store its latest loss without repeated SQL writes.
@@ -59,14 +58,16 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     }
     publish(event)
   }
-  function validateSave(conversationId: string, mark?: StreamMark) {
-    if (!mark) return
-    if (mark.streamGeneration !== streamGeneration || mark.eventCursor > eventCursor || mark.eventCursor < watermark('save', conversationId)) throw new Error('Stale conversation save boundary')
+  /** Advance the backend-owned durable history watermark to the current publication cursor. */
+  function checkpoint(conversationId: string) {
+    write.run('save', conversationId, eventCursor)
   }
-  function save(conversationId: string, mark?: StreamMark) {
-    validateSave(conversationId, mark)
-    if (mark) write.run('save', conversationId, mark.eventCursor)
-    else removeSave.run(conversationId)
+  /** Mark the just-published event as already committed to history, so mid-turn replay does not duplicate its message. */
+  function markLatestPersisted(conversationId: string, type: string) {
+    const latest = held.at(-1)
+    if (latest && latest.cursor === eventCursor && latest.routing.type === type && latest.routing.context.conversationId === conversationId) {
+      latest.inHistory = true
+    }
   }
   function snapshot(conversationId: string, context: ConversationContext, stopped = false) {
     const cutoff = watermark('save', conversationId)
@@ -77,7 +78,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       throw new Error('Conversation stream has an unreplayable gap')
     }
     return { streamGeneration, cutoverCursor: eventCursor,
-      replay: held.filter(row => row.cursor > cutoff && belongsTo(row.routing, context)).map(row => JSON.parse(row.json) as unknown) }
+      replay: held.filter(row => row.cursor > cutoff && belongsTo(row.routing, context)).map(row => {
+        const parsed = JSON.parse(row.json) as Record<string, unknown>
+        return row.inHistory ? { ...parsed, inHistory: true } : parsed
+      }) }
   }
-  return { send, save, validateSave, snapshot }
+  return { send, checkpoint, markLatestPersisted, snapshot }
 }

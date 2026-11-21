@@ -22,7 +22,9 @@ export function hitTarget(state: State, found: VerifiedMessage): { msgId: string
   // The conversation on screen: its finished messages are what is saved, in order, and the history has just said
   // the message is there now at that place (history-db.ts locate), so its place names it.
   if (found.segmentId === state.conversationId) {
-    const message = state.messages.filter((m: ThreadMessage) => !m.open)[found.seq]
+    const localSeq = found.seq - (state.historyOffset ?? 0)
+    if (localSeq < 0) return null
+    const message = state.messages.filter((m: ThreadMessage) => !m.open)[localSeq]
     return message ? { msgId: message.id } : null
   }
   const segment: Segment | undefined = state.earlier.segments.find((s: Segment) => s.id === found.segmentId)

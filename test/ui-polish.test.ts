@@ -6,10 +6,10 @@ import { threadState } from '../src/renderer/view/tasks-page.ts'
 import { composedInput, keepingInput } from '../src/renderer/view/dom.ts'
 
 test('background task thread view isolates rewind state from the foreground conversation', () => {
-  const withPrompt = reduce(initialState, { type: 'user_prompt', text: '前景问题', at: 1 })
+  const ready = reduce(initialState, { type: 'ready', info: { ...initialState.info, conversationId: 'seg-1' } })
+  const withPrompt = reduce(ready, { type: 'user_prompt', text: '前景问题', at: 1 })
   const answered = reduce(withPrompt, { type: 'turn_end', stopReason: 'end_turn', at: 2 })
-  const saved = reduce(answered, { type: 'conversation_saved', id: 'seg-1' })
-  const editing = reduce(saved, { type: 'rewind_edit', id: 'm0' })
+  const editing = reduce(answered, { type: 'rewind_edit', id: 'm0' })
   assert.equal(editing.rewind.editing, 'm0')
 
   const started = reduce(editing, {

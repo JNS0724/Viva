@@ -80,12 +80,13 @@ export function taskCard(task: BackgroundTask, handlers: Handlers, now: number):
 }
 
 /** Ended tasks restored from the last launch, put back under the message they hung from. */
-export function restoredTaskAnchors(state: Pick<State, 'taskCards' | 'messages' | 'tasks' | 'conversationId'>): Array<{ taskId: string, at: number }> {
+export function restoredTaskAnchors(state: Pick<State, 'taskCards' | 'messages' | 'tasks' | 'conversationId'> & { historyOffset?: number }): Array<{ taskId: string, at: number }> {
   const hosted = new Set([...state.taskCards, ...state.messages.flatMap(message => [message.taskId, ...(message.cardsAfter ?? [])])])
+  const total = (state.historyOffset ?? 0) + state.messages.length
   return state.tasks.list.filter(task => task.host?.conversationId === String(state.conversationId)
     && Number.isSafeInteger(task.host.at) && task.host.at >= 0 && !hosted.has(task.id))
     .toSorted((a, b) => a.host!.order - b.host!.order)
-    .map(task => ({ taskId: task.id, at: Math.min(task.host!.at, state.messages.length) }))
+    .map(task => ({ taskId: task.id, at: Math.min(task.host!.at, total) }))
 }
 
 /** The tasks with a line in the conversation on screen. */

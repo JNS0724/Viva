@@ -17,9 +17,9 @@ test('diagnostic JSON chunks retain a large RPC body and its context through the
   const context = { version: 1 as const, traceId: 'a'.repeat(32), spanId: 'b'.repeat(16) }
   const body = '深圳🙂\\"'.repeat(20_000)
   const { connection } = await backendWith(t, {
-    'history:save': (_event, text) => ({ length: String(text).length, equal: text === body, trace: diagnosticContext()?.traceId }),
+    'agent:prompt': (_event, text) => ({ length: String(text).length, equal: text === body, trace: diagnosticContext()?.traceId }),
   })
-  assert.deepEqual(await inDiagnosticContext(context, () => connection.rpc('history:save', [body])), { length: body.length, equal: true, trace: context.traceId })
+  assert.deepEqual(await inDiagnosticContext(context, () => connection.rpc('agent:prompt', [body])), { length: body.length, equal: true, trace: context.traceId })
 })
 
 test('a page\'s call reaches its channel with its arguments, bytes uploaded first, and the answer or error comes back', async (t) => {
@@ -40,12 +40,12 @@ test('a page\'s call reaches its channel with its arguments, bytes uploaded firs
 
 test('calls start in the order the shell made them, whatever order their bodies arrive in', async (t) => {
   const order: unknown[] = []
-  const { port } = await backendWith(t, { 'history:save': (_event, rows) => { order.push(rows) } })
+  const { port } = await backendWith(t, { 'agent:prompt': (_event, rows) => { order.push(rows) } })
   const auth = { authorization: `Bearer ${TOKEN}` }
-  const second = post(port, '/rpc/history:save', { headers: { ...auth, [SEQ_HEADER]: '2' }, body: JSON.stringify({ args: [['second']] }) })
+  const second = post(port, '/rpc/agent:prompt', { headers: { ...auth, [SEQ_HEADER]: '2' }, body: JSON.stringify({ args: [['second']] }) })
   await new Promise((resolve) => setTimeout(resolve, 30))
   assert.deepEqual(order, [], 'the second waits for the first')
-  const bad = await post(port, '/rpc/history:save', { headers: { ...auth, [SEQ_HEADER]: '1' }, body: '{ broken' })
+  const bad = await post(port, '/rpc/agent:prompt', { headers: { ...auth, [SEQ_HEADER]: '1' }, body: '{ broken' })
   assert.equal(bad.status, 400)
   assert.equal((await second).status, 200)
   assert.deepEqual(order, [['second']], 'a call that could not start gives up its turn, and the next goes')
@@ -100,7 +100,7 @@ test('an answer reaches the page only after what the backend pushed before it, e
   const late = { ...remote, listen: (listener: (call: HostCall) => void) => remote.listen((call) => { setTimeout(() => listener(call), 200) }) }
   const server = createRpcServer({
     token: TOKEN,
-    channels: new Map([['history:save', { kind: 'handle' as const, listener: () => { remote.host.window.send({ type: 'history_saved', seq: 0 }); return 'saved' } }]]),
+    channels: new Map([['history:rename', { kind: 'handle' as const, listener: () => { remote.host.window.send({ type: 'history_renamed', seq: 0 }); return 'renamed' } }]]),
     controls: {}, remote: late, since: () => [], image: () => new Response(null, { status: 404 }),
   })
   const port = await server.listen()
@@ -110,8 +110,8 @@ test('an answer reaches the page only after what the backend pushed before it, e
   const stop = connection.listen({ host: (call) => { pushed.push(String((call.args[0] as { type: string }).type)) }, ended: () => {} })
   t.after(stop)
   const started = Date.now()
-  assert.equal(await connection.rpc('history:save', [[]]), 'saved')
-  assert.deepEqual(pushed, ['history_saved'], 'the push came first')
+  assert.equal(await connection.rpc('history:rename', ['c1', '新标题']), 'renamed')
+  assert.deepEqual(pushed, ['history_renamed'], 'the push came first')
   assert.ok(Date.now() - started >= 150, 'the answer waited for it')
 })
 

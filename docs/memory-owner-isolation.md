@@ -208,7 +208,7 @@ On Stop, immediately show “Stopping” and preserve the draft. Target the sess
 
 Exercise Stop through the real composer with an asynchronous tool stalled and, separately, with the dsh event loop suspended. Verify immediate feedback, editing and recovery after the grace period, isolation of late output, repeated clicks, and late cancellation after switching conversations. Also verify a long command making normal progress can continue.
 
-The backend keeps the stopped conversation identity available for the final history save and for window reload. If a reload follows a long response whose unsaved output exceeds the replay buffer, the window shows the last saved history, explains the gap and offers recovery. It skips saving this incomplete snapshot over the existing checkpoint.
+The backend keeps the stopped conversation identity available for final foreground persistence and for window reload. If a reload follows a long response whose unpersisted output exceeds the replay buffer, the window shows the last persisted history, explains the gap and offers recovery; the renderer never writes history back over the backend checkpoint.
 
 ## Authorization across processes
 

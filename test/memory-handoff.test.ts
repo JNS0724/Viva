@@ -248,7 +248,6 @@ test('a human prompt racing report busy delivery and its later steer both enter 
   }, { onEvent(event) {
     if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
     offset = app.events.length
-    app.call('history:save', [{ role: 'user', text: question, sourceId: operation, receipt: null }])
     incoming = app.call('agent:prompt', question, [], operation)
     retry = app.call('agent:prompt', question, [], operation)
   } })
@@ -275,7 +274,9 @@ test('a human prompt racing report busy delivery and its later steer both enter 
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
     assert.equal(history.prepare('SELECT count(*) n FROM report_records').get()?.n, 1)
-    assert.equal(history.prepare('SELECT after_seq FROM report_records').get()?.after_seq, 0)
+    const promptSeq = history.prepare('SELECT seq FROM messages WHERE source_id=?').get(operation)?.seq
+    assert.equal(typeof promptSeq, 'number')
+    assert.equal(history.prepare('SELECT after_seq FROM report_records').get()?.after_seq, promptSeq)
     for (const id of [operation, laterOperation]) {
       assert.equal(db.prepare('SELECT count(*) n FROM memory_sources WHERE id=?').get(id)?.n, 1)
       assert.equal(history.prepare('SELECT count(*) n FROM routing_request_sources WHERE source=?').get(id)?.n, 1)
@@ -297,7 +298,6 @@ test('a picture submitted while a report is opening stays below the report and s
     if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
     offset = app.events.length
     const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
-    app.call('history:save', [{ role: 'user', text: question, images: [image], sourceId: operation, receipt: null }])
     incoming = app.call('agent:prompt', question, [image], operation)
   } })
   app.defer(release)
@@ -312,8 +312,9 @@ test('a picture submitted while a report is opening stays below the report and s
   assert.ok(after.some(event => event.type === 'report_delivered' && event.beforeSource === operation))
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try {
-    assert.equal(history.prepare('SELECT seq FROM messages WHERE source_id=?').get(operation)?.seq, 0)
-    assert.deepEqual(history.prepare('SELECT after_seq FROM report_records').all().map(row => row.after_seq), [0])
+    const promptSeq = history.prepare('SELECT seq FROM messages WHERE source_id=?').get(operation)?.seq
+    assert.equal(typeof promptSeq, 'number')
+    assert.deepEqual(history.prepare('SELECT after_seq FROM report_records').all().map(row => row.after_seq), [promptSeq])
   } finally { history.close() }
 })
 
@@ -453,12 +454,9 @@ test('the backend expires Stop while dsh is suspended and recovery only accepts 
   const snapshot = () => app.call<IpcResults['agent:snapshot']>('agent:snapshot')
   const active = snapshot()
   assert.equal(active.activeTurn?.id, start.turnId)
-  const save = { streamGeneration: active.streamGeneration, eventCursor: active.cutoverCursor, context: active.context }
-  app.call('history:save', [{ role: 'user', text: question, receipt: null }], save)
-  const reloadedActive = snapshot()
-  assert.ok(!reloadedActive.replay.some(event => (event as HostEvent).type === 'turn_started'))
+  assert.equal(active.history?.messages[0]?.text, question)
   const before = app.events.length
-  assert.equal(await app.call('agent:cancel', { ...reloadedActive.context, turnId: reloadedActive.activeTurn?.id }), true)
+  assert.equal(await app.call('agent:cancel', { ...active.context, turnId: active.activeTurn?.id }), true)
   assert.equal(snapshot().activeTurn?.stopping, true)
   assert.ok(app.events.slice(before).some(event => event.type === 'turn_stopping'))
   assert.ok(await eventually(() => app.events.slice(before).some(event => event.type === 'turn_end' && event.stopReason === 'cancel_unconfirmed'), { timeoutMs: 12_000 }))
@@ -467,13 +465,10 @@ test('the backend expires Stop while dsh is suspended and recovery only accepts 
   assert.equal(stopped.activeTurn, null)
   assert.equal(stopped.stopUnconfirmed, true)
   assert.deepEqual(stopped.context, start.context)
-  assert.ok(stopped.replay.some(event => (event as HostEvent).stopReason === 'cancel_unconfirmed'))
+  assert.equal(stopped.history?.messages[0]?.text, question)
+  assert.equal(stopped.history?.messages.at(-1)?.receipt?.stopReason, 'cancel_unconfirmed')
+  assert.deepEqual(stopped.replay, [], 'terminal cancel_unconfirmed event is checkpointed by the backend writer')
   await assert.rejects(app.newTopic(), /执行端未确认停止/)
-  const mark = { context: stopped.context, streamGeneration: stopped.streamGeneration, eventCursor: stopped.cutoverCursor }
-  app.call('history:save', [{ role: 'user', text: question, receipt: null }], mark)
-  const reloaded = snapshot()
-  assert.equal(reloaded.history?.messages[0]?.text, question)
-  assert.equal(reloaded.stopUnconfirmed, true, 'recovery survives the terminal event being checkpointed')
   const after = app.events.length
 
   await paused.resume()
@@ -482,7 +477,6 @@ test('the backend expires Stop while dsh is suspended and recovery only accepts 
   assert.ok(await app.call('agent:recover'))
   assert.notEqual(app.agentPid(), pid)
   assert.equal(snapshot().stopUnconfirmed, false)
-  assert.throws(() => app.call('history:save', [{ role: 'user', text: lateText }], mark), /old selection/)
   assert.notEqual(app.call<AgentInfo>('agent:info').sessionId, (start.context as { sessionId: string }).sessionId)
   const requestCount = app.model.requests.length
   await app.ask('恢复后的新问题')
@@ -509,7 +503,6 @@ test('cancelling a report rejects its queued human before any native source is d
   try { assert.equal(db.prepare('SELECT id FROM memory_sources WHERE id=?').get(operation), undefined) }
   finally { db.close() }
   const selected = app.call<AgentInfo>('agent:info')
-  await app.call('history:save', [{ role: 'user', text: question, sourceId: operation, receipt: null, failed: false }])
   await app.stopBackend(); await app.startBackend()
   const restored = await app.call<Promise<{ id: string, messages: Array<{ sourceId?: string, delivery?: 'pending' | 'not-sent' }> } | null>>('history:load')
   assert.equal(restored?.id, selected.conversationId)
@@ -718,8 +711,10 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'with
     finally { db.close() }
     assert.ok(app.model.requests.slice(count).some(request => questionOf(request.messages) === words))
   } else if (outcome === 'withdrawn') {
-    await app.call('history:save', [{ role: 'user', text: words, receipt: null, sourceId: operation }])
-    const edited = await app.call<Promise<{ ok: boolean }>>('timeline:rewind', { words, keep: 0, text: '替换这条尚未送达的原文' })
+    const loaded = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
+    const keep = loaded.messages.findIndex(message => message.sourceId === operation)
+    assert.ok(keep >= 0, 'the steered message is already persisted by the backend writer')
+    const edited = await app.call<Promise<{ ok: boolean }>>('timeline:rewind', { words, keep, text: '替换这条尚未送达的原文' })
     assert.equal(edited.ok, true)
     const afterEdit = app.model.requests.length
     await assert.rejects(app.call<Promise<void>>('agent:prompt', words, [], operation), /withdrawn|unavailable/i)
@@ -1266,12 +1261,9 @@ test('cold Viva startup erases native originals and settled output in root and u
     && event.update.kind === 'settle' && event.update.blocks.some((block: { text?: string }) => block.text === derived))
   assert.ok(reply, 'real DSH provides a settled reply under a stable stream key')
   const survivorId = await app.ask(survivor)
-  const savedHistory = await app.call<{ id: string }>('history:save', [
-    { role: 'user', text, receipt: null, sourceId },
-    { role: 'assistant', text: derived, receipt: null, key: reply.update.key },
-    { role: 'user', text: survivor, receipt: null, sourceId: survivorId },
-  ])
-  assert.match(JSON.stringify(app.call('history:load')), new RegExp(derived, 'u'), 'authenticated reply survives its first history save')
+  const savedHistory = app.call<{ id: string }>('history:load')
+  assert.ok(savedHistory)
+  assert.match(JSON.stringify(savedHistory), new RegExp(derived, 'u'), 'authenticated reply is persisted directly by the backend writer')
   const info = app.call<AgentInfo>('agent:info')
   assert.ok(info.sessionId)
   await app.stopBackend()
@@ -1586,10 +1578,11 @@ test('cold Viva startup erases native originals and settled output in root and u
     assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
   } finally { settled.close() }
 
-  const history = app.call<{ messages: unknown[] }>('history:load')
-  await app.call('history:save', [...history.messages, { role: 'user', text: question, receipt: null, sourceId: questionId }])
+  const history = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
+  const keep = history.messages.findIndex(message => message.sourceId === questionId)
+  assert.ok(keep >= 0, 'the resumed-session prompt is already persisted')
   const forked = await app.call<Promise<{ ok: boolean, problem?: string, info?: AgentInfo }>>('timeline:rewind',
-    { words: question, keep: history.messages.length, text: question })
+    { words: question, keep, text: question })
   assert.ok(forked.ok, JSON.stringify(forked))
   assert.notEqual(forked.info?.sessionId, parentId)
   const branchProbe = '验证已擦除会话的新分叉仍保留独立原文'
@@ -1615,7 +1608,6 @@ test('startup completes a history withdrawal interrupted by process death before
   ).get(entry.identity.workspace, entry.identity.id))
   const detail = await app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', entry.identity)
   assert.ok(detail?.sources.some(source => source.sourceId === sourceId))
-  await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
   const profileProbe = '随手核对周报提交邮箱背景资料'
   const unsavedSource = await app.ask(profileProbe)
   assert.ok(app.model.requests.some(raw => {
@@ -1637,7 +1629,6 @@ test('startup completes a history withdrawal interrupted by process death before
   const independent = '重启后应当保留的独立备忘'
   const survivorId = randomUUID()
   await app.call('agent:prompt', independent, [], survivorId)
-  await app.call('history:save', [{ role: 'user', text: independent, receipt: null, sourceId: survivorId }])
   const survivorStore = new DatabaseSync(memoryFile, { readOnly: true })
   try {
     // The independent original must be durably recorded before recovery.
@@ -1799,7 +1790,6 @@ test('source-backed project files, exact recall and chat history remain in their
     assert.ok(switched.ok)
     const sourceId = randomUUID()
     await step(`${label}:remember`, () => app.call('agent:prompt', text, [], sourceId))
-    await step(`${label}:save-history`, () => app.call('history:save', [{ role: 'user', text, receipt: null, sourceId }]))
     const summary = await step(`${label}:file-profile`, () => eventually(async () => {
       const { fileProfile } = await app.call<Promise<{ fileProfile: { project: { identity: MemoryFileDetail['identity'], text: string }[] | null } }>>('memory:get')
       return fileProfile.project?.find(item => item.text.includes(text.slice('记住：'.length)))
@@ -1878,10 +1868,6 @@ test('source-backed project files, exact recall and chat history remain in their
   assert.ok(image)
   await step('project-a:picture-prompt', () => app.call('agent:prompt', '', [image], sourceId))
   assert.ok(app.model.requests.some(raw => JSON.stringify(raw).includes(png)))
-  await step('project-a:save-picture-history', () => app.call('history:save', [
-    { role: 'user', text: '', images: [image], receipt: null, sourceId },
-    { role: 'assistant', text: rawHistoryText, receipt: null },
-  ]))
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
     assert.ok(db.prepare('SELECT project FROM memory_session_projects WHERE session=?').get(pictureTopic.sessionId))
@@ -1910,7 +1896,6 @@ test('source-backed project files, exact recall and chat history remain in their
 test('deleting a memory file preserves the original chat and the task and report that read it after restart', { timeout: 45_000 }, async t => {
   const app = await setup(t, () => null)
   const sourceId = await app.ask(oldFact)
-  await app.call('history:save', [{ role: 'user', text: oldFact, receipt: null, sourceId }])
   const file = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
   assert.ok(file)
   const brief = '核对我的周报提交邮箱'
@@ -1962,9 +1947,11 @@ test('an explicit save completes in a foreground session that already received f
 })
 
 async function rewriteRejectedSource(app: Awaited<ReturnType<typeof setup>>, sourceId: string, original: string) {
-  await app.call('history:save', [{ role: 'user', text: original, receipt: null, sourceId }])
+  const loaded = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
+  const keep = loaded.messages.findIndex(message => message.sourceId === sourceId)
+  assert.ok(keep >= 0, 'the source message is already persisted by the backend writer')
   const text = '已经替换前面的临时说明'
-  const edit = await app.call<Promise<{ ok: boolean, sourceId: string }>>('timeline:rewind', { words: original, keep: 0, text })
+  const edit = await app.call<Promise<{ ok: boolean, sourceId: string }>>('timeline:rewind', { words: original, keep, text })
   assert.ok(edit.ok)
   await app.call('agent:prompt', text, [], edit.sourceId)
 }
@@ -2044,7 +2031,6 @@ test('withdrawing a picture-only prompt also invalidates tasks that depended on 
   await app.ask(`后台做：${brief}`)
   taskId = (await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === brief)))?.task.id
   assert.ok(taskId)
-  await app.call('history:save', [{ role: 'user', text: '', images: [image], receipt: null, sourceId }])
   await app.newTopic()
   await app.call('history:delete', info.conversationId)
 

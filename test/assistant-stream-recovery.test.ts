@@ -139,7 +139,7 @@ test('legacy history without committed identities opens and retains its existing
     const original = openHistoryDb({ db: sqlite })
     const conversation = original.create({ sessionId: 'legacy' })
     original.save(conversation, [{ role: 'user', text: 'Legacy question' }])
-    sqlite.exec('ALTER TABLE messages DROP COLUMN source_key')
+    sqlite.exec('DROP INDEX IF EXISTS messages_key; ALTER TABLE messages DROP COLUMN source_key')
     const reopened = openHistoryDb({ db: sqlite })
     assert.equal(reopened.get(conversation.id)!.messages[0].text, 'Legacy question')
     assert.ok(sqlite.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'source_key'))
