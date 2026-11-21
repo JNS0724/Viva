@@ -214,3 +214,122 @@ test('renderer sliding window trims long sessions on idle turn_end and preserves
   assert.ok(grown.historyOffset > 400, 'historyOffset advanced when older messages were trimmed')
   assert.equal(grown.messages.length + grown.historyOffset, 402 + Math.ceil(CONVERSATION_WINDOW_LIMIT / 2) * 2)
 })
+
+test('foreground history keeps replay checkpoint intact on write failures and retries pending writes in order', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-err', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-err' }
+  let failWrites = false
+  const errors: unknown[] = []
+  let checkpoints = 0
+  const writer = createForegroundHistory({
+    commit: (conv, ops, options) => {
+      if (failWrites) throw new Error('disk full')
+      return history.commit(conv, ops, options)
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    checkpoint: id => { checkpoints += 1; stream.checkpoint(id) },
+    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    onError: err => { errors.push(err) },
+  })
+
+  // 1. Transient disk failure during viva_stream + turn_end must NOT advance checkpoint and must retain ops for retry
+  writer.userPrompt({ text: '第一问', advanceCheckpoint: true })
+  const beforeTurnCheckpoints = checkpoints
+  failWrites = true
+  history.bindGeneratedCopy('s-err', 'k-reply', 'assistant', '完整回复', [{ sources: [], fileRanges: [] }])
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  const streamEvent = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-reply', kind: 'settle', blocks: [{ type: 'text', text: '完整回复' }] } }
+  const endEvent = { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context }
+  for (const event of [startEvent, streamEvent, endEvent]) { stream.send(event); writer.receive(event) }
+  assert.equal(errors.length, 2)
+  assert.equal(checkpoints, beforeTurnCheckpoints, 'failed turn_end never advances checkpoint')
+  assert.equal(stream.snapshot(current.id, context).replay.length, 3, 'unpersisted turn remains replayable on reload')
+  assert.equal(history.get(current.id)!.messages.length, 1)
+
+  // Recover disk: flush retries retained ops in order (upsert_assistant then attach_receipt)
+  failWrites = false
+  assert.equal(writer.flush(), true)
+  const afterRetry = history.get(current.id)!.messages
+  assert.deepEqual(afterRetry.map(m => m.text), ['第一问', '完整回复'])
+  assert.equal(afterRetry[1]?.receipt?.stopReason, 'end_turn')
+
+  // 2. Oversized assistant reply (> 200_000 chars) fails validation and leaves checkpoint behind
+  const oversized = 'x'.repeat(200_001)
+  const beforeOversizedCheckpoints = checkpoints
+  const oversizedStart = { type: 'turn_started', by: 'user', context }
+  const oversizedChunk = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: oversized } } }
+  const oversizedEnd = { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context }
+  for (const event of [oversizedStart, oversizedChunk, oversizedEnd]) { stream.send(event); writer.receive(event) }
+  assert.equal(errors.length, 3)
+  assert.equal(checkpoints, beforeOversizedCheckpoints, 'validation failure never advances checkpoint')
+  assert.ok(stream.snapshot(current.id, context).replay.length >= 3)
+
+  // A subsequent error event cannot advance checkpoint while earlier pending writes remain unpersisted
+  const errorEvent = { type: 'error', message: 'boom', context }
+  stream.send(errorEvent)
+  writer.receive(errorEvent)
+  assert.equal(checkpoints, beforeOversizedCheckpoints, 'error event cannot skip an unpersisted failed write')
+})
+
+test('silent task turns persist earlier plain assistant segments and drop only the trailing silent reply', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-silent', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-silent' }
+  let failWrites = false
+  let checkpoints = 0
+  const committedTexts: string[] = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops) => {
+      if (failWrites) throw new Error('sqlite busy')
+      for (const op of ops) {
+        if (op.kind === 'upsert_assistant') committedTexts.push(op.message.text)
+      }
+      return conv
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    checkpoint: id => { checkpoints += 1; stream.checkpoint(id) },
+    onError: () => {},
+  })
+
+  // Plain assistant text -> tool_call boundary -> trailing SILENT_REPLY
+  const events = [
+    { type: 'turn_started', by: 'task', context },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '先看一下任务输出' } } },
+    { type: 'update', context, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Read' } },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: SILENT_REPLY } } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]
+
+  // When persistence fails, checkpoint stays put and earlier plain segment is retained for retry
+  failWrites = true
+  for (const event of events) { stream.send(event); writer.receive(event) }
+  assert.equal(checkpoints, 0, 'failed silent-task flush does not advance checkpoint')
+  assert.deepEqual(committedTexts, [])
+  assert.equal(stream.snapshot(current.id, context).replay.length, events.length)
+
+  failWrites = false
+  assert.equal(writer.flush(), true)
+  assert.deepEqual(committedTexts, ['先看一下任务输出'])
+
+  // Normal silent task with earlier plain segment persists earlier text and advances checkpoint
+  const nextEvents = [
+    { type: 'turn_started', by: 'task', context },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第二段可见说明' } } },
+    { type: 'update', context, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-2', title: 'Read' } },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: SILENT_REPLY } } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]
+  for (const event of nextEvents) { stream.send(event); writer.receive(event) }
+  assert.equal(checkpoints, 1)
+  assert.deepEqual(committedTexts, ['先看一下任务输出', '第二段可见说明'])
+  assert.deepEqual(stream.snapshot(current.id, context).replay, [])
+})

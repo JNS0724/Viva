@@ -42,10 +42,14 @@ interface ActiveTurn {
   openPlainThought: boolean
   plainText: string | null
   pendingPlainSegments: string[]
-  hadAssistant: boolean
-  lastAssistantKey?: string
-  lastAssistantText?: string
+  lastTurnMessage: { role: 'user' } | { role: 'assistant', text: string, key?: string } | null
   persistedStreamKeys: Set<string>
+}
+
+interface PendingWrite {
+  conversationId: string
+  ops: HistoryMessageMutation[]
+  session?: string | null
 }
 
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object'
@@ -101,6 +105,7 @@ export function createForegroundHistory({
   now = Date.now,
 }: ForegroundHistoryDeps) {
   let active: ActiveTurn | null = null
+  let pendingWrite: PendingWrite | null = null
   const pendingQuestions = new Map<string, Asked>()
 
   function newTurn(conversationId: string, by: string | null = null): ActiveTurn {
@@ -115,7 +120,7 @@ export function createForegroundHistory({
       openPlainThought: false,
       plainText: null,
       pendingPlainSegments: [],
-      hadAssistant: false,
+      lastTurnMessage: null,
       persistedStreamKeys: new Set(),
     }
   }
@@ -131,9 +136,7 @@ export function createForegroundHistory({
     turn.plainText = null
     if (!text) return
     turn.pendingPlainSegments.push(text)
-    turn.hadAssistant = true
-    turn.lastAssistantKey = undefined
-    turn.lastAssistantText = text
+    turn.lastTurnMessage = { role: 'assistant', text }
   }
 
   function drainPlainOps(turn: ActiveTurn): HistoryMessageMutation[] {
@@ -147,21 +150,31 @@ export function createForegroundHistory({
     return ops
   }
 
-  function persist(ops: readonly HistoryMessageMutation[], sessionOverride?: string | null): Conversation | null {
-    if (!ops.length) return null
+  function persist(ops: readonly HistoryMessageMutation[], sessionOverride?: string | null): { ok: boolean, saved: Conversation | null } {
+    const base = current()
+    const carried = pendingWrite?.conversationId === base.id ? pendingWrite : null
+    if (pendingWrite && !carried) pendingWrite = null
+    const allOps = carried ? [...carried.ops, ...ops] : [...ops]
+    if (!allOps.length) return { ok: true, saved: null }
+    const session = sessionOverride !== undefined
+      ? sessionOverride
+      : carried?.session !== undefined
+        ? carried.session
+        : sourceSession()
     try {
-      const base = current()
       const { mode, model } = agentInfo()
       const saved = commit(
         { ...base, mode: mode ?? base.mode, model: model ?? base.model },
-        ops,
-        { sourceSession: sessionOverride !== undefined ? sessionOverride : sourceSession() },
+        allOps,
+        { sourceSession: session },
       )
+      pendingWrite = null
       if (current().id === saved.id) setCurrent(saved)
-      return saved
+      return { ok: true, saved }
     } catch (error) {
+      pendingWrite = { conversationId: base.id, ops: allOps, session }
       onError(error)
-      return null
+      return { ok: false, saved: null }
     }
   }
 
@@ -184,20 +197,23 @@ export function createForegroundHistory({
         ...(sourceId ? { sourceId } : {}),
       },
     })
-    const saved = persist(ops)
-    if (saved && advanceCheckpoint) checkpoint?.(saved.id)
-    return saved
+    const result = persist(ops)
+    if (result.ok && result.saved && advanceCheckpoint) checkpoint?.(result.saved.id)
+    return result.saved
   }
 
   function userSteer({ text, sourceId }: { text: string, sourceId?: string }) {
     const selected = current()
     const ops: HistoryMessageMutation[] = []
-    if (active?.conversationId === selected.id) ops.push(...drainPlainOps(active))
+    if (active?.conversationId === selected.id) {
+      ops.push(...drainPlainOps(active))
+      active.lastTurnMessage = { role: 'user' }
+    }
     ops.push({
       kind: 'append_user',
       message: { role: 'user', text, receipt: null, ...(sourceId ? { sourceId } : {}) },
     })
-    return persist(ops)
+    return persist(ops).saved
   }
 
   function eventContext(event: RecordValue): { conversationId: string, sessionId: string | null } | null {
@@ -235,23 +251,20 @@ export function createForegroundHistory({
         ...drainPlainOps(turn),
         { kind: 'upsert_assistant', message: { role: 'assistant', text, receipt: null, key }, ...(beforeKey ? { beforeKey } : {}) },
       ]
-      if (persist(ops, sessionId)) {
-        turn.persistedStreamKeys.add(key)
-        turn.hadAssistant = true
-        if (!beforeKey || !turn.lastAssistantKey) {
-          turn.lastAssistantKey = key
-          turn.lastAssistantText = text
-        }
+      // Track the settled stream in the logical turn even if commit fails so retries and turn_end stay ordered.
+      persist(ops, sessionId)
+      turn.persistedStreamKeys.add(key)
+      if (!beforeKey || !turn.lastTurnMessage || (turn.lastTurnMessage.role === 'assistant' && turn.lastTurnMessage.key === key)) {
+        turn.lastTurnMessage = { role: 'assistant', text, key }
       }
       return
     }
     if (turn.persistedStreamKeys.has(key)) {
       persist([{ kind: 'remove_stream', key }], sessionId)
       turn.persistedStreamKeys.delete(key)
-      if (turn.lastAssistantKey === key) {
-        turn.lastAssistantKey = undefined
-        turn.lastAssistantText = undefined
-        turn.hadAssistant = turn.persistedStreamKeys.size > 0 || turn.pendingPlainSegments.length > 0 || turn.plainText !== null
+      if (turn.lastTurnMessage?.role === 'assistant' && turn.lastTurnMessage.key === key) {
+        const lastPlain = turn.pendingPlainSegments.at(-1)
+        turn.lastTurnMessage = lastPlain !== undefined ? { role: 'assistant', text: lastPlain } : null
       }
     }
   }
@@ -264,9 +277,7 @@ export function createForegroundHistory({
         if (!chunk) return
         turn.openPlainThought = false
         turn.plainText = (turn.plainText ?? '') + chunk
-        turn.hadAssistant = true
-        turn.lastAssistantKey = undefined
-        turn.lastAssistantText = turn.plainText
+        turn.lastTurnMessage = { role: 'assistant', text: turn.plainText }
         return
       }
       case 'viva_stream':
@@ -358,7 +369,9 @@ export function createForegroundHistory({
           ...(active?.conversationId === ctx.conversationId ? drainPlainOps(active) : []),
           ...replies,
         ]
-        if (persist(ops, session)) markLatestPersisted?.(ctx.conversationId, 'question_answered')
+        if (active?.conversationId === ctx.conversationId) active.lastTurnMessage = { role: 'user' }
+        const res = persist(ops, session)
+        if (res.ok && res.saved) markLatestPersisted?.(ctx.conversationId, 'question_answered')
         return
       }
       case 'update': {
@@ -372,13 +385,27 @@ export function createForegroundHistory({
         closePlain(turn)
         const endedAt = now()
         const stopReason = typeof raw.stopReason === 'string' ? raw.stopReason : 'end_turn'
+        const last = turn.lastTurnMessage
         const silentTask = stopReason === 'end_turn' && turn.by === 'task'
-          && (!turn.hadAssistant || (turn.lastAssistantText !== undefined && isSilentReply(turn.lastAssistantText)))
+          && (!last || (last.role === 'assistant' && isSilentReply(last.text)))
         if (silentTask) {
-          if (turn.lastAssistantKey && turn.persistedStreamKeys.has(turn.lastAssistantKey)) {
-            persist([{ kind: 'remove_last_assistant', key: turn.lastAssistantKey }], session)
+          const ops: HistoryMessageMutation[] = []
+          if (last?.role === 'assistant') {
+            if (last.key) {
+              ops.push(...drainPlainOps(turn))
+              if (turn.persistedStreamKeys.has(last.key)) {
+                ops.push({ kind: 'remove_last_assistant', key: last.key })
+              }
+            } else {
+              // Drop only the trailing silent plain segment; preserve earlier plain segments from this turn.
+              turn.pendingPlainSegments.pop()
+              ops.push(...drainPlainOps(turn))
+            }
+          } else {
+            ops.push(...drainPlainOps(turn))
           }
-          checkpoint?.(ctx.conversationId)
+          const res = persist(ops, session)
+          if (res.ok) checkpoint?.(ctx.conversationId)
           return
         }
         const delegated = delegatedDuringTurn?.(turn.startedAt, endedAt) ?? false
@@ -387,39 +414,39 @@ export function createForegroundHistory({
         const receipt = { ms: Math.max(0, endedAt - turn.startedAt), tools: turn.tools, thoughts: turn.thoughts, stopReason: reason }
         const ops: HistoryMessageMutation[] = drainPlainOps(turn)
         const problem = turnProblem(receipt.stopReason)
-        if (!problem && receipt.stopReason !== 'cancelled' && turn.hadAssistant) {
-          ops.push({ kind: 'attach_receipt', receipt, ...(turn.lastAssistantKey ? { key: turn.lastAssistantKey } : {}) })
+        if (!problem && receipt.stopReason !== 'cancelled' && last?.role === 'assistant') {
+          ops.push({ kind: 'attach_receipt', receipt, ...(last.key ? { key: last.key } : {}) })
         } else {
           const text = problem ?? (receipt.stopReason === 'cancelled' ? t('state.this.turn.was.stopped') : t('state.no.text.response.this.turn'))
           ops.push({ kind: 'append_note', message: { role: 'note', text, receipt } })
         }
-        persist(ops, session)
-        checkpoint?.(ctx.conversationId)
+        const res = persist(ops, session)
+        if (res.ok) checkpoint?.(ctx.conversationId)
         return
       }
       case 'error': {
+        let ops: HistoryMessageMutation[] = []
         if (active?.conversationId === ctx.conversationId) {
           const turn = active
           active = null
-          const ops = drainPlainOps(turn)
-          if (ops.length) persist(ops, session)
+          ops = drainPlainOps(turn)
         }
-        checkpoint?.(ctx.conversationId)
+        const res = persist(ops, session)
+        if (res.ok) checkpoint?.(ctx.conversationId)
       }
     }
   }
 
   function flush() {
-    if (!active) return
-    const turn = active
+    const selected = current()
+    const ops = active?.conversationId === selected.id ? drainPlainOps(active) : []
     active = null
-    if (turn.conversationId !== current().id) return
-    const ops = drainPlainOps(turn)
-    if (ops.length) persist(ops)
+    return persist(ops).ok
   }
 
   function reset() {
     active = null
+    pendingWrite = null
     pendingQuestions.clear()
   }
 
