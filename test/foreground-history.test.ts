@@ -278,20 +278,33 @@ test('foreground history keeps replay checkpoint intact on write failures and re
   assert.equal(history.get(copied.id)!.messages.at(-2)?.text.length, 250_000)
   assert.equal(history.get(copied.id)!.messages.at(-1)?.text, '重说这句')
 
-  // 3. Permanently invalid reply (> MAX_ASSISTANT_TEXT_CHARS) leaves checkpoint behind WITHOUT blocking subsequent turns
+  // 3. Plain assistant reply exceeding MAX_ASSISTANT_TEXT_CHARS splits into persistable chunks without loss
+  const beforeChunkedCheckpoints = checkpoints
+  const hugePlain = `${'z'.repeat(MAX_ASSISTANT_TEXT_CHARS - 1)}😀tail`
+  for (const event of [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: hugePlain } } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]) { stream.send(event); writer.receive(event) }
+  assert.equal(errors.length, 2, 'oversized plain reply splits cleanly without throwing')
+  assert.equal(checkpoints, beforeChunkedCheckpoints + 1)
+
+  // 4. Permanently invalid payload (HistoryValidationError) never poisons pendingWrites AND pins checkpoint behind the gap
   const oversized = 'x'.repeat(MAX_ASSISTANT_TEXT_CHARS + 1)
   const beforeOversizedCheckpoints = checkpoints
-  const oversizedStart = { type: 'turn_started', by: 'user', context }
-  const oversizedChunk = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: oversized } } }
-  const oversizedEnd = { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context }
-  for (const event of [oversizedStart, oversizedChunk, oversizedEnd]) { stream.send(event); writer.receive(event) }
+  history.bindGeneratedCopy('s-err', 'k-too-big', 'assistant', oversized, [{ sources: [], fileRanges: [] }])
+  for (const event of [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-too-big', kind: 'settle', blocks: [{ type: 'text', text: oversized }] } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]) { stream.send(event); writer.receive(event) }
   assert.equal(errors.length, 3)
   assert.equal(checkpoints, beforeOversizedCheckpoints, 'validation failure never advances checkpoint')
   assert.equal(writer.hasPendingWrites(), false, 'permanent validation failure does not poison pendingWrites')
   assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/, 'unpersisted evicted reply exposes an explicit gap instead of silently advancing checkpoint')
 
-  // Subsequent user prompt and assistant reply in the same conversation still persist normally!
-  writer.userPrompt({ text: '后续正常提问' })
+  // Subsequent user prompt and assistant reply still persist to SQLite, while checkpoint stays pinned behind the gap!
+  writer.userPrompt({ text: '后续正常提问', advanceCheckpoint: true })
   history.bindGeneratedCopy('s-err', 'k-next', 'assistant', '后续正常回复', [{ sources: [], fileRanges: [] }])
   for (const event of [
     { type: 'turn_started', by: 'user', context },
@@ -301,7 +314,8 @@ test('foreground history keeps replay checkpoint intact on write failures and re
   const afterRecovery = history.get(current.id)!.messages
   assert.equal(afterRecovery.at(-2)?.text, '后续正常提问')
   assert.equal(afterRecovery.at(-1)?.text, '后续正常回复')
-  assert.equal(checkpoints, beforeOversizedCheckpoints + 1)
+  assert.equal(checkpoints, beforeOversizedCheckpoints, 'later turns never advance checkpoint past an unpersisted gap')
+  assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/, 'reload still reports the unpersisted gap instead of silently erasing the lost reply')
 })
 
 test('silent task turns persist earlier plain assistant segments and drop only the trailing silent reply', t => {

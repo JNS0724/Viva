@@ -4,7 +4,7 @@ import { answerText, type AnsweredQuestion, type QuestionAnswer } from '../share
 import { isSilentReply } from '../shared/task-report.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 import type { Conversation, HistoryMessageMutation } from './history-db.ts'
-import { HistoryValidationError } from './history-schema.ts'
+import { HistoryValidationError, MAX_ASSISTANT_TEXT_CHARS } from './history-schema.ts'
 
 /**
  * Backend single-writer for the foreground conversation on screen. Mirrors the transcript rules of
@@ -71,6 +71,21 @@ const mergeBoundary = (a?: StreamBoundary, b?: StreamBoundary): StreamBoundary |
   return { cursor: Math.max(a.cursor, b.cursor) }
 }
 
+function splitAssistantText(text: string): string[] {
+  if (text.length <= MAX_ASSISTANT_TEXT_CHARS) return [text]
+  const parts: string[] = []
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(start + MAX_ASSISTANT_TEXT_CHARS, text.length)
+    if (end < text.length) {
+      const code = text.charCodeAt(end - 1)
+      if (code >= 0xD800 && code <= 0xDBFF) end -= 1
+    }
+    parts.push(text.slice(start, end))
+    start = end
+  }
+  return parts
+}
+
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object'
 const str = (value: unknown) => (typeof value === 'string' ? value : '')
 
@@ -127,8 +142,14 @@ export function createForegroundHistory({
 }: ForegroundHistoryDeps) {
   let active: ActiveTurn | null = null
   const pendingWrites = new Map<string, PendingWrite>()
+  /** Conversations with a permanently unpersistable payload: subsequent turns still persist, but checkpoint never advances past the gap. */
+  const unpersistedGap = new Set<string>()
   const pendingQuestions = new Map<string, Asked>()
   let retrying = false
+
+  const advanceCheckpoint = (conversationId: string, upToCursor?: number) => {
+    if (!unpersistedGap.has(conversationId)) checkpoint?.(conversationId, upToCursor)
+  }
 
   function newTurn(conversationId: string, by: string | null = null, sessionId: string | null = sourceSession()): ActiveTurn {
     return {
@@ -167,7 +188,7 @@ export function createForegroundHistory({
   function drainPlainOps(turn: ActiveTurn): HistoryMessageMutation[] {
     closePlain(turn)
     if (!turn.pendingPlainSegments.length) return []
-    const ops: HistoryMessageMutation[] = turn.pendingPlainSegments.map(text => ({
+    const ops: HistoryMessageMutation[] = turn.pendingPlainSegments.flatMap(splitAssistantText).map(text => ({
       kind: 'upsert_assistant',
       message: { role: 'assistant', text, receipt: null },
     }))
@@ -213,9 +234,12 @@ export function createForegroundHistory({
           if (current().id === saved.id) setCurrent(saved)
           if (entry.plainPersistedPending) markPlainPersisted?.(saved.id, entry.plainPersistedPending.cursor)
           for (const questionId of entry.questionIds) markQuestionPersisted?.(saved.id, questionId)
-          if (entry.checkpointPending) checkpoint?.(saved.id, entry.checkpointPending.cursor)
+          if (entry.checkpointPending) advanceCheckpoint(saved.id, entry.checkpointPending.cursor)
         } catch (error) {
-          if (error instanceof HistoryValidationError) pendingWrites.delete(id)
+          if (error instanceof HistoryValidationError) {
+            pendingWrites.delete(id)
+            unpersistedGap.add(id)
+          }
           onError(error)
         }
       }
@@ -247,7 +271,7 @@ export function createForegroundHistory({
       if (carried) pendingWrites.delete(base.id)
       if (plainBoundary) markPlainPersisted?.(base.id, plainBoundary.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(base.id, questionId)
-      if (checkpointBoundary) checkpoint?.(base.id, checkpointBoundary.cursor)
+      if (checkpointBoundary) advanceCheckpoint(base.id, checkpointBoundary.cursor)
       return { ok: true, saved: null }
     }
     const { mode, model } = agentInfo()
@@ -263,12 +287,14 @@ export function createForegroundHistory({
       if (current().id === saved.id) setCurrent(saved)
       if (plainBoundary) markPlainPersisted?.(saved.id, plainBoundary.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(saved.id, questionId)
-      if (checkpointBoundary) checkpoint?.(saved.id, checkpointBoundary.cursor)
+      if (checkpointBoundary) advanceCheckpoint(saved.id, checkpointBoundary.cursor)
       return { ok: true, saved }
     } catch (error) {
       // Permanent validation errors must not poison pendingWrites and block subsequent turns in this conversation;
-      // leave any prior transient carried writes intact and refuse to advance the checkpoint for this failed batch.
-      if (!(error instanceof HistoryValidationError)) {
+      // record an unpersisted gap so later turns still commit to SQLite without advancing checkpoint over lost data.
+      if (error instanceof HistoryValidationError) {
+        unpersistedGap.add(base.id)
+      } else {
         pendingWrites.set(base.id, {
           conversation: target,
           ops: allOps,
