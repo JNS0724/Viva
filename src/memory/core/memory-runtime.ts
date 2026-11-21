@@ -927,11 +927,12 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         withdrawNotes(source.id)
         store.withdrawSource(source.id)
       }
+      cuts.push(...eraseRetiredManualLocators())
       if (!payload.onlySources) store.setMeta(`withdrawn:${payload.conversation}`, '1')
       validateDispatch()
     })
     if (before !== store.revision()) publish(store.revision())
-    return { cuts }
+    return { cuts: mergedErasureCuts(cuts) }
   }
 
   function canonicalSource(id: string, inspected = new Map<string, MemorySource | null>()): MemorySource | null {
@@ -1357,41 +1358,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     return result
   }
 
-  async function resumeFileRangeErasure(input: MemoryFileForgetRequest,
-    committed: (result: MemoryFileMutationResult, cuts: readonly DocumentSourceCut[]) => void,
-    beforeErasure?: () => void): Promise<MemoryFileMutationResult> {
-    if (!documents || !fileManagement || !notes) throw domainError('not.found')
-    const storage = documents
-    const result = await runDocumentMutation(() => store.tx(() => {
-      if (closed) throw domainError('not.found')
-      const { refs, dailyKey } = fileManagement.forgetEvidence(input, managementAllows)
-      const direct = refs.map(ref => {
-        const current = canonicalSource(ref.id)
-        if (!current?.text || !current.hash || resources.sourceToken(current) !== ref.token) throw domainError('revision.conflict')
-        return { ...ref, spans: ref.spans ?? [{ start: 0, end: current.length }], version: current.version,
-          length: current.length, hash: current.hash } satisfies DocumentSourceCut
-      })
-      const cuts = dependentErasureCuts(direct.map(cut => ({ id: cut.id, cut })), direct)
-      beforeErasure?.()
-      store.nextRevision()
-      for (const cut of cuts) eraseCanonicalRange(cut)
-      cuts.push(...eraseRetiredManualLocators())
-      validateDispatch()
-      const usageVersion = dailyKey
-        ? notes.storage.allocations().find(item => item.key === dailyKey)?.revision
-        : storage.registered(input.identity.workspace).find(item => item.id === input.identity.id)?.usageVersion
-      if (usageVersion === undefined) throw new Error('Missing erased file identity')
-      const result: MemoryFileMutationResult = { operationId: input.operationId, identity: input.identity,
-        action: 'FORGET', contentRevision: input.version.contentRevision, usageVersion,
-        ...(input.restrictionId ? { restrictionId: input.restrictionId } : {}) }
-      committed(result, mergedErasureCuts(cuts))
-      return result
-    }))
-    publish(store.revision())
-    void effects.wake()
-    return result
-  }
-
   async function mutateManagedFile(input: MemoryFileMutation, committed?: FileMutationCommitted, waitForPublication = true): Promise<MemoryFileMutationResult> {
     const command = memoryFileMutation.parse(input)
     if (!documents || !fileManagement) throw domainError('not.found')
@@ -1495,7 +1461,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
     setFileEnabled: (input: MemoryFileSetEnabledRequest, committed?: FileMutationCommitted, waitForPublication = true) =>
       mutateManagedFile({ ...input, action: 'setEnabled' }, committed, waitForPublication),
-    forgetFile: forgetManagedFile, resumeFileRangeErasure,
+    forgetFile: forgetManagedFile,
     manualFileWorkspace,
     writeManagedFile, searchableReceipt,
     explicitFileSource,

@@ -174,6 +174,4 @@ test('deletion relies on the accepted file identity and version, independently o
   assert.equal(f.service.detail(f.identity, allow)?.actions.forget, true)
   const detail = f.service.detail(f.identity, allow)!
   assert.equal(f.service.deletionTarget({ operationId: randomUUID(), identity: f.identity, version: detail.version }, allow).id, f.identity.id)
-  assert.throws(() => f.service.forgetEvidence({ operationId: randomUUID(), identity: f.identity, version: detail.version }, allow),
-    { code: 'revision.conflict' })
 })

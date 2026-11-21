@@ -1,4 +1,4 @@
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { createErasableNativeFile, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -16,7 +16,6 @@ import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
 import { inspectNativeOutputWindow, projectNativeRetry } from '../plugins/memory/lib/native/project-native-outputs.ts'
 import { eraseColdNativeCopies, PendingNativePublication } from '../plugins/memory/lib/native/maintenance.ts'
-import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { scratch } from './fixtures/scratch.js'
 
 function retryLog() {
@@ -85,7 +84,7 @@ for (const forked of [false, true]) {
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Canonical memory supporting this failed request.' }] }) as HostMemoryApi['createFile']['output']
+      const file = await createErasableNativeFile(owner, 'Canonical memory supporting this failed request.')
       assert.match(owner.runtime.handle({ op: 'file_read', session: f.session.id, id: file.identity.id }, { session: f.session.id, conversation: f.session.id }) ?? '', /Canonical/u)
       const archive = new DatabaseSync(join(memoryRoot, 'memory.db'))
       try {
@@ -95,9 +94,7 @@ for (const forked of [false, true]) {
         attempts.record(f.independentAttempt, { sources: [], epoch: 0, turnOnly: false })
         attempts.finish(f.independentAttempt, { seq: f.independentOutput.seq, kind: 'attempt', digest: nativeEventDigest(f.independentOutput) })
       } finally { archive.close() }
-      const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
-      assert.ok(detail)
-      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
+      await withdrawNativeFile(owner, file)
     } finally { await owner.close() }
     const maintenance = openNativeOriginalMaintenance(memoryRoot, 'viva')
     assert.ok(maintenance)

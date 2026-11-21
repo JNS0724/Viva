@@ -254,26 +254,6 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
     return view
   }
-  // Persisted range erasures accepted by earlier releases retain their original scope.
-  function forgetEvidence(command: MemoryFileForgetRequest, allows: Allows): { refs: DocumentSourceRef[], dailyKey?: string } {
-    const view = resolve(command.identity, allows)
-    if (!view) throw failure('not.found')
-    const selected = command.restrictionId === undefined ? undefined
-      : view.daily?.restrictions.find(item => item.record.id === command.restrictionId)
-    const version = selected?.version ?? versionOf(view)
-    if (version.contentRevision !== command.version.contentRevision || version.usageVersion !== command.version.usageVersion
-      || version.policyToken !== command.version.policyToken) throw failure('revision.conflict')
-    if (command.restrictionId !== undefined) {
-      if (!selected || !daily || !selected.record.sources.length) throw failure('revision.conflict')
-      const snapshot = daily.ledger.snapshot(selected.record, selected.record.id)
-      if (!snapshot || hash(snapshot) !== version.contentRevision || !daily.sources(selected.record.sources, snapshot)) throw failure('revision.conflict')
-      return { refs: selected.record.sources, dailyKey: view.daily!.allocation.key }
-    }
-    const refs = view.kind === 'digest' ? view.backing?.sources
-      : view.daily?.hasProjection && daily ? daily.references(view.daily.allocation.key) : undefined
-    if (!refs?.length) throw failure('revision.conflict')
-    return { refs, dailyKey: view.daily?.allocation.key }
-  }
   function editTarget(command: MemoryFileEditRequest, allows: Allows) {
     const view = resolve(command.identity, allows)
     if (!view || !view.backing || !editSupported(view)) throw failure('revision.conflict')
@@ -282,5 +262,5 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
     return view.backing
   }
-  return { list, listPage, detail, resolve, validate, deletionTarget, forgetEvidence, editTarget }
+  return { list, listPage, detail, resolve, validate, deletionTarget, editTarget }
 }

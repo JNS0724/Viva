@@ -251,8 +251,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const operation = (id: string) => db.prepare('SELECT * FROM owner_operations WHERE id=?').get(id) as Operation | undefined
   function cleanupComplete(item: Operation) {
     if (item.state !== 'completed') return false
-    const receipt = item.payload ? JSON.parse(item.payload) as { fileOnly?: boolean, result?: MemoryFileMutationResult } : null
-    if (receipt?.fileOnly && receipt.result) return !runtime.deletedFileCleanupPending(receipt.result.identity)
+    const receipt = item.payload ? JSON.parse(item.payload) as { result?: MemoryFileMutationResult } : null
+    if (receipt?.result?.action === 'FORGET') return !runtime.deletedFileCleanupPending(receipt.result.identity)
     return runtime.cleanupPending() === 0 && !db.prepare('SELECT 1 FROM owner_host_effects WHERE id=? AND acked=0').get(item.id)
       && nativeCleanup.complete(item.id)
   }
@@ -597,16 +597,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     await fence.mutate(async () => { await options.quiesce(); db.prepare("UPDATE owner_operations SET state='prepared' WHERE id=?").run(item.id) })
     return { ticket: item.ticket!, operation: outcome(operation(item.id)!) }
   }
-  type FileReaders = ReadonlyMap<string, readonly MemoryFileDependency[]>
-  function currentFileReaders(workspace: string): FileReaders {
-    const readers = new Map<string, MemoryFileDependency[]>()
-    for (const { id: session } of db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>) {
-      const files = dispatch.snapshot(session).files?.filter(ref => ref.workspace === workspace && runtime.fileDependenciesCurrent([ref]))
-      if (files?.length) readers.set(session, files)
-    }
-    return readers
-  }
-  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[], readers?: FileReaders): boolean {
+  function recordRangeErasure(id: string, cuts: readonly DocumentSourceCut[]): boolean {
     if (!cuts.length) return false
     const ranges = cuts.map(({ id: sourceId, version: revision, length, hash, spans }) => {
       const afterHash = store.readSource(sourceId)?.hash
@@ -614,8 +605,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       return { sourceId, revision, length, hash, afterHash, spans }
     })
     const invalidated = (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id: session }) =>
-      usesErasedMemory(dispatch.snapshot(session), ranges)
-        || readers?.get(session)?.some(ref => !runtime.fileDependenciesCurrent([ref])) ? [session] : [])
+      usesErasedMemory(dispatch.snapshot(session), ranges) ? [session] : [])
     const current = db.prepare('SELECT session FROM owner_occurrences WHERE source=?')
     // File reads can reach native transcripts without creating a source occurrence.
     const nativeSession = db.prepare('SELECT 1 FROM owner_sessions WHERE session=?')
@@ -784,7 +774,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return fence.mutate(write)
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
-  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string, fileOnly?: true }
+  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string }
   function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
     const sourceIds = new Set(sources.map(ref => ref.sourceId))
     return (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id }) => {
@@ -912,7 +902,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const sources = pending?.sources ?? (command.method === 'forgetFile' || request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
     const sessions = pending?.sessions ?? (command.method === 'forgetFile' ? [] : fileSessions(request.identity, sources))
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint,
-      JSON.stringify({ command, sources, sessions, standaloneSession, ...(command.method === 'forgetFile' && { fileOnly: true }) } satisfies FileWritePayload))
+      JSON.stringify({ command, sources, sessions, standaloneSession } satisfies FileWritePayload))
     let notify = false
     const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
       store.tx(() => {
@@ -929,20 +919,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
       })
     }
-    // The result and its file tombstone commit together. Older intent rows predate file-only deletion.
-    const fileOnly = !pending || pending.fileOnly === true
     const finishForget = (result: MemoryFileMutationResult) => {
-      db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession, ...(fileOnly && { fileOnly: true }) }), id)
+      db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
     }
-    let readers: FileReaders | undefined
     try {
       const result = command.method === 'setFileEnabled'
         ? await runtime.setFileEnabled(command.input.args[0], committed, !replayingWrites)
         : command.method === 'undoFile' ? await runtime.undoFile(command.input.args[0], committed, !replayingWrites)
-          : !fileOnly ? await runtime.resumeFileRangeErasure(command.input.args[0], (result, cuts) => {
-            notify = recordRangeErasure(id, cuts, readers)
-            finishForget(result)
-          }, () => { readers = currentFileReaders(request.identity.workspace) })
           : runtime.forgetFile(command.input.args[0], finishForget)
       diagnostics.emit({ event: 'state.changed', operation: command.method === 'undoFile' ? 'memory.undo' : command.method === 'forgetFile' ? 'memory.forget' : 'memory.write',
         stage: 'applied', identities: { requestId: id, ownerEpoch: epoch, resourceId: result.identity.id, generation: result.contentRevision } })

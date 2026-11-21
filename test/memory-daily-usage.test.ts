@@ -207,18 +207,6 @@ test('turning off daily capture keeps existing stopped original sources fenced',
   assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')
 })
 
-test('an older file layout fails before starting an owner that could ignore existing restrictions', t => {
-  const { dir, defer } = scratch(t, 'memory-previous-file-layout-')
-  const store = openMemoryStore(join(dir, 'memory.db'))
-  store.close()
-  const db = new DatabaseSync(join(dir, 'memory.db'))
-  defer(() => db.close())
-  db.exec('CREATE TABLE memory_document_use_restrictions (document TEXT PRIMARY KEY, sources TEXT NOT NULL)')
-  assert.throws(() => openMemoryOwner({ root: dir, dailyNotes: false, route: () => null, compute: () => null,
-    quiesce: async () => {} }), /Memory file layout is incompatible/)
-})
-
-
 test('withdrawing part of a stopped snapshot removes its body while retaining the independent limit', async t => {
   const f = await fixture(t), first = await f.add('Withdraw this private item.')
   await f.add('Retain this independent item.')
