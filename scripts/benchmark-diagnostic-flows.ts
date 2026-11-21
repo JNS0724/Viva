@@ -49,8 +49,8 @@ const workspace = hash('workspace')
 const docs: MemoryDocumentView[] = Array.from({ length: 32 }, (_, i) => {
   const markdown = '---\nname: Reference ' + i + '\ndescription: search fixture\n---\nrelease notes'
   return { id: String(i), workspace, kind: 'digest', path: 'digest/wiki/' + i + '.md', revision: hash(markdown),
-    usageVersion: 1, policyToken: hash(markdown), updatedAt: 1, markdown, currentMarkdown: markdown, sources: [],
-    sourceTokens: [{ id: 'source-' + i, token: '1' }], backing: null, supporting: [], applicability: { state: 'current', supersessions: [] } }
+    usageVersion: 1, policyToken: hash(markdown), updatedAt: 1, markdown, sources: [],
+    sourceTokens: [{ id: 'source-' + i, token: '1' }], backing: null }
 })
 const retrieval = createMemoryFileRetrieval({ index: openMemoryFileIndex({ db }), hash, workspaces: () => [workspace],
   policy: { list: () => docs, read: (_, name) => docs.find(doc => doc.path === name) ?? null }, diagnostics: diagnosticPort })

@@ -285,7 +285,7 @@ export async function memoryFilesWith(win: SmokeWindow, words: string, includeSt
         `window.agent.listMemoryFiles(${JSON.stringify({ limit: 100, ...(cursor ? { cursor } : {}) })})`))
       if (page.status === 'stale') { stale = true; break }
       for (const item of page.items) {
-        if (!includeStopped && (!item.enabled || item.hasProjection === false || item.applicability !== 'current')) continue
+        if (!includeStopped && (!item.enabled || item.hasProjection === false)) continue
         const detail: MemoryFileDetailView | null = await run(win, `window.agent.readMemoryFile(${JSON.stringify(item.identity)})`)
         if (!detail) continue
         if (detail.identity.kind !== item.identity.kind || detail.identity.id !== item.identity.id || detail.identity.workspace !== item.identity.workspace) {

@@ -4,7 +4,6 @@ import type { MemoryModelJob, MemorySourceReference, MemoryToolExecutor } from '
 import { parseMemoryDocument, memoryDocumentLines, readMemoryLines } from './memory-document.ts'
 import { parseMemoryMarkdown } from './memory-markdown.ts'
 import { memorySearchTokens } from './search-tokens.ts'
-import type { DocumentSupersession } from './ports/documents.ts'
 
 /** Caller-supplied authorized workspace snapshot; extra identity/version fields are retained for commit CAS. */
 export interface DreamDocumentSnapshot {
@@ -14,7 +13,6 @@ export interface DreamDocumentSnapshot {
   sources: readonly MemorySourceReference[]
   usageVersion?: number
   policyToken?: string
-  applicability?: { state: 'current' | 'superseded' | 'unavailable', supersessions: readonly DocumentSupersession[] }
 }
 
 export class MemoryDreamStaleError extends Error {
@@ -64,7 +62,7 @@ export function searchMemoryNodes<S extends DreamDocumentSnapshot>(snapshots: re
   const terms = [...new Set(memorySearchTokens(input.query, false))]
   if (!terms.length) return []
   const nodes = snapshots
-    .filter(snapshot => digestPath.safeParse(snapshot.path).success && (!snapshot.applicability || snapshot.applicability.state === 'current'))
+    .filter(snapshot => digestPath.safeParse(snapshot.path).success)
     .map(snapshot => {
       const summary = dreamNodeMetadata(snapshot)
       const tokens = memorySearchTokens(`${summary.name} ${summary.description}`, true)
@@ -106,7 +104,6 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ docume
     return latest?.revision === snapshot.revision && latest?.usageVersion === snapshot.usageVersion
       && latest?.policyToken === snapshot.policyToken
       && JSON.stringify(latest?.sources) === JSON.stringify(snapshot.sources)
-      && JSON.stringify(latest?.applicability) === JSON.stringify(snapshot.applicability)
   })
   const checkedPaths = () => [...observed.keys()]
   const assertCurrent = (lookup = documents.read) => { if (!current(lookup)) throw new MemoryDreamStaleError() }
@@ -123,7 +120,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ docume
   }
   function read(path: string, lookup = documents.read) {
     const snapshot = lookup(path)
-    if (!snapshot || snapshot.applicability?.state === 'unavailable') return reject('memory-dream-document-unavailable')
+    if (!snapshot) return reject('memory-dream-document-unavailable')
     return observe(snapshot)
   }
   const sources = () => {
@@ -150,10 +147,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ docume
           const input = inputSchemas.node_search.parse(invocation.input)
           result = searchMemoryNodes(files.list(), input.query, input.limit).map(({ snapshot, summary, score }) => {
             observe(snapshot)
-            return {
-              path: snapshot.path, revision: snapshot.revision, ...summary, score,
-              ...(snapshot.applicability ? { applicability: snapshot.applicability } : {}),
-            }
+            return { path: snapshot.path, revision: snapshot.revision, ...summary, score }
           })
           if (files.partial) {
             incompleteSearches.set(input.query, files.next)
@@ -169,10 +163,7 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ docume
           if (start_line > total || end_line !== undefined && end_line < start_line) return reject('memory-dream-line-range')
           const end = Math.min(end_line ?? total, total)
           bodyReads.add(path)
-          result = {
-            path, start_line, end_line: end, markdown: readMemoryLines(snapshot.markdown, start_line, end),
-            ...(snapshot.applicability ? { applicability: snapshot.applicability } : {}),
-          }
+          result = { path, start_line, end_line: end, markdown: readMemoryLines(snapshot.markdown, start_line, end) }
           break
         }
       }

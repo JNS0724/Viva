@@ -117,8 +117,6 @@ export const en = {
   "memory-files.digest": "Digest",
   "memory-files.untitled": "Untitled memory",
   "memory-files.stopped": "Stopped",
-  "memory-files.superseded": "Superseded",
-  "memory-files.unavailable": "Unavailable",
   "memory-files.open": "View details",
   "memory-files.open.named": "View details for {title}",
   "memory-files.source.number": "View source {number}",

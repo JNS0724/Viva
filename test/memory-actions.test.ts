@@ -95,7 +95,7 @@ test('file details distinguish linked and unlocated sources without promoting th
   const link = 'viva://timeline/segment/0/88'
   const unknown = { namespace: 'canonical', sourceId: 'unlocated', revision: 1, link: null }
   const detail: MemoryFileDetailView = { identity, version: { contentRevision: 'body', usageVersion: 1, policyToken: 'policy' },
-    title: '日记', path: 'daily/note.md', enabled: true, applicability: 'current', actions: { setEnabled: true, edit: false, forget: false, undo: null },
+    title: '日记', path: 'daily/note.md', enabled: true, actions: { setEnabled: true, edit: false, forget: false, undo: null },
     markdown: '这是笔记内容。', sources: [{ ...unknown, sourceId: 'linked', link }, unknown],
   }
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: { cleanupPending: 2, profile: {}, onboarding: 'done', habits: { text: '', samples: 0 } } })
@@ -145,7 +145,7 @@ test('file permanent forget buttons map through explicit confirmation and keep I
   const { draw } = profileDom(t)
   const detail: MemoryFileDetailView = { identity: { kind: 'digest', workspace: 'personal', id: 'file' },
     version: { contentRevision: 'revision', usageVersion: 1, policyToken: 'policy' }, title: 'Private note',
-    path: 'digest/wiki/private.md', enabled: true, applicability: 'current', markdown: 'Private body', sources: [],
+    path: 'digest/wiki/private.md', enabled: true, markdown: 'Private body', sources: [],
     actions: { edit: false, setEnabled: false, forget: true, undo: null } }
   let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: {
     profile: {}, onboarding: 'done', habits: { text: '', samples: 0 },

@@ -13,8 +13,7 @@ const titleOf = (item: MemoryFileSummary) => item.title || t(item.identity.kind 
 
 function fileMeta(item: MemoryFileSummary) {
   const kind = t(item.identity.kind === 'daily' ? 'memory-files.daily' : 'memory-files.digest')
-  const status = item.hasProjection === false || item.identity.kind === 'digest' && !item.enabled ? t('memory-files.stopped')
-    : item.applicability !== 'current' ? t(`memory-files.${item.applicability}`) : ''
+  const status = item.hasProjection === false || item.identity.kind === 'digest' && !item.enabled ? t('memory-files.stopped') : ''
   return h('p', { class: 'memory-meta memory-file-meta', text: [kind, item.day, status].filter(Boolean).join(' · ') })
 }
 

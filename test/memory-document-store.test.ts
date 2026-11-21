@@ -53,24 +53,6 @@ test('local digest deletion recovers its exact file without changing another dig
   assert.throws(() => recovered.commit({ ...f.input, operationId: 'stale-create' }), /unavailable/)
 })
 
-test('locally deleting a correction preserves its body-free supersession on the original document', t => {
-  const f = fixture(t), documents = f.create()
-  const original = documents.commit({ ...f.input, markdown: 'Old location' })
-  const replacement = documents.commit({ ...f.input, operationId: 'candidate', path: 'digest/wiki/new.md', markdown: 'Checking' })
-  const corrected = documents.commit({ ...f.input, path: replacement.path, operationId: 'correct', action: 'CORRECT',
-    expectedRevision: replacement.revision, markdown: 'New location', corrections: [{
-      path, revision: original.revision!, startLine: 1, endLine: 1, text: 'Old location', condition: 'During work', time: 'Now',
-    }] })
-  documents.deleteFile(workspace, corrected.documentId, corrected.usageVersion)
-  documents.recoverDeletedFiles()
-  const relations = documents.supersessions(workspace, path)
-  assert.equal(relations.length, 1)
-  assert.equal(relations[0]!.documentId, corrected.documentId)
-  assert.equal(relations[0]!.text, '')
-  assert.equal(documents.read(workspace, path)?.markdown, 'Old location')
-  assert.equal(documents.read(workspace, replacement.path), null)
-})
-
 test('document commits persist identity and history; repeat receipts do not add revisions', t => {
   const f = fixture(t), documents = f.create()
   const saved = documents.commit(f.input)
@@ -173,27 +155,24 @@ test('retired paths stay unavailable, and independent evidence can use and link 
   assert.equal(recovered.pendingCleanup(), 0)
 })
 
-test('CORRECT persists exact old fragment; undo creates a revision and does not cover later edits', t => {
+test('REFINE persists previous snapshot; undo creates a revision and does not cover later edits', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)
   const snapshot = documents.read(workspace, path)!
-  const correction: DocumentCommit = { ...f.input, operationId: 'correct', action: 'CORRECT', expectedRevision: first.revision,
-    markdown: '# 居住地\n上海', sources: [...snapshot.sources, { id: 's2', token: 'v2' }], reads: [snapshot],
-    corrections: [{ path, revision: snapshot.revision, startLine: 2, endLine: 2, text: '深圳', condition: '主要居住地', time: '搬家后' }] }
-  const corrected = documents.commit(correction)
-  assert.equal(documents.supersessions(workspace, path).length, 1)
-  const restored = f.create().undo({ operationId: 'undo', workspace, documentId: first.documentId, revision: corrected.revision!, usageVersion: corrected.usageVersion })
+  const update: DocumentCommit = { ...f.input, operationId: 'refine', action: 'REFINE', expectedRevision: first.revision,
+    markdown: '# 居住地\n上海', sources: [...snapshot.sources, { id: 's2', token: 'v2' }], reads: [snapshot] }
+  const refined = documents.commit(update)
+  const restored = f.create().undo({ operationId: 'undo', workspace, documentId: first.documentId, revision: refined.revision!, usageVersion: refined.usageVersion })
   assert.equal(documents.read(workspace, path)?.markdown, f.input.markdown)
-  assert.equal(documents.supersessions(workspace, path).length, 0)
   assert.equal(restored.usageVersion, 3)
-  assert.throws(() => documents.undo({ operationId: 'late', workspace, documentId: first.documentId, revision: corrected.revision!, usageVersion: corrected.usageVersion }), /version/)
+  assert.throws(() => documents.undo({ operationId: 'late', workspace, documentId: first.documentId, revision: refined.revision!, usageVersion: refined.usageVersion }), /version/)
   assert.equal(f.db.prepare('SELECT COUNT(*) n FROM memory_document_revisions').get()?.n, 3)
 })
 
-test('invalid correction or changed source cannot commit; external edits are quarantined', t => {
+test('invalid action or changed source cannot commit; external edits are quarantined', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)
-  assert.throws(() => documents.commit({ ...f.input, operationId: 'bad', action: 'CORRECT', expectedRevision: first.revision, markdown: 'new' }), /correction-required/)
+  assert.throws(() => documents.commit({ ...f.input, operationId: 'bad', action: 'CREATE', expectedRevision: first.revision, markdown: 'new' }), /document-version|document-action/)
   f.sources.set('s1', { workspace, token: 'changed', text: 'changed' })
   assert.equal(documents.read(workspace, path), null)
   f.sources.set('s1', { workspace, token: 'v1', text: '我住深圳。我喜欢茶。' })
@@ -233,40 +212,6 @@ test('withdraw stages cleanup inside transaction and erases history', t => {
   documents.recover()
   assert.equal(documents.hasPendingCleanup('s1'), false)
   assert.equal(existsSync(join(f.root, workspace, path)), false)
-})
-
-test('withdrawing the source of a correction quotation erases it without removing an independent replacement', t => {
-  const f = fixture(t), documents = f.create()
-  const marker = 'Old private quotation text'
-  const original = documents.commit({ ...f.input, markdown: marker })
-  const target = 'digest/wiki/current.md', current = 'Shanghai is the new home'
-  const replacement = documents.commit({ ...f.input, operationId: 'new-file', path: target, markdown: 'Checking the new address',
-    sources: [{ id: 's2', token: 'v2' }] })
-  documents.commit({ ...f.input, operationId: 'correct-external', path: target, action: 'CORRECT', expectedRevision: replacement.revision,
-    markdown: current, sources: [{ id: 's2', token: 'v2' }],
-    corrections: [{ path, revision: original.revision!, startLine: 1, endLine: 1, text: marker, condition: 'Confidential condition', time: 'Private timeframe' }] })
-  const supersession = documents.supersessions(workspace, path)[0]!
-  assert.equal(supersession.text, marker)
-  assert.equal(supersession.anchorSources, undefined)
-  assert.deepEqual(documents.supersessions(workspace, path, { includeEvidence: true })[0]?.anchorSources, f.input.sources)
-  assert.equal(documents.undoCandidate(workspace, replacement.documentId)?.changeId, 'correct-external')
-  f.sources.delete('s1')
-  documents.withdraw('s1')
-  const reopened = f.create()
-  assert.equal(reopened.read(workspace, target)?.markdown, current)
-  assert.equal(reopened.acceptedSnapshot(workspace, replacement.documentId)?.markdown, current)
-  assert.equal(reopened.undoCandidate(workspace, replacement.documentId), null)
-  const tombstone = reopened.supersessions(workspace, path)[0]!
-  assert.equal(tombstone.sourceDocumentId, original.documentId)
-  assert.deepEqual([tombstone.text, tombstone.time, tombstone.condition], ['', '', ''])
-  assert.equal(reopened.read(workspace, path), null)
-  assert.equal(reopened.pendingCleanup(), 0)
-  const replicas = JSON.stringify([
-    f.db.prepare('SELECT * FROM memory_documents').all(),
-    f.db.prepare('SELECT * FROM memory_document_revisions').all(),
-    f.db.prepare('SELECT plan FROM memory_file_intents').all(),
-  ])
-  assert.doesNotMatch(replicas, /Old private quotation text|Confidential condition|Private timeframe/)
 })
 
 test('journal namespaces isolate recovery callbacks while sharing file exclusion', t => {
@@ -339,20 +284,18 @@ test('a failed request-revision callback rolls back metadata and is replayed on 
 })
 
 for (const point of ['intent', 'replace', 'receipt', 'checkpoint'] as const) {
-  test(`killed process at ${point} recovers CORRECT metadata and supports safe undo`, async t => {
+  test(`killed process at ${point} recovers REFINE metadata and supports safe undo`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'memory-doc-process-'))
     let db: DatabaseSync | undefined
     t.after(() => { db?.close(); rmSync(root, { recursive: true, force: true }) })
     await runToCrash(new URL('./fixtures/memory-document-crash.ts', import.meta.url), point, root)
     db = new DatabaseSync(join(root, 'memory.db'))
     const documents = openMemoryDocuments({ db, root, source: () => ({ workspace, token: 'v1', text: '原来在深圳，现在搬到上海。' }) })
-    const corrected = documents.read(workspace, path)!
-    assert.equal(corrected.markdown, '上海')
-    assert.equal(documents.supersessions(workspace, path).length, 1)
-    assert(documents.receipt(workspace, 'correct'))
-    documents.undo({ operationId: 'undo', workspace, documentId: corrected.id, revision: corrected.revision, usageVersion: corrected.usageVersion })
+    const refined = documents.read(workspace, path)!
+    assert.equal(refined.markdown, '上海')
+    assert(documents.receipt(workspace, 'refine'))
+    documents.undo({ operationId: 'undo', workspace, documentId: refined.id, revision: refined.revision, usageVersion: refined.usageVersion })
     assert.equal(documents.read(workspace, path)?.markdown, '深圳')
-    assert.equal(documents.supersessions(workspace, path).length, 0)
   })
 }
 
@@ -437,18 +380,17 @@ test('an external conflict during abandoned-draft restoration remains pending wi
   assert(another)
 })
 
-test('undo after restart skips usage changes to revert the semantic correction', t => {
+test('undo after restart skips usage changes to revert the semantic refinement', t => {
   const f = fixture(t), documents = f.create()
   const first = documents.commit(f.input)
-  const corrected = documents.commit({ ...f.input, operationId: 'correct', action: 'CORRECT', expectedRevision: first.revision, markdown: '上海', sources: [...f.input.sources, { id: 's2', token: 'v2' }], corrections: [{ path, revision: first.revision!, startLine: 2, endLine: 2, text: '深圳', condition: '居住地', time: '搬家后' }] })
-  const stopped = documents.setEnabled({ operationId: 'stop', workspace, documentId: first.documentId, expectedRevision: corrected.revision!, expectedUsageVersion: corrected.usageVersion, enabled: false })
+  const refined = documents.commit({ ...f.input, operationId: 'refine', action: 'REFINE', expectedRevision: first.revision, markdown: '上海', sources: [...f.input.sources, { id: 's2', token: 'v2' }] })
+  const stopped = documents.setEnabled({ operationId: 'stop', workspace, documentId: first.documentId, expectedRevision: refined.revision!, expectedUsageVersion: refined.usageVersion, enabled: false })
   const reopened = f.create()
-  assert.deepEqual(reopened.undoCandidate(workspace, first.documentId), { changeId: 'correct', revision: stopped.revision, usageVersion: stopped.usageVersion })
-  reopened.undo({ operationId: 'undo', workspace, documentId: first.documentId, revision: stopped.revision!, usageVersion: stopped.usageVersion, expectedChangeId: 'correct' })
+  assert.deepEqual(reopened.undoCandidate(workspace, first.documentId), { changeId: 'refine', revision: stopped.revision, usageVersion: stopped.usageVersion })
+  reopened.undo({ operationId: 'undo', workspace, documentId: first.documentId, revision: stopped.revision!, usageVersion: stopped.usageVersion, expectedChangeId: 'refine' })
   assert.equal(reopened.undoCandidate(workspace, first.documentId), null)
   assert.equal(reopened.read(workspace, path, { includeDisabled: true })?.markdown, f.input.markdown)
   assert.equal(reopened.read(workspace, path), null)
-  assert.deepEqual(reopened.supersessions(workspace, path), [])
 })
 
 test('a locked WAL keeps replica cleanup pending until a later checkpoint succeeds', t => {
@@ -556,3 +498,36 @@ for (const point of ['intent', 'receipt', 'checkpoint'] as const) {
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM memory_document_revisions').get()?.n, 1)
   })
 }
+
+test('openMemoryDocuments refuses pre-v11 schemas before mutating tables or opening the journal', t => {
+  const root = mkdtempSync(join(tmpdir(), 'memory-documents-legacy-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  const standaloneDb = new DatabaseSync(join(root, 'standalone.db'))
+  t.after(() => standaloneDb.close())
+  standaloneDb.exec(`CREATE TABLE memory_documents (
+    id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
+    usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
+    sources TEXT NOT NULL, corrections TEXT NOT NULL, UNIQUE(workspace,path)
+  )`)
+  assert.throws(
+    () => openMemoryDocuments({ db: standaloneDb, root, source: () => undefined }),
+    /incompatible contract version/,
+  )
+  assert.equal(
+    standaloneDb.prepare("SELECT 1 FROM sqlite_master WHERE name='memory_document_revisions'").get(),
+    undefined,
+  )
+
+  const versionedDb = new DatabaseSync(join(root, 'versioned.db'))
+  t.after(() => versionedDb.close())
+  versionedDb.exec('PRAGMA user_version = 10')
+  assert.throws(
+    () => openMemoryDocuments({ db: versionedDb, root, source: () => undefined }),
+    /incompatible contract version/,
+  )
+  assert.equal(
+    versionedDb.prepare("SELECT 1 FROM sqlite_master WHERE name='memory_documents'").get(),
+    undefined,
+  )
+})

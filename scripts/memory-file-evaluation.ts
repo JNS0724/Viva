@@ -6,14 +6,13 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { performance } from 'node:perf_hooks'
 import { pathToFileURL } from 'node:url'
-import { isDeepStrictEqual } from 'node:util'
 import { createMemoryEmbedder } from '../src/memory/node/memory-embedder.ts'
 import { openMemoryFileIndex } from '../src/memory/node/memory-file-index.ts'
 import { createMemoryFileRetrieval, memoryFileChunkKey, memoryFileLexicalQuery } from '../src/memory/core/memory-file-retrieval.ts'
 import { fuseMemoryFileHits, selectMemoryFileHits } from '../src/memory/core/memory-file-ranking.ts'
 import { createMemoryDocumentReadPolicy } from '../src/memory/core/memory-document-read-policy.ts'
 import { formatMemoryDocument, memoryDocumentLines, parseMemoryDocument, readMemoryLines } from '../src/memory/core/memory-document.ts'
-import type { DocumentSnapshot, DocumentSupersession } from '../src/memory/core/ports/documents.ts'
+import type { DocumentSnapshot } from '../src/memory/core/ports/documents.ts'
 import type { MemoryFileHit } from '../src/memory/core/ports/file-index.ts'
 import type { MemoryDocumentView } from '../src/memory/core/memory-document-read-policy.ts'
 import type { FileSearchResult } from '../src/memory/core/memory-file-retrieval.ts'
@@ -45,21 +44,9 @@ export function auditEvaluationResult(result: FileSearchResult, authorized: read
   for (const hit of result.hits) {
     const view = find(hit.workspace, hit.id)
     if (!view || view.path !== hit.path || view.revision !== hit.revision) unauthorized.push(`hit:${hit.id}`)
-    if (!view?.currentMarkdown || !hit.text
-      || !readMemoryLines(view.currentMarkdown, hit.startLine, hit.endLine).includes(hit.text.replace(/(?:\r\n|\r|\n)$/u, ''))) invalidSlices.push(hit.id)
-    if (view) {
-      requireDependency(view, true)
-      const expected = { state: view.applicability.state, supersessions: view.applicability.supersessions.map(item => {
-        const support = view.supporting.find(candidate => candidate.id === item.documentId)
-        const replacement = support && find(view.workspace, support.id)
-        const base = { startLine: item.startLine, endLine: item.endLine }
-        if (replacement && replacement.path === support.path) requireDependency(replacement, false)
-        return replacement && replacement.path === support.path
-          ? { ...base, condition: item.condition, time: item.time, replacement: { id: replacement.id, path: replacement.path, revision: replacement.revision, state: replacement.applicability.state } }
-          : { ...base, replacementUnavailable: true }
-      }) }
-      if (!isDeepStrictEqual(hit.applicability, expected)) unauthorized.push(`applicability:${hit.id}`)
-    }
+    if (!view?.markdown || !hit.text
+      || !readMemoryLines(view.markdown, hit.startLine, hit.endLine).includes(hit.text.replace(/(?:\r\n|\r|\n)$/u, ''))) invalidSlices.push(hit.id)
+    if (view) requireDependency(view, true)
   }
   for (const dependency of result.files) {
     const view = find(dependency.workspace, dependency.id)
@@ -110,29 +97,24 @@ export function checkValidationFreeze() {
 
 export function dataPolicy(documents: readonly EvaluationDocument[]) {
   const byId = new Map(documents.map(document => [document.id, document]))
-  const byLogicalId = new Map(documents.map(document => [logicalId(document), document]))
   const bodies = new Map(documents.map(document => [document.id, markdownOf(document)]))
-  const relations: DocumentSupersession[] = documents.flatMap(document => {
-    if (!document.supersedes) return []
+  const retiredIds = new Set<string>()
+  for (const document of documents) {
+    if (!document.supersedes) continue
     const old = byId.get(document.supersedes.id)!, markdown = bodies.get(old.id)!, quote = document.supersedes.quote
     const start = markdown.indexOf(quote)
     assert.ok(start >= 0 && markdown.indexOf(quote, start + 1) < 0)
-    const lines = memoryDocumentLines(markdown)
-    const startLine = lines.findIndex(line => line.startOffset <= start && start < line.endOffset) + 1
-    const last = start + quote.length - 1
-    const endLine = lines.findIndex(line => line.startOffset <= last && last < line.endOffset) + 1
-    assert.equal(readMemoryLines(markdown,startLine,endLine),quote)
-    return [{ path:pathOf(old), revision:hash(markdown),startLine,endLine,text:quote,condition:'',time:'',
-      sourceDocumentId:logicalId(old),documentId:logicalId(document),replacementRevision:hash(bodies.get(document.id)!),operationId:`correction:${document.id}` }]
-  })
+    retiredIds.add(old.id)
+  }
+  const activeState = (document: EvaluationDocument) => retiredIds.has(document.id) ? 'disabled' as const : document.state
   const snapshots = new Map(documents.filter(document => document.kind === 'digest').map(document => {
     const markdown = bodies.get(document.id)!
     const snapshot: DocumentSnapshot = {id:document.id,workspace:workspace(document.scope),path:pathOf(document),revision:hash(markdown),usageVersion:1,
-      markdown,sources:[source(document)],enabled:document.state==='active',corrections:relations.filter(item=>item.documentId===document.id)}
+      markdown,sources:[source(document)],enabled:activeState(document)==='active'}
     return [document.id,snapshot]
   }))
   type PolicyArguments = Parameters<typeof createMemoryDocumentReadPolicy>[0]
-  const notes = new Map(documents.filter(document=>document.kind==='daily').map(document=>{
+  const notes = new Map(documents.filter(document=>document.kind==='daily' && !retiredIds.has(document.id)).map(document=>{
     const markdown=bodies.get(document.id)!, revision=hash(markdown), row={key:document.id,workspace:workspace(document.scope),path:pathOf(document),day:document.day!,
       revision:1,processed:0,updatedAt:Date.parse(`${document.day}T12:00:00Z`),file_revision:revision}
     return [document.id,{...row,title:document.name,markdown:parseMemoryDocument(markdown).body,document:markdown,fileRevision:revision}]
@@ -145,10 +127,9 @@ export function dataPolicy(documents: readonly EvaluationDocument[]) {
     snapshot:ids=>documents.map(source).filter(ref=>ids.includes(ref.id)),
   }
   const documentPort: PolicyArguments['documents'] = {
-    registered:scope=>[...snapshots.values()].filter(item=>item.workspace===scope).map(item=>({...item,state:byId.get(item.id)!.state})),
-    read:(scope,path)=>[...snapshots.values()].find(item=>item.workspace===scope && item.path===path && byId.get(item.id)!.state==='active') ?? null,
-    sourceRestrictions:scope=>documents.filter(document=>workspace(document.scope)===scope && document.state==='disabled').map(source),
-    supersessions:(scope,path)=>relations.filter(item=>item.path===path && workspace(byLogicalId.get(item.sourceDocumentId)!.scope)===scope),
+    registered:scope=>[...snapshots.values()].filter(item=>item.workspace===scope).map(item=>({...item,state:activeState(byId.get(item.id)!)})),
+    read:(scope,path)=>[...snapshots.values()].find(item=>item.workspace===scope && item.path===path && activeState(byId.get(item.id)!)==='active') ?? null,
+    sourceRestrictions:scope=>documents.filter(document=>workspace(document.scope)===scope && activeState(document)==='disabled').map(source),
   }
   const policy=createMemoryDocumentReadPolicy({notes:notePort,documents:documentPort,hash,
     refsCurrent:refs=>refs.every(ref=>documents.some(document=>source(document).id===ref.id && source(document).token===ref.token && document.state!=='forgotten')),
@@ -223,8 +204,8 @@ export async function runMemoryFileEvaluation(modelRoot: string, runtimeRoot: st
         const presented=selectMemoryFileHits(hits,{limit:5,minScore:evaluationGates.minScore})
         for(const hit of presented) {
           const view=policy.read(hit.file.workspace,hit.file.path)
-          if(!view?.currentMarkdown || view.currentMarkdown.slice(hit.startOffset,hit.endOffset)!==hit.text
-            || !readMemoryLines(view.currentMarkdown,hit.startLine,hit.endLine).includes(hit.text.replace(/(?:\r\n|\r|\n)$/u,''))) {
+          if(!view?.markdown || view.markdown.slice(hit.startOffset,hit.endOffset)!==hit.text
+            || !readMemoryLines(view.markdown,hit.startLine,hit.endLine).includes(hit.text.replace(/(?:\r\n|\r|\n)$/u,''))) {
             sourceSliceErrors++;sliceFailures.push({query:query.id,lane,id:ids.get(hit.file.id)!})
           }
         }

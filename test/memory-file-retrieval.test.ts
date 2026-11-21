@@ -18,8 +18,8 @@ const allows = () => true
 function view(id: string, text: string, extra: Partial<MemoryDocumentView> = {}): MemoryDocumentView {
   const markdown = `---\nname: ${id}\ndescription: ${id} description\n---\n${text}`
   return { id, workspace, path:`digest/wiki/${id}.md`,kind:'digest',revision:hash(markdown),usageVersion:1,
-    policyToken:hash(markdown),updatedAt:1,markdown,currentMarkdown:markdown,sources:[],sourceTokens:[{id:`source-${id}`,token:'v1'}],
-    backing:null,supporting:[],applicability:{state:'current',supersessions:[]},...extra }
+    policyToken:hash(markdown),updatedAt:1,markdown,sources:[],sourceTokens:[{id:`source-${id}`,token:'v1'}],
+    backing:null,...extra }
 }
 function setup(t: test.TestContext, initial: MemoryDocumentView[], embedder?: MemoryEmbedder, diagnostics?: DiagnosticPort, { sync = true }: { sync?: boolean } = {}) {
   const db=new DatabaseSync(':memory:')
@@ -187,19 +187,6 @@ test('file search covers daily and digest with complete source lines and filters
   assert.equal(dated.files[0]!.policyToken,digest.policyToken)
 })
 
-test('superseded prose and stale metadata are never current search or node matches', async t=>{
-  const old=view('old','Retired city Shanghai.\nUnrelated needle remains.')
-  old.currentMarkdown=old.markdown.replace('Retired city Shanghai.',' '.repeat('Retired city Shanghai.'.length))
-  old.applicability={state:'superseded',supersessions:[]}
-  const {retrieval}=setup(t,[old])
-  assert.equal((await retrieval.search({query:'Shanghai',allows})).status,'empty')
-  const result=await retrieval.search({query:'needle',allows})
-  assert.equal(result.hits.length,1);assert.ok(!result.hits[0]!.text.includes('Shanghai'))
-  assert.equal(retrieval.nodeSearch({query:'old',allows}).nodes.length,0)
-  assert.ok(!retrieval.read({id:'old',allows})!.text.includes('Shanghai'))
-  assert.ok(retrieval.read({id:'old',allows,evidence:true})!.text.includes('Shanghai'))
-})
-
 test('context dedup distinguishes empty and exhausted and invalidates on query, turn and revision', async t=>{
   const a=view('a','needle'), b=view('b','needle')
   const {retrieval,views}=setup(t,[a,b])
@@ -274,16 +261,6 @@ test('broken or unavailable embeddings degrade to full text without claiming a s
   const result=await retrieval.search({query:'needle',allows})
   assert.equal(result.status,'ok');assert.deepEqual(result.hits.map(hit=>hit.id),['a'])
   assert.ok(result.reasons.includes('semantic-index-incomplete'))
-})
-
-test('evidence output hides inaccessible replacement identity and contents', t=>{
-  const old=view('old','old fact'), replacement=view('private','new secret fact')
-  old.supporting=[{id:replacement.id,workspace,path:replacement.path,revision:replacement.revision,usageVersion:1,markdown:replacement.markdown,sources:[],enabled:true,corrections:[]}]
-  old.applicability={state:'superseded',supersessions:[{path:old.path,revision:old.revision,startLine:5,endLine:5,text:'old fact',condition:'secret condition',time:'secret time',sourceDocumentId:old.id,documentId:replacement.id,replacementRevision:replacement.revision,operationId:'correction'}]}
-  const {retrieval}=setup(t,[old,replacement])
-  const result=retrieval.read({id:'old',evidence:true,allows:item=>item.id!=='private'})!
-  assert.deepEqual(result.applicability.supersessions,[{startLine:5,endLine:5,replacementUnavailable:true}])
-  assert.ok(!result.text.includes('secret'))
 })
 
 test('RRF uses fixed single-lane rank scores and removes generic function words only from lexical queries', ()=>{
@@ -372,7 +349,7 @@ test('synchronous recall shares filtering and readsets and declares that semanti
 test('search line ranges round-trip through read for LF, CRLF and lone CR', async t => {
   for (const newline of ['\n', '\r\n', '\r']) {
     const markdown = ['---', 'name: title', 'description: desc', '---', 'first', 'needle'].join(newline)
-    const document = view(`line-${newline.length}-${newline.charCodeAt(0)}`, '', { markdown, currentMarkdown: markdown, revision: hash(markdown), policyToken: hash(markdown) })
+    const document = view(`line-${newline.length}-${newline.charCodeAt(0)}`, '', { markdown, revision: hash(markdown), policyToken: hash(markdown) })
     const { retrieval } = setup(t, [document])
     const result = await retrieval.search({ query: 'needle', allows })
     const hit = result.hits[0]!
@@ -463,7 +440,7 @@ test('output budget skips an oversized leading hit to deliver shorter matches an
   assert.equal(retrieval.searchCached({ ...request, maxChars: 12_000 }).status, 'exhausted')
 })
 
-test('budget includes escaped JSON and applicability and marks only complete hits seen', t => {
+test('budget includes escaped JSON and marks only complete hits seen', t => {
   const root = view('a', 'needle "with escapes" '.repeat(25))
   const { retrieval } = setup(t, [root])
   const result = retrieval.searchCached({ query: 'needle', allows, maxChars: 400, contextKey: 'escaped-budget' })
@@ -473,20 +450,6 @@ test('budget includes escaped JSON and applicability and marks only complete hit
   assert.equal(result.hits.length, 0)
   assert.equal(retrieval.searchCached({ query: 'needle', allows, maxChars: 20_000, contextKey: 'escaped-budget' }).hits.length, 1)
   assert.throws(() => retrieval.searchCached({ query: 'needle', allows, maxChars: 10 }), /invalid-memory-file-output-budget/u)
-})
-
-
-test('output budget retains supersession applicability on delivered hits and drops over-budget hits safely', t => {
-  const old = view('old', 'needle '.repeat(1100))
-  old.applicability = { state: 'unavailable', supersessions: [{ path: old.path, revision: old.revision, startLine: 5, endLine: 5,
-    text: 'retired fragment', condition: 'only before transfer', time: 'past', sourceDocumentId: old.id,
-    documentId: 'missing-replacement', replacementRevision: 'gone', operationId: 'corrected' }] }
-  const { retrieval } = setup(t, [old])
-  const small = retrieval.searchCached({ query: 'needle', allows, maxChars: 1000, contextKey: 'warning-budget' })
-  assert.equal(small.hits.length, 0)
-  assert.ok(small.reasons.includes('output-budget'))
-  const full = retrieval.searchCached({ query: 'needle', allows, maxChars: 12_000, contextKey: 'warning-budget' })
-  assert.deepEqual(full.hits[0]!.applicability, { state: 'unavailable', supersessions: [{ startLine: 5, endLine: 5, replacementUnavailable: true }] })
 })
 
 test('file vector space follows adapter-declared dimensions and invalidates a changed width even with the same model fingerprint', async t => {
@@ -694,21 +657,19 @@ test('manual reindex during an in-flight query resumes vector preparation when t
   assert.deepEqual(index.missingVectors(rebuilt.vectorGeneration), [])
 })
 
-test('republishing an unchanged superseded digest returns zero accepted and skips redundant vector checks', async t => {
+test('republishing an unchanged digest returns zero accepted and skips redundant vector checks', async t => {
   const { embedder } = encoder()
-  const superseded = view('superseded-address', 'Old address.\nCurrent contact note.')
-  superseded.currentMarkdown = superseded.markdown.replace('Old address.', ' '.repeat('Old address.'.length))
-  superseded.applicability = { state: 'superseded', supersessions: [] }
-  const { retrieval, index } = setup(t, [superseded], embedder, undefined, { sync: false })
+  const existing = view('existing-address', 'Current contact note.')
+  const { retrieval, index } = setup(t, [existing], embedder, undefined, { sync: false })
   let vectorChecks = 0
   const begin = index.beginVectors
   index.beginVectors = space => { vectorChecks++; return begin(space) }
-  assert.deepEqual(retrieval.publishFiles([{ workspace, path: superseded.path }]), { accepted: 1, removed: 0 })
+  assert.deepEqual(retrieval.publishFiles([{ workspace, path: existing.path }]), { accepted: 1, removed: 0 })
   assert.equal(await retrieval.prepareVectors(), true)
   const checksAfterFirst = vectorChecks
   assert.ok(checksAfterFirst >= 1)
   for (let round = 0; round < 2; round++) {
-    assert.deepEqual(retrieval.publishFiles([{ workspace, path: superseded.path }]), { accepted: 0, removed: 0 })
+    assert.deepEqual(retrieval.publishFiles([{ workspace, path: existing.path }]), { accepted: 0, removed: 0 })
     await new Promise(resolve => setTimeout(resolve, 10))
     assert.equal(vectorChecks, checksAfterFirst)
   }

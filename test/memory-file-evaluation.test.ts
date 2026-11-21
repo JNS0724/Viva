@@ -11,7 +11,7 @@ test('retrieval evaluation datasets remain frozen without running or scoring a m
   assert.equal(checkValidationFreeze().dataHash, '3b13352e07f49e59328c40f662701209f704dc4bcb61c4b89fcc80ba3623d402')
 })
 
-test('evaluation admission resolves daily supersession by logical identity rather than fixture ID', () => {
+test('evaluation admission retires synthetic superseded documents while keeping active replacements readable', () => {
   const documents: EvaluationDocument[] = [
     { id: 'old-daily', name: 'Old instruction', body: 'The meeting starts at nine.', kind: 'daily', day: '2026-11-16', scope: 'public', state: 'active' },
     { id: 'new-digest', name: 'Current instruction', body: 'The meeting now starts at ten.', kind: 'digest', scope: 'public', state: 'active',
@@ -19,11 +19,8 @@ test('evaluation admission resolves daily supersession by logical identity rathe
   ]
   const workspace = createHash('sha256').update('holdout-workspace:public').digest('hex')
   const { policy } = dataPolicy(documents)
-  const old = policy.read(workspace, 'daily/2026-11-16/old-daily.md')
-  assert.ok(old)
-  assert.equal(old.applicability.supersessions[0]?.documentId, 'new-digest')
-  assert.ok(!old.currentMarkdown?.includes('The meeting starts at nine.'))
-  assert.match(policy.read(workspace, 'digest/wiki/new-digest.md')!.currentMarkdown!, /starts at ten/)
+  assert.equal(policy.read(workspace, 'daily/2026-11-16/old-daily.md'), null)
+  assert.match(policy.read(workspace, 'digest/wiki/new-digest.md')!.markdown, /starts at ten/)
 })
 
 test('evaluation audits service text and every exposed identity even without forbidden query labels', () => {
@@ -32,8 +29,8 @@ test('evaluation audits service text and every exposed identity even without for
   const views = policy.list(workspace), view = views[0]!
   const result: FileSearchResult = { status: 'ok', hits: [{
     id: view.id, workspace, path: view.path, revision: view.revision,
-    text: view.currentMarkdown!, startLine: 1, endLine: memoryDocumentLines(view.currentMarkdown!).length,
-    score: 0.01, applicability: { state: 'current', supersessions: [] },
+    text: view.markdown, startLine: 1, endLine: memoryDocumentLines(view.markdown).length,
+    score: 0.01,
   }], files: [{ id: view.id, workspace, path: view.path, revision: view.revision, usageVersion: view.usageVersion, policyToken: view.policyToken, sourceRanges: view.sourceTokens.map(({ id: sourceId, spans }) => ({ sourceId, ...(spans ? { spans } : {}) })) }],
     sourceIds: view.sourceTokens.map(item => item.id), reasons: [], partial: false }
   assert.deepEqual(auditEvaluationResult(result, views), { unauthorized: [], invalidSlices: [] })
@@ -45,9 +42,4 @@ test('evaluation audits service text and every exposed identity even without for
   for (const issue of ['dependency:secret', 'source:secret-source']) assert.ok(problems.includes(issue))
   assert.deepEqual(auditEvaluationResult({ ...result, files: [], sourceIds: [] }, views).unauthorized,
     ['missing-dependency:public', 'missing-source:source:public'])
-  const forgedProjection: FileSearchResult = { ...result, hits: [{ ...result.hits[0]!,
-    applicability: { state: 'current', supersessions: [{ startLine: 1, endLine: 1, condition: 'Injected condition',
-      replacement: { id: 'secret', path: 'digest/private.md', revision: 'secret', state: 'current' } }] },
-  }] }
-  assert.deepEqual(auditEvaluationResult(forgedProjection, views).unauthorized, ['applicability:public'])
 })

@@ -59,12 +59,11 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const canStop = Boolean(current && daily && !daily.references(key).some(ref => documentSourceRestricted(ref, ownRanges)))
     const dailyState = { allocation, hasProjection: Boolean(current), canStop, restrictions: authorized.map(({ record, version }) => ({ record, version })) }
     const sources = [...new Map([...(current?.sources ?? []), ...authorized.flatMap(item => item.sources)].map(ref => [ref.sourceId, ref])).values()]
-    if (current) return { ...current, sources, enabled: current.currentMarkdown !== null && current.applicability.state !== 'unavailable', daily: dailyState }
+    if (current) return { ...current, sources, enabled: current.enabled, daily: dailyState }
     const latest = authorized.at(-1)!
     return { id, kind: 'daily', workspace, path: allocation.path, day: allocation.day, updatedAt: allocation.updatedAt,
       revision: latest.version.contentRevision, usageVersion: allocation.revision, policyToken: hash(JSON.stringify([allocation, authorized.map(item => item.version)])),
-      enabled: false, markdown: '', currentMarkdown: null, sources, sourceTokens: [], backing: null, supporting: [],
-      applicability: { state: 'unavailable', supersessions: [] }, daily: dailyState }
+      enabled: false, markdown: '', sources, sourceTokens: [], backing: null, daily: dailyState }
   }
   function detachedDigestView(entry: DocumentFileRegistration): ManagedView | null {
     const { workspace, id, revision, usageVersion } = entry
@@ -72,8 +71,8 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     if (!restrictions.length) return null
     return { id, kind: 'digest', workspace, path: `digest/wiki/erased-${hash(id)}.md`, updatedAt: 0,
       revision, usageVersion, policyToken: hash(JSON.stringify(restrictions.map(item => item.version))),
-      enabled: false, markdown: '', currentMarkdown: null, sources: restrictions.flatMap(item => item.sources),
-      sourceTokens: [], backing: null, supporting: [], applicability: { state: 'unavailable', supersessions: [] },
+      enabled: false, markdown: '', sources: restrictions.flatMap(item => item.sources),
+      sourceTokens: [], backing: null,
       detachedRestrictions: restrictions.map(({ record, version }) => ({ record, version })) }
   }
   function managementViews(workspace: string, accepted?: MemoryDocumentManagementView[], target?: MemoryManagedFileIdentity): ManagedView[] {
@@ -95,8 +94,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     }
     return result
   }
-  const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null
-    && view.enabled && view.currentMarkdown !== null && view.applicability.state === 'current'
+  const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null && view.enabled
   function forgetSupported(view: ManagedView): boolean {
     return view.kind === 'digest' ? view.backing !== null : Boolean(view.daily)
   }
@@ -108,7 +106,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const candidate = undoCandidate(view)
     return { identity: identityOf(view), version: versionOf(view), path: view.path,
       title, enabled: view.enabled,
-      ...(view.day ? { day: view.day } : {}), applicability: view.applicability.state,
+      ...(view.day ? { day: view.day } : {}),
       ...(view.daily || view.detachedRestrictions ? { hasProjection: view.daily?.hasProjection ?? false,
         restrictions: (view.daily?.restrictions ?? view.detachedRestrictions ?? []).map(({ record, version }) => ({ id: record.id, version })) } : {}),
       actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.canStop || view.daily.restrictions.length)),
@@ -256,26 +254,6 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
     return view
   }
-  // Persisted range erasures accepted by earlier releases retain their original scope.
-  function forgetEvidence(command: MemoryFileForgetRequest, allows: Allows): { refs: DocumentSourceRef[], dailyKey?: string } {
-    const view = resolve(command.identity, allows)
-    if (!view) throw failure('not.found')
-    const selected = command.restrictionId === undefined ? undefined
-      : view.daily?.restrictions.find(item => item.record.id === command.restrictionId)
-    const version = selected?.version ?? versionOf(view)
-    if (version.contentRevision !== command.version.contentRevision || version.usageVersion !== command.version.usageVersion
-      || version.policyToken !== command.version.policyToken) throw failure('revision.conflict')
-    if (command.restrictionId !== undefined) {
-      if (!selected || !daily || !selected.record.sources.length) throw failure('revision.conflict')
-      const snapshot = daily.ledger.snapshot(selected.record, selected.record.id)
-      if (!snapshot || hash(snapshot) !== version.contentRevision || !daily.sources(selected.record.sources, snapshot)) throw failure('revision.conflict')
-      return { refs: selected.record.sources, dailyKey: view.daily!.allocation.key }
-    }
-    const refs = view.kind === 'digest' ? view.backing?.sources
-      : view.daily?.hasProjection && daily ? daily.references(view.daily.allocation.key) : undefined
-    if (!refs?.length) throw failure('revision.conflict')
-    return { refs, dailyKey: view.daily?.allocation.key }
-  }
   function editTarget(command: MemoryFileEditRequest, allows: Allows) {
     const view = resolve(command.identity, allows)
     if (!view || !view.backing || !editSupported(view)) throw failure('revision.conflict')
@@ -284,5 +262,5 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       || current.policyToken !== expected.policyToken) throw failure('revision.conflict')
     return view.backing
   }
-  return { list, listPage, detail, resolve, validate, deletionTarget, forgetEvidence, editTarget }
+  return { list, listPage, detail, resolve, validate, deletionTarget, editTarget }
 }

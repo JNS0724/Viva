@@ -594,32 +594,26 @@ test('native file recall deduplicates within a trusted turn and resets for the n
   assert.equal((await recall('1', 'other-session')).status, 'ok')
 })
 
-test('a correction and its undo immediately republish the unchanged anchor file', async t => {
+test('a refinement and its undo immediately republish the updated file', async t => {
   const f = fixture(t)
   const original = randomUUID()
   f.memory.accept('Indigo code names were retired and replaced by saffron.', origin, original)
   const { workspace, reference } = f.ref(original)
-  const anchor = f.documents.commit({ operationId: 'publication-old', workspace, path: 'digest/wiki/old.md',
+  const created = f.documents.commit({ operationId: 'publication-old', workspace, path: 'digest/wiki/code.md',
     expectedRevision: null, markdown: 'indigo', sources: [reference], reads: [], action: 'CREATE' })
-  const replacement = f.documents.commit({ operationId: 'publication-new', workspace, path: 'digest/wiki/new.md',
-    expectedRevision: null, markdown: 'saffron', sources: [reference], reads: [], action: 'CREATE' })
-  const recall = () => f.memory.handle({ op: 'recall', session: origin.session, query: 'indigo' }, origin)
+  const recall = (query: string) => f.memory.handle({ op: 'recall', session: origin.session, query }, origin)
   await f.memory.wake()
-  assert.match(recall(), /indigo/u)
+  assert.match(recall('indigo'), /indigo/u)
 
-  const corrected = f.documents.commit({ operationId: 'publication-correct', workspace, path: replacement.path,
-    expectedRevision: replacement.revision, markdown: 'saffron', sources: [reference], reads: [anchor].map(item => ({
-      id: item.documentId, revision: item.revision!, usageVersion: item.usageVersion,
-    })), action: 'CORRECT', corrections: [
-      { path: anchor.path, revision: anchor.revision!, startLine: 1, endLine: 1, text: 'indigo', condition: 'all', time: 'current' },
-    ] })
-  assert.equal(f.documents.read(workspace, anchor.path)?.revision, anchor.revision, 'the source bytes never changed')
+  const refined = f.documents.commit({ operationId: 'publication-refine', workspace, path: created.path,
+    expectedRevision: created.revision, markdown: 'saffron', sources: [reference], reads: [], action: 'REFINE' })
   await f.memory.wake()
-  assert.doesNotMatch(recall(), /indigo/u)
+  assert.doesNotMatch(recall('indigo'), /"markdown":"indigo"/u)
+  assert.match(recall('saffron'), /saffron/u)
 
-  await f.memory.undoDocument({ operationId: 'publication-undo', workspace, documentId: replacement.documentId,
-    revision: corrected.revision!, usageVersion: corrected.usageVersion })
-  assert.match(recall(), /indigo/u, 'undo must republish the anchor before the operation completes')
+  await f.memory.undoDocument({ operationId: 'publication-undo', workspace, documentId: created.documentId,
+    revision: refined.revision!, usageVersion: refined.usageVersion })
+  assert.match(recall('indigo'), /indigo/u, 'undo must republish the restored content before the operation completes')
 })
 
 test('a temporarily unreadable committed file keeps its publication pending without hiding unrelated files', async t => {
@@ -651,21 +645,18 @@ test('a temporarily unreadable committed file keeps its publication pending with
   assert.equal(effect(), undefined)
 })
 
-test('a delayed missing-file repair cannot erase a correction undo published through another file', { timeout: 8_000 }, async t => {
+test('a delayed missing-file repair cannot erase an undo published while repair was reading', { timeout: 8_000 }, async t => {
   const f = fixture(t), source = randomUUID()
   f.memory.accept('Indigo was replaced by saffron. Keep the ledger.', origin, source)
   const { workspace, reference } = f.ref(source)
   const anchor = f.documents.commit({ operationId: 'anchor', workspace, path: 'digest/wiki/anchor.md',
     expectedRevision: null, markdown: 'indigo\nKeep the ledger.', sources: [reference], reads: [], action: 'CREATE' })
-  const replacement = f.documents.commit({ operationId: 'replacement', workspace, path: 'digest/wiki/replacement.md',
-    expectedRevision: null, markdown: 'saffron', sources: [reference], reads: [], action: 'CREATE' })
-  const corrected = f.documents.commit({ operationId: 'correct', workspace, path: replacement.path,
-    expectedRevision: replacement.revision, markdown: 'saffron', sources: [reference], reads: [], action: 'CORRECT',
-    corrections: [{ path: anchor.path, revision: anchor.revision!, startLine: 1, endLine: 1, text: 'indigo', condition: '', time: '' }] })
+  const refined = f.documents.commit({ operationId: 'refine', workspace, path: anchor.path,
+    expectedRevision: anchor.revision, markdown: 'saffron\nKeep the ledger.', sources: [reference], reads: [], action: 'REFINE' })
   await f.memory.wake()
   const recall = (query: string) => f.memory.handle({ op: 'recall', session: origin.session, query }, origin)
   assert.match(recall('ledger'), /Keep the ledger/u)
-  assert.doesNotMatch(recall('indigo'), /indigo/u)
+  assert.doesNotMatch(recall('indigo'), /"markdown":"indigo/u)
 
   const physical = join(f.store.fileRoot, workspace, anchor.path)
   renameSync(physical, physical + '.moved')
@@ -688,10 +679,10 @@ test('a delayed missing-file repair cannot erase a correction undo published thr
   try {
     await captured
     renameSync(physical + '.moved', physical)
-    await f.memory.undoDocument({ operationId: 'undo', workspace, documentId: replacement.documentId,
-      revision: corrected.revision!, usageVersion: corrected.usageVersion })
+    await f.memory.undoDocument({ operationId: 'undo', workspace, documentId: anchor.documentId,
+      revision: refined.revision!, usageVersion: refined.usageVersion })
     assert.match(recall('indigo'), /indigo/u)
   } finally { resume() }
   await f.memory.wake()
-  assert.match(recall('indigo'), /indigo/u, 'the older repair must preserve the anchor published by undo')
+  assert.match(recall('indigo'), /indigo/u, 'the older repair must preserve the projection published by undo')
 })

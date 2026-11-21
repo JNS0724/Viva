@@ -8,8 +8,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { scratch } from './fixtures/scratch.js'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
-import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
-import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 import type { MemoryHostEffect } from '../src/memory/contracts/service.ts'
 import type { MemoryFileDetail, MemoryFileListResult, MemoryFileMutationResult, MemoryFileSetEnabledRequest, MemoryManagedFileIdentity } from '../src/memory/contracts/file-management.ts'
@@ -209,18 +207,6 @@ test('turning off daily capture keeps existing stopped original sources fenced',
   assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')
 })
 
-test('an older file layout fails before starting an owner that could ignore existing restrictions', t => {
-  const { dir, defer } = scratch(t, 'memory-previous-file-layout-')
-  const store = openMemoryStore(join(dir, 'memory.db'))
-  store.close()
-  const db = new DatabaseSync(join(dir, 'memory.db'))
-  defer(() => db.close())
-  db.exec('CREATE TABLE memory_document_use_restrictions (document TEXT PRIMARY KEY, sources TEXT NOT NULL)')
-  assert.throws(() => openMemoryOwner({ root: dir, dailyNotes: false, route: () => null, compute: () => null,
-    quiesce: async () => {} }), /Memory file layout is incompatible/)
-})
-
-
 test('withdrawing part of a stopped snapshot removes its body while retaining the independent limit', async t => {
   const f = await fixture(t), first = await f.add('Withdraw this private item.')
   await f.add('Retain this independent item.')
@@ -245,77 +231,6 @@ test('withdrawing part of a stopped snapshot removes its body while retaining th
     enabled: true, restrictionId: prior.id }), { code: 'revision.conflict' })
 })
 
-function fixtureDocuments(f: Awaited<ReturnType<typeof fixture>>) {
-  return openMemoryDocuments({ db: f.store.db, root: f.store.fileRoot, source(id) {
-    const row = f.store.readSource(id)
-    return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
-  } })
-}
-
-test('a daily projection with unavailable current applicability can still be stopped as evidence', async t => {
-  const f = await fixture(t), old = 'Prior original schedule Friday.'
-  await f.add(old)
-  const initial = await f.find(), replacement = randomUUID(), session = randomUUID()
-  await f.owner.receiveSource({ sessionId: session, messageId: replacement, text: 'Confirmed schedule Saturday.',
-    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
-  const documents = fixtureDocuments(f)
-  const source = f.store.readSource(replacement)!
-  const base = { workspace: initial.identity.workspace, path: 'digest/wiki/schedule.md',
-    sources: [{ id: source.id, token: memorySourceToken(source) }], reads: [] }
-  const first = documents.commit({ ...base, operationId: randomUUID(), action: 'CREATE', expectedRevision: null, markdown: 'Proposed change' })
-  const line = initial.markdown.split('\n').indexOf(old) + 1
-  const saved = documents.commit({ ...base, operationId: randomUUID(), action: 'CORRECT', expectedRevision: first.revision,
-    markdown: 'Confirmed schedule Saturday.', corrections: [{ path: initial.path, revision: initial.version.contentRevision,
-      startLine: line, endLine: line, text: old, condition: '', time: '' }] })
-  const digest = await f.detail({ kind: 'digest', workspace: initial.identity.workspace, id: saved.documentId })
-  await f.set(stopInput(digest))
-  const pending = await f.detail(initial.identity)
-  assert.equal(pending.applicability, 'unavailable')
-  assert.equal(pending.hasProjection, true)
-  assert.equal(pending.actions.stop, true)
-  const reader = randomUUID()
-  const examine = () => f.owner.runtime.handle({ op: 'file_read', session: reader, id: initial.identity.id, evidence: true },
-    { session: reader, conversation: reader })
-  assert.match(examine(), /Prior original schedule Friday/)
-  await f.set(stopInput(pending))
-  assert.doesNotMatch(examine(), /Prior original schedule Friday/)
-})
-
-test('a daily correction quotation is erased from the independent digest on source withdrawal', async t => {
-  const f = await fixture(t), marker = 'Confidential original detail on Monday.', original = await f.add(marker)
-  const daily = await f.find(), workspace = daily.identity.workspace, replacementText = 'The confirmed detail is now Tuesday.'
-  const replacementId = randomUUID()
-  await f.owner.receiveSource({ sessionId: randomUUID(), messageId: replacementId, text: replacementText,
-    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
-  const source = f.store.readSource(replacementId)!, documents = fixtureDocuments(f)
-  const base = { workspace, path: 'digest/wiki/confirmed-schedule.md',
-    sources: [{ id: source.id, token: memorySourceToken(source) }], reads: [] }
-  const draft = documents.commit({ ...base, operationId: randomUUID(), action: 'CREATE', expectedRevision: null, markdown: 'Draft' })
-  const line = daily.markdown.split('\n').indexOf(marker) + 1
-  documents.commit({ ...base, operationId: randomUUID(), action: 'CORRECT', expectedRevision: draft.revision, markdown: replacementText,
-    corrections: [{ path: daily.path, revision: daily.version.contentRevision, startLine: line, endLine: line, text: marker, condition: '', time: '' }] })
-  const operationId = randomUUID()
-  const { ticket } = await f.owner.handleHost('prepareSourceChange', { operationId, conversation: f.session,
-    onlySources: true, ids: [original.messageId] }) as { ticket: string }
-  await f.owner.handleHost('commitSourceChange', { operationId, ticket })
-  await f.reopen()
-  const reopened = fixtureDocuments(f)
-  assert.equal(reopened.read(workspace, base.path)?.markdown, replacementText)
-  assert.equal(reopened.supersessions(workspace, daily.path)[0]?.text, '')
-  assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')
-  const retained = JSON.stringify(f.store.db.prepare('SELECT before,after FROM memory_document_revisions').all())
-  assert(!retained.includes(marker))
-  const later = 'An independent lavender routine.'
-  await f.add(later)
-  const fresh = await f.find()
-  assert.deepEqual(fresh.identity, daily.identity)
-  assert.equal(fresh.applicability, 'current')
-  const reader = randomUUID()
-  const packet = f.owner.runtime.handle({ op: 'recall', session: reader, query: 'lavender' }, { session: reader, conversation: reader })
-  assert.match(packet, /independent lavender routine/)
-  assert.doesNotMatch(packet, /Confidential original detail/)
-})
-
 test('file deletion rejects stopped snapshots and preserves both the current file and the prior restriction', async t => {
   const f = await fixture(t), a = await f.add('Private earlier evidence for Tuesday.'), first = await f.find()
   const stopped = await f.set(stopInput(first))
@@ -336,38 +251,6 @@ test('file deletion rejects stopped snapshots and preserves both the current fil
   assert.equal(f.owner.runtime.dispatchSourceCurrent(second.messageId), true)
   assert.equal(f.owner.runtime.dispatchSourceCurrent(a.messageId), false)
 })
-
-test('stopped correction evidence supplies neither private applicability text nor dependency to an independent daily rebuild', async t => {
-  const f = await fixture(t), line = 'Identical quotation on the schedule.', secret = 'Confidential approved condition.'
-  const original = await f.add(`${line}\n${secret}`), initial = await f.find()
-  const lineNumber = initial.markdown.split('\n').findIndex(text => text === line) + 1
-  assert(lineNumber > 0)
-  const replacementSession = randomUUID(), replacementId = randomUUID(), replacementText = 'Use the new schedule independently.'
-  await f.owner.receiveSource({ sessionId: replacementSession, messageId: replacementId, text: replacementText,
-    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
-  const replacement = f.store.readSource(replacementId)!, documents = fixtureDocuments(f)
-  const base = { workspace: initial.identity.workspace, path: 'digest/wiki/replacement.md',
-    sources: [{ id: replacement.id, token: memorySourceToken(replacement) }], reads: [] }
-  const draft = documents.commit({ ...base, operationId: randomUUID(), action: 'CREATE', expectedRevision: null, markdown: replacementText })
-  documents.commit({ ...base, operationId: randomUUID(), action: 'CORRECT', expectedRevision: draft.revision, markdown: replacementText,
-    corrections: [{ path: initial.path, revision: initial.version.contentRevision, startLine: lineNumber, endLine: lineNumber,
-      text: line, condition: secret, time: '' }] })
-  const active = await f.find()
-  await f.set(stopInput(active))
-  await f.owner.runtime.wake()
-  await retireStoppedOriginal(f, original)
-  const independent = await f.add(line), rebuilt = await f.find(), reader = randomUUID()
-  const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: rebuilt.identity.id, evidence: true },
-    { session: reader, conversation: reader })
-  assert.match(packet, /Identical quotation on the schedule/)
-  assert.match(packet, /replacement/)
-  assert.doesNotMatch(packet, /Confidential approved condition/)
-  const evidence = await f.owner.handleHost('provenance', { args: [reader] }) as import('../src/memory/contracts/records.ts').MemoryProvenance
-  const sources = evidence.files?.flatMap(file => file.sourceRanges?.map(ref => ref.sourceId) ?? []) ?? []
-  assert(sources.includes(independent.messageId))
-  assert(!sources.includes(original.messageId))
-})
-
 
 test('a changed stopped daily snapshot cannot advertise permanent forget or authorize its old proof', async t => {
   const f = await fixture(t)

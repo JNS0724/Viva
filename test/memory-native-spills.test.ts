@@ -1,4 +1,4 @@
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { createErasableNativeFile, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { link, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises'
@@ -16,8 +16,6 @@ import { createNativeSpills, type NativeSpillIntent } from '../src/memory/node/n
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeErasureReceipts } from '../src/memory/node/native-erasure-receipts.ts'
-import { memoryFileDetail, memoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
-import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { reserveNativeSpill, publishGovernedNativeSpill } from '../plugins/memory/lib/native/governed-spills.ts'
 import { eraseNativeSpill } from '../plugins/memory/lib/native/local-spills.ts'
 import { trackNativeSpillReads } from '../plugins/memory/lib/native/read-spills.ts'
@@ -101,7 +99,7 @@ test('native catalog acknowledgement waits for affected spill retirement after t
   try {
     await owner.recover()
     owner.initializeSession({ sessionId: 'session' })
-    const file = memoryFileMutationResult.parse(await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: body }] }))
+    const file = await createErasableNativeFile(owner, body)
     const call = { id: randomUUID(), session: 'session', callId: 'memory-read', generation: 0,
       turn: 1, step: 1, seq: 3, digest: 'c'.repeat(64) }
     const result = owner.withNativeToolRead({ call, calls: [call], current: () => true },
@@ -114,8 +112,7 @@ test('native catalog acknowledgement waits for affected spill retirement after t
     const saved = await publishGovernedNativeSpill(reserved.handle, intent, body, () => true)
     owner.finishNativeSpill(spillId, saved.receipt, intent.call.session)
     owner.finishNativeToolRead(call, { seq: 4, digest: 'd'.repeat(64) })
-    const detail = memoryFileDetail.parse(await owner.handleHost('readFile', { args: [file.identity] }))
-    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: file.identity, version: detail.version })
+    await withdrawNativeFile(owner, file, operationId)
   } finally { await owner.close() }
   const maintenance = openNativeOriginalMaintenance(memoryRoot, 'viva')
   assert.ok(maintenance)
@@ -146,7 +143,7 @@ test('spill read-back archives its exact source proof before use and rejects a l
     compute: () => null, route: () => null, quiesce: async () => {} })
   try {
     await owner.recover()
-    const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: body }] }) as HostMemoryApi['createFile']['output']
+    const created = await createErasableNativeFile(owner, body)
     owner.initializeSession({ sessionId: 'origin' }); owner.initializeSession({ sessionId: 'consumer' })
     const call = { id: randomUUID(), session: 'origin', callId: 'read', generation: 0, turn: 1, step: 1, seq: 3, digest: 'a'.repeat(64) }
     owner.withNativeToolRead({ call, calls: [call], current: () => true }, () =>
@@ -204,8 +201,7 @@ test('spill read-back archives its exact source proof before use and rejects a l
       mode = 'held'
       const delayed = ctx.fs.streamText(target)
       await started
-      const detail = await owner.handleHost('readFile', { args: [created.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
-      await resumeLegacyFileErasure(owner, join(dir, 'memory', 'memory.db'), { operationId: randomUUID(), identity: created.identity, version: detail.version })
+      await withdrawNativeFile(owner, created)
       release()
       await assert.rejects(delayed, /source changed/u)
     } finally {

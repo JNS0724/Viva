@@ -16,7 +16,7 @@ export const memoryFileActions = z.strictObject({ setEnabled: z.boolean(), edit:
   undo: z.strictObject({ changeId: opaque }).nullable() })
 export const memoryFileSummary = z.strictObject({ identity: memoryFileIdentity, version: memoryFileVersion,
   path: z.string().min(1).max(4096), title: z.string().max(200), enabled: z.boolean(), day: z.string().optional(),
-  applicability: z.enum(['current', 'superseded', 'unavailable']), actions: memoryFileActions,
+  actions: memoryFileActions,
   hasProjection: z.boolean().optional(), restrictions: z.array(memoryFileUseRestriction).optional() })
 export const memoryFileDetail = memoryFileSummary.extend({ markdown: z.string(), sources: z.array(memorySourceReference),
   editor: z.strictObject({ title: z.string(), text: z.string() }).optional(),

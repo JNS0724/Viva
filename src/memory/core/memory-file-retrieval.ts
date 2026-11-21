@@ -25,20 +25,14 @@ export interface FileReadPolicy {
 }
 type Allows = (view: MemoryDocumentView) => boolean
 type FileLookup = {id?:string,workspace?:string,workspaces?: string[],path?:string,allows:Allows}
-type FileReadInput = FileLookup & {startLine?:number,endLine?:number,evidence?:boolean,signal?:AbortSignal}
+type FileReadInput = FileLookup & {startLine?:number,endLine?:number,signal?:AbortSignal}
 type NodeSearchInput = {workspaces?: readonly string[],query:string,limit?:number,allows:Allows,signal?:AbortSignal}
 export interface FileReadSet { files: MemoryFileDependency[], sourceIds: string[] }
-export interface FileApplicability {
-  state: MemoryDocumentView['applicability']['state']
-  supersessions: Array<{ startLine: number, endLine: number, condition?: string, time?: string,
-    replacement?: { id: string, path: string, revision: string, state: MemoryDocumentView['applicability']['state'] }, replacementUnavailable?: true }>
-}
 export interface FileSearchHit {
   id: string, workspace: string, path: string, revision: string
   startLine: number, endLine: number, text: string
   /** Fixed weighted RRF, not confidence. Coverage/diversity order need not descend by score. */
   score: number
-  applicability: FileApplicability
   lineHistory?: MemoryLineChange
 }
 export interface FileSearchResult extends FileReadSet {
@@ -84,15 +78,13 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const view = readable(file.workspace, file.path)
     return view && sameVersion(file, view) && (!allows || allows(view)) ? view : null
   }
-  function project(view: MemoryDocumentView): MemoryFileSnapshot | null {
-    if (view.currentMarkdown === null) return null
-    const parsed = parseMemoryMarkdown(view.currentMarkdown)
-    const usableMetadata = view.applicability.state === 'current'
+  function project(view: MemoryDocumentView): MemoryFileSnapshot {
+    const parsed = parseMemoryMarkdown(view.markdown)
     return {
       workspace: view.workspace, id: view.id, path: view.path, revision: view.revision, usageVersion: view.usageVersion,
       policyToken: view.policyToken, kind: view.kind, ...(view.day ? { day: view.day } : {}), updatedAt: view.updatedAt,
-      sources: view.sourceTokens, name: usableMetadata && typeof parsed.metadata.name === 'string' ? parsed.metadata.name : '',
-      description: usableMetadata && typeof parsed.metadata.description === 'string' ? parsed.metadata.description : '',
+      sources: view.sourceTokens, name: typeof parsed.metadata.name === 'string' ? parsed.metadata.name : '',
+      description: typeof parsed.metadata.description === 'string' ? parsed.metadata.description : '',
       chunks: parsed.chunks.filter(chunk => Boolean(chunk.text.trim())),
     }
   }
@@ -147,13 +139,11 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     for (const workspace of scopes) for (const view of policy.list(workspace)) {
       try {
         const old = index.nodeAt(view.workspace, view.path)
-        if (view.currentMarkdown === null) continue
         if (unchangedNode(old, view)) {
           visible.add(identityKey(view))
           continue
         }
         const snapshot = project(view)
-        if (!snapshot) continue
         const result = publishSnapshot(snapshot)
         if (result === null) continue
         if (result) accepted++
@@ -178,7 +168,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       const key = JSON.stringify([file.workspace, file.id, file.path, file.revision, file.usageVersion, file.policyToken])
       if (!checked.has(key)) {
         const view = batch ? batch.readObservation(file.workspace, file.path) : readable(file.workspace, file.path)
-        if (!view || view.currentMarkdown === null || !sameVersion(file, view)) {
+        if (!view || !sameVersion(file, view)) {
           stale = true
           checked.set(key, null)
           if (reportStale && view !== undefined) {
@@ -190,28 +180,13 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     }
     return { verify, incomplete: () => stale }
   }
-  function readSet(views: readonly MemoryDocumentView[], read = readable): FileReadSet {
+  function readSet(views: readonly MemoryDocumentView[]): FileReadSet {
     const files = new Map<string, MemoryFileDependency>(), sourceIds = new Set<string>()
     for (const view of views) {
       files.set(identityKey(view), fileDependency(view))
       view.sourceTokens.forEach(source => sourceIds.add(source.id))
-      // Replacement state is a dynamic dependency even when its body was not expanded.
-      for (const support of view.supporting) {
-        const replacement = read(view.workspace, support.path)
-        if (replacement) files.set(identityKey(replacement), fileDependency(replacement))
-      }
     }
     return { files: [...files.values()], sourceIds: [...sourceIds] }
-  }
-  function applicability(view: MemoryDocumentView, allows: Allows, read = readable): FileApplicability {
-    return { state: view.applicability.state, supersessions: view.applicability.supersessions.map(item => {
-      const support = view.supporting.find(candidate => candidate.id === item.documentId)
-      const replacement = support && read(view.workspace, support.path)
-      const base = { startLine: item.startLine, endLine: item.endLine }
-      return replacement && allows(replacement)
-        ? { ...base, condition: item.condition, time: item.time, replacement: { id: replacement.id, path: replacement.path, revision: replacement.revision, state: replacement.applicability.state } }
-        : { ...base, replacementUnavailable: true as const }
-    }) }
   }
   async function loadFiles(batch: MemoryDocumentReadBatch, files: readonly Pick<MemoryFileIdentity, 'workspace' | 'path'>[], milliseconds: number, signal?: AbortSignal) {
     if (!files.length || milliseconds <= 0 || signal?.aborted) return
@@ -414,7 +389,6 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const { limit, reasons } = plan
     if (closed || request.signal?.aborted) return unavailable('cancelled')
     const { checks, timedOut, ranked, context, seen, remaining, limited } = selectSearch(request, plan, vector, batch)
-    const read = batch?.read ?? readable
     if ((limited || plan.lexicalIncomplete) && !reasons.includes('candidate-limit')) reasons.push('candidate-limit')
     if (checks.incomplete() || timedOut()) reasons.push('file-changed')
     const views: MemoryDocumentView[] = []
@@ -439,7 +413,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         ? policy.lineHistory?.(view.workspace, view, hit.startLine, hit.endLine) ?? undefined
         : undefined
       const baseCandidate: FileSearchHit = {id:view.id,workspace:view.workspace,path:view.path,revision:view.revision,startLine:hit.startLine,endLine:hit.endLine,
-        text:hit.text,score:hit.score,applicability:applicability(view, request.allows, read)}
+        text:hit.text,score:hit.score}
       const candidate: FileSearchHit = history ? { ...baseCandidate, lineHistory: history } : baseCandidate
       if (fits([...hits, candidate])) {
         hits.push(candidate)
@@ -463,7 +437,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     }
     if (timedOut() && !reasons.includes('file-changed')) reasons.push('file-changed')
     return {status:hits.length || budgetLimited ? 'ok' : ranked.length && context ? 'exhausted' : reasons.includes('file-changed') ? 'unavailable' : 'empty',
-      hits,...readSet(views, read), reasons,partial:remaining.length > limit || reasons.length > 0}
+      hits,...readSet(views), reasons,partial:remaining.length > limit || reasons.length > 0}
   }
   function searchCached(request: FileSearchRequest): FileSearchResult {
     const observation = beginDiagnosticOperation(diagnostics, 'memory.recall', { identities: { sessionId: request.contextKey ?? null } })
@@ -574,8 +548,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const lookup = batch?.read ?? readable
     const view=resolve(input, lookup)
     if (!view) return null
-    const markdown=input.evidence ? view.markdown : view.currentMarkdown
-    if (markdown===null) return null
+    const markdown=view.markdown
     const lineCount = memoryDocumentLines(markdown).length
     const startLine=input.startLine ?? 1, endLine=Math.min(input.endLine ?? lineCount,lineCount)
     const text=readMemoryLines(markdown,startLine,input.endLine)
@@ -584,7 +557,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       ? policy.lineHistory?.(view.workspace, view, startLine, endLine) ?? undefined
       : undefined
     return {id:view.id,workspace:view.workspace,path:view.path,revision:view.revision,startLine,endLine,text,
-      applicability:applicability(view,input.allows,lookup),...(history ? { lineHistory: history } : {}),...readSet([view],lookup)}
+      ...(history ? { lineHistory: history } : {}),...readSet([view])}
   }
   async function readAsync(input: FileReadInput, batch = policy.readBatch?.(input.signal)) {
     if (!batch || !resolveId) return read(input)
@@ -611,7 +584,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const checks = verifier(input.allows, undefined, batch)
     const rows = candidates.rows.flatMap(file => {
       const view = checks.verify(file)
-      return view?.kind === 'digest' && view.applicability.state === 'current'
+      return view?.kind === 'digest'
         ? [{ key: identityKey(file), text: `${file.name}
 ${file.description}`, file, view }] : []
     })
@@ -619,7 +592,7 @@ ${file.description}`, file, view }] : []
     return { nodes: ranked.hits.map(({ document, score }) => {
       const { id, workspace, path, name, description } = document.file
       return { id, workspace, path, name, description, score }
-    }), ...readSet(ranked.hits.map(hit => hit.document.view), batch?.read), partial: ranked.partial || candidates.incomplete || checks.incomplete() }
+    }), ...readSet(ranked.hits.map(hit => hit.document.view)), partial: ranked.partial || candidates.incomplete || checks.incomplete() }
   }
   async function nodeSearchAsync(input: NodeSearchInput, batch = policy.readBatch?.(input.signal)) {
     if (!batch || closed || input.signal?.aborted) return nodeSearch(input)

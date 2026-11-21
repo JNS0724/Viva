@@ -1,4 +1,4 @@
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { createErasableNativeFile, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -9,7 +9,6 @@ import { createAssistantMessage, createToolResultMessage, ToolCallId } from '@de
 import { appendPluginRecord, interruptedTurnClosers, Session, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import type { ResolvedToolSet, ToolExecution, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
-import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
@@ -26,7 +25,7 @@ for (const scenario of ['settled-fork', 'interrupted', 'output-overlap', 'child-
     const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
       compute: () => null, route: () => null, quiesce: async () => {} })
     await owner.recover()
-    const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Exact private PTC source.' }] }) as HostMemoryApi['createFile']['output']
+    const created = await createErasableNativeFile(owner, 'Exact private PTC source.')
     const session = Session.create(SessionId(randomUUID())), signal = new AbortController().signal
     owner.initializeSession({ sessionId: String(session.id), cwd: dir })
     const tools: ResolvedToolSet = { dispose() {}, view: () => new Map() }
@@ -124,9 +123,7 @@ for (const scenario of ['settled-fork', 'interrupted', 'output-overlap', 'child-
       } finally { await mounted.dispose() }
       assert.match(owner.runtime.handle({ op: 'file_read', session: session.id, id: created.identity.id }, owner.sessionContext(session.id)) ?? '', /Exact private/u)
     }
-    const detail = await owner.handleHost('readFile', { args: [created.identity] }) as HostMemoryApi['readFile']['output']
-    assert.ok(detail)
-    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.identity, version: detail.version })
+    await withdrawNativeFile(owner, created)
     await owner.close()
     const prefix = childOnly ? inheritedPrefix : session.snapshotEvents(), inherited = SessionLogOffset(prefix.length), forkId = SessionId(randomUUID())
     const fork = Session.create(forkId, prefix, { ...session.header, id: forkId, isSeeded: true }, inherited)
@@ -213,7 +210,7 @@ test('an interrupted ordinary memory tool has a cold no-output receipt after the
   const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
     compute: () => null, route: () => null, quiesce: async () => {} })
   await owner.recover()
-  const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Unsettled ordinary file read.' }] }) as HostMemoryApi['createFile']['output']
+  const file = await createErasableNativeFile(owner, 'Unsettled ordinary file read.')
   const session = Session.create(SessionId(randomUUID())), callId = ToolCallId('native-memory-read')
   owner.initializeSession({ sessionId: String(session.id), cwd: dir })
   session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
@@ -223,8 +220,7 @@ test('an interrupted ordinary memory tool has a cold no-output receipt after the
   const call = { id: randomUUID(), session: String(session.id), callId, generation: 0, turn: 1, step: 1, seq: event.seq, digest: nativeEventDigest(event) }
   assert.match(owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.runtime.handle({ op: 'file_read', session: call.session, id: file.identity.id },
     owner.sessionContext(call.session))) ?? '', /Unsettled ordinary/u)
-  const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
-  await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
+  await withdrawNativeFile(owner, file)
   await owner.close()
   const ctx = new Context(), mounted = await ctx.plugin(jsonl, { root, compression: 'zstd' })
   try {

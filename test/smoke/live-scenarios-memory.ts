@@ -69,7 +69,7 @@ const memorySupersede: LiveScenario = {
       const unchanged: string[] = []
       for (const file of original.filter(file => file.identity.kind === 'digest')) {
         const latest = await run(win, `window.agent.readMemoryFile(${JSON.stringify(file.identity)})`)
-        if (latest?.enabled && latest.applicability === 'current' && latest.version.contentRevision === file.version.contentRevision
+        if (latest?.enabled && latest.version.contentRevision === file.version.contentRevision
           && latest.version.policyToken === file.version.policyToken) unchanged.push(file.identity.id)
       }
       expect(unchanged.length === 0, 'the original assertion should be superseded or revised while its history may remain', unchanged)

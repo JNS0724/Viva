@@ -3,7 +3,7 @@ import { z } from 'zod'
 /** Document bucket and action vocabulary. Buckets organize documents, not predicates. */
 export const digestBuckets = Object.freeze(['personal', 'procedure', 'wiki'] as const)
 export type DigestBucket = typeof digestBuckets[number]
-export const digestActions = Object.freeze(['CREATE', 'CORROBORATE', 'REFINE', 'CORRECT'] as const)
+export const digestActions = Object.freeze(['CREATE', 'REFINE'] as const)
 export type DigestAction = typeof digestActions[number]
 
 /** Portable workspace-relative path. The backend additionally checks symlinks and ownership. */

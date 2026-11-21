@@ -83,14 +83,14 @@ function memoryWindow(api: object): import('./smoke/smoke-kit.ts').SmokeWindow {
   } } } as import('./smoke/smoke-kit.ts').SmokeWindow
 }
 
-test('live file discovery reads full paginated bodies and ignores stopped or superseded historical evidence', async () => {
+test('live file discovery reads full paginated bodies and ignores stopped historical evidence', async () => {
   const { memoryFilesWith } = await import('./smoke/live-kit.ts')
-  const detail = (id: string, active = true, applicability: 'current' | 'superseded' = 'current'): import('../src/shared/ipc-results.ts').MemoryFileDetailView => ({
+  const detail = (id: string, active = true, hasProjection = true): import('../src/shared/ipc-results.ts').MemoryFileDetailView => ({
     identity: { kind: 'digest', workspace: 'workspace', id }, title: 'A title without the search token', path: `digest/wiki/${id}.md`,
-    version: { contentRevision: id, usageVersion: 1, policyToken: id }, enabled: active, applicability,
+    version: { contentRevision: id, usageVersion: 1, policyToken: id }, enabled: active, ...(hasProjection ? {} : { hasProjection: false }),
     actions: { setEnabled: true, edit: false, forget: false, undo: null }, markdown: 'Only the body has NEEDLE.', sources: [],
   })
-  const items = [detail('disabled', false), detail('old', true, 'superseded'), detail('current')]
+  const items = [detail('disabled', false), detail('stopped-projection', true, false), detail('current')]
   const queries: object[] = []
   const win = memoryWindow({
     async listMemoryFiles(request: { cursor?: { offset: number } }) {
@@ -104,7 +104,7 @@ test('live file discovery reads full paginated bodies and ignores stopped or sup
   assert.deepEqual((await memoryFilesWith(win, 'NEEDLE')).map(item => item.identity.id), ['current'])
   assert.equal(queries.length, 3, 'later pages cannot disappear behind a title query')
   assert.ok(queries.every(query => !('query' in query)))
-  assert.deepEqual((await memoryFilesWith(win, 'NEEDLE', true)).map(item => item.identity.id), ['disabled', 'old', 'current'])
+  assert.deepEqual((await memoryFilesWith(win, 'NEEDLE', true)).map(item => item.identity.id), ['disabled', 'stopped-projection', 'current'])
 })
 
 test('a match in a stopped snapshot identifies its whole file at the current version', async () => {
@@ -113,7 +113,7 @@ test('a match in a stopped snapshot identifies its whole file at the current ver
   const version = { contentRevision: 'current', usageVersion: 2, policyToken: 'current-token' }
   const archived = { contentRevision: 'old', usageVersion: 1, policyToken: 'old-token' }
   const file: import('../src/shared/ipc-results.ts').MemoryFileDetailView = { identity, title: 'Day', path: 'daily/day.md', version,
-    enabled: true, hasProjection: true, applicability: 'current', actions: { setEnabled: true, edit: false, forget: true, undo: null },
+    enabled: true, hasProjection: true, actions: { setEnabled: true, edit: false, forget: true, undo: null },
     markdown: 'Current body', sources: [], restrictions: [{ id: 'stopped', version: archived }] }
   const requests: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest[] = []
   const { markdown: _body, sources: _sources, restrictions: _restrictions, ...summary } = file
@@ -183,7 +183,7 @@ test('the offline runtime benchmark uses source-backed files, file profile and p
 test('live file discovery restarts from the beginning when a body version changed during pagination', async () => {
   const { memoryFilesWith } = await import('./smoke/live-kit.ts')
   const file = { identity: { kind: 'digest' as const, workspace: 'workspace', id: 'changing' }, title: 'Title', path: 'digest/wiki/changing.md',
-    version: { contentRevision: 'new', usageVersion: 2, policyToken: 'new' }, enabled: true, applicability: 'current' as const,
+    version: { contentRevision: 'new', usageVersion: 2, policyToken: 'new' }, enabled: true,
     actions: { setEnabled: true, edit: false, forget: false, undo: null } }
   let lists = 0
   const win = memoryWindow({

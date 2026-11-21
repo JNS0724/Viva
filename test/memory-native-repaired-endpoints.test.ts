@@ -1,4 +1,4 @@
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { createErasableNativeFile, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -9,7 +9,6 @@ import { interruptedTurnClosers, Session, SessionId, SessionLogOffset } from '@d
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
-import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { eraseColdNativeCopies } from '../plugins/memory/lib/native/maintenance.ts'
 import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
 import { scratch } from './fixtures/scratch.js'
@@ -19,7 +18,7 @@ test('cold parent repair preserves machine output while a fork retires known lea
   const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
     compute: () => null, route: () => null, quiesce: async () => {} })
   await owner.recover()
-  const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'REPAIRED_PRIVATE source.' }] }) as HostMemoryApi['createFile']['output']
+  const file = await createErasableNativeFile(owner, 'REPAIRED_PRIVATE source.')
   const session = Session.create(SessionId(randomUUID())), rootId = ToolCallId('root'), leafId = ToolCallId('leaf')
   owner.initializeSession({ sessionId: String(session.id) })
   session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
@@ -55,8 +54,7 @@ test('cold parent repair preserves machine output while a fork retires known lea
       await writer.append(repaired.slice(durable.length)); await writer.flush()
     } finally { await writer.close() }
   } finally { await mounted.dispose() }
-  const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']; assert.ok(detail)
-  await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
+  await withdrawNativeFile(owner, file)
   await owner.close()
   for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storages'), hostNamespace: 'viva',
     isCold: () => true, trace: { key: () => undefined, erase: () => {} } })

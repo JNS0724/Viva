@@ -1,4 +1,4 @@
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { createErasableNativeFile, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -12,7 +12,6 @@ import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
-import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { memoryOriginalContentDigest, memoryRecoveryMessageHash } from '../plugins/memory/lib/context-recovery.ts'
 import { eraseColdNativeCopies, PendingNativePublication } from '../plugins/memory/lib/native/maintenance.ts'
 import { scratch } from './fixtures/scratch.js'
@@ -23,8 +22,6 @@ test('cold native derived erasure groups inbox replicas and retains independent 
   const options = { root: memoryRoot, hostNamespace: 'viva',
     compute: () => null, route: () => null, quiesce: async () => {} }
   const owner = openMemoryOwner(options)
-  const call = <K extends 'createFile' | 'readFile' | 'forgetFile'>(method: K, input: HostMemoryApi[K]['input']) =>
-    owner.handleHost(method, input) as Promise<HostMemoryApi[K]['output']>
   const attemptA = randomUUID(), attemptB = randomUUID()
   const parentId = SessionId('derived-root'), childId = SessionId('derived-unknown-fork')
   const make = (kind: 'user' | 'viva-memory', text: string) => createUserMessage({
@@ -68,7 +65,7 @@ test('cold native derived erasure groups inbox replicas and retains independent 
 
   async function prepare(message: UserMessage, scope: string, operationId: string) {
     const original = 'Canonical independent file ' + scope
-    const created = await call('createFile', { args: [{ operationId: randomUUID(), text: original }] })
+    const created = await createErasableNativeFile(owner, original)
     owner.initializeSession({ sessionId: scope })
     const packet = owner.runtime.handle({ op: 'file_read', session: scope, id: created.identity.id }, { session: scope, conversation: scope })
     assert.match(packet ?? '', /Canonical/u)
@@ -77,9 +74,7 @@ test('cold native derived erasure groups inbox replicas and retains independent 
     if (message === second) await owner.registerDerived({ sessionId: scope, messageId: noticeOnly.id, sourceIds: [],
       nativeUserSource: noticeOnly.source.kind, nativeMessageDigest: memoryRecoveryMessageHash(noticeOnly),
       contentDigest: memoryOriginalContentDigest(noticeOnly) })
-    const detail = await call('readFile', { args: [created.identity] })
-    assert.ok(detail)
-    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: created.identity, version: detail.version })
+    await withdrawNativeFile(owner, created, operationId)
   }
   try {
     await owner.recover()
@@ -151,14 +146,12 @@ for (const unknownFailure of [false, true]) test(`cold recovery restores a flush
   try {
     await owner.recover()
     owner.initializeSession({ sessionId: String(parent.id) })
-    const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Canonical file underlying the response.' }] }) as HostMemoryApi['createFile']['output']
+    const file = await createErasableNativeFile(owner, 'Canonical file underlying the response.')
     assert.match(owner.runtime.handle({ op: 'file_read', session: parent.id, id: file.identity.id }, { session: parent.id, conversation: parent.id }) ?? '', /Canonical/)
     const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
     try { createNativeOutputAttempts(db).record({ ...marker, session: parent.id, floor }, owner.dispatch.snapshot(parent.id)) }
     finally { db.close() }
-    const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
-    assert.ok(detail)
-    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
+    await withdrawNativeFile(owner, file)
   } finally { await owner.close() }
 
   const parentPrefix = Session.fromRestore(parent.id, prefix.slice(0, floor), parent.header, SessionLogOffset(0), 'detached')
@@ -220,16 +213,14 @@ test('cold recovery restores a tool receipt flushed only in an inherited fork an
     compute: () => null, route: () => null, quiesce: async () => {} })
   try {
     await owner.recover()
-    const file = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: 'Canonical file underlying the tool result.' }] }) as HostMemoryApi['createFile']['output']
+    const file = await createErasableNativeFile(owner, 'Canonical file underlying the tool result.')
     assert.match(owner.runtime.handle({ op: 'file_read', session: parent.id, id: file.identity.id }, { session: parent.id, conversation: parent.id }) ?? '', /Canonical/u)
     const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
     try {
       const evidence = owner.dispatch.snapshot(parent.id)
       createNativeToolReads(db).record(identity, evidence.files ?? [], evidence.sources)
     } finally { db.close() }
-    const detail = await owner.handleHost('readFile', { args: [file.identity] }) as HostMemoryApi['readFile']['output']
-    assert.ok(detail)
-    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: file.identity, version: detail.version })
+    await withdrawNativeFile(owner, file)
   } finally { await owner.close() }
 
   const context = new Context(), mounted = await context.plugin(jsonl, { root, compression: 'zstd' })

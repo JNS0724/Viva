@@ -1,4 +1,4 @@
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { recordPartialOriginalErasure } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -10,10 +10,6 @@ import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
-import { openMemoryStore } from '../src/memory/node/memory-store.ts'
-import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
-import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
-import type { HostMemoryApi } from '../src/memory/contracts/host.ts'
 import { memoryOriginalContentDigest, memoryRecoveryCandidates, memorySessionSurfaceHash, planMemoryContextRecovery } from '../plugins/memory/lib/context-recovery.ts'
 import { createSessionIngestion } from '../plugins/memory/lib/ingestion.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
@@ -35,8 +31,8 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
   const native = session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] }), { surfaceOp: 'append' })
   const independent = session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: unrelated }] }), { surfaceOp: 'append' })
   const owner = openMemoryOwner(options)
-  const identityOf = (documentId: string, workspace: string) => ({ kind: 'digest' as const, id: documentId, workspace })
-  const targets: ReturnType<typeof identityOf>[] = []
+  const spans: Array<{ start: number, end: number }> = []
+  let primarySourceId = ''
   async function withStore<T>(work: (store: Context['sessionPersistence']) => Promise<T>) {
     const ctx = new Context(), mounted = await ctx.plugin(jsonl, { root, compression: 'zstd' })
     try { return await work(ctx.sessionPersistence) } finally { await mounted.dispose() }
@@ -59,21 +55,11 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
         contentDigest: memoryOriginalContentDigest(event.data), at: Date.now(), timezone: 'UTC', turn: 0, step: 0, admitted: true, inherited: false, live: false })
       sourceIds.push(result.sourceId)
     }
-    const store = openMemoryStore(join(memoryRoot, 'memory.db'))
-    try {
-      const source = store.readSource(sourceIds[0]!)!
-      const workspace = memorySourceWorkspace(source)
-      const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source(id) {
-        const current = store.readSource(id)
-        return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
-      } })
-      for (const [index, excerpt] of [first, second].entries()) {
-        const start = text.indexOf(excerpt)
-        const created = documents.commit({ operationId: randomUUID(), workspace, path: `digest/wiki/recovery-${index}.md`, expectedRevision: null,
-          action: 'CREATE', markdown: excerpt, sources: [{ id: source.id, token: memorySourceToken(source), spans: [{ start, end: start + excerpt.length }] }], reads: [] })
-        targets.push(identityOf(created.documentId, workspace))
-      }
-    } finally { store.close() }
+    primarySourceId = sourceIds[0]!
+    for (const excerpt of [first, second]) {
+      const start = text.indexOf(excerpt)
+      spans.push({ start, end: start + excerpt.length })
+    }
     const baseSurfaceHash = memorySessionSurfaceHash(session)
     const ticket = await owner.prepareContextRecovery({ sessionId: parentId, baseSurfaceHash,
       candidates: memoryRecoveryCandidates(session).map(({ text, ...item }) => ({ ...item, content: text })) })
@@ -97,20 +83,14 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
   } finally { await owner.close() }
 
   const operationIds: string[] = []
-  const forget = async (target: ReturnType<typeof identityOf>) => {
-    const owner = openMemoryOwner(options)
-    try {
-      await owner.recover()
-      const detail = await owner.handleHost('readFile', { args: [target] }) as HostMemoryApi['readFile']['output']
-      assert.ok(detail)
-      const id = randomUUID()
-      operationIds.push(id)
-      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: id, identity: target, version: detail.version })
-    } finally { await owner.close() }
+  const forget = (span: { start: number, end: number }) => {
+    const id = randomUUID()
+    operationIds.push(id)
+    recordPartialOriginalErasure(memoryRoot, { operationId: id, sourceId: primarySourceId, spans: [span] })
   }
   const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot: root, storageRoot: join(dir, 'storage'), hostNamespace: 'viva',
     isCold: () => true, trace: { key: () => undefined, erase: () => assert.fail('recovery markers have no trace') } })
-  await forget(targets[0]!)
+  forget(spans[0]!)
   openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
   const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
   defer(() => db.close())
@@ -124,7 +104,7 @@ for (const tamperMarker of [false, true]) test(`cold recovery markers ${tamperMa
     assert.doesNotMatch(JSON.stringify(first), /First source erased phrase/u)
     assert.match(JSON.stringify(first), /Second source erased phrase/u)
   }
-  await forget(targets[1]!)
+  forget(spans[1]!)
   await erase()
   await erase()
   for (const id of [parentId, forkId]) {

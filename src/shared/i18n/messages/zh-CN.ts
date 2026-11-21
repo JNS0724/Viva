@@ -117,8 +117,6 @@ export const zhCN = {
   "memory-files.digest": "整理记忆",
   "memory-files.untitled": "未命名记忆",
   "memory-files.stopped": "已停用",
-  "memory-files.superseded": "已更新适用范围",
-  "memory-files.unavailable": "当前不可用",
   "memory-files.open": "查看详情",
   "memory-files.open.named": "查看「{title}」的详情",
   "memory-files.source.number": "查看原文 {number}",

@@ -1,5 +1,5 @@
 import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
-import { resumeLegacyFileErasure } from './fixtures/legacy-file-erasure.ts'
+import { recordPartialOriginalErasure, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { ChildProcess } from 'node:child_process'
@@ -192,7 +192,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
       const page: MemoryFileListResult = await call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'digest', ...(cursor ? { cursor } : {}) })
       assert.equal(page.status, 'ok')
       for (const item of page.items) {
-        if (!item.enabled || item.applicability !== 'current' || item.hasProjection === false) continue
+        if (!item.enabled || item.hasProjection === false) continue
         const detail = await call<Promise<MemoryFileDetail | null>>('memory:read-file', item.identity)
         if (detail) result.push(detail)
       }
@@ -928,10 +928,15 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
     }
     return { text: 'PTC completed.' }
   }, { dailyNotes: true, ptc: true, ptcDrainSpill: !nextFails })
-  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
+  const seedId = randomUUID()
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before PTC revision.' })
   assert.equal(created.status, 'applied')
+  const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
+    operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
+  })
+  assert.equal(edited.status, 'applied')
   fileId = created.receipt.identity.id
-  const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
   const db = openMemoryControlDb(join(memoryRoot, 'memory.db'))
   try {
@@ -979,7 +984,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.receipt.identity, version: detail.version })
+      await withdrawNativeFile(owner, { identity: created.receipt.identity, seedId })
     } finally { await owner.close() }
     const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
       isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
@@ -1025,9 +1030,15 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
     }
     return null
   }, { dailyNotes: true, ptc: true, ptcFailure: failure })
-  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text: body })
-  assert.equal(created.status, 'applied'); id = created.receipt.identity.id
-  const detail = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const seedId = randomUUID()
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before prepare revision.' })
+  assert.equal(created.status, 'applied')
+  const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
+    operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
+  })
+  assert.equal(edited.status, 'applied')
+  id = created.receipt.identity.id
   await app.ask(prompt)
   if (failure === 'crash') assert.ok(await eventually(() => fs.existsSync(join(app.directory, 'ptc-prepared'))),
     JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error'), results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')) }))
@@ -1059,7 +1070,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
       compute: () => null, route: () => null, quiesce: async () => {} })
     try {
       await owner.recover()
-      await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: randomUUID(), identity: created.receipt.identity, version: detail.version })
+      await withdrawNativeFile(owner, { identity: created.receipt.identity, seedId })
     } finally { await owner.close() }
     for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
       isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
@@ -1090,11 +1101,17 @@ test('a real DSH tool read archives and erases native results even when the next
     requested = true
     return { tool: { name: 'memory_read', input: { id: fileId } } }
   }, { dailyNotes: true })
-  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: randomUUID(), text })
+  const seedId = randomUUID(), editId = randomUUID()
+  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before tool revision.' })
   assert.equal(created.status, 'applied')
+  const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
+  const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
+    operationId: editId, identity: created.receipt.identity, version: seeded.version, text,
+  })
+  assert.equal(edited.status, 'applied')
   fileId = created.receipt.identity.id
   const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
-  const source = file.sources[0]
+  const source = file.sources.find(item => item.sourceId === editId)
   assert.ok(source?.sourceId)
   const memoryRoot = join(app.directory, 'memory')
   const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
@@ -1174,7 +1191,7 @@ test('a real DSH tool read archives and erases native results even when the next
   const operationId = randomUUID()
   try {
     await owner.recover()
-    await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId, identity: created.receipt.identity, version: file.version })
+    await withdrawNativeFile(owner, { identity: created.receipt.identity, seedId }, operationId)
   } finally { await owner.close() }
 
   openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
@@ -1409,26 +1426,14 @@ test('cold Viva startup erases native originals and settled output in root and u
     const store = openMemoryStore(join(memoryRoot, 'memory.db'))
     try {
       assert.equal(store.db.prepare('SELECT 1 FROM owner_occurrences WHERE session=?').get(forkId), undefined)
-      const source = store.readSource(sourceId)!
-      const workspace = memorySourceWorkspace(source)
-      const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, deferRecovery: true, source(id) {
-        const row = store.readSource(id)
-        return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
-      } })
-      const makeDigest = (name: string, excerpt: string) => {
-        const start = text.indexOf(excerpt)
-        const entry = documents.commit({ operationId: randomUUID(), workspace, path: `digest/wiki/${name}.md`,
-          action: 'CREATE', expectedRevision: null, markdown: excerpt,
-          sources: [{ id: sourceId, token: memorySourceToken(source), spans: [{ start, end: start + excerpt.length }] }], reads: [] })
-        return { kind: 'digest', workspace, id: entry.documentId } as const
-      }
-      const first = makeDigest('native-erasure', erased), secondDigest = makeDigest('native-erasure-2', second)
-      for (const [identity, id] of [[first, operationId], [secondDigest, nextOperation]] as const) {
-        const detail = await owner.handleHost('readFile', { args: [identity] }) as MemoryFileDetail
-        await resumeLegacyFileErasure(owner, join(memoryRoot, 'memory.db'), { operationId: id, identity, version: detail.version })
-      }
     } finally { store.close() }
   } finally { await owner.close() }
+  for (const [excerpt, id] of [[erased, operationId], [second, nextOperation]] as const) {
+    const start = text.indexOf(excerpt)
+    recordPartialOriginalErasure(memoryRoot, {
+      operationId: id, sourceId, spans: [{ start, end: start + excerpt.length }], extraSessions: [parentId], hostNamespace: 'viva',
+    })
+  }
 
   const cache = join(app.directory, 'dsh', 'storages', 'session_projcache', 'sessions')
   mkdirSync(cache, { recursive: true })
