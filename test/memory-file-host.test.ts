@@ -407,11 +407,6 @@ test('file profiles use scoped, enabled digests after retiring old Dream questio
   await f.client.setFileEnabled({ operationId: randomUUID(), identity: user, version: stopped.version, enabled: true })
   assert.equal((await f.client.fileProfile(project)).user.length, 1)
 
-  const source = f.store.readSource(projectSource)!, path = 'digest/personal/project-release.md'
-  f.documents.defer({ operationId: 'dream:pre-upgrade-profile', workspace: projectFile.workspace,
-    unit: { name: 'Project releases', bucket: 'personal', summary: projectText, paths: [path] },
-    reason: 'The rollout environment is disputed.', sources: [{ id: source.id, token: memorySourceToken(source) }],
-    reads: [f.documents.read(projectFile.workspace, path)!], files: [], readPolicies: [] })
   await f.reopen()
   assert.deepEqual((await f.client.fileProfile(project)).project, [{ identity: projectFile, text: projectText }])
   assert.equal((await f.client.fileProfile(project)).user.length, 1)

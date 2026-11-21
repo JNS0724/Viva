@@ -1,5 +1,5 @@
 import type { MemorySource } from '../../contracts/records.ts'
-import type { DigestAction, DreamUnit } from '../../contracts/memory-file-contract.ts'
+import type { DigestAction } from '../../contracts/memory-file-contract.ts'
 
 export interface MemoryPhysicalFile {
   path: string
@@ -57,7 +57,7 @@ export interface DocumentCommit {
   path: string
   expectedRevision: string | null
   markdown: string
-  action: DigestAction | 'TAG'
+  action: DigestAction
   sources: DocumentSourceRef[]
   reads: DocumentReadRef[]
   corrections?: DocumentCorrection[]
@@ -82,25 +82,17 @@ export interface DocumentReceipt {
   path: string
   revision: string | null
   usageVersion: number
-  action: DigestAction | 'TAG' | 'UNDO' | 'ENABLE' | 'DISABLE' | 'FORGET'
+  action: DigestAction | 'UNDO' | 'ENABLE' | 'DISABLE' | 'FORGET'
 }
-export interface DeferredDocumentWork {
+export interface DocumentRevisionEntry {
   operationId: string
-  workspace: string
-  unit: DreamUnit
-  reason: string
-  sources: DocumentSourceRef[]
-  reads: DocumentReadRef[]
-  /** Daily versions are part of the readset even though they are not digest identities. */
-  files: Array<{ path: string, revision: string, policyToken?: string }>
-  /** Applicability state of dynamically read files, retained across clarification waits. */
-  readPolicies?: Array<{ path: string, policyToken: string }>
-  status: 'pending_clarification' | 'ready' | 'resolved' | 'expired'
-  answer?: { operationId: string, source: DocumentSourceRef, text: string }
+  at: number
+  before: DocumentSnapshot | null
+  after: DocumentSnapshot | null
 }
-export interface DocumentTagAttempt { workspace: string, operationId: string, path: string, revision: string, state: 'attempted' | 'failed' | 'completed', reason?: string }
 export interface MemoryDocuments {
   acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
+  revisionHistory?(workspace: string, documentId: string, limit?: number): DocumentRevisionEntry[]
   workspaces(): string[]
   indexFile(workspace: string, id: string): { path: string, revision: string, state: 'active' | 'disabled' | 'forgotten' } | null
   /** Body-free correction edges, including tombstones that still hide an old claim. */
@@ -109,9 +101,6 @@ export interface MemoryDocuments {
   registered(workspace: string): Array<DocumentFileRegistration & { sources: DocumentSourceRef[] }>
   /** Registry metadata for management, including forgotten entries only while a restriction remains. */
   fileRegistry(workspace: string): DocumentFileRegistration[]
-  settleInterruptedTagAttempts(): void
-  recordTagAttempt(input: DocumentTagAttempt): void
-  tagAttempt(workspace: string, operationId: string): DocumentTagAttempt | null
   sourceRestrictions(workspace: string): DocumentSourceRef[]
   recoverDeletedFiles(): void
   deletedFileCleanupPending(workspace: string, id: string): boolean
@@ -137,15 +126,4 @@ export interface MemoryDocuments {
   withdraw(sourceId: string): string[]
   eraseSource(cut: DocumentSourceCut): string[]
   supersessions(workspace: string, path: string, options?: { includeEvidence?: boolean, physical?: MemoryPhysicalFile | null }): DocumentSupersession[]
-  defer(input: Omit<DeferredDocumentWork, 'status' | 'answer'>, previousOperationId?: string): DeferredDocumentWork
-  deferred(workspace: string, operationId: string): DeferredDocumentWork | null
-  retireClarifications(): void
-  retiredClarification(workspace: string, operationId: string): boolean
-  pending(workspace: string): DeferredDocumentWork[]
-  /** Canonical replies derived from this exact evidence, including resolved work. */
-  dependentAnswerIds(sourceId: string, cut?: DocumentSourceCut): string[]
-  answerDependencies(answerId: string): DocumentSourceRef[]
-  answer(input: { operationId: string, workspace: string, deferredId: string, source: DocumentSourceRef, text: string }): DeferredDocumentWork
-  resolve(workspace: string, operationId: string): void
-  expire(workspace: string, operationId: string): void
 }

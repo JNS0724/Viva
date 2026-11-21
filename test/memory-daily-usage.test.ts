@@ -281,7 +281,7 @@ test('a daily projection with unavailable current applicability can still be sto
   assert.doesNotMatch(examine(), /Prior original schedule Friday/)
 })
 
-test('a daily correction quotation is erased from the independent digest and its deferred work on source withdrawal', async t => {
+test('a daily correction quotation is erased from the independent digest on source withdrawal', async t => {
   const f = await fixture(t), marker = 'Confidential original detail on Monday.', original = await f.add(marker)
   const daily = await f.find(), workspace = daily.identity.workspace, replacementText = 'The confirmed detail is now Tuesday.'
   const replacementId = randomUUID()
@@ -294,16 +294,12 @@ test('a daily correction quotation is erased from the independent digest and its
   const line = daily.markdown.split('\n').indexOf(marker) + 1
   documents.commit({ ...base, operationId: randomUUID(), action: 'CORRECT', expectedRevision: draft.revision, markdown: replacementText,
     corrections: [{ path: daily.path, revision: daily.version.contentRevision, startLine: line, endLine: line, text: marker, condition: '', time: '' }] })
-  const snapshot = documents.read(workspace, base.path)!
-  const question = documents.defer({ ...base, operationId: randomUUID(), unit: { name: 'Schedule', bucket: 'personal', summary: 'Confirm the schedule', paths: [] },
-    reason: marker, reads: [snapshot], files: [] })
   const operationId = randomUUID()
   const { ticket } = await f.owner.handleHost('prepareSourceChange', { operationId, conversation: f.session,
     onlySources: true, ids: [original.messageId] }) as { ticket: string }
   await f.owner.handleHost('commitSourceChange', { operationId, ticket })
   await f.reopen()
   const reopened = fixtureDocuments(f)
-  assert.equal(reopened.deferred(workspace, question.operationId), null)
   assert.equal(reopened.read(workspace, base.path)?.markdown, replacementText)
   assert.equal(reopened.supersessions(workspace, daily.path)[0]?.text, '')
   assert.equal((await f.owner.handleHost('getOperation', { operationId }) as { cleanup: string }).cleanup, 'complete')

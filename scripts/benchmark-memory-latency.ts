@@ -14,7 +14,7 @@ import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { removeTree } from '../src/backend/remove-tree.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
-import { DREAM_EXTRACT_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
 import { routeFixtureTools, startFakeLlm } from '../test/fixtures/fake-llm.ts'
@@ -97,7 +97,7 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
   const model = await startFakeLlm({ decideFirst: routeFixtureTools((request: Request) => {
     const fixture = venueModel.decide(request)
     if (fixture) {
-      if (request.system === DREAM_EXTRACT_SYSTEM || JSON.stringify(request.system).includes(DREAM_EXTRACT_SYSTEM)) {
+      if (request.system === DREAM_CONSOLIDATE_SYSTEM || JSON.stringify(request.system).includes(DREAM_CONSOLIDATE_SYSTEM)) {
         dreamStarted = true
         return { ...fixture, waitFor: dreamGate }
       }
