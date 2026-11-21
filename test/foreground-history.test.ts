@@ -259,7 +259,7 @@ test('foreground history keeps replay checkpoint intact on write failures and re
   assert.deepEqual(afterRetry.map(m => m.text), ['第一问', '完整回复'])
   assert.equal(afterRetry[1]?.receipt?.stopReason, 'end_turn')
 
-  // 2. Long assistant reply above 200_000 chars (within MAX_ASSISTANT_TEXT_CHARS) persists cleanly
+  // 2. Long assistant reply above 200_000 chars (within MAX_ASSISTANT_TEXT_CHARS) persists cleanly and survives rewind copy via db.save()
   const longText = 'y'.repeat(250_000)
   history.bindGeneratedCopy('s-err', 'k-long', 'assistant', longText, [{ sources: [], fileRanges: [] }])
   for (const event of [
@@ -268,6 +268,15 @@ test('foreground history keeps replay checkpoint intact on write failures and re
     { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
   ]) { stream.send(event); writer.receive(event) }
   assert.equal(history.get(current.id)!.messages.at(-1)?.text.length, 250_000)
+
+  // Rewinding a later user message copies the long assistant reply through db.save() without failing validation
+  const keptBeforeRewind = history.get(current.id)!.messages
+  const forked = history.create({ sessionId: 's-fork', mode: 'live', model: 'V4', cwd: '/w', parentId: current.id })
+  const copied = history.save(forked, [...keptBeforeRewind, { role: 'user', text: '重说这句', receipt: null }], {
+    copy: { from: current.id, count: keptBeforeRewind.length },
+  })
+  assert.equal(history.get(copied.id)!.messages.at(-2)?.text.length, 250_000)
+  assert.equal(history.get(copied.id)!.messages.at(-1)?.text, '重说这句')
 
   // 3. Permanently invalid reply (> MAX_ASSISTANT_TEXT_CHARS) leaves checkpoint behind WITHOUT blocking subsequent turns
   const oversized = 'x'.repeat(MAX_ASSISTANT_TEXT_CHARS + 1)

@@ -40,9 +40,10 @@ function normalizeReceipt(receipt: any): Receipt | null {
   return { ms, tools, thoughts, stopReason }
 }
 
-export function normalizeMessage(message: any, { maxTextChars = MAX_TEXT_CHARS }: { maxTextChars?: number } = {}): StoredMessage {
+export function normalizeMessage(message: any, { maxTextChars }: { maxTextChars?: number } = {}): StoredMessage {
   if (!ROLES.has(message?.role)) throw new HistoryValidationError(t("main.history-schema.invalid.message.role", { role: message?.role }))
-  if (typeof message.text !== 'string' || message.text.length > maxTextChars) throw new HistoryValidationError(t("main.history-schema.invalid.message.text"))
+  const limit = maxTextChars ?? (message.role === 'assistant' ? MAX_ASSISTANT_TEXT_CHARS : MAX_TEXT_CHARS)
+  if (typeof message.text !== 'string' || message.text.length > limit) throw new HistoryValidationError(t("main.history-schema.invalid.message.text"))
   if (message.key !== undefined && (typeof message.key !== 'string' || !message.key || message.key.length > 1000)) throw new HistoryValidationError(t('main.history-schema.invalid.message.key'))
   const images = checkImages(message.images)
   if (!images) throw new HistoryValidationError(t("main.history-schema.invalid.message.images"))
