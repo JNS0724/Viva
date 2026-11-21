@@ -4,8 +4,6 @@ import { t } from '../shared/i18n/translate.ts'
 import { checkImages, type ImageRef } from '../shared/images.ts'
 
 export const MAX_TEXT_CHARS = 200_000
-/** Trusted backend assistant writes may exceed the user-input IPC bound while remaining finite. */
-export const MAX_ASSISTANT_TEXT_CHARS = 2_000_000
 const MAX_STOP_REASON_CHARS = 40
 const MAX_TITLE_CHARS = 80
 const AUTO_TITLE_CHARS = 20
@@ -40,10 +38,12 @@ function normalizeReceipt(receipt: any): Receipt | null {
   return { ms, tools, thoughts, stopReason }
 }
 
-export function normalizeMessage(message: any, { maxTextChars }: { maxTextChars?: number } = {}): StoredMessage {
+export function normalizeMessage(message: any): StoredMessage {
   if (!ROLES.has(message?.role)) throw new HistoryValidationError(t("main.history-schema.invalid.message.role", { role: message?.role }))
-  const limit = maxTextChars ?? (message.role === 'assistant' ? MAX_ASSISTANT_TEXT_CHARS : MAX_TEXT_CHARS)
-  if (typeof message.text !== 'string' || message.text.length > limit) throw new HistoryValidationError(t("main.history-schema.invalid.message.text"))
+  // Trusted backend assistant replies have no arbitrary text-length cliff so keyed stream digests and rewinds stay intact.
+  if (typeof message.text !== 'string' || (message.role !== 'assistant' && message.text.length > MAX_TEXT_CHARS)) {
+    throw new HistoryValidationError(t("main.history-schema.invalid.message.text"))
+  }
   if (message.key !== undefined && (typeof message.key !== 'string' || !message.key || message.key.length > 1000)) throw new HistoryValidationError(t('main.history-schema.invalid.message.key'))
   const images = checkImages(message.images)
   if (!images) throw new HistoryValidationError(t("main.history-schema.invalid.message.images"))

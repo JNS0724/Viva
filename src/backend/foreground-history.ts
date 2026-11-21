@@ -4,7 +4,7 @@ import { answerText, type AnsweredQuestion, type QuestionAnswer } from '../share
 import { isSilentReply } from '../shared/task-report.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 import type { Conversation, HistoryMessageMutation } from './history-db.ts'
-import { HistoryValidationError, MAX_ASSISTANT_TEXT_CHARS } from './history-schema.ts'
+import { HistoryValidationError } from './history-schema.ts'
 
 /**
  * Backend single-writer for the foreground conversation on screen. Mirrors the transcript rules of
@@ -69,21 +69,6 @@ const mergeBoundary = (a?: StreamBoundary, b?: StreamBoundary): StreamBoundary |
   if (!b) return a
   if (a.cursor === undefined || b.cursor === undefined) return { cursor: a.cursor ?? b.cursor }
   return { cursor: Math.max(a.cursor, b.cursor) }
-}
-
-function splitAssistantText(text: string): string[] {
-  if (text.length <= MAX_ASSISTANT_TEXT_CHARS) return [text]
-  const parts: string[] = []
-  for (let start = 0; start < text.length;) {
-    let end = Math.min(start + MAX_ASSISTANT_TEXT_CHARS, text.length)
-    if (end < text.length) {
-      const code = text.charCodeAt(end - 1)
-      if (code >= 0xD800 && code <= 0xDBFF) end -= 1
-    }
-    parts.push(text.slice(start, end))
-    start = end
-  }
-  return parts
 }
 
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object'
@@ -188,7 +173,7 @@ export function createForegroundHistory({
   function drainPlainOps(turn: ActiveTurn): HistoryMessageMutation[] {
     closePlain(turn)
     if (!turn.pendingPlainSegments.length) return []
-    const ops: HistoryMessageMutation[] = turn.pendingPlainSegments.flatMap(splitAssistantText).map(text => ({
+    const ops: HistoryMessageMutation[] = turn.pendingPlainSegments.map(text => ({
       kind: 'upsert_assistant',
       message: { role: 'assistant', text, receipt: null },
     }))
