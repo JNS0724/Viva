@@ -63,9 +63,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     }
     publish(event)
   }
-  /** Advance the backend-owned durable history watermark to the current publication cursor. */
-  function checkpoint(conversationId: string) {
-    write.run('save', conversationId, eventCursor)
+  /** Advance the backend-owned durable history watermark to the given (or current) publication cursor. */
+  function checkpoint(conversationId: string, upToCursor?: number) {
+    const target = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
+    write.run('save', conversationId, target)
   }
   /** Mark a persisted question_answered event by questionId (works immediately or after retry) so mid-turn replay does not duplicate its message. */
   function markQuestionPersisted(conversationId: string, questionId: string) {
@@ -73,10 +74,11 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       if (row.questionId === questionId && row.routing.context.conversationId === conversationId) row.inHistory = true
     }
   }
-  /** Exclude already-persisted plain assistant chunks from mid-turn replay while retaining tool/question/thought events. */
-  function markPlainPersisted(conversationId: string) {
+  /** Exclude already-persisted plain assistant chunks up to the given (or current) cursor from mid-turn replay. */
+  function markPlainPersisted(conversationId: string, upToCursor?: number) {
+    const limit = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
     for (const row of held) {
-      if (row.plainChunk && row.routing.context.conversationId === conversationId) row.skipReplay = true
+      if (row.plainChunk && row.cursor <= limit && row.routing.context.conversationId === conversationId) row.skipReplay = true
     }
   }
   function snapshot(conversationId: string, context: ConversationContext, stopped = false) {
@@ -93,5 +95,5 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
         return row.inHistory ? { ...parsed, inHistory: true } : parsed
       }) }
   }
-  return { send, checkpoint, markQuestionPersisted, markPlainPersisted, snapshot }
+  return { send, cursor: () => eventCursor, checkpoint, markQuestionPersisted, markPlainPersisted, snapshot }
 }

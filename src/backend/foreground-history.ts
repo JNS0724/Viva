@@ -18,9 +18,10 @@ export interface ForegroundHistoryDeps {
   setCurrent: (conversation: Conversation) => void
   agentInfo: () => { mode?: string | null, model?: string | null }
   sourceSession: () => string | null
-  checkpoint?: (conversationId: string) => void
+  streamCursor?: () => number
+  checkpoint?: (conversationId: string, upToCursor?: number) => void
   markQuestionPersisted?: (conversationId: string, questionId: string) => void
-  markPlainPersisted?: (conversationId: string) => void
+  markPlainPersisted?: (conversationId: string, upToCursor?: number) => void
   delegatedDuringTurn?: (startedAt: number, endedAt: number) => boolean
   onError?: (error: unknown) => void
   now?: () => number
@@ -50,13 +51,24 @@ interface ActiveTurn {
   persistedStreamKeys: Set<string>
 }
 
+interface StreamBoundary {
+  cursor?: number
+}
+
 interface PendingWrite {
   conversation: Conversation
   ops: HistoryMessageMutation[]
   session: string | null
-  checkpointPending: boolean
-  plainPersistedPending: boolean
+  checkpointPending?: StreamBoundary
+  plainPersistedPending?: StreamBoundary
   questionIds: string[]
+}
+
+const mergeBoundary = (a?: StreamBoundary, b?: StreamBoundary): StreamBoundary | undefined => {
+  if (!a) return b
+  if (!b) return a
+  if (a.cursor === undefined || b.cursor === undefined) return { cursor: a.cursor ?? b.cursor }
+  return { cursor: Math.max(a.cursor, b.cursor) }
 }
 
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object'
@@ -105,6 +117,7 @@ export function createForegroundHistory({
   setCurrent,
   agentInfo,
   sourceSession,
+  streamCursor,
   checkpoint,
   markQuestionPersisted,
   markPlainPersisted,
@@ -166,7 +179,7 @@ export function createForegroundHistory({
     conversation: Conversation,
     ops: readonly HistoryMessageMutation[],
     session: string | null,
-    flags: { checkpointPending?: boolean, plainPersistedPending?: boolean, questionIds?: readonly string[] } = {},
+    flags: { checkpointPending?: StreamBoundary, plainPersistedPending?: StreamBoundary, questionIds?: readonly string[] } = {},
   ) {
     const prior = pendingWrites.get(conversation.id)
     const questionIds = [...new Set([...(prior?.questionIds ?? []), ...(flags.questionIds ?? [])])]
@@ -174,8 +187,8 @@ export function createForegroundHistory({
       conversation,
       ops: prior ? [...prior.ops, ...ops] : [...ops],
       session: session ?? prior?.session ?? null,
-      checkpointPending: Boolean(prior?.checkpointPending || flags.checkpointPending),
-      plainPersistedPending: Boolean(prior?.plainPersistedPending || flags.plainPersistedPending),
+      checkpointPending: mergeBoundary(prior?.checkpointPending, flags.checkpointPending),
+      plainPersistedPending: mergeBoundary(prior?.plainPersistedPending, flags.plainPersistedPending),
       questionIds,
     })
   }
@@ -190,7 +203,7 @@ export function createForegroundHistory({
         const stale = active
         active = null
         const staleOps = drainPlainOps(stale)
-        if (staleOps.length) queuePending(stale.conversation, staleOps, stale.sessionId, { plainPersistedPending: true })
+        if (staleOps.length) queuePending(stale.conversation, staleOps, stale.sessionId, { plainPersistedPending: { cursor: streamCursor?.() } })
       }
       for (const [id, entry] of [...pendingWrites]) {
         if (id === excludeId) continue
@@ -198,9 +211,9 @@ export function createForegroundHistory({
           const saved = commit(entry.conversation, entry.ops, { sourceSession: entry.session })
           pendingWrites.delete(id)
           if (current().id === saved.id) setCurrent(saved)
-          if (entry.plainPersistedPending) markPlainPersisted?.(saved.id)
+          if (entry.plainPersistedPending) markPlainPersisted?.(saved.id, entry.plainPersistedPending.cursor)
           for (const questionId of entry.questionIds) markQuestionPersisted?.(saved.id, questionId)
-          if (entry.checkpointPending) checkpoint?.(saved.id)
+          if (entry.checkpointPending) checkpoint?.(saved.id, entry.checkpointPending.cursor)
         } catch (error) {
           if (error instanceof HistoryValidationError) pendingWrites.delete(id)
           onError(error)
@@ -227,13 +240,14 @@ export function createForegroundHistory({
     const carried = pendingWrites.get(base.id)
     const allOps = carried ? [...carried.ops, ...ops] : [...ops]
     const allQuestionIds = [...new Set([...(carried?.questionIds ?? []), ...questionIds])]
-    const shouldMarkPlain = Boolean(plainPersisted || carried?.plainPersistedPending)
-    const shouldCheckpoint = Boolean(deferCheckpoint || carried?.checkpointPending)
+    const boundary = (plainPersisted || deferCheckpoint) ? { cursor: streamCursor?.() } : undefined
+    const plainBoundary = mergeBoundary(carried?.plainPersistedPending, plainPersisted ? boundary : undefined)
+    const checkpointBoundary = mergeBoundary(carried?.checkpointPending, deferCheckpoint ? boundary : undefined)
     if (!allOps.length) {
       if (carried) pendingWrites.delete(base.id)
-      if (shouldMarkPlain) markPlainPersisted?.(base.id)
+      if (plainBoundary) markPlainPersisted?.(base.id, plainBoundary.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(base.id, questionId)
-      if (shouldCheckpoint) checkpoint?.(base.id)
+      if (checkpointBoundary) checkpoint?.(base.id, checkpointBoundary.cursor)
       return { ok: true, saved: null }
     }
     const { mode, model } = agentInfo()
@@ -247,9 +261,9 @@ export function createForegroundHistory({
       const saved = commit(target, allOps, { sourceSession: session })
       pendingWrites.delete(base.id)
       if (current().id === saved.id) setCurrent(saved)
-      if (shouldMarkPlain) markPlainPersisted?.(saved.id)
+      if (plainBoundary) markPlainPersisted?.(saved.id, plainBoundary.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(saved.id, questionId)
-      if (shouldCheckpoint) checkpoint?.(saved.id)
+      if (checkpointBoundary) checkpoint?.(saved.id, checkpointBoundary.cursor)
       return { ok: true, saved }
     } catch (error) {
       // Permanent validation errors must not poison pendingWrites and block subsequent turns in this conversation;
@@ -259,8 +273,8 @@ export function createForegroundHistory({
           conversation: target,
           ops: allOps,
           session,
-          checkpointPending: shouldCheckpoint,
-          plainPersistedPending: shouldMarkPlain,
+          checkpointPending: checkpointBoundary,
+          plainPersistedPending: plainBoundary,
           questionIds: allQuestionIds,
         })
       }
@@ -533,7 +547,7 @@ export function createForegroundHistory({
       if (turn.conversationId === selected.id) {
         persist(ops, turn.sessionId, { plainPersisted: ops.length > 0 })
       } else if (ops.length) {
-        queuePending(turn.conversation, ops, turn.sessionId, { plainPersistedPending: true })
+        queuePending(turn.conversation, ops, turn.sessionId, { plainPersistedPending: { cursor: streamCursor?.() } })
       }
     }
     return retryPending()

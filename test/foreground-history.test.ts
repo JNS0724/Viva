@@ -489,3 +489,71 @@ test('mid-turn plain text persisted before question_answered or userSteer is exc
   assert.equal(afterRetry.find(e => e.type === 'question_answered' && e.questionId === 'q-retry')?.inHistory, true,
     'retrying question_answered marks its earlier replay event inHistory: true by questionId')
 })
+
+test('retrying an earlier pending write advances checkpoint and plain dedup only to the queued cursor', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-cur', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-cur' }
+  let failWrites = false
+  const committed: string[] = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops) => {
+      if (failWrites) throw new Error('sqlite busy')
+      for (const op of ops) {
+        if (op.kind === 'upsert_assistant' || op.kind === 'append_user') committed.push(`${op.message.role}:${op.message.text}`)
+      }
+      return conv
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
+    markPlainPersisted: (id, upToCursor) => stream.markPlainPersisted(id, upToCursor),
+    onError: () => {},
+  })
+
+  // 1. Turn 1 ends and fails transiently at turn_end -> checkpointPending captures Turn 1's cursor
+  failWrites = true
+  for (const event of [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第一轮回复' } } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]) { stream.send(event); writer.receive(event) }
+
+  // Turn 2 starts and streams plain text that is still buffered in active.plainText (unpersisted!)
+  for (const event of [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '第二轮进行中' } } },
+  ]) { stream.send(event); writer.receive(event) }
+
+  // Disk recovers and retryPending() commits Turn 1: checkpoint advances ONLY to Turn 1's cursor!
+  failWrites = false
+  assert.equal(writer.retryPending(), true)
+  assert.deepEqual(committed, ['assistant:第一轮回复'])
+  const replayAfterTurn1Retry = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  assert.equal(replayAfterTurn1Retry.length, 2, 'Turn 2 events remain replayable after Turn 1 retry')
+  assert.equal(replayAfterTurn1Retry[0]?.type, 'turn_started')
+  assert.equal(((replayAfterTurn1Retry[1]?.update as Record<string, unknown>)?.content as Record<string, unknown>)?.text, '第二轮进行中')
+
+  // 2. Mid-turn userSteer fails transiently while draining '第二轮进行中' -> plainPersistedPending captures C1
+  failWrites = true
+  writer.userSteer({ text: '插话' })
+  // Later plain chunk arrives at C2 > C1
+  const laterPlain = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '插话后的新文本' } } }
+  stream.send(laterPlain)
+  writer.receive(laterPlain)
+
+  // Retry commits '第二轮进行中' + '插话' and skips ONLY plain chunks <= C1; '插话后的新文本' stays replayable!
+  failWrites = false
+  assert.equal(writer.retryPending(), true)
+  assert.deepEqual(committed, ['assistant:第一轮回复', 'assistant:第二轮进行中', 'user:插话'])
+  const replayAfterSteerRetry = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  const plainTexts = replayAfterSteerRetry
+    .filter(e => e.type === 'update' && (e.update as Record<string, unknown>)?.sessionUpdate === 'agent_message_chunk')
+    .map(e => ((e.update as Record<string, unknown>).content as Record<string, unknown>).text)
+  assert.deepEqual(plainTexts, ['插话后的新文本'])
+})
