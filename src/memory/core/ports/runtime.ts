@@ -13,7 +13,7 @@ export interface MemoryIdentity {
 
 /** The authoritative commit queues affected identities. Publication may run once it is durable. */
 export interface MemoryFileIndexChanges {
-  queue(input: { workspace: string, id: string, anchors?: readonly string[], sources?: readonly string[] }): void
+  queue(input: { workspace: string, id: string, sources?: readonly string[] }): void
   publish(workspace: string, id: string): void
 }
 

@@ -59,12 +59,11 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const canStop = Boolean(current && daily && !daily.references(key).some(ref => documentSourceRestricted(ref, ownRanges)))
     const dailyState = { allocation, hasProjection: Boolean(current), canStop, restrictions: authorized.map(({ record, version }) => ({ record, version })) }
     const sources = [...new Map([...(current?.sources ?? []), ...authorized.flatMap(item => item.sources)].map(ref => [ref.sourceId, ref])).values()]
-    if (current) return { ...current, sources, enabled: current.currentMarkdown !== null && current.applicability.state !== 'unavailable', daily: dailyState }
+    if (current) return { ...current, sources, enabled: current.enabled, daily: dailyState }
     const latest = authorized.at(-1)!
     return { id, kind: 'daily', workspace, path: allocation.path, day: allocation.day, updatedAt: allocation.updatedAt,
       revision: latest.version.contentRevision, usageVersion: allocation.revision, policyToken: hash(JSON.stringify([allocation, authorized.map(item => item.version)])),
-      enabled: false, markdown: '', currentMarkdown: null, sources, sourceTokens: [], backing: null, supporting: [],
-      applicability: { state: 'unavailable', supersessions: [] }, daily: dailyState }
+      enabled: false, markdown: '', sources, sourceTokens: [], backing: null, daily: dailyState }
   }
   function detachedDigestView(entry: DocumentFileRegistration): ManagedView | null {
     const { workspace, id, revision, usageVersion } = entry
@@ -72,8 +71,8 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     if (!restrictions.length) return null
     return { id, kind: 'digest', workspace, path: `digest/wiki/erased-${hash(id)}.md`, updatedAt: 0,
       revision, usageVersion, policyToken: hash(JSON.stringify(restrictions.map(item => item.version))),
-      enabled: false, markdown: '', currentMarkdown: null, sources: restrictions.flatMap(item => item.sources),
-      sourceTokens: [], backing: null, supporting: [], applicability: { state: 'unavailable', supersessions: [] },
+      enabled: false, markdown: '', sources: restrictions.flatMap(item => item.sources),
+      sourceTokens: [], backing: null,
       detachedRestrictions: restrictions.map(({ record, version }) => ({ record, version })) }
   }
   function managementViews(workspace: string, accepted?: MemoryDocumentManagementView[], target?: MemoryManagedFileIdentity): ManagedView[] {
@@ -95,8 +94,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     }
     return result
   }
-  const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null
-    && view.enabled && view.currentMarkdown !== null && view.applicability.state === 'current'
+  const editSupported = (view: ManagedView) => editing && view.kind === 'digest' && view.backing !== null && view.enabled
   function forgetSupported(view: ManagedView): boolean {
     return view.kind === 'digest' ? view.backing !== null : Boolean(view.daily)
   }
@@ -108,7 +106,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const candidate = undoCandidate(view)
     return { identity: identityOf(view), version: versionOf(view), path: view.path,
       title, enabled: view.enabled,
-      ...(view.day ? { day: view.day } : {}), applicability: view.applicability.state,
+      ...(view.day ? { day: view.day } : {}),
       ...(view.daily || view.detachedRestrictions ? { hasProjection: view.daily?.hasProjection ?? false,
         restrictions: (view.daily?.restrictions ?? view.detachedRestrictions ?? []).map(({ record, version }) => ({ id: record.id, version })) } : {}),
       actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.canStop || view.daily.restrictions.length)),

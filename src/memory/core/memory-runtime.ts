@@ -28,7 +28,7 @@ import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-docum
 import type { FileEvidenceCurrent } from './memory-dispatch.ts'
 import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDependency } from './memory-document-read-policy.ts'
 import { availableDocumentSourceSpans, documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource, projectDocumentSource } from './memory-document-restrictions.ts'
-import { formatMemoryDocument, parseMemoryDocument, readMemoryLines } from './memory-document.ts'
+import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
 import type { DreamCalculate } from './memory-dream-jobs.ts'
 import { guardDiagnosticPort, NO_DIAGNOSTICS, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import type { DiagnosticPort } from '../../diagnostics/contracts.ts'
@@ -335,9 +335,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const previous = publicationPayload.safeParse(effects.get(INDEX_PUBLISH, key)?.payload)
     effects.queue(INDEX_PUBLISH, key, { workspace, ...(repairOnly ? { repairOnly: true } : {}), ids: [...new Set([...ids, ...(previous.success ? previous.data.ids : [])])] })
   }
-  function queueFilePublication({ workspace, id, anchors = [], sources = [] }: Parameters<MemoryFileIndexChanges['queue']>[0]) {
+  function queueFilePublication({ workspace, id, sources = [] }: Parameters<MemoryFileIndexChanges['queue']>[0]) {
     if (!fileRetrieval) return
-    const ids = new Set([id, ...anchors])
+    const ids = new Set([id])
     const affected = new Set(sources)
     for (const source of affected) {
       for (const copy of store.manualFileCopies(source)) affected.add(copy.source)
@@ -352,15 +352,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         if (doc.sources.some(ref => affected.has(ref.id))) ids.add(doc.id)
       }
     }
-    const byReplacement = new Map<string, string[]>()
-    for (const edge of documents?.indexDependencies(workspace) ?? []) {
-      const anchor = edge.anchorId
-      if (edge.anchorSourceIds.some(source => affected.has(source))) ids.add(anchor)
-      const existing = byReplacement.get(edge.replacementId)
-      if (existing) existing.push(anchor)
-      else byReplacement.set(edge.replacementId, [anchor])
-    }
-    for (const target of ids) for (const anchor of byReplacement.get(target) ?? []) ids.add(anchor)
     stagePublication(workspace, id, ids)
     void effects.wake()
     return ids
@@ -501,14 +492,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     void effects.wake()
     return new Map(jobs.map(job => [job.key, 'done' as const]))
   })
-  // Recovery needs the full source and applicability policy. The owner is still
-  // initializing and has not opened model admission.
   queueRestrictedRebuilds = notes?.queueRestrictedRebuilds
   notes?.storage.recover()
   documents?.recover()
-  store.tx(() => {
-    store.dispatch.retireFileClarifications()
-  })
   documentsReady = true
   documentStorageReady = true
   deferIndexPublication = false
@@ -1013,7 +999,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   type RecallRequest = Extract<MemoryRequest, { op: 'recall' }>
 
   function summarizeFileProfile(views: readonly MemoryDocumentView[], project?: Origin['project']): MemoryFileProfile {
-    const digests = views.filter(view => view.applicability.state !== 'unavailable' && view.currentMarkdown !== null)
+    const digests = views.filter(view => view.kind === 'digest')
     function summarize(scope: FileProfileScope): MemoryFileProfileItem[] {
       const origin: Origin = { conversation: null, session: null, scope, ...(scope.kind === 'project' ? { project: scope } : {}) }
       const candidates = digests.flatMap(view => {
@@ -1028,9 +1014,8 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       return candidates.sort((a, b) => b.at - a.at || fileLocatorKey(a.view).localeCompare(fileLocatorKey(b.view)))
         .flatMap(({ view }) => {
           try {
-            const { metadata, body, bodyStartLine } = parseMemoryDocument(view.markdown)
-            const choices = view.applicability.state === 'current' ? [body, metadata.description]
-              : [readMemoryLines(view.currentMarkdown!, bodyStartLine)]
+            const { metadata, body } = parseMemoryDocument(view.markdown)
+            const choices = [body, metadata.description]
             const text = choices.flatMap(value => typeof value === 'string' ? [maskMemoryWikiLinks(value, () => true).trim()] : [])
               .find(value => value.length > 0 && value.length <= FILE_PROFILE_ITEM_CHARS)
             return text ? [{ identity: { kind: view.kind, workspace: view.workspace, id: view.id }, text }] : []
@@ -1089,7 +1074,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     signal?.throwIfAborted()
     if (closed) return null
     const detail = fileManagement.detail(identity, managementAllows, restrictionId, batch?.managementRead)
-    if (detail?.enabled && path && fileIndex && !fileIndex.nodeAt(workspace, path) && batch?.read(workspace, path)?.currentMarkdown != null) {
+    if (detail?.enabled && path && fileIndex && !fileIndex.nodeAt(workspace, path) && batch?.read(workspace, path) != null) {
       const key = publicationKey(workspace, identity.id)
       const pending = effects.timing(INDEX_PUBLISH, key)
       if (pending && pending.dueAt > now()) {
@@ -1139,7 +1124,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const allows = (view: MemoryDocumentView) => fileAllowsOrigin(view, origin)
       if (request.op === 'file_read') {
         return fileRetrieval.readAsync({ workspaces: visibleWorkspaces(origin), id: request.id, startLine: request.start_line, endLine: request.end_line,
-          evidence: request.evidence, allows, signal }, batch).then(result =>
+          allows, signal }, batch).then(result =>
           current() && result && fileDependenciesCurrent(result.files, [], false, batch)
             ? retainFileReadPacket(request.session, result) : textOf({ status: 'unavailable' }))
       }
@@ -1185,7 +1170,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const scope = origin.context ?? origin.scope
     if (request.op === 'file_read') {
       const result = fileRetrieval?.read({ id: request.id, startLine: request.start_line, endLine: request.end_line,
-        evidence: request.evidence, allows: view => fileAllowsOrigin(view, origin, scope) })
+        allows: view => fileAllowsOrigin(view, origin, scope) })
       return result ? retainFileReadPacket(request.session, result) : textOf({ status: 'unavailable' })
     }
     if (request.op === 'node_search') {
@@ -1265,7 +1250,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const file = { path: receipt.path, revision: receipt.revision, markdown }
       // The journal just accepted these exact bytes. Record their dependency with the
       // operation receipt, including on replay, before publishing the index asynchronously.
-      const view = policy.read(workspace, file.path, new Set(), (area, path) => area === workspace && path === file.path ? file : null)
+      const view = policy.read(workspace, file.path, (area, path) => area === workspace && path === file.path ? file : null)
       if (!view || view.id !== receipt.documentId || view.usageVersion !== receipt.usageVersion) throw domainError('revision.conflict')
       const result: MemoryFileMutationResult = { operationId, identity: { kind: 'digest', workspace, id: receipt.documentId },
         contentRevision: receipt.revision, usageVersion: receipt.usageVersion, action: 'CREATE' }

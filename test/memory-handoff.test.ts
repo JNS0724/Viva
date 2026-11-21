@@ -192,7 +192,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
       const page: MemoryFileListResult = await call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'digest', ...(cursor ? { cursor } : {}) })
       assert.equal(page.status, 'ok')
       for (const item of page.items) {
-        if (!item.enabled || item.applicability !== 'current' || item.hasProjection === false) continue
+        if (!item.enabled || item.hasProjection === false) continue
         const detail = await call<Promise<MemoryFileDetail | null>>('memory:read-file', item.identity)
         if (detail) result.push(detail)
       }

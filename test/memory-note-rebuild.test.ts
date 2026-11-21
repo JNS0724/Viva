@@ -9,7 +9,6 @@ import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryFileRestrictions } from '../src/memory/node/memory-file-restrictions.ts'
-import { memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
 
 test('daily rebuild can replay contributed, skipped and pending turns without crossing a day or session', t => {
   const { dir, defer } = scratch(t, 'memory-note-rebuild-')
@@ -157,7 +156,7 @@ test('withdrawing a source does not erase external bytes at an empty daily alloc
 })
 
 
-test('external bytes at an empty daily allocation cannot anchor a digest correction', t => {
+test('external bytes at an empty daily allocation remain unaccepted by the note store', t => {
   const { dir, defer } = scratch(t, 'memory-empty-daily-anchor-')
   const store = openMemoryStore(join(dir, 'memory.db'))
   defer(() => store.close())
@@ -167,18 +166,8 @@ test('external bytes at an empty daily allocation cannot anchor a digest correct
     1, Date.now(), notes.snapshot([source.id]), undefined)
   const old = notes.read(key)!
   notes.commit(key, notes.rebuildRows(key), { status: 'skip' }, 2, Date.now(), [], old, { rebuild: true })
-  const external = 'Unaccepted body'
-  writeFileSync(join(store.fileRoot, old.workspace, old.path), external)
-  const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source(id) {
-    const row = store.readSource(id)
-    return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
-  } })
-  const input = { workspace: old.workspace, path: 'digest/wiki/independent.md', sources: notes.snapshot([source.id]), reads: [] }
-  const first = documents.commit({ ...input, operationId: 'create', expectedRevision: null, action: 'CREATE', markdown: 'Current digest' })
-  assert.throws(() => documents.commit({ ...input, operationId: 'unsafe-correction', expectedRevision: first.revision, action: 'CORRECT', markdown: 'Suspect change',
-    corrections: [{ path: old.path, revision: memoryFileRevision(external), startLine: 1, endLine: 1, text: external, condition: '', time: '' }],
-  }), /memory-correction-source-identity/)
-  assert.equal(documents.read(old.workspace, first.path)?.revision, first.revision)
+  writeFileSync(join(store.fileRoot, old.workspace, old.path), 'Unaccepted body')
+  assert.equal(notes.read(key), undefined)
 })
 
 

@@ -43,7 +43,6 @@ type FileRef = {
   policyToken: string
   checkpoint: number
   sources: DocumentSourceRef[]
-  reads: Array<{ id: string, revision: string, usageVersion: number }>
 }
 type Note = NonNullable<ReturnType<MemoryNotes['read']>>
 type Location = { workspace: string, path: string }
@@ -236,17 +235,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       && (batch ?? policy).read(ref.workspace, ref.path)?.policyToken === ref.policyToken && refsCurrent(ref.sources)
       && !ref.sources.some(item => documentSourceRestricted(item, documents.sourceRestrictions(ref.workspace)))
   }
-  function dependencies(files: readonly FileRef[]): Location[] {
-    return files.flatMap(file => [file, ...file.reads.flatMap(ref => {
-      const target = documents.indexFile(file.workspace, ref.id)
-      return target ? [{ workspace: file.workspace, path: target.path }] : []
-    })])
-  }
-  const readsCurrent = (files: readonly FileRef[], batch?: MemoryDocumentReadBatch) => files.every(file => file.reads.every(ref => {
-    const target = documents.indexFile(file.workspace, ref.id)
-    const doc = target && documents.read(file.workspace, target.path, { physical: batch?.physical(file.workspace, target.path) })
-    return doc?.id === ref.id && doc.revision === ref.revision && doc.usageVersion === ref.usageVersion
-  }))
   async function loadFiles(files: Location[], signal?: AbortSignal, partial = false) {
     const batch = policy.readBatch(signal, files.length + 512)
     if (!batch) return
@@ -386,18 +374,22 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       })
     }
 
-    const pendingBatch = pendingBatchOf(job.payload)
-    if (pendingBatch) {
-      const workspace = pendingBatch.workspace
-      const project = (text: string) => documents.projectErasedLocators(workspace, text)
+    async function commitBatchOperations(
+      workspace: string,
+      operations: readonly PersistedOperation[],
+      options: {
+        verifyOp(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): Promise<'ready' | 'wait' | 'stale' | 'retry' | 'cancelled'>
+        assertMutateCurrent(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): void
+        onCommittedPath?(path: string): void
+      },
+    ): Promise<'done' | 'wait' | 'stale' | 'retry' | 'cancelled'> {
       const committedReads = new Map<string, { id: string, revision: string, usageVersion: number }>()
       const committedByPath = new Map<string, { id: string, revision: string, usageVersion: number }>()
-      let resumeOutcome: 'done' | 'wait' | 'retry' | 'cancelled' = 'done'
-
-      for (const op of pendingBatch.operations) {
-        if (!effects.holds(job)) { resumeOutcome = 'cancelled'; break }
+      for (const op of operations) {
+        if (!effects.holds(job)) return 'cancelled'
         const prior = documents.receipt(workspace, op.operationId)
         if (prior) {
+          options.onCommittedPath?.(op.path)
           if (prior.revision !== null) {
             const nextRead = { id: prior.documentId, revision: prior.revision, usageVersion: prior.usageVersion }
             committedReads.set(prior.documentId, nextRead)
@@ -405,35 +397,71 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           }
           continue
         }
-        if (operationsUsed >= dreamUnits) { resumeOutcome = 'retry'; break }
-
+        if (operationsUsed >= dreamUnits) return 'retry'
         const reads = new Map(op.reads.map(ref => [ref.id, committedReads.get(ref.id) ?? ref]))
         for (const linkedPath of op.linkedPaths) {
           const committedTarget = committedByPath.get(linkedPath)
           if (committedTarget) reads.set(committedTarget.id, committedTarget)
         }
         const opReads = [...reads.values()]
-        const opLocations = (): Location[] => [
-          ...dependencies(pendingBatch.fileRefs),
-          { workspace, path: op.path },
-          ...opReads.flatMap(ref => {
-            const target = documents.indexFile(workspace, ref.id)
-            return target ? [{ workspace, path: target.path }] : []
-          }),
-        ]
-        const opSourcesValid = (requireEligible: boolean) => {
-          const restrictions = documents.sourceRestrictions(workspace)
-          return refsCurrent(op.sources)
-            && !op.sources.some(ref => documentSourceRestricted(ref, restrictions))
-            && (!requireEligible || op.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) }))
-            && materialAllowed(op.markdown, op.sources)
-            && project(op.markdown) === op.markdown
+        const verifiedState = await options.verifyOp(op, opReads)
+        if (verifiedState !== 'ready') return verifiedState
+        try {
+          const receipt = await mutate(() => {
+            const existing = documents.receipt(workspace, op.operationId)
+            if (existing) return existing
+            options.assertMutateCurrent(op, opReads)
+            return documents.commit({
+              operationId: op.operationId, workspace, path: op.path,
+              expectedRevision: op.expectedRevision,
+              markdown: op.markdown, action: op.action,
+              sources: op.sources, reads: opReads, files: op.files,
+            })
+          })
+          operationsUsed++
+          options.onCommittedPath?.(op.path)
+          if (receipt.revision !== null) {
+            const nextRead = { id: receipt.documentId, revision: receipt.revision, usageVersion: receipt.usageVersion }
+            committedReads.set(receipt.documentId, nextRead)
+            committedByPath.set(op.path, nextRead)
+          }
+          committed(receipt)
+          diagnostics.emit({
+            event: 'operation.progress', operation: 'memory.write', stage: 'applied',
+            identities: { requestId: op.operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
+            metrics: { count: op.sources.length },
+          })
+        } catch (error) {
+          if (!effects.holds(job)) return 'cancelled'
+          if (isStaleCommitError(error)) {
+            clearPendingBatch()
+            progress(job, 'source_changed', 'consolidate')
+            return 'stale'
+          }
+          progress(job, safeDiagnosticReason(error), 'consolidate')
+          return 'retry'
         }
-        const opCurrent = (observed?: MemoryDocumentReadBatch) => {
+      }
+      return 'done'
+    }
+
+    const pendingBatch = pendingBatchOf(job.payload)
+    if (pendingBatch) {
+      const workspace = pendingBatch.workspace
+      const project = (text: string) => documents.projectErasedLocators(workspace, text)
+      const opSourcesValid = (op: PersistedOperation, requireEligible: boolean) => {
+        const restrictions = documents.sourceRestrictions(workspace)
+        return refsCurrent(op.sources)
+          && !op.sources.some(ref => documentSourceRestricted(ref, restrictions))
+          && (!requireEligible || op.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) }))
+          && materialAllowed(op.markdown, op.sources)
+          && project(op.markdown) === op.markdown
+      }
+      const makeOpCurrent = (op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>) =>
+        (observed?: MemoryDocumentReadBatch) => {
           if (!effects.holds(job)
             || !pendingBatch.fileRefs.every(ref => fileCurrent(ref, observed))
-            || !readsCurrent(pendingBatch.fileRefs, observed)
-            || !opSourcesValid(true)) return false
+            || !opSourcesValid(op, true)) return false
           if (!opReads.every(ref => {
             const target = documents.indexFile(workspace, ref.id)
             const doc = target && documents.read(workspace, target.path, { physical: observed?.physical(workspace, target.path) })
@@ -448,69 +476,41 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const target = documents.read(workspace, op.path, { physical })
           return target !== null && target.revision === op.expectedRevision
         }
-
-        let currentReady = false
-        try {
-          currentReady = await verified(observeReadset(opLocations, opCurrent))
-        } catch (error) {
-          if (!(error instanceof RequestTimeout)) throw error
-          resumeOutcome = 'retry'
-          break
-        }
-        if (!currentReady) {
-          if (!effects.holds(job)) { resumeOutcome = 'cancelled'; break }
-          if (opSourcesValid(false) && op.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) {
-            resumeOutcome = 'wait'
-            break
+      const resumeOutcome = await commitBatchOperations(workspace, pendingBatch.operations, {
+        async verifyOp(op, opReads) {
+          const opLocations = (): Location[] => [
+            ...pendingBatch.fileRefs,
+            { workspace, path: op.path },
+            ...opReads.flatMap(ref => {
+              const target = documents.indexFile(workspace, ref.id)
+              return target ? [{ workspace, path: target.path }] : []
+            }),
+          ]
+          let currentReady = false
+          try {
+            currentReady = await verified(observeReadset(opLocations, makeOpCurrent(op, opReads)))
+          } catch (error) {
+            if (!(error instanceof RequestTimeout)) throw error
+            return 'retry'
+          }
+          if (currentReady) return 'ready'
+          if (!effects.holds(job)) return 'cancelled'
+          if (opSourcesValid(op, false) && op.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) {
+            return 'wait'
           }
           clearPendingBatch()
           progress(job, 'source_changed', 'consolidate')
-          resumeOutcome = 'done'
-          break
-        }
-
-        try {
-          const receipt = await mutate(() => {
-            const existing = documents.receipt(workspace, op.operationId)
-            if (existing) return existing
-            if (!opCurrent()) throw new MemoryDreamStaleError()
-            return documents.commit({
-              operationId: op.operationId, workspace, path: op.path,
-              expectedRevision: op.expectedRevision,
-              markdown: op.markdown, action: op.action,
-              sources: op.sources, reads: opReads, corrections: [], files: op.files,
-            })
-          })
-          operationsUsed++
-          if (receipt.revision !== null) {
-            const nextRead = { id: receipt.documentId, revision: receipt.revision, usageVersion: receipt.usageVersion }
-            committedReads.set(receipt.documentId, nextRead)
-            committedByPath.set(op.path, nextRead)
-          }
-          committed(receipt)
-          diagnostics.emit({
-            event: 'operation.progress', operation: 'memory.write', stage: 'applied',
-            identities: { requestId: op.operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
-            metrics: { count: op.sources.length },
-          })
-        } catch (error) {
-          if (!effects.holds(job)) { resumeOutcome = 'cancelled'; break }
-          if (isStaleCommitError(error)) {
-            clearPendingBatch()
-            progress(job, 'source_changed', 'consolidate')
-            resumeOutcome = 'done'
-            break
-          }
-          progress(job, safeDiagnosticReason(error), 'consolidate')
-          resumeOutcome = 'retry'
-          break
-        }
-      }
+          return 'stale'
+        },
+        assertMutateCurrent(op, opReads) {
+          if (!makeOpCurrent(op, opReads)()) throw new MemoryDreamStaleError()
+        },
+      })
 
       if (resumeOutcome === 'cancelled') return 'done'
       if (resumeOutcome === 'wait') return 'wait'
       if (resumeOutcome === 'retry') return 'retry'
-      if (pendingBatchOf(effects.get(DREAM, DAILY)?.payload)) {
+      if (resumeOutcome === 'done') {
         clearPendingBatch()
         const toCheckpoint = pendingBatch.fileRefs.filter(file => pendingBatch.checkpointPaths.includes(file.path))
         if (toCheckpoint.length) await checkpointFiles(toCheckpoint)
@@ -534,7 +534,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       const note = notes.read(file.key, check?.physical(file.workspace, file.path))
       if (!note) continue
       const view = (check ?? policy).read(file.workspace, file.path)
-      if (view && view.applicability.state !== 'unavailable') {
+      if (view) {
         available.push(note)
         initialViews.set(note.key, view)
       }
@@ -564,7 +564,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           return {
             key: note.key, workspace: note.workspace, path: note.path, revision: note.fileRevision,
             policyToken: view.policyToken, checkpoint: note.revision, sources: view.sourceTokens,
-            reads: view.supporting.map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion })),
           }
         })
         const restrictions = documents.sourceRestrictions(workspace)
@@ -606,19 +605,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const newTools = () => createMemoryDreamTools<MemoryDocumentView>({
           documents: scope,
           onRead(snapshot) {
-            for (const ref of mergeDocumentSources([...readSources.values(), ...snapshot.sourceTokens, ...(snapshot.correctionSources ?? [])])) {
+            for (const ref of mergeDocumentSources([...readSources.values(), ...snapshot.sourceTokens])) {
               readSources.set(ref.id, ref)
             }
           },
         })
         const committedPaths = new Set<string>()
         const toolReadDocs = () => toolAttempts.flatMap(tools => tools.reads())
-          .flatMap(doc => [...(doc.backing ? [doc.backing] : []), ...doc.supporting])
+          .flatMap(doc => doc.backing ? [doc.backing] : [])
         const current = (observed?: MemoryDocumentReadBatch) => {
           const allRefs = [...readSources.values()]
           return effects.holds(job)
             && fileRefs.every(ref => fileCurrent(ref, observed))
-            && readsCurrent(fileRefs, observed)
             && seen.every(snapshot => (observed ?? policy).read(workspace, snapshot.path)?.policyToken === snapshot.policyToken)
             && refsCurrent(allRefs)
             && allRefs.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })
@@ -634,7 +632,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             })
         }
         const locations = () => [
-          ...dependencies(fileRefs),
+          ...fileRefs,
           ...toolAttempts.flatMap(tools => tools.checkedPaths().map(path => ({ workspace, path }))),
           ...toolReadDocs().map(doc => ({ workspace, path: doc.path })),
         ]
@@ -676,8 +674,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 title: typeof name === 'string' ? name : '',
                 markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
                 sourceIds: fileRefs[index]!.sources.map(ref => ref.id),
-                applicability: snapshot.applicability,
-                replacements: snapshot.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })),
               }
             }),
             canonicalSources,
@@ -745,7 +741,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 }
                 const boundDigests = unique([...(before ? [before] : []), ...referencedDigests])
                 const evidence = mergeDocumentSources([
-                  ...boundDigests.flatMap(doc => [...doc.sourceTokens, ...(doc.correctionSources ?? [])]),
+                  ...boundDigests.flatMap(doc => doc.sourceTokens),
                   ...referencedPlanned.flatMap(item => item.evidence),
                   ...opRefs,
                   ...opRefs.flatMap(ref => questionContexts.get(ref.id) ?? []),
@@ -758,8 +754,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 }
                 const opReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
                 for (const doc of boundDigests) {
-                  for (const read of [...(doc.backing ? [doc.backing] : []), ...doc.supporting]) {
-                    opReadsMap.set(read.id, { id: read.id, revision: read.revision, usageVersion: read.usageVersion })
+                  if (doc.backing) {
+                    opReadsMap.set(doc.backing.id, { id: doc.backing.id, revision: doc.backing.revision, usageVersion: doc.backing.usageVersion })
                   }
                 }
                 for (const item of referencedPlanned) {
@@ -835,52 +831,25 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (!effects.amend(job, { pendingBatch: nextPending })) return
         }
 
-        const committedReads = new Map<string, { id: string, revision: string, usageVersion: number }>()
-        const committedByPath = new Map<string, { id: string, revision: string, usageVersion: number }>()
-        for (const op of persistedOps) {
-          if (!await inputsCurrent()) {
+        const commitOutcome = await commitBatchOperations(workspace, persistedOps, {
+          async verifyOp() {
+            if (await inputsCurrent()) return 'ready'
             clearPendingBatch()
-            retry = true
-            return
-          }
-          const reads = new Map(op.reads.map(ref => [ref.id, committedReads.get(ref.id) ?? ref]))
-          for (const linkedPath of op.linkedPaths) {
-            const committedTarget = committedByPath.get(linkedPath)
-            if (committedTarget) reads.set(committedTarget.id, committedTarget)
-          }
-          try {
-            const receipt = await mutate(() => {
-              const existing = documents.receipt(workspace, op.operationId)
-              if (existing) return existing
-              if (!current()) throw new MemoryDreamStaleError()
-              return documents.commit({
-                operationId: op.operationId, workspace, path: op.path,
-                expectedRevision: op.expectedRevision,
-                markdown: op.markdown, action: op.action,
-                sources: op.sources, reads: [...reads.values()], corrections: [], files: op.files,
-              })
-            })
-            operationsUsed++
-            committedPaths.add(op.path)
-            if (receipt.revision !== null) {
-              const nextRead = { id: receipt.documentId, revision: receipt.revision, usageVersion: receipt.usageVersion }
-              committedReads.set(receipt.documentId, nextRead)
-              committedByPath.set(op.path, nextRead)
-            }
-            committed(receipt)
-            diagnostics.emit({
-              event: 'operation.progress', operation: 'memory.write', stage: 'applied',
-              identities: { requestId: op.operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
-              metrics: { count: op.sources.length },
-            })
-          } catch (error) {
-            if (!effects.holds(job)) return
-            if (isStaleCommitError(error)) clearPendingBatch()
-            else stopPass = true
-            progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'consolidate')
-            retry = true
-            return
-          }
+            progress(job, 'source_changed', 'consolidate')
+            return 'stale'
+          },
+          assertMutateCurrent() {
+            if (!current()) throw new MemoryDreamStaleError()
+          },
+          onCommittedPath(path) {
+            committedPaths.add(path)
+          },
+        })
+        if (commitOutcome === 'cancelled') return
+        if (commitOutcome !== 'done') {
+          if (commitOutcome === 'retry') stopPass = true
+          retry = true
+          return
         }
         if (persistedOps.length > 0) clearPendingBatch()
 

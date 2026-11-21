@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { test } from 'node:test'
 import { createMemoryFileManagement } from '../src/memory/core/memory-file-management.ts'
 import { createMemoryDocumentReadPolicy } from '../src/memory/core/memory-document-read-policy.ts'
-import type { DocumentSnapshot, DocumentUndoCandidate, DocumentSupersession } from '../src/memory/core/ports/documents.ts'
+import type { DocumentSnapshot, DocumentUndoCandidate } from '../src/memory/core/ports/documents.ts'
 import { memoryFileDetail, memoryFileIdentity, memoryFileListRequest, memoryFileListResult } from '../src/memory/contracts/file-management.ts'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -11,11 +11,11 @@ const allow = () => true
 function fixture() {
   const workspace = 'opaque:workspace/value', refs = [{ id: 'source', token: 'private-source-token' }]
   const doc: DocumentSnapshot = { id: 'opaque:digest/value', workspace, path: 'digest/wiki/original.md', revision: 'r1', usageVersion: 1,
-    markdown: '---\nname: Original\n---\nAccepted private body.', sources: refs, enabled: true, corrections: [] }
+    markdown: '---\nname: Original\n---\nAccepted private body.', sources: refs, enabled: true }
   const note = { key: 'internal-session-key', workspace, path: 'daily/2026-11-17/card.md', day: '2026-11-17', revision: 1,
     file_revision: 'daily-r1', fileRevision: 'daily-r1', updatedAt: 1, processed: 0, title: 'Daily',
     markdown: 'Daily body.', document: '---\nname: Daily\n---\nDaily body.' }
-  const docs = [doc], supersessions: DocumentSupersession[] = [], unavailable = new Set<string>(), forgotten = new Set<string>()
+  const docs = [doc], unavailable = new Set<string>(), forgotten = new Set<string>()
   let sourceAllowed = true, candidate: DocumentUndoCandidate | null = { changeId: 'original-change', revision: doc.revision, usageVersion: doc.usageVersion }
   const policy = createMemoryDocumentReadPolicy({ hash,
     notes: { registered: () => [{ ...note, state: 'active', sources: refs }],
@@ -26,7 +26,7 @@ function fixture() {
       registered: () => docs.map(item => ({ ...item, state: forgotten.has(item.id) ? 'forgotten' : item.enabled ? 'active' : 'disabled' })),
       read: (_workspace, path, options) => docs.find(item => item.path === path && !forgotten.has(item.id)
         && !unavailable.has(item.id) && (item.enabled || options?.includeDisabled)) ?? null,
-      sourceRestrictions: () => [], supersessions: (_workspace, path) => supersessions.filter(item => item.path === path),
+      sourceRestrictions: () => [],
     }, refsCurrent: () => sourceAllowed, materialAllowed: () => sourceAllowed,
     reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
   })
@@ -35,7 +35,7 @@ function fixture() {
       ({ id, workspace, path, revision, usageVersion, state: forgotten.has(id) ? 'forgotten' : enabled ? 'active' : 'disabled' })),
   }, workspaces: () => [workspace], hash })
   const identity = { kind: 'digest' as const, workspace, id: doc.id }
-  return { service, policy, doc, docs, refs, note, identity, unavailable, forgotten, supersessions,
+  return { service, policy, doc, docs, refs, note, identity, unavailable, forgotten,
     denySource() { sourceAllowed = false }, setUndo(value: DocumentUndoCandidate | null) { candidate = value } }
 }
 
@@ -46,7 +46,7 @@ test('disabled management details retain authorized accepted content without ena
   const detail = f.service.detail(f.identity, allow)!
   assert.equal(detail.markdown, f.doc.markdown)
   assert.equal(detail.enabled, false)
-  assert.equal(f.service.resolve(f.identity, allow)?.currentMarkdown, null)
+  assert.equal(f.service.resolve(f.identity, allow)?.enabled, false)
   assert.deepEqual(detail.actions, { setEnabled: true, edit: false, forget: true, undo: { changeId: 'original-change' } })
   memoryFileDetail.parse(detail)
 })
@@ -92,21 +92,6 @@ test('daily management advertises no unsupported writes or undo', () => {
   assert.deepEqual(item.actions, { setEnabled: false, edit: false, forget: false, undo: null })
   assert.throws(() => f.service.validate({ action: 'setEnabled', operationId: randomUUID(), identity: item.identity,
     version: item.version, enabled: false }, allow), { code: 'invalid.text' })
-})
-
-test('replacement applicability invalidates management CAS without exposing unavailable replacement identities', () => {
-  const f = fixture(), original = f.service.detail(f.identity, allow)!
-  f.supersessions.push({ sourceDocumentId: f.doc.id, documentId: 'private-replacement', operationId: 'private-correction',
-    replacementRevision: 'replacement-r1', path: f.doc.path, revision: f.doc.revision, startLine: 4, endLine: 4,
-    text: 'Accepted private body.', condition: 'after the move', time: 'from tomorrow' })
-  const changed = f.service.detail(f.identity, allow)!
-  assert.equal(changed.applicability, 'unavailable')
-  assert.equal(changed.version.contentRevision, original.version.contentRevision)
-  assert.notEqual(changed.version.policyToken, original.version.policyToken)
-  assert.ok(!JSON.stringify(changed).includes('private-replacement'))
-  assert.ok(!JSON.stringify(changed).includes('private-correction'))
-  assert.throws(() => f.service.validate({ action: 'setEnabled', operationId: randomUUID(), identity: f.identity,
-    version: original.version, enabled: false }, allow), { code: 'revision.conflict' })
 })
 
 test('list pages are deterministic, redact bodies and tokens, and reject a changed snapshot or filter', () => {

@@ -261,32 +261,6 @@ test('host undo binds the specific semantic edit, survives a stop and does not b
   assert.deepEqual(await f.client.undoFile(command), receipt)
 })
 
-
-test('recovery rejects an old policy after another digest corrects the target without changing its content revision', async t => {
-  const f = await fixture(t), before = (await f.client.readFile(f.identity))!
-  const command = { operationId: randomUUID(), identity: f.identity, version: before.version, enabled: true }
-  const original = f.documents.read(f.identity.workspace, before.path)!
-  const replacement = f.documents.commit({ operationId: randomUUID(), workspace: original.workspace, path: 'digest/wiki/revised-report.md',
-    expectedRevision: null, action: 'CREATE', markdown: 'Draft report', sources: original.sources, reads: [] })
-  f.store.db.exec(`CREATE TRIGGER interrupt_document_receipt BEFORE INSERT ON memory_document_receipts
-    BEGIN SELECT RAISE(ABORT, 'simulated interruption before document receipt'); END`)
-  await assert.rejects(f.client.setFileEnabled(command), /simulated interruption/)
-  f.store.db.exec('DROP TRIGGER interrupt_document_receipt')
-  f.documents.commit({ operationId: randomUUID(), workspace: original.workspace, path: replacement.path,
-    expectedRevision: replacement.revision, action: 'CORRECT', markdown: 'Revised Friday report', sources: original.sources, reads: [],
-    corrections: [{ path: original.path, revision: original.revision, startLine: 1, endLine: 1,
-      text: original.markdown, condition: '', time: '' }] })
-  const corrected = (await f.client.readFile(f.identity))!
-  assert.equal(corrected.version.contentRevision, before.version.contentRevision)
-  assert.equal(corrected.version.usageVersion, before.version.usageVersion)
-  assert.notEqual(corrected.version.policyToken, before.version.policyToken)
-  // The owner replays the document journal inside the authorized command after source recovery.
-  await f.reopen()
-  assert.equal(f.documents.receipt(f.identity.workspace, command.operationId), null)
-  await assert.rejects(f.client.setFileEnabled(command), { code: 'revision.conflict' })
-  assert.equal((await f.owner.handleHost('getOperation', { operationId: command.operationId }) as { state: string }).state, 'failed')
-})
-
 test('restart completes the host outbox once after the document receipt commits and the owner transaction fails', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
   const command = { operationId: randomUUID(), identity: f.identity, version: before.version, enabled: false }
@@ -430,21 +404,6 @@ test('file-mode cleanup stays pending until both host and native owners complete
   assert.ok(f.store.db.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId), 'the immutable plan remains auditable')
   assert.deepEqual(await f.owner.handleHost('pendingHostEffects', {}), [])
 })
-
-test('file profile keeps unrelated lines while withholding a verified superseded fragment', async t => {
-  const f = await fixture(t), original = f.store.readSource(f.sourceId)!
-  const common = { workspace: f.identity.workspace, sources: [{ id: original.id, token: memorySourceToken(original) }], reads: [] }
-  const personal = f.documents.commit({ ...common, operationId: randomUUID(), path: 'digest/personal/drink.md', expectedRevision: null,
-    action: 'CREATE', markdown: 'Schedules drinks for weekends.\nKeeps reports concise.' })
-  const prior = f.documents.commit({ ...common, operationId: randomUUID(), path: 'digest/wiki/new-drink.md', expectedRevision: null,
-    action: 'CREATE', markdown: 'Review the drink schedule' })
-  f.documents.commit({ ...common, operationId: randomUUID(), path: prior.path, expectedRevision: prior.revision, action: 'CORRECT',
-    markdown: 'Schedules drinks for weekdays.', corrections: [{ path: personal.path, revision: personal.revision!, startLine: 1, endLine: 1,
-      text: 'Schedules drinks for weekends.', time: '', condition: '' }] })
-  const profile = await f.client.fileProfile()
-  assert.deepEqual(profile.user, [{ identity: { ...f.identity, id: personal.documentId }, text: 'Keeps reports concise.' }])
-})
-
 
 test('a same-process retry of a prepared stop durably schedules the affected daily rebuild', async t => {
   const f = await fixture(t), before = (await f.client.readFile(f.identity))!
@@ -762,47 +721,17 @@ test('an erased locator is removed from independent Markdown and history across 
   const linked = f.documents.commit({ workspace: f.identity.workspace, operationId: randomUUID(), path: 'digest/wiki/linked.md',
     markdown: `Monday tea. [[${f.created.path}]] [[  ${f.created.path}#original  |retained citation]]\n\n| Source |\n| --- |\n| [[${f.created.path}\\|citation]] |`, action: 'CREATE', expectedRevision: null, reads: [],
     sources: [{ id: source.id, token: memorySourceToken(source), spans: [{ start: 26, end: source.length }] }] })
-  const proof = [{ id: source.id, token: memorySourceToken(source), spans: [{ start: 26, end: source.length }] }]
-  const replacement = { workspace: f.identity.workspace, path: 'digest/wiki/replacement.md', sources: proof, reads: [] }
-  const draft = f.documents.commit({ ...replacement, operationId: randomUUID(), markdown: 'Draft', action: 'CREATE', expectedRevision: null })
-  f.documents.commit({ ...replacement, operationId: randomUUID(), markdown: 'Updated tea', action: 'CORRECT', expectedRevision: draft.revision,
-    corrections: [{ path: linked.path, revision: linked.revision!, startLine: 1, endLine: 1,
-      text: `Monday tea. [[${f.created.path}]] [[  ${f.created.path}#original  |retained citation]]`,
-      condition: `See [[${f.created.path}]]`, time: `After [[${f.created.path}]]` }] })
   const current = (await f.client.readFile(f.identity))!
   await f.resumeOldErasure({ operationId: randomUUID(), identity: f.identity, version: current.version })
   await f.reopen()
   const session = randomUUID()
-  const read = f.owner.runtime.handle({ op: 'file_read', session, id: linked.documentId, evidence: true }, { session, conversation: session })
+  const read = f.owner.runtime.handle({ op: 'file_read', session, id: linked.documentId }, { session, conversation: session })
   assert.match(read, /Monday tea/)
   assert.ok(!read.includes(f.created.path))
   assert.ok(!readFileSync(join(f.store.fileRoot, f.identity.workspace, linked.path), 'utf8').includes(f.created.path))
   const copies = f.store.db.prepare('SELECT before,after FROM memory_document_revisions').all()
   assert.ok(!JSON.stringify(copies).includes(f.created.path))
   assert.equal(f.owner.runtime.cleanupPending(), 0)
-})
-
-test('an escaped locator retained only in correction metadata is physically removed', async t => {
-  const f = await fixture(t), source = f.store.readSource(f.sourceId)!
-  const shared = { workspace: f.identity.workspace, reads: [], sources: [{ id: source.id, token: memorySourceToken(source),
-    spans: [{ start: 26, end: source.length }] }] }
-  const before = f.documents.commit({ ...shared, operationId: randomUUID(), path: 'digest/wiki/tea-before.md', markdown: 'Tea Monday',
-    action: 'CREATE', expectedRevision: null })
-  const after = f.documents.commit({ ...shared, operationId: randomUUID(), path: 'digest/wiki/tea-after.md', markdown: 'Draft',
-    action: 'CREATE', expectedRevision: null })
-  f.documents.commit({ ...shared, operationId: randomUUID(), path: after.path, markdown: 'Tea Tuesday',
-    action: 'CORRECT', expectedRevision: after.revision, corrections: [{ path: before.path, revision: before.revision!, startLine: 1, endLine: 1,
-      text: 'Tea Monday', time: '', condition: `[[${f.created.path}\\|citation]]` }] })
-  const original = (await f.client.readFile(f.identity))!
-  await f.resumeOldErasure({ operationId: randomUUID(), identity: original.identity, version: original.version })
-  await f.reopen()
-  assert.equal(f.owner.runtime.cleanupPending(), 0)
-  const metadata = f.store.db.prepare('SELECT corrections FROM memory_documents WHERE id=?').get(after.documentId)?.corrections
-  assert.ok(!String(metadata).includes(f.created.path))
-  const reader = randomUUID()
-  const packet = f.owner.runtime.handle({ op: 'file_read', session: reader, id: before.documentId, evidence: true }, { session: reader, conversation: reader })
-  assert.match(packet, /Tea Monday/)
-  assert.ok(!packet.includes(f.created.path))
 })
 
 test('manual file writes use the accepted digest, preserve evidence and support idempotent undo', async t => {
@@ -1089,7 +1018,7 @@ test('forgetting erases accepted escaped manual titles and their exact canonical
   assert.match(after.editor?.title ?? '', /^Tea: before +after$/u)
   assert.ok(!JSON.stringify(after).includes(forgotten.path))
   const session = randomUUID()
-  const model = f.owner.runtime.handle({ op: 'file_read', session, id: manual.identity.id, evidence: true }, { session, conversation: session })
+  const model = f.owner.runtime.handle({ op: 'file_read', session, id: manual.identity.id }, { session, conversation: session })
   assert.ok(model.includes(text))
   assert.ok(!model.includes(forgotten.path))
   assert.equal(f.owner.runtime.replaySource(request.operationId, original), false)

@@ -10,7 +10,7 @@ import { MEMORY_READ_BUDGET_MS } from '../src/shared/request-budget.ts'
 const version = (id: string) => ({ contentRevision: `body-${id}`, usageVersion: 4, policyToken: `policy-${id}` })
 const detailOf = (id: string, kind: 'daily' | 'digest' = 'digest'): MemoryFileDetailView => ({
   identity: { kind, id, workspace: 'workspace' }, title: id, path: `${kind}/${id}.md`, version: version(id), enabled: true,
-  applicability: 'current', ...(kind === 'daily' ? { hasProjection: true } : {}),
+  ...(kind === 'daily' ? { hasProjection: true } : {}),
   actions: { setEnabled: true, stop: kind === 'daily', edit: false, forget: false, undo: kind === 'daily' ? null : { changeId: `change-${id}` } },
   markdown: `Body ${id}`, sources: [],
 })

@@ -35,7 +35,6 @@ export interface MemoryStore {
     files(session: string, files: readonly MemoryFileDependency[], sources?: readonly string[]): void
     source(session: string, source: string): void
     turnOnly(session: string): void
-    retireFileClarifications(): void
     snapshot(session: string): MemoryProvenance
   }
   sessionEpoch(id: string): number

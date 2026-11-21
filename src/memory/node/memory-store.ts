@@ -46,7 +46,6 @@ const SCHEMA = `
   CREATE TABLE memory_session_turn_only (session TEXT PRIMARY KEY);
   CREATE TABLE memory_session_file_dependencies (session TEXT NOT NULL, reference TEXT NOT NULL, PRIMARY KEY(session,reference));
   CREATE TABLE memory_session_file_sources (session TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY(session,source));
-  CREATE TABLE memory_session_file_clarifications (session TEXT NOT NULL, work TEXT NOT NULL, PRIMARY KEY(session,work));
   CREATE TABLE memory_session_projects (session TEXT PRIMARY KEY, project TEXT NOT NULL);
 `
 
@@ -203,7 +202,6 @@ export function openMemoryStore(file: string, now = Date.now) {
     },
     source: (session: string, source: string) => insertSessionSource.run(session, source),
     turnOnly: (session: string) => retainTurnOnly.run(session),
-    retireFileClarifications: () => { db.prepare('DELETE FROM memory_session_file_clarifications').run() },
     snapshot(session: string): MemoryProvenance {
       const project = sessionProject(session)
       const files = (readSessionFiles.all(session) as Array<{ reference: string }>).map(row => memoryFileDependencySchema.parse(JSON.parse(row.reference)))

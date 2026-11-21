@@ -23,33 +23,12 @@ export interface DocumentFileRegistration extends DocumentReadRef {
   path: string
   state: 'active' | 'disabled' | 'forgotten'
 }
-/** Exact old fragment and applicability supplied by semantic verification, then checked against the read snapshot. */
-export interface DocumentCorrection {
-  path: string
-  revision: string
-  startLine: number
-  endLine: number
-  text: string
-  condition: string
-  time: string
-}
-export interface DocumentSupersession extends DocumentCorrection {
-  sourceDocumentId: string
-  /** Storage-issued provenance of the old quotation, separate from the replacement's sources. */
-  anchorSources?: DocumentSourceRef[]
-  /** Body-free exclusion after erasing a quotation; applies only where its source still contributes. */
-  erasedAnchorSources?: DocumentSourceRef[]
-  documentId: string
-  replacementRevision: string
-  operationId: string
-}
 export interface DocumentSnapshot extends DocumentReadRef {
   workspace: string
   path: string
   markdown: string
   sources: DocumentSourceRef[]
   enabled: boolean
-  corrections: DocumentSupersession[]
 }
 export interface DocumentCommit {
   operationId: string
@@ -60,7 +39,6 @@ export interface DocumentCommit {
   action: DigestAction
   sources: DocumentSourceRef[]
   reads: DocumentReadRef[]
-  corrections?: DocumentCorrection[]
   files?: Array<{ path: string, revision: string }>
 }
 /** Latest reversible semantic edit; excludes private historical Markdown. */
@@ -95,8 +73,6 @@ export interface MemoryDocuments {
   revisionHistory?(workspace: string, documentId: string, limit?: number): DocumentRevisionEntry[]
   workspaces(): string[]
   indexFile(workspace: string, id: string): { path: string, revision: string, state: 'active' | 'disabled' | 'forgotten' } | null
-  /** Body-free correction edges, including tombstones that still hide an old claim. */
-  indexDependencies(workspace: string): Array<{ replacementId: string, anchorId: string, anchorSourceIds: string[] }>
   deleteFile(workspace: string, id: string, expectedUsageVersion: number): number
   registered(workspace: string): Array<DocumentFileRegistration & { sources: DocumentSourceRef[] }>
   /** Registry metadata for management, including forgotten entries only while a restriction remains. */
@@ -125,5 +101,4 @@ export interface MemoryDocuments {
   /** Caller excludes the canonical source before invoking physical cleanup. */
   withdraw(sourceId: string): string[]
   eraseSource(cut: DocumentSourceCut): string[]
-  supersessions(workspace: string, path: string, options?: { includeEvidence?: boolean, physical?: MemoryPhysicalFile | null }): DocumentSupersession[]
 }
