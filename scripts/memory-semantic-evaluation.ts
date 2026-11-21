@@ -324,7 +324,7 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
               'A personal origin must not read an accepted project file')
           }
           if (snapshot.jobs.some(job => job.error)) throw new Error('Dream model processing failed; see the preserved response')
-          assert.ok(snapshot.jobs.some(job => job.stage === 'dream'), 'The production dream must actually consolidate from the daily result')
+          assert.ok(snapshot.jobs.some(job => job.stage === 'consolidate'), 'The production dream must actually consolidate from the daily result')
           assert.ok(snapshot.files.some(file => file.identity.kind === 'digest' && file.enabled),
             'Required unambiguous facts must reach an accepted current digest; a model success claim is insufficient')
         } catch (error) {
