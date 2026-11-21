@@ -2,7 +2,7 @@ import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentSourceCut, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
+import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentRevisionEntry, DocumentSourceCut, DocumentSourceRef, DocumentReadRef, DocumentCorrection, DocumentSupersession, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { digestPath, memoryFilePath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument, readMemoryLines, memoryDocumentLines } from '../core/memory-document.ts'
 import type { MemorySource } from '../contracts/records.ts'
@@ -739,6 +739,31 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
     }
     return null
   }
+  function revisionHistory(scope: string, id: string, limit = 20): DocumentRevisionEntry[] {
+    workspace(scope)
+    const row = rowById(id)
+    if (!row || row.workspace !== scope || row.forgotten || !row.enabled || !journal.visible(scope, row.path)) return []
+    const capped = Math.max(1, Math.min(limit, 50))
+    const rows = db.prepare('SELECT operation, before, after, at FROM memory_document_revisions WHERE document=? ORDER BY rowid DESC LIMIT ?')
+      .all(id, capped) as Array<{ operation: string, before: string | null, after: string | null, at: number }>
+    const entries: DocumentRevisionEntry[] = []
+    let expectedRevision = row.revision
+    let expectedUsageVersion = row.usage_version
+    for (const item of rows) {
+      if (!item.before || !item.after) break
+      const receipt = readReceipt(scope, item.operation)
+      if (!receipt || receipt.action === 'UNDO' || receipt.action === 'FORGET') break
+      const before = JSON.parse(item.before) as DocumentSnapshot
+      const after = JSON.parse(item.after) as DocumentSnapshot
+      if (before.workspace !== scope || after.workspace !== scope) break
+      if (after.revision !== expectedRevision || after.usageVersion !== expectedUsageVersion) break
+      expectedRevision = before.revision
+      expectedUsageVersion = before.usageVersion
+      if (receipt.action === 'ENABLE' || receipt.action === 'DISABLE') continue
+      entries.push({ operationId: item.operation, at: item.at, before, after })
+    }
+    return entries
+  }
   function currentIdentityPath(scope: string, id: string): string | undefined {
     const document = rowById(id)
     if (document?.workspace === scope) return document.path
@@ -813,7 +838,7 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   }
   if (!deferRecovery) recover()
   return {
-    acceptedSnapshot,
+    acceptedSnapshot, revisionHistory,
     registered: scope => (db.prepare('SELECT * FROM memory_documents WHERE workspace=? ORDER BY id').all(scope) as Row[])
       .map(row => ({ id: row.id, workspace: row.workspace, path: row.path, revision: row.revision,
         usageVersion: row.usage_version, sources: refsOf(row), state: row.forgotten ? 'forgotten' : row.enabled ? 'active' : 'disabled' })),

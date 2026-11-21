@@ -11,5 +11,7 @@ export type { DreamDocumentSnapshot, DreamSearchPage } from './memory-dream-tool
 export type { MemoryDocuments } from './ports/documents.ts'
 
 export { createMemoryDocumentReadPolicy } from './memory-document-read-policy.ts'
+export { traceLineHistory } from './memory-line-history.ts'
+export type { MemoryLineChange, MemoryLineRevision } from './memory-line-history.ts'
 export { parseMemoryMarkdown } from './memory-markdown.ts'
 export type { MemoryFileIndex } from './ports/file-index.ts'

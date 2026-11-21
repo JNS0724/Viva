@@ -29,6 +29,7 @@ export const testLevels = {
     'memory-note-fence',
     'memory-file-passages',
     'memory-file-retrieval',
+    'memory-line-history',
     'memory-file-provenance',
     'memory-document-read-policy',
     'memory-dream',

@@ -84,8 +84,15 @@ export interface DocumentReceipt {
   usageVersion: number
   action: DigestAction | 'UNDO' | 'ENABLE' | 'DISABLE' | 'FORGET'
 }
+export interface DocumentRevisionEntry {
+  operationId: string
+  at: number
+  before: DocumentSnapshot | null
+  after: DocumentSnapshot | null
+}
 export interface MemoryDocuments {
   acceptedSnapshot(workspace: string, id: string): DocumentSnapshot | null
+  revisionHistory?(workspace: string, documentId: string, limit?: number): DocumentRevisionEntry[]
   workspaces(): string[]
   indexFile(workspace: string, id: string): { path: string, revision: string, state: 'active' | 'disabled' | 'forgotten' } | null
   /** Body-free correction edges, including tombstones that still hide an old claim. */

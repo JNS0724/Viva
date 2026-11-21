@@ -7,9 +7,10 @@ import { inspectMemoryDocumentText } from './memory-dream-material.ts'
 import type { DocumentSnapshot, DocumentSourceRef, DocumentSupersession, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
 import { readMemoryLines, memoryDocumentLines } from './memory-document.ts'
+import { traceLineHistory, type MemoryLineChange, type MemoryLineRevision } from './memory-line-history.ts'
 
 type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'>
-type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'projectErasedLocators'>>
+type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions' | 'supersessions'> & Partial<Pick<MemoryDocuments, 'projectErasedLocators' | 'revisionHistory'>>
 type FileLocation = { workspace: string, path: string }
 type PhysicalSnapshot = (workspace: string, path: string) => MemoryPhysicalFile | null
 const locationKey = (workspace: string, path: string) => JSON.stringify([workspace, path])
@@ -316,5 +317,33 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       return view?.policyToken === policyToken && refsCurrent(existing) && materialAllowed(markdown, existing)
     } catch { return false }
   }
-  return { read, readBatch, paths, list, managementRead, managementList, managementCurrent }
+  function lineHistory(workspace: string, view: MemoryDocumentView, startLine: number, endLine: number): MemoryLineChange | null {
+    if (view.kind !== 'digest' || view.applicability.state !== 'current' || !documents.revisionHistory) return null
+    try {
+      const restrictions = documents.sourceRestrictions(workspace)
+      const liveTokens = new Map(view.sourceTokens.map(ref => [ref.id, ref]))
+      const entries = documents.revisionHistory(workspace, view.id, 20)
+      const verified: MemoryLineRevision[] = []
+      let expectedRevision = view.revision
+      for (const entry of entries) {
+        if (!entry.before || !entry.after || entry.after.revision !== expectedRevision) break
+        const beforeRefs = entry.before.sources
+        const covered = beforeRefs.length > 0 && beforeRefs.every(ref => {
+          const live = liveTokens.get(ref.id)
+          if (!live || live.token !== ref.token) return false
+          if (live.spans && (!ref.spans || !ref.spans.every(span => live.spans!.some(parent => parent.start <= span.start && span.end <= parent.end)))) return false
+          return !documentSourceRestricted(ref, restrictions) && !inheritedUseRestricted(ref)
+        })
+        if (!covered || !refsCurrent(beforeRefs)) break
+        const beforeMarkdown = documents.projectErasedLocators?.(workspace, entry.before.markdown) ?? entry.before.markdown
+        const afterMarkdown = documents.projectErasedLocators?.(workspace, entry.after.markdown) ?? entry.after.markdown
+        if (verified.length === 0 && afterMarkdown !== view.markdown) break
+        if (!materialAllowed(beforeMarkdown, beforeRefs)) break
+        verified.push({ at: entry.at, before: beforeMarkdown, after: afterMarkdown })
+        expectedRevision = entry.before.revision
+      }
+      return verified.length ? traceLineHistory(verified, startLine, endLine) : null
+    } catch { return null }
+  }
+  return { read, readBatch, paths, list, managementRead, managementList, managementCurrent, lineHistory }
 }

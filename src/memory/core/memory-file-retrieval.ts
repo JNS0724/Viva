@@ -5,6 +5,7 @@ import { MEMORY_EMBEDDING_BATCH } from '../contracts/embedding.ts'
 import type { MemoryEmbedder, MemoryEmbeddingInput } from '../contracts/embedding.ts'
 import type { MemoryFileDependency } from '../contracts/records.ts'
 import { fileDependency, type MemoryDocumentReadBatch, type MemoryDocumentView } from './memory-document-read-policy.ts'
+import type { MemoryLineChange } from './memory-line-history.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryFileIndex, MemoryFileIdentity, MemoryFileSnapshot, MemoryFileHit, MemoryFileChunkRef, MemoryFileQueryScope, MemoryFileNode } from './ports/file-index.ts'
 import { dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
@@ -20,6 +21,7 @@ export interface FileReadPolicy {
   read(workspace: string, path: string): MemoryDocumentView | null
   list(workspace: string): MemoryDocumentView[]
   readBatch?(signal?: AbortSignal): MemoryDocumentReadBatch | undefined
+  lineHistory?(workspace: string, view: MemoryDocumentView, startLine: number, endLine: number): MemoryLineChange | null
 }
 type Allows = (view: MemoryDocumentView) => boolean
 type FileLookup = {id?:string,workspace?:string,workspaces?: string[],path?:string,allows:Allows}
@@ -37,6 +39,7 @@ export interface FileSearchHit {
   /** Fixed weighted RRF, not confidence. Coverage/diversity order need not descend by score. */
   score: number
   applicability: FileApplicability
+  lineHistory?: MemoryLineChange
 }
 export interface FileSearchResult extends FileReadSet {
   status: 'ok' | 'empty' | 'exhausted' | 'unavailable'
@@ -432,10 +435,20 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       if (!view) continue
       if (checks.incomplete() && !reasons.includes('file-changed')) reasons.push('file-changed')
       if (timedOut()) break
-      const candidate: FileSearchHit = {id:view.id,workspace:view.workspace,path:view.path,revision:view.revision,startLine:hit.startLine,endLine:hit.endLine,
+      const history = view.kind === 'digest'
+        ? policy.lineHistory?.(view.workspace, view, hit.startLine, hit.endLine) ?? undefined
+        : undefined
+      const baseCandidate: FileSearchHit = {id:view.id,workspace:view.workspace,path:view.path,revision:view.revision,startLine:hit.startLine,endLine:hit.endLine,
         text:hit.text,score:hit.score,applicability:applicability(view, request.allows, read)}
+      const candidate: FileSearchHit = history ? { ...baseCandidate, lineHistory: history } : baseCandidate
       if (fits([...hits, candidate])) {
         hits.push(candidate)
+        delivered.push(hit.ref)
+        views.push(view)
+        continue
+      }
+      if (history && fits([...hits, baseCandidate])) {
+        hits.push(baseCandidate)
         delivered.push(hit.ref)
         views.push(view)
         continue
@@ -567,8 +580,11 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const startLine=input.startLine ?? 1, endLine=Math.min(input.endLine ?? lineCount,lineCount)
     const text=readMemoryLines(markdown,startLine,input.endLine)
     if (startLine > lineCount) return null
+    const history = view.kind === 'digest'
+      ? policy.lineHistory?.(view.workspace, view, startLine, endLine) ?? undefined
+      : undefined
     return {id:view.id,workspace:view.workspace,path:view.path,revision:view.revision,startLine,endLine,text,
-      applicability:applicability(view,input.allows,lookup),...readSet([view],lookup)}
+      applicability:applicability(view,input.allows,lookup),...(history ? { lineHistory: history } : {}),...readSet([view],lookup)}
   }
   async function readAsync(input: FileReadInput, batch = policy.readBatch?.(input.signal)) {
     if (!batch || !resolveId) return read(input)

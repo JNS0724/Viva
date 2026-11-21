@@ -669,42 +669,159 @@ test('write-before-read and search-before-create guards reject uninspected opera
   assert.ok(h.documents.read(workspace, 'digest/wiki/existing.md')!.markdown.includes('Original with extra note.'))
 })
 
-test('reaching dreamUnits cap only checkpoints covered daily notes and retries remaining notes', async t => {
+test('reaching dreamUnits cap defers checkpointing even for a single multi-topic daily note until a pass finishes below the cap', async t => {
   const h = harness(t, { units: 1 })
-  const first = h.add('Alpha topic: use strict lint rules.', 'Alpha')
-  const second = h.add('Beta topic: rotate keys monthly.', 'Beta')
+  const note = h.add('Alpha topic: use strict lint rules. Beta topic: rotate keys monthly.', 'DailyTopics')
   let calls = 0
   h.setModel(async request => {
     calls++
-    const input = request.input as { maxOperations: number, existingDigestCount: number, notes: Array<{ path: string, title: string, sourceIds: string[] }> }
+    const input = request.input as { maxOperations: number, existingDigestCount: number, notes: Array<{ path: string, sourceIds: string[] }> }
     assert.equal(input.maxOperations, 1)
     if (input.existingDigestCount > 0) {
-      await request.tools!.executeTool({ callId: `s-${calls}`, name: 'node_search', input: { query: input.notes[0]!.title } })
+      await request.tools!.executeTool({ callId: `s-${calls}`, name: 'node_search', input: { query: 'topic' } })
     }
     const target = input.notes[0]!
-    return JSON.stringify({
-      operations: [{
-        action: 'CREATE',
-        path: `digest/wiki/${target.title.toLowerCase()}.md`,
-        name: target.title,
-        description: `${target.title} rule`,
-        body: `${target.title} summary.`,
-        dailyPaths: [target.path],
-        sourceIds: target.sourceIds,
-      }],
-    })
+    if (calls === 1) {
+      return JSON.stringify({
+        operations: [{
+          action: 'CREATE',
+          path: 'digest/wiki/alpha.md',
+          name: 'Alpha',
+          description: 'Alpha lint rule',
+          body: 'Use strict lint rules.',
+          dailyPaths: [target.path],
+          sourceIds: target.sourceIds,
+        }],
+      })
+    }
+    if (calls === 2) {
+      return JSON.stringify({
+        operations: [{
+          action: 'CREATE',
+          path: 'digest/wiki/beta.md',
+          name: 'Beta',
+          description: 'Beta key rotation',
+          body: 'Rotate keys monthly.',
+          dailyPaths: [target.path],
+          sourceIds: target.sourceIds,
+        }],
+      })
+    }
+    return JSON.stringify({ operations: [] })
   })
+
   await h.run()
   assert.equal(calls, 1)
   assert.equal(h.status().state, 'retry')
-  assert.equal(h.documents.list(first.note.workspace).length, 1)
-  const pending = h.notes.changedFiles('2026-11-15', '2026-11-16')
-  assert.equal(pending.length, 1)
-  assert.ok([first.key, second.key].includes(pending[0]!.key))
+  assert.equal(h.documents.list(note.note.workspace).length, 1)
+  // Single daily file must stay uncheckpointed because the pass hit maxOperations.
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
 
   await h.retry()
   assert.equal(calls, 2)
+  assert.equal(h.status().state, 'retry')
+  assert.equal(h.documents.list(note.note.workspace).length, 2)
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
+
+  await h.retry()
+  assert.equal(calls, 3)
   assert.equal(h.status().state, 'idle')
-  assert.equal(h.documents.list(first.note.workspace).length, 2)
+  assert.equal(h.documents.list(note.note.workspace).length, 2)
   assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+})
+
+test('partial commit failure in a multi-op batch resumes idempotently across restart without re-invoking the model', async t => {
+  let failSecondCommit = true
+  let mutateCalls = 0
+  const h = harness(t, {
+    mutate: async work => {
+      mutateCalls++
+      if (failSecondCommit && mutateCalls === 2) {
+        failSecondCommit = false
+        throw new Error('transient-disk-busy')
+      }
+      return work()
+    },
+  })
+  const first = h.add('Alpha topic and Beta topic linked together.', 'Combined')
+  const receipts: DocumentReceipt[] = []
+  h.afterCommit(receipt => { receipts.push(receipt) })
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    const dailyPaths = [input.notes[0]!.path]
+    const sourceIds = input.notes[0]!.sourceIds
+    return JSON.stringify({
+      operations: [
+        {
+          action: 'CREATE', path: 'digest/wiki/alpha.md', name: 'Alpha', description: 'Alpha guide',
+          body: 'Alpha rules.', dailyPaths, sourceIds,
+        },
+        {
+          action: 'CREATE', path: 'digest/wiki/beta.md', name: 'Beta', description: 'Beta guide',
+          body: 'Beta depends on [[digest/wiki/alpha.md]].', dailyPaths, sourceIds,
+        },
+      ],
+    })
+  })
+
+  await h.run()
+  assert.equal(h.requests.length, 1)
+  assert.equal(h.status().state, 'retry')
+  assert.equal(receipts.length, 1)
+  assert.equal(h.documents.read(first.note.workspace, 'digest/wiki/alpha.md')?.enabled, true)
+  assert.equal(h.documents.read(first.note.workspace, 'digest/wiki/beta.md'), null)
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
+
+  // Simulate process restart before retrying: pendingBatch must resume Op 2 via receipts without re-calling the LLM.
+  h.restart()
+  await h.retry()
+  assert.equal(h.requests.length, 1, 'resuming pendingBatch must not re-invoke the LLM')
+  assert.equal(h.status().state, 'idle')
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.equal(receipts.length, 2)
+  assert.equal(h.documents.read(first.note.workspace, 'digest/wiki/alpha.md')?.enabled, true)
+  assert.equal(h.documents.read(first.note.workspace, 'digest/wiki/beta.md')?.enabled, true)
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+})
+
+test('withdraw scrubs a persisted pendingBatch while Dream is sleeping for retry', async t => {
+  let failSecondCommit = true
+  let mutateCalls = 0
+  const h = harness(t, {
+    mutate: async work => {
+      mutateCalls++
+      if (failSecondCommit && mutateCalls === 2) {
+        failSecondCommit = false
+        throw new Error('transient-disk-busy')
+      }
+      return work()
+    },
+  })
+  const note = h.add('Private phrase banana-secret-42.', 'SecretTopic')
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    const dailyPaths = [input.notes[0]!.path]
+    const sourceIds = input.notes[0]!.sourceIds
+    return JSON.stringify({
+      operations: [
+        { action: 'CREATE', path: 'digest/wiki/one.md', name: 'One', description: 'One', body: 'banana-secret-42 part one.', dailyPaths, sourceIds },
+        { action: 'CREATE', path: 'digest/wiki/two.md', name: 'Two', description: 'Two', body: 'banana-secret-42 part two.', dailyPaths, sourceIds },
+      ],
+    })
+  })
+
+  await h.run()
+  assert.equal(h.status().state, 'retry')
+  const beforeRow = h.store.db.prepare("SELECT payload FROM effects WHERE kind='memory.dream' AND key='daily'").get() as { payload: string }
+  assert.ok(beforeRow.payload.includes('banana-secret-42'))
+
+  h.store.withdrawSource(note.source.id)
+  h.documents.withdraw(note.source.id)
+  h.notes.withdraw(note.source.id)
+  h.withdraw(note.source.id)
+
+  const afterRow = h.store.db.prepare("SELECT payload FROM effects WHERE kind='memory.dream' AND key='daily'").get() as { payload: string }
+  assert.equal(afterRow.payload.includes('banana-secret-42'), false)
+  await h.retry()
+  assert.equal(h.documents.read(note.note.workspace, 'digest/wiki/two.md'), null)
 })

@@ -1166,9 +1166,14 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
 
   function retainFileReadPacket(session: string, result: NonNullable<ReturnType<NonNullable<typeof fileRetrieval>['read']>>) {
     const { files, sourceIds, ...content } = result
-    if (textOf(content).length > MAX_DEEP_RECALL_CHARS) return textOf({ status: 'rejected', reason: 'narrow-line-range' })
+    let packet: Record<string, unknown> = content
+    if (textOf(packet).length > MAX_DEEP_RECALL_CHARS && 'lineHistory' in content && content.lineHistory !== undefined) {
+      const { lineHistory: _omitted, ...plain } = content
+      packet = plain
+    }
+    if (textOf(packet).length > MAX_DEEP_RECALL_CHARS) return textOf({ status: 'rejected', reason: 'narrow-line-range' })
     retainFileReads(session, { files, sourceIds })
-    return textOf({ status: 'ok', ...content })
+    return textOf({ status: 'ok', ...packet })
   }
   function retainNodeSearchPacket(session: string, result: ReturnType<NonNullable<typeof fileRetrieval>['nodeSearch']>) {
     const { files, sourceIds, nodes, partial } = result
