@@ -7,7 +7,7 @@ import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, inHistory?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, inHistory?: boolean, plainChunk?: boolean, skipReplay?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -34,8 +34,11 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     const origin = contextOf(event)
     if (origin && belongsTo(event, origin) && isConversationEvent(event)) {
       const json = JSON.stringify(event), size = Math.max(json.length * 2, Buffer.byteLength(json)) + 128
+      const update = event.type === 'update' && event.update && typeof event.update === 'object' ? event.update as Record<string, unknown> : null
+      const plainChunk = update?.sessionUpdate === 'agent_message_chunk'
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
-        reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined, bytes: size })
+        reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
+        ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
         const removed = held.shift()!
@@ -69,6 +72,12 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       latest.inHistory = true
     }
   }
+  /** Exclude already-persisted plain assistant chunks from mid-turn replay while retaining tool/question/thought events. */
+  function markPlainPersisted(conversationId: string) {
+    for (const row of held) {
+      if (row.plainChunk && row.routing.context.conversationId === conversationId) row.skipReplay = true
+    }
+  }
   function snapshot(conversationId: string, context: ConversationContext, stopped = false) {
     const cutoff = watermark('save', conversationId)
     if (cutoff < Math.max(loss(key(context.sessionId, context.conversationId)), loss(key(context.sessionId, null)))) {
@@ -78,10 +87,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       throw new Error('Conversation stream has an unreplayable gap')
     }
     return { streamGeneration, cutoverCursor: eventCursor,
-      replay: held.filter(row => row.cursor > cutoff && belongsTo(row.routing, context)).map(row => {
+      replay: held.filter(row => !row.skipReplay && row.cursor > cutoff && belongsTo(row.routing, context)).map(row => {
         const parsed = JSON.parse(row.json) as Record<string, unknown>
         return row.inHistory ? { ...parsed, inHistory: true } : parsed
       }) }
   }
-  return { send, checkpoint, markLatestPersisted, snapshot }
+  return { send, checkpoint, markLatestPersisted, markPlainPersisted, snapshot }
 }

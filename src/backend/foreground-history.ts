@@ -19,6 +19,7 @@ export interface ForegroundHistoryDeps {
   sourceSession: () => string | null
   checkpoint?: (conversationId: string) => void
   markLatestPersisted?: (conversationId: string, type: string) => void
+  markPlainPersisted?: (conversationId: string) => void
   delegatedDuringTurn?: (startedAt: number, endedAt: number) => boolean
   onError?: (error: unknown) => void
   now?: () => number
@@ -33,6 +34,8 @@ interface Asked {
 
 interface ActiveTurn {
   conversationId: string
+  conversation: Conversation
+  sessionId: string | null
   by: string | null
   startedAt: number
   tools: number
@@ -47,9 +50,11 @@ interface ActiveTurn {
 }
 
 interface PendingWrite {
-  conversationId: string
+  conversation: Conversation
   ops: HistoryMessageMutation[]
-  session?: string | null
+  session: string | null
+  checkpointPending: boolean
+  plainPersistedPending: boolean
 }
 
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object'
@@ -100,17 +105,21 @@ export function createForegroundHistory({
   sourceSession,
   checkpoint,
   markLatestPersisted,
+  markPlainPersisted,
   delegatedDuringTurn,
   onError = () => {},
   now = Date.now,
 }: ForegroundHistoryDeps) {
   let active: ActiveTurn | null = null
-  let pendingWrite: PendingWrite | null = null
+  const pendingWrites = new Map<string, PendingWrite>()
   const pendingQuestions = new Map<string, Asked>()
+  let retrying = false
 
-  function newTurn(conversationId: string, by: string | null = null): ActiveTurn {
+  function newTurn(conversationId: string, by: string | null = null, sessionId: string | null = sourceSession()): ActiveTurn {
     return {
       conversationId,
+      conversation: current(),
+      sessionId,
       by,
       startedAt: now(),
       tools: 0,
@@ -125,8 +134,9 @@ export function createForegroundHistory({
     }
   }
 
-  function ensureTurn(conversationId: string): ActiveTurn {
-    if (!active || active.conversationId !== conversationId) active = newTurn(conversationId)
+  function ensureTurn(conversationId: string, sessionId: string | null = sourceSession()): ActiveTurn {
+    if (!active || active.conversationId !== conversationId) active = newTurn(conversationId, null, sessionId)
+    else if (sessionId) active.sessionId = sessionId
     return active
   }
 
@@ -150,29 +160,87 @@ export function createForegroundHistory({
     return ops
   }
 
-  function persist(ops: readonly HistoryMessageMutation[], sessionOverride?: string | null): { ok: boolean, saved: Conversation | null } {
+  function queuePending(conversation: Conversation, ops: readonly HistoryMessageMutation[], session: string | null, flags: { checkpointPending?: boolean, plainPersistedPending?: boolean } = {}) {
+    const prior = pendingWrites.get(conversation.id)
+    pendingWrites.set(conversation.id, {
+      conversation,
+      ops: prior ? [...prior.ops, ...ops] : [...ops],
+      session: session ?? prior?.session ?? null,
+      checkpointPending: Boolean(prior?.checkpointPending || flags.checkpointPending),
+      plainPersistedPending: Boolean(prior?.plainPersistedPending || flags.plainPersistedPending),
+    })
+  }
+
+  function retryPending(excludeId?: string): boolean {
+    if (retrying) return pendingWrites.size === 0
+    retrying = true
+    try {
+      const selectedId = current().id
+      // If a conversation switch happened while an active turn held buffered plain text, preserve it for its own conversation.
+      if (active && active.conversationId !== selectedId) {
+        const stale = active
+        active = null
+        const staleOps = drainPlainOps(stale)
+        if (staleOps.length) queuePending(stale.conversation, staleOps, stale.sessionId, { plainPersistedPending: true })
+      }
+      for (const [id, entry] of [...pendingWrites]) {
+        if (id === excludeId) continue
+        try {
+          const saved = commit(entry.conversation, entry.ops, { sourceSession: entry.session })
+          pendingWrites.delete(id)
+          if (current().id === saved.id) setCurrent(saved)
+          if (entry.plainPersistedPending) markPlainPersisted?.(saved.id)
+          if (entry.checkpointPending) checkpoint?.(saved.id)
+        } catch (error) {
+          onError(error)
+        }
+      }
+      return pendingWrites.size === 0
+    } finally {
+      retrying = false
+    }
+  }
+
+  function persist(
+    ops: readonly HistoryMessageMutation[],
+    sessionOverride?: string | null,
+    { plainPersisted = false, deferCheckpoint = false }: { plainPersisted?: boolean, deferCheckpoint?: boolean } = {},
+  ): { ok: boolean, saved: Conversation | null } {
     const base = current()
-    const carried = pendingWrite?.conversationId === base.id ? pendingWrite : null
-    if (pendingWrite && !carried) pendingWrite = null
+    // Best-effort retry any failed writes belonging to other conversations without dropping them.
+    if (pendingWrites.size > 0) retryPending(base.id)
+    const carried = pendingWrites.get(base.id)
     const allOps = carried ? [...carried.ops, ...ops] : [...ops]
-    if (!allOps.length) return { ok: true, saved: null }
+    const shouldMarkPlain = Boolean(plainPersisted || carried?.plainPersistedPending)
+    const shouldCheckpoint = Boolean(deferCheckpoint || carried?.checkpointPending)
+    if (!allOps.length) {
+      if (carried) pendingWrites.delete(base.id)
+      if (shouldMarkPlain) markPlainPersisted?.(base.id)
+      if (shouldCheckpoint) checkpoint?.(base.id)
+      return { ok: true, saved: null }
+    }
+    const { mode, model } = agentInfo()
+    const target: Conversation = { ...base, mode: mode ?? base.mode, model: model ?? base.model }
     const session = sessionOverride !== undefined
       ? sessionOverride
       : carried?.session !== undefined
         ? carried.session
         : sourceSession()
     try {
-      const { mode, model } = agentInfo()
-      const saved = commit(
-        { ...base, mode: mode ?? base.mode, model: model ?? base.model },
-        allOps,
-        { sourceSession: session },
-      )
-      pendingWrite = null
+      const saved = commit(target, allOps, { sourceSession: session })
+      pendingWrites.delete(base.id)
       if (current().id === saved.id) setCurrent(saved)
+      if (shouldMarkPlain) markPlainPersisted?.(saved.id)
+      if (shouldCheckpoint) checkpoint?.(saved.id)
       return { ok: true, saved }
     } catch (error) {
-      pendingWrite = { conversationId: base.id, ops: allOps, session }
+      pendingWrites.set(base.id, {
+        conversation: target,
+        ops: allOps,
+        session,
+        checkpointPending: shouldCheckpoint,
+        plainPersistedPending: shouldMarkPlain,
+      })
       onError(error)
       return { ok: false, saved: null }
     }
@@ -185,35 +253,36 @@ export function createForegroundHistory({
     advanceCheckpoint?: boolean
   }) {
     const selected = current()
-    const ops: HistoryMessageMutation[] = []
-    if (active?.conversationId === selected.id) ops.push(...drainPlainOps(active))
-    ops.push({
-      kind: 'append_user',
-      message: {
-        role: 'user',
-        text,
-        receipt: null,
-        ...(images?.length ? { images: [...images] } : {}),
-        ...(sourceId ? { sourceId } : {}),
+    const plain = active?.conversationId === selected.id ? drainPlainOps(active) : []
+    const ops: HistoryMessageMutation[] = [
+      ...plain,
+      {
+        kind: 'append_user',
+        message: {
+          role: 'user',
+          text,
+          receipt: null,
+          ...(images?.length ? { images: [...images] } : {}),
+          ...(sourceId ? { sourceId } : {}),
+        },
       },
-    })
-    const result = persist(ops)
-    if (result.ok && result.saved && advanceCheckpoint) checkpoint?.(result.saved.id)
+    ]
+    const result = persist(ops, undefined, { plainPersisted: plain.length > 0, deferCheckpoint: advanceCheckpoint })
     return result.saved
   }
 
   function userSteer({ text, sourceId }: { text: string, sourceId?: string }) {
     const selected = current()
-    const ops: HistoryMessageMutation[] = []
-    if (active?.conversationId === selected.id) {
-      ops.push(...drainPlainOps(active))
-      active.lastTurnMessage = { role: 'user' }
-    }
-    ops.push({
-      kind: 'append_user',
-      message: { role: 'user', text, receipt: null, ...(sourceId ? { sourceId } : {}) },
-    })
-    return persist(ops).saved
+    const plain = active?.conversationId === selected.id ? drainPlainOps(active) : []
+    if (active?.conversationId === selected.id) active.lastTurnMessage = { role: 'user' }
+    const ops: HistoryMessageMutation[] = [
+      ...plain,
+      {
+        kind: 'append_user',
+        message: { role: 'user', text, receipt: null, ...(sourceId ? { sourceId } : {}) },
+      },
+    ]
+    return persist(ops, undefined, { plainPersisted: plain.length > 0 }).saved
   }
 
   function eventContext(event: RecordValue): { conversationId: string, sessionId: string | null } | null {
@@ -247,12 +316,13 @@ export function createForegroundHistory({
     const text = blocks.filter(block => block.type === 'text' && Boolean(str(block.text))).map(block => str(block.text)).join('')
     const beforeKey = isRecord(update.before) && str(update.before.text) ? str(update.before.text) : undefined
     if (text) {
+      const plain = drainPlainOps(turn)
       const ops: HistoryMessageMutation[] = [
-        ...drainPlainOps(turn),
+        ...plain,
         { kind: 'upsert_assistant', message: { role: 'assistant', text, receipt: null, key }, ...(beforeKey ? { beforeKey } : {}) },
       ]
       // Track the settled stream in the logical turn even if commit fails so retries and turn_end stay ordered.
-      persist(ops, sessionId)
+      persist(ops, sessionId, { plainPersisted: plain.length > 0 })
       turn.persistedStreamKeys.add(key)
       if (!beforeKey || !turn.lastTurnMessage || (turn.lastTurnMessage.role === 'assistant' && turn.lastTurnMessage.key === key)) {
         turn.lastTurnMessage = { role: 'assistant', text, key }
@@ -319,9 +389,9 @@ export function createForegroundHistory({
       case 'turn_started': {
         if (active?.conversationId === ctx.conversationId) {
           const left = drainPlainOps(active)
-          if (left.length) persist(left, session)
+          if (left.length) persist(left, session, { plainPersisted: true })
         }
-        active = newTurn(ctx.conversationId, typeof raw.by === 'string' ? raw.by : null)
+        active = newTurn(ctx.conversationId, typeof raw.by === 'string' ? raw.by : null, session)
         return
       }
       case 'permission': {
@@ -365,22 +435,20 @@ export function createForegroundHistory({
             },
           }))
           : [{ kind: 'append_user' as const, message: { role: 'user' as const, text: answerText(asked.questions, answers), receipt: null, ...(sourceId ? { sourceId } : {}) } }]
-        const ops: HistoryMessageMutation[] = [
-          ...(active?.conversationId === ctx.conversationId ? drainPlainOps(active) : []),
-          ...replies,
-        ]
+        const plain = active?.conversationId === ctx.conversationId ? drainPlainOps(active) : []
+        const ops: HistoryMessageMutation[] = [...plain, ...replies]
         if (active?.conversationId === ctx.conversationId) active.lastTurnMessage = { role: 'user' }
-        const res = persist(ops, session)
+        const res = persist(ops, session, { plainPersisted: plain.length > 0 })
         if (res.ok && res.saved) markLatestPersisted?.(ctx.conversationId, 'question_answered')
         return
       }
       case 'update': {
-        const turn = ensureTurn(ctx.conversationId)
+        const turn = ensureTurn(ctx.conversationId, session)
         handleUpdate(turn, raw.update, session)
         return
       }
       case 'turn_end': {
-        const turn = active?.conversationId === ctx.conversationId ? active : newTurn(ctx.conversationId)
+        const turn = active?.conversationId === ctx.conversationId ? active : newTurn(ctx.conversationId, null, session)
         active = null
         closePlain(turn)
         const endedAt = now()
@@ -404,8 +472,7 @@ export function createForegroundHistory({
           } else {
             ops.push(...drainPlainOps(turn))
           }
-          const res = persist(ops, session)
-          if (res.ok) checkpoint?.(ctx.conversationId)
+          persist(ops, session, { deferCheckpoint: true })
           return
         }
         const delegated = delegatedDuringTurn?.(turn.startedAt, endedAt) ?? false
@@ -420,8 +487,7 @@ export function createForegroundHistory({
           const text = problem ?? (receipt.stopReason === 'cancelled' ? t('state.this.turn.was.stopped') : t('state.no.text.response.this.turn'))
           ops.push({ kind: 'append_note', message: { role: 'note', text, receipt } })
         }
-        const res = persist(ops, session)
-        if (res.ok) checkpoint?.(ctx.conversationId)
+        persist(ops, session, { deferCheckpoint: true })
         return
       }
       case 'error': {
@@ -431,25 +497,31 @@ export function createForegroundHistory({
           active = null
           ops = drainPlainOps(turn)
         }
-        const res = persist(ops, session)
-        if (res.ok) checkpoint?.(ctx.conversationId)
+        persist(ops, session, { deferCheckpoint: true })
       }
     }
   }
 
   function flush() {
     const selected = current()
-    const ops = active?.conversationId === selected.id ? drainPlainOps(active) : []
-    active = null
-    return persist(ops).ok
+    if (active) {
+      const turn = active
+      active = null
+      const ops = drainPlainOps(turn)
+      if (turn.conversationId === selected.id) {
+        persist(ops, turn.sessionId, { plainPersisted: ops.length > 0 })
+      } else if (ops.length) {
+        queuePending(turn.conversation, ops, turn.sessionId, { plainPersistedPending: true })
+      }
+    }
+    return retryPending()
   }
 
   function reset() {
     active = null
-    pendingWrite = null
     pendingQuestions.clear()
   }
 
-  return { userPrompt, userSteer, receive, flush, reset }
+  return { userPrompt, userSteer, receive, flush, retryPending, reset, hasPendingWrites: () => pendingWrites.size > 0 }
 }
 export type ForegroundHistory = ReturnType<typeof createForegroundHistory>

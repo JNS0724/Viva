@@ -254,6 +254,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
     changed: () => {
+      foregroundHistory?.retryPending()
       wakeEffects()
       syncProjectView()
     },
@@ -1685,6 +1686,7 @@ ${question}` : question
       sourceSession: () => rendererContext().sessionId,
       checkpoint: conversationId => rendererStream.checkpoint(conversationId),
       markLatestPersisted: (conversationId, type) => rendererStream.markLatestPersisted(conversationId, type),
+      markPlainPersisted: conversationId => rendererStream.markPlainPersisted(conversationId),
       delegatedDuringTurn: (startedAt, endedAt) => {
         const list = taskStore?.list() ?? []
         const recordsList = historyDb.recordsOf(sessions.current().id)

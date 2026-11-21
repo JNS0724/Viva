@@ -55,19 +55,32 @@ export const OPENED_TOPIC_MAX = 100
 const fillers = new WeakMap<HTMLDetailsElement, () => void>()
 
 /** The rows an opened topic draws: its latest OPENED_TOPIC_MAX messages, with a line to read the rest in 回顾. */
-function openedRows(rows: readonly EarlierRow[], handlers: Handlers, cachedRows: (rows: readonly EarlierRow[]) => View[]): View[] {
+function openedRows(rows: readonly EarlierRow[], handlers: Handlers, cachedRows: (rows: readonly EarlierRow[]) => View[], block: TopicBlock): View[] {
   const messages = rows.filter((row): row is RowOf<'message'> => row.kind === 'message')
-  if (messages.length <= OPENED_TOPIC_MAX) return cachedRows(rows)
-  const first = messages[messages.length - OPENED_TOPIC_MAX]
-  const hidden = messages.length - OPENED_TOPIC_MAX
-  // Read in 回顾 from the last one not drawn here, so reading on there goes on from where this part starts.
-  const place = rowPlace(messages[hidden - 1].id)
+  const hiddenOffset = block.segments.reduce((sum, segment) => sum + (segment.offset ?? 0), 0)
+  if (messages.length <= OPENED_TOPIC_MAX && hiddenOffset === 0) return cachedRows(rows)
+  if (messages.length > OPENED_TOPIC_MAX) {
+    const first = messages[messages.length - OPENED_TOPIC_MAX]
+    const trimmedLocal = messages.length - OPENED_TOPIC_MAX
+    const hidden = hiddenOffset + trimmedLocal
+    // Read in 回顾 from the last one not drawn here, so reading on there goes on from where this part starts.
+    const place = rowPlace(messages[trimmedLocal - 1].id)
+    return [
+      h('button', {
+        class: 'timeline-more topic-rest', type: 'button', text: t("topic.earlier.messages", { p0: hidden }),
+        onClick: () => place && handlers.jumpToHit(place),
+      }),
+      ...cachedRows(rows.slice(rows.indexOf(first))),
+    ]
+  }
+  const trimmedSegment = block.segments.find((segment) => (segment.offset ?? 0) > 0)
+  const place = trimmedSegment ? { segmentId: trimmedSegment.id, seq: (trimmedSegment.offset ?? 1) - 1 } : null
   return [
     h('button', {
-      class: 'timeline-more topic-rest', type: 'button', text: t("topic.earlier.messages", { p0: hidden }),
+      class: 'timeline-more topic-rest', type: 'button', text: t("topic.earlier.messages", { p0: hiddenOffset }),
       onClick: () => place && handlers.jumpToHit(place),
     }),
-    ...cachedRows(rows.slice(rows.indexOf(first))),
+    ...cachedRows(rows),
   ]
 }
 
@@ -210,7 +223,7 @@ export function renderEarlier(container: HTMLElement, state: State, handlers: Ha
     const day = leadingDay(grouped[i])
     const views = hit ? previous.views : block.remembered
       ? cachedRows(grouped[i])
-      : [...cachedRows(grouped[i].slice(0, day)), oldTopic(block, () => openedRows(grouped[i].slice(day), handlers, cachedRows), handlers, options)]
+      : [...cachedRows(grouped[i].slice(0, day)), oldTopic(block, () => openedRows(grouped[i].slice(day), handlers, cachedRows, block), handlers, options)]
     blockCache.set(key, { inputs, views })
     return views
   })

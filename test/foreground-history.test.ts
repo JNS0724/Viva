@@ -318,6 +318,7 @@ test('silent task turns persist earlier plain assistant segments and drop only t
 
   failWrites = false
   assert.equal(writer.flush(), true)
+  assert.equal(checkpoints, 1, 'deferred checkpoint advances once retry succeeds')
   assert.deepEqual(committedTexts, ['先看一下任务输出'])
 
   // Normal silent task with earlier plain segment persists earlier text and advances checkpoint
@@ -329,7 +330,128 @@ test('silent task turns persist earlier plain assistant segments and drop only t
     { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
   ]
   for (const event of nextEvents) { stream.send(event); writer.receive(event) }
-  assert.equal(checkpoints, 1)
+  assert.equal(checkpoints, 2)
   assert.deepEqual(committedTexts, ['先看一下任务输出', '第二段可见说明'])
   assert.deepEqual(stream.snapshot(current.id, context).replay, [])
+})
+
+test('pending writes survive conversation switches and reset until committed for their own conversation', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let convA: Conversation = history.create({ sessionId: 's-a', mode: 'live', model: 'V4', cwd: '/w' })
+  const convB: Conversation = history.create({ sessionId: 's-b', mode: 'live', model: 'V4', cwd: '/w' })
+  let current: Conversation = convA
+  let failWrites = false
+  const checkpointed: string[] = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops, options) => {
+      if (failWrites) throw new Error('disk full')
+      return history.commit(conv, ops, options)
+    },
+    current: () => current,
+    setCurrent: next => {
+      if (current.id === next.id) current = next
+      if (convA.id === next.id) convA = next
+    },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    checkpoint: id => { checkpointed.push(id); stream.checkpoint(id) },
+    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    markPlainPersisted: id => stream.markPlainPersisted(id),
+    onError: () => {},
+  })
+
+  // Conversation A fails to persist its reply at turn_end
+  const ctxA = { conversationId: convA.id, sessionId: 's-a' }
+  writer.userPrompt({ text: 'A 的问题', advanceCheckpoint: true })
+  failWrites = true
+  history.bindGeneratedCopy('s-a', 'k-a', 'assistant', 'A 的回复', [{ sources: [], fileRanges: [] }])
+  for (const event of [
+    { type: 'turn_started', by: 'user', context: ctxA },
+    { type: 'update', context: ctxA, update: { sessionUpdate: 'viva_stream', key: 'k-a', kind: 'settle', blocks: [{ type: 'text', text: 'A 的回复' }] } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context: ctxA },
+  ]) { stream.send(event); writer.receive(event) }
+  assert.equal(writer.hasPendingWrites(), true)
+  assert.equal(history.get(convA.id)!.messages.length, 1)
+
+  // Switching to Conversation B and calling reset() must NOT drop A's pending writes
+  current = convB
+  writer.reset()
+  assert.equal(writer.hasPendingWrites(), true)
+  assert.equal(writer.retryPending(), false, 'still failing while disk is full')
+  assert.equal(writer.hasPendingWrites(), true)
+
+  // Once disk recovers, writing to Conversation B also retries and commits Conversation A + advances A's checkpoint
+  failWrites = false
+  writer.userPrompt({ text: 'B 的问题', advanceCheckpoint: true })
+  assert.equal(writer.hasPendingWrites(), false)
+  assert.deepEqual(history.get(convA.id)!.messages.map(m => m.text), ['A 的问题', 'A 的回复'])
+  assert.equal(history.get(convA.id)!.messages[1]?.receipt?.stopReason, 'end_turn')
+  assert.deepEqual(history.get(convB.id)!.messages.map(m => m.text), ['B 的问题'])
+  assert.equal(checkpointed.filter(id => id === convA.id).length, 2, 'deferred checkpoint for A fires on retry success')
+  assert.deepEqual(stream.snapshot(convA.id, ctxA).replay, [])
+})
+
+test('mid-turn plain text persisted before question_answered or userSteer is excluded from reload replay', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-mid', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-mid' }
+  let failWrites = false
+  const committed: string[] = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops) => {
+      if (failWrites) throw new Error('disk full')
+      for (const op of ops) {
+        if (op.kind === 'upsert_assistant' || op.kind === 'append_user') committed.push(`${op.message.role}:${op.message.text}`)
+      }
+      return conv
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    checkpoint: id => stream.checkpoint(id),
+    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    markPlainPersisted: id => stream.markPlainPersisted(id),
+    onError: () => {},
+  })
+
+  // Plain assistant text -> tool_call -> question -> question_answered
+  const turnStart = { type: 'turn_started', by: 'user', context }
+  const plain1 = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '先确认城市' } } }
+  const tool1 = { type: 'update', context, update: { sessionUpdate: 'tool_call', toolCallId: 'tc-1', title: 'Lookup' } }
+  const q1 = { type: 'question', questionId: 'q-mid', questions: [{ id: 'city', question: '哪个城市？' }], context }
+  const ans1 = { type: 'question_answered', questionId: 'q-mid', answers: [{ id: 'city', selected: ['上海'] }], context }
+  for (const event of [turnStart, plain1, tool1, q1, ans1]) { stream.send(event); writer.receive(event) }
+
+  assert.deepEqual(committed, ['assistant:先确认城市', 'user:上海'])
+  const replayAfterAnswer = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  assert.equal(replayAfterAnswer.some(e => e.type === 'update' && (e.update as Record<string, unknown>)?.sessionUpdate === 'agent_message_chunk'), false,
+    'already-persisted plain assistant chunks are excluded from mid-turn replay')
+  assert.equal(replayAfterAnswer.some(e => e.type === 'update' && (e.update as Record<string, unknown>)?.sessionUpdate === 'tool_call'), true,
+    'tool_call events remain in replay to rebuild tool state')
+  assert.equal(replayAfterAnswer.find(e => e.type === 'question_answered')?.inHistory, true)
+
+  // Another plain chunk followed by userSteer excludes that chunk too, while later chunks remain replayable
+  const plain2 = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '正在整理' } } }
+  stream.send(plain2)
+  writer.receive(plain2)
+  writer.userSteer({ text: '顺便看下天气' })
+  const plain3 = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '好的，继续' } } }
+  stream.send(plain3)
+  writer.receive(plain3)
+
+  assert.deepEqual(committed, ['assistant:先确认城市', 'user:上海', 'assistant:正在整理', 'user:顺便看下天气'])
+  const replayAfterSteer = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  const replayedPlainTexts = replayAfterSteer
+    .filter(e => e.type === 'update' && (e.update as Record<string, unknown>)?.sessionUpdate === 'agent_message_chunk')
+    .map(e => ((e.update as Record<string, unknown>).content as Record<string, unknown>).text)
+  assert.deepEqual(replayedPlainTexts, ['好的，继续'], 'only unpersisted post-steer plain chunks remain in replay')
+
+  // If persisting fails during userSteer, the plain chunk stays replayable until retry succeeds
+  failWrites = true
+  writer.userSteer({ text: '失败的插话' })
+  const replayAfterFail = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  assert.ok(replayAfterFail.some(e => e.type === 'update' && ((e.update as Record<string, unknown>).content as Record<string, unknown>)?.text === '好的，继续'))
 })

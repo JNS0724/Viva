@@ -58,6 +58,8 @@ interface Segment {
   /** What it went on from (topics.ts). */
   parentId?: string | null
   createdAt: number
+  /** Number of messages before `messages[0]` when kept from a trimmed foreground window. */
+  offset?: number
   messages: ReadonlyArray<SegmentMessage>
   /** Its task records, each after the messages before it (history-db.ts recordsOf). */
   records?: ReadonlyArray<ReportRecord>

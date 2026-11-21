@@ -36,6 +36,7 @@ export function withCurrentKept(state: State, at = Date.now()): State['earlier']
     // What it went on from, so the topic it belongs to still reads as one (topics.js).
     parentId: state.topic?.parentId ?? null,
     createdAt: at,
+    ...(offset > 0 ? { offset } : {}),
     messages: state.messages.map((message: ThreadMessage, seq: number) => ({
       seq: offset + seq, role: message.role, text: message.text, receipt: message.receipt ?? null, at, ...(message.images ? { images: message.images } : {}),
       ...(message.streamKey ? { key: message.streamKey } : {}),

@@ -481,7 +481,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   const focus = editorFocus()
   const nodes = [
     initialization && initialization.status !== 'ready' ? part('initialization', [initialization], () => initializationNotice({ initialization }, handlers)) : '',
-    hidden > 0 ? part('thread-rest', [hidden, state.conversationId], () => restLine(state, start, handlers)) : '',
+    hidden > 0 ? part('thread-rest', [hidden, state.conversationId, offset], () => restLine(state, start, handlers)) : '',
     ...earlierCards,
     ...takeCards([...state.taskCards, ...anchors.filter(anchor => anchor.at <= offset).map(anchor => anchor.taskId)]),
     ...recordsAfter(hidden),

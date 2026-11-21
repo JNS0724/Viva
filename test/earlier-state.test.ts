@@ -61,15 +61,16 @@ test('when the conversation goes on in another folder, what was said so far stay
   const talking: State = {
     ...initialState,
     conversationId: 'c1',
+    historyOffset: 50,
     info: { ...initialState.info, mode: 'live', cwd: '/w/viva' },
-    messages: [{ id: 'm0', role: 'user', text: '做周报', shown: 4, open: false, receipt: null }],
+    messages: [{ id: 'm50', role: 'user', text: '做周报', shown: 4, open: false, receipt: null }],
   }
   const moved = reduce(talking, { type: 'workdir_switched', info: { ...initialState.info, mode: 'live', cwd: '/w/site', sessionId: 's2' } })
   assert.deepEqual(moved.messages, [])
   assert.equal(moved.conversationId, null)
   assert.equal(moved.info.cwd, '/w/site')
   const kept = moved.earlier.segments.at(-1)!
-  assert.deepEqual([kept.id, kept.cwd, kept.messages.map((m: SegmentMessage) => [m.role, m.text])], ['c1', '/w/viva', [['user', '做周报']]])
+  assert.deepEqual([kept.id, kept.cwd, kept.offset, kept.messages.map((m: SegmentMessage) => [m.seq, m.role, m.text])], ['c1', '/w/viva', 50, [[50, 'user', '做周报']]])
   assert.ok(Number.isFinite(kept.messages[0]!.at))
   assert.deepEqual(talking.earlier.segments, [], 'the state given is left as it was')
 })
