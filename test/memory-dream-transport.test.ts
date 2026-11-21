@@ -22,7 +22,6 @@ type Json = MemoryToolInvocation['input']
 type WireBlock = { type: string, id?: string, name?: string, thinking?: string, signature?: string, text?: string, tool_use_id?: string, content?: Json }
 type WireRequest = { model: string, messages: Array<{ role: string, content: WireBlock[] }>, tools: Array<{ name: string, input_schema: Json }> }
 const path = 'digest/wiki/deployment.md'
-const daily = 'daily/2026-11-16/work.md'
 const addedSource = { namespace: 'canonical', sourceId: 'newly-read-source', revision: 1 }
 const reasoning = 'Inspect node metadata, then inspect its evidence before integrating.'
 const signature = 'native-reasoning-signature'
@@ -93,7 +92,7 @@ async function fixture(t: TestContext, { withdrawAfterTool = false, failSecondRe
     rmSync(root, { recursive: true, force: true })
   })
   const snapshot = { path, revision: 'document-v1', markdown: '---\nname: Deployment\ndescription: Deployment procedure\n---\nRead the current deployment evidence.', sources: [addedSource], usageVersion: 1 }
-  const tools = createMemoryDreamTools({ unit: { name: 'Deployment', bucket: 'wiki', summary: 'Deployment procedure', paths: [daily] },
+  const tools = createMemoryDreamTools({
     documents: { list: () => [snapshot], read: candidate => candidate === path ? snapshot : null },
     onRead: snapshot => { for (const source of snapshot.sources) reads.add(source.sourceId) },
   })
@@ -110,7 +109,7 @@ test('real DeepSeek HTTP dream loop preserves native thinking/call IDs and fence
   const f = await fixture(t)
   assert.equal(await f.run(), 'integration complete')
   assert.equal(f.requests.length, 3)
-  assert.deepEqual(f.requests[0]!.tools.map(tool => tool.name), ['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update'])
+  assert.deepEqual(f.requests[0]!.tools.map(tool => tool.name), ['node_search', 'read'])
   assert.deepEqual(f.attempts.map(attempt => attempt.sources), [['initial-source'], ['initial-source', addedSource.sourceId], ['initial-source', addedSource.sourceId]])
   assert.equal(new Set(f.attempts.map(attempt => attempt.id)).size, 3)
   assert.equal(new Set(f.attempts.map(attempt => attempt.payload)).size, 3)

@@ -1,52 +1,62 @@
-import { z } from 'zod'
 import { guardDiagnosticPort, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import type { DiagnosticPort, DiagnosticReason, DiagnosticStage } from '../../diagnostics/contracts.ts'
-import type { MemoryComputeTools } from '../contracts/compute.ts'
 import { MemoryComputeError } from '../contracts/compute.ts'
+import type { MemoryComputeTools } from '../contracts/compute.ts'
 import { DAILY_MEMORY_DEFAULTS as defaults } from '../contracts/memory-daily-defaults.ts'
-import { dreamUnitSchema, mergeDreamUnits, parseDreamUnits } from '../contracts/memory-file-contract.ts'
-import type { DreamUnit } from '../contracts/memory-file-contract.ts'
+import { dailyPath, parseDreamOperations } from '../contracts/memory-file-contract.ts'
+import type { DreamEdit, DreamOperation } from '../contracts/memory-file-contract.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
 import type { MemoryIdentity } from './ports/runtime.ts'
 import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
 import type { MemoryStore, MemorySource } from './ports/store.ts'
-import type { DocumentCorrection, DocumentReceipt, DocumentSourceRef, MemoryDocuments, ReadMemoryPhysicalFile } from './ports/documents.ts'
+import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import type { MemoryFileIndex } from './ports/file-index.ts'
 import { memorySearchTokens } from './search-tokens.ts'
 import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import { todayAt } from './memory-calendar.ts'
-import { parseMemoryDocument, updateMemoryFrontmatter } from './memory-document.ts'
-import { createMemoryDreamTools, dreamNodeMetadata, dreamChangesConclusion, memoryDocumentLinks, MemoryDreamStaleError } from './memory-dream-tools.ts'
+import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
 import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
-import type { DreamSearchPage } from './memory-dream-tools.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-document-read-policy.ts'
 import { documentSourceRestricted, projectDocumentSource } from './memory-document-restrictions.ts'
-import { validateDreamReview } from './memory-dream-evidence.ts'
-import { DREAM_EXTRACT_SYSTEM, DREAM_INTEGRATE_SYSTEM, DREAM_TAG_SYSTEM, DREAM_VERIFY_SYSTEM } from './memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM } from './memory-dream-prompts.ts'
+import { createMemoryDreamTools, dreamNodeMetadata, memoryDocumentLinks, MemoryDreamStaleError } from './memory-dream-tools.ts'
+import type { DreamSearchPage } from './memory-dream-tools.ts'
+
+export { MemoryDreamStaleError } from './memory-dream-tools.ts'
 
 export type DreamCalculate = (request: {
-  job: Effect, stage: 'extract' | 'integrate' | 'verify' | 'tag', system: string, input: object,
-  sourceIds: () => readonly string[], current: () => boolean, observe?: (signal?: AbortSignal) => Promise<() => boolean>, tools?: MemoryComputeTools,
+  job: Effect, stage: 'consolidate', system: string, input: object,
+  sourceIds: () => readonly string[], current: () => boolean,
+  observe?: (signal?: AbortSignal) => Promise<() => boolean>,
+  tools?: MemoryComputeTools,
 }) => Promise<string | undefined>
-const sourceRefSchema = z.object({ id: z.string(), token: z.string(), spans: z.array(z.object({ start: z.int().nonnegative(), end: z.int().positive() })).optional() })
-const fileRefSchema = z.object({ key: z.string(), workspace: z.string(), path: z.string(), revision: z.string(), policyToken: z.string().min(1), checkpoint: z.int(), oversized: z.literal(true).optional(), sources: z.array(sourceRefSchema), reads: z.array(z.object({ id: z.string(), revision: z.string(), usageVersion: z.int() })).default([]) })
-const planSchema = z.object({
-  version: z.literal(1), files: z.array(fileRefSchema),
-  units: z.array(z.object({ workspace: z.string(), operationId: z.string(), unit: dreamUnitSchema, state: z.enum(['pending', 'done', 'deferred']) })),
-  tags: z.array(z.object({ workspace: z.string(), path: z.string(), revision: z.string(), documentId: z.string().optional(), attempted: z.boolean() })),
-  retryExtraction: z.boolean(),
-})
-type DreamPlan = z.infer<typeof planSchema>
-type FileRef = z.infer<typeof fileRefSchema>
-type PlannedUnit = DreamPlan['units'][number]
+
+type FileRef = {
+  key: string
+  workspace: string
+  path: string
+  revision: string
+  policyToken: string
+  checkpoint: number
+  sources: DocumentSourceRef[]
+  reads: Array<{ id: string, revision: string, usageVersion: number }>
+}
 type Note = NonNullable<ReturnType<MemoryNotes['read']>>
-type ToolSnapshot = MemoryDocumentView
-const deferredReply = z.strictObject({ status: z.enum(['skip', 'deferred']), reason: z.string().trim().min(1).optional() })
-const tagReply = z.strictObject({ memory_tags: z.array(z.string().trim().min(1)) })
+type Location = { workspace: string, path: string }
+type PreparedOperation = {
+  operation: DreamOperation
+  before: MemoryDocumentView | null
+  markdown: string
+  evidence: DocumentSourceRef[]
+  reads: Array<{ id: string, revision: string, usageVersion: number }>
+  linkedPaths: string[]
+  files: Array<{ path: string, revision: string }>
+}
+
 const DAILY = 'daily'
 const MANUAL_JOB = 'dream.manualJob'
 const MANUAL_FOLLOWUP = 'dream.manualFollowup'
@@ -57,7 +67,60 @@ const unique = <T>(values: readonly T[]) => [...new Set(values)]
 const parse = (text: string) => JSON.parse(text) as unknown
 const isModelTimeout = (error: unknown) => error instanceof MemoryComputeError && error.reason === 'timeout'
 
-/** ReMe day grouping and UTF-8 budget. Oversized single files remain standalone, never silently disappear. */
+function applyRefineEdits(beforeBody: string, edits: readonly DreamEdit[]): string {
+  let body = beforeBody
+  for (const edit of edits) {
+    const first = body.indexOf(edit.oldText)
+    if (first === -1 || body.indexOf(edit.oldText, first + 1) !== -1) throw new Error('dream-edit-not-unique')
+    body = body.slice(0, first) + edit.newText + body.slice(first + edit.oldText.length)
+  }
+  return body
+}
+
+function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
+  const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
+  const draftBody = operation.action === 'CREATE'
+    ? operation.body
+    : operation.body !== undefined
+      ? operation.body
+      : applyRefineEdits(beforeParsed!.body, operation.edits!)
+  const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
+  const bodyLinks = memoryDocumentLinks(draftBody)
+  const presentExact = new Set(bodyLinks)
+  const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
+  const missingExisting = existingLinks.filter(link => !presentExact.has(link))
+  for (const link of missingExisting) presentPaths.add(link.split('#')[0]!)
+  const missingDaily = operation.dailyPaths.filter(path => !presentPaths.has(path))
+  const missing = unique([...missingExisting, ...missingDaily])
+  let body = draftBody.trimEnd()
+  if (missing.length) {
+    const lines = missing.map(link => `- [[${link}]]`).join('\n')
+    const hasSourcesHeading = /(?:^|\n)#{1,6}\s+(?:Sources|来源|来源依据)\s*(?:\n|$)/iu.test(body)
+    body = hasSourcesHeading ? `${body}\n${lines}` : `${body}\n\n## Sources\n${lines}`
+  }
+  const previousMetadata = beforeParsed ? beforeParsed.metadata : {}
+  return formatMemoryDocument({
+    metadata: { ...previousMetadata, name: operation.name, description: operation.description },
+    body,
+  })
+}
+
+function retryHintFor(reason: string): string {
+  switch (reason) {
+    case 'dream-search-required':
+      return 'Call node_search to inspect existing digests before using CREATE.'
+    case 'dream-read-target-first':
+      return 'Call read on the target digest before using REFINE on it.'
+    case 'dream-edit-not-unique':
+      return 'Each REFINE edits[].oldText must match exactly once in the existing digest body; fix oldText or supply body instead.'
+    case 'dream-ungrounded-link':
+      return 'Only link paths from dailyPaths, inspected digests from node_search/read, or prior links already in the target digest.'
+    default:
+      return 'The prior JSON had an invalid shape, target path, budget, or source reference. Correct it using only the supplied inputs.'
+  }
+}
+
+/** Day grouping and UTF-8 budget. Oversized single files remain standalone, never silently disappear. */
 export function batchDreamNotes<T extends { day: string, document: string }>(notes: readonly T[], budget: number): T[][] {
   if (!Number.isSafeInteger(budget) || budget < 0) throw new Error('invalid-dream-byte-budget')
   if (!budget) return notes.length ? [[...notes]] : []
@@ -91,7 +154,7 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
   return { lastCheckResult, lastCheckedAt: read('dream.lastCheckedAt'), lastProcessedAt: read('dream.lastProcessedAt') }
 }
 
-/** Four-stage document jobs. Storage and provider message/reasoning state stay behind their respective ports. */
+/** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
   calculate, transaction, mutate, readPhysicalFile, digestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
@@ -128,44 +191,74 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       ...dreamHistory(store), ...(receipt && { jobId: receipt.payload }),
     }
   }
-  const refOf = (note: Note, view = policy.read(note.workspace, note.path)): FileRef => {
-    if (!view || view.applicability.state === 'unavailable') throw new MemoryDreamStaleError()
-    return { key: note.key, workspace: note.workspace, path: note.path, revision: note.fileRevision,
-      policyToken: view.policyToken, checkpoint: note.revision, sources: notes.references(note.key), reads: [] }
-  }
   const { refsCurrent, materialAllowed } = createMemoryDocumentEvidence({ notes, documents, hash: identity.hash, source, readable, allowsText })
+  const policy = createMemoryDocumentReadPolicy({ notes, documents, hash: identity.hash, refsCurrent, materialAllowed, reference, readPhysicalFile })
   const fileCurrent = (ref: FileRef, batch?: MemoryDocumentReadBatch) => {
     const latest = notes.read(ref.key, batch?.physical(ref.workspace, ref.path))
     return latest?.workspace === ref.workspace && latest.path === ref.path && latest.fileRevision === ref.revision
       && (batch ?? policy).read(ref.workspace, ref.path)?.policyToken === ref.policyToken && refsCurrent(ref.sources)
-      && !ref.sources.some(source => documentSourceRestricted(source, documents.sourceRestrictions(ref.workspace)))
+      && !ref.sources.some(item => documentSourceRestricted(item, documents.sourceRestrictions(ref.workspace)))
   }
-  const allSources = mergeDocumentSources
-  const policy = createMemoryDocumentReadPolicy({ notes, documents, hash: identity.hash, refsCurrent, materialAllowed, reference, readPhysicalFile })
+  function dependencies(files: readonly FileRef[]): Location[] {
+    return files.flatMap(file => [file, ...file.reads.flatMap(ref => {
+      const target = documents.indexFile(file.workspace, ref.id)
+      return target ? [{ workspace: file.workspace, path: target.path }] : []
+    })])
+  }
+  const readsCurrent = (files: readonly FileRef[], batch?: MemoryDocumentReadBatch) => files.every(file => file.reads.every(ref => {
+    const target = documents.indexFile(file.workspace, ref.id)
+    const doc = target && documents.read(file.workspace, target.path, { physical: batch?.physical(file.workspace, target.path) })
+    return doc?.id === ref.id && doc.revision === ref.revision && doc.usageVersion === ref.usageVersion
+  }))
+  async function loadFiles(files: Location[], signal?: AbortSignal, partial = false) {
+    const batch = policy.readBatch(signal, files.length + 512)
+    if (!batch) return
+    const budget = createRequestBudget(defaults.fileVerificationBudgetMs, signal)
+    try { await budget.run(() => batch.load(files, budget.signal)) }
+    catch (error) {
+      if (!partial || signal?.aborted || !(error instanceof RequestTimeout)) throw error
+    } finally { budget.close() }
+    return batch
+  }
+  function observeReadset(locations: () => Location[], current: (batch?: MemoryDocumentReadBatch) => boolean) {
+    return async (signal?: AbortSignal) => {
+      signal?.throwIfAborted()
+      const batch = await loadFiles(locations(), signal)
+      if (!batch) return () => !signal?.aborted && current()
+      if (batch.incomplete()) throw new RequestTimeout()
+      return () => !signal?.aborted && locations().every(file => batch.observedRevision(file.workspace, file.path) !== undefined) && current(batch)
+    }
+  }
+  const verified = async (observe: () => Promise<() => boolean>) => {
+    const check = await observe()
+    return check()
+  }
+
   const scopedDocuments = (workspace: string) => {
-    // The canonical journal fills gaps for not-yet-published nodes.
-    // These hints only select paths for verification. They never reach a tool.
     const unpublished = new Map<string, { revision: string, path: string, name: string, terms: string[] }>()
+    const activeEntries = () => {
+      const restrictions = documents.sourceRestrictions(workspace)
+      const entries = restrictions.length
+        ? documents.registered(workspace).filter(doc => !doc.sources.some(ref => documentSourceRestricted(ref, restrictions)))
+        : documents.fileRegistry(workspace)
+      return entries.filter(row => row.state === 'active')
+    }
     async function candidates(query: string, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
       const matches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
       let yieldAt = performance.now() + 4
-      const restrictions = documents.sourceRestrictions(workspace)
-      const entries = restrictions.length ? documents.registered(workspace).filter(doc =>
-        !doc.sources.some(ref => documentSourceRestricted(ref, restrictions))) : documents.fileRegistry(workspace)
-      for (const row of entries) {
+      for (const row of activeEntries()) {
         if (performance.now() >= yieldAt) {
           await new Promise<void>(resolve => setTimeout(resolve, 0))
           signal?.throwIfAborted()
           yieldAt = performance.now() + 4
         }
-        if (row.state !== 'active') continue
         const node = published.get(row.id)
         let words: string[] | undefined, name: string | undefined
         if (node && node.revision === row.revision && node.usageVersion === row.usageVersion && node.path === row.path) {
           name = node.name || row.path.split('/').at(-1)!.replace(/\.md$/u, '')
-          words = memorySearchTokens([name, node.description, ...(node.tags ?? [])].join(' '), true)
+          words = memorySearchTokens(`${name} ${node.description}`, true)
         } else {
           const cached = unpublished.get(row.id)
           if (cached?.revision === row.revision && cached.path === row.path) { words = cached.terms; name = cached.name }
@@ -173,13 +266,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             const accepted = documents.acceptedSnapshot(workspace, row.id)
             if (accepted) {
               const metadata = dreamNodeMetadata(accepted)
-              words = memorySearchTokens([metadata.name, metadata.description, ...metadata.tags].join(' '), true)
+              words = memorySearchTokens(`${metadata.name} ${metadata.description}`, true)
               name = metadata.name
               unpublished.set(row.id, { revision: row.revision, path: row.path, name, terms: words })
             }
           }
         }
-        // Prioritize exact names and multi-term hits before the physical verification limit.
         const score = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
           ? [...new Set(words.filter(word => terms.has(word)))].length : 0
         if (!words || score > 0) matches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score })
@@ -187,6 +279,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
     }
     return {
+      countActive: () => activeEntries().length,
       read: (path: string) => policy.read(workspace, path),
       list: () => policy.list(workspace, 'digest'),
       async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
@@ -216,135 +309,39 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (view === undefined) unread = true
           return view ?? []
         })
-        // Only advance over a fully observed page. A changed candidate set
-        // restarts discovery, while late body reads cannot authorize a CREATE.
         const nextOffset = unread ? offset : offset + selected.length
         const partial = unread || nextOffset < matches.length
         return { read, list: () => list, partial, next: partial ? { fingerprint, offset: nextOffset } : undefined }
       },
-      locatorRetired: (path: string) => documents.locatorRetired(workspace, path),
     }
   }
-  type Location = { workspace: string, path: string }
-  function dependencies(files: readonly FileRef[]): Location[] {
-    return files.flatMap(file => [file, ...file.reads.flatMap(ref => {
-      const target = documents.indexFile(file.workspace, ref.id)
-      return target ? [{ workspace: file.workspace, path: target.path }] : []
-    })])
-  }
-  const extractedReadsCurrent = (files: readonly FileRef[], batch?: MemoryDocumentReadBatch) => files.every(file => file.reads.every(ref => {
-    const target = documents.indexFile(file.workspace, ref.id)
-    const doc = target && documents.read(file.workspace, target.path, { physical: batch?.physical(file.workspace, target.path) })
-    return doc?.id === ref.id && doc.revision === ref.revision && doc.usageVersion === ref.usageVersion
-  }))
-  // The native provider enters and leaves the process several times per job. Each
-  // boundary observes its live readset again, including a proposed, still-missing file.
-  async function loadFiles(files: Location[], signal?: AbortSignal, partial = false) {
-    const batch = policy.readBatch(signal, files.length + 512)
-    if (!batch) return
-    const budget = createRequestBudget(defaults.fileVerificationBudgetMs, signal)
-    try { await budget.run(() => batch.load(files, budget.signal)) }
-    catch (error) {
-      if (!partial || signal?.aborted || !(error instanceof RequestTimeout)) throw error
-    } finally { budget.close() }
-    return batch
-  }
-  function observeReadset(locations: () => Location[], current: (batch?: MemoryDocumentReadBatch) => boolean) {
-    return async (signal?: AbortSignal) => {
-      signal?.throwIfAborted()
-      const batch = await loadFiles(locations(), signal)
-      if (!batch) return () => !signal?.aborted && current()
-      if (batch.incomplete()) throw new RequestTimeout()
-      return () => !signal?.aborted && locations().every(file => batch.observedRevision(file.workspace, file.path) !== undefined) && current(batch)
-    }
-  }
-  const verified = async (observe: () => Promise<() => boolean>) => {
-    const check = await observe()
-    return check()
-  }
-  async function advanceOwnReads(plan: DreamPlan, workspace: string, receipt: DocumentReceipt) {
-    const files = plan.files.filter(file => file.workspace === workspace
-      && (receipt.action === 'CORRECT' || file.reads.some(ref => ref.id === receipt.documentId)))
-    if (!files.length) return
-    const observed = await loadFiles([{ workspace, path: receipt.path }, ...files], undefined, true)
-    const latest = documents.read(workspace, receipt.path, { physical: observed?.physical(workspace, receipt.path) })
-    if (!latest || latest.id !== receipt.documentId || latest.revision !== receipt.revision || latest.usageVersion !== receipt.usageVersion) return
-    for (const file of files) {
-      const view = (observed ?? policy).read(file.workspace, file.path)
-      if (!view || view.applicability.state === 'unavailable' || view.revision !== file.revision) continue
-      const previous = new Map(file.reads.map(ref => [ref.id, ref]))
-      // Only this exact receipt can explain a changed dependency. A new replacement
-      // elsewhere in the chain must invalidate the persisted extraction instead.
-      if (!view.supporting.some(doc => doc.id === latest.id)
-        || view.supporting.some(doc => {
-          const expected = doc.id === latest.id ? latest : previous.get(doc.id)
-          return !expected || expected.revision !== doc.revision || expected.usageVersion !== doc.usageVersion
-        }) || file.reads.some(ref => !view.supporting.some(doc => doc.id === ref.id))) continue
-      file.sources = allSources([...file.sources, ...view.sourceTokens])
-      file.reads = view.supporting.map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion }))
-      file.policyToken = view.policyToken
-    }
-  }
-  function persist(job: Effect, plan: DreamPlan) {
-    if (!effects.amend(job, plan)) throw new MemoryDreamStaleError()
-  }
-  function checkpointFiles(plan: DreamPlan, at: number, observed?: MemoryDocumentReadBatch) {
-    let advanced = false
-    for (const file of plan.files) {
-      const waiting = plan.units.some(item => item.workspace === file.workspace && item.unit.paths.includes(file.path) && item.state !== 'done')
-      if (!waiting && fileCurrent(file, observed) && notes.markProcessed(file.key, file.checkpoint) && !file.oversized) advanced = true
-    }
-    if (advanced) store.setMeta('dream.lastProcessedAt', String(at))
-  }
-  function complete(job: Effect, plan: DreamPlan, observed?: MemoryDocumentReadBatch): Outcome {
-    if (!effects.holds(job)) return 'done'
-    transaction(() => {
-      const at = now()
-      checkpointFiles(plan, at, observed)
-      if (plan.retryExtraction) effects.amend(job, {})
-      else {
-        store.setMeta('dream.lastCheckedAt', String(at))
-        store.setMeta('dream.lastCheckResult', plan.files.some(file => file.oversized) ? 'size-limit' : plan.files.length ? 'processed' : 'empty')
-        const jobId = store.meta(MANUAL_JOB)
-        if (jobId && store.meta(MANUAL_FOLLOWUP) === jobId) {
-          // The automatic batch had already selected its inputs before the click.
-          // Start the manual pass after its checkpoint, including after a restart.
-          store.setMeta(MANUAL_FOLLOWUP, '')
-          effects.queue(DREAM, DAILY, null)
-          void effects.wake()
-          return
-        }
-        if (jobId) {
-          const receipt: MemoryDreamStatus = { state: 'idle', ...dreamHistory(store), jobId, completedAt: at }
-          store.setMeta(receiptKey(jobId), JSON.stringify(receipt))
-          store.setMeta(MANUAL_JOB, '')
-        }
-        effects.finishGeneration(job)
-        schedule()
-      }
+
+  async function runJob(job: Effect): Promise<Outcome> {
+    if (notes.needsRecovery() || documents.needsRecovery()) await mutate(() => {
+      if (notes.needsRecovery()) notes.recover()
+      if (documents.needsRecovery()) documents.recover()
     })
-    return plan.retryExtraction ? 'retry' : 'done'
-  }
-  async function extract(job: Effect): Promise<DreamPlan | 'wait' | 'retry' | undefined> {
     const today = todayAt(now(), timezone)
     const from = new Date(Date.parse(today) - (scanDays - 1) * DAY_MS).toISOString().slice(0, 10)
-    const plan: DreamPlan = { version: 1, files: [], units: [], tags: [], retryExtraction: false }
+    let retry = false
     let waitingForAdmission = false
+    let processedAny = false
+    let oversizedAny = false
+    let operationsUsed = 0
     const available: Note[] = []
-    const initialViews = new Map<string, ToolSnapshot>()
+    const initialViews = new Map<string, MemoryDocumentView>()
     for (const file of notes.changedFiles(from, today)) {
-      if (!effects.holds(job)) return
+      if (!effects.holds(job)) return 'done'
       let check: MemoryDocumentReadBatch | undefined
       try {
         check = await loadFiles([file])
         if (check?.incomplete()) throw new RequestTimeout()
       } catch (error) {
         if (!(error instanceof RequestTimeout)) throw error
-        // Keep an unreadable note pending while processing verified peers.
-        plan.retryExtraction = true
+        retry = true
         continue
       }
-      if (!effects.holds(job)) return
+      if (!effects.holds(job)) return 'done'
       const note = notes.read(file.key, check?.physical(file.workspace, file.path))
       if (!note) continue
       const view = (check ?? policy).read(file.workspace, file.path)
@@ -360,24 +357,99 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       if (!admitted) waitingForAdmission = true
       return admitted
     })
-    // Temporary recovery/turn admission is not an empty extraction. Keep the same durable job
-    // until the owner's next wake, rather than postponing unprocessed notes to tomorrow.
     if (waitingForAdmission) return 'wait'
-    const workspaces = unique(changed.map(note => note.workspace))
-    const extracted: Array<{ workspace: string, unit: DreamUnit }> = []
-    let count = 0, stopPass = false
-    for (const workspace of workspaces) {
-      if (stopPass) break
+
+    let stopPass = false
+    for (const workspace of unique(changed.map(note => note.workspace))) {
+      if (stopPass || !effects.holds(job)) break
       const candidates = changed.filter(note => note.workspace === workspace)
+      const project = (text: string) => documents.projectErasedLocators(workspace, text)
+      const scope = scopedDocuments(workspace)
+
       const consume = async (batch: Note[]): Promise<void> => {
-        if (stopPass || count >= dreamUnits || !effects.holds(job)) return
+        if (stopPass || !effects.holds(job)) return
+        if (operationsUsed >= dreamUnits) { retry = true; return }
         const seen = batch.map(note => initialViews.get(note.key)!)
-        const refs = batch.map((note, index) => ({ ...refOf(note, seen[index]!), sources: seen[index]!.sourceTokens,
-          reads: seen[index]!.supporting.map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion })) }))
-        const sources = allSources(refs.flatMap(ref => ref.sources))
-        const current = (batch?: MemoryDocumentReadBatch) => effects.holds(job) && refs.every(ref => fileCurrent(ref, batch)) && extractedReadsCurrent(refs, batch)
-          && seen.every(snapshot => (batch ?? policy).read(workspace, snapshot.path)?.policyToken === snapshot.policyToken)
-        const observe = observeReadset(() => dependencies(refs), current)
+        const fileRefs: FileRef[] = batch.map((note, index) => {
+          const view = seen[index]!
+          return {
+            key: note.key, workspace: note.workspace, path: note.path, revision: note.fileRevision,
+            policyToken: view.policyToken, checkpoint: note.revision, sources: view.sourceTokens,
+            reads: view.supporting.map(doc => ({ id: doc.id, revision: doc.revision, usageVersion: doc.usageVersion })),
+          }
+        })
+        const restrictions = documents.sourceRestrictions(workspace)
+        const existingDigestCount = scope.countActive()
+
+        const batchSourceMap = new Map<string, DocumentSourceRef>()
+        for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources))) batchSourceMap.set(ref.id, ref)
+        const questionContexts = new Map<string, DocumentSourceRef[]>()
+        const canonicalSources: Array<{
+          sourceId: string, author: MemorySource['author'], text: string,
+          question: string | null, questionUnavailable: boolean, at: number, timezone: string,
+        }> = []
+        for (const ref of batchSourceMap.values()) {
+          const original = source(ref.id)
+          if (!original?.text) { progress(job, 'source_changed', 'consolidate'); retry = true; return }
+          const context = notes.sourceQuestionContext(ref.id)
+          const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
+          const questionAllowed = Boolean(original.question) && wholeSource && context.current
+            && !documentSourceRestricted({ id: ref.id, token: ref.token }, restrictions)
+            && context.refs.every(dep => !documentSourceRestricted(dep, restrictions))
+            && (!context.refs.length || refsCurrent(context.refs))
+            && allowsText(original.question!, original)
+            && context.refs.every(dep => { const item = source(dep.id); return Boolean(item?.text && allowsText(item.text, item)) })
+          if (questionAllowed) questionContexts.set(ref.id, context.refs)
+          canonicalSources.push({
+            sourceId: original.id, author: original.author,
+            text: project(projectDocumentSource(original.text, ref, restrictions)),
+            question: questionAllowed ? project(original.question!) : null,
+            questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed,
+            at: original.at, timezone: original.timezone,
+          })
+        }
+
+        const readSources = new Map(mergeDocumentSources([
+          ...batchSourceMap.values(),
+          ...[...questionContexts.values()].flat(),
+        ]).map(ref => [ref.id, ref]))
+        const toolAttempts: ReturnType<typeof createMemoryDreamTools<MemoryDocumentView>>[] = []
+        const newTools = () => createMemoryDreamTools<MemoryDocumentView>({
+          documents: scope,
+          onRead(snapshot) {
+            for (const ref of mergeDocumentSources([...readSources.values(), ...snapshot.sourceTokens, ...(snapshot.correctionSources ?? [])])) {
+              readSources.set(ref.id, ref)
+            }
+          },
+        })
+        const committedPaths = new Set<string>()
+        const toolReadDocs = () => toolAttempts.flatMap(tools => tools.reads())
+          .flatMap(doc => [...(doc.backing ? [doc.backing] : []), ...doc.supporting])
+        const current = (observed?: MemoryDocumentReadBatch) => {
+          const allRefs = [...readSources.values()]
+          return effects.holds(job)
+            && fileRefs.every(ref => fileCurrent(ref, observed))
+            && readsCurrent(fileRefs, observed)
+            && seen.every(snapshot => (observed ?? policy).read(workspace, snapshot.path)?.policyToken === snapshot.policyToken)
+            && refsCurrent(allRefs)
+            && allRefs.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })
+            && [...questionContexts].every(([id, expected]) => {
+              const latest = notes.sourceQuestionContext(id)
+              return latest.current && JSON.stringify(latest.refs) === JSON.stringify(expected)
+            })
+            && toolAttempts.every(tools => tools.current(observed ? path => observed.read(workspace, path) : undefined, committedPaths))
+            && toolReadDocs().every(doc => {
+              if (committedPaths.has(doc.path)) return true
+              const latest = documents.read(workspace, doc.path, { physical: observed?.physical(workspace, doc.path) })
+              return latest?.id === doc.id && latest.revision === doc.revision && latest.usageVersion === doc.usageVersion
+            })
+        }
+        const locations = () => [
+          ...dependencies(fileRefs),
+          ...toolAttempts.flatMap(tools => tools.checkedPaths().map(path => ({ workspace, path }))),
+          ...toolReadDocs().map(doc => ({ workspace, path: doc.path })),
+        ]
+        const observe = observeReadset(locations, current)
         const inputsCurrent = async () => {
           try { return await verified(observe) }
           catch (error) {
@@ -385,354 +457,258 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             return false
           }
         }
-        if (!await inputsCurrent()) { progress(job, 'source_changed', 'extract'); plan.retryExtraction = true; return }
-        const rememberFiles = (oversized = false) => {
-          for (const file of refs) if (!plan.files.some(previous => previous.key === file.key)) plan.files.push(oversized ? { ...file, oversized: true } : file)
-        }
+        if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate'); retry = true; return }
+
         const split = async () => {
           const middle = Math.floor(batch.length / 2)
           await consume(batch.slice(0, middle))
           if (!stopPass) await consume(batch.slice(middle))
         }
-        let units: DreamUnit[] | undefined
-        let invalid = false
-        for (let attempt = 0; attempt < 2 && !units; attempt++) {
-          try {
-            const input = { maxUnits: dreamUnits - count, notes: batch.map((note, index) => {
+
+        const noteByPath = new Map(fileRefs.map(ref => [ref.path, ref]))
+        const changedPaths = new Set(noteByPath.keys())
+        const allowedSourceIds = new Set(batchSourceMap.keys())
+        const remainingAtStart = dreamUnits - operationsUsed
+        let prepared: PreparedOperation[] | undefined
+        let retryHint: string | undefined
+
+        for (let attempt = 0; attempt < 2 && !prepared; attempt++) {
+          const tools = newTools()
+          toolAttempts.push(tools)
+          const input = {
+            maxOperations: remainingAtStart,
+            existingDigestCount,
+            notes: batch.map((note, index) => {
               const snapshot = seen[index]!
               const name = parseMemoryDocument(snapshot.markdown).metadata.name
               const chars = [...snapshot.markdown]
-              return { path: note.path, title: typeof name === 'string' ? name : '', markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
-                applicability: snapshot.applicability, replacements: snapshot.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })) }
-            }), ...(invalid ? { retry: 'The prior JSON had an invalid shape, budget or source path. Correct it using only the supplied inputs.' } : {}) }
-            if (batch.length > 1 && dreamBatchBytes && new TextEncoder().encode(JSON.stringify(input)).length > dreamBatchBytes) {
-              await split()
-              return
+              return {
+                path: note.path,
+                title: typeof name === 'string' ? name : '',
+                markdown: chars.slice(0, defaults.dreamFileChars).join('') + (chars.length > defaults.dreamFileChars ? '\n\n[truncated]' : ''),
+                sourceIds: fileRefs[index]!.sources.map(ref => ref.id),
+                applicability: snapshot.applicability,
+                replacements: snapshot.supporting.map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown })),
+              }
+            }),
+            canonicalSources,
+            ...(retryHint ? { retry: retryHint } : {}),
+          }
+          if (batch.length > 1 && dreamBatchBytes && new TextEncoder().encode(JSON.stringify(input)).length > dreamBatchBytes) {
+            await split()
+            return
+          }
+          try {
+            const raw = await calculateStage({
+              job, stage: 'consolidate', system: DREAM_CONSOLIDATE_SYSTEM, input,
+              sourceIds: () => [...readSources.keys()], current, observe,
+              tools: { tools: tools.tools, executeTool: tools.executeTool },
+            })
+            if (raw === undefined) { progress(job, 'unavailable', 'consolidate', attempt); stopPass = true; retry = true; return }
+            if (!await inputsCurrent()) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
+            try {
+              const operations = parseDreamOperations(parse(raw), changedPaths, allowedSourceIds, remainingAtStart)
+              const validated: PreparedOperation[] = []
+              const plannedByPath = new Map<string, { evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }>()
+              for (const operation of operations) {
+                const opFiles = operation.dailyPaths.map(path => noteByPath.get(path)!)
+                const opFileSourceMap = new Map(mergeDocumentSources(opFiles.flatMap(file => file.sources)).map(ref => [ref.id, ref]))
+                const opRefs = operation.sourceIds.map(id => {
+                  const ref = opFileSourceMap.get(id)
+                  if (!ref) throw new Error('dream-source-outside-daily')
+                  return ref
+                })
+                if (opRefs.some(ref => documentSourceRestricted(ref, restrictions))) throw new Error('dream-source-restricted')
+                let before: MemoryDocumentView | null = null
+                if (operation.action === 'CREATE') {
+                  if (existingDigestCount > 0 && !tools.searched()) throw new Error('dream-search-required')
+                  if (tools.searchIncomplete()) throw new Error('dream-search-incomplete')
+                  if (documents.locatorRetired(workspace, operation.path)
+                    || documents.read(workspace, operation.path, { includeDisabled: true }) !== null
+                    || policy.read(workspace, operation.path) !== null) {
+                    throw new Error('dream-target-unavailable')
+                  }
+                } else {
+                  if (!tools.bodyRead(operation.path)) throw new Error('dream-read-target-first')
+                  before = tools.observed(operation.path)
+                  if (!before || !before.backing) throw new Error('dream-refine-target-missing')
+                }
+                const markdown = formatDigestMarkdown(operation, before)
+                const beforeLinkPaths = new Set(before ? memoryDocumentLinks(before.markdown).map(link => link.split('#')[0]!) : [])
+                const referencedDigests: MemoryDocumentView[] = []
+                const referencedPlanned: Array<{ evidence: DocumentSourceRef[], reads: Array<{ id: string, revision: string, usageVersion: number }> }> = []
+                const linkedPaths = new Set<string>()
+                for (const link of memoryDocumentLinks(markdown)) {
+                  const targetPath = link.split('#')[0]!
+                  if (targetPath === operation.path) continue
+                  if (dailyPath.safeParse(targetPath).success) {
+                    if (!operation.dailyPaths.includes(targetPath) && !beforeLinkPaths.has(targetPath)) {
+                      throw new Error('dream-ungrounded-link')
+                    }
+                    continue
+                  }
+                  const observedDigest = tools.observed(targetPath)
+                  const planned = plannedByPath.get(targetPath)
+                  if (observedDigest) { referencedDigests.push(observedDigest); linkedPaths.add(targetPath) }
+                  if (planned) { referencedPlanned.push(planned); linkedPaths.add(targetPath) }
+                  if (!observedDigest && !planned && !beforeLinkPaths.has(targetPath)) throw new Error('dream-ungrounded-link')
+                }
+                const boundDigests = unique([...(before ? [before] : []), ...referencedDigests])
+                const evidence = mergeDocumentSources([
+                  ...boundDigests.flatMap(doc => [...doc.sourceTokens, ...(doc.correctionSources ?? [])]),
+                  ...referencedPlanned.flatMap(item => item.evidence),
+                  ...opRefs,
+                  ...opRefs.flatMap(ref => questionContexts.get(ref.id) ?? []),
+                ])
+                if (!evidence.length || !refsCurrent(evidence)
+                  || evidence.some(ref => documentSourceRestricted(ref, restrictions))
+                  || !materialAllowed(markdown, evidence)
+                  || project(markdown) !== markdown) {
+                  throw new Error('dream-material-rejected')
+                }
+                const opReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
+                for (const doc of boundDigests) {
+                  for (const read of [...(doc.backing ? [doc.backing] : []), ...doc.supporting]) {
+                    opReadsMap.set(read.id, { id: read.id, revision: read.revision, usageVersion: read.usageVersion })
+                  }
+                }
+                for (const item of referencedPlanned) {
+                  for (const read of item.reads) opReadsMap.set(read.id, read)
+                }
+                const opReads = [...opReadsMap.values()]
+                plannedByPath.set(operation.path, { evidence, reads: opReads })
+                validated.push({
+                  operation, before, markdown, evidence, reads: opReads, linkedPaths: [...linkedPaths],
+                  files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
+                })
+              }
+              prepared = validated
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : 'invalid-output'
+              if (reason === 'dream-search-incomplete') { retry = true; return }
+              retryHint = retryHintFor(reason)
+              progress(job, 'validation_failed', 'consolidate', attempt)
             }
-            const result = await calculateStage({ job, stage: 'extract', system: DREAM_EXTRACT_SYSTEM, input,
-              sourceIds: () => sources.map(ref => ref.id), current, observe })
-            if (result === undefined) { progress(job, 'unavailable', 'extract', attempt); stopPass = true; plan.retryExtraction = true; return }
-            if (!await inputsCurrent()) { progress(job, 'source_changed', 'extract', attempt); plan.retryExtraction = true; return }
-            try { units = parseDreamUnits(parse(result), new Set(batch.map(note => note.path)), dreamUnits - count) }
-            catch { invalid = true; progress(job, 'validation_failed', 'extract', attempt) }
           } catch (error) {
             if (error instanceof MemoryComputeError && error.reason === 'context-window-exceeded' && await inputsCurrent()) {
-              progress(job, 'oversized', 'extract', attempt)
+              progress(job, 'oversized', 'consolidate', attempt)
               if (batch.length > 1) await split()
-              // Its persisted note revision is reconsidered when its content changes.
-              else rememberFiles(true)
+              else {
+                oversizedAny = true
+                transaction(() => {
+                  const file = fileRefs[0]!
+                  if (fileCurrent(file)) notes.markProcessed(file.key, file.checkpoint)
+                })
+              }
               return
             }
-            if (error instanceof RequestTimeout) { plan.retryExtraction = true; return }
-            if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'extract', attempt)
+            if (error instanceof RequestTimeout) { retry = true; return }
+            if (error instanceof MemoryDreamStaleError) { progress(job, 'source_changed', 'consolidate', attempt); retry = true; return }
+            if (!isModelTimeout(error)) progress(job, safeDiagnosticReason(error), 'consolidate', attempt)
             stopPass = true
-            plan.retryExtraction = true
+            retry = true
             return
           }
         }
-        if (!units || !await inputsCurrent()) {
-          stopPass = !units
-          plan.retryExtraction = true
+
+        if (!prepared || !await inputsCurrent()) {
+          stopPass = !prepared
+          retry = true
           return
         }
-        rememberFiles()
-        for (const unit of units) extracted.push({ workspace, unit })
-        count = plan.units.length + workspaces.reduce((sum, scope) => sum + mergeDreamUnits(extracted.filter(item => item.workspace === scope).map(item => item.unit)).length, 0)
+
+        const committedReads = new Map<string, { id: string, revision: string, usageVersion: number }>()
+        const committedByPath = new Map<string, { id: string, revision: string, usageVersion: number }>()
+        for (const item of prepared) {
+          if (!await inputsCurrent()) { retry = true; return }
+          const operationId = `dream:${identity.newId()}`
+          const reads = new Map(item.reads.map(ref => [ref.id, committedReads.get(ref.id) ?? ref]))
+          for (const linkedPath of item.linkedPaths) {
+            const committedTarget = committedByPath.get(linkedPath)
+            if (committedTarget) reads.set(committedTarget.id, committedTarget)
+          }
+          try {
+            const receipt = await mutate(() => {
+              if (!current()) throw new MemoryDreamStaleError()
+              return documents.commit({
+                operationId, workspace, path: item.operation.path,
+                expectedRevision: item.before?.revision ?? null,
+                markdown: item.markdown, action: item.operation.action,
+                sources: item.evidence, reads: [...reads.values()], corrections: [], files: item.files,
+              })
+            })
+            operationsUsed++
+            committedPaths.add(item.operation.path)
+            if (receipt.revision !== null) {
+              const nextRead = { id: receipt.documentId, revision: receipt.revision, usageVersion: receipt.usageVersion }
+              committedReads.set(receipt.documentId, nextRead)
+              committedByPath.set(item.operation.path, nextRead)
+            }
+            committed(receipt)
+            diagnostics.emit({
+              event: 'operation.progress', operation: 'memory.write', stage: 'applied',
+              identities: { requestId: operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
+              metrics: { count: item.evidence.length },
+            })
+          } catch (error) {
+            if (!effects.holds(job)) return
+            progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'consolidate')
+            retry = true
+            return
+          }
+        }
+
+        const hitLimit = prepared.length > 0 && prepared.length >= remainingAtStart
+        const coveredPaths = new Set(prepared.flatMap(item => item.operation.dailyPaths))
+        const uncovered = hitLimit ? fileRefs.filter(file => !coveredPaths.has(file.path)) : []
+        const uncoveredPaths = new Set(uncovered.map(file => file.path))
+        if (uncovered.length) retry = true
+
+        const checkpointBatch = await loadFiles(fileRefs, undefined, true)
+        if (!effects.holds(job)) return
+        if (checkpointBatch && fileRefs.some(file => !uncoveredPaths.has(file.path) && checkpointBatch.readObservation(file.workspace, file.path) === undefined)) retry = true
+        transaction(() => {
+          const at = now()
+          let advanced = false
+          for (const file of fileRefs) {
+            if (uncoveredPaths.has(file.path)) continue
+            const unreadable = checkpointBatch && checkpointBatch.readObservation(file.workspace, file.path) === undefined
+            if (!unreadable && fileCurrent(file, checkpointBatch) && notes.markProcessed(file.key, file.checkpoint)) {
+              advanced = true
+              processedAny = true
+            }
+          }
+          if (advanced) store.setMeta('dream.lastProcessedAt', String(at))
+        })
       }
+
       for (const batch of batchDreamNotes(candidates, dreamBatchBytes)) await consume(batch)
     }
-    if (!effects.holds(job)) return undefined
-    for (const workspace of workspaces) for (const unit of mergeDreamUnits(extracted.filter(item => item.workspace === workspace).map(item => item.unit))) {
-      const operationId = `dream:${identity.newId()}`
-      plan.units.push({ workspace, operationId, unit, state: 'pending' })
-    }
-    if (stopPass && !plan.files.length) return 'retry'
-    persist(job, plan)
-    if (stopPass) return 'retry'
-    return plan
-  }
-  async function integrate(job: Effect, plan: DreamPlan, item: PlannedUnit): Promise<'done' | 'retry' | 'wait'> {
-    const committedReceipt = documents.receipt(item.workspace, item.operationId)
-    if (committedReceipt) {
-      await advanceOwnReads(plan, item.workspace, committedReceipt)
-      if (committedReceipt.revision && !plan.tags.some(tag => tag.workspace === item.workspace && tag.path === committedReceipt.path)) {
-        plan.tags.push({ workspace: item.workspace, path: committedReceipt.path, revision: committedReceipt.revision, documentId: committedReceipt.documentId, attempted: false })
-      }
-      return 'done'
-    }
-    const files = plan.files.filter(file => file.workspace === item.workspace && item.unit.paths.includes(file.path))
-    if (files.length !== unique(item.unit.paths).length) throw new MemoryDreamStaleError()
-    function sourceQuestionContext(id: string) {
-      if (source(id)?.outcome !== 'document-clarification') return notes.sourceQuestionContext(id)
-      const refs = documents.answerDependencies(id)
-      return { current: refs.length > 0 && readable(id) && refsCurrent(refs), refs }
-    }
-    const scope = scopedDocuments(item.workspace)
-    const readSources = new Map(allSources(files.flatMap(file => file.sources)).map(ref => [ref.id, ref]))
-    const toolAttempts: ReturnType<typeof createMemoryDreamTools<ToolSnapshot>>[] = []
-    const newTools = () => createMemoryDreamTools({ unit: item.unit, documents: scope,
-      allowsDraftMaterial: markdown => materialAllowed(markdown, [...readSources.values()]), onRead(snapshot) {
-        for (const ref of allSources([...readSources.values(), ...snapshot.sourceTokens, ...snapshot.correctionSources ?? []])) readSources.set(ref.id, ref)
-      } })
-    const questionContexts = new Map<string, DocumentSourceRef[]>()
-    const refs = () => [...readSources.values()]
-    const toolReads = () => toolAttempts.flatMap(tools => tools.reads())
-    const readDocuments = () => toolReads().flatMap(snapshot => [...snapshot.backing ? [snapshot.backing] : [], ...snapshot.supporting])
-    const current = (batch?: MemoryDocumentReadBatch) => effects.holds(job) && files.every(ref => fileCurrent(ref, batch)) && extractedReadsCurrent(files, batch) && refsCurrent(refs())
-      && refs().every(ref => { const original = source(ref.id); return original && eligible(original) }) && toolAttempts.every(tools => tools.current(batch && (path => batch.read(item.workspace, path))))
-      && [...questionContexts].every(([id, refs]) => { const current = sourceQuestionContext(id);
-        return current.current && JSON.stringify(current.refs) === JSON.stringify(refs) })
-      && readDocuments().every(snapshot => {
-        const latest = documents.read(item.workspace, snapshot.path, { physical: batch?.physical(item.workspace, snapshot.path) })
-        return latest?.id === snapshot.id && latest.revision === snapshot.revision && latest.usageVersion === snapshot.usageVersion
-      })
-    const observe = observeReadset(() => [...dependencies(files),
-      ...toolAttempts.flatMap(tools => tools.checkedPaths().map(path => ({ workspace: item.workspace, path }))), ...readDocuments()], current)
-    const skip = async () => {
-      if (!await verified(observe)) throw new MemoryDreamStaleError()
-      progress(job, 'deferred', 'integrate')
-      return 'done' as const
-    }
-    if (!await verified(observe)) throw new MemoryDreamStaleError()
-    let repair: { reason: string, rejected: { action: string, target_path: string, markdown: string } } | undefined
-    // One repair belongs to the same unit/operation. Both attempts retain their
-    // reads, but each gets an isolated draft so a wrong target can be corrected.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (!await verified(observe)) throw new MemoryDreamStaleError()
-      const tools = newTools()
-      toolAttempts.push(tools)
-      const project = (text: string) => documents.projectErasedLocators?.(item.workspace, text) ?? text
-      const raw = await calculateStage({ job, stage: 'integrate', system: DREAM_INTEGRATE_SYSTEM,
-        input: { unit: item.unit, ...(repair ? { repair } : {}) },
-        sourceIds: () => [...readSources.keys()], current, observe, tools: { tools: tools.tools, executeTool: tools.executeTool } })
-      if (raw === undefined) { progress(job, 'external_wake', 'integrate'); return 'wait' }
-      if (!await verified(observe)) throw new MemoryDreamStaleError()
-      let output: unknown
-      try { output = parse(raw) }
-      catch (error) { progress(job, 'validation_failed', 'integrate', attempt); throw error }
-      const deferred = deferredReply.safeParse(output)
-      if (deferred.success) return tools.searchIncomplete() ? 'retry' : skip()
-      let draft: ReturnType<typeof tools.finish>
-      try {
-        const checked = await scope.load([...tools.checkedPaths(), ...item.unit.paths], null)
-        draft = tools.finish(output, checked.read)
-      }
-      catch (error) { progress(job, 'validation_failed', 'integrate', attempt); throw error }
-      const substantive = draft.before && dreamChangesConclusion(draft.before.markdown, draft.markdown, item.unit.paths)
-      if (!substantive && draft.receipt.action === 'CORRECT') throw new Error('memory-dream-correction-without-change')
-      // Search hits stay in the authorization/read set. Only an actual citation makes a hit evidence for a direct write.
-      let sources: DocumentSourceRef[] = []
-      let corrections: DocumentCorrection[] = []
-      if (!substantive) {
-        const cited = new Set(memoryDocumentLinks(draft.markdown).map(link => link.split('#')[0]))
-        sources = allSources([...files.flatMap(file => file.sources), ...draft.reads.filter(read => cited.has(read.path))
-          .flatMap(read => [...read.sourceTokens, ...read.correctionSources ?? []])])
-      }
-      const restrictions = documents.sourceRestrictions(item.workspace)
-      const canonicalSources: Array<{ sourceId: string, version: number, author: MemorySource['author'], text: string,
-        question: string | null, questionUnavailable: boolean, at: number, timezone: string }> = []
-      for (const ref of substantive ? readSources.values() : sources) {
-        const { id } = ref
-        const original = source(id)
-        if (!original?.text) throw new MemoryDreamStaleError()
-        if (!substantive && !original.question) continue
-        const context = sourceQuestionContext(id)
-        const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
-        const questionAllowed = Boolean(original.question) && wholeSource && context.current
-          && !documentSourceRestricted({ id, token: ref.token }, restrictions)
-          && context.refs.every(ref => !documentSourceRestricted(ref, restrictions))
-          && (!context.refs.length || refsCurrent(context.refs))
-          && allowsText(original.question!, original)
-          && context.refs.every(ref => { const dependency = source(ref.id); return dependency?.text && allowsText(dependency.text, dependency) })
-        if (questionAllowed) {
-          questionContexts.set(id, context.refs)
-          for (const dependency of allSources([...readSources.values(), ...context.refs])) readSources.set(dependency.id, dependency)
-        }
-        if (substantive) canonicalSources.push({ sourceId: original.id, version: original.version, author: original.author,
-          text: project(projectDocumentSource(original.text, ref, restrictions)), question: questionAllowed ? project(original.question!) : null,
-          questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed, at: original.at, timezone: original.timezone })
-      }
-      if (!materialAllowed(draft.markdown, refs()) || !await verified(observe)) throw new MemoryDreamStaleError()
-      if (!substantive) {
-        if (!sources.length || files.some(file => !file.sources.length)
-          || sources.some(ref => documentSourceRestricted(ref, restrictions))) throw new MemoryDreamStaleError()
-      } else {
-        const reviewed = await calculateStage({ job, stage: 'verify', system: DREAM_VERIFY_SYSTEM,
-          input: { unit: item.unit, action: draft.receipt.action, note: draft.receipt.note, target_path: draft.path,
-            before: draft.before && { path: draft.before.path, revision: draft.before.revision, markdown: draft.before.markdown },
-            proposed: draft.markdown, documents: toolReads().map(doc => ({ path: doc.path, revision: doc.revision, markdown: doc.markdown, applicability: doc.applicability })),
-            canonicalSources },
-          sourceIds: () => [...readSources.keys()], current, observe })
-        if (reviewed === undefined) { progress(job, 'external_wake', 'verify'); return 'wait' }
-        if (!await verified(observe)) throw new MemoryDreamStaleError()
-        let review: ReturnType<typeof validateDreamReview>
-        try {
-          review = validateDreamReview({ value: parse(reviewed), action: draft.receipt.action, sources: refs(), source,
-            reads: toolReads(), unitSources: files.map(file => file.sources.map(ref => ref.id)),
-            restricted: ref => documentSourceRestricted(ref, documents.sourceRestrictions(item.workspace)) })
-        } catch (error) { progress(job, 'validation_failed', 'verify'); throw error }
-        if (review.verdict === 'deferred') { progress(job, 'deferred', 'verify'); return skip() }
-        if (review.verdict === 'rejected') {
-          progress(job, 'validation_failed', 'verify', attempt)
-          if (attempt === 1 || !materialAllowed(review.reason, refs())) return 'retry'
-          repair = { reason: review.reason, rejected: { action: draft.receipt.action, target_path: draft.path, markdown: draft.markdown } }
-          continue
-        }
-        sources = review.sources
-        corrections = review.corrections
-      }
-      const correctionSources = corrections.flatMap(correction => toolReads().find(snapshot => snapshot.path === correction.path
-        && snapshot.revision === correction.revision)?.sourceTokens ?? [])
-      const evidence = allSources([...(draft.before?.sourceTokens ?? []), ...sources, ...sources.flatMap(ref => questionContexts.get(ref.id) ?? []), ...correctionSources])
-      if (!await verified(observe)) throw new MemoryDreamStaleError()
-      const receipt = await mutate(() => {
-        if (!current()) throw new MemoryDreamStaleError()
-        return documents.commit({ operationId: item.operationId, workspace: item.workspace, path: draft.path,
-        expectedRevision: draft.before?.revision ?? null, markdown: draft.markdown, action: draft.receipt.action,
-        sources: evidence, reads: readDocuments(), corrections,
-          files: unique([...files.map(file => JSON.stringify({ path: file.path, revision: file.revision })),
-            ...toolReads().filter(snapshot => snapshot.path.startsWith('daily/')).map(snapshot => JSON.stringify({ path: snapshot.path, revision: snapshot.revision }))])
-            .map(value => JSON.parse(value) as { path: string, revision: string }) })
-      })
-      committed(receipt)
-      await advanceOwnReads(plan, item.workspace, receipt)
-      diagnostics.emit({ event: 'operation.progress', operation: 'memory.write', stage: 'applied',
-        identities: { requestId: item.operationId, jobId: job.key, generation: job.generation, resourceId: receipt.documentId, methodId: receipt.action },
-        metrics: { count: evidence.length } })
-      if (receipt.revision) {
-        const tag = plan.tags.find(tag => tag.workspace === item.workspace && tag.path === receipt.path)
-        if (tag) { tag.revision = receipt.revision; tag.documentId = receipt.documentId; tag.attempted = false }
-        else plan.tags.push({ workspace: item.workspace, path: receipt.path, revision: receipt.revision, documentId: receipt.documentId, attempted: false })
-      }
-      return 'done'
-    }
-    return 'retry'
-  }
-  async function tag(job: Effect, plan: DreamPlan) {
-    let retry = false
-    for (const item of plan.tags) {
-      if (item.attempted || !effects.holds(job)) continue
-      const batch = await loadFiles([item], undefined, true)
-      const targetView = batch ? batch.readObservation(item.workspace, item.path) : policy.read(item.workspace, item.path)
-      if (targetView === undefined) { retry = true; continue }
-      // Only a conclusive observation consumes this stage. The ledger below is
-      // durable before model I/O, including across a plan replay.
-      item.attempted = true
-      const target = targetView?.backing
-      if (!targetView || targetView.applicability.state !== 'current') continue
-      if (!target || target.revision !== item.revision || !refsCurrent(target.sources)) continue
-      const operationId = `tag:${identity.hash(JSON.stringify([item.workspace, target.id, target.revision]))}`
-      if (documents.tagAttempt(item.workspace, operationId)) continue
-      const attempt = { workspace: item.workspace, operationId, path: item.path, revision: target.revision }
-      documents.recordTagAttempt({ ...attempt, state: 'attempted' })
-      const fail = (reason: string) => documents.recordTagAttempt({ ...attempt, state: 'failed', reason })
-      const current = (batch?: MemoryDocumentReadBatch) => {
-        const view = (batch ?? policy).read(item.workspace, item.path)
-        return effects.holds(job) && refsCurrent(target.sources) && view?.policyToken === targetView.policyToken
-          && view.backing?.revision === target.revision && view.backing.usageVersion === target.usageVersion
-      }
-      const observe = observeReadset(() => [item], current)
-      let receipt: DocumentReceipt
-      try {
-        const result = await calculateStage({ job, stage: 'tag', system: DREAM_TAG_SYSTEM,
-          input: { path: target.path, markdown: targetView.markdown }, sourceIds: () => target.sources.map(ref => ref.id), current, observe })
-        if (result === undefined) { progress(job, 'unavailable', 'tag'); fail('unavailable'); continue }
-        if (!await verified(observe)) { progress(job, 'source_changed', 'tag'); fail('unavailable'); continue }
-        let reply: ReturnType<typeof tagReply.parse>
-        try { reply = tagReply.parse(parse(result)) }
-        catch (error) { progress(job, 'validation_failed', 'tag'); throw error }
-        const markdown = updateMemoryFrontmatter(target.markdown, { memory_tags: unique(reply.memory_tags) })
-        if (!materialAllowed(markdown, target.sources)) { fail('rejected'); continue }
-        if (markdown === target.markdown) { documents.recordTagAttempt({ ...attempt, state: 'completed' }); continue }
-        receipt = await mutate(() => {
-          if (!current()) throw new MemoryDreamStaleError()
-          return documents.commit({ operationId,
-          workspace: item.workspace, path: target.path, expectedRevision: target.revision, markdown, action: 'TAG',
-          sources: target.sources, reads: [target] })
-        })
-      } catch (error) {
-        const saved = documents.receipt(item.workspace, operationId)
-        if (!saved) {
-          if (!isModelTimeout(error)) progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'tag')
-          fail(isModelTimeout(error) ? 'timeout' : 'failed')
-          continue
-        }
-        receipt = saved
-      }
-      // If publication stops here, recovery replays the receipt, never the model request.
-      committed(receipt)
-      await advanceOwnReads(plan, item.workspace, receipt)
-      persist(job, plan)
-    }
-    return retry
-  }
-  async function runJob(job: Effect): Promise<Outcome> {
-    if (notes.needsRecovery() || documents.needsRecovery()) await mutate(() => {
-      if (notes.needsRecovery()) notes.recover()
-      if (documents.needsRecovery()) documents.recover()
-    })
-    let plan = planSchema.safeParse(job.payload).data
-    if (!plan) {
-      const extracted = await extract(job)
-      if (extracted === 'wait' || extracted === 'retry') return extracted
-      plan = extracted
-    }
-    if (!plan) return 'done'
-    // A journal receipt can precede the effect-plan write when the process stops. Only exact owned receipts
-    // may advance these reads; unrelated later revisions never count as our continuation.
-    const priorPlan = JSON.stringify(plan)
-    for (const unit of plan.units) {
-      const receipt = documents.receipt(unit.workspace, unit.operationId)
-      if (receipt) await advanceOwnReads(plan, unit.workspace, receipt)
-    }
-    for (const item of plan.tags) {
-      const id = item.documentId ?? documents.registered(item.workspace).find(row => row.path === item.path && row.state !== 'forgotten')?.id
-      if (!id) continue
-      const receipt = documents.receipt(item.workspace, `tag:${identity.hash(JSON.stringify([item.workspace, id, item.revision]))}`)
-      if (receipt) {
-        if (!item.attempted) { committed(receipt); item.attempted = true }
-        await advanceOwnReads(plan, item.workspace, receipt)
-      }
-    }
-    if (priorPlan !== JSON.stringify(plan)) persist(job, plan)
-    const verifiedPlan = await loadFiles(plan.files, undefined, true)
-    const unknown = new Set(plan.files.filter(file => verifiedPlan && verifiedPlan.readObservation(file.workspace, file.path) === undefined))
-    if (plan.files.some(file => !unknown.has(file) && !fileCurrent(file, verifiedPlan))) {
-      if (effects.holds(job)) effects.amend(job, {})
-      return 'retry'
-    }
-    let retry = unknown.size > 0, wait = false, unitTimedOut = false
-    for (const item of plan.units) {
-      if (item.state === 'deferred' || documents.retiredClarification(item.workspace, item.operationId)) {
-        item.state = 'done'
-        persist(job, plan)
-      }
-      if (item.state === 'done' || [...unknown].some(file => file.workspace === item.workspace && item.unit.paths.includes(file.path))) continue
-      try {
-        const outcome = await integrate(job, plan, item)
-        if (outcome === 'done') { item.state = outcome; persist(job, plan) }
-        else if (outcome === 'wait') wait = true
-        else retry = true
-      } catch (error) {
-        if (!effects.holds(job)) return 'done'
-        if (isModelTimeout(error)) { unitTimedOut = true; break }
-        progress(job, error instanceof MemoryDreamStaleError ? 'source_changed' : safeDiagnosticReason(error), 'integrate')
-        if (error instanceof MemoryDreamStaleError) { effects.amend(job, {}); return 'retry' }
-        retry = true
-      }
-    }
-    if (unitTimedOut) retry = true
-    else if (await tag(job, plan)) retry = true
-    const checkpoint = await loadFiles(plan.files, undefined, true)
+
     if (!effects.holds(job)) return 'done'
-    if (checkpoint && plan.files.some(file => checkpoint.readObservation(file.workspace, file.path) === undefined)) retry = true
-    if (retry || wait) {
-      // Successful paths can checkpoint independently; the durable plan still retains failed units for retries.
-      transaction(() => checkpointFiles(plan, now(), checkpoint))
-      return retry ? 'retry' : 'wait'
-    }
-    return complete(job, plan, checkpoint)
+    if (retry) return 'retry'
+    transaction(() => {
+      const at = now()
+      store.setMeta('dream.lastCheckedAt', String(at))
+      store.setMeta('dream.lastCheckResult', oversizedAny ? 'size-limit' : processedAny ? 'processed' : 'empty')
+      const jobId = store.meta(MANUAL_JOB)
+      if (jobId && store.meta(MANUAL_FOLLOWUP) === jobId) {
+        store.setMeta(MANUAL_FOLLOWUP, '')
+        effects.queue(DREAM, DAILY, null)
+        void effects.wake()
+        return
+      }
+      if (jobId) {
+        const receipt: MemoryDreamStatus = { state: 'idle', ...dreamHistory(store), jobId, completedAt: at }
+        store.setMeta(receiptKey(jobId), JSON.stringify(receipt))
+        store.setMeta(MANUAL_JOB, '')
+      }
+      effects.finishGeneration(job)
+      schedule()
+    })
+    return 'done'
   }
+
   effects.runs(DREAM, async jobs => {
     const outcomes = new Map<string, Outcome>()
     for (const job of jobs) {
@@ -748,7 +724,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     }
     return outcomes
   }, attempts => Math.min(defaults.retryMaxMs, defaults.retryMs * 2 ** attempts))
-  documents.settleInterruptedTagAttempts()
   transaction(() => { if (!effects.get(DREAM, DAILY)) schedule() })
   return {
     status,
@@ -763,10 +738,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       const state = status().state
       const joined = store.meta(MANUAL_JOB)
       const jobId = joined || operationId
-      const selectedInputs = planSchema.safeParse(effects.get(DREAM, DAILY)?.payload).success
       transaction(() => {
-        if (!joined && (active || selectedInputs)) store.setMeta(MANUAL_FOLLOWUP, jobId)
-        if (state !== 'running' && state !== 'queued') effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null)
+        if (!joined && active) store.setMeta(MANUAL_FOLLOWUP, jobId)
+        if (state !== 'running' && state !== 'queued') effects.queue(DREAM, DAILY, null)
         store.setMeta(MANUAL_JOB, jobId)
         store.recordCommand(key, 'dream.request', jobId, null)
       })
@@ -774,13 +748,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       return { ...status(), jobId, completedAt: null }
     },
     run() {
-      transaction(() => effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null))
+      transaction(() => effects.queue(DREAM, DAILY, null))
       void effects.wake()
     },
     withdraw(sourceId: string) {
       const job = effects.get(DREAM, DAILY)
-      const plan = planSchema.safeParse(job?.payload).data
-      if (job && (!plan || plan.files.some(file => file.sources.some(ref => ref.id === sourceId)))) {
+      if (job && active) {
         transaction(() => {
           effects.cancel(DREAM, DAILY)
           if (store.meta(MANUAL_JOB)) {
@@ -790,6 +763,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           } else schedule()
         })
       }
+      void sourceId
     },
   }
 }

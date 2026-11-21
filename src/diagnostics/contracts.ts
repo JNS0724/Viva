@@ -24,7 +24,7 @@ export const EVENTS = ['operation.start', 'operation.end', 'operation.progress',
   'context.dropped', 'sink.status', 'diagnostics.cleared', 'health'] as const
 export type DiagnosticEventName = typeof EVENTS[number]
 export const STAGES = ['start', 'ready', 'connecting', 'recovering', 'unavailable', 'closed',
-  'profile', 'onboarding', 'cleanup', 'revision', 'file-profile', 'extract', 'integrate', 'verify', 'tag',
+  'profile', 'onboarding', 'cleanup', 'revision', 'file-profile', 'extract', 'integrate', 'verify', 'tag', 'consolidate',
   'queued', 'running', 'deferred', 'waiting', 'draining', 'sending', 'settled', 'injected',
   'received', 'responded', 'applied', 'first-response', 'complete', 'failed', 'paused',
   'claim', 'dispatch', 'report', 'checkpoint', 'lexical', 'vector', 'fusion', 'relations', 'rebuild'] as const

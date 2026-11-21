@@ -3,6 +3,7 @@ import { createRequestBudget, RequestTimeout } from '../../shared/request-budget
 import { z } from 'zod'
 import { beginDiagnosticOperation } from '../../diagnostics/operation.ts'
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
+import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryEmbedder } from '../contracts/embedding.ts'
 import type {
   MemoryFileCreateRequest, MemoryFileEditRequest,
@@ -83,7 +84,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   diagnostics?: DiagnosticPort,
   resources: MemoryRuntimeResources,
   presentation?: MemoryPresentation,
-  compute: (request: MemoryCompute, signal?: AbortSignal, tools?: import('../contracts/compute.ts').MemoryComputeTools) => Promise<string> | null,
+  compute: (request: MemoryCompute, signal?: AbortSignal, tools?: MemoryComputeTools) => Promise<string> | null,
   route: () => Route | null,
   embedder?: Pick<MemoryEmbedder, 'fingerprint' | 'dimensions' | 'embedBatch' | 'close'>,
   dailyNotes?: boolean | DailyMemorySettings,
@@ -339,7 +340,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const ids = new Set([id, ...anchors])
     const affected = new Set(sources)
     for (const source of affected) {
-      for (const child of documents?.dependentAnswerIds(source) ?? []) affected.add(child)
       for (const copy of store.manualFileCopies(source)) affected.add(copy.source)
     }
     if (affected.size) {
@@ -506,9 +506,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   queueRestrictedRebuilds = notes?.queueRestrictedRebuilds
   notes?.storage.recover()
   documents?.recover()
-  // Retire work queued by older versions before this owner can admit a turn.
   store.tx(() => {
-    documents?.retireClarifications()
     store.dispatch.retireFileClarifications()
   })
   documentsReady = true
@@ -645,9 +643,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       return !source || documentReferencesRestricted([{ id, token: resources.sourceToken(source) }])
     })
   }
-  function clarificationAnswerParents(source: MemorySource) {
-    return source.outcome === 'document-clarification' ? documents?.answerDependencies(source.id) ?? [] : undefined
-  }
   function documentReferencesRestricted(refs: readonly DocumentSourceRef[]): boolean {
     const checkedProofs = new Set<string>(), expanded = new Set<string>()
     const pending = [...refs]
@@ -665,9 +660,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
           ?? useRestrictions.sources(resources.sourceWorkspace(source)))) return true
       if (expanded.has(source.id)) continue
       expanded.add(source.id)
-      const clarification = clarificationAnswerParents(source)
-      if (clarification && !clarification.length) return true
-      const parents = [...clarification ?? [], ...store.manualFileParents(source.id)]
+      const parents = store.manualFileParents(source.id)
       if (parents.some(parent => !canonicalSource(parent.id))) return true
       pending.push(...parents)
     }
@@ -861,7 +854,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       if (!parent) continue
       const root = cut ?? { id, token: resources.sourceToken(parent) }
       const copies = store.manualFileCopies(id).filter(copy => documentSourceRestricted(copy.reference, [root]))
-      const children = [...documents?.dependentAnswerIds(id, cut) ?? [], ...copies.map(copy => copy.source)]
+      const children = copies.map(copy => copy.source)
       for (const child of children) {
         if (expanded.has(child)) continue
         expanded.add(child)
@@ -974,9 +967,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   function fileSourceAllowsUse(id: string) {
     const source = canonicalSource(id)
     if (!source?.text) return false
-    const clarification = clarificationAnswerParents(source)
-    return (!clarification || clarification.length > 0)
-      && !documentReferencesRestricted([...clarification ?? [], ...store.manualFileParents(source.id)])
+    return !documentReferencesRestricted(store.manualFileParents(source.id))
   }
   function sourceCurrent(id: string) {
     const source = canonicalSource(id)
@@ -1196,7 +1187,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const result = fileRetrieval?.nodeSearch({ workspaces: visibleWorkspaces(origin), query: request.query, limit: request.limit, allows: view => fileAllowsOrigin(view, origin, scope) })
       return result ? retainNodeSearchPacket(request.session, result) : textOf({ status: 'unavailable' })
     }
-    if (request.op === 'clarify') return textOf({ status: 'rejected', reason: 'expired-ref' })
     if (request.op === 'recall') {
       if (request.scope === 'project' && !origin.project) return textOf({ status: 'rejected', reason: 'project-unavailable' })
       const query = fileQuery(request, origin)
@@ -1527,7 +1517,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     runDocumentDream: () => { dream?.run(); return effects.wake() },
     readDocument: documents?.read,
     listDocuments: documents?.list,
-    pendingDocumentClarifications: documents?.pending,
     fileDependenciesCurrent,
     loadFileEvidenceCheck,
     async undoDocument(input: Parameters<NonNullable<typeof documents>['undo']>[0]) {

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { maskMemoryWikiLinks, parseMemoryMarkdown } from '../src/memory/core/memory-markdown.ts'
-import { memoryDocumentLinks } from '../src/memory/core/memory-dream-tools.ts'
 
 const length = (text: string) => new TextEncoder().encode(text).byteLength
 function checkSlices(markdown: string, maxBytes: number) {
@@ -100,11 +99,6 @@ test('table cells and emphasis report links without promoting inline code', () =
   assert.deepEqual(parseMemoryMarkdown(markdown).links, [
     { path: 'digest/wiki/a.md', line: 3 }, { path: 'digest/wiki/a.md', line: 5 },
   ])
-})
-
-test('dream link compatibility validates paths and deduplicates anchor references', () => {
-  assert.deepEqual(memoryDocumentLinks('[[../bad.md]] [[digest/wiki/a.md#x|one]] [[digest/wiki/a.md#x|two]] [[daily/2026-11-16.md]]'),
-    ['digest/wiki/a.md#x', 'daily/2026-11-16.md'])
 })
 
 test('invalid frontmatter and unusable byte budgets are rejected without partial output', () => {

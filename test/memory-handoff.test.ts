@@ -835,7 +835,7 @@ for (const failure of ['invalid-json', 'http-error'] as const) {
     const app = await setup(t, request => {
       const system = JSON.stringify(request.system)
       if (system.includes('整理最近完成的会话回合')) return { text: JSON.stringify({ status: 'write', title: '周报', markdown: '周报提交邮箱已记录。' }) }
-      if (system.includes('Extract reusable abstractions')) {
+      if (system.includes('Consolidate reusable abstractions')) {
         dreamRequests++
         return failure === 'http-error' ? { httpError: 503 } : { text: 'not JSON' }
       }
@@ -2476,52 +2476,6 @@ test('the real DSH send surface removes a stopped original and still delivers a 
   const continued = app.call<AgentInfo>('agent:info')
   assert.equal(continued.conversationId, first.conversationId)
   assert.notEqual(continued.sessionId, first.sessionId)
-})
-
-test('upgrading retires an old Dream question before related recall in a real foreground turn', { timeout: 45_000 }, async t => {
-  const topic = '会场安排', earlier = '会场安排原先是北厅，南厅尚未确认。', query = '查一下会场安排'
-  const app = await setup(t, request => {
-    if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
-      return { text: JSON.stringify({ status: 'write', title: topic, markdown: earlier }) }
-    }
-    if (questionOf(request.messages) !== query && lastWords(request.messages) !== query) return null
-    const result = modelToolResults(request, 'memory_recall').at(-1)
-    if (!result) return { tool: { name: 'memory_recall', input: { query: topic } } }
-    return { text: '已查看已有的会场记录。' }
-  }, { dailyNotes: true })
-  const sourceId = randomUUID()
-  await app.call('agent:prompt', earlier, [], sourceId)
-  for (const prompt of ['准备下一次见面。', '先检查交通。', '还是要确认人数。', '我再同步日程。']) await app.ask(prompt)
-  const memory = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
-  const workId = `dream:${randomUUID()}`
-  try {
-    const summary = await eventually(async () => (await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'daily' })).items[0])
-    assert.ok(summary)
-    const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', summary.identity)
-    const original = memory.readSource(sourceId)!
-    const documents = openMemoryDocuments({ db: memory.db, root: memory.fileRoot, deferRecovery: true, source(id) {
-      const row = memory.readSource(id)
-      return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
-    } })
-    const originalRef = { id: original.id, token: memorySourceToken(original) }
-    const seeded = documents.commit({ operationId: randomUUID(), workspace: file.identity.workspace, path: 'digest/wiki/follow-up-venue.md',
-      action: 'CREATE', expectedRevision: null, markdown: earlier, sources: [originalRef], reads: [] })
-    const digest = documents.read(file.identity.workspace, seeded.path)!
-    documents.defer({ operationId: workId, workspace: file.identity.workspace, unit: { name: topic, bucket: 'personal', summary: '确认本次会场安排', paths: [file.path] },
-      reason: '会场尚有不确定性', sources: [originalRef], reads: [{ id: digest.id, revision: digest.revision, usageVersion: digest.usageVersion }], readPolicies: [],
-      files: [{ path: file.path, revision: file.version.contentRevision, policyToken: file.version.policyToken }],
-    })
-    await app.stopBackend()
-    await app.startBackend()
-    const offset = app.events.length, from = app.model.requests.length
-    await app.ask(query)
-    const answers = app.model.requests.slice(from).flatMap(raw => modelToolResults(raw as Request, 'memory_recall'))
-    assert.ok(answers.length > 0)
-    assert.doesNotMatch(JSON.stringify(answers), /"clarification"|pending_clarification|memory-clarify:file:/)
-    assert.ok(!app.events.slice(offset).some(event => event.type === 'question'))
-    assert.ok(!documents.pending(file.identity.workspace).some(work => work.operationId === workId
-      && (work.status === 'pending_clarification' || work.status === 'ready')))
-  } finally { memory.close() }
 })
 
 test('removing the last model from an unconfirmed stop enters setup without retaining the retired session', { timeout: 40_000 }, async t => {

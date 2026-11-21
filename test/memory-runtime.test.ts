@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import { createEffects } from '../src/backend/effects.ts'
 import { memoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
-import { DREAM_EXTRACT_SYSTEM, DREAM_INTEGRATE_SYSTEM, DREAM_VERIFY_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { dreamModelStep } from './fixtures/dream-model.ts'
@@ -39,8 +39,8 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
         return JSON.stringify({ status: 'write', title: '周报安排', markdown: '周五提交周报。草稿尚未完成。' })
       }
       assert.equal(job.stage, 'dream')
-      assert.notEqual(job.system, DREAM_VERIFY_SYSTEM)
-      return dreamModelStep(job, tools, { name: '周报安排', summary: '每周五提交周报', evidenceId: ids[0] })
+      assert.equal(job.system, DREAM_CONSOLIDATE_SYSTEM)
+      return dreamModelStep(job, { name: '周报安排', summary: '每周五提交周报' }, tools)
     },
   })
   defer(() => memory.close())
@@ -58,7 +58,7 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
   assert.match(recalled.notes[0].markdown, /草稿尚未完成/)
   now = Date.parse('2026-11-03T23:00:00Z')
   await memory.wake()
-  assert.deepEqual(stages, ['note', 'dream', 'dream', 'dream'])
+  assert.deepEqual(stages, ['note', 'dream'])
   assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const document = store.db.prepare('SELECT sources FROM memory_documents').get()!
   assert.deepEqual(new Set(JSON.parse(String(document.sources)).map((ref: { id: string }) => ref.id)), new Set(ids))
@@ -136,18 +136,14 @@ test('document consolidation waits for the draft before checkpointing and retrie
     async compute(job, _signal, tools) {
       if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', markdown: fact })
       assert.equal(job.stage, 'dream')
-      if (job.system === DREAM_EXTRACT_SYSTEM) {
-        const input = JSON.parse(job.input)
-        assert.equal(input.maxUnits, 5)
-        if (++dreams === 1) return '{"units": ['
-        assert(input.retry)
-      }
-      assert.notEqual(job.system, DREAM_VERIFY_SYSTEM)
-      if (job.system === DREAM_INTEGRATE_SYSTEM) {
-        beganDraft.resolve()
-        await completeDraft.promise
-      }
-      return dreamModelStep(job, tools, { summary: fact })
+      assert.equal(job.system, DREAM_CONSOLIDATE_SYSTEM)
+      const input = JSON.parse(job.input)
+      assert.equal(input.maxOperations, 5)
+      if (++dreams === 1) return '{"operations": ['
+      assert(input.retry)
+      beganDraft.resolve()
+      await completeDraft.promise
+      return dreamModelStep(job, { summary: fact }, tools)
     },
   })
   defer(() => memory.close())
@@ -190,7 +186,7 @@ test('consolidation groups the two-day window by byte budget, bisects explicit c
         assert.equal([...notes[0].markdown.replace(/\n\n\[truncated\]$/u, '')].length, 60_000)
         assert.match(notes[0].markdown, /\[truncated\]$/u)
       }
-      return JSON.stringify({ units: [] })
+      return JSON.stringify({ operations: [] })
     },
   })
   defer(() => memory.close())
@@ -321,7 +317,7 @@ for (const extraction of ['partial', 'empty'] as const) test(`daily files retain
         return JSON.stringify({ status: 'write', title: '周报安排', markdown: text })
       }
       assert.equal(job.stage, 'dream')
-      return dreamModelStep(job, tools, { empty: extraction === 'empty', summary: fact, evidenceId: sourceId })
+      return dreamModelStep(job, { empty: extraction === 'empty', summary: fact, evidenceId: sourceId }, tools)
     },
   })
   defer(() => memory.close())

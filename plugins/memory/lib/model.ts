@@ -23,7 +23,8 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
   if (new Set(tools.map(tool => tool.name)).size !== tools.length) throw new MemoryComputeError('call-failed')
   const names = new Set(tools.map(tool => tool.name))
   const seenCalls = new Set<string>()
-  while (true) {
+  const maxToolRounds = 12
+  for (let round = 0; ; round++) {
     signal.throwIfAborted()
     const assembler = new BlockAssembler()
     let terminal = false
@@ -53,7 +54,7 @@ export async function completeMemoryModel(ctx: Pick<Context, 'llm'>, job: Memory
       const parsed = memoryComputeFailure.safeParse(assembler.finish?.kind)
       throw new MemoryComputeError(parsed.success ? parsed.data : 'call-failed')
     }
-    if (new Set(calls.map(call => call.id)).size !== calls.length || calls.some(call => seenCalls.has(call.id))) {
+    if (new Set(calls.map(call => call.id)).size !== calls.length || calls.some(call => seenCalls.has(call.id)) || round >= maxToolRounds) {
       throw new MemoryComputeError('call-failed')
     }
     for (const call of calls) seenCalls.add(call.id)

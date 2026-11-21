@@ -7,25 +7,24 @@ import { completeMemoryModel } from '../plugins/memory/lib/model.ts'
 import { assertMemoryProviderSupported } from '../plugins/memory/lib/providers.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
-import { DREAM_INTEGRATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
+import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { createVenueModelFixture, venue } from './fixtures/memory-plugin-venue.ts'
 
 const job: MemoryCompute = { id: '1', sourceId: '2', generation: 1, stage: 'note', provider: 'test', model: 'model', system: 'system', input: 'source' }
 
-for (const failed of ['frontmatter_read', 'frontmatter_update'] as const) {
+for (const failed of ['node_search', 'read'] as const) {
   test(`packed Web acceptance cannot report a rejected ${failed} as exercised successfully`, () => {
     const fixture = createVenueModelFixture(), path = 'daily/2026-11-17/venue.md'
-    const request = { system: DREAM_INTEGRATE_SYSTEM, messages: [{ role: 'user', content: [
-      { type: 'text', text: JSON.stringify({ unit: { name: venue.archive, paths: [path] } }) },
+    const request = { system: DREAM_CONSOLIDATE_SYSTEM, messages: [{ role: 'user', content: [
+      { type: 'text', text: JSON.stringify({ notes: [{ path, markdown: venue.facts.join('\n'), sourceIds: ['s1'] }] }) },
     ] }] as Array<{ role: string, content: Array<{ type: string, text?: string, id?: string, name?: string, tool_use_id?: string, content?: string, is_error?: boolean }> }> }
     let rejected = false
-    for (let index = 0; index < 6; index++) {
+    for (let index = 0; index < 3; index++) {
       const response = fixture.decide(request) as { tool: { name: string, input: { path?: string } } }
       assert.ok(response.tool)
-      const { name, input } = response.tool, id = `venue-call-${index}`
+      const { name } = response.tool, id = `venue-call-${index}`
       request.messages.push({ role: 'assistant', content: [{ type: 'tool_use', id, name }] })
-      const content = name === 'node_search' ? [] : name === 'read' ? { path, markdown: venue.facts.join('\n') }
-        : name === 'frontmatter_read' ? { path, metadata: { name: venue.topic } } : { path: input.path, staged: true }
+      const content = name === 'node_search' ? [] : { path, markdown: venue.facts.join('\n') }
       request.messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id,
         is_error: name === failed, content: name === failed ? 'memory-dream-tool-rejected' : JSON.stringify(content) }] })
       if (name === failed) {

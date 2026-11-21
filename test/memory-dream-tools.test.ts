@@ -1,288 +1,83 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { z } from 'zod'
-import { dreamChangesConclusion, createMemoryDreamTools, memoryDocumentLinks, memoryDreamToolDefinitions, MemoryDreamStaleError, searchMemoryNodes } from '../src/memory/core/memory-dream-tools.ts'
+import { createMemoryDreamTools, MemoryDreamStaleError, memoryDocumentLinks, searchMemoryNodes } from '../src/memory/core/memory-dream-tools.ts'
 import type { DreamDocumentSnapshot } from '../src/memory/core/memory-dream-tools.ts'
-import type { MemoryToolInvocation } from '../src/memory/contracts/service.ts'
-import { formatMemoryDocument, parseMemoryDocument } from '../src/memory/core/memory-document.ts'
-import { inspectMemoryDocumentText } from '../src/memory/core/memory-dream-material.ts'
-import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
+import { formatMemoryDocument } from '../src/memory/core/memory-document.ts'
 
-const daily = 'daily/2026-11-16/work.md'
-const oldDaily = 'daily/2026-11-15/work.md'
-const target = 'digest/wiki/work.md'
-const related = 'digest/wiki/release.md'
-const source = { namespace: 'test', sourceId: 'canonical-one', revision: 1 }
-const document = (path: string, name: string, body: string, description = name): DreamDocumentSnapshot => ({
-  path, revision: `${path}:1`, usageVersion: 1, sources: [source],
-  markdown: formatMemoryDocument({ metadata: { name, description, custom: 'retained' }, body }),
+const source = (id: string) => ({ namespace: 'canonical' as const, sourceId: id, revision: 1 })
+const doc = (path: string, name: string, description: string, body: string, revision = 'r1'): DreamDocumentSnapshot => ({
+  path, revision, usageVersion: 1, policyToken: `p-${revision}`, sources: [source(`src-${path}`)],
+  markdown: formatMemoryDocument({ metadata: { name, description }, body }),
 })
-const unit = { name: 'Deployment', bucket: 'wiki' as const, summary: 'Deployment procedure', paths: [daily] }
-const content = (name = 'Deployment', body = `New procedure.\n\n## Sources\nThe decision in [[${daily}]] supports this procedure.`) =>
-  formatMemoryDocument({ metadata: { name, description: 'Deployment procedure', custom: 'retained' }, body })
-function setup(snapshots: DreamDocumentSnapshot[] = [], retired: string[] = []) {
-  const rows = new Map([document(daily, 'Today', 'We changed the deployment process.'), ...snapshots].map(snapshot => [snapshot.path, snapshot]))
-  const seen: string[] = []
-  const tools = createMemoryDreamTools({ unit, documents: { list: () => [...rows.values()], read: path => rows.get(path) ?? null,
-    locatorRetired: path => retired.includes(path) }, onRead: snapshot => seen.push(snapshot.path) })
-  let id = 0
-  const call = (name: string, input: MemoryToolInvocation['input']) => tools.executeTool({ callId: String(++id), name, input })
-  const search = () => call('node_search', { query: 'Deployment' })
-  return { rows, seen, tools, call, search }
-}
 
-test('Dream can choose a new filename after the requested locator is retired', async () => {
-  const { call, search, tools } = setup([], [target])
-  await search()
-  const rejected = await call('write', { path: target, markdown: content() })
+test('read-only dream tools expose only node_search and read and reject unknown tools', async () => {
+  const existing = doc('digest/wiki/deploy.md', 'Deploy', 'Release steps', 'Step 1\nStep 2\nStep 3')
+  const tools = createMemoryDreamTools({ documents: { list: () => [existing], read: p => p === existing.path ? existing : null } })
+  assert.deepEqual(tools.tools?.map(t => t.name), ['node_search', 'read'])
+
+  const rejected = await tools.executeTool({ callId: 'c1', name: 'write', input: { path: existing.path, markdown: 'x' } })
   assert.equal(rejected.state, 'rejected')
-  assert.equal(rejected.content, 'memory-dream-target-unavailable')
-  const fresh = 'digest/wiki/work-2.md'
-  assert.equal((await call('write', { path: fresh, markdown: content() })).state, 'completed')
-  assert.equal(tools.finish({ action: 'CREATE', target_path: fresh, note: 'Fresh path' }).path, fresh)
+  assert.equal(rejected.content, 'memory-dream-tool-not-allowed')
 })
 
-test('six dream tools expose complete JSON schemas and reject extra arguments and unknown tools', async () => {
-  assert.deepEqual(memoryDreamToolDefinitions.map(tool => tool.name), ['node_search', 'read', 'frontmatter_read', 'write', 'edit', 'frontmatter_update'])
-  for (const tool of memoryDreamToolDefinitions) {
-    assert.equal(z.json().safeParse(tool.schema).success, true)
-    assert.equal(typeof tool.schema === 'object' && tool.schema !== null && !Array.isArray(tool.schema) ? tool.schema.type : null, 'object')
-  }
-  const { call } = setup()
-  assert.equal((await call('shell', { command: 'rm' })).state, 'rejected')
-  assert.equal((await call('constructor', {})).state, 'rejected')
-  assert.equal((await call('read', { path: daily, workspace: 'other-owner' })).state, 'rejected')
-  assert.equal((await call('read', { path: '../daily/private.md' })).state, 'rejected')
-  assert.equal((await call('write', { path: daily, markdown: 'overwrite source' })).state, 'rejected')
+test('node_search excludes bodies, tracks partial pages, and read enforces line bounds and bodyRead', async () => {
+  const first = doc('digest/wiki/alpha.md', 'Alpha Guide', 'Release notes', 'Secret body keyword: unicorn\nLine 2')
+  const second = doc('digest/wiki/beta.md', 'Beta Guide', 'Release notes', 'Beta body')
+  const pages: number[] = []
+  const tools = createMemoryDreamTools({
+    documents: {
+      list: () => [first, second],
+      read: p => [first, second].find(item => item.path === p) ?? null,
+      async load(_paths, search) {
+        if (!search) return { list: () => [], read: p => [first, second].find(item => item.path === p) ?? null }
+        const offset = search.page?.offset ?? 0
+        pages.push(offset)
+        if (offset === 0) return { list: () => [first], read: p => [first, second].find(item => item.path === p) ?? null, partial: true, next: { fingerprint: 'fp', offset: 1 } }
+        return { list: () => [second], read: p => [first, second].find(item => item.path === p) ?? null, partial: false }
+      },
+    },
+  })
+
+  // Body-only term must never match node_search.
+  assert.deepEqual(searchMemoryNodes([first, second], 'unicorn'), [])
+
+  const page1 = await tools.executeTool({ callId: 's1', name: 'node_search', input: { query: 'Release' } })
+  assert.equal(page1.state, 'completed')
+  assert.equal(tools.searched(), true)
+  assert.equal(tools.searchIncomplete(), true)
+  assert.equal(tools.bodyRead(first.path), false)
+  assert.deepEqual(JSON.parse(page1.content).partial, true)
+
+  const page2 = await tools.executeTool({ callId: 's2', name: 'node_search', input: { query: 'Release' } })
+  assert.equal(page2.state, 'completed')
+  assert.equal(tools.searchIncomplete(), false)
+  assert.deepEqual(pages, [0, 1])
+
+  const readRes = await tools.executeTool({ callId: 'r1', name: 'read', input: { path: first.path, start_line: 1, end_line: 2 } })
+  assert.equal(readRes.state, 'completed')
+  assert.equal(tools.bodyRead(first.path), true)
+  assert.equal(tools.observed(first.path)?.revision, 'r1')
+
+  const badRange = await tools.executeTool({ callId: 'r2', name: 'read', input: { path: first.path, start_line: 5, end_line: 2 } })
+  assert.equal(badRange.state, 'rejected')
+  assert.equal(badRange.content, 'memory-dream-line-range')
 })
 
-test('node_search ranks only digest metadata across the entire authorized workspace', () => {
-  const irrelevant = Array.from({ length: 100 }, (_, index) => document(`digest/wiki/noise-${index}.md`, 'Other', 'Deployment appears only in the body.'))
-  const exact = document(target, 'Deployment', 'Not returned', 'Release steps')
-  const tagged = document(related, 'Release', 'Secret body')
-  tagged.markdown = formatMemoryDocument({ metadata: { name: 'Release', description: 'Checks', memory_tags: ['Deployment'] }, body: 'Secret body' })
-  const results = searchMemoryNodes([...irrelevant, exact, tagged, document(daily, 'Deployment', 'daily cannot be a node')], 'Deployment', 50)
-  assert.deepEqual(new Set(results.map(result => result.snapshot.path)), new Set([target, related]))
-  assert.equal(results.every(result => result.score > 0), true)
-  assert.deepEqual(searchMemoryNodes([exact], 'unrelated'), [])
-  assert.throws(() => searchMemoryNodes([exact], 'Deployment', 51))
-})
-
-test('node summaries add sources before returning but never expose bodies', async () => {
-  const { search, seen, tools } = setup([document(target, 'Deployment', 'PRIVATE BODY')])
-  const response = await search()
-  assert.equal(response.state, 'completed')
-  assert.equal(response.content.includes('PRIVATE BODY'), false)
-  assert.deepEqual(seen, [target])
-  assert.deepEqual(response.sources, [source])
-  assert.equal(tools.reads()[0]?.path, target)
-})
-
-test('read line ranges are independent of paths; frontmatter reads preserve arbitrary fields', async () => {
-  const { call, rows } = setup()
-  const raw = rows.get(daily)!.markdown
-  const result = await call('read', { path: daily, start_line: 2, end_line: 3 })
-  assert.deepEqual(JSON.parse(result.content), { path: daily, start_line: 2, end_line: 3, markdown: raw.split('\n').slice(1, 3).join('\n') })
-  assert.equal((await call('read', { path: daily, start_line: 3, end_line: 2 })).state, 'rejected')
-  assert.equal((await call('read', { path: daily, start_line: 999 })).state, 'rejected')
-  assert.equal((await call('read', { path: `${daily}:2` })).state, 'rejected')
-  const metadata = JSON.parse((await call('frontmatter_read', { path: daily })).content).metadata as Record<string, unknown>
-  assert.equal(metadata.custom, 'retained')
-})
-
-test('CREATE is isolated, requires search, and returns all canonical reads for commit', async () => {
-  const { tools, call, search, rows, seen } = setup()
-  assert.equal((await call('write', { path: target, markdown: content() })).state, 'rejected')
-  await search()
-  assert.equal((await call('write', { path: target, markdown: content() })).state, 'completed')
-  assert.equal(rows.has(target), false)
-  const staged = await call('read', { path: target })
-  assert.equal(JSON.parse(staged.content).markdown, content())
-  const result = tools.finish({ action: 'CREATE', target_path: target, note: 'Created from the deployment decision.' })
-  assert.equal(result.before, null)
-  assert.equal(result.markdown, content())
-  assert.deepEqual(result.reads.map(read => read.path), [daily])
-  assert.deepEqual(seen, [daily])
-  assert.equal(rows.has(target), false)
-})
-
-test('existing digest needs actual body read, and all six tools operate on one draft', async () => {
-  const original = document(target, 'Deployment', `Old step.\n\n## Sources\n[[${oldDaily}]] supports the old step.\nRelated: [[${related}#Checks|release checks]].`)
-  const { call, search, tools, rows } = setup([original])
-  await search()
-  await call('frontmatter_read', { path: target })
-  assert.equal((await call('write', { path: target, markdown: original.markdown })).content, 'memory-dream-read-target-first')
-  await call('read', { path: target })
-  assert.equal((await call('edit', { path: target, old_text: 'Old step.', new_text: `New step based on [[${daily}]].` })).state, 'completed')
-  assert.equal((await call('frontmatter_update', { path: target, patch: { description: 'Updated procedure', memory_tags: ['Release'] } })).state, 'completed')
-  const result = tools.finish({ action: 'REFINE', target_path: target, note: 'Clarified the same procedure.' })
-  const parsed = parseMemoryDocument(result.markdown)
-  assert.equal(parsed.metadata.custom, 'retained')
-  assert.equal(parsed.metadata.description, 'Updated procedure')
-  assert.deepEqual(parsed.metadata.memory_tags, ['Release'])
-  assert.equal(parsed.body.includes(`[[${related}#Checks|release checks]]`), true)
-  assert.equal(rows.get(target)!.markdown, original.markdown)
-  assert.equal((await call('write', { path: related, markdown: content() })).content, 'memory-dream-single-target-required')
-})
-
-test('ambiguous exact edits and malformed drafts do not poison the previous draft', async () => {
-  const original = document(target, 'Deployment', `repeat repeat\n[[${daily}]] supports this.`)
-  const { call, search, tools } = setup([original])
-  await search(); await call('read', { path: target })
-  assert.equal((await call('edit', { path: target, old_text: 'repeat', new_text: 'changed' })).content, 'memory-dream-edit-not-unique')
-  assert.equal((await call('edit', { path: target, old_text: 'missing', new_text: 'changed' })).state, 'rejected')
-  await call('write', { path: target, markdown: original.markdown })
-  assert.equal((await call('write', { path: target, markdown: '---\nnot closed' })).state, 'rejected')
-  assert.equal(tools.finish({ action: 'CORROBORATE', target_path: target, note: 'New source agrees.' }).markdown, original.markdown)
-})
-
-test('finish verifies action, target bucket, required metadata, and original supporting links', async () => {
-  const { call, search, tools } = setup()
-  await search(); await call('write', { path: 'digest/personal/work.md', markdown: content() })
-  assert.throws(() => tools.finish({ action: 'REFINE', target_path: 'digest/personal/work.md', note: 'Wrong action' }), /action-target/)
-  assert.throws(() => tools.finish({ action: 'CREATE', target_path: 'digest/personal/work.md', note: 'Wrong bucket' }), /create-bucket/)
-  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Wrong target' }), /target-mismatch/)
-  const existing = setup([document(target, 'Deployment', `Old source [[${oldDaily}]].` )])
-  await existing.search(); await existing.call('read', { path: target })
-  await existing.call('write', { path: target, markdown: content() })
-  assert.throws(() => existing.tools.finish({ action: 'REFINE', target_path: target, note: 'Lost old source' }), /existing-link-removed/)
-  await existing.call('write', { path: target, markdown: `No metadata. [[${oldDaily}]] [[${daily}]]` })
-  assert.throws(() => existing.tools.finish({ action: 'REFINE', target_path: target, note: 'No summaries' }), /summary-required/)
-})
-
-test('wikilink validation ignores code/escapes and requires explicit full paths', async () => {
-  assert.deepEqual(memoryDocumentLinks(`\`[[${daily}]]\`\n\`\`\`md\n[[${oldDaily}]]\n\`\`\`\n\\[[${target}]]\n[[${related}#Checks|label]]\n[[daily/2026-11-16/work]]`), [`${related}#Checks`])
-  const { call, search, tools } = setup()
-  await search()
-  const rejected = await call('write', { path: target, markdown: content('Deployment', `Only a code example: \`[[${daily}]]\``) })
-  assert.equal(rejected.state, 'rejected')
-  assert.equal(JSON.parse(rejected.content).code, 'memory-dream-unit-source-missing')
-  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Not an actual evidence link' }), /missing-draft/)
-})
-
-test('a plain Sources path is rejected before staging so the same model loop can repair it', async () => {
-  const { call, search, tools } = setup()
-  await search()
-  const missing = await call('write', { path: target, markdown: content('Deployment', `## Sources\n${daily} supports the deployment decision.`) })
-  assert.equal(missing.state, 'rejected')
-  const diagnostic = JSON.parse(missing.content) as { code: string, message: string, requiredPaths: string[] }
-  assert.equal(diagnostic.code, 'memory-dream-unit-source-missing')
-  assert.deepEqual(diagnostic.requiredPaths, [daily])
-  assert.match(diagnostic.message, /\[\[workspace-relative\/path\.md\]\]/u)
-  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Claimed success without valid sources' }), /missing-draft/)
-  assert.equal((await call('write', { path: target, markdown: content() })).state, 'completed')
-  assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Repaired sources' }).path, target)
-  const rejectedEdit = await call('edit', { path: target, old_text: `[[${daily}]]`, new_text: daily })
-  assert.equal(rejectedEdit.state, 'rejected')
-  assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Keep the prior valid draft' }).markdown, content())
-})
-
-test('malformed copied backend metadata gets repair feedback without weakening credential validation', async () => {
-  const session = `session/dialog/${'a1'.repeat(32)}.jsonl`
-  const rows = [document(daily, 'Today', 'A confirmed deployment decision.')]
-  const tools = createMemoryDreamTools({ unit, documents: { list: () => rows, read: path => rows.find(row => row.path === path) ?? null },
-    allowsDraftMaterial: markdown => !looksSecret(inspectMemoryDocumentText(markdown, [daily, session])) })
-  const call = (name: string, input: MemoryToolInvocation['input']) => tools.executeTool({ callId: name, name, input })
-  await call('node_search', { query: 'Deployment' })
-  const malformed = content().replace('custom: retained', `source_conversation: "[[${session.slice(0, -6)}]]"`)
-  const rejected = await call('write', { path: target, markdown: malformed })
-  assert.equal(rejected.state, 'rejected')
-  assert.equal(JSON.parse(rejected.content).code, 'memory-dream-draft-material-unavailable')
-  assert.throws(() => tools.finish({ action: 'CREATE', target_path: target, note: 'Unsupported identity' }), /missing-draft/u)
-  assert.equal((await call('write', { path: target, markdown: content() })).state, 'completed')
-  const secret = await call('write', { path: target, markdown: content() + '\nsk-abcdefghijklmnopqrstuv' })
-  assert.equal(secret.state, 'rejected')
-  assert.equal(tools.finish({ action: 'CREATE', target_path: target, note: 'Keep the valid draft' }).markdown, content())
-})
-
-test('new read dependencies and usage versions invalidate next tool call and commit', async () => {
-  const { call, search, tools, rows } = setup([document(target, 'Deployment', `[[${daily}]] supports this.`)])
-  await search(); await call('read', { path: target })
-  await call('write', { path: target, markdown: content() })
-  rows.set(target, { ...rows.get(target)!, usageVersion: 2 })
-  assert.equal(tools.current(), false)
-  await assert.rejects(call('node_search', { query: 'Deployment' }), MemoryDreamStaleError)
-  assert.throws(() => tools.finish({ action: 'REFINE', target_path: target, note: 'stale' }), MemoryDreamStaleError)
-})
-
-test('disappeared sources, a newly-created target, and onRead barrier failures never become ordinary tool errors', async () => {
-  const first = setup()
-  await first.search(); await first.call('read', { path: daily }); await first.call('write', { path: target, markdown: content() })
-  first.rows.delete(daily)
-  await assert.rejects(first.call('frontmatter_read', { path: target }), MemoryDreamStaleError)
-  const second = setup()
-  await second.search(); await second.call('write', { path: target, markdown: content() })
-  second.rows.set(target, document(target, 'Concurrent create', 'Other content'))
-  assert.throws(() => second.tools.finish({ action: 'CREATE', target_path: target, note: 'stale' }), MemoryDreamStaleError)
-  const failure = new Error('dispatch-denied')
-  const snapshot = document(target, 'Deployment', 'body')
-  const guarded = createMemoryDreamTools({ unit, documents: { list: () => [snapshot], read: () => snapshot }, onRead: () => { throw failure } })
-  await assert.rejects(guarded.executeTool({ callId: '1', name: 'node_search', input: { query: 'Deployment' } }), error => error === failure)
-})
-
-test('superseded content carries trusted applicability outside Markdown and status changes invalidate the readset', async () => {
-  const supersession = { path: target, revision: 'old-revision', startLine: 7, endLine: 7, text: 'Old claim', condition: 'current location', time: 'since today',
-    sourceDocumentId: 'old-doc', documentId: 'replacement-id', replacementRevision: 'replacement-revision', operationId: 'correction-operation' }
-  const snapshot = { ...document(target, 'Deployment', 'Old claim'), applicability: { state: 'superseded' as const, supersessions: [supersession] } }
-  const { call, search, rows, tools } = setup([snapshot])
-  const result = JSON.parse((await search()).content) as Array<{ applicability: DreamDocumentSnapshot['applicability'] }>
-  assert.deepEqual(result, [])
-  const raw = JSON.parse((await call('read', { path: target })).content) as { markdown: string, applicability: DreamDocumentSnapshot['applicability'] }
-  assert.equal(raw.markdown, snapshot.markdown)
-  assert.deepEqual(raw.applicability, snapshot.applicability)
-  const frontmatter = JSON.parse((await call('frontmatter_read', { path: target })).content) as { applicability: DreamDocumentSnapshot['applicability'] }
-  assert.deepEqual(frontmatter.applicability, snapshot.applicability)
-  rows.set(target, { ...snapshot, applicability: { state: 'unavailable', supersessions: [supersession] } })
-  assert.equal(tools.current(), false)
-  await assert.rejects(call('read', { path: target }), MemoryDreamStaleError)
-  const unavailable = setup([{ ...snapshot, applicability: { state: 'unavailable', supersessions: [supersession] } }])
-  assert.deepEqual(JSON.parse((await unavailable.search()).content), [])
-  assert.equal((await unavailable.call('read', { path: target })).state, 'rejected')
-})
-
-test('node search omits superseded metadata while annotated evidence reads remain available', async () => {
-  const old = { ...document(target, 'Deployment', 'Old deployment.'), policyToken: 'old-policy',
-    applicability: { state: 'superseded' as const, supersessions: [] } }
-  const { search, call } = setup([old])
-  const result = await search()
-  assert.equal(result.content.includes(target), false)
-  const evidence = JSON.parse((await call('read', { path: target })).content)
-  assert.ok(evidence.markdown.includes('Old deployment.'))
-  assert.equal(evidence.applicability.state, 'superseded')
-})
-
-test('a transitive applicability policy change invalidates tool reads even with identical direct metadata and sources', async () => {
-  const observed = { ...document(target, 'Deployment', 'Original evidence.'), policyToken: 'A-B',
-    applicability: { state: 'superseded' as const, supersessions: [] } }
-  const { rows, tools, call } = setup([observed])
-  assert.equal((await call('read', { path: target })).state, 'completed')
+test('concurrent revision change on an observed document triggers MemoryDreamStaleError', async () => {
+  let currentDoc = doc('digest/wiki/deploy.md', 'Deploy', 'Release steps', 'Original', 'r1')
+  const tools = createMemoryDreamTools({
+    documents: { list: () => [currentDoc], read: p => p === currentDoc.path ? currentDoc : null },
+  })
+  assert.equal((await tools.executeTool({ callId: 'r1', name: 'read', input: { path: currentDoc.path } })).state, 'completed')
   assert.equal(tools.current(), true)
-  rows.set(target, { ...observed, policyToken: 'A-B-C' })
+
+  currentDoc = doc('digest/wiki/deploy.md', 'Deploy', 'Release steps', 'Changed externally', 'r2')
   assert.equal(tools.current(), false)
-  await assert.rejects(call('read', { path: target }), MemoryDreamStaleError)
+  assert.equal(tools.current(undefined, new Set([currentDoc.path])), true)
+  await assert.rejects(tools.executeTool({ callId: 'r2', name: 'read', input: { path: currentDoc.path } }), MemoryDreamStaleError)
 })
 
-test('dream evidence reads use the shared original line map for lone CR files', async () => {
-  const { rows, call } = setup()
-  const original = rows.get(daily)!
-  rows.set(daily, { ...original, markdown: original.markdown.replaceAll('\n', '\r') })
-  const lines = original.markdown.split('\n'), line = lines.findIndex(value => value === 'We changed the deployment process.') + 1
-  const result = await call('read', { path: daily, start_line: line, end_line: line })
-  assert.equal(result.state, 'completed')
-  assert.equal(JSON.parse(result.content).markdown, lines[line - 1])
-})
-
-test('only citation additions preserve the actual conclusion and its section', () => {
-  const before = `## Care\nAvoid an allergen.\n## Sources\nThe deadline does not apply to the request in [[${oldDaily}]].`
-  const fenced = before + '\n```text\ncode\n```\n## Deadline\nFriday.'
-  assert.equal(dreamChangesConclusion(fenced, fenced.replace('```\n## Deadline', '``` [[' + daily + ']]\n## Deadline'), [daily]), true)
-  const indented = 'The rule follows.\n    Friday.'
-  assert.equal(dreamChangesConclusion(indented, indented.replace('\n', '\n\n'), [daily]), true)
-  assert.equal(dreamChangesConclusion(before, before + `\nThe deadline does not apply to the request in [[${daily}]].`, [daily]), true)
-  assert.equal(dreamChangesConclusion(before, before.replace('Avoid an allergen.', '## Sources\nAvoid an allergen.'), [daily]), true)
-  assert.equal(dreamChangesConclusion(before, before + `\n- [[${daily}]]`, [daily]), false)
-  assert.equal(dreamChangesConclusion(before, before.replace('Avoid an allergen.', `Avoid an allergen. [[${daily}]]`), [daily]), false)
-  assert.equal(dreamChangesConclusion('Avoid an allergen.', `Avoid an allergen.\n\n## Sources\n[[${daily}]]`, [daily]), false)
-  assert.equal(dreamChangesConclusion(before, before.replace('Avoid an allergen.', 'Allow an allergen.'), [daily]), true)
-  assert.equal(dreamChangesConclusion('---\nname: Care\ndescription: Avoid\n---\nFact', '---\ndescription: Avoid\nname: "Care"\n---\n\nFact\n', []), false)
+test('memoryDocumentLinks ignores wikilinks inside code blocks and preserves anchors', () => {
+  const md = 'See [[digest/wiki/guide.md#Spring]] and `[[digest/wiki/fake.md]]`.\n```md\n[[daily/2026-11-16/code.md]]\n```'
+  assert.deepEqual(memoryDocumentLinks(md), ['digest/wiki/guide.md#Spring'])
 })
