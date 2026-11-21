@@ -7,7 +7,7 @@ import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, inHistory?: boolean, plainChunk?: boolean, skipReplay?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, inHistory?: boolean, plainChunk?: boolean, skipReplay?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -36,8 +36,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       const json = JSON.stringify(event), size = Math.max(json.length * 2, Buffer.byteLength(json)) + 128
       const update = event.type === 'update' && event.update && typeof event.update === 'object' ? event.update as Record<string, unknown> : null
       const plainChunk = update?.sessionUpdate === 'agent_message_chunk'
+      const questionId = event.type === 'question_answered' && typeof event.questionId === 'string' ? event.questionId : undefined
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
         reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
+        ...(questionId ? { questionId } : {}),
         ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
@@ -65,11 +67,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
   function checkpoint(conversationId: string) {
     write.run('save', conversationId, eventCursor)
   }
-  /** Mark the just-published event as already committed to history, so mid-turn replay does not duplicate its message. */
-  function markLatestPersisted(conversationId: string, type: string) {
-    const latest = held.at(-1)
-    if (latest && latest.cursor === eventCursor && latest.routing.type === type && latest.routing.context.conversationId === conversationId) {
-      latest.inHistory = true
+  /** Mark a persisted question_answered event by questionId (works immediately or after retry) so mid-turn replay does not duplicate its message. */
+  function markQuestionPersisted(conversationId: string, questionId: string) {
+    for (const row of held) {
+      if (row.questionId === questionId && row.routing.context.conversationId === conversationId) row.inHistory = true
     }
   }
   /** Exclude already-persisted plain assistant chunks from mid-turn replay while retaining tool/question/thought events. */
@@ -92,5 +93,5 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
         return row.inHistory ? { ...parsed, inHistory: true } : parsed
       }) }
   }
-  return { send, checkpoint, markLatestPersisted, markPlainPersisted, snapshot }
+  return { send, checkpoint, markQuestionPersisted, markPlainPersisted, snapshot }
 }

@@ -4,6 +4,7 @@ import { answerText, type AnsweredQuestion, type QuestionAnswer } from '../share
 import { isSilentReply } from '../shared/task-report.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 import type { Conversation, HistoryMessageMutation } from './history-db.ts'
+import { HistoryValidationError } from './history-schema.ts'
 
 /**
  * Backend single-writer for the foreground conversation on screen. Mirrors the transcript rules of
@@ -18,7 +19,7 @@ export interface ForegroundHistoryDeps {
   agentInfo: () => { mode?: string | null, model?: string | null }
   sourceSession: () => string | null
   checkpoint?: (conversationId: string) => void
-  markLatestPersisted?: (conversationId: string, type: string) => void
+  markQuestionPersisted?: (conversationId: string, questionId: string) => void
   markPlainPersisted?: (conversationId: string) => void
   delegatedDuringTurn?: (startedAt: number, endedAt: number) => boolean
   onError?: (error: unknown) => void
@@ -55,6 +56,7 @@ interface PendingWrite {
   session: string | null
   checkpointPending: boolean
   plainPersistedPending: boolean
+  questionIds: string[]
 }
 
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object'
@@ -104,7 +106,7 @@ export function createForegroundHistory({
   agentInfo,
   sourceSession,
   checkpoint,
-  markLatestPersisted,
+  markQuestionPersisted,
   markPlainPersisted,
   delegatedDuringTurn,
   onError = () => {},
@@ -160,14 +162,21 @@ export function createForegroundHistory({
     return ops
   }
 
-  function queuePending(conversation: Conversation, ops: readonly HistoryMessageMutation[], session: string | null, flags: { checkpointPending?: boolean, plainPersistedPending?: boolean } = {}) {
+  function queuePending(
+    conversation: Conversation,
+    ops: readonly HistoryMessageMutation[],
+    session: string | null,
+    flags: { checkpointPending?: boolean, plainPersistedPending?: boolean, questionIds?: readonly string[] } = {},
+  ) {
     const prior = pendingWrites.get(conversation.id)
+    const questionIds = [...new Set([...(prior?.questionIds ?? []), ...(flags.questionIds ?? [])])]
     pendingWrites.set(conversation.id, {
       conversation,
       ops: prior ? [...prior.ops, ...ops] : [...ops],
       session: session ?? prior?.session ?? null,
       checkpointPending: Boolean(prior?.checkpointPending || flags.checkpointPending),
       plainPersistedPending: Boolean(prior?.plainPersistedPending || flags.plainPersistedPending),
+      questionIds,
     })
   }
 
@@ -190,8 +199,10 @@ export function createForegroundHistory({
           pendingWrites.delete(id)
           if (current().id === saved.id) setCurrent(saved)
           if (entry.plainPersistedPending) markPlainPersisted?.(saved.id)
+          for (const questionId of entry.questionIds) markQuestionPersisted?.(saved.id, questionId)
           if (entry.checkpointPending) checkpoint?.(saved.id)
         } catch (error) {
+          if (error instanceof HistoryValidationError) pendingWrites.delete(id)
           onError(error)
         }
       }
@@ -204,18 +215,24 @@ export function createForegroundHistory({
   function persist(
     ops: readonly HistoryMessageMutation[],
     sessionOverride?: string | null,
-    { plainPersisted = false, deferCheckpoint = false }: { plainPersisted?: boolean, deferCheckpoint?: boolean } = {},
+    { plainPersisted = false, deferCheckpoint = false, questionIds = [] }: {
+      plainPersisted?: boolean
+      deferCheckpoint?: boolean
+      questionIds?: readonly string[]
+    } = {},
   ): { ok: boolean, saved: Conversation | null } {
     const base = current()
     // Best-effort retry any failed writes belonging to other conversations without dropping them.
     if (pendingWrites.size > 0) retryPending(base.id)
     const carried = pendingWrites.get(base.id)
     const allOps = carried ? [...carried.ops, ...ops] : [...ops]
+    const allQuestionIds = [...new Set([...(carried?.questionIds ?? []), ...questionIds])]
     const shouldMarkPlain = Boolean(plainPersisted || carried?.plainPersistedPending)
     const shouldCheckpoint = Boolean(deferCheckpoint || carried?.checkpointPending)
     if (!allOps.length) {
       if (carried) pendingWrites.delete(base.id)
       if (shouldMarkPlain) markPlainPersisted?.(base.id)
+      for (const questionId of allQuestionIds) markQuestionPersisted?.(base.id, questionId)
       if (shouldCheckpoint) checkpoint?.(base.id)
       return { ok: true, saved: null }
     }
@@ -231,16 +248,22 @@ export function createForegroundHistory({
       pendingWrites.delete(base.id)
       if (current().id === saved.id) setCurrent(saved)
       if (shouldMarkPlain) markPlainPersisted?.(saved.id)
+      for (const questionId of allQuestionIds) markQuestionPersisted?.(saved.id, questionId)
       if (shouldCheckpoint) checkpoint?.(saved.id)
       return { ok: true, saved }
     } catch (error) {
-      pendingWrites.set(base.id, {
-        conversation: target,
-        ops: allOps,
-        session,
-        checkpointPending: shouldCheckpoint,
-        plainPersistedPending: shouldMarkPlain,
-      })
+      // Permanent validation errors must not poison pendingWrites and block subsequent turns in this conversation;
+      // leave any prior transient carried writes intact and refuse to advance the checkpoint for this failed batch.
+      if (!(error instanceof HistoryValidationError)) {
+        pendingWrites.set(base.id, {
+          conversation: target,
+          ops: allOps,
+          session,
+          checkpointPending: shouldCheckpoint,
+          plainPersistedPending: shouldMarkPlain,
+          questionIds: allQuestionIds,
+        })
+      }
       onError(error)
       return { ok: false, saved: null }
     }
@@ -438,8 +461,7 @@ export function createForegroundHistory({
         const plain = active?.conversationId === ctx.conversationId ? drainPlainOps(active) : []
         const ops: HistoryMessageMutation[] = [...plain, ...replies]
         if (active?.conversationId === ctx.conversationId) active.lastTurnMessage = { role: 'user' }
-        const res = persist(ops, session, { plainPersisted: plain.length > 0 })
-        if (res.ok && res.saved) markLatestPersisted?.(ctx.conversationId, 'question_answered')
+        persist(ops, session, { plainPersisted: plain.length > 0, questionIds: [questionId] })
         return
       }
       case 'update': {

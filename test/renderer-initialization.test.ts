@@ -150,7 +150,7 @@ test('backend publication snapshots use backend-owned history cutoffs, bound rep
   assert.equal(stream.snapshot(context.conversationId, context).replay.length, 1)
   stream.checkpoint(context.conversationId)
   stream.send({ type: 'question_answered', context, questionId: 'q1', answers: [] })
-  stream.markLatestPersisted(context.conversationId, 'question_answered')
+  stream.markQuestionPersisted(context.conversationId, 'q1')
   stream.send({ type: 'update', context, update: { text: 'two' } })
   const replayed = stream.snapshot(context.conversationId, context).replay as Array<Record<string, unknown>>
   assert.equal(replayed.length, 2)

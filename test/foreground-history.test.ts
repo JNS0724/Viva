@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test, type TestContext } from 'node:test'
 import { createForegroundHistory } from '../src/backend/foreground-history.ts'
 import { openHistoryDb, type Conversation } from '../src/backend/history-db.ts'
+import { MAX_ASSISTANT_TEXT_CHARS } from '../src/backend/history-schema.ts'
 import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../src/shared/renderer-sync.ts'
 import { SILENT_REPLY } from '../src/shared/task-report.ts'
@@ -35,7 +36,7 @@ test('foreground history persists prompts, steers, authenticated streams, receip
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
     sourceSession: () => current.sessionId,
     checkpoint: id => stream.checkpoint(id),
-    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
     delegatedDuringTurn: () => delegated,
     onError: err => { throw err },
     now: () => clock,
@@ -233,7 +234,7 @@ test('foreground history keeps replay checkpoint intact on write failures and re
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
     sourceSession: () => current.sessionId,
     checkpoint: id => { checkpoints += 1; stream.checkpoint(id) },
-    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
     onError: err => { errors.push(err) },
   })
 
@@ -258,8 +259,18 @@ test('foreground history keeps replay checkpoint intact on write failures and re
   assert.deepEqual(afterRetry.map(m => m.text), ['第一问', '完整回复'])
   assert.equal(afterRetry[1]?.receipt?.stopReason, 'end_turn')
 
-  // 2. Oversized assistant reply (> 200_000 chars) fails validation and leaves checkpoint behind
-  const oversized = 'x'.repeat(200_001)
+  // 2. Long assistant reply above 200_000 chars (within MAX_ASSISTANT_TEXT_CHARS) persists cleanly
+  const longText = 'y'.repeat(250_000)
+  history.bindGeneratedCopy('s-err', 'k-long', 'assistant', longText, [{ sources: [], fileRanges: [] }])
+  for (const event of [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-long', kind: 'settle', blocks: [{ type: 'text', text: longText }] } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]) { stream.send(event); writer.receive(event) }
+  assert.equal(history.get(current.id)!.messages.at(-1)?.text.length, 250_000)
+
+  // 3. Permanently invalid reply (> MAX_ASSISTANT_TEXT_CHARS) leaves checkpoint behind WITHOUT blocking subsequent turns
+  const oversized = 'x'.repeat(MAX_ASSISTANT_TEXT_CHARS + 1)
   const beforeOversizedCheckpoints = checkpoints
   const oversizedStart = { type: 'turn_started', by: 'user', context }
   const oversizedChunk = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: oversized } } }
@@ -267,13 +278,21 @@ test('foreground history keeps replay checkpoint intact on write failures and re
   for (const event of [oversizedStart, oversizedChunk, oversizedEnd]) { stream.send(event); writer.receive(event) }
   assert.equal(errors.length, 3)
   assert.equal(checkpoints, beforeOversizedCheckpoints, 'validation failure never advances checkpoint')
-  assert.ok(stream.snapshot(current.id, context).replay.length >= 3)
+  assert.equal(writer.hasPendingWrites(), false, 'permanent validation failure does not poison pendingWrites')
+  assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/, 'unpersisted evicted reply exposes an explicit gap instead of silently advancing checkpoint')
 
-  // A subsequent error event cannot advance checkpoint while earlier pending writes remain unpersisted
-  const errorEvent = { type: 'error', message: 'boom', context }
-  stream.send(errorEvent)
-  writer.receive(errorEvent)
-  assert.equal(checkpoints, beforeOversizedCheckpoints, 'error event cannot skip an unpersisted failed write')
+  // Subsequent user prompt and assistant reply in the same conversation still persist normally!
+  writer.userPrompt({ text: '后续正常提问' })
+  history.bindGeneratedCopy('s-err', 'k-next', 'assistant', '后续正常回复', [{ sources: [], fileRanges: [] }])
+  for (const event of [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-next', kind: 'settle', blocks: [{ type: 'text', text: '后续正常回复' }] } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]) { stream.send(event); writer.receive(event) }
+  const afterRecovery = history.get(current.id)!.messages
+  assert.equal(afterRecovery.at(-2)?.text, '后续正常提问')
+  assert.equal(afterRecovery.at(-1)?.text, '后续正常回复')
+  assert.equal(checkpoints, beforeOversizedCheckpoints + 1)
 })
 
 test('silent task turns persist earlier plain assistant segments and drop only the trailing silent reply', t => {
@@ -356,7 +375,7 @@ test('pending writes survive conversation switches and reset until committed for
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
     sourceSession: () => current.sessionId,
     checkpoint: id => { checkpointed.push(id); stream.checkpoint(id) },
-    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
     markPlainPersisted: id => stream.markPlainPersisted(id),
     onError: () => {},
   })
@@ -412,7 +431,7 @@ test('mid-turn plain text persisted before question_answered or userSteer is exc
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
     sourceSession: () => current.sessionId,
     checkpoint: id => stream.checkpoint(id),
-    markLatestPersisted: (id, type) => stream.markLatestPersisted(id, type),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
     markPlainPersisted: id => stream.markPlainPersisted(id),
     onError: () => {},
   })
@@ -454,4 +473,19 @@ test('mid-turn plain text persisted before question_answered or userSteer is exc
   writer.userSteer({ text: '失败的插话' })
   const replayAfterFail = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
   assert.ok(replayAfterFail.some(e => e.type === 'update' && ((e.update as Record<string, unknown>).content as Record<string, unknown>)?.text === '好的，继续'))
+
+  // Transient failure on question_answered followed by later events and retry still marks question_answered inHistory: true
+  const q2 = { type: 'question', questionId: 'q-retry', questions: [{ id: 'confirm', question: '继续？' }], context }
+  const ans2 = { type: 'question_answered', questionId: 'q-retry', answers: [{ id: 'confirm', selected: ['继续'] }], context }
+  const laterTool = { type: 'update', context, update: { sessionUpdate: 'tool_call', toolCallId: 'tc-2', title: 'Next' } }
+  for (const event of [q2, ans2, laterTool]) { stream.send(event); writer.receive(event) }
+  const beforeRetry = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  assert.equal(beforeRetry.find(e => e.type === 'question_answered' && e.questionId === 'q-retry')?.inHistory, undefined,
+    'unpersisted question_answered is not yet marked inHistory')
+
+  failWrites = false
+  assert.equal(writer.retryPending(), true)
+  const afterRetry = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  assert.equal(afterRetry.find(e => e.type === 'question_answered' && e.questionId === 'q-retry')?.inHistory, true,
+    'retrying question_answered marks its earlier replay event inHistory: true by questionId')
 })

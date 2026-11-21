@@ -1685,7 +1685,7 @@ ${question}` : question
       agentInfo: () => lastInfo,
       sourceSession: () => rendererContext().sessionId,
       checkpoint: conversationId => rendererStream.checkpoint(conversationId),
-      markLatestPersisted: (conversationId, type) => rendererStream.markLatestPersisted(conversationId, type),
+      markQuestionPersisted: (conversationId, questionId) => rendererStream.markQuestionPersisted(conversationId, questionId),
       markPlainPersisted: conversationId => rendererStream.markPlainPersisted(conversationId),
       delegatedDuringTurn: (startedAt, endedAt) => {
         const list = taskStore?.list() ?? []

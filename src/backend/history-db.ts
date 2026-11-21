@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readerQueries } from './history-reader.ts'
 import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
-import { assertId, autoTitle, normalizeMessage, normalizeMessages, normalizeTitle, type Receipt, type StoredMessage } from './history-schema.ts'
+import { assertId, autoTitle, MAX_ASSISTANT_TEXT_CHARS, normalizeMessage, normalizeMessages, normalizeTitle, type Receipt, type StoredMessage } from './history-schema.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 import { createHistoryGeneratedCopies } from './history-generated-copies.ts'
 import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
@@ -677,7 +677,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
           continue
         }
         if (op.kind === 'upsert_assistant') {
-          const normalized = normalizeMessage({ ...op.message, role: 'assistant' })
+          const normalized = normalizeMessage({ ...op.message, role: 'assistant' }, { maxTextChars: MAX_ASSISTANT_TEXT_CHARS })
           const prior = normalized.key ? sql.messageByKey.get(id, normalized.key) : undefined
           const redacted = redactSingle(id, normalized, sourceSession, prior)
           ensureRow()
