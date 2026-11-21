@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type { MemoryDocuments, DocumentSnapshot, DocumentCommit, DocumentReceipt, DocumentRevisionEntry, DocumentSourceCut, DocumentSourceRef, DocumentReadRef, DocumentUndoCandidate, DocumentManagementGuard, DocumentManualWrite, MemoryPhysicalFile } from '../core/ports/documents.ts'
+import { MEMORY_CONTRACT } from '../contracts/memory-contract.ts'
 import { digestPath } from '../contracts/memory-file-contract.ts'
 import { parseMemoryDocument } from '../core/memory-document.ts'
 import type { MemorySource } from '../contracts/records.ts'
@@ -47,6 +48,13 @@ export function openMemoryDocuments({ db, root, source, now = Date.now, checkpoi
   deferRecovery?: boolean,
   checkpoint?: (point: FileCheckpoint, path?: string) => void,
 }): MemoryDocuments {
+  const version = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
+  const existingColumns = (db.prepare('PRAGMA table_info(memory_documents)').all() as Array<{ name: string }>).map(column => column.name)
+  const expectedColumns = ['id', 'workspace', 'path', 'revision', 'usage_version', 'enabled', 'forgotten', 'sources']
+  if ((version !== 0 && version !== MEMORY_CONTRACT)
+    || (existingColumns.length > 0 && !isDeepStrictEqual(existingColumns, expectedColumns))) {
+    throw new Error('memory.db has an incompatible contract version')
+  }
   db.exec(`PRAGMA secure_delete=ON;
     CREATE TABLE IF NOT EXISTS memory_documents (
       id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,

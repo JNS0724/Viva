@@ -498,3 +498,36 @@ for (const point of ['intent', 'receipt', 'checkpoint'] as const) {
     assert.equal(f.db.prepare('SELECT COUNT(*) n FROM memory_document_revisions').get()?.n, 1)
   })
 }
+
+test('openMemoryDocuments refuses pre-v11 schemas before mutating tables or opening the journal', t => {
+  const root = mkdtempSync(join(tmpdir(), 'memory-documents-legacy-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+
+  const standaloneDb = new DatabaseSync(join(root, 'standalone.db'))
+  t.after(() => standaloneDb.close())
+  standaloneDb.exec(`CREATE TABLE memory_documents (
+    id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
+    usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
+    sources TEXT NOT NULL, corrections TEXT NOT NULL, UNIQUE(workspace,path)
+  )`)
+  assert.throws(
+    () => openMemoryDocuments({ db: standaloneDb, root, source: () => undefined }),
+    /incompatible contract version/,
+  )
+  assert.equal(
+    standaloneDb.prepare("SELECT 1 FROM sqlite_master WHERE name='memory_document_revisions'").get(),
+    undefined,
+  )
+
+  const versionedDb = new DatabaseSync(join(root, 'versioned.db'))
+  t.after(() => versionedDb.close())
+  versionedDb.exec('PRAGMA user_version = 10')
+  assert.throws(
+    () => openMemoryDocuments({ db: versionedDb, root, source: () => undefined }),
+    /incompatible contract version/,
+  )
+  assert.equal(
+    versionedDb.prepare("SELECT 1 FROM sqlite_master WHERE name='memory_documents'").get(),
+    undefined,
+  )
+})
