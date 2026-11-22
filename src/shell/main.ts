@@ -180,6 +180,7 @@ let quitting = false
 let backendClosing: Promise<void> | null = null
 let backendClosed = false
 let lastInFront = false
+let composerTyping = false
 
 /** The backend's connection once it is running: at once, or after a restart (backend-keeper.ts). */
 const backendConnection = async () => (await keeper.get()).connection
@@ -329,7 +330,7 @@ function startBackend(onExit: (code: number | null, signal: NodeJS.Signals | nul
       packaged: app.isPackaged,
       automation: automationMode,
       locale: app.getLocale(),
-      mirror: { inFront: windowInFront(), idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings(), composerTyping: false },
+      mirror: { inFront: windowInFront(), idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings(), composerTyping },
     },
   })
 }
@@ -370,7 +371,7 @@ function backendUp(started: BackendProcess, restarted: boolean) {
   setLocale(started.ready.locale)
   listenTo(started)
   if (!restarted) return
-  mirror({ shellSettings: shellSettings() })
+  mirror({ shellSettings: shellSettings(), composerTyping })
   const shown = win && !win.isDestroyed() ? win : null
   if (!shown) return
   shown.webContents.once('did-finish-load', () => tellBackend('start-bridge'))
@@ -591,7 +592,7 @@ app.whenReady().then(async () => {
   registerShellSettingsIpc()
   const islandDrafts = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu,
     preview: () => deskPreview,
-    onTypingChange: composerTyping => mirror({ composerTyping }),
+    onTypingChange: typing => { composerTyping = typing; mirror({ composerTyping }) },
     keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
     switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
   ownDraft = islandDrafts.ownDraft

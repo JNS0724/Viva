@@ -4,12 +4,13 @@ import type { ActiveTool } from '../shared/ipc-results.ts'
 
 import type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
-interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string }
-export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string }
+interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string, previewTruncated: boolean }
+export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string, resultTruncated?: boolean }
 export type TaskScope = { kind: 'main', cwd?: string } | { taskId: string }
 export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, cwd?: string, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean, outputOffset?: number, outputLimit?: number }
 export const DEFAULT_OUTPUT_LIMIT = 4000
 export const MAX_OUTPUT_LIMIT = 4000
+const MAX_TERMINAL_MESSAGE_CHARS = 200_000
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
 const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted'])
 /** How a task's turn ended (acp-bridge task_end's stopReason), as its status. */
@@ -29,8 +30,9 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const waits = new Map<string, Map<string, 'permission' | 'answer'>>()
   const tools = new Map<string, Map<string, string>>()
   const streams = new Map<string, { key: string, blocks: Map<number, string> }>()
+  const terminalMessages = new Map<string, string>()
   const published = new Map<string, string>()
-  const snapshot = ({ cwd: _cwd, request: _request, resultKey: _resultKey, ...value }: Task): TaskSnapshot => ({ ...value })
+  const snapshot = ({ cwd: _cwd, request: _request, resultKey: _resultKey, previewTruncated: _previewTruncated, ...value }: Task): TaskSnapshot => ({ ...value })
   function publish(task: Task) {
     task.updatedAt = now(); task.revision++
     // Text chunks already have their own UI event. Do not double renderer work on every token.
@@ -43,31 +45,35 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const previous = tasks.get(meta.id)
     if (previous && !restored) return
     const status: TaskStatus = restored ? (Number.isFinite(meta.endedAt) && ['done', 'stopped', 'error'].includes(meta.status ?? '') ? meta.status as TaskStatus : 'interrupted') : 'running'
+    const rawPreview = meta.resultPreview ?? ''
     const task: Task = { taskId: meta.id, runId: meta.runId ?? '', title: meta.title.slice(0, 200), cwd: meta.cwd ?? '', request: (meta.words ?? '').slice(0, 20_000),
       status, currentAction: null, waitingFor: null, startedAt: meta.startedAt ?? now(), updatedAt: now(), endedAt: status === 'interrupted' ? null : meta.endedAt ?? null,
-      resultPreview: (meta.resultPreview ?? '').slice(-4000), resultKey: meta.resultKey, revision: 0 }
+      resultPreview: rawPreview.slice(-4000), resultKey: meta.resultKey, previewTruncated: Boolean(meta.resultTruncated) || rawPreview.length > 4000, revision: 0 }
+    terminalMessages.delete(meta.id)
     tasks.set(meta.id, task)
     publish(task)
   }
   function restart(id: string, runId = '') {
     const task = tasks.get(id); if (!task) return
-    waits.delete(id); tools.delete(id); streams.delete(id)
-    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', resultKey: undefined, startedAt: now() })
+    waits.delete(id); tools.delete(id); streams.delete(id); terminalMessages.delete(id)
+    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', resultKey: undefined, previewTruncated: false, startedAt: now() })
     publish(task)
   }
   /** How a task is now in every map, to be put back if the change it was part of is undone. */
   function checkpoint(id: string): () => void {
     const task = tasks.get(id)
     const saved = { task: task ? { ...task } : undefined, waits: copy(waits.get(id)), tools: copy(tools.get(id)), published: published.get(id),
+      terminalMessage: terminalMessages.get(id),
       stream: (() => { const stream = streams.get(id); return stream ? { key: stream.key, blocks: new Map(stream.blocks) } : undefined })() }
     const put = <V>(map: Map<string, V>, value: V | undefined) => { if (value === undefined) map.delete(id); else map.set(id, value) }
     return () => {
       put(tasks, saved.task ? { ...saved.task } : undefined)
       put(waits, copy(saved.waits)); put(tools, copy(saved.tools)); put(published, saved.published)
+      put(terminalMessages, saved.terminalMessage)
       put(streams, saved.stream ? { key: saved.stream.key, blocks: new Map(saved.stream.blocks) } : undefined)
     }
   }
-  function remove(id: string) { tasks.delete(id); waits.delete(id); tools.delete(id); streams.delete(id); published.delete(id) }
+  function remove(id: string) { tasks.delete(id); waits.delete(id); tools.delete(id); streams.delete(id); terminalMessages.delete(id); published.delete(id) }
   function receive(raw: unknown) {
     const event = record(raw), id = text(event.taskId)
     if (!id) return
@@ -94,7 +100,9 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       }
       if (kind === 'agent_message_chunk') {
         task.resultKey = undefined
-        task.resultPreview = (task.resultPreview + text(record(update.content).text)).slice(-4000)
+        const next = task.resultPreview + text(record(update.content).text)
+        if (next.length > 4000) task.previewTruncated = true
+        task.resultPreview = next.slice(-4000)
       }
       if (kind === 'viva_stream') {
         const key = text(update.key)
@@ -102,14 +110,23 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         if (!stream || stream.key !== key) { stream = { key, blocks: new Map() }; streams.set(id, stream) }
         if (update.kind === 'settle' && Array.isArray(update.blocks)) {
           task.resultKey = key || undefined
-          task.resultPreview = update.blocks.map(record).filter(block => block.type === 'text').map(block => text(block.text)).join('\n').slice(-4000)
+          const next = update.blocks.map(record).filter(block => block.type === 'text').map(block => text(block.text)).join('\n')
+          task.previewTruncated = next.length > 4000
+          task.resultPreview = next.slice(-4000)
         } else if (update.blockType === 'text' && typeof update.index === 'number') {
           task.resultKey = key || undefined
           const old = stream.blocks.get(update.index) ?? ''
-          stream.blocks.set(update.index, (update.kind === 'delta' ? old + text(update.text) : text(update.text)).slice(-4000))
+          const nextBlock = update.kind === 'delta' ? old + text(update.text) : text(update.text)
+          if (nextBlock.length > 4000) task.previewTruncated = true
+          stream.blocks.set(update.index, nextBlock.slice(-4000))
           // Bound memory even for a long response with many text blocks.
-          while (stream.blocks.size > 16) stream.blocks.delete(stream.blocks.keys().next().value!)
-          task.resultPreview = [...stream.blocks.values()].join('\n').slice(-4000)
+          while (stream.blocks.size > 16) {
+            stream.blocks.delete(stream.blocks.keys().next().value!)
+            task.previewTruncated = true
+          }
+          const joined = [...stream.blocks.values()].join('\n')
+          if (joined.length > 4000) task.previewTruncated = true
+          task.resultPreview = joined.slice(-4000)
         }
       }
     }
@@ -119,8 +136,12 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       task.status = endedStatus(event.stopReason)
       task.endedAt = now(); task.waitingFor = null; task.currentAction = null
       if (event.message) {
+        const fullMessage = text(event.message)
         task.resultKey = undefined
-        task.resultPreview = text(event.message).slice(-4000)
+        task.previewTruncated = fullMessage.length > 4000
+        task.resultPreview = fullMessage.slice(-4000)
+        if (fullMessage.length <= MAX_TERMINAL_MESSAGE_CHARS) terminalMessages.set(id, fullMessage)
+        else terminalMessages.delete(id)
       }
       waits.delete(id); tools.delete(id); streams.delete(id)
     }
@@ -142,12 +163,14 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       let outputFields: {
         resultPreview: string | undefined
         outputOffset?: number
-        outputTotalChars?: number
+        outputTotalChars?: number | null
         nextOutputOffset?: number | null
         outputTruncated?: boolean
       } = { resultPreview: undefined }
       if (request.includeOutput) {
-        const full = readOutput?.(task.taskId, task.resultPreview) ?? task.resultPreview
+        const resolved = readOutput?.(task.taskId, task.resultPreview)
+        const full = resolved ?? terminalMessages.get(task.taskId) ?? task.resultPreview
+        const previewOnlyTruncated = resolved == null && !terminalMessages.has(task.taskId) && task.previewTruncated
         const total = full.length
         const start = Math.min(request.outputOffset ?? 0, total)
         const limit = Math.min(request.outputLimit ?? DEFAULT_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT)
@@ -156,9 +179,9 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         outputFields = {
           resultPreview: slice,
           outputOffset: start,
-          outputTotalChars: total,
+          outputTotalChars: previewOnlyTruncated ? null : total,
           nextOutputOffset,
-          outputTruncated: start > 0 || nextOutputOffset !== null,
+          outputTruncated: previewOnlyTruncated || start > 0 || nextOutputOffset !== null,
         }
       }
       return { observedAt: now(), task: { ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), ...outputFields,
@@ -185,11 +208,12 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   /** How many times a task has changed (its snapshots' `revision`), or null for one unknown. */
   const revisionOf = (id: string): number | null => tasks.get(id)?.revision ?? null
   const resultKeyOf = (id: string) => tasks.get(id)?.resultKey
+  const resultTruncatedOf = (id: string) => Boolean(tasks.get(id)?.previewTruncated)
   /** The tool calls a task's run has at work now, in the order they began: for a window that opens (task-runtime.ts finished). */
   const activeTools = (id: string): ActiveTool[] => [...(tools.get(id) ?? new Map<string, string>())].map(([toolCallId, title]) => ({ toolCallId, title }))
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, resultKeyOf, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
+  return { put, restart, remove, resultKeyOf, resultTruncatedOf, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

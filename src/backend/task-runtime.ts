@@ -379,7 +379,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
-    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview })
+    const resultTruncated = registry.resultTruncatedOf(snapshot.taskId)
+    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview,
+      ...(resultTruncated ? { resultTruncated: true } : { resultTruncated: undefined }) })
     const host = typeof entry.next === 'string' ? db.get(entry.next) : null
     const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
     const end = pendingEnds.get(snapshot.taskId)
@@ -389,7 +391,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
-    const windowedOutput = windowReportOutput(fullOutputOf(snapshot.taskId, snapshot.resultPreview) ?? snapshot.resultPreview)
+    const terminalMessage = typeof end?.event.message === 'string' && end.event.message ? end.event.message : null
+    const windowedOutput = windowReportOutput(terminalMessage ?? fullOutputOf(snapshot.taskId, snapshot.resultPreview) ?? snapshot.resultPreview)
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
       host: typeof entry.next === 'string' ? entry.next : null, output: windowedOutput.text,
       ...(windowedOutput.truncated ? { outputTruncated: true } : {}), token: randomUUID().replaceAll('-', ''),
@@ -474,7 +477,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const evidence = admit ? await admit(taskId) : true
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, text, evidence)
-    const { endedAt: _endedAt, status: _status, ...going } = kept
+    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, ...going } = kept
     const runId = newRunId()
     const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
@@ -518,7 +521,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = newRunId()
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
-    const running = { ...kept, runId, runStart }
+    const { resultTruncated: _resultTruncated, ...keptWithoutTruncated } = kept
+    const running = { ...keptWithoutTruncated, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)

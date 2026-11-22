@@ -109,6 +109,27 @@ test('get_background_task paginates full output via outputOffset and outputLimit
   assert.equal(short.outputTotalChars, 4)
   assert.equal(short.nextOutputOffset, null)
   assert.equal(short.outputTruncated, false)
+
+  // Long terminal event.message (>4000 chars) stays fully paginatable in memory; when only a truncated preview survives,
+  // outputTotalChars is null and outputTruncated stays true even on the final slice.
+  const standalone = createTaskRegistry()
+  standalone.put({ id: 'err', title: '长报错任务', cwd: '/work' })
+  const longError = `${'E'.repeat(1000)}${'X'.repeat(3500)}${'Z'.repeat(1000)}`
+  standalone.receive({ type: 'task_end', taskId: 'err', stopReason: 'error', message: longError })
+  const errPage1 = standalone.query({ op: 'get', taskId: 'err', includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(errPage1.outputTotalChars, longError.length)
+  assert.equal(errPage1.resultPreview, longError.slice(0, 4000))
+  assert.equal(errPage1.nextOutputOffset, 4000)
+  const errPage2 = standalone.query({ op: 'get', taskId: 'err', includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(errPage2.resultPreview, longError.slice(4000))
+  assert.equal(errPage2.nextOutputOffset, null)
+
+  standalone.put({ id: 'restored-err', title: '重启后的长报错', cwd: '/work', endedAt: 20, status: 'error', resultPreview: longError.slice(-4000), resultTruncated: true }, true)
+  const previewOnly = standalone.query({ op: 'get', taskId: 'restored-err', includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(previewOnly.resultPreview, longError.slice(-4000))
+  assert.equal(previewOnly.outputTotalChars, null)
+  assert.equal(previewOnly.nextOutputOffset, null)
+  assert.equal(previewOnly.outputTruncated, true)
 })
 
 test('plugin IPC carries session identity, rejects stale sessions, and returns structured query data', async () => {

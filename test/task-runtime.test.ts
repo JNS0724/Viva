@@ -739,14 +739,29 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(afterRelaunch.outputTotalChars, full.length)
   assert.equal(afterRelaunch.nextOutputOffset, 1000)
 
-  // Terminal error event.message is preserved instead of being overwritten by earlier transcript text.
+  // Terminal error event.message (including >4000 chars) is preserved in full live, windowed in reports,
+  // and explicitly marked truncated (outputTotalChars: null) when only the 4000-char preview survives relaunch.
   const failed = await later.start('会报错的任务')
   later.says(failed.task.id, '正在尝试请求…')
-  later.emit({ type: 'task_end', taskId: failed.task.id, stopReason: 'error', message: 'API 429 rate limit' })
+  const longError = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'X'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  later.emit({ type: 'task_end', taskId: failed.task.id, stopReason: 'error', message: longError })
   const failedReport = h.queuedReports.find(item => item.payload.taskId === failed.task.id)
-  assert.equal(failedReport?.payload.output, 'API 429 rate limit')
-  const failedQuery = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true }, { kind: 'main' }).task!
-  assert.equal(failedQuery.resultPreview, 'API 429 rate limit')
+  assert.equal(failedReport?.payload.outputTruncated, true)
+  assert.ok(failedReport?.payload.output.startsWith('E'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'report keeps head of long error')
+  assert.ok(failedReport?.payload.output.endsWith('Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'report keeps tail of long error')
+  const failedPage1 = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(failedPage1.resultPreview, longError.slice(0, 4000))
+  assert.equal(failedPage1.outputTotalChars, longError.length)
+  assert.equal(failedPage1.nextOutputOffset, 4000)
+  const failedPage2 = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(failedPage2.resultPreview, longError.slice(4000))
+  assert.equal(failedPage2.nextOutputOffset, null)
+
+  const afterErrorRelaunch = h.relaunch().tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(afterErrorRelaunch.resultPreview, longError.slice(-4000))
+  assert.equal(afterErrorRelaunch.outputTotalChars, null)
+  assert.equal(afterErrorRelaunch.nextOutputOffset, null)
+  assert.equal(afterErrorRelaunch.outputTruncated, true)
 
   // Erased ended task preview (stored.resultPreview === '') must never resurrect transcript text from historyDb.
   const stored = h.kept().find(entry => entry.id === task.id)!
