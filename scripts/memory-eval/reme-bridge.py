@@ -424,6 +424,72 @@ def _record_usage(telemetry: dict[str, Any], phase: str, prompt: int, cached: in
         bucket["outputTokens"] += completion
 
 
+class _MeteredAsyncStream:
+    """Proxy for openai.AsyncStream preserving both async iteration and async context manager protocol."""
+
+    def __init__(self, inner: Any, telemetry: dict[str, Any], phase: str) -> None:
+        self._inner = inner
+        self._telemetry = telemetry
+        self._phase = phase
+        self._seen_tools: dict[int, str] = {}
+        self._final_usage: Any = None
+        self._recorded = False
+
+    def _flush(self) -> None:
+        if self._recorded:
+            return
+        self._recorded = True
+        p, c, o = _extract_openai_usage(self._final_usage)
+        _record_usage(self._telemetry, self._phase, p, c, o)
+        if self._phase == "answer":
+            for name in self._seen_tools.values():
+                self._telemetry["toolCalls"] += 1
+                self._telemetry["toolNames"][name] = self._telemetry["toolNames"].get(name, 0) + 1
+
+    async def __aenter__(self) -> "_MeteredAsyncStream":
+        if hasattr(self._inner, "__aenter__"):
+            await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        self._flush()
+        if hasattr(self._inner, "__aexit__"):
+            return await self._inner.__aexit__(exc_type, exc, tb)
+        return False
+
+    def __aiter__(self) -> "_MeteredAsyncStream":
+        self._aiter = self._inner.__aiter__()
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            chunk = await self._aiter.__anext__()
+        except StopAsyncIteration:
+            self._flush()
+            raise
+        if getattr(chunk, "usage", None) is not None:
+            self._final_usage = chunk.usage
+        for choice in getattr(chunk, "choices", None) or ():
+            delta = getattr(choice, "delta", None)
+            for tc in getattr(delta, "tool_calls", None) or ():
+                idx = int(getattr(tc, "index", 0) or 0)
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn is not None else None
+                if idx not in self._seen_tools:
+                    self._seen_tools[idx] = name or "unknown"
+                elif name and self._seen_tools[idx] == "unknown":
+                    self._seen_tools[idx] = name
+        return chunk
+
+    async def close(self) -> None:
+        self._flush()
+        if hasattr(self._inner, "close"):
+            await self._inner.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 def _install_llm_meter(app: Any, telemetry: dict[str, Any], phase_ref: list[str]) -> None:
     """Wrap AsyncOpenAI chat.completions.create on every ReMe as_llm component for exact HTTP call, tool, and token accounting."""
     as_llms = getattr(getattr(app, "context", None), "components", {}).get("as_llm", {})
@@ -447,30 +513,7 @@ def _install_llm_meter(app: Any, telemetry: dict[str, Any], phase_ref: list[str]
                 kwargs["stream_options"] = stream_opts
             resp = await _orig(*args, **kwargs)
             if kwargs.get("stream") and hasattr(resp, "__aiter__"):
-                async def _metered_stream() -> Any:
-                    seen_tool_indices: dict[int, str] = {}
-                    final_usage = None
-                    async for chunk in resp:
-                        if getattr(chunk, "usage", None) is not None:
-                            final_usage = chunk.usage
-                        for choice in getattr(chunk, "choices", None) or ():
-                            delta = getattr(choice, "delta", None)
-                            for tc in getattr(delta, "tool_calls", None) or ():
-                                idx = int(getattr(tc, "index", 0) or 0)
-                                fn = getattr(tc, "function", None)
-                                name = getattr(fn, "name", None) if fn is not None else None
-                                if idx not in seen_tool_indices:
-                                    seen_tool_indices[idx] = name or "unknown"
-                                elif name and seen_tool_indices[idx] == "unknown":
-                                    seen_tool_indices[idx] = name
-                        yield chunk
-                    p, c, o = _extract_openai_usage(final_usage)
-                    _record_usage(telemetry, phase, p, c, o)
-                    if phase == "answer":
-                        for name in seen_tool_indices.values():
-                            telemetry["toolCalls"] += 1
-                            telemetry["toolNames"][name] = telemetry["toolNames"].get(name, 0) + 1
-                return _metered_stream()
+                return _MeteredAsyncStream(resp, telemetry, phase)
             p, c, o = _extract_openai_usage(getattr(resp, "usage", None))
             _record_usage(telemetry, phase, p, c, o)
             if phase == "answer":
