@@ -836,15 +836,39 @@ test('production openHistoryDb + TaskStore(retainedReply) enforces provenance on
     },
   })
   try {
-    // 1. Unkeyed agent_message_chunk (no provenance proof): never exposed via live query, ended query, or report.
+    // 1. Genuinely empty running task reports total=0, not truncated; once unverified live streaming text arrives
+    // (either unkeyed agent_message_chunk or unsettled viva_stream delta before bindGeneratedCopy), queries never leak
+    // the unverified text AND explicitly mark outputUnavailable=true with outputTotalChars=null instead of claiming 0.
     const unverified = await runtime.agent.start('未校验文本任务')
+    const emptyLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(emptyLive.resultPreview, '')
+    assert.equal(emptyLive.outputTotalChars, 0)
+    assert.equal(emptyLive.outputTruncated, false)
+    assert.equal(emptyLive.outputUnavailable, undefined)
+
+    runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: { sessionUpdate: 'viva_stream', key: 'streaming-k', kind: 'delta', index: 0, blockType: 'text', text: 'IN_FLIGHT_UNVERIFIED' } })
+    const streamingLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(streamingLive.resultPreview, '')
+    assert.equal(streamingLive.outputTotalChars, null)
+    assert.equal(streamingLive.outputTruncated, true)
+    assert.equal(streamingLive.outputUnavailable, true)
+
     runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: chunk('UNVERIFIED_IN_MEMORY_TEXT') })
-    assert.equal(runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
+    const chunkLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(chunkLive.resultPreview, '')
+    assert.equal(chunkLive.outputTotalChars, null)
+    assert.equal(chunkLive.outputTruncated, true)
+    assert.equal(chunkLive.outputUnavailable, true)
+
     runtime.dsh.receive({ type: 'task_end', taskId: unverified.taskId, stopReason: 'end_turn' })
     const unverifiedStored = store.list().find(item => item.id === unverified.taskId)!
     assert.equal(unverifiedStored.resultPreview, '')
     assert.equal(queuedReports.find(item => item.payload.taskId === unverified.taskId)?.payload.output, '')
-    assert.equal(runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
+    const unverifiedEnded = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(unverifiedEnded.resultPreview, '')
+    assert.equal(unverifiedEnded.outputTotalChars, null)
+    assert.equal(unverifiedEnded.outputTruncated, true)
+    assert.equal(unverifiedEnded.outputUnavailable, true)
 
     // 2. Verified viva_stream reply (bound via bindGeneratedCopy): readable live, in report, and after restart.
     const verified = await runtime.agent.start('已校验任务')

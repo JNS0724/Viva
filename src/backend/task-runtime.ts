@@ -72,8 +72,8 @@ const titleOf = (words: string) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
 }
-/** Latest run's full assistant text, anchored at `runStart` when tracked so mid-run steers and question answers never drop earlier output from the same run. */
-function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknown }>, runStart?: number): string {
+/** Latest run's messages starting at `runStart` when tracked (falling back to after the last user message for legacy tasks). */
+function runMessages<T extends { role?: unknown, text?: unknown }>(messages: readonly T[], runStart?: number): T[] {
   let start = 0
   if (typeof runStart === 'number' && Number.isSafeInteger(runStart) && runStart >= 0) {
     start = runStart
@@ -83,6 +83,10 @@ function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknow
     }
   }
   return messages.slice(start)
+}
+/** Latest run's full assistant text, anchored at `runStart` when tracked so mid-run steers and question answers never drop earlier output from the same run. */
+function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknown }>, runStart?: number): string {
+  return runMessages(messages, runStart)
     .filter(message => message.role === 'assistant' && typeof message.text === 'string' && message.text.length > 0)
     .map(message => String(message.text))
     .join('\n')
@@ -231,12 +235,12 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     onError: (err) => emitDiagnosticFailure('task', err, { stage: 'checkpoint' }),
   })
 
-  function fullOutputOf(taskId: string): string | null {
-    if (revoked.has(taskId)) return ''
+  function fullOutputOf(taskId: string): { text: string, complete: boolean } | null {
+    if (revoked.has(taskId)) return { text: '', complete: true }
     const stored = store.list().find(item => item.id === taskId)
     const entry = stored ?? tasks.get(taskId)
     if (!entry) return null
-    if (stored?.resultErased) return ''
+    if (stored?.resultErased) return { text: '', complete: true }
     const runStart = typeof entry.runStart === 'number' ? entry.runStart : undefined
     const endedStored = Boolean(stored && isEnded(stored))
     if (attached.has(taskId) && !endedStored) {
@@ -249,12 +253,20 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
           ...(message.streamKey ? { key: message.streamKey } : {}),
           ...(message.sourceId ? { sourceId: message.sourceId } : {}),
         }, taskId))
-        return latestRunOutput(verified, runStart)
+        const rawRun = runMessages(live, runStart)
+        const verifiedRun = runMessages(verified, runStart)
+        const withheld = rawRun.some((message, index) =>
+          message.role === 'assistant' && typeof message.text === 'string' && message.text.length > 0
+          && !(typeof verifiedRun[index]?.text === 'string' && String(verifiedRun[index]?.text).length > 0))
+        return { text: latestRunOutput(verified, runStart), complete: !withheld }
       }
     }
     const segment = db.get(entry.segmentId)
     if (!segment) return null
-    return latestRunOutput(segment.messages.slice(entry.keep ?? 0), runStart)
+    const slice = segment.messages.slice(entry.keep ?? 0)
+    const run = runMessages(slice, runStart)
+    const withheld = run.some(message => message.role === 'assistant' && (!message.text || message.text.length === 0))
+    return { text: latestRunOutput(slice, runStart), complete: !withheld }
   }
 
   function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
@@ -403,13 +415,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
-    const reportOutput = terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (fullOutputOf(snapshot.taskId) ?? ''))
+    const verifiedOutput = resultFromTerminal ? null : fullOutputOf(snapshot.taskId)
+    const reportOutput = terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (verifiedOutput?.text ?? ''))
     const persistedTranscript = !resultFromTerminal
       ? latestRunOutput(db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? [], typeof entry.runStart === 'number' ? entry.runStart : undefined)
       : ''
     const durablyReadable = terminalMessage
       ? saved?.terminalMessage === terminalMessage
-      : (!resultFromTerminal && !saved?.resultErased && persistedTranscript.length >= reportOutput.length && reportOutput.length > 0)
+      : (!resultFromTerminal && !saved?.resultErased && Boolean(verifiedOutput?.complete) && persistedTranscript.length >= reportOutput.length && reportOutput.length > 0)
     const windowedOutput = windowReportOutput(reportOutput, { readable: durablyReadable })
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
       host: typeof entry.next === 'string' ? entry.next : null, output: windowedOutput.text,

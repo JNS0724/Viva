@@ -20,11 +20,13 @@ const text = (value: unknown) => typeof value === 'string' ? value : ''
 const copy = <K, V>(map: Map<K, V> | undefined): Map<K, V> | undefined => map ? new Map(map) : undefined
 const directory = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
 
+export type TaskOutputRead = string | { text: string, complete: boolean } | null | undefined
+
 /** Main-process projection: no renderer round trip and no disk read on a tool query unless full output is requested. */
 export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskSnapshot) => {}, readOutput }: {
   now?: () => number
   changed?: (snapshot: TaskSnapshot) => void
-  readOutput?: (taskId: string) => string | null | undefined
+  readOutput?: (taskId: string) => TaskOutputRead
 } = {}) {
   const tasks = new Map<string, Task>()
   const waits = new Map<string, Map<string, 'permission' | 'answer'>>()
@@ -175,13 +177,16 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         outputTotalChars?: number | null
         nextOutputOffset?: number | null
         outputTruncated?: boolean
+        outputUnavailable?: boolean
       } = { resultPreview: undefined }
       if (request.includeOutput) {
         const resolved = task.resultFromTerminal
           ? (terminalMessages.get(task.taskId) ?? null)
           : readOutput?.(task.taskId)
-        const full = resolved ?? task.resultPreview
-        const previewOnlyTruncated = resolved == null && task.previewTruncated
+        const resolvedText = typeof resolved === 'string' ? resolved : resolved?.text
+        const resolvedIncomplete = typeof resolved === 'object' && resolved !== null && !resolved.complete
+        const full = resolvedText ?? task.resultPreview
+        const unavailable = resolvedIncomplete || (resolvedText == null && task.previewTruncated)
         const total = full.length
         const start = Math.min(request.outputOffset ?? 0, total)
         const limit = Math.min(request.outputLimit ?? DEFAULT_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT)
@@ -190,9 +195,10 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         outputFields = {
           resultPreview: slice,
           outputOffset: start,
-          outputTotalChars: previewOnlyTruncated ? null : total,
+          outputTotalChars: unavailable ? null : total,
           nextOutputOffset,
-          outputTruncated: previewOnlyTruncated || start > 0 || nextOutputOffset !== null,
+          outputTruncated: unavailable || start > 0 || nextOutputOffset !== null,
+          ...(unavailable ? { outputUnavailable: true } : {}),
         }
       }
       return { observedAt: now(), task: { ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), ...outputFields,
