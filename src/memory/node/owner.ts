@@ -295,10 +295,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     const metadata = input.cwd !== undefined || input.parentSessionId !== undefined
     if (parent && metadata && parent !== input.parentSessionId) throw new Error('Session parent context changed')
-    const parentProject = input.parentSessionId ? sessionContext(input.parentSessionId).project : undefined
-    const inheritCrossProject = Boolean(input.parentSessionId && parentProject?.id === project?.id && coordination.sessionCrossProject(input.parentSessionId))
     if (input.parentSessionId && !parent && (!db.prepare('SELECT 1 FROM owner_sessions WHERE session=?').get(input.parentSessionId)
-      || !coordination.canInherit(input.parentSessionId, parentProject, project, true, acceptsFiles, inheritCrossProject)
+      || !coordination.canInherit(input.parentSessionId, sessionContext(input.parentSessionId).project, project, true, acceptsFiles)
       || !dispatch.transferable(dispatch.snapshot(input.parentSessionId), acceptsFiles))) throw new Error('Parent memory context is unavailable')
     const bound = saved?.context ? JSON.parse(saved.context) as MemoryScope : undefined
     const defaultScope: MemoryScope = input.parentSessionId || parent ? { kind: 'task', id: input.sessionId } : project ?? { kind: 'user' }
@@ -313,7 +311,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,?,?)').run(input.sessionId, input.sessionId, JSON.stringify(context), project?.id ?? null)
       if (!bound || newlyBoundChild) db.prepare('UPDATE owner_sessions SET context=? WHERE session=?').run(JSON.stringify(context), input.sessionId)
       if (input.parentSessionId && !parent) {
-        if (inheritCrossProject) db.prepare('INSERT OR IGNORE INTO owner_cross_project_sessions VALUES (?)').run(input.sessionId)
         dispatch.attach(input.sessionId, dispatch.snapshot(input.parentSessionId))
         db.prepare('INSERT INTO owner_session_parents VALUES (?,?)').run(input.sessionId, input.parentSessionId)
       }
@@ -1176,7 +1173,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const proof = await runtime.loadFileEvidenceCheck(dispatch.snapshot(parent).files ?? [], signal)
         const previous = nativeSurface.parent(session)
         if (parent === session || previous && previous !== parent) return false
-        const allowCross = sourceProject?.id === targetProject?.id && coordination.sessionCrossProject(parent)
+        const allowCross = sourceProject?.id === targetProject?.id
+          && sessionContext(parent).context?.kind !== 'task'
+          && coordination.sessionCrossProject(parent)
         return store.tx(() => {
           if (!coordination.inherit(parent, session, sourceProject, targetProject, ready, proof, allowCross)) return false
           nativeSurface.bindFork(session, parent)

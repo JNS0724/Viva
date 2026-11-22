@@ -704,7 +704,7 @@ test('cross-project transfer, inherit and history use commit evidence and sessio
   assert.equal(await owner.handleHost('transfer', { args: [transferTarget, evidence, projectB, true, true] }), true)
   assert.equal(await owner.handleHost('inherit', { args: [origin.sessionId, inheritTarget, projectA, projectB, true, true] }), true)
   await owner.handleHost('useHistory', { args: [historyTarget, historyRow, true] })
-  // A same-project fork from a cross-project session inherits the flag atomically, while a cross-project fork stays rejected.
+  // A same-project foreground fork inherits the flag atomically, while a cross-project fork, task fork, or native subagent child stays rejected.
   const sameProjectFork = await makeTarget()
   const crossProjectFork = randomUUID()
   assert.equal(await owner.handleHost('bindProject', { args: [crossProjectFork, projectA] }), true)
@@ -714,6 +714,24 @@ test('cross-project transfer, inherit and history use commit evidence and sessio
   assert.equal(await owner.handleHost('inheritFork', { args: [transferTarget, sameProjectFork, projectB, projectB, true] }), true)
   assert.equal(owner.coordination.sessionCrossProject(sameProjectFork), true)
   assert.deepEqual(owner.dispatch.snapshot(sameProjectFork).sources, [received.sourceId])
+
+  const nativeParent = await makeTarget()
+  const nativeParentInput = source({ sessionId: nativeParent, project: projectB.id, text: '乙项目主会话输入' })
+  await owner.receiveSource(nativeParentInput)
+  assert.equal(await owner.handleHost('transfer', { args: [nativeParent, evidence, projectB, true, true] }), true)
+  const nativeChild = randomUUID()
+  assert.throws(() => owner.initializeSession({ sessionId: nativeChild, parentSessionId: nativeParent }), /Parent memory context is unavailable/)
+  assert.equal(owner.coordination.sessionCrossProject(nativeChild), false)
+  assert.deepEqual(owner.dispatch.snapshot(nativeChild).sources, [])
+
+  const taskSession = randomUUID()
+  await owner.handleHost('sourceAlias', { operationId: randomUUID(), sourceId: randomUUID(), session: taskSession,
+    conversation: taskSession, text: '乙项目后台任务指令', origin: 'derived', context: { kind: 'task', id: taskSession }, project: projectB })
+  assert.equal(await owner.handleHost('transfer', { args: [taskSession, evidence, projectB, true, true] }), true)
+  const taskFork = await makeTarget()
+  assert.equal(await owner.handleHost('inheritFork', { args: [taskSession, taskFork, projectB, projectB, true] }), false)
+  assert.equal(owner.coordination.sessionCrossProject(taskFork), false)
+  assert.deepEqual(owner.dispatch.snapshot(taskFork).sources, [])
   await owner.close()
 
   const reopened = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
