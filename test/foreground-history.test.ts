@@ -10,6 +10,8 @@ import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../src/shared/renderer-sync.ts'
 import { SILENT_REPLY } from '../src/shared/task-report.ts'
 import { CONVERSATION_WINDOW_LIMIT, initialState, reduce } from '../src/renderer/state.ts'
+import { decodeAgentEvent } from '../src/renderer/agent-event-decoder.ts'
+import { createEventActions } from '../src/renderer/agent-event-actions.ts'
 import type { ConversationUpdate } from '../src/renderer/conversation-types.ts'
 import { foldAfter, rewindTarget } from '../src/renderer/rewind-state.ts'
 import { recordsAt } from '../src/renderer/report-state.ts'
@@ -793,15 +795,23 @@ test('long unfinished turn reclaims persisted viva_stream events so mid-turn rel
       },
     },
   })
-  for (const event of snap.replay) {
-    if (event.type === 'turn_started') state = reduce(state, { type: 'agent_turn_started', by: 'user', at: 100 })
-    else if (event.type === 'update') state = reduce(state, { type: 'acp_update', update: event.update as ConversationUpdate, at: 101 })
+  const toAction = createEventActions()
+  for (const rawEvent of snap.replay) {
+    const decoded = decodeAgentEvent(rawEvent)
+    assert.ok(decoded, `replay event must pass real agent-event-decoder: ${String(rawEvent.type)}`)
+    const action = toAction(decoded, 101)
+    if (action) state = reduce(state, action)
   }
   assert.equal(state.phase, 'working')
   assert.equal(state.messages.length, CONVERSATION_WINDOW_MESSAGES)
   assert.equal(state.messages.some(m => m.streamKey === 'long-250' && m.text.startsWith('第250条:')), true,
-    'in-window persisted message with reasoning block is NOT deleted when its reasoning-only settle replays')
+    'in-window persisted message with reasoning block is NOT deleted when its reasoning-only settle replays through real decoder')
   assert.deepEqual(state.thoughts.map(item => item.text), ['推理-0', '推理-250', '仅推理'])
+  assert.equal(
+    decodeAgentEvent({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'bad', kind: 'settle', blocks: [], textInHistory: 'yes' } }),
+    null,
+    'malformed non-boolean textInHistory is rejected by decoder',
+  )
 })
 
 test('unpersisted stream overflow when commit fails still triggers unreplayable gap on mid-turn reload', t => {

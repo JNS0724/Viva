@@ -128,8 +128,10 @@ export function decodeUpdate(value: unknown): ConversationUpdate | null {
       const blocks = list(item.blocks, value => { const block = objectOf(value); return block && string(block.type) && optional(block.text, string) ? { type: block.type, text: block.text } : null })
       const before = item.before === undefined ? undefined : objectOf(item.before)
       if (before === null || (before && (!optional(before.text, string) || !optional(before.reasoning, string)))) return null
+      if (item.textInHistory !== undefined && typeof item.textInHistory !== 'boolean') return null
       return blocks ? { sessionUpdate: item.sessionUpdate, key: item.key, kind: 'settle', blocks,
-        ...(before ? { before: { text: before.text as string | undefined, reasoning: before.reasoning as string | undefined } } : {}) } : null
+        ...(before ? { before: { text: before.text as string | undefined, reasoning: before.reasoning as string | undefined } } : {}),
+        ...(item.textInHistory ? { textInHistory: true } : {}) } : null
     }
     if ((item.kind === 'delta' || item.kind === 'block') && natural(item.index) && (item.blockType === 'text' || item.blockType === 'reasoning') && string(item.text)) return { sessionUpdate: item.sessionUpdate, key: item.key, kind: item.kind, index: item.index, blockType: item.blockType, text: item.text }
     return null
