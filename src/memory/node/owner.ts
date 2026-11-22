@@ -141,6 +141,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && (removedSession(session) || nativeSurface.has(session))),
     sessionCrossProject: (session: string) => Boolean(db.prepare('SELECT 1 FROM owner_cross_project_sessions WHERE session=?').get(session)),
     recordSessionCrossProject: (session: string) => { db.prepare('INSERT OR IGNORE INTO owner_cross_project_sessions VALUES (?)').run(session) },
+    tx: store.tx,
     allowedHistory(row: MemoryHistoryOccurrence) {
       // Browsable history without original-source or generated-session provenance
       // cannot be replayed as model context.

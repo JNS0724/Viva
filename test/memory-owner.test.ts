@@ -663,3 +663,66 @@ test('agent relay receipts preserve the sender readset and reject missing native
   assert.throws(() => owner.acquireSend(randomUUID(), { session: target.sessionId }, 'relayed text'))
   await assert.rejects(owner.registerDerived({ sessionId: target.sessionId, messageId, sourceIds: [], senderSessionId: sender.sessionId }), /Derived dependencies unavailable/)
 })
+
+test('cross-project transfer, inherit and history use commit evidence and session flag atomically and survive restart', async t => {
+  const { owner, root, defer } = fixture(t); await owner.recover()
+  const projectA = { kind: 'project' as const, id: 'project-a' }
+  const projectB = { kind: 'project' as const, id: 'project-b' }
+  const origin = source({ project: projectA.id, text: '甲项目的跨目录事实' })
+  const received = await owner.receiveSource(origin)
+  const evidence = owner.dispatch.snapshot(origin.sessionId)
+  const historyRow = { segmentId: 'seg-a', role: 'user', text: origin.text, sourceId: received.sourceId, sessionId: origin.sessionId }
+
+  const makeTarget = async () => {
+    const id = randomUUID()
+    assert.equal(await owner.handleHost('bindProject', { args: [id, projectB] }), true)
+    await owner.handleHost('recordSession', { args: [id] })
+    return id
+  }
+  const transferTarget = await makeTarget()
+  const inheritTarget = await makeTarget()
+  const historyTarget = await makeTarget()
+
+  // Simulate an interrupted write between marking cross-project and persisting evidence: the transaction rolls back both.
+  const db = new DatabaseSync(join(root, 'memory.db'))
+  try {
+    db.exec(`CREATE TRIGGER fail_cross_evidence BEFORE INSERT ON memory_session_sources
+      WHEN NEW.session IN ('${transferTarget}', '${inheritTarget}', '${historyTarget}')
+      BEGIN SELECT RAISE(ABORT, 'simulated mid-write failure'); END;`)
+    await assert.rejects(owner.handleHost('transfer', { args: [transferTarget, evidence, projectB, true, true] }), /simulated mid-write failure/)
+    await assert.rejects(owner.handleHost('inherit', { args: [origin.sessionId, inheritTarget, projectA, projectB, true, true] }), /simulated mid-write failure/)
+    await assert.rejects(owner.handleHost('useHistory', { args: [historyTarget, historyRow, true] }), /simulated mid-write failure/)
+    for (const id of [transferTarget, inheritTarget, historyTarget]) {
+      assert.deepEqual(owner.dispatch.snapshot(id).sources, [])
+      assert.equal(owner.coordination.sessionCrossProject(id), false)
+      assert.equal(await owner.handleHost('allowsSession', { args: [id, projectB] }), true)
+    }
+    db.exec('DROP TRIGGER fail_cross_evidence')
+  } finally { db.close() }
+
+  // Retry after recovery: all three commit both evidence and flag together and remain valid across owner restart.
+  assert.equal(await owner.handleHost('transfer', { args: [transferTarget, evidence, projectB, true, true] }), true)
+  assert.equal(await owner.handleHost('inherit', { args: [origin.sessionId, inheritTarget, projectA, projectB, true, true] }), true)
+  await owner.handleHost('useHistory', { args: [historyTarget, historyRow, true] })
+  await owner.close()
+
+  const reopened = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  defer(() => reopened.close())
+  await reopened.recover()
+  for (const id of [transferTarget, inheritTarget, historyTarget]) {
+    assert.deepEqual(reopened.dispatch.snapshot(id).sources, [received.sourceId])
+    assert.equal(reopened.coordination.sessionCrossProject(id), true)
+    assert.equal(await reopened.handleHost('allowsSession', { args: [id, projectB] }), true)
+    const permit = reopened.acquireSend(randomUUID(), { session: id }, 'after restart')
+    permit.settled()
+  }
+
+  // Withdrawing the cross-project source still invalidates every recovered target session.
+  const op = randomUUID()
+  const { ticket } = await reopened.handleHost('prepareSourceChange', { operationId: op, conversation: origin.sessionId, ids: [received.sourceId] }) as { ticket: string }
+  await reopened.handleHost('commitSourceChange', { operationId: op, ticket })
+  for (const id of [transferTarget, inheritTarget, historyTarget]) {
+    assert.equal(await reopened.handleHost('allowsSession', { args: [id, projectB] }), false)
+    assert.throws(() => reopened.acquireSend(randomUUID(), { session: id }, 'after withdrawal'))
+  }
+})

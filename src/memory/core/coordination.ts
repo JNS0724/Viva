@@ -18,6 +18,7 @@ export interface MemoryCoordinationRuntime {
   recordSessionProject(session: string, project: string): void
   sessionCrossProject?(session: string): boolean
   recordSessionCrossProject?(session: string): void
+  tx?<T>(work: () => T): T
   projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent, crossProject?: boolean): boolean
   computeAdmission(job: string): { current(): boolean, deadline: number | null } | null
 }
@@ -64,6 +65,10 @@ export function createMemoryCoordination({ runtime, dispatch }: {
   }
   const sessionCrossProject = (session: string | null | undefined) => Boolean(session && runtime()?.sessionCrossProject?.(session))
   const markCrossProject = (session: string) => { runtime()?.recordSessionCrossProject?.(session) }
+  const atomic = <T>(work: () => T): T => {
+    const tx = runtime()?.tx
+    return tx ? tx(work) : work()
+  }
   const allowsEvidence = (evidence: MemoryProvenance | null | undefined, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent, crossProject = false) =>
     !evidence || Boolean(runtime()?.projectAllows(evidence, project, acceptsFiles, crossProject))
   function bindProject(session: string, project?: MemoryProject) {
@@ -129,8 +134,11 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     const allowCross = Boolean(crossProject || sessionCrossProject(session))
     if (transferStatus(evidence, project, transportReady, acceptsFiles, allowCross) !== 'ready') return false
     if (evidence) {
-      dispatch()!.attach(session, evidence)
-      if (allowCross && !allowsEvidence(evidence, project, acceptsFiles, false)) markCrossProject(session)
+      const crosses = allowCross && !allowsEvidence(evidence, project, acceptsFiles, false)
+      atomic(() => {
+        if (crosses) markCrossProject(session)
+        dispatch()!.attach(session, evidence)
+      })
     }
     return true
   }
@@ -142,8 +150,11 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     const allowCross = Boolean(crossProject || (source === target && sessionCrossProject(target)))
     if (!canInherit(source, sourceProject, targetProject, transportReady, acceptsFiles, allowCross)) return false
     const snapshot = dispatch()?.snapshot(source)
-    dispatch()?.inherit(source, target)
-    if (allowCross && (sessionCrossProject(source) || !allowsEvidence(snapshot, targetProject, acceptsFiles, false))) markCrossProject(target)
+    const crosses = allowCross && (sessionCrossProject(source) || !allowsEvidence(snapshot, targetProject, acceptsFiles, false))
+    atomic(() => {
+      if (crosses) markCrossProject(target)
+      dispatch()?.inherit(source, target)
+    })
     return true
   }
   function allowsHistory(row: MemoryHistoryOccurrence, sourceProject?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
@@ -178,9 +189,11 @@ export function createMemoryCoordination({ runtime, dispatch }: {
       Boolean(row.sourceId && !owner.projectAllows({ sources: [row.sourceId] }, project))
       || Boolean(sourceSnapshot && (sessionCrossProject(row.sessionId) || !allowsEvidence(sourceSnapshot, project, acceptsFiles, false)))
     )
-    if (row.sourceId) leases.recordSource(session, row.sourceId)
-    if (row.sessionId && (row.role !== 'user' || !row.sourceId)) leases.inherit(row.sessionId, session)
-    if (crosses) markCrossProject(session)
+    atomic(() => {
+      if (crosses) markCrossProject(session)
+      if (row.sourceId) leases.recordSource(session, row.sourceId)
+      if (row.sessionId && (row.role !== 'user' || !row.sourceId)) leases.inherit(row.sessionId, session)
+    })
   }
 
   async function mutate<T>(work: () => T | Promise<T>, prepare?: () => void | Promise<void>): Promise<T> {
