@@ -647,6 +647,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       allowGeneralQuestion: async (session, turn, cards, _waiting, phase) => turn ? memory.call('authorizeGeneralQuestion', { args: [session, turn, cards,
         session === sessions.current().sessionId ? sessions.current().id : historyDb.bySession(session)?.id ?? session,
         session === sessions.current().sessionId ? foregroundMemoryScope(currentMemoryProject()) : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
+      admitTaskWaitResume: (kind, id) => {
+        const slot = taskRuntime?.dsh.reserveWaitResume(kind, id)
+        return !slot || !('problem' in slot)
+      },
       onQuestionAnswer: async (entry, answers, operation) => {
         if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
         const conversation = entry.taskId ? historyDb.bySession(entry.sessionId)?.id : entry.context?.conversationId

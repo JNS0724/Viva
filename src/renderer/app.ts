@@ -635,17 +635,19 @@ const handlers = {
   cancel: conversationActions.cancel,
   respond(requestId: string, optionId: string | null) {
     if (state.initialization.status !== 'ready') return
-    const isTaskPermission = liveTasks(state).some((task) => task.permission?.requestId === requestId)
-    if (!isTaskPermission) {
+    const owner = liveTasks(state).find((task) => task.permission?.requestId === requestId)
+    if (!owner) {
       dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
       api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
       return
     }
     if (respondingPermissions.has(requestId)) return
+    const permission = owner.permission
+    const taskId = owner.id
     respondingPermissions.add(requestId)
     api.respondPermission(requestId, optionId)
       .then((accepted) => {
-        if (accepted) dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
+        if (accepted) dispatch({ type: 'permission_resolved', requestId, optionId, taskId, permission, at: Date.now() })
       })
       .catch((err) => historyActions.showToast(errorMessage(err)))
       .finally(() => { respondingPermissions.delete(requestId) })

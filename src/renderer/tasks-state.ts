@@ -365,10 +365,11 @@ export function taskActions() {
  */
 export function routeToTask(state: State, action: Action): State | null {
   if (action.type === 'task_question_pick') return inView(state, action.taskId, { type: 'question_pick', id: action.id, label: action.label })
-  if (action.type === 'task_question_answered') return inView(state, action.taskId, { type: 'question_answered', questionId: action.questionId, answers: action.answers, at: action.at })
+  if (action.type === 'task_question_answered') return inView(state, action.taskId, { type: 'question_answered', questionId: action.questionId, answers: action.answers, at: action.at, ...(action.questions ? { questions: action.questions } : {}) })
   if (action.type === 'task_permission_request') return takePiece(state, action, taken => inView(taken, action.taskId, { ...action, type: 'permission_request' }))
   if (action.type === 'permission_resolved' && state.permission?.requestId !== action.requestId) {
-    const owner = state.tasks.list.find((task) => task.view.permission?.requestId === action.requestId)
+    const owner = (action.taskId ? state.tasks.list.find((task) => task.id === action.taskId) : undefined)
+      ?? state.tasks.list.find((task) => task.view.permission?.requestId === action.requestId)
     if (owner) return mapTask(state, owner.id, (task) => ({ ...task, view: reduceConversation(task.view, action) }))
   }
   return null

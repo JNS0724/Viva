@@ -101,6 +101,25 @@ test('a task question stays open and toasts when backend refuses the answer (e.g
   assert.match(win.said.toasts.at(-1) ?? '', /最多 5 个/)
 })
 
+test('a task answer is still recorded in messages and timeline even when task_question_closed arrives before IPC resolves', async () => {
+  let resolveAnswer
+  const win = windowWith({ answerQuestion: () => new Promise((resolve) => { resolveAnswer = resolve }) })
+  withTask(win)
+  const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }
+  win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q-race', questions: [city], at: 70 })
+  win.actions.pickTaskOption('s1', 'city', '上海')
+  // Backend emits task_question_closed BEFORE the IPC promise resolves.
+  win.dispatch({ type: 'task_question_closed', taskId: 's1', questionId: 'q-race', at: 71 })
+  assert.equal(liveTasks(win.state())[0].question, null)
+  resolveAnswer(true)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const task = liveTasks(win.state())[0]
+  assert.equal(taskMessages(task).at(-1).text, '上海')
+  const entries = task.view.timeline.filter((entry) => entry.kind === 'answer' && entry.ref === 'q-race')
+  assert.equal(entries.length, 1, 'replaces premature closed entry instead of duplicating')
+  assert.equal(entries[0].answered, true)
+})
+
 test('the tasks the last launch kept come back at the start, with what they said', async () => {
   const win = windowWith({
     finishedTasks: async () => [{

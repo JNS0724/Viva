@@ -89,7 +89,7 @@ export function createAcpBridge({
   onExit = null as ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
-  launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, onSessionCreated, recordOutputs, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
+  launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, admitTaskWaitResume, onSessionCreated, recordOutputs, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
   allowGeneralQuestion, taskSourceAlias, memoryOwner,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
@@ -124,6 +124,7 @@ export function createAcpBridge({
   recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
   onSessionCreated?: (id: string, cwd: string, parent?: string) => void | Promise<void>,
   onQuestionAnswer?: Parameters<typeof createQuestionDesk>[0]['onAnswer'],
+  admitTaskWaitResume?: (kind: 'permission' | 'answer', id: string) => boolean,
   /**
    * The request runtime (request-runtime.ts): the user's words to the main conversation are each a request, taken
    * here as they are sent; the routing plugin's decisions and failures go to it (routing-channel.ts).
@@ -169,6 +170,10 @@ export function createAcpBridge({
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.turn(id) ? operations.context(id) : null : undefined
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
+    admitMemoryDecline: admitTaskWaitResume ? (_taskId, questionId) => admitTaskWaitResume('answer', questionId) : undefined,
+    onMemoryDeclineBlocked: (taskId, questionId) => {
+      void taskSessions.cancelTask(taskId).finally(() => toPlugins({ type: 'decline', id: questionId, reason: 'memory-clarification' }))
+    },
     allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true

@@ -141,15 +141,15 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   const questionOf = (taskId: string) => taskById(taskId)?.view.question ?? null
 
-  /** Answers what a task asks; waits for backend admission so a slot-full refusal keeps the question intact. */
+  /** Answers what a task asks; snapshots questions so an earlier task_question_closed event still records the reply on ack. */
   function answerTask(taskId: string, answers: QuestionAnswer[]) {
     const question = questionOf(taskId)
     if (!question || answering.has(question.questionId)) return
-    const questionId = question.questionId
+    const { questionId, questions } = question
     answering = new Set([...answering, questionId])
     api.answerQuestion(questionId, answers)
       .then((accepted: boolean) => {
-        if (accepted) dispatch({ type: 'task_question_answered', taskId, questionId, answers, at: Date.now() })
+        if (accepted) dispatch({ type: 'task_question_answered', taskId, questionId, questions, answers, at: Date.now() })
         else showToast(t("app.this.question.has.ended.your.answer.was"))
       })
       .catch((err: unknown) => showToast(errorMessage(err)))

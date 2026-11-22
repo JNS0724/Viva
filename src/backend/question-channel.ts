@@ -82,11 +82,15 @@ export type QuestionAdmission = boolean | (() => boolean)
  * send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
  * task a session is, if any (its questions go to the window as task_question).
  */
-export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, allowGeneralQuestion }: {
+export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, allowGeneralQuestion, admitMemoryDecline, onMemoryDeclineBlocked }: {
   send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
   conversationContext?: (sessionId: string) => ConversationContext | null,
   onAnswer?: (entry: Pending, answers: Answer[], operation?: string) => string | { sourceIds: Readonly<Record<string, string>> } | void | Promise<string | { sourceIds: Readonly<Record<string, string>> } | void>,
   allowGeneralQuestion?: (sessionId: string, questions: readonly Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') => QuestionAdmission | Promise<QuestionAdmission>,
+  /** Called before declining a waiting task's invalidated question: false means active slots are full, so do not resume the task. */
+  admitMemoryDecline?: (taskId: string, questionId: string) => boolean,
+  /** Safe fallback when a memory-invalidated task question cannot resume due to full active slots (cancels the task turn). */
+  onMemoryDeclineBlocked?: (taskId: string, questionId: string) => void,
 }) {
   const pending = new Map<string, Pending>()
   const checking = new Map<string, Pending>()
@@ -174,6 +178,11 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     }
     for (const [questionId, entry] of [...pending]) {
       if (keep(entry)) continue
+      if (memoryReview && entry.taskId && admitMemoryDecline && !admitMemoryDecline(entry.taskId, questionId)) {
+        pending.delete(questionId)
+        onMemoryDeclineBlocked?.(entry.taskId, questionId)
+        continue
+      }
       pending.delete(questionId)
       send({ type: 'decline', id: questionId, ...(memoryReview ? { reason: 'memory-clarification' } : {}) })
       closed(questionId, entry.taskId, entry.context)
