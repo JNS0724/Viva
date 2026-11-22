@@ -497,6 +497,7 @@ const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>
   'open-profile': () => memoryActions.openProfile(),
   'open-settings': () => handlers.openSettings(),
   'open-mcp': () => capabilityActions.openCapabilities('mcp'),
+  'open-tasks': () => handlers.openTasks(),
   'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
   'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
 }
@@ -535,9 +536,10 @@ const handlers = {
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
-  /** Background tasks: stopping or closing one. */
+  /** Background tasks: stopping, closing or resuming one. */
   stopTask: (taskId: string) => taskActions.stopTask(taskId),
   closeTask: (taskId: string) => taskActions.closeTask(taskId),
+  resumeTask: (taskId: string) => taskActions.resumeTask(taskId),
   pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
   /** The 后台 page's list folded to its strip, or unfolded; kept for the next launch. */
   foldTaskList: (folded: boolean) => {

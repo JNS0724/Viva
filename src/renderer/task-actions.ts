@@ -29,12 +29,16 @@ const taskOf = (event: AgentEvent): string | null => {
 const pause = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
 
 export function createTaskActions({ api, getState, dispatch, showToast, errorMessage, deliver, wait = pause }: Pick<ActionDeps, 'getState' | 'dispatch' | 'showToast' | 'errorMessage'> & {
-  api: Pick<AgentApi, 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'>,
+  api: Pick<AgentApi, 'finishedTasks' | 'answerQuestion' | 'stopTask' | 'closeTask'> & Partial<Pick<AgentApi, 'resumeTask'>>,
   /** An event from the main process, reduced as app.ts reduces it (handleEvent). */
   deliver: (event: AgentEvent) => void,
   /** Waits before a read of the tasks is tried again (tests pass their own). */
   wait?: (ms: number) => Promise<void>,
 }) {
+  /** Interrupted tasks already announced via toast in this launch, so reloads/retries do not repeat the notice. */
+  let notifiedInterrupted = new Set<string>()
+  /** Tasks with a resume IPC currently in flight, preventing duplicate clicks from flashing an error toast. */
+  let resuming = new Set<string>()
   /**
    * While the tasks are read (loadKept): what the live channel says meanwhile of any task, in order, to be taken once
    * the read is, over it. Null when no read is under way.
@@ -118,6 +122,17 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
       for (const taskId of gone) dispatch({ type: 'task_closed', taskId })
       if (taken.length) dispatch({ type: 'tasks_restored', list: taken })
       for (const event of waited) deliver(event)
+      const newlyInterrupted = taken
+        .filter((entry) => entry.status === 'interrupted' && !notifiedInterrupted.has(entry.task.id))
+        .map((entry) => entry.task.id)
+        .filter((id) => taskById(id)?.status === 'interrupted')
+      if (newlyInterrupted.length) {
+        notifiedInterrupted = new Set([...notifiedInterrupted, ...newlyInterrupted])
+        showToast(t('tasks-page.interrupted.notice', { count: newlyInterrupted.length }), {
+          action: { label: t('task.open.background'), kind: 'open-tasks' },
+          ms: 6000,
+        })
+      }
       return
     }
   }
@@ -154,10 +169,22 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     return dispatch({ type: 'task_closed', taskId })
   }
 
+  async function resumeTask(taskId: string) {
+    if (!api.resumeTask || resuming.has(taskId)) return
+    resuming = new Set([...resuming, taskId])
+    try {
+      const result = await call(() => api.resumeTask!(taskId))
+      if (isFailed(result)) showToast(result.problem)
+    } finally {
+      resuming = new Set([...resuming].filter((id) => id !== taskId))
+    }
+  }
+
   return {
     hold,
     stopTask,
     closeTask,
+    resumeTask,
     pickTaskOption,
     loadKept,
     submitTaskAnswer: (taskId: string) => {

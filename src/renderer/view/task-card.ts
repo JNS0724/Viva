@@ -1,5 +1,5 @@
 import { t } from '../../shared/i18n/translate.ts'
-import { permissionCard } from '../prompt-card.ts'
+import { permissionCard, promptButtons } from '../prompt-card.ts'
 import { formatListTime } from '../selectors.ts'
 import { taskPreview } from '../tasks-state.ts'
 import { h } from './dom.ts'
@@ -61,14 +61,65 @@ export function taskCardInputs(task: BackgroundTask, now: number): readonly unkn
     LIVE.has(task.status) ? null : taskPreview(task.view)]
 }
 
+/** Quick actions rendered beneath the task line when a single click can resolve it without switching pages. */
+function inlineActions(task: BackgroundTask, handlers: Handlers): HTMLElement | null {
+  if (task.status === 'waiting') {
+    const permission = task.permission
+    if (permission && Array.isArray(permission.options) && permission.options.length > 0) {
+      return h('div', { class: 'task-inline', 'data-task': task.id, 'data-kind': 'permission' },
+        promptButtons(permission.options).map((option) => h('button', {
+          class: option.role === 'primary' ? 'btn btn-primary task-inline-btn' : 'btn btn-secondary task-inline-btn',
+          type: 'button',
+          text: option.name,
+          onClick: () => handlers.respond(permission.requestId, option.optionId),
+        })))
+    }
+    const questions = task.question?.questions
+    const first = Array.isArray(questions) && questions.length === 1 ? questions[0] : null
+    if (first && !first.multiSelect && Array.isArray(first.options) && first.options.length > 0) {
+      return h('div', { class: 'task-inline', 'data-task': task.id, 'data-kind': 'question' },
+        first.options.map((option: { label: string, description?: string }) => h('button', {
+          class: 'btn btn-secondary task-inline-btn',
+          type: 'button',
+          title: option.description ?? null,
+          text: option.label,
+          onClick: () => handlers.pickTaskOption(task.id, first.id, option.label),
+        })),
+        h('button', {
+          class: 'btn btn-text task-inline-btn',
+          type: 'button',
+          text: t('island-dom.skip'),
+          onClick: () => handlers.skipTaskQuestion(task.id),
+        }))
+    }
+    return null
+  }
+  if (task.status === 'interrupted') {
+    return h('div', { class: 'task-inline', 'data-task': task.id, 'data-kind': 'interrupted' },
+      h('button', {
+        class: 'btn btn-primary task-inline-btn',
+        type: 'button',
+        text: t('task-card.resume'),
+        onClick: () => handlers.resumeTask(task.id),
+      }),
+      h('button', {
+        class: 'btn btn-secondary task-inline-btn',
+        type: 'button',
+        text: t('task-card.close'),
+        onClick: () => handlers.closeTask(task.id),
+      }))
+  }
+  return null
+}
+
 /**
  * A task's line in the conversation, under the words that started it, changing in place as it goes: where it
- * stands and one line of it. No buttons of its own: a click opens its page, where it is answered, followed up
- * or closed. Waiting on the user, it stands out, and leads to the page where it is answered.
+ * stands and one line of it. Clicking the line opens its page; waiting approvals, single-choice questions, and
+ * interrupted tasks also offer an inline action strip right underneath so one click settles them in place.
  */
-export function taskCard(task: BackgroundTask, handlers: Handlers, now: number): HTMLElement {
+export function taskCard(task: BackgroundTask, handlers: Handlers, now: number): View {
   const parts = partsOf(task, now)
-  return h('button', {
+  const line = h('button', {
     class: 'task-line task-card', type: 'button', 'data-status': task.status, 'data-task': task.id,
     title: t("task.open.background"), onClick: () => handlers.openTasks(task.id),
   },
@@ -77,6 +128,8 @@ export function taskCard(task: BackgroundTask, handlers: Handlers, now: number):
   h('span', { class: 'task-state', text: parts.said }),
   parts.line ? h('span', { class: 'task-line-text', text: parts.line }) : null,
   h('span', { class: 'task-line-go', text: leads()[task.status] ?? t("task.view.result") }))
+  const actions = inlineActions(task, handlers)
+  return actions ? [line, actions] : line
 }
 
 /** Ended tasks restored from the last launch, put back under the message they hung from. */

@@ -66,7 +66,9 @@ import { createTaskReports, REPORT, type ReportPayload } from './task-reports.ts
 import { createReportRecords } from './report-records.ts'
 import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
-import type { ScheduleAction } from './tasks-channel.ts'
+import type { TaskChannelAction } from './tasks-channel.ts'
+import { checkAnswers, type Question } from './question-channel.ts'
+import { answerText } from '../shared/question-answer.ts'
 import { createRequestStore } from './request-store.ts'
 import { createRequestRuntime, type RequestPlace, type RequestRuntime } from './request-runtime.ts'
 import { createTaskStore } from './task-store.ts'
@@ -765,14 +767,52 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
-  /** The agent of the conversation on screen changing schedules (viva-tasks); a task's own session may not. */
-  async function actOnSchedule(request: ScheduleAction, sessionId: string) {
-    if (sessionId !== lastInfo.sessionId) throw new Error(t('main.tasks-channel.not.from.a.task'))
+  /** The agent of the conversation on screen acting on schedules or answering a task's question (viva-tasks); a task's own session may not. */
+  async function actOnSchedule(request: TaskChannelAction, sessionId: string) {
+    if (sessionId !== lastInfo.sessionId || !isMainSession(sessionId)) throw new Error(t('main.tasks-channel.not.from.a.task'))
     const erasureRevision = historyDb.fileErasureRevision()
     const caller = sessions.context()
     const bridge = dsh.current
     if (!await allowMemorySession(sessionId)) throw new Error(t('main.memory.context.stale'))
     const evidence = await memory.provenance(sessionId)
+    if (request.op === 'answer_background_task') {
+      if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
+      if (!bridge) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
+      const pending = bridge.taskWaits(request.taskId).questions.find(
+        (item): item is { questionId: string, questions: Question[] } =>
+          Boolean(item && typeof item === 'object'
+            && (item as { questionId?: unknown }).questionId === request.questionId
+            && Array.isArray((item as { questions?: unknown }).questions)),
+      )
+      if (!pending) throw new Error(t('main.tasks-channel.question.not.found'))
+      const questions = pending.questions
+      const checked = checkAnswers(questions, request.answers)
+      if (!await allowMemorySession(request.taskId) || !canTransferMemoryToModel(request.taskId)) {
+        throw new Error(t('main.memory.context.stale'))
+      }
+      if (evidence && historyDb.evidenceErased(evidence)) throw new Error(t('main.memory.context.stale'))
+      const taskProject = await projectOfSession(request.taskId)
+      const memoryReady = Boolean(bridge.memory.ready())
+      if (!await memoryCoordination.transfer(request.taskId, evidence, taskProject, memoryReady, true)) {
+        throw new Error(t('main.memory.context.stale'))
+      }
+      if (historyDb.fileErasureRevision() !== erasureRevision || dsh.current !== bridge || !sameContext(caller, sessions.context())
+        || (evidence && historyDb.evidenceErased(evidence))) {
+        throw new Error(t('main.memory.context.stale'))
+      }
+      let answerKey: string | undefined
+      if (evidence) {
+        answerKey = `generated-answer:${randomUUID()}`
+        if (!historyDb.bindGeneratedCopy(request.taskId, answerKey, 'user', answerText(questions, checked), [memoryErasureEvidence(evidence)])) {
+          throw new Error(t('main.memory.context.stale'))
+        }
+      }
+      const keep = taskRuntime?.dsh.holdQuestion(request.questionId) ?? null
+      const accepted = await bridge.answerQuestion(request.questionId, checked, undefined, { recordMemory: false })
+      if (!accepted) throw new Error(t('main.tasks-channel.question.not.found'))
+      keep?.(checked, undefined, answerKey)
+      return { ok: true, taskId: request.taskId, questionId: request.questionId }
+    }
     if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
     const memoryReady = dsh.current?.memory.ready()
     const project = currentMemoryProject()
@@ -1833,6 +1873,7 @@ ${question}` : question
       // Once a task's end is kept: its result back to the conversation.
       onEnd: () => wakeEffects(),
       captureReportMemory: taskId => memory.provenance(taskId),
+      admitResume: async (taskId) => !memoryBusy() && await allowMemorySession(taskId) && canTransferMemoryToModel(taskId),
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)

@@ -7,7 +7,7 @@ import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
 import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, windowReportOutput, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
-import { createTaskRegistry, endedStatus, MAX_TERMINAL_MESSAGE_CHARS, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
+import { createTaskRegistry, endedStatus, MAX_TERMINAL_MESSAGE_CHARS, type PendingTaskQuestion, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
@@ -61,8 +61,10 @@ export const END_RETRY_MS: readonly number[] = Object.freeze([1_000, 5_000, 30_0
  * seen stops reminding), so enough are kept that the 后台 page's 做完了 rarely offers one already let go.
  */
 export const KEEP_ENDED = 30
-/** At most this many tasks work at once; one more is refused, not queued. */
+/** At most this many tasks actively work at once; waiting tasks do not consume an active slot. */
 export const MAX_RUNNING = 5
+/** Hard cap on open (running + waiting) task sessions in one launch, preventing unbounded session leaks. */
+export const MAX_LIVE = 15
 const ENDED_STATUSES = new Set(['done', 'stopped', 'error'])
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TEXT_CHARS
@@ -131,6 +133,8 @@ export interface TaskRuntimeDeps {
   effects?: Pick<Effects, 'queue' | 'cancel' | 'cancelStarting'> | null
   /** Capture the completed run's owner-authenticated inputs before creating a report. */
   captureReportMemory?: (taskId: string) => Promise<MemoryProvenance>
+  /** Check whether an interrupted task may be resumed directly from the window (task:resume). */
+  admitResume?: (taskId: string) => Maybe<boolean>
   now?: () => number
   newRunId?: () => string
 }
@@ -147,7 +151,7 @@ export type TaskPush = { type: 'task_snapshot', taskId: string, snapshot: Window
 
 type PendingEnd = { runId: string, event: Record<string, unknown>, memory?: MemoryProvenance, timer?: unknown }
 
-export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, captureReportMemory,
+export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, captureReportMemory, admitResume,
   waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
   const later = timers.later ?? setTimeout
   const cancel = timers.cancel ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
@@ -170,7 +174,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     seqs.set(taskId, taskSeq)
     publish({ ...event, type: String(event.type), taskId, runId, taskSeq })
   }
-  const registry = createTaskRegistry({ now, readOutput: (taskId) => fullOutputOf(taskId), changed: (snapshot) => {
+  const readQuestion = (taskId: string): PendingTaskQuestion | null => {
+    const first = waitsOf(taskId).questions[0]
+    if (!first || typeof first !== 'object') return null
+    const candidate = first as Record<string, unknown>
+    if (typeof candidate.questionId !== 'string' || !Array.isArray(candidate.questions)) return null
+    return first as PendingTaskQuestion
+  }
+  const registry = createTaskRegistry({ now, readOutput: (taskId) => fullOutputOf(taskId), readQuestion, changed: (snapshot) => {
     queued = [...queued, snapshot]
     ended(snapshot)
     if (depth === 0) pushQueued()
@@ -306,7 +317,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    */
   function reserveRun(taskId: string | null): { counted: () => void, release: () => void } | { problem: string } {
     if (taskId !== null && beginning.has(taskId)) return { problem: taskProblems().going }
-    if (registry.live() + places.size >= MAX_RUNNING) return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
+    if (registry.running() + places.size >= MAX_RUNNING) return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
+    if (registry.live() + places.size >= MAX_LIVE) return { problem: t('main.task-ipc.live.full', { max: MAX_LIVE }) }
     runsBegun += 1
     const place = `run:${runsBegun}`
     places = new Set([...places, place])
@@ -500,13 +512,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   }
 
   async function askReserved(taskId: string, text: string, kept: StoredTask, counted: () => void, admit?: AdmitBrief) {
-    if (!attached.has(taskId)) {
+    const reattached = !attached.has(taskId)
+    if (reattached) {
       const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
       if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().gone }
-      attached = new Set([...attached, taskId])
     }
     const evidence = admit ? await admit(taskId) : true
-    if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
+    if (!admitted(taskId, evidence)) {
+      if (reattached) await agent.closeTask(taskId)
+      return { ok: false, problem: t('main.memory.context.stale') }
+    }
+    if (reattached) attached = new Set([...attached, taskId])
     const brief = briefMessage(taskId, text, evidence)
     const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, resultErased: _resultErased, ...going } = kept
     const runId = newRunId()
@@ -547,7 +563,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const taken = await agent.resumeTask({ taskId, ...(kept.cwd ? { cwd: kept.cwd } : {}) })
     if (!taken.ok || revoked.has(taskId)) return { ok: false, problem: taskProblems().lost }
     const evidence = admit ? await admit(taskId) : true
-    if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
+    if (!admitted(taskId, evidence)) {
+      await agent.closeTask(taskId)
+      return { ok: false, problem: t('main.memory.context.stale') }
+    }
     const brief = briefMessage(taskId, words, evidence)
     const runId = newRunId()
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
@@ -772,6 +791,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       close,
       /** Its turn stops; the task stays, to be asked again. */
       stop: async (taskId: unknown): Promise<void> => { await agent.cancelTask(taskById(taskId).id) },
+      /** One-click resume for an interrupted task from the conversation card or 后台 page. */
+      resume: async (taskId: unknown): Promise<{ ok: boolean, problem?: string }> => {
+        if (agentInfo().mode === 'connecting') return { ok: false, problem: taskProblems().connecting }
+        if (typeof taskId !== 'string' || !taskId) return { ok: false, problem: taskProblems().gone }
+        const kept = store.list().find((entry) => entry.id === taskId)
+        if (!kept) return { ok: false, problem: taskProblems().gone }
+        if (isEnded(kept)) return { ok: false, problem: taskProblems().invalid }
+        if (attached.has(taskId) || pendingEnds.has(taskId)) return { ok: false, problem: taskProblems().going }
+        const taken = await resume(taskId, t('main.task-ipc.resume.default.prompt'), admitResume)
+        return taken.ok ? { ok: true } : { ok: false, problem: taken.problem }
+      },
     },
     /** The agent's tools (viva-tasks): its queries, and starting, stopping or messaging a task. */
     agent: {

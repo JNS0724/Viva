@@ -55,3 +55,21 @@ test('retired Dream questions are declined in both venues while a live question 
   await desk.receive(asked('live', 'main'))
   assert.equal(await desk.answer('live', [{ id: 'c', selected: ['上海'] }]), true)
 })
+
+test('answer with recordMemory: false validates and delivers the answer without calling onAnswer', async () => {
+  const sent: object[] = []
+  let onAnswerCalls = 0
+  const desk = createQuestionDesk({
+    send: message => { sent.push(message) },
+    emit: () => {},
+    sessionId: () => 'main',
+    taskOf: session => session === 'task-s' ? 'task-1' : null,
+    onAnswer: async () => { onAnswerCalls++; return 'human-src' },
+  })
+  await desk.receive(asked('q-agent', 'task-s'))
+  const accepted = await desk.answer('q-agent', [{ id: 'c', selected: ['上海'], custom: '代理转述' }], undefined, { recordMemory: false })
+  assert.equal(accepted, true)
+  assert.equal(onAnswerCalls, 0, 'agent-relayed custom text must not invoke human acceptQuestionAnswer')
+  assert.deepEqual(sent.at(-1), { type: 'answer', id: 'q-agent', answers: [{ id: 'c', selected: ['上海'], custom: '代理转述' }] })
+  assert.deepEqual(desk.pendingOf('task-1'), [])
+})

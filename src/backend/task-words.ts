@@ -132,13 +132,13 @@ export function createTaskWords({ persist, later = setTimeout, cancel = (timer) 
    * About to answer a question: what was asked is taken now, because dsh closes the question (task_question_closed)
    * while it takes the answer. Returns how to keep the reply once dsh accepted it; null for a question of no task held.
    */
-  function holdQuestion(questionId: string): ((raw: unknown, sourceIds?: Readonly<Record<string, string>>) => void) | null {
+  function holdQuestion(questionId: string): ((raw: unknown, sourceIds?: Readonly<Record<string, string>>, key?: string) => void) | null {
     const asked = questions.get(questionId)
     if (!asked) return null
-    return (raw, sourceIds) => {
+    return (raw, sourceIds, key) => {
       questions.delete(questionId)
       const transcript = transcripts.get(asked.taskId)
-      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw), sourceIds))
+      if (transcript) change(asked.taskId, answered(transcript, asked.questions, answersOf(raw), sourceIds, key))
     }
   }
 

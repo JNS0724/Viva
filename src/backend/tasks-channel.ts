@@ -20,12 +20,23 @@ export type ScheduleAction =
   | { op: 'schedule_list' }
   | { op: 'schedule_update', id: string, title?: string, prompt?: string, rule?: Record<string, unknown>, paused?: boolean }
   | { op: 'schedule_delete', id: string }
-export type TaskAct = (request: ScheduleAction, sessionId: string) => Promise<unknown>
+export type AnswerTaskAction = {
+  op: 'answer_background_task'
+  taskId: string
+  questionId: string
+  answers: Array<{ id: string, selected: string[], custom?: string }>
+}
+export type TaskChannelAction = ScheduleAction | AnswerTaskAction
+export type TaskAct = (request: TaskChannelAction, sessionId: string) => Promise<unknown>
 
-const ACTIONS = new Set(['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'])
+const ACTIONS = new Set(['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'answer_background_task'])
 const MAX_TITLE_CHARS = 120
 const RULE_KINDS = new Set(['at', 'daily', 'weekly', 'cron'])
 const MAX_ID_CHARS = 200
+const MAX_ANSWER_ITEMS = 6
+const MAX_ANSWER_SELECTED = 8
+const MAX_ANSWER_LABEL_CHARS = 200
+const MAX_ANSWER_CUSTOM_CHARS = 2000
 const isText = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max
 
 /** An action the model asked for, checked: what it names, and words within the app's limits. */
@@ -60,8 +71,33 @@ function parseScheduleAction(raw: Record<string, unknown>): ScheduleAction {
   return { op: 'schedule_update', id: raw.id, ...changes }
 }
 
-export function parseTaskAction(value: unknown): ScheduleAction {
+function parseAnswerTaskAction(raw: Record<string, unknown>): AnswerTaskAction {
+  if (!isText(raw.taskId, MAX_ID_CHARS) || !isText(raw.questionId, MAX_ID_CHARS) || !Array.isArray(raw.answers) || raw.answers.length === 0 || raw.answers.length > MAX_ANSWER_ITEMS) {
+    throw new Error(t('main.tasks-channel.invalid.answer'))
+  }
+  const answers = raw.answers.map((entry) => {
+    if (!entry || typeof entry !== 'object') throw new Error(t('main.tasks-channel.invalid.answer'))
+    const item = entry as Record<string, unknown>
+    if (!isText(item.id, MAX_ID_CHARS) || !Array.isArray(item.selected) || item.selected.length > MAX_ANSWER_SELECTED) {
+      throw new Error(t('main.tasks-channel.invalid.answer'))
+    }
+    const selected: string[] = []
+    for (const label of item.selected) {
+      if (!isText(label, MAX_ANSWER_LABEL_CHARS)) throw new Error(t('main.tasks-channel.invalid.answer'))
+      selected.push(label)
+    }
+    if (item.custom !== undefined && (typeof item.custom !== 'string' || item.custom.length > MAX_ANSWER_CUSTOM_CHARS)) {
+      throw new Error(t('main.tasks-channel.invalid.answer'))
+    }
+    const custom = typeof item.custom === 'string' && item.custom.trim() ? item.custom.trim() : undefined
+    return { id: item.id.trim(), selected, ...(custom ? { custom } : {}) }
+  })
+  return { op: 'answer_background_task', taskId: raw.taskId.trim(), questionId: raw.questionId.trim(), answers }
+}
+
+export function parseTaskAction(value: unknown): TaskChannelAction {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  if (raw.op === 'answer_background_task') return parseAnswerTaskAction(raw)
   if (typeof raw.op === 'string' && raw.op.startsWith('schedule_')) return parseScheduleAction(raw)
   throw new Error(t('main.task-registry.unknown.task.query.operation'))
 }

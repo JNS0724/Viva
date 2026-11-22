@@ -37,10 +37,10 @@ export const said = (transcript: Transcript, words: string, key?: string): Trans
   [...closed(transcript), { role: 'user', text: words, ...(key ? { streamKey: key } : {}) }]
 
 /** The user answered what the agent asked: their reply, worded as the window words it. */
-export const answered = (transcript: Transcript, questions: readonly AnsweredQuestion[], answers: readonly QuestionAnswer[], sourceIds?: Readonly<Record<string, string>>): Transcript =>
+export const answered = (transcript: Transcript, questions: readonly AnsweredQuestion[], answers: readonly QuestionAnswer[], sourceIds?: Readonly<Record<string, string>>, key?: string): Transcript =>
   sourceIds && Object.keys(sourceIds).length ? [...closed(transcript), ...questions.map(question => ({ role: 'user' as const,
     text: answerText([question], answers), ...(Object.hasOwn(sourceIds, question.id) ? { sourceId: sourceIds[question.id] } : {}) }))]
-    : said(transcript, answerText(questions, answers))
+    : said(transcript, answerText(questions, answers), key)
 
 function contentText(content: unknown) {
   if (!isRecord(content)) return ''

@@ -22,11 +22,23 @@ const directory = (value: string) => process.platform === 'win32' ? path.resolve
 
 export type TaskOutputRead = string | { text: string, complete: boolean } | null | undefined
 
+export interface PendingTaskQuestion {
+  questionId: string
+  questions: ReadonlyArray<{
+    id: string
+    question: string
+    header?: string
+    multiSelect?: boolean
+    options: ReadonlyArray<{ label: string, description?: string }>
+  }>
+}
+
 /** Main-process projection: no renderer round trip and no disk read on a tool query unless full output is requested. */
-export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskSnapshot) => {}, readOutput }: {
+export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskSnapshot) => {}, readOutput, readQuestion }: {
   now?: () => number
   changed?: (snapshot: TaskSnapshot) => void
   readOutput?: (taskId: string) => TaskOutputRead
+  readQuestion?: (taskId: string) => PendingTaskQuestion | null | undefined
 } = {}) {
   const tasks = new Map<string, Task>()
   const waits = new Map<string, Map<string, 'permission' | 'answer'>>()
@@ -201,7 +213,9 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
           ...(unavailable ? { outputUnavailable: true } : {}),
         }
       }
+      const pendingQuestion = task.waitingFor === 'answer' ? (readQuestion?.(task.taskId) ?? null) : null
       return { observedAt: now(), task: { ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), ...outputFields,
+        ...(pendingQuestion ? { pendingQuestion } : {}),
         ...(request.includeRequest ? { request: task.request } : {}) } }
     }
     const list = [...tasks.values()].filter(task => visible(task)
@@ -229,9 +243,11 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const resultFromTerminalOf = (id: string) => Boolean(tasks.get(id)?.resultFromTerminal)
   /** The tool calls a task's run has at work now, in the order they began: for a window that opens (task-runtime.ts finished). */
   const activeTools = (id: string): ActiveTool[] => [...(tools.get(id) ?? new Map<string, string>())].map(([toolCallId, title]) => ({ toolCallId, title }))
+  /** Tasks actively working (excluding those waiting on the user), this launch. */
+  const running = () => [...tasks.values()].filter((task) => task.status === 'running').length
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, resultKeyOf, resultTruncatedOf, resultFromTerminalOf, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
+  return { put, restart, remove, resultKeyOf, resultTruncatedOf, resultFromTerminalOf, receive, interrupt, query, running, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

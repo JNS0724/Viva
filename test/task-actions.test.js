@@ -98,3 +98,31 @@ test('the tasks the last launch kept come back at the start, with what they said
   const [task] = win.state().tasks.list
   assert.deepEqual([task.id, task.status, taskMessages(task).map((m) => m.text)], ['s3', 'done', ['查天气', '晴。']])
 })
+
+test('loadKept shows a one-time startup toast for restored interrupted tasks, and resumeTask forwards to api.resumeTask', async () => {
+  const resumed = []
+  let nextResult = { ok: true }
+  const interruptedTask = {
+    task: { id: 'int-1', segmentId: 'c-int', title: '分析日志', words: '分析日志' }, status: 'interrupted', endedAt: 5,
+    messages: [{ role: 'user', text: '分析日志', receipt: null }],
+  }
+  const win = windowWith({
+    finishedTasks: async () => [interruptedTask],
+    resumeTask: async (taskId) => { resumed.push(taskId); return nextResult },
+  })
+  await win.actions.loadKept()
+  assert.equal(win.said.toasts.length, 1)
+  assert.match(win.said.toasts[0], /1 个后台任务/)
+
+  // Re-reading the same interrupted task does not repeat the toast.
+  await win.actions.loadKept()
+  assert.equal(win.said.toasts.length, 1)
+
+  await win.actions.resumeTask('int-1')
+  assert.deepEqual(resumed, ['int-1'])
+  assert.equal(win.said.toasts.length, 1)
+
+  nextResult = { ok: false, problem: '上下文已失效' }
+  await win.actions.resumeTask('int-1')
+  assert.equal(win.said.toasts.at(-1), '上下文已失效')
+})

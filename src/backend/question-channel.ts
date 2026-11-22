@@ -136,7 +136,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
   }
 
   /** @returns false when the question is no longer waiting */
-  async function answer(questionId: string, answers: unknown, operation?: string): Promise<boolean> {
+  async function answer(questionId: string, answers: unknown, operation?: string, options?: { recordMemory?: boolean }): Promise<boolean> {
     const entry = pending.get(questionId)
     if (!entry || answering.has(questionId)) return false
     answering.add(questionId)
@@ -147,11 +147,13 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
       }
       if (pending.get(questionId) !== entry) return false
       const checked = checkAnswers(entry.question.questions, answers)
-      let sources: Awaited<ReturnType<NonNullable<typeof onAnswer>>>
-      try { sources = await onAnswer?.(entry, checked, operation) }
-      catch (error) {
-        if (pending.get(questionId) !== entry) return false
-        throw error
+      let sources: Awaited<ReturnType<NonNullable<typeof onAnswer>>> = undefined
+      if (options?.recordMemory !== false) {
+        try { sources = await onAnswer?.(entry, checked, operation) }
+        catch (error) {
+          if (pending.get(questionId) !== entry) return false
+          throw error
+        }
       }
       const sourceId = typeof sources === 'string' ? sources : undefined
       const sourceIds = sources && typeof sources === 'object' ? sources.sourceIds : undefined

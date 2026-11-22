@@ -457,7 +457,7 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     const card = id ? cards.get(id) : undefined
     if (!card || !id) return []
     cards.delete(id)
-    return [card]
+    return Array.isArray(card) ? card : [card]
   })
   const hostedBy = (i: number) => takeCards([state.messages[i].taskId, ...(state.messages[i].cardsAfter ?? []),
     ...anchors.filter(anchor => anchor.at === offset + i + 1).map(anchor => anchor.taskId)])

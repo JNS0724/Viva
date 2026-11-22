@@ -120,12 +120,15 @@ export function toldByRecords(state: State): State {
     .reduce<State>((told, task) => markSeen(told, task.id), state)
 }
 
-export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status)).toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+export const interruptedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => task.status === 'interrupted').toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
 
-/** The 后台 page's list: those waiting on the user, then those at work, then those that ended, latest first. */
+export const endedTasks = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => !LIVE.has(task.status) && task.status !== 'interrupted').toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+
+/** The 后台 page's list: those waiting on the user, interrupted tasks, those at work, then those that ended, latest first. */
 export function pageGroups(state: State): Array<{ key: string, tasks: BackgroundTask[] }> {
   const groups = [
     { key: 'waiting', tasks: state.tasks.list.filter((task) => task.status === 'waiting') },
+    { key: 'interrupted', tasks: interruptedTasks(state) },
     { key: 'running', tasks: state.tasks.list.filter((task) => task.status === 'running') },
     { key: 'ended', tasks: endedTasks(state) },
   ]

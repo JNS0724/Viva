@@ -100,6 +100,7 @@ export interface IpcResults {
   'history:model-request': import('./trace.ts').ModelCallDetail | null
   'task:close': void
   'task:stop': void
+  'task:resume': { ok: boolean, problem?: string }
   'memory:dream-status': MemoryDreamStatus
   'memory:run-dream': MemoryDreamStatus
   'memory:list-files': MemoryFileListResult

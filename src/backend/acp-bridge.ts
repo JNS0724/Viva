@@ -764,7 +764,8 @@ export function createAcpBridge({
   }
 
   /** @returns false when the question is no longer waiting; throws when the answer does not fit it */
-  const answerQuestion = (questionId: string, answers: unknown, operation?: string): Promise<boolean> => questions.answer(questionId, answers, operation)
+  const answerQuestion = (questionId: string, answers: unknown, operation?: string, options?: { recordMemory?: boolean }): Promise<boolean> =>
+    questions.answer(questionId, answers, operation, options)
   /** What a background task waits on the user for, still: its approvals and its questions (a reloaded window shows them). */
   const taskWaits = taskSessions.waits
   /**

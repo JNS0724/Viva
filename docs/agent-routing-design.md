@@ -133,7 +133,7 @@ The main session's tools fall into five layers, defined only in [`plugins/routin
 | Route | `commit_route` | Called for every request |
 | Context | Chat history search and reading, `memory_recall`, task queries, read-only file tools | Always available |
 | App query | `schedule_list`, `viva_mcp_list`, `viva_skill_list` | Always available |
-| App change | Creating, changing, and deleting schedules; remembering and forgetting memories; adding, changing, removing, and importing MCP servers and skills | Visible to the model; needs a matching `app_action` accepted in this turn, and one `app_action` allows one call |
+| App change | Creating, changing, and deleting schedules; answering a waiting background task's question (`answer_background_task`, never permissions); remembering and forgetting memories; adding, changing, removing, and importing MCP servers and skills | Visible to the model; needs a matching `app_action` accepted in this turn, and one `app_action` allows one call |
 | Execution | Shell, file writes, web access, subagents, background task tools, tools from the user's MCP servers, and every other tool | Outside the main session's scope; the work goes to a task through `commit_route` |
 
 App tools stay inside the main session's scope, so they still pass through DSH's argument checks, approval cards, secret prompts, and observers. No new DSH interface is needed.
@@ -275,11 +275,11 @@ The fast lane decides in about 1.4 seconds. Corrections to the current answer we
 
 ### 10.2 Slots
 
-At most 5 tasks run at once. When all slots are taken, the handover fails with a clear reason and the user is told. Work is not queued, and the main agent does not do it itself instead.
+At most 5 tasks actively run (`running`) at once. Tasks waiting on user input (`waiting`) release their active execution slot so new work is not deadlocked behind an unanswered prompt, while a separate total cap (`MAX_LIVE = 15`) bounds the combined number of `running` and `waiting` task sessions. When either limit is reached, the handover fails with a clear reason and the user is told. Work is not queued, and the main agent does not do it itself instead.
 
 ### 10.3 App operations
 
-Changes to schedules, memories, MCP servers, and skills are made by the main agent calling the original tools once the `app_action` is accepted. Argument checks, approval cards, secret prompts, and results are unchanged. A schedule proposal does not block the conversation. A configuration change that needs approval keeps the main session waiting for the user, as before routing. Plugin management is outside the main session's scope.
+Changes to schedules, memories, MCP servers, and skills — as well as submitting a user's explicit answer to a background task waiting for an answer (`answer_background_task`, strictly excluding permission approvals) — are made by the main agent calling the corresponding tools once the `app_action` is accepted. Argument checks, approval cards, secret prompts, and results are unchanged. A schedule proposal does not block the conversation. A configuration change that needs approval keeps the main session waiting for the user, as before routing. Plugin management is outside the main session's scope.
 
 If confirmations ever need to leave the main session, the first choice is an app-side proposal card (the same pattern as `schedule_create`), which needs no DSH changes.
 

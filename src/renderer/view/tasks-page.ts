@@ -18,7 +18,12 @@ import { renderTraceDetail, type TraceItem, type DetailHandlers } from './trace-
  * own input: words into its turn while it works, its next question once it has ended. A follow-up shows its
  * draft and what can be done with it. One of the hub's pages, beside 回顾 · 关于你 · 设置.
  */
-const groupNames = (): Readonly<Record<string, string>> => ({ waiting: t("task.status.waiting"), running: t("island-tasks.in.background"), ended: t("island-view.done") })
+const groupNames = (): Readonly<Record<string, string>> => ({
+  waiting: t("task.status.waiting"),
+  interrupted: t("task-card.interrupted"),
+  running: t("island-tasks.in.background"),
+  ended: t("island-view.done"),
+})
 const LIVE = new Set(['running', 'waiting'])
 const pendingScroll = new WeakMap<HTMLElement, { follow: boolean, top: number, observedTop: number }>()
 
@@ -191,13 +196,25 @@ function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
   return section
 }
 
+function headerActions(task: BackgroundTask, handlers: Handlers): HTMLElement[] {
+  if (LIVE.has(task.status)) {
+    return [h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("island-tasks.stop"), onClick: () => handlers.stopTask(task.id) })]
+  }
+  if (task.status === 'interrupted') {
+    return [
+      h('button', { class: 'btn btn-primary tp-act', type: 'button', text: t("tasks-page.resume"), onClick: () => handlers.resumeTask(task.id) }),
+      h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("tasks-page.close.this.task"), onClick: () => handlers.closeTask(task.id) }),
+    ]
+  }
+  return [h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("tasks-page.close.this.task"), onClick: () => handlers.closeTask(task.id) })]
+}
+
 function mainView(state: State, handlers: Handlers, now: number) {
   const task = pageTask(state)
   if (!task) {
     return h('div', { class: 'tp-main tp-empty' },
       h('p', { class: 'help', text: t("tasks-page.no.background.work.yet.type.a.request") }))
   }
-  const live = LIVE.has(task.status)
   const selectedDetail = state.traceDetail ? traceItems(task.view).find(item => item.key === state.traceDetail!.key) : null
   if (selectedDetail) {
     const detailState: State = { ...state, ...task.view, conversationId: task.segmentId, traceDetail: state.traceDetail }
@@ -211,9 +228,7 @@ function mainView(state: State, handlers: Handlers, now: number) {
     h('header', { class: 'tp-head' },
       h('h2', { class: 'tp-title', text: `#${task.title}` }),
       h('span', { class: 'tp-status' }, statusMark(task.status), standing(task, now)),
-      live
-        ? h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("island-tasks.stop"), onClick: () => handlers.stopTask(task.id) })
-        : h('button', { class: 'btn btn-secondary tp-act', type: 'button', text: t("tasks-page.close.this.task"), onClick: () => handlers.closeTask(task.id) })),
+      h('div', { class: 'tp-acts' }, headerActions(task, handlers))),
     scroll)
 }
 
@@ -286,15 +301,9 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
     if (localeChanged || previousTask.status !== task.status || standing(previousTask, prior.now) !== standing(task, now)) {
       main.querySelector('.tp-status')?.replaceChildren(statusMark(task.status), standing(task, now))
     }
-    if (LIVE.has(previousTask.status) !== LIVE.has(task.status)) {
-      const live = LIVE.has(task.status)
-      main.querySelector('.tp-act')?.replaceWith(h('button', { class: 'btn btn-secondary tp-act', type: 'button',
-        text: t(live ? 'island-tasks.stop' : 'tasks-page.close.this.task'),
-        onClick: () => live ? handlers.stopTask(task.id) : handlers.closeTask(task.id) }))
-    } else if (localeChanged) {
-      const live = LIVE.has(task.status)
-      const action = main.querySelector('.tp-act')
-      if (action) action.textContent = live ? t("island-tasks.stop") : t("tasks-page.close.this.task")
+    if (localeChanged || LIVE.has(previousTask.status) !== LIVE.has(task.status)
+      || (previousTask.status === 'interrupted') !== (task.status === 'interrupted')) {
+      main.querySelector('.tp-acts')?.replaceChildren(...headerActions(task, handlers))
     }
     renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
     if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps || prior.state.tasks.page.allSteps !== state.tasks.page.allSteps
