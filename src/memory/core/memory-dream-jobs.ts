@@ -115,11 +115,13 @@ function applyRefineEdits(beforeBody: string, edits: readonly DreamEdit[]): stri
 
 function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
   const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
-  const draftBody = operation.action === 'CREATE'
+  const rawDraftBody = operation.action === 'CREATE'
     ? operation.body
     : operation.body !== undefined
       ? operation.body
       : applyRefineEdits(beforeParsed!.body, operation.edits!)
+  // Strip accidental YAML frontmatter if the model echoes metadata inside body.
+  const draftBody = parseMemoryDocument(rawDraftBody).body
   const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
   const bodyLinks = memoryDocumentLinks(draftBody)
   const presentExact = new Set(bodyLinks)
@@ -314,8 +316,27 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       }
       return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
     }
+    const catalog = (maxEntries = 30) => {
+      const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
+      const rows = [...activeEntries()].sort((a, b) => a.path.localeCompare(b.path))
+      const items: Array<{ path: string, name: string }> = []
+      for (const row of rows.slice(0, maxEntries)) {
+        const node = published.get(row.id)
+        let name = ''
+        if (node && node.revision === row.revision && node.usageVersion === row.usageVersion && node.path === row.path) {
+          name = node.name
+        } else {
+          const accepted = documents.acceptedSnapshot(workspace, row.id)
+          if (accepted) name = dreamNodeMetadata(accepted).name
+        }
+        const trimmed = [...(name || row.path.split('/').at(-1)!.replace(/\.md$/u, ''))].slice(0, 80).join('')
+        items.push({ path: row.path, name: trimmed })
+      }
+      return { items, truncated: rows.length > maxEntries }
+    }
     return {
       countActive: () => activeEntries().length,
+      catalog,
       read: (path: string) => policy.read(workspace, path),
       list: () => policy.list(workspace, 'digest'),
       async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
@@ -583,6 +604,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         })
         const restrictions = documents.sourceRestrictions(workspace)
         const existingDigestCount = scope.countActive()
+        const existingCatalog = existingDigestCount > 0 ? scope.catalog(30) : { items: [], truncated: false }
 
         const batchSourceMap = new Map<string, DocumentSourceRef>()
         for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources))) batchSourceMap.set(ref.id, ref)
@@ -680,6 +702,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const input = {
             maxOperations: remainingAtStart,
             existingDigestCount,
+            ...(existingCatalog.items.length ? { existingDigests: existingCatalog.items } : {}),
+            ...(existingCatalog.truncated ? { existingDigestsTruncated: true } : {}),
             notes: batch.map((note, index) => {
               const snapshot = seen[index]!
               const name = parseMemoryDocument(snapshot.markdown).metadata.name

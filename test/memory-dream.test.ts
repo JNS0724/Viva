@@ -859,3 +859,54 @@ test('withdraw scrubs a persisted pendingBatch while Dream is sleeping for retry
   await h.retry()
   assert.equal(h.documents.read(note.note.workspace, 'digest/wiki/two.md'), null)
 })
+
+test('Dream passes a bounded metadata-only existingDigests catalog for active dimensions without leaking bodies or disabled files', async t => {
+  const h = harness(t)
+  const first = h.add('User drinks warm water and avoids coffee.', 'Drinks')
+  const dietPath = 'digest/personal/diet-and-drinks.md'
+  h.documents.commit({
+    operationId: randomUUID(), workspace: first.note.workspace, path: dietPath, action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({
+      metadata: { name: 'Diet & Drinks', description: 'Ongoing beverage and food preferences' },
+      body: '## Beverages\n- Warm water only; no coffee.\nSECRET_BODY_CANARY_99',
+    }),
+    sources: h.notes.references(first.key), reads: [],
+  })
+  const disabledNote = h.add('Private disabled topic.', 'Disabled')
+  const disabledRec = h.documents.commit({
+    operationId: randomUUID(), workspace: first.note.workspace, path: 'digest/personal/disabled-topic.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Disabled Secret', description: 'Hidden' }, body: 'Hidden body' }),
+    sources: h.notes.references(disabledNote.key), reads: [],
+  })
+  h.documents.setEnabled({
+    operationId: randomUUID(), workspace: first.note.workspace, documentId: disabledRec.documentId,
+    expectedRevision: disabledRec.revision!, expectedUsageVersion: disabledRec.usageVersion, enabled: false,
+  })
+
+  const second = h.add('User also prefers unsweetened green tea in the afternoon.', 'Afternoon tea')
+  let sawCatalog: Array<{ path: string, name: string }> | undefined
+  h.setModel(async request => {
+    const input = request.input as { existingDigestCount: number, existingDigests?: Array<{ path: string, name: string }>, notes: Array<{ path: string, sourceIds: string[] }> }
+    sawCatalog = input.existingDigests
+    assert.equal(input.existingDigestCount, 1)
+    assert.equal(JSON.stringify(input).includes('SECRET_BODY_CANARY_99'), false)
+    assert.equal(JSON.stringify(input).includes('Disabled Secret'), false)
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: dietPath } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: dietPath,
+        name: 'Diet & Drinks',
+        description: 'Ongoing beverage and food preferences including afternoon tea',
+        edits: [{ oldText: '- Warm water only; no coffee.', newText: '- Warm water only; no coffee.\n- Unsweetened green tea in the afternoon.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+  await h.run()
+  assert.deepEqual(sawCatalog, [{ path: dietPath, name: 'Diet & Drinks' }])
+  const updated = h.documents.read(second.note.workspace, dietPath)
+  assert.ok(updated?.markdown.includes('Unsweetened green tea in the afternoon.'))
+})
