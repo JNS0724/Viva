@@ -92,6 +92,7 @@ export function createRemoteHost({ start, secrets, onDropped = () => {} }: {
       send: (event) => tell('window.send', event),
       broadcastLanguage: (state) => tell('window.broadcastLanguage', state),
       inFront: () => mirror.inFront,
+      composerTyping: () => Boolean(mirror.composerTyping),
       setPending: (count) => tell('window.setPending', count),
       refreshNative: () => tell('window.refreshNative'),
     },

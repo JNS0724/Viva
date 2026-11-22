@@ -17,7 +17,7 @@ const SCHEMA = `
 `
 
 /** A task as kept; task-runtime.ts adds what else it needs (words, cwd, startedAt, endedAt, status). */
-export interface StoredTask { id: string, segmentId: string, title: string, requestMemory?: MemoryProvenance, resultKey?: string, [field: string]: any }
+export interface StoredTask { id: string, segmentId: string, title: string, runStart?: number, resultTruncated?: boolean, resultFromTerminal?: boolean, terminalMessage?: string, resultErased?: boolean, requestMemory?: MemoryProvenance, resultKey?: string, [field: string]: any }
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const isTask = (entry: any): entry is StoredTask => Boolean(entry) && typeof entry === 'object' && isText(entry.id) && isText(entry.segmentId) && isText(entry.title)
@@ -63,8 +63,11 @@ export function createTaskStore({ db, retainedReply, onError = () => {} }: {
     add: (task) => {
       if (erased.get(task.id)) throw new Error('Erased task body cannot be restored')
       // A retained task may still receive a late ending after a previous result was erased.
-      if (retainedReply && (!task.resultKey || !retainedReply(task.id, task.resultKey))) {
-        task = { ...task, resultKey: undefined, resultPreview: '' }
+      // Host/provider terminal error messages (resultFromTerminal without a reply key) are not memory-derived replies.
+      const terminalResult = Boolean(task.resultFromTerminal) && !task.resultKey && !task.resultErased
+      if (retainedReply && !terminalResult && (!task.resultKey || !retainedReply(task.id, task.resultKey))) {
+        const erasedResult = Boolean(task.resultKey) || Boolean(task.resultErased)
+        task = { ...task, resultKey: undefined, resultPreview: '', resultTruncated: undefined, resultFromTerminal: undefined, terminalMessage: undefined, ...(erasedResult ? { resultErased: true } : {}) }
       }
       put.run(task.id, JSON.stringify(task))
     },
@@ -78,7 +81,7 @@ export function createTaskStore({ db, retainedReply, onError = () => {} }: {
           drop.run(task.id)
         } else if (sessions.has(task.id)) {
           if (removed.some(entry => entry.session === task.id && entry.key === task.resultKey)) {
-            update.run(JSON.stringify({ ...task, resultKey: undefined, resultPreview: '' }), task.id)
+            update.run(JSON.stringify({ ...task, resultKey: undefined, resultPreview: '', resultTruncated: undefined, resultFromTerminal: undefined, terminalMessage: undefined, resultErased: true }), task.id)
           }
           affected.add(task.id)
         }

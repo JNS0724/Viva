@@ -20,15 +20,36 @@ type DeskIsland = ReturnType<typeof createDeskIsland>
  * is checked (island-ipc.js); the desktop island may only speak on its own channels, the window on its own.
  */
 export const ASK_SHORTCUT = 'CommandOrControl+Shift+Space'
+/** How long an active composer stays in "typing" state after the latest draft edit before releasing idle reports. */
+export const COMPOSER_TYPING_GRACE_MS = 4_000
 let NOT_SENT = t("main.island-main.could.not.send.please.try.again")
 
 /** deps.Menu: Electron's, for the island's right-click menu; switchOff: 不再显示桌面岛 in that menu */
-export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage, preview }: {
+export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWindow, Menu, switchOff, keepImage, preview, onTypingChange, typingGraceMs = COMPOSER_TYPING_GRACE_MS }: {
   desk: () => DeskIsland | null, window: () => BrowserWindow | null, showWindow: () => void,
   Menu: Pick<typeof ElectronMenu, 'buildFromTemplate'>, switchOff: () => void,
   keepImage: (bytes: Uint8Array | ArrayBuffer) => Promise<KeptImage>,
   preview?: () => ReturnType<typeof createDeskPreview> | null,
+  onTypingChange?: (typing: boolean) => void,
+  typingGraceMs?: number,
 }) {
+  let composerTyping = false
+  let typingTimer: ReturnType<typeof setTimeout> | null = null
+  const setTyping = (next: boolean) => {
+    if (!next && typingTimer) { clearTimeout(typingTimer); typingTimer = null }
+    if (composerTyping === next) return
+    composerTyping = next
+    onTypingChange?.(next)
+  }
+  const hasDraftContent = (snapshot: { text: string, images: readonly unknown[], files: readonly unknown[] }) =>
+    snapshot.text.trim().length > 0 || snapshot.images.length > 0 || snapshot.files.length > 0
+  const noteDraftActivity = (snapshot: { text: string, images: readonly unknown[], files: readonly unknown[] }) => {
+    if (!hasDraftContent(snapshot)) return setTyping(false)
+    if (typingTimer) clearTimeout(typingTimer)
+    setTyping(true)
+    typingTimer = setTimeout(() => { typingTimer = null; setTyping(false) }, typingGraceMs)
+    typingTimer.unref?.()
+  }
   const drafts = createComposerDraftStore(snapshot => {
     const main = window()
     if (main && !main.isDestroyed()) main.webContents.send('draft:changed', snapshot)
@@ -48,7 +69,14 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (event.sender !== window()?.webContents) return
     const view = checkIslandView(raw)
     if (view) {
-      if (typeof view.target?.key === 'string' && view.target.key.length <= 1000) drafts.select(view.target.key, view.target.inheritDraft === true, view.target.migrateDraft === true)
+      if (typeof view.target?.key === 'string' && view.target.key.length <= 1000) {
+        const previousKey = drafts.snapshot().key
+        drafts.select(view.target.key, view.target.inheritDraft === true, view.target.migrateDraft === true)
+        const current = drafts.snapshot()
+        if ((!view.target.migrateDraft && !view.target.inheritDraft && view.target.key !== previousKey) || !hasDraftContent(current)) {
+          setTyping(false)
+        }
+      }
       desk()?.setView(view)
     }
   })
@@ -58,10 +86,14 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     const host = source(event)
     if (!host || !checkImages(snapshot.images)) return
     const result = drafts.update(host, snapshot)
-    if (!result.ok) event.sender.send('draft:changed', result.draft)
+    if (result.ok) noteDraftActivity(result.draft)
+    else event.sender.send('draft:changed', result.draft)
   })
   ipcMain.handle('draft:append-image', (event, key, image) => {
-    if (source(event) && checkImages([image])) drafts.appendImage(key, image)
+    if (source(event) && checkImages([image]) && drafts.appendImage(key, image)) {
+      const current = drafts.snapshot()
+      if (current.key === key) noteDraftActivity(current)
+    }
   })
   ipcMain.handle('island:begin-image-import', (event, key) => fromDesk(event)?.beginImport(event.sender, key) ?? null)
   ipcMain.on('island:end-image-import', (event, ticket, error) => {
@@ -72,10 +104,16 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     if (ticket !== undefined ? !desk()?.claimImport(event.sender, key, ticket) : !source(event)) return
     const results = await Promise.allSettled(images.map(bytes => keepImage(bytes)))
     let problem: string | null = readError ?? null
+    let added = false
     // Keep the clipboard's order even when the saves finish in reverse, after either host is destroyed.
     for (const result of results) {
       if (result.status === 'rejected') problem ??= String((result.reason as Error | null)?.message ?? result.reason)
-      else if (!drafts.appendImage(key, result.value)) problem ??= t('desk.up.to.images.per.message', { perMessage: IMAGE_LIMITS.perMessage })
+      else if (drafts.appendImage(key, result.value)) added = true
+      else problem ??= t('desk.up.to.images.per.message', { perMessage: IMAGE_LIMITS.perMessage })
+    }
+    if (added) {
+      const current = drafts.snapshot()
+      if (current.key === key) noteDraftActivity(current)
     }
     if (problem) drafts.setError(key, problem)
   })
@@ -84,7 +122,11 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     const checkedPaths = checkDroppedPaths(paths)
     const checked = checkedPaths ? describeDropped(checkedPaths) : { error: MISSING }
     if ('error' in checked) drafts.setError(key, checked.error)
-    else drafts.appendFiles(key, checked.files)
+    else {
+      drafts.appendFiles(key, checked.files)
+      const current = drafts.snapshot()
+      if (current.key === key) noteDraftActivity(current)
+    }
   })
 
   const openWindow = (island: DeskIsland) => {
@@ -184,7 +226,11 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
     return new Promise<{ ok: boolean, error?: string }>(resolve => {
       const timer = setTimeout(() => { receipts.delete(receiptId); resolve({ ok: false, error: NOT_SENT }) }, 10_000)
       receipts.set(receiptId, { timer, feedItemId: snapshot.feedItemId, finish: result => {
-        if (result.ok) { drafts.clear(snapshot); island.closeInput({ sent: true }) }
+        if (result.ok) {
+          drafts.clear(snapshot)
+          if (!hasDraftContent(drafts.snapshot())) setTyping(false)
+          island.closeInput({ sent: true })
+        }
         resolve(result)
       } })
       toWindow({ kind: 'ask', text: ask.text, files: ask.files, images: ask.images, targetKey: snapshot.key, receiptId,
@@ -194,6 +240,7 @@ export function registerIslandIpc(ipcMain: IpcRegistry, { desk, window, showWind
   return { ownDraft: drafts.own,
     eraseFeedDrafts(ids: readonly string[]) {
       drafts.eraseFeed(ids)
+      if (!hasDraftContent(drafts.snapshot())) setTyping(false)
       for (const [id, receipt] of receipts) {
         if (!receipt.feedItemId || !ids.includes(receipt.feedItemId)) continue
         clearTimeout(receipt.timer); receipts.delete(id)

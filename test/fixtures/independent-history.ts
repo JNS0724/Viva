@@ -6,6 +6,8 @@ import { normalizeMessages } from '../../src/backend/history-schema.ts'
 export function openIndependentHistory(options: Parameters<typeof openHistoryDb>[0]) {
   const history = openHistoryDb(options)
   const save = history.save
+  const retainMessage = history.retainMessage
+  history.retainMessage = (message, session) => (message.role === 'assistant' && !message.key ? message : retainMessage(message, session))
   history.save = (conversation, messages, ...args) => {
     const prior = history.get(conversation.id)?.messages ?? []
     const copied = args[0]?.copy

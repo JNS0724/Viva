@@ -63,6 +63,8 @@ test('the plugins shipped with the app all pass, each with its data file under u
   assert.match(ROUTING_PERSONA.prefix, /必须先用 list_background_tasks/)
   assert.match(ROUTING_PERSONA.prefix, /它们为空不能证明 Viva 没有后台任务/)
   assert.match(ROUTING_PERSONA.prefix, /后台任务都归你管，不论它是在哪个话题里开的/, 'the main conversation owns every task')
+  assert.match(ROUTING_PERSONA.prefix, /直接在主会话 reply 回答/, 'allows direct reply when task output already covers the follow-up')
+  assert.match(ROUTING_PERSONA.prefix, /先用 get_background_task 分段读完再决定/, 'reads omitted task output slices before deciding')
   assert.match(ROUTING_PERSONA.prefix, /不论你此刻在聊什么，都要把结果反馈给用户/)
   assert.match(ROUTING_PERSONA.prefix, /不能回答没有任务/)
   assert.doesNotMatch(ROUTING_PERSONA.prefix, /ask_user_question|start_background_task/, 'it asks through clarify, hands work over through commit_route')

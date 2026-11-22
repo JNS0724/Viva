@@ -4,12 +4,18 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { openHistoryDb as openProductionHistoryDb } from '../src/backend/history-db.ts'
 import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
+import { MAX_TERMINAL_MESSAGE_CHARS } from '../src/backend/task-registry.ts'
 import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
-import type { StoredTask } from '../src/backend/task-store.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { APP_DB_PRAGMAS } from '../src/backend/app-db.ts'
+import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
+import type { Effects } from '../src/backend/effects.ts'
+import { REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, type ReportPayload } from '../src/backend/task-reports.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
 /**
@@ -45,6 +51,12 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
   let kept = stored
+  const queuedReports: Array<{ key: string, payload: ReportPayload }> = []
+  const effects = {
+    queue: (_kind: string, key: string, payload: unknown) => { queuedReports.push({ key, payload: payload as ReportPayload }) },
+    cancel: () => {},
+    cancelStarting: () => {},
+  } as unknown as Effects
   /** The tasks' events (the runtime's apply), and how many snapshots went out while one was still being written. */
   const events: Array<{ kind: string, data: Record<string, unknown> }> = []
   let depth = 0
@@ -78,6 +90,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
     const tasks: TaskRuntime = createTaskRuntime({
       db,
       store,
+      effects,
       timers,
       apply: (kind, data, write) => {
         depth += 1
@@ -136,7 +149,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   const first = register()
   const texts = (segmentId: string) => db.get(segmentId)?.messages.map(m => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
-  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length }
+  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length, queuedReports }
 }
 
 test('what the task says is saved along the way, once however much it says meanwhile, and at once when it ends', async () => {
@@ -700,5 +713,255 @@ test('owner erasure during asynchronous task admission cannot recreate the task'
   await assert.rejects(pending)
   assert.equal(h.kept().length, 0)
   assert.equal(h.calls.filter(call => call[0] === 'promptTask').length, 0)
+  h.db.close()
+})
+
+test('long task output (>4000 chars) queues a head+tail report window, supports full segmented reads before and after relaunch, preserves error messages, and never resurrects erased previews', async () => {
+  const h = setup()
+  const { task } = await h.start('深度排查长日志')
+  const full = `${'H'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(4000)}${'T'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  h.says(task.id, full)
+  h.ends(task.id)
+
+  const queued = h.queuedReports.find(item => item.payload.taskId === task.id)
+  assert.ok(queued, 'report queued on task end')
+  assert.equal(queued.payload.outputTruncated, true)
+  assert.ok(queued.payload.output.startsWith('H'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'report keeps head even when full output exceeds 4000 chars')
+  assert.ok(queued.payload.output.endsWith('T'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'report keeps tail')
+  assert.match(queued.payload.output, /已省略中间 4000 字，全文共 6400 字/)
+
+  const mid = h.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: REPORT_OUTPUT_HEAD_CHARS, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(mid.resultPreview, 'M'.repeat(4000))
+  assert.equal(mid.outputTotalChars, full.length)
+  assert.equal(mid.nextOutputOffset, REPORT_OUTPUT_HEAD_CHARS + 4000)
+  assert.equal(mid.outputTruncated, true)
+
+  // After relaunch (detached from taskWords), full output is still read from historyDb.
+  const later = h.relaunch()
+  const afterRelaunch = later.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 0, outputLimit: 1000 }, { kind: 'main' }).task!
+  assert.equal(afterRelaunch.resultPreview, 'H'.repeat(1000))
+  assert.equal(afterRelaunch.outputTotalChars, full.length)
+  assert.equal(afterRelaunch.nextOutputOffset, 1000)
+
+  // Terminal error event.message (<= MAX_TERMINAL_MESSAGE_CHARS) is persisted for full pagination live and after relaunch,
+  // while an oversized (> MAX_TERMINAL_MESSAGE_CHARS) error explicitly marks the report non-paginatable and returns outputTotalChars: null.
+  const failed = await later.start('会报错的任务')
+  later.says(failed.task.id, '正在尝试请求…')
+  const longError = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'X'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  later.emit({ type: 'task_end', taskId: failed.task.id, stopReason: 'error', message: longError })
+  const failedReport = h.queuedReports.find(item => item.payload.taskId === failed.task.id)
+  assert.equal(failedReport?.payload.outputTruncated, true)
+  assert.ok(failedReport?.payload.output.startsWith('E'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'report keeps head of long error')
+  assert.ok(failedReport?.payload.output.endsWith('Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'report keeps tail of long error')
+  assert.match(failedReport?.payload.output ?? '', /outputOffset=1000/)
+  const failedPage1 = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(failedPage1.resultPreview, longError.slice(0, 4000))
+  assert.equal(failedPage1.outputTotalChars, longError.length)
+  assert.equal(failedPage1.nextOutputOffset, 4000)
+  const failedPage2 = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(failedPage2.resultPreview, longError.slice(4000))
+  assert.equal(failedPage2.nextOutputOffset, null)
+
+  const afterErrorRelaunch = h.relaunch().tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(afterErrorRelaunch.resultPreview, longError.slice(0, 4000))
+  assert.equal(afterErrorRelaunch.outputTotalChars, longError.length)
+  assert.equal(afterErrorRelaunch.nextOutputOffset, 4000)
+  assert.equal(afterErrorRelaunch.outputTruncated, true)
+
+  const huge = await later.start('超大报错任务')
+  const hugeError = `${'A'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'B'.repeat(MAX_TERMINAL_MESSAGE_CHARS)}${'C'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  later.emit({ type: 'task_end', taskId: huge.task.id, stopReason: 'error', message: hugeError })
+  const hugeReport = h.queuedReports.find(item => item.payload.taskId === huge.task.id)
+  assert.equal(hugeReport?.payload.outputTruncated, true)
+  assert.match(hugeReport?.payload.output ?? '', /无法通过 get_background_task 分段读取/)
+  assert.doesNotMatch(hugeReport?.payload.output ?? '', /outputOffset=/)
+  for (const instance of [later, h.relaunch()]) {
+    const hugeQuery = instance.tasks.agent.query({ op: 'get', taskId: huge.task.id, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(hugeQuery.resultPreview, hugeError.slice(-4000))
+    assert.equal(hugeQuery.outputTotalChars, null)
+    assert.equal(hugeQuery.nextOutputOffset, null)
+    assert.equal(hugeQuery.outputTruncated, true)
+  }
+
+  // Terminal error whose trailing text collides verbatim with earlier assistant output must still win, live and after relaunch.
+  const colliding = await later.start('子串碰撞报错任务')
+  later.says(colliding.task.id, '准备调用接口，之前文档写过常见错误：rate limit exceeded')
+  later.emit({ type: 'task_end', taskId: colliding.task.id, stopReason: 'error', message: '请求失败\nrate limit exceeded' })
+  assert.equal(h.queuedReports.find(item => item.payload.taskId === colliding.task.id)?.payload.output, '请求失败\nrate limit exceeded')
+  const liveCollision = later.tasks.agent.query({ op: 'get', taskId: colliding.task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(liveCollision.resultPreview, '请求失败\nrate limit exceeded')
+  assert.equal(liveCollision.outputTotalChars, '请求失败\nrate limit exceeded'.length)
+  const relaunchedCollision = h.relaunch().tasks.agent.query({ op: 'get', taskId: colliding.task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(relaunchedCollision.resultPreview, '请求失败\nrate limit exceeded')
+  assert.equal(relaunchedCollision.outputTotalChars, '请求失败\nrate limit exceeded'.length)
+
+  // Erased ended task preview (stored.resultErased === true) must never resurrect transcript text from historyDb.
+  const stored = h.kept().find(entry => entry.id === task.id)!
+  const erasedCheck = createTaskRuntime({
+    db: h.db,
+    store: { list: () => [{ ...stored, resultPreview: '', resultKey: undefined, resultErased: true }], add: () => {}, remove: () => {} },
+    current: () => h.current(),
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
+  })
+  const erasedQuery = erasedCheck.agent.query({ op: 'get', taskId: stored.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(erasedQuery.resultPreview, '')
+  assert.equal(erasedQuery.outputTotalChars, 0)
+
+  h.db.close()
+})
+
+test('production openHistoryDb + TaskStore(retainedReply) enforces provenance on live/ended queries and reports while preserving verified replies and terminal errors', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-store-retained-'))
+  const db = openProductionHistoryDb({ file: path.join(dir, 'history.db'), newId: (() => { let n = 0; return () => `c${++n}` })() })
+  const appDb = new DatabaseSync(path.join(dir, 'app.db'))
+  appDb.exec(APP_DB_PRAGMAS)
+  const store = createTaskStore({ db: appDb, retainedReply: db.retainedReply })
+  const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('开始')])
+  const queuedReports: Array<{ key: string, payload: ReportPayload }> = []
+  let seq = 0
+  const runtime = createTaskRuntime({
+    db, store,
+    effects: {
+      queue: (_kind: string, key: string, payload: unknown) => { queuedReports.push({ key, payload: payload as ReportPayload }) },
+      cancel: () => {}, cancelStarting: () => {},
+    } as unknown as Effects,
+    current: () => current,
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    agent: {
+      closeTask: async () => {}, cancelTask: async () => {},
+      steerTask: async () => ({ ok: true }), resumeTask: async () => ({ ok: true }),
+      promptTask: async () => {},
+      startTask: async () => ({ ok: true, taskId: `t-${++seq}` }),
+    },
+  })
+  try {
+    // 1. Genuinely empty running task reports total=0, not truncated; once unverified live streaming text arrives
+    // (either unkeyed agent_message_chunk or unsettled viva_stream delta before bindGeneratedCopy), queries never leak
+    // the unverified text AND explicitly mark outputUnavailable=true with outputTotalChars=null instead of claiming 0.
+    const unverified = await runtime.agent.start('未校验文本任务')
+    const emptyLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(emptyLive.resultPreview, '')
+    assert.equal(emptyLive.outputTotalChars, 0)
+    assert.equal(emptyLive.outputTruncated, false)
+    assert.equal(emptyLive.outputUnavailable, undefined)
+
+    runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: { sessionUpdate: 'viva_stream', key: 'streaming-k', kind: 'delta', index: 0, blockType: 'text', text: 'IN_FLIGHT_UNVERIFIED' } })
+    const streamingLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(streamingLive.resultPreview, '')
+    assert.equal(streamingLive.outputTotalChars, null)
+    assert.equal(streamingLive.outputTruncated, true)
+    assert.equal(streamingLive.outputUnavailable, true)
+
+    runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: chunk('UNVERIFIED_IN_MEMORY_TEXT') })
+    const chunkLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(chunkLive.resultPreview, '')
+    assert.equal(chunkLive.outputTotalChars, null)
+    assert.equal(chunkLive.outputTruncated, true)
+    assert.equal(chunkLive.outputUnavailable, true)
+
+    runtime.dsh.receive({ type: 'task_end', taskId: unverified.taskId, stopReason: 'end_turn' })
+    const unverifiedStored = store.list().find(item => item.id === unverified.taskId)!
+    assert.equal(unverifiedStored.resultPreview, '')
+    assert.equal(queuedReports.find(item => item.payload.taskId === unverified.taskId)?.payload.output, '')
+    const unverifiedEnded = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(unverifiedEnded.resultPreview, '')
+    assert.equal(unverifiedEnded.outputTotalChars, null)
+    assert.equal(unverifiedEnded.outputTruncated, true)
+    assert.equal(unverifiedEnded.outputUnavailable, true)
+
+    // 2. Verified viva_stream reply (bound via bindGeneratedCopy): readable live, in report, and after restart.
+    const verified = await runtime.agent.start('已校验任务')
+    const verifiedText = `${'V'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(2000)}${'W'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+    assert.equal(db.bindGeneratedCopy(verified.taskId, 'verified-k', 'assistant', verifiedText, [{ sources: [], fileRanges: [] }]), true)
+    runtime.dsh.receive({ type: 'task_update', taskId: verified.taskId, update: { sessionUpdate: 'viva_stream', key: 'verified-k', kind: 'settle', blocks: [{ type: 'text', text: verifiedText }] } })
+    assert.equal(runtime.agent.query({ op: 'get', taskId: verified.taskId, includeOutput: true, outputOffset: 0, outputLimit: 1000 }, { kind: 'main' }).task!.resultPreview, 'V'.repeat(1000))
+    runtime.dsh.receive({ type: 'task_end', taskId: verified.taskId, stopReason: 'end_turn' })
+    const verifiedReport = queuedReports.find(item => item.payload.taskId === verified.taskId)?.payload.output ?? ''
+    assert.ok(verifiedReport.startsWith('V'.repeat(REPORT_OUTPUT_HEAD_CHARS)))
+    assert.match(verifiedReport, /outputOffset=1000/)
+    assert.equal(runtime.agent.query({ op: 'get', taskId: verified.taskId, includeOutput: true, outputOffset: 1000, outputLimit: 2000 }, { kind: 'main' }).task!.resultPreview, 'M'.repeat(2000))
+
+    // 3. Terminal error event.message (no resultKey): preserved by TaskStore even with retainedReply so it
+    // survives restart and supports paginated reads and readable report pointers.
+    const errored = await runtime.agent.start('报错任务')
+    const longErr = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+    runtime.dsh.receive({ type: 'task_update', taskId: errored.taskId, update: chunk('前面说过的话') })
+    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: longErr })
+    const errStored = store.list().find(item => item.id === errored.taskId)!
+    assert.equal(errStored.resultPreview, longErr.slice(-4000))
+    assert.equal(errStored.terminalMessage, longErr)
+    assert.equal(errStored.resultFromTerminal, true)
+    assert.equal(errStored.resultErased, undefined)
+    const errReport = queuedReports.find(item => item.payload.taskId === errored.taskId)?.payload.output ?? ''
+    assert.match(errReport, /outputOffset=1000/)
+    const relaunched = createTaskRuntime({
+      db, store, current: () => current, agentInfo: () => ({ mode: 'live', model: 'V4' }),
+      agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
+    })
+    const errAfterRestart = relaunched.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+    assert.equal(errAfterRestart.resultPreview, longErr.slice(0, 4000))
+    assert.equal(errAfterRestart.outputTotalChars, longErr.length)
+    assert.equal(errAfterRestart.nextOutputOffset, 4000)
+
+    // 4. Unbound/retired viva_stream resultKey (retainedReply returns false): store marks resultErased=true and blocks output.
+    const retired = await runtime.agent.start('已擦除任务')
+    runtime.dsh.receive({ type: 'task_update', taskId: retired.taskId, update: { sessionUpdate: 'viva_stream', key: 'retired-k', kind: 'settle', blocks: [{ type: 'text', text: 'SENSITIVE_RETIRED' }] } })
+    runtime.dsh.receive({ type: 'task_end', taskId: retired.taskId, stopReason: 'end_turn' })
+    const retiredStored = store.list().find(item => item.id === retired.taskId)!
+    assert.equal(retiredStored.resultErased, true)
+    assert.equal(queuedReports.find(item => item.payload.taskId === retired.taskId)?.payload.output, '')
+    assert.equal(runtime.agent.query({ op: 'get', taskId: retired.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
+  } finally {
+    appDb.close()
+    db.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('mid-run steers and question answers keep earlier output from the same run in reports and paginated queries, while a new run resets the run boundary', async () => {
+  const h = setup()
+  const { task } = await h.start('梳理架构变更')
+  const part1 = `${'H'.repeat(REPORT_OUTPUT_HEAD_CHARS)}第一段详细分析`
+  const part2 = `${'M'.repeat(2200)}${'T'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  h.says(task.id, part1)
+  await h.tasks.agent.message(task.id, '顺便补充风险评估')
+  const city = { id: 'scope', question: '覆盖范围？', options: [{ label: '全量' }] }
+  h.tasks.dsh.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
+  h.tasks.dsh.answer('q1', [{ id: 'scope', selected: ['全量'] }])
+  h.says(task.id, part2)
+  h.ends(task.id)
+
+  const expectedRun1 = `${part1}\n${part2}`
+  const run1Report = h.queuedReports.find(item => item.payload.taskId === task.id && item.payload.runId === 'run-1')
+  assert.ok(run1Report, 'run-1 report queued')
+  assert.equal(run1Report.payload.outputTruncated, true)
+  assert.ok(run1Report.payload.output.startsWith('H'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'keeps pre-steer head in report')
+  assert.ok(run1Report.payload.output.endsWith('T'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'keeps post-steer tail in report')
+
+  // Live paginated query includes both pre-steer and post-steer output.
+  const firstPage = h.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(firstPage.outputTotalChars, expectedRun1.length)
+  assert.equal(firstPage.resultPreview, expectedRun1.slice(0, 4000))
+  assert.equal(firstPage.nextOutputOffset, 4000)
+  const secondPage = h.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(secondPage.resultPreview, expectedRun1.slice(4000))
+  assert.equal(secondPage.nextOutputOffset, null)
+
+  // Persisted runStart survives relaunch.
+  const later = h.relaunch()
+  const afterRelaunch = later.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 0, outputLimit: 100 }, { kind: 'main' }).task!
+  assert.equal(afterRelaunch.outputTotalChars, expectedRun1.length)
+  assert.equal(afterRelaunch.resultPreview, expectedRun1.slice(0, 100))
+
+  // Starting a brand-new run (follow-up after task_end) advances runStart so run-1 output is excluded.
+  await later.tasks.agent.message(task.id, '单独总结风险清单')
+  later.says(task.id, '第二轮风险清单：无阻塞项。')
+  later.ends(task.id)
+  const run2Query = later.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(run2Query.resultPreview, '第二轮风险清单：无阻塞项。')
+  assert.equal(run2Query.outputTotalChars, '第二轮风险清单：无阻塞项。'.length)
+  assert.equal(run2Query.outputTruncated, false)
+
   h.db.close()
 })

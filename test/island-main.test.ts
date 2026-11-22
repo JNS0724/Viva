@@ -259,3 +259,63 @@ test('file drops append and report failures in the main-process draft without a 
     assert.equal(harness.snapshot().files.length, 1)
   } finally { fs.rmSync(directory, { recursive: true, force: true }) }
 })
+
+test('composer typing state tracks active draft edits, ignores inactive drafts, clears on send/switch/erase, and expires after inactivity', async () => {
+  const listeners = new Map<string, Parameters<RawIpc['on']>[1]>()
+  const ipc = checkedIpc({ on: (key, listener) => { listeners.set(key, listener) }, handle: (key, listener) => { listeners.set(key, listener) } })
+  const messages: Array<{ channel: string, payload: unknown }> = []
+  const main = { send: (channel: string, payload: unknown) => messages.push({ channel, payload }) }
+  const desktop = { send() {} }
+  const island = { owns: (sender: unknown) => sender === desktop, setView() {}, sendDraft() {}, closeInput() {} }
+  const typingEvents: boolean[] = []
+  const bridge = registerIslandIpc(ipc, {
+    desk: () => island as unknown as ReturnType<typeof createDeskIsland>,
+    window: () => ({ webContents: main, isDestroyed: () => false }) as unknown as BrowserWindow,
+    showWindow() {}, switchOff() {}, Menu: {} as Parameters<typeof registerIslandIpc>[1]['Menu'],
+    keepImage: async () => keptImage,
+    onTypingChange: typing => typingEvents.push(typing),
+    typingGraceMs: 40,
+  })
+  const emit = (sender: unknown, channel: string, ...args: unknown[]) => listeners.get(channel)!({ sender }, ...args)
+  const snapshot = () => emit(main, 'draft:get') as DraftSnapshot
+
+  emit(main, 'island:view', { form: 'idle', label: 'idle', recent: [], target: { key: 'topic-a' } })
+  const initial = snapshot()
+  emit(main, 'draft:update', { ...initial, sequence: initial.sequence + 1, text: 'hello' })
+  assert.deepEqual(typingEvents, [true])
+
+  // Clearing text clears typing immediately without waiting for the grace timer.
+  const typed = snapshot()
+  emit(main, 'draft:update', { ...typed, sequence: typed.sequence + 1, text: '   ' })
+  assert.deepEqual(typingEvents, [true, false])
+
+  // Switching topics clears typing immediately.
+  const empty = snapshot()
+  emit(main, 'draft:update', { ...empty, sequence: empty.sequence + 1, text: 'draft in a' })
+  assert.deepEqual(typingEvents, [true, false, true])
+  emit(main, 'island:view', { form: 'idle', label: 'idle', recent: [], target: { key: 'topic-b' } })
+  assert.deepEqual(typingEvents, [true, false, true, false])
+
+  // Appending an image to an inactive draft key must not mark the active topic as typing.
+  await emit(main, 'draft:keep-images', 'topic-a', [new Uint8Array([1])])
+  assert.deepEqual(typingEvents, [true, false, true, false])
+
+  // Desktop send acknowledgement clears typing immediately when the draft is cleared.
+  bridge.ownDraft('desk')
+  const deskStart = snapshot()
+  emit(desktop, 'draft:update', { ...deskStart, sequence: deskStart.sequence + 1, text: 'from island' })
+  assert.deepEqual(typingEvents, [true, false, true, false, true])
+  const deskDraft = snapshot()
+  const sending = emit(desktop, 'island:ask', { text: deskDraft.text, files: [], images: [], draft: { key: deskDraft.key, version: deskDraft.version } })
+  const receipt = messages.findLast(message => message.channel === 'island:action')!.payload as { receiptId: string }
+  emit(main, 'island:ask-result', receipt.receiptId, { ok: true })
+  assert.deepEqual(await sending, { ok: true })
+  assert.deepEqual(typingEvents, [true, false, true, false, true, false])
+
+  // Inactivity clears typing after typingGraceMs.
+  const again = snapshot()
+  emit(desktop, 'draft:update', { ...again, sequence: again.sequence + 1, text: 'pausing...' })
+  assert.equal(typingEvents.at(-1), true)
+  await new Promise(resolve => setTimeout(resolve, 90))
+  assert.equal(typingEvents.at(-1), false)
+})

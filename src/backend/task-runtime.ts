@@ -5,9 +5,9 @@ import type { Conversation } from './history-db.ts'
 import { autoTitle, type StoredMessage } from './history-schema.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
-import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
+import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, windowReportOutput, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
-import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
+import { createTaskRegistry, endedStatus, MAX_TERMINAL_MESSAGE_CHARS, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
@@ -71,6 +71,25 @@ const summaryOf = ({ id, segmentId, title, words }: StoredTask) => ({ id, segmen
 const titleOf = (words: string) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
+}
+/** Latest run's messages starting at `runStart` when tracked (falling back to after the last user message for legacy tasks). */
+function runMessages<T extends { role?: unknown, text?: unknown }>(messages: readonly T[], runStart?: number): T[] {
+  let start = 0
+  if (typeof runStart === 'number' && Number.isSafeInteger(runStart) && runStart >= 0) {
+    start = runStart
+  } else {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === 'user') { start = i + 1; break }
+    }
+  }
+  return messages.slice(start)
+}
+/** Latest run's full assistant text, anchored at `runStart` when tracked so mid-run steers and question answers never drop earlier output from the same run. */
+function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknown }>, runStart?: number): string {
+  return runMessages(messages, runStart)
+    .filter(message => message.role === 'assistant' && typeof message.text === 'string' && message.text.length > 0)
+    .map(message => String(message.text))
+    .join('\n')
 }
 
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
@@ -151,7 +170,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     seqs.set(taskId, taskSeq)
     publish({ ...event, type: String(event.type), taskId, runId, taskSeq })
   }
-  const registry = createTaskRegistry({ now, changed: (snapshot) => {
+  const registry = createTaskRegistry({ now, readOutput: (taskId) => fullOutputOf(taskId), changed: (snapshot) => {
     queued = [...queued, snapshot]
     ended(snapshot)
     if (depth === 0) pushQueued()
@@ -215,6 +234,40 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     ...timers, persist,
     onError: (err) => emitDiagnosticFailure('task', err, { stage: 'checkpoint' }),
   })
+
+  function fullOutputOf(taskId: string): { text: string, complete: boolean } | null {
+    if (revoked.has(taskId)) return { text: '', complete: true }
+    const stored = store.list().find(item => item.id === taskId)
+    const entry = stored ?? tasks.get(taskId)
+    if (!entry) return null
+    if (stored?.resultErased) return { text: '', complete: true }
+    const runStart = typeof entry.runStart === 'number' ? entry.runStart : undefined
+    const endedStored = Boolean(stored && isEnded(stored))
+    if (attached.has(taskId) && !endedStored) {
+      const live = taskWords.current(taskId)
+      if (live) {
+        const verified = live.map(message => db.retainMessage({
+          role: message.role,
+          text: message.text,
+          receipt: null,
+          ...(message.streamKey ? { key: message.streamKey } : {}),
+          ...(message.sourceId ? { sourceId: message.sourceId } : {}),
+        }, taskId))
+        const rawRun = runMessages(live, runStart)
+        const verifiedRun = runMessages(verified, runStart)
+        const withheld = rawRun.some((message, index) =>
+          message.role === 'assistant' && typeof message.text === 'string' && message.text.length > 0
+          && !(typeof verifiedRun[index]?.text === 'string' && String(verifiedRun[index]?.text).length > 0))
+        return { text: latestRunOutput(verified, runStart), complete: !withheld }
+      }
+    }
+    const segment = db.get(entry.segmentId)
+    if (!segment) return null
+    const slice = segment.messages.slice(entry.keep ?? 0)
+    const run = runMessages(slice, runStart)
+    const withheld = run.some(message => message.role === 'assistant' && (!message.text || message.text.length === 0))
+    return { text: latestRunOutput(slice, runStart), complete: !withheld }
+  }
 
   function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
     const message: StoredMessage = { role: 'user', text, receipt: null }
@@ -307,14 +360,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [initial])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(name?.trim() || text), words: text }
-      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent',
+      store.add({ ...begun, runId, runStart: 0, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent',
         ...(typeof evidence === 'object' ? { requestMemory: evidence } : {}) })
       opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return { initial, task: begun }
     }))
     counted()
-    tasks.set(task.id, { ...task, keep: 0, next: main.id })
+    tasks.set(task.id, { ...task, runStart: 0, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
     taskWords.track(task.id, [initial])
     agent.promptTask(task.id, text)
@@ -344,18 +397,36 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
-    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview })
+    const end = pendingEnds.get(snapshot.taskId)
+    const terminalMessage = typeof end?.event.message === 'string' && end.event.message ? end.event.message : null
+    const persistedTerminalMessage = terminalMessage && terminalMessage.length <= MAX_TERMINAL_MESSAGE_CHARS ? terminalMessage : undefined
+    const resultTruncated = registry.resultTruncatedOf(snapshot.taskId)
+    const resultFromTerminal = registry.resultFromTerminalOf(snapshot.taskId)
+    store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview,
+      ...(resultTruncated ? { resultTruncated: true } : { resultTruncated: undefined }),
+      ...(resultFromTerminal ? { resultFromTerminal: true } : { resultFromTerminal: undefined }),
+      ...(persistedTerminalMessage ? { terminalMessage: persistedTerminalMessage } : { terminalMessage: undefined }) })
+    const saved = store.list().find((item) => item.id === snapshot.taskId)
     const host = typeof entry.next === 'string' ? db.get(entry.next) : null
     const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
-    const end = pendingEnds.get(snapshot.taskId)
     const captured = end?.runId === snapshot.runId ? end.memory : undefined
     const memory = captured ? combineMemoryProvenance(entry.requestMemory ?? null, captured) : undefined
     // A title can change independently of the task, including after a derived feed continuation.
     const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
+    const verifiedOutput = resultFromTerminal ? null : fullOutputOf(snapshot.taskId)
+    const reportOutput = terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (verifiedOutput?.text ?? ''))
+    const persistedTranscript = !resultFromTerminal
+      ? latestRunOutput(db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? [], typeof entry.runStart === 'number' ? entry.runStart : undefined)
+      : ''
+    const durablyReadable = terminalMessage
+      ? saved?.terminalMessage === terminalMessage
+      : (!resultFromTerminal && !saved?.resultErased && Boolean(verifiedOutput?.complete) && persistedTranscript.length >= reportOutput.length && reportOutput.length > 0)
+    const windowedOutput = windowReportOutput(reportOutput, { readable: durablyReadable })
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
-      host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview, token: randomUUID().replaceAll('-', ''),
+      host: typeof entry.next === 'string' ? entry.next : null, output: windowedOutput.text,
+      ...(windowedOutput.truncated ? { outputTruncated: true } : {}), token: randomUUID().replaceAll('-', ''),
       // Its background, for a note given while the conversation is on another topic.
       request: typeof entry.words === 'string' ? entry.words.slice(0, REQUEST_CHARS) : '',
       topic: titleAllowed ? host?.conversation.title || null : null, ...(memory ? { memory } : {}),
@@ -437,9 +508,11 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const evidence = admit ? await admit(taskId) : true
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, text, evidence)
-    const { endedAt: _endedAt, status: _status, ...going } = kept
+    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, resultErased: _resultErased, ...going } = kept
     const runId = newRunId()
-    const running = { ...going, runId }
+    const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const runStart = before.length
+    const running = { ...going, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
@@ -448,7 +521,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     })
     counted()
     tasks.set(taskId, running)
-    if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
+    if (!taskWords.has(taskId)) taskWords.track(taskId, before)
     taskWords.userSaid(taskId, text, brief.key)
     agent.promptTask(taskId, text)
     return { ok: true }
@@ -477,7 +550,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, words, evidence)
     const runId = newRunId()
-    const running = { ...kept, runId }
+    const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const runStart = before.length
+    const { resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, resultErased: _resultErased, ...keptWithoutTruncated } = kept
+    const running = { ...keptWithoutTruncated, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
@@ -488,7 +564,6 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     letEndGo(taskId)
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
-    const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const said = [...before, brief]
     taskWords.track(taskId, said)
     agent.promptTask(taskId, words)

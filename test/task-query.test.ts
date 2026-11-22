@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { createTaskRegistry, parseTaskQuery } from '../src/backend/task-registry.ts'
+import { createTaskRegistry, MAX_OUTPUT_LIMIT, parseTaskQuery } from '../src/backend/task-registry.ts'
 import { createTasksDesk, parseTaskAction } from '../src/backend/tasks-channel.ts'
 import { createTasksChannel } from '../plugins/tasks/lib/channel.ts'
 import { initialState, reduce } from './fixtures/task-window.ts'
@@ -69,7 +69,67 @@ test('queries let main see all workspaces with optional cwd filter, keep backgro
   registry.remove('a'); assert.equal(registry.query({ op: 'list' }, { taskId: 'a' }).total, 0)
   assert.equal(parseTaskQuery({ op: 'list', limit: 100, cwd: ' /one ' }).limit, 30)
   assert.equal(parseTaskQuery({ op: 'list', cwd: ' /one ' }).cwd, '/one')
-  for (const request of [{ op: 'stop' }, { op: 'get' }, { op: 'list', offset: -1 }, { op: 'list', includeOutput: 'yes' }, { op: 'list', status: 'fake' }, { op: 'list', cwd: '   ' }, { op: 'list', cwd: 123 }]) assert.throws(() => parseTaskQuery(request))
+  assert.equal(parseTaskQuery({ op: 'get', taskId: 'a', includeOutput: true, outputOffset: 1000, outputLimit: 99999 }).outputLimit, MAX_OUTPUT_LIMIT)
+  for (const request of [{ op: 'stop' }, { op: 'get' }, { op: 'list', offset: -1 }, { op: 'list', includeOutput: 'yes' }, { op: 'list', status: 'fake' }, { op: 'list', cwd: '   ' }, { op: 'list', cwd: 123 }, { op: 'get', taskId: 'a', outputOffset: -1 }, { op: 'get', taskId: 'a', outputOffset: 1.5 }, { op: 'get', taskId: 'a', outputLimit: 0 }, { op: 'get', taskId: 'a', outputLimit: '10' }]) assert.throws(() => parseTaskQuery(request))
+})
+
+test('get_background_task paginates full output via outputOffset and outputLimit with truncation metadata', () => {
+  const full = `${'A'.repeat(4000)}${'B'.repeat(4000)}${'C'.repeat(1000)}`
+  const registry = createTaskRegistry({ readOutput: id => id === 'a' ? full : null })
+  registry.put({ id: 'a', title: '长输出任务', cwd: '/work', endedAt: 10, status: 'done', resultPreview: full.slice(-4000) }, true)
+
+  const page1 = registry.query({ op: 'get', taskId: 'a', includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(page1.resultPreview, 'A'.repeat(4000))
+  assert.equal(page1.outputOffset, 0)
+  assert.equal(page1.outputTotalChars, 9000)
+  assert.equal(page1.nextOutputOffset, 4000)
+  assert.equal(page1.outputTruncated, true)
+
+  const page2 = registry.query({ op: 'get', taskId: 'a', includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(page2.resultPreview, 'B'.repeat(4000))
+  assert.equal(page2.outputOffset, 4000)
+  assert.equal(page2.nextOutputOffset, 8000)
+  assert.equal(page2.outputTruncated, true)
+
+  const page3 = registry.query({ op: 'get', taskId: 'a', includeOutput: true, outputOffset: 8000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(page3.resultPreview, 'C'.repeat(1000))
+  assert.equal(page3.outputOffset, 8000)
+  assert.equal(page3.nextOutputOffset, null)
+  assert.equal(page3.outputTruncated, true, 'reading a trailing slice still marks the response as a partial slice')
+
+  const pastEnd = registry.query({ op: 'get', taskId: 'a', includeOutput: true, outputOffset: 99999 }, { kind: 'main' }).task!
+  assert.equal(pastEnd.resultPreview, '')
+  assert.equal(pastEnd.outputOffset, 9000)
+  assert.equal(pastEnd.nextOutputOffset, null)
+
+  // Short output fits in one slice: not truncated.
+  registry.put({ id: 'b', title: '短输出', cwd: '/work', endedAt: 11, status: 'done', resultPreview: '简短结果' }, true)
+  const short = registry.query({ op: 'get', taskId: 'b', includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(short.resultPreview, '简短结果')
+  assert.equal(short.outputTotalChars, 4)
+  assert.equal(short.nextOutputOffset, null)
+  assert.equal(short.outputTruncated, false)
+
+  // Long terminal event.message (>4000 chars) stays fully paginatable in memory; when only a truncated preview survives,
+  // outputTotalChars is null and outputTruncated stays true even on the final slice.
+  const standalone = createTaskRegistry()
+  standalone.put({ id: 'err', title: '长报错任务', cwd: '/work' })
+  const longError = `${'E'.repeat(1000)}${'X'.repeat(3500)}${'Z'.repeat(1000)}`
+  standalone.receive({ type: 'task_end', taskId: 'err', stopReason: 'error', message: longError })
+  const errPage1 = standalone.query({ op: 'get', taskId: 'err', includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(errPage1.outputTotalChars, longError.length)
+  assert.equal(errPage1.resultPreview, longError.slice(0, 4000))
+  assert.equal(errPage1.nextOutputOffset, 4000)
+  const errPage2 = standalone.query({ op: 'get', taskId: 'err', includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(errPage2.resultPreview, longError.slice(4000))
+  assert.equal(errPage2.nextOutputOffset, null)
+
+  standalone.put({ id: 'restored-err', title: '重启后的长报错', cwd: '/work', endedAt: 20, status: 'error', resultPreview: longError.slice(-4000), resultTruncated: true }, true)
+  const previewOnly = standalone.query({ op: 'get', taskId: 'restored-err', includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(previewOnly.resultPreview, longError.slice(-4000))
+  assert.equal(previewOnly.outputTotalChars, null)
+  assert.equal(previewOnly.nextOutputOffset, null)
+  assert.equal(previewOnly.outputTruncated, true)
 })
 
 test('plugin IPC carries session identity, rejects stale sessions, and returns structured query data', async () => {
