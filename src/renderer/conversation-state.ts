@@ -133,9 +133,22 @@ export const CONVERSATION_ACTIONS = {
     ...view,
     messages: view.messages.flatMap(message => {
       if (!message.pending || message.sourceId !== sourceId) return [message]
-      return accepted ? [{ ...message, pending: false }] : []
+      return accepted ? [{ ...message, pending: false, persisted: true }] : []
     }),
   }),
+
+  prompt_persisted: (view, { sourceId }) => ({
+    ...view,
+    messages: view.messages.map(message => (message.sourceId === sourceId ? { ...message, persisted: true } : message)),
+  }),
+
+  prompt_retracted: (view, { sourceId }) => {
+    if (!view.messages.some(message => message.sourceId === sourceId && !message.persisted)) return view
+    return {
+      ...view,
+      messages: view.messages.filter(message => !(message.sourceId === sourceId && !message.persisted)),
+    }
+  },
 
   /**
    * A turn the app started, not the user: a background task ended and its result comes back (backend/task-reports.ts).

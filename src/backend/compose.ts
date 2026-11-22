@@ -1078,9 +1078,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           : { ok: true, delivery: 'sent' as const }
       }
       if (historyDb.promptPending([deliveryId])) throw new Error(t('main.memory.change.pending'))
+      const agent = requireBridge(), origin = sessions.context(), generation = foregroundRequests.lease(), admitted = humanAdmission, originalTurn = turn
       historyDb.reservePromptDelivery([deliveryId])
       foregroundHistory?.userSteer({ text: words, sourceId: deliveryId })
-      const agent = requireBridge(), origin = sessions.context(), generation = foregroundRequests.lease(), admitted = humanAdmission, originalTurn = turn
       const selected = () => generation() && dsh.current === agent
         && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
@@ -1206,6 +1206,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         sourceId: operation,
         advanceCheckpoint: !turn.active && !foregroundRequests.busy(),
       })
+      emitToRenderer({ type: 'prompt_persisted', sourceId: operation, context: origin })
     }
     let nativeStarted = false, deliveryError: unknown
     let accepted = (_value: IpcResults['agent:prompt']) => {}, refused = (_error: unknown) => {}

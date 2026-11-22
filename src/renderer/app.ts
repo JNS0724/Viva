@@ -58,7 +58,7 @@ import { attachColumnResize } from './view/column-resize.ts'
 const TICK_MS = 1000
 const MAX_FRAME_MS = 100
 /** Moments when backend-persisted conversation history changed and an open search should refresh. */
-const REFRESH_SEARCH_AFTER = new Set(['user_prompt', 'prompt_admitted', 'user_steer', 'question_answered', 'turn_end', 'error'])
+const REFRESH_SEARCH_AFTER = new Set(['user_prompt', 'prompt_admitted', 'prompt_retracted', 'user_steer', 'question_answered', 'turn_end', 'error'])
 const api = window.agent
 const platform = api?.platform ?? 'darwin'
 const dom = createPageElements(document, platform)
@@ -232,8 +232,14 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
   ask: ({ text, files, images = [], targetKey, receiptId, expiresAt, feedItemId }) => {
     const receipt = (ok: boolean, error = t('desk.interaction.draft.not.sent')) => api.islandAskResult(receiptId, { ok, ...(ok ? {} : { error }) })
+    const restoreRejected = () => {
+      if (draftTarget(state).key !== targetKey) return
+      if (dom.input.value.trim() || draftImages.list().length || composerFiles.length) return
+      applyDraftFields({ text: withFiles(text, files), files: [], images, error: null, feedItemId: undefined })
+      composerDraft?.changed()
+    }
     const ok = targetKey === draftTarget(state).key && Date.now() <= expiresAt
-      && ask(withFiles(text, files), { via: 'island', images, feedItemId, admitted: receipt })
+      && ask(withFiles(text, files), { via: 'island', images, feedItemId, admitted: receipt, onRejected: restoreRejected })
     if (ok) dom.follower.resetForPrompt({ anchor: false })
     if (!ok || !feedItemId) receipt(Boolean(ok))
   },
@@ -371,28 +377,31 @@ const draftImages = createDraftImages({
 const sharedFiles = h('div', { class: 'isl-files composer-shared-files', hidden: true })
 dom.draftPics.after(sharedFiles)
 let composerFeedItem: string | undefined
+function applyDraftFields(draft: { text: string, files: DraftFile[], images: Array<{ id: string }>, error: string | null, feedItemId?: string }) {
+  if (dom.input.value !== draft.text) dom.input.value = draft.text
+  composerFeedItem = draft.feedItemId
+  composerFiles = draft.files; composerError = draft.error
+  draftImages.replace(draft.images)
+  sharedFiles.hidden = !draft.files.length && !draft.error
+  dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
+  sharedFiles.replaceChildren(...draft.files.map(file => h('div', { class: 'isl-file', title: file.path },
+    h('span', { class: 'isl-file-name', text: file.name }), h('button', { type: 'button', class: 'isl-file-x', text: '×',
+      'aria-label': t('island-input.remove', { name: file.name }), onClick: () => {
+        composerFiles = composerFiles.filter(item => item.path !== file.path)
+        dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
+        sharedFiles.querySelector(`[title="${CSS.escape(file.path)}"]`)?.remove()
+        sharedFiles.hidden = !composerFiles.length && !composerError
+        composerDraft?.changed()
+        renderSendButton(dom, state)
+      } }))), ...(draft.error ? [h('div', { class: 'isl-error', role: 'alert', text: draft.error })] : []))
+  renderSendButton(dom, state)
+}
 composerDraft = createComposerDraftActions({ api, host: 'main',
   read: () => ({ text: dom.input.value, files: composerFiles, images: draftImages.list(), error: composerError,
     feedItemId: dom.input.value.trim() ? composerFeedItem : undefined }),
   write: draft => {
     dom.input.readOnly = draft.owner !== 'main'
-    if (dom.input.value !== draft.text) dom.input.value = draft.text
-    composerFeedItem = draft.feedItemId
-    composerFiles = draft.files; composerError = draft.error
-    draftImages.replace(draft.images)
-    sharedFiles.hidden = !draft.files.length && !draft.error
-    dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
-    sharedFiles.replaceChildren(...draft.files.map(file => h('div', { class: 'isl-file', title: file.path },
-      h('span', { class: 'isl-file-name', text: file.name }), h('button', { type: 'button', class: 'isl-file-x', text: '×',
-        'aria-label': t('island-input.remove', { name: file.name }), onClick: () => {
-          composerFiles = composerFiles.filter(item => item.path !== file.path)
-          dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
-          sharedFiles.querySelector(`[title="${CSS.escape(file.path)}"]`)?.remove()
-          sharedFiles.hidden = !composerFiles.length && !composerError
-          composerDraft?.changed()
-          renderSendButton(dom, state)
-        } }))), ...(draft.error ? [h('div', { class: 'isl-error', role: 'alert', text: draft.error })] : []))
-    renderSendButton(dom, state)
+    applyDraftFields(draft)
   },
 })
 
@@ -566,7 +575,18 @@ const handlers = {
       if (!text) return
       answer(answersFrom(state.question, text))
       dom.input.value = ''
-    } else if (ask(withFiles(text, composerFiles.map(file => file.path)), { images: draftImages.list() })) clearDraft()
+    } else {
+      const sentText = text
+      const sentImages = draftImages.list()
+      const sentFiles = [...composerFiles]
+      const restoreDraft = () => {
+        if (sentDraft && (!composerDraft?.ready() || composerDraft.snapshot()?.key !== sentDraft.key)) return
+        if (dom.input.value.trim() || draftImages.list().length || composerFiles.length) return
+        applyDraftFields({ text: sentText, files: sentFiles, images: sentImages, error: null, feedItemId: undefined })
+        composerDraft?.changed()
+      }
+      if (ask(withFiles(text, composerFiles.map(file => file.path)), { images: sentImages, onRejected: restoreDraft })) clearDraft()
+    }
     dom.composer.dataset.attachments = String(composerFiles.length + draftImages.list().length)
     composerDraft?.changed()
     // Emptied while the agent works, the button goes back to stopping it.

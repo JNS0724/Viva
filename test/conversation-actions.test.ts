@@ -321,3 +321,31 @@ test('unconfirmed stop prevents sending until the user recovers the runtime', as
   await recovering
   assert.equal(h.actions.ask('send the recovered draft'), true)
 })
+
+test('a prompt rejected before backend persistence retracts its bubble and restores draft; persisted prompts stay on later errors', async () => {
+  // 1. Pre-persist rejection (no prompt_persisted event) for both text and image prompts: retract bubble & restore draft
+  for (const images of [[], [{ id: 'pic-1' }]]) {
+    let restored = 0
+    const h = harness({ prompt: () => Promise.reject(new Error('memory busy')) })
+    assert.equal(h.actions.ask('unsent question', { images, onRejected: () => { restored += 1 } }), true)
+    assert.equal(h.state().messages.length, 1)
+    await settle()
+    assert.equal(h.state().messages.length, 0, 'unpersisted rejected prompt is retracted so indices stay aligned with SQLite')
+    assert.equal(restored, 1, 'onRejected restores the user draft')
+    assert.match(h.state().error ?? '', /memory busy/)
+  }
+
+  // 2. Post-persist rejection (prompt_persisted arrived before rejection): keep message & do not restore draft
+  let restoredAfterPersist = 0
+  const pending = deferred<void>()
+  const h = harness({ prompt: () => pending.promise })
+  assert.equal(h.actions.ask('already persisted', { onRejected: () => { restoredAfterPersist += 1 } }), true)
+  const sourceId = h.state().messages[0]!.sourceId!
+  h.dispatch({ type: 'prompt_persisted', sourceId })
+  pending.reject(new Error('mid-turn disconnect'))
+  await settle()
+  assert.equal(h.state().messages.length, 1, 'persisted prompt stays visible on later turn error')
+  assert.equal(h.state().messages[0]?.text, 'already persisted')
+  assert.equal(restoredAfterPersist, 0)
+  assert.match(h.state().error ?? '', /mid-turn disconnect/)
+})
