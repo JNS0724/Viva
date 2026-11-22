@@ -495,7 +495,6 @@ async function runVivaAgenticAnswer(
   const maxRounds = 10
   for (let round = 0; round < maxRounds; round++) {
     const assembler = new BlockAssembler()
-    telemetry.llmCalls++
     for await (const chunk of ctx.llm.stream({
       provider: DEEPSEEK_DEFAULT.provider,
       model: DEEPSEEK_DEFAULT.model,
@@ -576,8 +575,57 @@ async function runVivaAgenticAnswer(
   return 'Information not found.'
 }
 
+type EvalPhase = 'ingest' | 'dream' | 'answer'
+
 function emptyTelemetry(): LiveTelemetry {
-  return { llmCalls: 0, inputTokens: 0, outputTokens: 0, ingestMs: 0, dreamMs: 0, answerMs: 0, toolCalls: 0, toolNames: {} }
+  return {
+    llmCalls: 0,
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    outputTokens: 0,
+    ingestMs: 0,
+    dreamMs: 0,
+    answerMs: 0,
+    toolCalls: 0,
+    toolNames: {},
+    phaseTokens: {
+      ingest: { calls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+      dream: { calls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+      answer: { calls: 0, inputTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+    },
+  }
+}
+
+/** Intercept every real HTTP ctx.llm.stream() call to record exact call count & disjoint token usage (normalized to total prompt tokens = uncached + cacheRead). */
+function createMeteringLlmCtx(
+  base: Pick<Context, 'llm'>,
+  telemetry: LiveTelemetry,
+  getPhase: () => EvalPhase,
+): Pick<Context, 'llm'> {
+  const metered = Object.create(base.llm) as Context['llm']
+  metered.stream = (async function* (request) {
+    const phase = getPhase()
+    const bucket = telemetry.phaseTokens?.[phase]
+    telemetry.llmCalls++
+    if (bucket) bucket.calls++
+    for await (const chunk of base.llm.stream(request)) {
+      if (chunk.type === 'usage') {
+        const cached = chunk.usage.cacheReadTokens ?? 0
+        const totalIn = chunk.usage.inputTokens + cached
+        const out = chunk.usage.outputTokens
+        telemetry.inputTokens += totalIn
+        telemetry.cacheReadTokens = (telemetry.cacheReadTokens ?? 0) + cached
+        telemetry.outputTokens += out
+        if (bucket) {
+          bucket.inputTokens += totalIn
+          bucket.cacheReadTokens += cached
+          bucket.outputTokens += out
+        }
+      }
+      yield chunk
+    }
+  }) as Context['llm']['stream']
+  return { llm: metered }
 }
 
 function gitFixture(directory: string) {
@@ -646,6 +694,8 @@ export async function runVivaChineseEval(
     if (fixture.scope.kind === 'project') gitFixture(projectDir)
     const project = memoryProjectScope(projectDir)
     const telemetry = emptyTelemetry()
+    let activePhase: EvalPhase = 'ingest'
+    const meteredCtx = createMeteringLlmCtx(ctx, telemetry, () => activePhase)
     const owner = openMemoryOwner({
       root: path.join(dir, 'memory'),
       dailyNotes: { noteInterval: 5, timezone: 'UTC', scanDays: 3650, dreamUnits: 5 },
@@ -653,8 +703,7 @@ export async function runVivaChineseEval(
       route: () => ({ ...DEEPSEEK_DEFAULT }),
       quiesce: async () => {},
       async compute(job, signal, tools) {
-        telemetry.llmCalls++
-        return completeMemoryModel(ctx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
+        return completeMemoryModel(meteredCtx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
       },
     })
     const phases: ChineseCaseSystemResult['phases'] = []
@@ -667,6 +716,7 @@ export async function runVivaChineseEval(
       for (let pIdx = 0; pIdx < fixture.phases.length; pIdx++) {
         const phase = fixture.phases[pIdx]!
         const baseMs = Date.parse(`2026-11-${String(10 + pIdx).padStart(2, '0')}T10:00:00Z`)
+        activePhase = 'ingest'
         const tIng = performance.now()
         for (let tIdx = 0; tIdx < phase.turns.length; tIdx++) {
           const pair = phase.turns[tIdx]!
@@ -698,6 +748,7 @@ export async function runVivaChineseEval(
         await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.note'])
         telemetry.ingestMs += performance.now() - tIng
 
+        activePhase = 'dream'
         const tDr = performance.now()
         await owner.runtime.runDocumentDream()
         await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'])
@@ -713,8 +764,9 @@ export async function runVivaChineseEval(
           AbortSignal.timeout(15_000),
         )
         const recallParsed = JSON.parse(recallRaw) as { notes?: unknown[] }
+        activePhase = 'answer'
         const answer = await runVivaAgenticAnswer(
-          ctx,
+          meteredCtx,
           owner,
           reader,
           phase.recallQuery,
@@ -825,6 +877,8 @@ export async function runVivaLmeEval(
       rmSync(dir, { recursive: true, force: true })
       mkdirSync(dir, { recursive: true })
       const telemetry = emptyTelemetry()
+      let activePhase: EvalPhase = 'ingest'
+      const meteredCtx = createMeteringLlmCtx(ctx, telemetry, () => activePhase)
       const owner = openMemoryOwner({
         root: path.join(dir, 'memory'),
         dailyNotes: { noteInterval: 5, timezone: 'UTC', scanDays: 3650, dreamUnits: 5 },
@@ -832,8 +886,7 @@ export async function runVivaLmeEval(
         route: () => ({ ...DEEPSEEK_DEFAULT }),
         quiesce: async () => {},
         async compute(job, signal, tools) {
-          telemetry.llmCalls++
-          return completeMemoryModel(ctx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
+          return completeMemoryModel(meteredCtx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
         },
       })
       let dreamTriggers = 0
@@ -848,6 +901,7 @@ export async function runVivaLmeEval(
           if (prevDate !== null && prevDate !== sess.dateStr) {
             daysSinceDream++
             if (opts.enableDream && daysSinceDream >= 4 && !dreamedDates.has(prevDate)) {
+              activePhase = 'dream'
               const tDr = performance.now()
               await owner.runtime.runDocumentDream()
               await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 2)
@@ -859,6 +913,7 @@ export async function runVivaLmeEval(
           }
           const sessionId = sess.sessionId || randomUUID()
           owner.initializeSession({ sessionId })
+          activePhase = 'ingest'
           const tIng = performance.now()
           let turn = 0
           for (let i = 0; i < sess.messages.length; i++) {
@@ -897,6 +952,7 @@ export async function runVivaLmeEval(
           prevDate = sess.dateStr
         }
         if (opts.enableDream && prevDate !== null && !dreamedDates.has(prevDate)) {
+          activePhase = 'dream'
           const tDr = performance.now()
           await owner.runtime.runDocumentDream()
           await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 2)
@@ -908,8 +964,9 @@ export async function runVivaLmeEval(
         const reader = randomUUID()
         owner.initializeSession({ sessionId: reader })
         if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader)
+        activePhase = 'answer'
         answer = await runVivaAgenticAnswer(
-          ctx,
+          meteredCtx,
           owner,
           reader,
           task.question,

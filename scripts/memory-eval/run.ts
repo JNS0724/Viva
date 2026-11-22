@@ -123,8 +123,8 @@ export function renderSummaryMarkdown(report: {
     lines.push('## 3. M3 中文语义与忠实度真实模型对照（7 类 / 8 阶段 / 40 回合）')
     lines.push('')
     const modes = [...new Set(report.chinese.map(r => r.mode))]
-    lines.push('| 系统 / 模式 | 阶段通过率 (Judge) | 必要模式命中 | 禁止违规 | 跨项目/跨范围泄漏 | Daily 文件数 | Digest 文件数 | 总耗时(s) | LLM 调用 |')
-    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+    lines.push('| 系统 / 模式 | 阶段通过率 (Judge) | 必要模式命中 | 禁止违规 | 跨项目/跨范围泄漏 | Daily / Digest | 总耗时(s) | HTTP LLM 调用 | Input Tokens (Cache命中) | Output Tokens |')
+    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for (const mode of modes) {
       const items = report.chinese.filter(r => r.mode === mode)
       const phases = items.flatMap(i => i.phases)
@@ -138,7 +138,11 @@ export function renderSummaryMarkdown(report: {
       const digest = items.reduce((s, i) => s + i.workspace.digestFiles, 0)
       const totalS = items.reduce((s, i) => s + i.telemetry.ingestMs + i.telemetry.dreamMs + i.telemetry.answerMs, 0) / 1000
       const calls = items.reduce((s, i) => s + i.telemetry.llmCalls, 0)
-      lines.push(`| \`${mode}\` | ${yes}/${phases.length} (${(yes / Math.max(phases.length, 1) * 100).toFixed(1)}%) | ${patHit}/${patTot} | ${forb} | ${hasIso ? leaks : 'N/A (无原生项目隔离)'} | ${daily} | ${digest} | ${totalS.toFixed(1)} | ${calls} |`)
+      const inTok = items.reduce((s, i) => s + i.telemetry.inputTokens, 0)
+      const cacheTok = items.reduce((s, i) => s + (i.telemetry.cacheReadTokens ?? 0), 0)
+      const outTok = items.reduce((s, i) => s + i.telemetry.outputTokens, 0)
+      const cachePct = inTok > 0 ? `${(cacheTok / inTok * 100).toFixed(0)}%` : '-'
+      lines.push(`| \`${mode}\` | ${yes}/${phases.length} (${(yes / Math.max(phases.length, 1) * 100).toFixed(1)}%) | ${patHit}/${patTot} | ${forb} | ${hasIso ? leaks : 'N/A (无原生项目隔离)'} | ${daily} / ${digest} | ${totalS.toFixed(1)} | ${calls} | ${inTok.toLocaleString()} (${cachePct}) | ${outTok.toLocaleString()} |`)
     }
     lines.push('')
     lines.push('### 中文语义逐题明细')
@@ -182,18 +186,27 @@ export function renderSummaryMarkdown(report: {
     })
     lines.push(`| **OVERALL** | ${overallCols.join(' | ')} |`)
     lines.push('')
-    lines.push('### 效率与工作区产出对比')
+    lines.push('### 效率、Token 成本与工作区产出对比（单题均值）')
     lines.push('')
-    lines.push('| 系统 / 模式 | 平均 Ingest(s/题) | 平均 Dream(s/题) | 平均 Answer(s/题) | 平均工具调用 | 平均 Daily 文件 | 平均 Digest 文件 | 错误数 |')
-    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+    lines.push('| 系统 / 模式 | Ingest(s) | Dream(s) | Answer(s) | HTTP 调用(Ing/Drm/Ans) | Input Tokens (Cache命中) | Output Tokens | 工具调用 | Daily / Digest | 错误数 |')
+    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for (const m of modes) {
       const sub = report.lme.results.filter(r => r.mode === m)
       const n = Math.max(sub.length, 1)
       const avg = (fn: (r: LmeCaseSystemResult) => number) => (sub.reduce((s, r) => s + fn(r), 0) / n)
+      const inAvg = avg(r => r.telemetry.inputTokens)
+      const cacheAvg = avg(r => r.telemetry.cacheReadTokens ?? 0)
+      const outAvg = avg(r => r.telemetry.outputTokens)
+      const cachePct = inAvg > 0 ? `${(cacheAvg / inAvg * 100).toFixed(0)}%` : '-'
+      const ingCalls = avg(r => r.telemetry.phaseTokens?.ingest.calls ?? 0)
+      const drmCalls = avg(r => r.telemetry.phaseTokens?.dream.calls ?? 0)
+      const ansCalls = avg(r => r.telemetry.phaseTokens?.answer.calls ?? 0)
+      const callsStr = `${avg(r => r.telemetry.llmCalls).toFixed(1)} (${ingCalls.toFixed(1)}/${drmCalls.toFixed(1)}/${ansCalls.toFixed(1)})`
       lines.push(
         `| \`${m}\` | ${(avg(r => r.telemetry.ingestMs) / 1000).toFixed(1)} | ${(avg(r => r.telemetry.dreamMs) / 1000).toFixed(1)} | ` +
-        `${(avg(r => r.telemetry.answerMs) / 1000).toFixed(1)} | ${avg(r => r.telemetry.toolCalls).toFixed(2)} | ` +
-        `${avg(r => r.workspace.dailyFiles).toFixed(1)} | ${avg(r => r.workspace.digestFiles).toFixed(1)} | ${sub.filter(r => r.error).length} |`,
+        `${(avg(r => r.telemetry.answerMs) / 1000).toFixed(1)} | ${callsStr} | ${Math.round(inAvg).toLocaleString()} (${cachePct}) | ` +
+        `${Math.round(outAvg).toLocaleString()} | ${avg(r => r.telemetry.toolCalls).toFixed(2)} | ` +
+        `${avg(r => r.workspace.dailyFiles).toFixed(1)} / ${avg(r => r.workspace.digestFiles).toFixed(1)} | ${sub.filter(r => r.error).length} |`,
       )
     }
     lines.push('')

@@ -70,15 +70,28 @@ export interface WorkspaceStats {
   filePaths: string[]
 }
 
+export interface PhaseTokenStats {
+  calls: number
+  inputTokens: number
+  cacheReadTokens: number
+  outputTokens: number
+}
+
 export interface LiveTelemetry {
   llmCalls: number
   inputTokens: number
+  cacheReadTokens?: number
   outputTokens: number
   ingestMs: number
   dreamMs: number
   answerMs: number
   toolCalls: number
   toolNames: Record<string, number>
+  phaseTokens?: {
+    ingest: PhaseTokenStats
+    dream: PhaseTokenStats
+    answer: PhaseTokenStats
+  }
 }
 
 export interface ChineseCaseSystemResult {

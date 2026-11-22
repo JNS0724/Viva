@@ -379,21 +379,112 @@ async def cmd_scale_bench(payload: dict[str, Any]) -> dict[str, Any]:
     return {"points": points}
 
 
-def _collect_usage_from_resp(resp: Any, telemetry: dict[str, Any]) -> None:
-    meta = getattr(resp, "metadata", None) or {}
-    # AgentScope wrapper stores usage stats in metadata if present
-    usage = meta.get("token_usage") or meta.get("usage") or {}
-    if isinstance(usage, dict):
-        telemetry["inputTokens"] += int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-        telemetry["outputTokens"] += int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
-    tool_calls = meta.get("tool_calls") or meta.get("tool_call_count")
-    if isinstance(tool_calls, int):
-        telemetry["toolCalls"] += tool_calls
-    elif isinstance(tool_calls, list):
-        telemetry["toolCalls"] += len(tool_calls)
-        for tc in tool_calls:
-            name = tc.get("name", "unknown") if isinstance(tc, dict) else str(tc)
-            telemetry["toolNames"][name] = telemetry["toolNames"].get(name, 0) + 1
+def _empty_telemetry() -> dict[str, Any]:
+    return {
+        "llmCalls": 0,
+        "inputTokens": 0,
+        "cacheReadTokens": 0,
+        "outputTokens": 0,
+        "ingestMs": 0.0,
+        "dreamMs": 0.0,
+        "answerMs": 0.0,
+        "toolCalls": 0,
+        "toolNames": {},
+        "phaseTokens": {
+            "ingest": {"calls": 0, "inputTokens": 0, "cacheReadTokens": 0, "outputTokens": 0},
+            "dream": {"calls": 0, "inputTokens": 0, "cacheReadTokens": 0, "outputTokens": 0},
+            "answer": {"calls": 0, "inputTokens": 0, "cacheReadTokens": 0, "outputTokens": 0},
+        },
+    }
+
+
+def _extract_openai_usage(usage: Any) -> tuple[int, int, int]:
+    if usage is None:
+        return 0, 0, 0
+    prompt = int(getattr(usage, "prompt_tokens", None) or (usage.get("prompt_tokens") if isinstance(usage, dict) else 0) or 0)
+    completion = int(getattr(usage, "completion_tokens", None) or (usage.get("completion_tokens") if isinstance(usage, dict) else 0) or 0)
+    cached = int(getattr(usage, "prompt_cache_hit_tokens", None) or (usage.get("prompt_cache_hit_tokens") if isinstance(usage, dict) else 0) or 0)
+    if not cached:
+        details = getattr(usage, "prompt_tokens_details", None) or (usage.get("prompt_tokens_details") if isinstance(usage, dict) else None)
+        if details is not None:
+            cached = int(getattr(details, "cached_tokens", None) or (details.get("cached_tokens") if isinstance(details, dict) else 0) or 0)
+    return prompt, cached, completion
+
+
+def _record_usage(telemetry: dict[str, Any], phase: str, prompt: int, cached: int, completion: int) -> None:
+    if prompt <= 0 and completion <= 0:
+        return
+    telemetry["inputTokens"] += prompt
+    telemetry["cacheReadTokens"] += cached
+    telemetry["outputTokens"] += completion
+    bucket = telemetry["phaseTokens"].get(phase)
+    if bucket is not None:
+        bucket["inputTokens"] += prompt
+        bucket["cacheReadTokens"] += cached
+        bucket["outputTokens"] += completion
+
+
+def _install_llm_meter(app: Any, telemetry: dict[str, Any], phase_ref: list[str]) -> None:
+    """Wrap AsyncOpenAI chat.completions.create on every ReMe as_llm component for exact HTTP call, tool, and token accounting."""
+    as_llms = getattr(getattr(app, "context", None), "components", {}).get("as_llm", {})
+    for comp in as_llms.values():
+        model = getattr(comp, "model", None)
+        client = getattr(model, "client", None)
+        completions = getattr(getattr(client, "chat", None), "completions", None)
+        orig_create = getattr(completions, "create", None)
+        if orig_create is None or getattr(orig_create, "_viva_metered", False):
+            continue
+
+        async def _wrapped_create(*args: Any, _orig: Any = orig_create, **kwargs: Any) -> Any:
+            phase = phase_ref[0]
+            telemetry["llmCalls"] += 1
+            bucket = telemetry["phaseTokens"].get(phase)
+            if bucket is not None:
+                bucket["calls"] += 1
+            if kwargs.get("stream"):
+                stream_opts = dict(kwargs.get("stream_options") or {})
+                stream_opts.setdefault("include_usage", True)
+                kwargs["stream_options"] = stream_opts
+            resp = await _orig(*args, **kwargs)
+            if kwargs.get("stream") and hasattr(resp, "__aiter__"):
+                async def _metered_stream() -> Any:
+                    seen_tool_indices: dict[int, str] = {}
+                    final_usage = None
+                    async for chunk in resp:
+                        if getattr(chunk, "usage", None) is not None:
+                            final_usage = chunk.usage
+                        for choice in getattr(chunk, "choices", None) or ():
+                            delta = getattr(choice, "delta", None)
+                            for tc in getattr(delta, "tool_calls", None) or ():
+                                idx = int(getattr(tc, "index", 0) or 0)
+                                fn = getattr(tc, "function", None)
+                                name = getattr(fn, "name", None) if fn is not None else None
+                                if idx not in seen_tool_indices:
+                                    seen_tool_indices[idx] = name or "unknown"
+                                elif name and seen_tool_indices[idx] == "unknown":
+                                    seen_tool_indices[idx] = name
+                        yield chunk
+                    p, c, o = _extract_openai_usage(final_usage)
+                    _record_usage(telemetry, phase, p, c, o)
+                    if phase == "answer":
+                        for name in seen_tool_indices.values():
+                            telemetry["toolCalls"] += 1
+                            telemetry["toolNames"][name] = telemetry["toolNames"].get(name, 0) + 1
+                return _metered_stream()
+            p, c, o = _extract_openai_usage(getattr(resp, "usage", None))
+            _record_usage(telemetry, phase, p, c, o)
+            if phase == "answer":
+                for choice in getattr(resp, "choices", None) or ():
+                    msg = getattr(choice, "message", None)
+                    for tc in getattr(msg, "tool_calls", None) or ():
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", None) or "unknown"
+                        telemetry["toolCalls"] += 1
+                        telemetry["toolNames"][name] = telemetry["toolNames"].get(name, 0) + 1
+            return resp
+
+        setattr(_wrapped_create, "_viva_metered", True)
+        completions.create = _wrapped_create
 
 
 async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
@@ -424,16 +515,9 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
         )
         app = Application(**cfg)
         await app.start()
-        telemetry: dict[str, Any] = {
-            "llmCalls": 0,
-            "inputTokens": 0,
-            "outputTokens": 0,
-            "ingestMs": 0.0,
-            "dreamMs": 0.0,
-            "answerMs": 0.0,
-            "toolCalls": 0,
-            "toolNames": {},
-        }
+        telemetry = _empty_telemetry()
+        phase_ref = ["ingest"]
+        _install_llm_meter(app, telemetry, phase_ref)
         phase_outputs = []
         case_error = None
         try:
@@ -445,8 +529,9 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
                     formatted.append({"name": "user", "role": "user", "content": turn["user"], "created_at": ts})
                     formatted.append({"name": "assistant", "role": "assistant", "content": turn["assistant"], "created_at": ts})
 
+                phase_ref[0] = "ingest"
                 t_ing = time.perf_counter()
-                am_resp = await app.run_job(
+                await app.run_job(
                     "auto_memory",
                     messages=formatted,
                     session_id=f"{case['id']}-{phase['id']}",
@@ -454,21 +539,19 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 await app.run_job("index_update")
                 telemetry["ingestMs"] += (time.perf_counter() - t_ing) * 1000.0
-                telemetry["llmCalls"] += 1
-                _collect_usage_from_resp(am_resp, telemetry)
 
+                phase_ref[0] = "dream"
                 t_dr = time.perf_counter()
-                dr_resp = await app.run_job("auto_dream", date=day_str, scan_days=2, max_units=5)
+                await app.run_job("auto_dream", date=day_str, scan_days=2, max_units=5)
                 await app.run_job("index_update")
                 await app.run_job("digest_update")
                 telemetry["dreamMs"] += (time.perf_counter() - t_dr) * 1000.0
-                telemetry["llmCalls"] += 1
-                _collect_usage_from_resp(dr_resp, telemetry)
 
                 # Also capture raw search hits + agentic answer
                 search_resp = await app.run_job("search", query=phase["recallQuery"], limit=5)
                 hits = _extract_hits_from_search_response(search_resp, {})
 
+                phase_ref[0] = "answer"
                 t_ans = time.perf_counter()
                 ans_resp = await app.run_job(
                     "agentic_answer",
@@ -476,8 +559,6 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
                     query_time=f"{day_str}T23:30:00",
                 )
                 telemetry["answerMs"] += (time.perf_counter() - t_ans) * 1000.0
-                telemetry["llmCalls"] += 1
-                _collect_usage_from_resp(ans_resp, telemetry)
 
                 phase_outputs.append({
                     "phaseId": phase["id"],
@@ -525,16 +606,9 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
     )
     app = Application(**cfg)
     await app.start()
-    telemetry: dict[str, Any] = {
-        "llmCalls": 0,
-        "inputTokens": 0,
-        "outputTokens": 0,
-        "ingestMs": 0.0,
-        "dreamMs": 0.0,
-        "answerMs": 0.0,
-        "toolCalls": 0,
-        "toolNames": {},
-    }
+    telemetry = _empty_telemetry()
+    phase_ref = ["ingest"]
+    _install_llm_meter(app, telemetry, phase_ref)
     dream_triggers = 0
     answer = ""
     err = None
@@ -545,12 +619,11 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
         for sess in sessions:
             date_str = sess["dateStr"]
             if enable_dream and prev_date is not None and prev_date != date_str and prev_date not in dreamed_dates:
+                phase_ref[0] = "dream"
                 t_dr = time.perf_counter()
-                dr_resp = await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5)
+                await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5)
                 await app.run_job("index_update")
                 telemetry["dreamMs"] += (time.perf_counter() - t_dr) * 1000.0
-                telemetry["llmCalls"] += 1
-                _collect_usage_from_resp(dr_resp, telemetry)
                 dreamed_dates.add(prev_date)
                 dream_triggers += 1
 
@@ -563,8 +636,9 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
                 }
                 for m in sess["messages"]
             ]
+            phase_ref[0] = "ingest"
             t_ing = time.perf_counter()
-            am_resp = await app.run_job(
+            await app.run_job(
                 "auto_memory",
                 messages=formatted,
                 session_id=sess["sessionId"],
@@ -572,21 +646,20 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
             )
             await app.run_job("index_update")
             telemetry["ingestMs"] += (time.perf_counter() - t_ing) * 1000.0
-            telemetry["llmCalls"] += 1
-            _collect_usage_from_resp(am_resp, telemetry)
             prev_date = date_str
 
         if enable_dream and prev_date is not None and prev_date not in dreamed_dates:
+            phase_ref[0] = "dream"
             t_dr = time.perf_counter()
-            dr_resp = await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5)
+            await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5)
             await app.run_job("index_update")
             telemetry["dreamMs"] += (time.perf_counter() - t_dr) * 1000.0
-            telemetry["llmCalls"] += 1
-            _collect_usage_from_resp(dr_resp, telemetry)
+            dreamed_dates.add(prev_date)
             dream_triggers += 1
 
         await app.run_job("digest_update")
 
+        phase_ref[0] = "answer"
         t_ans = time.perf_counter()
         ans_resp = await app.run_job(
             "agentic_answer",
@@ -594,8 +667,6 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
             query_time=item["queryTimeIso"],
         )
         telemetry["answerMs"] += (time.perf_counter() - t_ans) * 1000.0
-        telemetry["llmCalls"] += 1
-        _collect_usage_from_resp(ans_resp, telemetry)
         answer = str(ans_resp.answer or "").strip()
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
