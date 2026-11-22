@@ -2640,4 +2640,17 @@ test('main session oversees background tasks across git repos while background t
   await app.ask('停掉甲仓库任务')
   assert.ok(await eventually(() => app.tasks().some(task => task.task.id === taskAId && task.status === 'stopped')))
   releaseHoldStop()
+
+  // Switching to a nested directory within the same Git repo after cross-project reads/reports must fork cleanly.
+  const nestedB = join(repoB, 'nested')
+  mkdirSync(nestedB)
+  const beforeNested = app.call<AgentInfo>('agent:info')
+  const forkedB = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', nestedB, { confirmed: true })
+  assert.equal(forkedB.ok, true)
+  assert.equal(forkedB.info.topicId, beforeNested.topicId)
+  assert.notEqual(forkedB.info.sessionId, beforeNested.sessionId)
+  const nestedGetOffset = app.model.requests.length
+  await app.ask('读取甲仓库任务详情')
+  const nestedGetResults = (app.model.requests.slice(nestedGetOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
+  assert.ok(nestedGetResults.some(result => JSON.stringify(result).includes(repoA)), JSON.stringify({ nestedGetResults }))
 })

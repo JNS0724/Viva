@@ -704,12 +704,22 @@ test('cross-project transfer, inherit and history use commit evidence and sessio
   assert.equal(await owner.handleHost('transfer', { args: [transferTarget, evidence, projectB, true, true] }), true)
   assert.equal(await owner.handleHost('inherit', { args: [origin.sessionId, inheritTarget, projectA, projectB, true, true] }), true)
   await owner.handleHost('useHistory', { args: [historyTarget, historyRow, true] })
+  // A same-project fork from a cross-project session inherits the flag atomically, while a cross-project fork stays rejected.
+  const sameProjectFork = await makeTarget()
+  const crossProjectFork = randomUUID()
+  assert.equal(await owner.handleHost('bindProject', { args: [crossProjectFork, projectA] }), true)
+  await owner.handleHost('recordSession', { args: [crossProjectFork] })
+  assert.equal(await owner.handleHost('inheritFork', { args: [transferTarget, crossProjectFork, projectB, projectA, true] }), false)
+  assert.equal(owner.coordination.sessionCrossProject(crossProjectFork), false)
+  assert.equal(await owner.handleHost('inheritFork', { args: [transferTarget, sameProjectFork, projectB, projectB, true] }), true)
+  assert.equal(owner.coordination.sessionCrossProject(sameProjectFork), true)
+  assert.deepEqual(owner.dispatch.snapshot(sameProjectFork).sources, [received.sourceId])
   await owner.close()
 
   const reopened = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
   defer(() => reopened.close())
   await reopened.recover()
-  for (const id of [transferTarget, inheritTarget, historyTarget]) {
+  for (const id of [transferTarget, inheritTarget, historyTarget, sameProjectFork]) {
     assert.deepEqual(reopened.dispatch.snapshot(id).sources, [received.sourceId])
     assert.equal(reopened.coordination.sessionCrossProject(id), true)
     assert.equal(await reopened.handleHost('allowsSession', { args: [id, projectB] }), true)
@@ -721,7 +731,7 @@ test('cross-project transfer, inherit and history use commit evidence and sessio
   const op = randomUUID()
   const { ticket } = await reopened.handleHost('prepareSourceChange', { operationId: op, conversation: origin.sessionId, ids: [received.sourceId] }) as { ticket: string }
   await reopened.handleHost('commitSourceChange', { operationId: op, ticket })
-  for (const id of [transferTarget, inheritTarget, historyTarget]) {
+  for (const id of [transferTarget, inheritTarget, historyTarget, sameProjectFork]) {
     assert.equal(await reopened.handleHost('allowsSession', { args: [id, projectB] }), false)
     assert.throws(() => reopened.acquireSend(randomUUID(), { session: id }, 'after withdrawal'))
   }
