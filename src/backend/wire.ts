@@ -33,13 +33,14 @@ export interface Mirror {
   inFront: boolean
   idleSeconds: number
   shellSettings: ShellSettings
+  composerTyping?: boolean
 }
 
 const shellSettings = z.object({
   shortcut: z.object({ keys: z.string(), held: z.boolean() }).nullable(),
   openAtLogin: z.object({ available: z.boolean() }),
 })
-export const MIRROR = z.object({ inFront: z.boolean(), idleSeconds: z.number().nonnegative(), shellSettings })
+export const MIRROR = z.object({ inFront: z.boolean(), idleSeconds: z.number().nonnegative(), shellSettings, composerTyping: z.boolean().optional() })
 export const START = z.object({
   type: z.literal('start'),
   token: z.string().min(32),

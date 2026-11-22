@@ -10,6 +10,8 @@ import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPu
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
 import type { StoredTask } from '../src/backend/task-store.ts'
+import type { Effects } from '../src/backend/effects.ts'
+import { REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, type ReportPayload } from '../src/backend/task-reports.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
 
 /**
@@ -45,6 +47,12 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   const db = openHistoryDb({ file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-')), 'history.db'), newId: () => `c${++n}` })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('做周报'), answer('写好了'), user('整理发布说明')])
   let kept = stored
+  const queuedReports: Array<{ key: string, payload: ReportPayload }> = []
+  const effects = {
+    queue: (_kind: string, key: string, payload: unknown) => { queuedReports.push({ key, payload: payload as ReportPayload }) },
+    cancel: () => {},
+    cancelStarting: () => {},
+  } as unknown as Effects
   /** The tasks' events (the runtime's apply), and how many snapshots went out while one was still being written. */
   const events: Array<{ kind: string, data: Record<string, unknown> }> = []
   let depth = 0
@@ -78,6 +86,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
     const tasks: TaskRuntime = createTaskRuntime({
       db,
       store,
+      effects,
       timers,
       apply: (kind, data, write) => {
         depth += 1
@@ -136,7 +145,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
   const first = register()
   const texts = (segmentId: string) => db.get(segmentId)?.messages.map(m => m.text)
   const runPending = () => { const runs = pending; pending = []; runs.forEach((run) => run()) }
-  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length }
+  return { db, ...first, relaunch: register, current: () => current, kept: () => kept, writes, events, writtenIn, pushedInside: () => pushedInside, texts, runPending, pending: () => pending.length, queuedReports }
 }
 
 test('what the task says is saved along the way, once however much it says meanwhile, and at once when it ends', async () => {
@@ -700,5 +709,57 @@ test('owner erasure during asynchronous task admission cannot recreate the task'
   await assert.rejects(pending)
   assert.equal(h.kept().length, 0)
   assert.equal(h.calls.filter(call => call[0] === 'promptTask').length, 0)
+  h.db.close()
+})
+
+test('long task output (>4000 chars) queues a head+tail report window, supports full segmented reads before and after relaunch, preserves error messages, and never resurrects erased previews', async () => {
+  const h = setup()
+  const { task } = await h.start('深度排查长日志')
+  const full = `${'H'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(4000)}${'T'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  h.says(task.id, full)
+  h.ends(task.id)
+
+  const queued = h.queuedReports.find(item => item.payload.taskId === task.id)
+  assert.ok(queued, 'report queued on task end')
+  assert.equal(queued.payload.outputTruncated, true)
+  assert.ok(queued.payload.output.startsWith('H'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'report keeps head even when full output exceeds 4000 chars')
+  assert.ok(queued.payload.output.endsWith('T'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'report keeps tail')
+  assert.match(queued.payload.output, /已省略中间 4000 字，全文共 6400 字/)
+
+  const mid = h.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: REPORT_OUTPUT_HEAD_CHARS, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(mid.resultPreview, 'M'.repeat(4000))
+  assert.equal(mid.outputTotalChars, full.length)
+  assert.equal(mid.nextOutputOffset, REPORT_OUTPUT_HEAD_CHARS + 4000)
+  assert.equal(mid.outputTruncated, true)
+
+  // After relaunch (detached from taskWords), full output is still read from historyDb.
+  const later = h.relaunch()
+  const afterRelaunch = later.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 0, outputLimit: 1000 }, { kind: 'main' }).task!
+  assert.equal(afterRelaunch.resultPreview, 'H'.repeat(1000))
+  assert.equal(afterRelaunch.outputTotalChars, full.length)
+  assert.equal(afterRelaunch.nextOutputOffset, 1000)
+
+  // Terminal error event.message is preserved instead of being overwritten by earlier transcript text.
+  const failed = await later.start('会报错的任务')
+  later.says(failed.task.id, '正在尝试请求…')
+  later.emit({ type: 'task_end', taskId: failed.task.id, stopReason: 'error', message: 'API 429 rate limit' })
+  const failedReport = h.queuedReports.find(item => item.payload.taskId === failed.task.id)
+  assert.equal(failedReport?.payload.output, 'API 429 rate limit')
+  const failedQuery = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(failedQuery.resultPreview, 'API 429 rate limit')
+
+  // Erased ended task preview (stored.resultPreview === '') must never resurrect transcript text from historyDb.
+  const stored = h.kept().find(entry => entry.id === task.id)!
+  const erasedCheck = createTaskRuntime({
+    db: h.db,
+    store: { list: () => [{ ...stored, resultPreview: '', resultKey: undefined }], add: () => {}, remove: () => {} },
+    current: () => h.current(),
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
+  })
+  const erasedQuery = erasedCheck.agent.query({ op: 'get', taskId: stored.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(erasedQuery.resultPreview, '')
+  assert.equal(erasedQuery.outputTotalChars, 0)
+
   h.db.close()
 })

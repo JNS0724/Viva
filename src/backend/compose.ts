@@ -862,6 +862,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     eligible: eligibleTaskReport,
     conversation: async () => (!dsh.current || memoryBusy() || await staleMemorySession(dsh.current.currentSession())
       || sessions.isChanging() || dsh.current.isSwitching() || dsh.isQuitting() ? 'away' : turn.active ? 'busy' : 'idle'),
+    typing: () => Boolean(host.window.composerTyping?.()),
+    wakeLater: (ms) => scheduleReportWake(ms),
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
     opening: id => foregroundRequests.openingReports().includes(id),
@@ -921,7 +923,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     beforeRecord: (conversationId, reportId) => foregroundHistory ? foregroundHistory.beforeReportRecord(conversationId, reportId) : { ready: true },
   })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
-  const wakeEffects = () => { void effects?.wake() }
+  let reportWakeTimer: ReturnType<typeof setTimeout> | null = null
+  const clearReportWake = () => { if (reportWakeTimer) { clearTimeout(reportWakeTimer); reportWakeTimer = null } }
+  const wakeEffects = () => { clearReportWake(); void effects?.wake() }
+  function scheduleReportWake(ms: number) {
+    clearReportWake()
+    reportWakeTimer = setTimeout(() => { reportWakeTimer = null; void effects?.wake() }, Math.max(1, ms))
+    reportWakeTimer.unref?.()
+  }
 
   /** Only the app's selected provider credentials reach dsh; inherited endpoints remain isolated. */
   function dshSettings(config: Config) {
@@ -1998,10 +2007,12 @@ ${question}` : question
     },
     /** Quitting stops both supervised processes. A regular dsh restart leaves the owner available. */
     async stop() {
+      clearReportWake()
       await dsh.stopWithin()
       if (dsh.isQuitting()) await memoryOwner.close()
     },
-    close,
+    wakeReports: wakeEffects,
+    close: () => { clearReportWake(); close() },
   }
 }
 

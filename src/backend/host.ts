@@ -56,6 +56,8 @@ export interface HostCapabilities {
     /** The language for every window (language:changed). */
     broadcastLanguage(state: unknown): void
     inFront(): boolean
+    /** Whether the user is actively typing in a composer (main window or desktop island). */
+    composerTyping?(): boolean
     /** The tray's count of what is new in 动态. */
     setPending(count: number): void
     /** Native words (the tray menu) after the language changed. */

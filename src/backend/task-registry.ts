@@ -7,7 +7,9 @@ export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string }
 export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string }
 export type TaskScope = { kind: 'main', cwd?: string } | { taskId: string }
-export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, cwd?: string, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean }
+export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, cwd?: string, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean, outputOffset?: number, outputLimit?: number }
+export const DEFAULT_OUTPUT_LIMIT = 4000
+export const MAX_OUTPUT_LIMIT = 4000
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
 const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted'])
 /** How a task's turn ended (acp-bridge task_end's stopReason), as its status. */
@@ -17,8 +19,12 @@ const text = (value: unknown) => typeof value === 'string' ? value : ''
 const copy = <K, V>(map: Map<K, V> | undefined): Map<K, V> | undefined => map ? new Map(map) : undefined
 const directory = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
 
-/** Main-process projection: no renderer round trip and no disk read on a tool query. */
-export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskSnapshot) => {} } = {}) {
+/** Main-process projection: no renderer round trip and no disk read on a tool query unless full output is requested. */
+export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskSnapshot) => {}, readOutput }: {
+  now?: () => number
+  changed?: (snapshot: TaskSnapshot) => void
+  readOutput?: (taskId: string, preview: string) => string | null | undefined
+} = {}) {
   const tasks = new Map<string, Task>()
   const waits = new Map<string, Map<string, 'permission' | 'answer'>>()
   const tools = new Map<string, Map<string, string>>()
@@ -133,7 +139,29 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     if (request.op === 'get') {
       const task = tasks.get(request.taskId ?? '')
       if (!task || !visible(task)) throw new Error(t("main.task-registry.task.does.not.exist.or.is.outside"))
-      return { observedAt: now(), task: { ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), resultPreview: request.includeOutput ? task.resultPreview : undefined,
+      let outputFields: {
+        resultPreview: string | undefined
+        outputOffset?: number
+        outputTotalChars?: number
+        nextOutputOffset?: number | null
+        outputTruncated?: boolean
+      } = { resultPreview: undefined }
+      if (request.includeOutput) {
+        const full = readOutput?.(task.taskId, task.resultPreview) ?? task.resultPreview
+        const total = full.length
+        const start = Math.min(request.outputOffset ?? 0, total)
+        const limit = Math.min(request.outputLimit ?? DEFAULT_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT)
+        const slice = full.slice(start, start + limit)
+        const nextOutputOffset = start + slice.length < total ? start + slice.length : null
+        outputFields = {
+          resultPreview: slice,
+          outputOffset: start,
+          outputTotalChars: total,
+          nextOutputOffset,
+          outputTruncated: start > 0 || nextOutputOffset !== null,
+        }
+      }
+      return { observedAt: now(), task: { ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), ...outputFields,
         ...(request.includeRequest ? { request: task.request } : {}) } }
     }
     const list = [...tasks.values()].filter(task => visible(task)
@@ -172,7 +200,10 @@ export function parseTaskQuery(value: unknown): TaskQuery {
   if (raw.status !== undefined && !statuses.has(text(raw.status))) throw new Error(t("main.task-registry.invalid.status"))
   if (raw.cwd !== undefined && (typeof raw.cwd !== 'string' || !raw.cwd.trim() || raw.cwd.length > 4096)) throw new Error(t("main.task-registry.invalid", { key: 'cwd' }))
   for (const key of ['limit', 'offset'] as const) if (raw[key] !== undefined && (!Number.isSafeInteger(raw[key]) || Number(raw[key]) < (key === 'limit' ? 1 : 0))) throw new Error(t("main.task-registry.invalid", { key: key }))
+  for (const key of ['outputLimit', 'outputOffset'] as const) if (raw[key] !== undefined && (!Number.isSafeInteger(raw[key]) || Number(raw[key]) < (key === 'outputLimit' ? 1 : 0))) throw new Error(t("main.task-registry.invalid", { key: key }))
   for (const key of ['includeRequest', 'includeOutput'] as const) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw new Error(t("main.task-registry.invalid", { key: key }))
   return { op: raw.op, taskId: text(raw.taskId), status: raw.status as TaskStatus | undefined, ...(raw.cwd !== undefined ? { cwd: raw.cwd.trim() } : {}),
-    limit: Math.min(Number(raw.limit ?? 10), 30), offset: Number(raw.offset ?? 0), includeRequest: raw.includeRequest === true, includeOutput: raw.includeOutput === true }
+    limit: Math.min(Number(raw.limit ?? 10), 30), offset: Number(raw.offset ?? 0), includeRequest: raw.includeRequest === true, includeOutput: raw.includeOutput === true,
+    ...(raw.outputOffset !== undefined ? { outputOffset: Number(raw.outputOffset) } : {}),
+    ...(raw.outputLimit !== undefined ? { outputLimit: Math.min(Number(raw.outputLimit), MAX_OUTPUT_LIMIT) } : {}) }
 }

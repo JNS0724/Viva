@@ -5,7 +5,7 @@ import type { Conversation } from './history-db.ts'
 import { autoTitle, type StoredMessage } from './history-schema.ts'
 import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
-import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, type ReportPayload } from './task-reports.ts'
+import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, windowReportOutput, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
 import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
@@ -71,6 +71,24 @@ const summaryOf = ({ id, segmentId, title, words }: StoredTask) => ({ id, segmen
 const titleOf = (words: string) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
+}
+/** Latest run's full assistant text (messages after the last user prompt), preserving both head and tail. */
+function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknown }>): string {
+  let start = 0
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') { start = i + 1; break }
+  }
+  return messages.slice(start)
+    .filter(message => message.role === 'assistant' && typeof message.text === 'string' && message.text.length > 0)
+    .map(message => String(message.text))
+    .join('\n')
+}
+/** Confirm `full` actually corresponds to `preview` so terminal error messages from `task_end` are never masked by earlier transcript text. */
+function matchesPreview(full: string, preview: string): boolean {
+  if (!preview) return true
+  const tailLine = preview.split('\n').map(line => line.trim()).filter(Boolean).at(-1) ?? preview
+  const sample = tailLine.slice(-Math.min(tailLine.length, 64))
+  return full.includes(sample)
 }
 
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
@@ -151,7 +169,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     seqs.set(taskId, taskSeq)
     publish({ ...event, type: String(event.type), taskId, runId, taskSeq })
   }
-  const registry = createTaskRegistry({ now, changed: (snapshot) => {
+  const registry = createTaskRegistry({ now, readOutput: (taskId, preview) => fullOutputOf(taskId, preview), changed: (snapshot) => {
     queued = [...queued, snapshot]
     ended(snapshot)
     if (depth === 0) pushQueued()
@@ -215,6 +233,19 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     ...timers, persist,
     onError: (err) => emitDiagnosticFailure('task', err, { stage: 'checkpoint' }),
   })
+
+  function fullOutputOf(taskId: string, preview: string): string | null {
+    if (revoked.has(taskId)) return ''
+    const stored = store.list().find(item => item.id === taskId)
+    const entry = stored ?? tasks.get(taskId)
+    if (!entry) return null
+    if (stored && isEnded(stored) && stored.resultPreview === '') return ''
+    const held = attached.has(taskId)
+    const messages = (held ? taskWords.current(taskId) : null) ?? db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? []
+    const text = latestRunOutput(messages)
+    if (!text) return null
+    return matchesPreview(text, preview) ? text : null
+  }
 
   function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
     const message: StoredMessage = { role: 'user', text, receipt: null }
@@ -354,8 +385,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
+    const windowedOutput = windowReportOutput(fullOutputOf(snapshot.taskId, snapshot.resultPreview) ?? snapshot.resultPreview)
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
-      host: typeof entry.next === 'string' ? entry.next : null, output: snapshot.resultPreview, token: randomUUID().replaceAll('-', ''),
+      host: typeof entry.next === 'string' ? entry.next : null, output: windowedOutput.text,
+      ...(windowedOutput.truncated ? { outputTruncated: true } : {}), token: randomUUID().replaceAll('-', ''),
       // Its background, for a note given while the conversation is on another topic.
       request: typeof entry.words === 'string' ? entry.words.slice(0, REQUEST_CHARS) : '',
       topic: titleAllowed ? host?.conversation.title || null : null, ...(memory ? { memory } : {}),

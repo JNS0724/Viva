@@ -329,7 +329,7 @@ function startBackend(onExit: (code: number | null, signal: NodeJS.Signals | nul
       packaged: app.isPackaged,
       automation: automationMode,
       locale: app.getLocale(),
-      mirror: { inFront: windowInFront(), idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings() },
+      mirror: { inFront: windowInFront(), idleSeconds: powerMonitor.getSystemIdleTime(), shellSettings: shellSettings(), composerTyping: false },
     },
   })
 }
@@ -591,6 +591,7 @@ app.whenReady().then(async () => {
   registerShellSettingsIpc()
   const islandDrafts = registerIslandIpc(ipcMain, { desk: () => desk, window: () => win, showWindow, Menu,
     preview: () => deskPreview,
+    onTypingChange: composerTyping => mirror({ composerTyping }),
     keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
     switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
   ownDraft = islandDrafts.ownDraft

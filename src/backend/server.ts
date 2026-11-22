@@ -69,7 +69,12 @@ async function start(message: StartMessage) {
         if (typeof kind !== 'string' || !SHELL_SIGNALS.has(kind)) throw new Error(`the shell may not send signal ${String(kind)}`)
         backend.signal({ kind } as Parameters<typeof backend.signal>[0])
       },
-      mirror: (update) => remote.mirror(MIRROR.partial().parse(update)),
+      mirror: (update) => {
+        const parsed = MIRROR.partial().parse(update)
+        const wasTyping = Boolean(remote.host.window.composerTyping?.())
+        remote.mirror(parsed)
+        if (wasTyping && parsed.composerTyping === false) backend.wakeReports()
+      },
       'settings-view': () => backend.settingsView(),
       'preferences-get': () => backend.preferences().get(),
       'preferences-set': (key, value) => {
