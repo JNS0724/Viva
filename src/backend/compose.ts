@@ -1934,7 +1934,7 @@ ${question}` : question
     scheduleRuns?.close()
     feedSourceRuns?.close()
     foregroundHistory?.flush()
-    foregroundHistory?.reset()
+    foregroundHistory?.close()
     taskRuntime?.dispose()
     historyDb?.close()
     appDb?.close()

@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test, type TestContext } from 'node:test'
 import { createForegroundHistory } from '../src/backend/foreground-history.ts'
 import { openHistoryDb, type Conversation } from '../src/backend/history-db.ts'
+import { HistoryValidationError } from '../src/backend/history-schema.ts'
 import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../src/shared/renderer-sync.ts'
 import { SILENT_REPLY } from '../src/shared/task-report.ts'
@@ -859,4 +860,150 @@ test('evicting >1024 durable reasoning settles drops oldest durable thoughts wit
   const snap = stream.snapshot(current.id, context)
   assert.equal(snap.replay[0]?.type, 'turn_started', 'non-durable turn_started is preserved while oldest durable thoughts evict')
   assert.equal(snap.replay.length, 1024)
+})
+
+test('transient write failure on final turn_end retries automatically with backoff and cancels timer on success or close', async t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-backoff', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-backoff' }
+  let attempts = 0
+  const checkpoints: Array<{ id: string, cursor?: number }> = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops, opts) => {
+      attempts += 1
+      if (attempts <= 3) throw new Error('sqlite busy')
+      return history.commit(conv, ops, opts)
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, cursor) => { checkpoints.push({ id, cursor }); stream.checkpoint(id, cursor) },
+    onError: () => {},
+    retryBaseDelayMs: 10,
+    retryMaxDelayMs: 40,
+  })
+  t.after(() => writer.close())
+
+  // Simulate a complete turn whose final turn_end commit fails transiently, followed by zero user activity.
+  history.bindGeneratedCopy('s-backoff', 'k-backoff', 'assistant', '延迟重试落盘回复', [{ sources: [], fileRanges: [] }])
+  const events = [
+    { type: 'turn_started', by: 'user', context },
+    { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-backoff', kind: 'settle', blocks: [{ type: 'text', text: '延迟重试落盘回复' }] } },
+    { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context },
+  ]
+  for (const event of events) { stream.send(event); writer.receive(event) }
+  assert.equal(writer.hasPendingWrites(), true)
+  assert.equal(attempts, 2, 'settle + turn_end both failed transiently while SQLite was busy')
+  assert.equal(checkpoints.length, 0)
+
+  // Wait for automatic backoff retry without calling retryPending() or flush().
+  const deadline = Date.now() + 1000
+  while (writer.hasPendingWrites() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(writer.hasPendingWrites(), false, 'automatic backoff retry drains pending writes while idle')
+  assert.equal(attempts, 4, 'multi-step backoff retries commit the queued settle + receipt automatically')
+  assert.equal(checkpoints.length, 1, 'checkpoint advances once the automatic retry commits')
+  const stored = history.get(current.id)!.messages
+  assert.equal(stored.length, 1)
+  assert.equal(stored[0]?.text, '延迟重试落盘回复')
+  assert.equal(stored[0]?.receipt?.stopReason, 'end_turn')
+
+  // Verify close() cancels any pending retry timer so no further attempts fire after close.
+  let postCloseAttempts = 0
+  const closingWriter = createForegroundHistory({
+    commit: () => { postCloseAttempts += 1; throw new Error('still busy') },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    onError: () => {},
+    retryBaseDelayMs: 15,
+    retryMaxDelayMs: 30,
+  })
+  closingWriter.userPrompt({ text: '关闭前失败' })
+  assert.equal(postCloseAttempts, 1)
+  closingWriter.close()
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(postCloseAttempts, 1, 'close() cancels scheduled retry timer')
+})
+
+test('HistoryValidationError isolates only invalid ops while preserving carried and sibling valid ops in order', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-iso', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-iso' }
+  let failTransient = true
+  let transientOnValid3 = false
+  const errors: unknown[] = []
+  const checkpoints: string[] = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops, opts) => {
+      if (failTransient) throw new Error('sqlite busy')
+      if (transientOnValid3 && ops.length === 1 && ops[0]?.kind === 'append_user' && ops[0].message.text.includes('有效回答3')) {
+        transientOnValid3 = false
+        throw new Error('sqlite busy mid-isolation')
+      }
+      return history.commit(conv, ops, opts)
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: id => { checkpoints.push(id); stream.checkpoint(id) },
+    onError: err => { errors.push(err) },
+    retryBaseDelayMs: 1000,
+  })
+  t.after(() => writer.close())
+
+  // 1. Queue a valid userPrompt behind a transient SQLite failure
+  writer.userPrompt({ text: '先前排队的问题' })
+  assert.equal(writer.hasPendingWrites(), true)
+  assert.equal(history.get(current.id), null)
+
+  // 2. DB recovers, and a question_answered batch arrives with [valid1, oversized invalid2, valid3]
+  //    plus a transient hiccup on valid3 mid-isolation to exercise partial tail queueing too.
+  failTransient = false
+  transientOnValid3 = true
+  const qEvent = {
+    type: 'question', context, questionId: 'q-iso',
+    questions: [
+      { id: 'q1', header: 'Q1', question: '第一题' },
+      { id: 'q2', header: 'Q2', question: '第二题' },
+      { id: 'q3', header: 'Q3', question: '第三题' },
+    ],
+  }
+  const ansEvent = {
+    type: 'question_answered', context, questionId: 'q-iso',
+    sourceIds: { q1: randomUUID(), q2: randomUUID(), q3: randomUUID() },
+    answers: [
+      { id: 'q1', selected: ['有效回答1'] },
+      { id: 'q2', selected: ['超长'.repeat(120_000)] },
+      { id: 'q3', selected: ['有效回答3'] },
+    ],
+  }
+  for (const event of [qEvent, ansEvent]) { stream.send(event); writer.receive(event) }
+
+  // Carried userPrompt + valid1 committed immediately; invalid2 isolated; only valid3 stays queued for retry!
+  assert.deepEqual(
+    history.get(current.id)!.messages.map(m => m.text),
+    ['先前排队的问题', '有效回答1'],
+  )
+  assert.equal(writer.hasPendingWrites(), true, 'only the unexecuted tail after mid-isolation transient error remains queued')
+
+  // Retry commits ONLY valid3 without duplicating carried userPrompt or valid1, and keeps checkpoint pinned behind the gap
+  assert.equal(writer.retryPending(), true)
+  assert.equal(writer.hasPendingWrites(), false)
+  assert.deepEqual(
+    history.get(current.id)!.messages.map(m => m.text),
+    ['先前排队的问题', '有效回答1', '有效回答3'],
+    'carried and sibling valid ops persist in exact order while invalid op is isolated',
+  )
+  writer.receive({ type: 'turn_end', stopReason: 'end_turn', finalReply: true, context })
+  assert.equal(checkpoints.length, 0, 'checkpoint stays pinned behind the isolated validation gap')
+  assert.equal(errors.some(err => err instanceof HistoryValidationError), true)
 })

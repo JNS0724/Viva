@@ -26,6 +26,8 @@ export interface ForegroundHistoryDeps {
   delegatedDuringTurn?: (startedAt: number, endedAt: number) => boolean
   onError?: (error: unknown) => void
   now?: () => number
+  retryBaseDelayMs?: number
+  retryMaxDelayMs?: number
 }
 
 type RecordValue = Readonly<Record<string, unknown>>
@@ -127,6 +129,8 @@ export function createForegroundHistory({
   delegatedDuringTurn,
   onError = () => {},
   now = Date.now,
+  retryBaseDelayMs = 250,
+  retryMaxDelayMs = 15_000,
 }: ForegroundHistoryDeps) {
   let active: ActiveTurn | null = null
   const pendingWrites = new Map<string, PendingWrite>()
@@ -134,6 +138,34 @@ export function createForegroundHistory({
   const unpersistedGap = new Set<string>()
   const pendingQuestions = new Map<string, Asked>()
   let retrying = false
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+  let retryAttempt = 0
+  let disposed = false
+
+  function cancelRetry() {
+    if (retryTimer !== null) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
+    retryAttempt = 0
+  }
+
+  function scheduleRetry() {
+    if (disposed || pendingWrites.size === 0 || retryTimer !== null) return
+    const delay = Math.min(retryMaxDelayMs, retryBaseDelayMs * 2 ** Math.min(retryAttempt, 10))
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      if (disposed || pendingWrites.size === 0) {
+        retryAttempt = 0
+        return
+      }
+      retryAttempt += 1
+      retryPending()
+      if (pendingWrites.size === 0) retryAttempt = 0
+      else scheduleRetry()
+    }, delay)
+    retryTimer.unref?.()
+  }
 
   const advanceCheckpoint = (conversationId: string, upToCursor?: number) => {
     if (!unpersistedGap.has(conversationId)) checkpoint?.(conversationId, upToCursor)
@@ -213,6 +245,105 @@ export function createForegroundHistory({
       questionIds,
       streamKeys: mergeStreamKeys(prior?.streamKeys, flags.streamKeys),
     })
+    scheduleRetry()
+  }
+
+  interface CommitBatchResult {
+    saved: Conversation | null
+    remainingOps: HistoryMessageMutation[]
+    failedOps: HistoryMessageMutation[]
+    hadValidationError: boolean
+    transientError: unknown
+  }
+
+  function commitWithIsolation(
+    target: Conversation,
+    ops: readonly HistoryMessageMutation[],
+    session: string | null,
+  ): CommitBatchResult {
+    try {
+      const saved = commit(target, ops, { sourceSession: session })
+      return { saved, remainingOps: [], failedOps: [], hadValidationError: false, transientError: null }
+    } catch (error) {
+      if (!(error instanceof HistoryValidationError)) {
+        return { saved: null, remainingOps: [...ops], failedOps: [], hadValidationError: false, transientError: error }
+      }
+      if (ops.length <= 1) {
+        onError(error)
+        return { saved: null, remainingOps: [], failedOps: [...ops], hadValidationError: true, transientError: null }
+      }
+      // Batch transaction rolled back on HistoryValidationError: replay ops individually in order
+      // so valid carried and sibling mutations still persist while only invalid payloads are isolated.
+      let saved: Conversation | null = null
+      let cur = target
+      const failedOps: HistoryMessageMutation[] = []
+      for (let i = 0; i < ops.length; i += 1) {
+        const op = ops[i]!
+        try {
+          cur = commit(cur, [op], { sourceSession: session })
+          saved = cur
+        } catch (opError) {
+          if (opError instanceof HistoryValidationError) {
+            failedOps.push(op)
+            onError(opError)
+            continue
+          }
+          return { saved, remainingOps: ops.slice(i), failedOps, hadValidationError: true, transientError: opError }
+        }
+      }
+      return { saved, remainingOps: [], failedOps, hadValidationError: true, transientError: null }
+    }
+  }
+
+  function applyCommitResult(
+    id: string,
+    target: Conversation,
+    session: string | null,
+    result: CommitBatchResult,
+    meta: {
+      checkpointBoundary?: StreamBoundary
+      plainBoundary?: StreamBoundary
+      questionIds: string[]
+      streamKeys: Array<{ key: string, cursor?: number }>
+    },
+  ): { ok: boolean, saved: Conversation | null } {
+    if (result.saved && current().id === result.saved.id) setCurrent(result.saved)
+    if (result.hadValidationError) unpersistedGap.add(id)
+
+    const plainFailed = result.failedOps.some(op => op.kind === 'upsert_assistant' && !op.message.key)
+    const failedStreamKeys = new Set<string>(result.failedOps.flatMap(op => (
+      op.kind === 'upsert_assistant' && op.message.key ? [op.message.key]
+        : op.kind === 'remove_stream' ? [op.key]
+        : []
+    )))
+    const userFailed = result.failedOps.some(op => op.kind === 'append_user')
+
+    if (result.remainingOps.length > 0) {
+      pendingWrites.set(id, {
+        conversation: result.saved ?? target,
+        ops: result.remainingOps,
+        session,
+        checkpointPending: meta.checkpointBoundary,
+        plainPersistedPending: plainFailed ? undefined : meta.plainBoundary,
+        questionIds: userFailed ? [] : meta.questionIds,
+        streamKeys: meta.streamKeys.filter(item => !failedStreamKeys.has(item.key)),
+      })
+      if (result.transientError !== null) onError(result.transientError)
+      scheduleRetry()
+      return { ok: false, saved: result.saved }
+    }
+
+    pendingWrites.delete(id)
+    if (meta.plainBoundary && !plainFailed) markPlainPersisted?.(id, meta.plainBoundary.cursor)
+    for (const item of meta.streamKeys) {
+      if (!failedStreamKeys.has(item.key)) markStreamPersisted?.(id, item.key, item.cursor)
+    }
+    if (!userFailed) {
+      for (const questionId of meta.questionIds) markQuestionPersisted?.(id, questionId)
+    }
+    if (meta.checkpointBoundary) advanceCheckpoint(id, meta.checkpointBoundary.cursor)
+    if (pendingWrites.size === 0) cancelRetry()
+    return { ok: !result.hadValidationError, saved: result.saved }
   }
 
   function retryPending(excludeId?: string): boolean {
@@ -229,22 +360,16 @@ export function createForegroundHistory({
       }
       for (const [id, entry] of [...pendingWrites]) {
         if (id === excludeId) continue
-        try {
-          const saved = commit(entry.conversation, entry.ops, { sourceSession: entry.session })
-          pendingWrites.delete(id)
-          if (current().id === saved.id) setCurrent(saved)
-          if (entry.plainPersistedPending) markPlainPersisted?.(saved.id, entry.plainPersistedPending.cursor)
-          for (const item of entry.streamKeys) markStreamPersisted?.(saved.id, item.key, item.cursor)
-          for (const questionId of entry.questionIds) markQuestionPersisted?.(saved.id, questionId)
-          if (entry.checkpointPending) advanceCheckpoint(saved.id, entry.checkpointPending.cursor)
-        } catch (error) {
-          if (error instanceof HistoryValidationError) {
-            pendingWrites.delete(id)
-            unpersistedGap.add(id)
-          }
-          onError(error)
-        }
+        const result = commitWithIsolation(entry.conversation, entry.ops, entry.session)
+        applyCommitResult(id, entry.conversation, entry.session, result, {
+          checkpointBoundary: entry.checkpointPending,
+          plainBoundary: entry.plainPersistedPending,
+          questionIds: entry.questionIds,
+          streamKeys: entry.streamKeys,
+        })
       }
+      if (pendingWrites.size === 0) cancelRetry()
+      else scheduleRetry()
       return pendingWrites.size === 0
     } finally {
       retrying = false
@@ -278,6 +403,7 @@ export function createForegroundHistory({
       for (const item of allStreamKeys) markStreamPersisted?.(base.id, item.key, item.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(base.id, questionId)
       if (checkpointBoundary) advanceCheckpoint(base.id, checkpointBoundary.cursor)
+      if (pendingWrites.size === 0) cancelRetry()
       return { ok: true, saved: null }
     }
     const { mode, model } = agentInfo()
@@ -287,34 +413,13 @@ export function createForegroundHistory({
       : carried?.session !== undefined
         ? carried.session
         : sourceSession()
-    try {
-      const saved = commit(target, allOps, { sourceSession: session })
-      pendingWrites.delete(base.id)
-      if (current().id === saved.id) setCurrent(saved)
-      if (plainBoundary) markPlainPersisted?.(saved.id, plainBoundary.cursor)
-      for (const item of allStreamKeys) markStreamPersisted?.(saved.id, item.key, item.cursor)
-      for (const questionId of allQuestionIds) markQuestionPersisted?.(saved.id, questionId)
-      if (checkpointBoundary) advanceCheckpoint(saved.id, checkpointBoundary.cursor)
-      return { ok: true, saved }
-    } catch (error) {
-      // Permanent validation errors must not poison pendingWrites and block subsequent turns in this conversation;
-      // record an unpersisted gap so later turns still commit to SQLite without advancing checkpoint over lost data.
-      if (error instanceof HistoryValidationError) {
-        unpersistedGap.add(base.id)
-      } else {
-        pendingWrites.set(base.id, {
-          conversation: target,
-          ops: allOps,
-          session,
-          checkpointPending: checkpointBoundary,
-          plainPersistedPending: plainBoundary,
-          questionIds: allQuestionIds,
-          streamKeys: allStreamKeys,
-        })
-      }
-      onError(error)
-      return { ok: false, saved: null }
-    }
+    const result = commitWithIsolation(target, allOps, session)
+    return applyCommitResult(base.id, target, session, result, {
+      checkpointBoundary,
+      plainBoundary,
+      questionIds: allQuestionIds,
+      streamKeys: allStreamKeys,
+    })
   }
 
   function userPrompt({ text, images, sourceId, advanceCheckpoint = false }: {
@@ -595,6 +700,12 @@ export function createForegroundHistory({
     pendingQuestions.clear()
   }
 
-  return { userPrompt, userSteer, receive, flush, retryPending, reset, hasPendingWrites: () => pendingWrites.size > 0 }
+  function close() {
+    disposed = true
+    cancelRetry()
+    reset()
+  }
+
+  return { userPrompt, userSteer, receive, flush, retryPending, reset, close, hasPendingWrites: () => pendingWrites.size > 0 }
 }
 export type ForegroundHistory = ReturnType<typeof createForegroundHistory>
