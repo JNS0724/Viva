@@ -1091,3 +1091,104 @@ test('single long viva_stream overflowing before settle clears its loss once per
   assert.equal(snapAfterHuge.replay[0]?.type, 'turn_started')
   assert.equal(history.get(current.id)!.messages.at(-1)?.text.length, hugeText.length)
 })
+
+test('report_delivered flushes and closes buffered plain assistant text before recording report, matching renderer', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: null, mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-rep-split' }
+  const committedTexts: string[] = []
+  const attachedReceipts: Array<string | undefined> = []
+  const writer = createForegroundHistory({
+    commit: (conv, ops) => {
+      for (const op of ops) {
+        if (op.kind === 'upsert_assistant') committedTexts.push(op.message.text)
+        if (op.kind === 'attach_receipt') attachedReceipts.push(op.receipt.stopReason)
+      }
+      return history.commit(conv, ops, { sourceSession: null })
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => null,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markPlainPersisted: (id, upToCursor) => stream.markPlainPersisted(id, upToCursor),
+    onError: err => { throw err },
+  })
+  t.after(() => writer.close())
+
+  // 1. Assistant streams plain text before report arrives
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  const chunk1 = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报前的第一段' } } }
+  for (const event of [startEvent, chunk1]) { stream.send(event); writer.receive(event) }
+
+  // 2. report_delivered arrives (e.g. written -> drawOn): must persist & close first segment BEFORE addRecord runs
+  const report1 = {
+    type: 'report_delivered', conversationId: current.id, sessionId: 's-rep-split',
+    reportId: 'rep-1', text: '后台任务完成', at: 500, context,
+  }
+  stream.send(report1)
+  writer.receive(report1)
+  assert.deepEqual(committedTexts, ['回报前的第一段'])
+  assert.equal(history.get(current.id)!.messages.length, 1)
+
+  // Mid-turn reload right after report_delivered does not replay already-persisted first segment
+  const replayAfterReport1 = stream.snapshot(current.id, context).replay as Array<Record<string, unknown>>
+  assert.equal(
+    replayAfterReport1.some(e => e.type === 'update' && (e.update as Record<string, unknown>)?.sessionUpdate === 'agent_message_chunk'),
+    false,
+    'persisted plain chunk before report is reclaimed from replay',
+  )
+
+  // 3. Assistant starts streaming second segment; then read() records rep-1 and emits duplicate report_delivered(rep-1)
+  const chunk2a = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报后前半' } } }
+  stream.send(chunk2a)
+  writer.receive(chunk2a)
+  writer.beforeReportRecord(current.id, 'rep-1')
+  history.addRecord({ conversationId: current.id, reportId: 'rep-1', at: 500, text: '后台任务完成' })
+  stream.send(report1)
+  writer.receive(report1) // duplicate reportId must NOT split the open second segment!
+  const chunk2b = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报后后半' } } }
+  stream.send(chunk2b)
+  writer.receive(chunk2b)
+
+  // 4. Direct read() path without prior written(): beforeReportRecord flushes second segment before addRecord
+  writer.beforeReportRecord(current.id, 'rep-2')
+  history.addRecord({ conversationId: current.id, reportId: 'rep-2', at: 600, text: '第二条后台汇报' })
+  const report2 = {
+    type: 'report_delivered', conversationId: current.id, sessionId: 's-rep-split',
+    reportId: 'rep-2', text: '第二条后台汇报', at: 600, context,
+  }
+  stream.send(report2)
+  writer.receive(report2)
+  const chunk3 = { type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '最终收尾段' } } }
+  const endEvent = { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context }
+  for (const event of [chunk3, endEvent]) { stream.send(event); writer.receive(event) }
+
+  // Compare persisted SQLite message count + committed segments/receipt + report records against renderer reducer output
+  const stored = history.get(current.id)!
+  assert.deepEqual(committedTexts, ['回报前的第一段', '回报后前半回报后后半', '最终收尾段'])
+  assert.deepEqual(attachedReceipts, ['end_turn'])
+  assert.equal(stored.messages.length, 3)
+  assert.deepEqual(stored.records.map(r => ({ reportId: r.reportId, after: r.after })), [
+    { reportId: 'rep-1', after: 1 },
+    { reportId: 'rep-2', after: 2 },
+  ])
+
+  let viewState: State = { ...initialState, conversationId: current.id, info: { ...initialState.info, sessionId: 's-rep-split' } }
+  viewState = reduce(viewState, { type: 'agent_turn_started', by: 'user', at: 100 })
+  viewState = reduce(viewState, { type: 'acp_update', update: chunk1.update as ConversationUpdate, at: 110 })
+  viewState = reduce(viewState, { type: 'report_delivered', conversationId: current.id, sessionId: 's-rep-split', reportId: 'rep-1', text: '后台任务完成', at: 500 })
+  viewState = reduce(viewState, { type: 'acp_update', update: chunk2a.update as ConversationUpdate, at: 510 })
+  viewState = reduce(viewState, { type: 'report_delivered', conversationId: current.id, sessionId: 's-rep-split', reportId: 'rep-1', text: '后台任务完成', at: 500 })
+  viewState = reduce(viewState, { type: 'acp_update', update: chunk2b.update as ConversationUpdate, at: 520 })
+  viewState = reduce(viewState, { type: 'report_delivered', conversationId: current.id, sessionId: 's-rep-split', reportId: 'rep-2', text: '第二条后台汇报', at: 600 })
+  viewState = reduce(viewState, { type: 'acp_update', update: chunk3.update as ConversationUpdate, at: 610 })
+  viewState = reduce(viewState, { type: 'turn_end', stopReason: 'end_turn', finalReply: true, at: 700 })
+  assert.deepEqual(viewState.messages.map(m => m.text), committedTexts)
+  assert.deepEqual(
+    viewState.records.map(r => ({ reportId: r.reportId, after: r.after })),
+    stored.records.map(r => ({ reportId: r.reportId, after: r.after })),
+  )
+})

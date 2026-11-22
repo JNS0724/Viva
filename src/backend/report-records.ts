@@ -50,10 +50,12 @@ export interface ReportRecordsDeps {
   /** The conversation on screen. */
   current: () => Conversation
   show: (event: RecordShown) => void
+  /** Flush any in-memory foreground text before a report record counts persisted messages. */
+  beforeRecord?: (conversationId: string, reportId: string) => void
   now?: () => number
 }
 
-export function createReportRecords({ history, effects, apply, current, show, now = Date.now }: ReportRecordsDeps) {
+export function createReportRecords({ history, effects, apply, current, show, beforeRecord, now = Date.now }: ReportRecordsDeps) {
   /** The conversation of the session a report went to: the one on screen first (it may not be stored yet). */
   function targetOf(effect: Effect<ReportPayload>): Conversation | null {
     const session = effect.payload.deliveredTo
@@ -115,6 +117,7 @@ export function createReportRecords({ history, effects, apply, current, show, no
       return
     }
     const at = timeOf(effect)
+    beforeRecord?.(target.id, effect.key)
     const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
       if (!queue.finishGeneration(effect)) return false
       const memory = effect.payload.memory

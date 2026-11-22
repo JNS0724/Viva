@@ -137,6 +137,7 @@ export function createForegroundHistory({
   /** Conversations with a permanently unpersistable payload: subsequent turns still persist, but checkpoint never advances past the gap. */
   const unpersistedGap = new Set<string>()
   const pendingQuestions = new Map<string, Asked>()
+  const deliveredReportIds = new Set<string>()
   let retrying = false
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let retryAttempt = 0
@@ -422,6 +423,31 @@ export function createForegroundHistory({
     })
   }
 
+  function rememberReport(reportId: string): boolean {
+    if (deliveredReportIds.has(reportId)) return false
+    deliveredReportIds.add(reportId)
+    if (deliveredReportIds.size > 512) {
+      const oldest = deliveredReportIds.values().next().value
+      if (oldest !== undefined) deliveredReportIds.delete(oldest)
+    }
+    return true
+  }
+
+  function beforeReportRecord(conversationId: string, reportId: string, sessionId?: string | null) {
+    const first = reportId ? rememberReport(reportId) : true
+    const selected = current()
+    if (first && active?.conversationId === conversationId) {
+      active.openPlainThought = false
+      const plain = drainPlainOps(active)
+      if (plain.length) {
+        const session = sessionId ?? active.sessionId
+        if (selected.id === conversationId) persist(plain, session, { plainPersisted: true })
+        else queuePending(active.conversation, plain, session, { plainPersistedPending: { cursor: streamCursor?.() } })
+      }
+    }
+    if (pendingWrites.has(conversationId)) retryPending()
+  }
+
   function userPrompt({ text, images, sourceId, advanceCheckpoint = false }: {
     text: string
     images?: readonly ImageRef[]
@@ -595,6 +621,10 @@ export function createForegroundHistory({
         if (questionId) pendingQuestions.delete(questionId)
         return
       }
+      case 'report_delivered': {
+        beforeReportRecord(ctx.conversationId, str(raw.reportId), session)
+        return
+      }
       case 'question_answered': {
         const questionId = str(raw.questionId)
         const asked = questionId ? pendingQuestions.get(questionId) : undefined
@@ -706,6 +736,6 @@ export function createForegroundHistory({
     reset()
   }
 
-  return { userPrompt, userSteer, receive, flush, retryPending, reset, close, hasPendingWrites: () => pendingWrites.size > 0 }
+  return { userPrompt, userSteer, beforeReportRecord, receive, flush, retryPending, reset, close, hasPendingWrites: () => pendingWrites.size > 0 }
 }
 export type ForegroundHistory = ReturnType<typeof createForegroundHistory>
