@@ -19,6 +19,7 @@ export interface ForegroundHistoryDeps {
   agentInfo: () => { mode?: string | null, model?: string | null }
   sourceSession: () => string | null
   streamCursor?: () => number
+  messageCount?: (conversationId: string) => number | undefined
   checkpoint?: (conversationId: string, upToCursor?: number) => void
   markQuestionPersisted?: (conversationId: string, questionId: string) => void
   markPlainPersisted?: (conversationId: string, upToCursor?: number) => void
@@ -59,6 +60,11 @@ interface StreamBoundary {
   cursor?: number
 }
 
+interface ReportAnchor {
+  reportId: string
+  atOp: number
+}
+
 interface PendingWrite {
   conversation: Conversation
   ops: HistoryMessageMutation[]
@@ -67,6 +73,7 @@ interface PendingWrite {
   plainPersistedPending?: StreamBoundary
   questionIds: string[]
   streamKeys: Array<{ key: string, cursor?: number }>
+  reportAnchors: ReportAnchor[]
 }
 
 const mergeBoundary = (a?: StreamBoundary, b?: StreamBoundary): StreamBoundary | undefined => {
@@ -123,6 +130,7 @@ export function createForegroundHistory({
   agentInfo,
   sourceSession,
   streamCursor,
+  messageCount,
   checkpoint,
   markQuestionPersisted,
   markPlainPersisted,
@@ -140,6 +148,7 @@ export function createForegroundHistory({
   const unpersistedGap = new Set<string>()
   const pendingQuestions = new Map<string, Asked>()
   const deliveredReportIds = new Set<string>()
+  const resolvedReportAnchors = new Map<string, number>()
   let retrying = false
   let retryTimer: ReturnType<typeof setTimeout> | null = null
   let retryAttempt = 0
@@ -247,13 +256,24 @@ export function createForegroundHistory({
       plainPersistedPending: mergeBoundary(prior?.plainPersistedPending, flags.plainPersistedPending),
       questionIds,
       streamKeys: mergeStreamKeys(prior?.streamKeys, flags.streamKeys),
+      reportAnchors: prior?.reportAnchors ? [...prior.reportAnchors] : [],
     })
     scheduleRetry()
+  }
+
+  function rememberResolvedAnchor(reportId: string, after: number | undefined) {
+    if (!reportId || after === undefined || !Number.isFinite(after)) return
+    resolvedReportAnchors.set(reportId, Math.max(0, Math.trunc(after)))
+    if (resolvedReportAnchors.size > 512) {
+      const oldest = resolvedReportAnchors.keys().next().value
+      if (oldest !== undefined) resolvedReportAnchors.delete(oldest)
+    }
   }
 
   interface CommitBatchResult {
     saved: Conversation | null
     remainingOps: HistoryMessageMutation[]
+    remainingAnchors: ReportAnchor[]
     failedOps: HistoryMessageMutation[]
     hadValidationError: boolean
     transientError: unknown
@@ -263,7 +283,7 @@ export function createForegroundHistory({
     target: Conversation,
     ops: readonly HistoryMessageMutation[],
     session: string | null,
-  ): CommitBatchResult {
+  ): Omit<CommitBatchResult, 'remainingAnchors'> {
     try {
       const saved = commit(target, ops, { sourceSession: session })
       return { saved, remainingOps: [], failedOps: [], hadValidationError: false, transientError: null }
@@ -298,6 +318,61 @@ export function createForegroundHistory({
     }
   }
 
+  function commitWithAnchors(
+    id: string,
+    target: Conversation,
+    ops: readonly HistoryMessageMutation[],
+    session: string | null,
+    anchors: readonly ReportAnchor[],
+  ): CommitBatchResult {
+    if (!anchors.length) {
+      return { ...commitWithIsolation(target, ops, session), remainingAnchors: [] }
+    }
+    const sorted = [...anchors].sort((a, b) => a.atOp - b.atOp)
+    let saved: Conversation | null = null
+    let cur = target
+    let cursor = 0
+    let anchorIndex = 0
+    const failedOps: HistoryMessageMutation[] = []
+    let hadValidationError = false
+
+    const resolveAt = (position: number) => {
+      while (anchorIndex < sorted.length && sorted[anchorIndex]!.atOp <= position) {
+        rememberResolvedAnchor(sorted[anchorIndex]!.reportId, messageCount?.(id))
+        anchorIndex += 1
+      }
+    }
+    resolveAt(0)
+
+    while (cursor < ops.length) {
+      const nextBoundary = anchorIndex < sorted.length ? Math.min(ops.length, sorted[anchorIndex]!.atOp) : ops.length
+      const slice = ops.slice(cursor, nextBoundary)
+      const seg = commitWithIsolation(cur, slice, session)
+      if (seg.saved) { saved = seg.saved; cur = seg.saved }
+      if (seg.failedOps.length) failedOps.push(...seg.failedOps)
+      if (seg.hadValidationError) hadValidationError = true
+      if (seg.remainingOps.length > 0) {
+        const executed = cursor + (slice.length - seg.remainingOps.length)
+        const remainingAnchors = sorted.slice(anchorIndex).map(item => ({
+          reportId: item.reportId,
+          atOp: Math.max(0, item.atOp - executed),
+        }))
+        return {
+          saved,
+          remainingOps: [...seg.remainingOps, ...ops.slice(nextBoundary)],
+          remainingAnchors,
+          failedOps,
+          hadValidationError,
+          transientError: seg.transientError,
+        }
+      }
+      cursor = nextBoundary
+      resolveAt(cursor)
+    }
+    resolveAt(ops.length)
+    return { saved, remainingOps: [], remainingAnchors: [], failedOps, hadValidationError, transientError: null }
+  }
+
   function applyCommitResult(
     id: string,
     target: Conversation,
@@ -330,6 +405,7 @@ export function createForegroundHistory({
         plainPersistedPending: plainFailed ? undefined : meta.plainBoundary,
         questionIds: userFailed ? [] : meta.questionIds,
         streamKeys: meta.streamKeys.filter(item => !failedStreamKeys.has(item.key)),
+        reportAnchors: result.remainingAnchors,
       })
       if (result.transientError !== null) onError(result.transientError)
       scheduleRetry()
@@ -367,7 +443,7 @@ export function createForegroundHistory({
       }
       for (const [id, entry] of [...pendingWrites]) {
         if (id === excludeId) continue
-        const result = commitWithIsolation(entry.conversation, entry.ops, entry.session)
+        const result = commitWithAnchors(id, entry.conversation, entry.ops, entry.session, entry.reportAnchors)
         applyCommitResult(id, entry.conversation, entry.session, result, {
           checkpointBoundary: entry.checkpointPending,
           plainBoundary: entry.plainPersistedPending,
@@ -398,6 +474,7 @@ export function createForegroundHistory({
     if (pendingWrites.size > 0) retryPending(base.id)
     const carried = pendingWrites.get(base.id)
     const allOps = carried ? [...carried.ops, ...ops] : [...ops]
+    const allAnchors = carried?.reportAnchors ?? []
     const allQuestionIds = [...new Set([...(carried?.questionIds ?? []), ...questionIds])]
     const currentCursor = (plainPersisted || deferCheckpoint || streamKeys.length > 0) ? streamCursor?.() : undefined
     const allStreamKeys = mergeStreamKeys(carried?.streamKeys, streamKeys.map(key => ({ key, ...(currentCursor !== undefined ? { cursor: currentCursor } : {}) })))
@@ -406,6 +483,7 @@ export function createForegroundHistory({
     const checkpointBoundary = mergeBoundary(carried?.checkpointPending, deferCheckpoint ? boundary : undefined)
     if (!allOps.length) {
       if (carried) pendingWrites.delete(base.id)
+      for (const anchor of allAnchors) rememberResolvedAnchor(anchor.reportId, messageCount?.(base.id))
       if (plainBoundary) markPlainPersisted?.(base.id, plainBoundary.cursor)
       for (const item of allStreamKeys) markStreamPersisted?.(base.id, item.key, item.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(base.id, questionId)
@@ -420,7 +498,7 @@ export function createForegroundHistory({
       : carried?.session !== undefined
         ? carried.session
         : sourceSession()
-    const result = commitWithIsolation(target, allOps, session)
+    const result = commitWithAnchors(base.id, target, allOps, session, allAnchors)
     return applyCommitResult(base.id, target, session, result, {
       checkpointBoundary,
       plainBoundary,
@@ -439,7 +517,10 @@ export function createForegroundHistory({
     return true
   }
 
-  function beforeReportRecord(conversationId: string, reportId: string, sessionId?: string | null): boolean {
+  function beforeReportRecord(conversationId: string, reportId: string, sessionId?: string | null): { ready: boolean, after?: number } {
+    if (reportId && resolvedReportAnchors.has(reportId)) {
+      return { ready: true, after: resolvedReportAnchors.get(reportId) }
+    }
     const first = reportId ? rememberReport(reportId) : true
     const selected = current()
     let attempted = false
@@ -457,7 +538,19 @@ export function createForegroundHistory({
       }
     }
     if (!attempted && pendingWrites.has(conversationId)) retryPending()
-    return !pendingWrites.has(conversationId)
+    if (reportId && resolvedReportAnchors.has(reportId)) {
+      return { ready: true, after: resolvedReportAnchors.get(reportId) }
+    }
+    const pending = pendingWrites.get(conversationId)
+    if (pending) {
+      if (reportId && !pending.reportAnchors.some(item => item.reportId === reportId)) {
+        pending.reportAnchors.push({ reportId, atOp: pending.ops.length })
+      }
+      return { ready: false }
+    }
+    const after = messageCount?.(conversationId)
+    if (reportId && after !== undefined) rememberResolvedAnchor(reportId, after)
+    return after !== undefined ? { ready: true, after } : { ready: true }
   }
 
   function userPrompt({ text, images, sourceId, advanceCheckpoint = false }: {

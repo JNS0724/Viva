@@ -24,7 +24,7 @@ export interface RecordHistory {
   /** Whether a conversation is stored (a blank topic is not, till its first save). */
   get: (id: string) => unknown
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
-  addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, memory?: MemoryProvenance }) => boolean
+  addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number, memory?: MemoryProvenance }) => boolean
   evidenceErased: (memory: MemoryProvenance) => boolean
   recordReportProof: (reportId: string, memory: MemoryProvenance) => boolean
 }
@@ -50,8 +50,8 @@ export interface ReportRecordsDeps {
   /** The conversation on screen. */
   current: () => Conversation
   show: (event: RecordShown) => void
-  /** Flush any in-memory foreground text before a report record counts persisted messages; return false to defer recording. */
-  beforeRecord?: (conversationId: string, reportId: string) => boolean | void
+  /** Flush any in-memory foreground text before a report record counts persisted messages; return false / { ready: false } to defer. */
+  beforeRecord?: (conversationId: string, reportId: string) => boolean | { ready: boolean, after?: number } | void
   now?: () => number
 }
 
@@ -117,16 +117,21 @@ export function createReportRecords({ history, effects, apply, current, show, be
       return
     }
     const at = timeOf(effect)
-    if (beforeRecord?.(target.id, effect.key) === false) {
+    const gate = beforeRecord?.(target.id, effect.key)
+    if (gate === false || (gate && typeof gate === 'object' && !gate.ready)) {
       throw new Error('foreground history has pending writes before report record')
     }
+    const anchored = gate && typeof gate === 'object' ? gate.after : undefined
     const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
       if (!queue.finishGeneration(effect)) return false
       const memory = effect.payload.memory
       if (memory && store.evidenceErased(memory)) return false
       // A blank topic on screen is stored with it, so the record has a conversation to come back with after a restart.
       if (!store.get(target.id)) store.save(target, [], { keepEmpty: true })
-      store.addRecord({ conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload), beforeSource: effect.payload.beforeSource, memory })
+      store.addRecord({
+        conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload),
+        beforeSource: effect.payload.beforeSource, ...(anchored !== undefined ? { after: anchored } : {}), memory,
+      })
       return true
     }).value
     if (kept && target.id === current().id) drawOn(target, effect, at)

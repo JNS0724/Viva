@@ -303,7 +303,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     records: db.prepare('SELECT report_id, after_seq, at, text FROM report_records WHERE conversation_id = ? ORDER BY after_seq, at, report_id'),
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, COALESCE((SELECT MIN(seq) FROM messages WHERE conversation_id = ? AND source_id = ?),
-        (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)), ?, ?)`),
+        MIN(COALESCE(?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)), (SELECT COUNT(*) FROM messages WHERE conversation_id = ?))), ?, ?)`),
     reportProof: db.prepare('SELECT memory FROM memory_report_proofs WHERE report_id=?'),
     putReportProof: db.prepare('INSERT INTO memory_report_proofs VALUES (?,?)'),
     hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
@@ -517,11 +517,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
    * now. False when it is kept already.
    */
-  function addRecord({ conversationId, reportId, at, text, beforeSource, memory }: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, memory?: MemoryProvenance }): boolean {
+  function addRecord({ conversationId, reportId, at, text, beforeSource, after, memory }: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number, memory?: MemoryProvenance }): boolean {
     const id = assertId(conversationId)
+    const anchored = typeof after === 'number' && Number.isFinite(after) ? Math.max(0, Math.trunc(after)) : null
     return transaction(() => {
       if (memory && !recordReportProof(reportId, memory)) return false
-      return Number(sql.addRecord.run(reportId, id, id, beforeSource ?? null, id, Math.max(0, Math.trunc(at)), text).changes) > 0
+      return Number(sql.addRecord.run(reportId, id, id, beforeSource ?? null, anchored, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
     })
   }
 

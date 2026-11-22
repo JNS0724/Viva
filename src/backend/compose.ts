@@ -908,7 +908,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     apply: applyChange,
     current: sessions.current,
     show: emitToRenderer,
-    beforeRecord: (conversationId, reportId) => foregroundHistory ? foregroundHistory.beforeReportRecord(conversationId, reportId) : true,
+    beforeRecord: (conversationId, reportId) => foregroundHistory ? foregroundHistory.beforeReportRecord(conversationId, reportId) : { ready: true },
   })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
   const wakeEffects = () => { void effects?.wake() }
@@ -1687,6 +1687,7 @@ ${question}` : question
       agentInfo: () => lastInfo,
       sourceSession: () => rendererContext().sessionId,
       streamCursor: () => rendererStream.cursor(),
+      messageCount: id => historyDb.getTail(id, 0)?.total ?? 0,
       checkpoint: (conversationId, upToCursor) => rendererStream.checkpoint(conversationId, upToCursor),
       markQuestionPersisted: (conversationId, questionId) => rendererStream.markQuestionPersisted(conversationId, questionId),
       markPlainPersisted: (conversationId, upToCursor) => rendererStream.markPlainPersisted(conversationId, upToCursor),

@@ -1211,6 +1211,7 @@ test('report-records defers recording when foreground plain flush fails transien
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
     sourceSession: () => null,
     streamCursor: () => stream.cursor(),
+    messageCount: id => history.getTail(id, 0)?.total ?? 0,
     onPendingDrained: () => { drainedCount += 1 },
     onError: () => {},
     retryBaseDelayMs: 1000,
@@ -1244,9 +1245,9 @@ test('report-records defers recording when foreground plain flush fails transien
     now: () => 500,
   })
 
-  // 1. Assistant emits plain text before report arrives, then SQLite is transiently busy during report read
+  // 1. Assistant emits plain text A before report arrives, then SQLite is transiently busy during report read
   writer.receive({ type: 'turn_started', by: 'user', context })
-  writer.receive({ type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报前的正文' } } })
+  writer.receive({ type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报前的正文A' } } })
 
   assert.throws(
     () => records.read(effect as never),
@@ -1257,17 +1258,22 @@ test('report-records defers recording when foreground plain flush fails transien
   assert.equal(history.recordsOf(current.id).length, 0, 'no premature report record written at seq 0')
   assert.equal(writer.hasPendingWrites(), true)
 
-  // 2. Database recovers -> pending write commits first, wakes effects, and report records at after_seq = 1
+  // 2. Database recovers and assistant text B commits BEFORE records.read() retries:
+  //    A commits first (resolving rep-defer's anchor at seq 1), then B commits (total = 2).
   failCommit = false
-  assert.equal(writer.retryPending(), true)
+  writer.receive({ type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报后的正文B' } } })
+  writer.receive({ type: 'turn_end', stopReason: 'end_turn', finalReply: true, context })
+  assert.equal(writer.hasPendingWrites(), false)
   assert.equal(drainedCount, 1, 'onPendingDrained wakes effects once pending writes clear')
+  assert.equal(history.get(current.id)!.messages.length, 2, 'both A and B are persisted before report retry runs')
+
+  // 3. Report retry runs AFTER B is already persisted -> must still anchor at after_seq = 1 (A -> report -> B)!
   records.read(effect as never)
   assert.equal(finished, true)
   assert.equal(shown.length, 1)
-  assert.equal(history.get(current.id)!.messages.length, 1)
   assert.deepEqual(
     history.recordsOf(current.id).map(r => ({ reportId: r.reportId, after: r.after })),
     [{ reportId: 'rep-defer', after: 1 }],
-    'report record anchors AFTER the retried preceding assistant message',
+    'report record keeps its original anchor (after A, before B) even when B commits before report retry',
   )
 })
