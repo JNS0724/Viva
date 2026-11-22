@@ -6,8 +6,8 @@ import type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string }
 export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string }
-export type TaskScope = { cwd: string } | { taskId: string }
-export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean }
+export type TaskScope = { kind: 'main', cwd?: string } | { taskId: string }
+export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, cwd?: string, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean }
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
 const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted'])
 /** How a task's turn ended (acp-bridge task_end's stopReason), as its status. */
@@ -128,18 +128,21 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     waits.clear(); tools.clear(); streams.clear()
   }
   function query(request: TaskQuery, scope: TaskScope) {
-    const visible = (task: Task) => 'taskId' in scope ? task.taskId === scope.taskId : Boolean(task.cwd && scope.cwd) && directory(task.cwd) === directory(scope.cwd)
+    const visible = (task: Task) => 'taskId' in scope ? task.taskId === scope.taskId : true
+    const dir = request.cwd ? directory(request.cwd) : null
     if (request.op === 'get') {
       const task = tasks.get(request.taskId ?? '')
       if (!task || !visible(task)) throw new Error(t("main.task-registry.task.does.not.exist.or.is.outside"))
-      return { observedAt: now(), task: { ...snapshot(task), resultPreview: request.includeOutput ? task.resultPreview : undefined,
+      return { observedAt: now(), task: { ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), resultPreview: request.includeOutput ? task.resultPreview : undefined,
         ...(request.includeRequest ? { request: task.request } : {}) } }
     }
-    const list = [...tasks.values()].filter(task => visible(task) && (!request.status || task.status === request.status))
+    const list = [...tasks.values()].filter(task => visible(task)
+      && (!request.status || task.status === request.status)
+      && (!dir || (Boolean(task.cwd) && directory(task.cwd) === dir)))
       .sort((a, b) => b.updatedAt - a.updatedAt || a.taskId.localeCompare(b.taskId))
     const offset = request.offset ?? 0, limit = request.limit ?? 10
     return { observedAt: now(), total: list.length, nextOffset: offset + limit < list.length ? offset + limit : null,
-      tasks: list.slice(offset, offset + limit).map(task => ({ ...snapshot(task), resultPreview: undefined })) }
+      tasks: list.slice(offset, offset + limit).map(task => ({ ...snapshot(task), ...(task.cwd ? { cwd: task.cwd } : {}), resultPreview: undefined })) }
   }
   /** The run a task is at, while it works or waits on the user; null for one unknown or no longer at work. */
   const runOf = (id: string): string | null => {
@@ -167,8 +170,9 @@ export function parseTaskQuery(value: unknown): TaskQuery {
   if (raw.op !== 'list' && raw.op !== 'get') throw new Error(t("main.task-registry.unknown.task.query.operation"))
   if (raw.op === 'get' && (typeof raw.taskId !== 'string' || !raw.taskId || raw.taskId.length > 200)) throw new Error(t("main.task-registry.invalid.taskid"))
   if (raw.status !== undefined && !statuses.has(text(raw.status))) throw new Error(t("main.task-registry.invalid.status"))
+  if (raw.cwd !== undefined && (typeof raw.cwd !== 'string' || !raw.cwd.trim() || raw.cwd.length > 4096)) throw new Error(t("main.task-registry.invalid", { key: 'cwd' }))
   for (const key of ['limit', 'offset'] as const) if (raw[key] !== undefined && (!Number.isSafeInteger(raw[key]) || Number(raw[key]) < (key === 'limit' ? 1 : 0))) throw new Error(t("main.task-registry.invalid", { key: key }))
   for (const key of ['includeRequest', 'includeOutput'] as const) if (raw[key] !== undefined && typeof raw[key] !== 'boolean') throw new Error(t("main.task-registry.invalid", { key: key }))
-  return { op: raw.op, taskId: text(raw.taskId), status: raw.status as TaskStatus | undefined, limit: Math.min(Number(raw.limit ?? 10), 30),
-    offset: Number(raw.offset ?? 0), includeRequest: raw.includeRequest === true, includeOutput: raw.includeOutput === true }
+  return { op: raw.op, taskId: text(raw.taskId), status: raw.status as TaskStatus | undefined, ...(raw.cwd !== undefined ? { cwd: raw.cwd.trim() } : {}),
+    limit: Math.min(Number(raw.limit ?? 10), 30), offset: Number(raw.offset ?? 0), includeRequest: raw.includeRequest === true, includeOutput: raw.includeOutput === true }
 }

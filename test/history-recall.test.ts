@@ -76,7 +76,7 @@ function joined(db: ReturnType<typeof openHistoryDb>) {
   return (request: object) => channel.request(request, 'main')
 }
 
-test('a search within days finds only what was said then, each hit with its topic', async () => {
+test('a search within days finds only what was said then, each hit with its topic and cwd when present', async () => {
   const { db } = seeded()
   const ask = joined(db)
   const all = await ask({ query: '付款期限' })
@@ -85,6 +85,10 @@ test('a search within days finds only what was said then, each hit with its topi
   assert.match(early, /找到 1 条/)
   assert.match(early, /话题「审一下合同的付款期限」 · 你：/)
   assert.match(early, /read_conversation/)
+  assert.doesNotMatch(early, /目录：/)
+  db.save(db.create({ sessionId: 's-dir', cwd: '/repo/alpha' }), [said('user', '付款期限改到 15 天')])
+  const withDir = await ask({ query: '付款期限' })
+  assert.match(withDir, /目录：\/repo\/alpha/)
   await assert.rejects(ask({ query: '付款期限', since: '十月' }), /日期要写成/)
 })
 

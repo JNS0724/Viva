@@ -23,7 +23,7 @@ test('real DSH discovers both tools and queries main-process tasks over IPC with
   registry.receive({ type: 'task_end', taskId: 'demo-task', stopReason: 'end_turn' })
   let calls = 0
   const bridge = h.bridge({ cwd: dir,
-    taskRead: (request, sessionId) => { assert.ok(sessionId); calls++; return registry.query(request, { cwd: dir }) },
+    taskRead: (request, sessionId) => { assert.ok(sessionId); calls++; return registry.query(request, { kind: 'main', cwd: dir }) },
   })
   await bridge.start()
   await bridge.prompt('查询后台任务测试')

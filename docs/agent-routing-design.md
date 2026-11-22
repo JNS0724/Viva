@@ -270,7 +270,7 @@ The fast lane decides in about 1.4 seconds. Corrections to the current answer we
 
 - TaskRuntime is the only writer of tasks.
 - A new task starts from the conversation the request came from. Topics cannot be switched while a turn runs, so this is usually the conversation on screen. When a decision is still being carried out after its turn ended and another conversation is on screen, its remaining starts are not made and their receipts record the failure.
-- Only tasks in the request's working directory can be stopped or sent an addition.
+- The main conversation oversees all of its background tasks across working directories: it can inspect (`list_background_tasks` / `get_background_task`), message, or stop any task regardless of the current working folder, while each task continues to execute inside its own working directory and remains isolated from other tasks.
 - A brief stands on its own: the user's words, the goal, the agreements found and their sources, files, and output requirements. A summary of old context never replaces the original reference.
 
 ### 10.2 Slots

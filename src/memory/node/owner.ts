@@ -97,6 +97,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     CREATE TABLE IF NOT EXISTS owner_turn_sources(session TEXT NOT NULL,turn INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(session,turn,source));
     CREATE TABLE IF NOT EXISTS owner_file_native_erasures (operation TEXT PRIMARY KEY,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS owner_host_effects(id TEXT PRIMARY KEY,payload TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE IF NOT EXISTS owner_cross_project_sessions(session TEXT PRIMARY KEY);
   `)
   db.exec('CREATE TABLE IF NOT EXISTS owner_file_host_receipts (effect TEXT PRIMARY KEY,fingerprint TEXT NOT NULL) WITHOUT ROWID')
   const nativeCleanup = createNativeErasureReceipts(db)
@@ -138,6 +139,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const nativeOutputs = createNativeOutputAttempts(db)
   const coordinated = { ...runtime,
     staleSession: (session: string | null | undefined) => runtime.staleSession(session) || Boolean(session && (removedSession(session) || nativeSurface.has(session))),
+    sessionCrossProject: (session: string) => Boolean(db.prepare('SELECT 1 FROM owner_cross_project_sessions WHERE session=?').get(session)),
+    recordSessionCrossProject: (session: string) => { db.prepare('INSERT OR IGNORE INTO owner_cross_project_sessions VALUES (?)').run(session) },
     allowedHistory(row: MemoryHistoryOccurrence) {
       // Browsable history without original-source or generated-session provenance
       // cannot be replayed as model context.
@@ -190,6 +193,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     },
     replace(session, sources) {
       dispatch.replaceAfterRecovery(session, sources)
+      db.prepare('DELETE FROM owner_cross_project_sessions WHERE session=?').run(session)
       nativeSurface.clear(session)
     },
     committed(session) {
@@ -213,7 +217,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (runtime.staleSession(session) || dispatch.stale(session, acceptsFiles)) return true
     for (const child of contextChildren(session)) {
       if (needsContextRecovery(child, visited, acceptsFiles) || !dispatch.transferable(dispatch.snapshot(child), acceptsFiles)
-        || !coordination.allowsEvidence(dispatch.snapshot(child), sessionContext(session).project, acceptsFiles)) return true
+        || !coordination.allowsEvidence(dispatch.snapshot(child), sessionContext(session).project, acceptsFiles, coordination.sessionCrossProject(session))) return true
     }
     visited.delete(session)
     return false
@@ -270,7 +274,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       reconcileChildren(child, visited, acceptsFiles)
       const evidence = dispatch.snapshot(child)
       if (!coordination.allowsSession(child, sessionContext(child).project, acceptsFiles) || !dispatch.transferable(evidence, acceptsFiles)
-        || !coordination.allowsEvidence(evidence, sessionContext(session).project, acceptsFiles)) throw new Error('Child memory context is unavailable')
+        || !coordination.allowsEvidence(evidence, sessionContext(session).project, acceptsFiles, coordination.sessionCrossProject(session))) throw new Error('Child memory context is unavailable')
       dispatch.attach(session, evidence)
     }
     visited.delete(session)
@@ -523,7 +527,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       && saved.origin_session === input.sessionId && saved.origin_turn === active))
     const valid = evidence.turnOnly ? sameLiveTurn && !dispatch.stale(input.sessionId, proof)
       : dispatch.transferable(evidence, proof)
-    if (!coordination.allowsEvidence(evidence, sessionContext(input.sessionId).project, proof) || !valid) throw new Error('Derived dependencies unavailable')
+    if (!coordination.allowsEvidence(evidence, sessionContext(input.sessionId).project, proof, coordination.sessionCrossProject(input.sessionId)) || !valid) throw new Error('Derived dependencies unavailable')
     const canonical = typeof old?.source === 'string' ? old.source : randomUUID()
     store.tx(() => {
       db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'derived')").run(input.messageId, canonical, hash(evidence))
@@ -1138,20 +1142,30 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const acceptsFiles = await runtime.loadFileEvidenceCheck(dispatch.snapshot(session).files ?? [], signal)
         return coordination.allowsSession(session, project, acceptsFiles)
       }
-      case 'transferable':
+      case 'transferable': {
+        const [evidence] = command.input.args
+        const proof = await runtime.loadFileEvidenceCheck(evidence?.files ?? [], signal)
+        return coordination.transferable(evidence, proof)
+      }
       case 'transferStatus': {
-        const proof = await runtime.loadFileEvidenceCheck(command.input.args[0]?.files ?? [], signal)
-        return command.method === 'transferable' ? coordination.transferable(...command.input.args, proof)
-          : coordination.transferStatus(...command.input.args, proof)
+        const [evidence, project, ready, crossProject] = command.input.args
+        const proof = await runtime.loadFileEvidenceCheck(evidence?.files ?? [], signal)
+        return coordination.transferStatus(evidence, project, ready, proof, crossProject)
       }
       case 'transfer': {
-        const proof = await runtime.loadFileEvidenceCheck(command.input.args[1]?.files ?? [], signal)
-        return coordination.transfer(...command.input.args, proof)
+        const [session, evidence, project, ready, crossProject] = command.input.args
+        const proof = await runtime.loadFileEvidenceCheck(evidence?.files ?? [], signal)
+        return coordination.transfer(session, evidence, project, ready, proof, crossProject)
       }
-      case 'canInherit':
+      case 'canInherit': {
+        const [source, sourceProject, targetProject, ready, crossProject] = command.input.args
+        const proof = await runtime.loadFileEvidenceCheck(dispatch.snapshot(source).files ?? [], signal)
+        return coordination.canInherit(source, sourceProject, targetProject, ready, proof, crossProject)
+      }
       case 'inherit': {
-        const proof = await runtime.loadFileEvidenceCheck(dispatch.snapshot(command.input.args[0]).files ?? [], signal)
-        return command.method === 'inherit' ? coordination.inherit(...command.input.args, proof) : coordination.canInherit(...command.input.args, proof)
+        const [source, target, sourceProject, targetProject, ready, crossProject] = command.input.args
+        const proof = await runtime.loadFileEvidenceCheck(dispatch.snapshot(source).files ?? [], signal)
+        return coordination.inherit(source, target, sourceProject, targetProject, ready, proof, crossProject)
       }
       case 'inheritFork': {
         const [parent, session] = command.input.args
@@ -1169,9 +1183,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const row = command.method === 'useHistory' ? command.input.args[1] : command.input.args[0]
         const files = row.sessionId && !(row.role === 'user' && row.sourceId) ? dispatch.snapshot(row.sessionId).files ?? [] : []
         const proof = await runtime.loadFileEvidenceCheck(files, signal)
-        if (command.method === 'useHistory') return coordination.useHistory(...command.input.args, proof)
-        const [occurrence, sourceProject, targetProject, sessionProject] = command.input.args
-        return coordination.allowsProjectHistory(occurrence, sourceProject, targetProject, sessionProject, proof)
+        if (command.method === 'useHistory') {
+          const [session, occurrence, crossProject] = command.input.args
+          return coordination.useHistory(session, occurrence, proof, crossProject)
+        }
+        const [occurrence, sourceProject, targetProject, sessionProject, crossProject] = command.input.args
+        return coordination.allowsProjectHistory(occurrence, sourceProject, targetProject, sessionProject, proof, crossProject)
       }
       case 'dreamStatus': return runtime.dreamStatus(...command.input.args)
       case 'requestDream': return runtime.requestDream(...command.input.args)
@@ -1196,7 +1213,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (!current()) return null
         const { project, conversation } = sessionContext(session)
         if (!coordination.allowsSession(session, project, acceptsFiles)) return null
-        if (prior) return !sourceId && coordination.allowsEvidence(prior, project, acceptsFiles) && dispatch.transferable(prior, acceptsFiles) ? prior : null
+        if (prior) return !sourceId && coordination.allowsEvidence(prior, project, acceptsFiles, coordination.sessionCrossProject(session)) && dispatch.transferable(prior, acceptsFiles) ? prior : null
         const evidence = dispatch.snapshot(session)
         if (!sourceId) return evidence
         // Fast routing may take the wire before native inbox intake. A host-bound
@@ -1259,7 +1276,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const proof = { ...saved.provenance, epoch: store.epoch() }
       const current = () => state === 'ready' && !replayingWrites && !hasPending() && scope.current() && scope.call.generation === generation
         && contextRecovery.contextGeneration(scope.call.session) === generation && nativeSpills.read(id)?.erased === false
-        && dispatch.transferable(proof, acceptsFiles) && coordination.allowsEvidence(proof, sessionContext(scope.call.session).project, acceptsFiles)
+        && dispatch.transferable(proof, acceptsFiles) && coordination.allowsEvidence(proof, sessionContext(scope.call.session).project, acceptsFiles, coordination.sessionCrossProject(scope.call.session))
       if (!current()) throw new Error('Native spill source or scope was retired')
       store.tx(() => {
         for (const call of scope.calls) for (const evidence of saved.evidence!) nativeToolReads.recordEvidence(call, evidence, scope.readCut?.())

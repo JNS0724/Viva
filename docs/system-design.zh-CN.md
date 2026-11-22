@@ -145,7 +145,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 | --- | --- |
 | `memory` | 独立 owner、会话摄取、文件写入/遗忘/检索、daily/dream、上下文注入、请求屏障与原生副本恢复；宿主通道供 Viva 客户端访问 |
 | `trace` | 把每轮的工具调用、思考和模型请求记进 `trace.db` |
-| `tasks` | 后台任务的查询工具（`list_background_tasks`、`get_background_task`）和定时的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`）；由后端去做，范围由后端按工作目录和会话限定，不由工具参数决定。开始、停止任务和给任务发话不是工具，由主会话的路由决定交给后端去做（§11.1） |
+| `tasks` | 后台任务的查询工具（`list_background_tasks`、`get_background_task`）和定时的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`）；范围由后端按会话限定（主会话可跨工作目录查询全部后台任务并按可选 `cwd` 过滤，后台任务只能查询自身；定时任务仍限定在当前项目）。开始、停止任务和给任务发话不是工具，由主会话的路由决定交给后端去做（§11.1） |
 | `history` | 让模型查以前的对话 |
 | `stream` | `viva-routing`：主会话的请求路由（[路由设计](agent-routing-design.zh-CN.md)）。把主会话收窄到路由、上下文和应用设置的工具，并换上主会话的人设；`commit_route` 的决定交给后端（`request-runtime.ts`）接受和执行；只显示获准回答的文字。它同时是回答流式内容交给应用的唯一途径 |
 | `questions` | 模型向用户提问的卡片（后台任务用；主会话用 `clarify` 在文字里提问） |

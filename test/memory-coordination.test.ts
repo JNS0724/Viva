@@ -11,6 +11,7 @@ function setup() {
   let runtimeBusy = false
   let activeProject: MemoryProject | undefined = { kind: 'project', id: 'project-a' }
   const projects = new Map<string, string>()
+  const crossProjectSessions = new Set<string>()
   const runtime: MemoryCoordinationRuntime = {
     busy: () => runtimeBusy,
     sourceCurrent: () => valid,
@@ -18,7 +19,9 @@ function setup() {
     staleSession: () => false,
     sessionProject: session => projects.get(session),
     recordSessionProject: (session, project) => { projects.set(session, project) },
-    projectAllows: (evidence, project) => !evidence.projects?.some(id => id !== project?.id),
+    sessionCrossProject: session => crossProjectSessions.has(session),
+    recordSessionCrossProject: session => { crossProjectSessions.add(session) },
+    projectAllows: (evidence, project, _acceptsFiles, crossProject) => Boolean(crossProject) || !evidence.projects?.some(id => id !== project?.id),
     computeAdmission: () => ({ current: () => valid, deadline: 250 }),
   }
   let owner: MemoryCoordinationRuntime | undefined = runtime
@@ -256,4 +259,42 @@ test('late completion releases the original dispatcher and mutation waits for th
     coordinator.endDispatch('new-request')
     assert.equal(replacement.canCommit(), true)
   } finally { store.close(); replacementStore.close() }
+})
+
+test('explicit cross-project overseer transfers keep erasure fences intact while preserving default project isolation', () => {
+  const fixture = setup()
+  const { coordinator, runtime, dispatch, store } = fixture
+  const projectA: MemoryProject = { kind: 'project', id: 'project-a' }
+  const projectB: MemoryProject = { kind: 'project', id: 'project-b' }
+  try {
+    runtime.recordSessionProject('task-a', projectA.id)
+    store.recordSessionProject('task-a', projectA.id)
+    runtime.recordSessionProject('main-b', projectB.id)
+    store.recordSessionProject('main-b', projectB.id)
+    dispatch.recordSource('task-a', 'src-a')
+    runtime.projectAllows = (evidence, project, _acceptsFiles, crossProject) =>
+      Boolean(crossProject) || (!evidence.projects?.some(id => id !== project?.id) && (!evidence.sources.includes('src-a') || project?.id === projectA.id))
+
+    const evidenceA = dispatch.snapshot('task-a')
+    assert.equal(coordinator.transferStatus(evidenceA, projectB, true), 'stale')
+    assert.equal(coordinator.transfer('main-b', evidenceA, projectB, true), false)
+    assert.equal(coordinator.transferStatus(evidenceA, projectB, true, undefined, true), 'ready')
+    assert.equal(coordinator.transfer('main-b', evidenceA, projectB, true, undefined, true), true)
+    assert.equal(coordinator.sessionCrossProject('main-b'), true)
+    assert.equal(coordinator.allowsSession('main-b', projectB), true)
+    assert.ok(coordinator.beginSession('req-b', 'main-b', projectB, () => projectB))
+    coordinator.endDispatch('req-b')
+
+    const row = { segmentId: 'seg-a', role: 'user', text: 'from project a', sourceId: 'src-a', sessionId: 'task-a' }
+    assert.equal(coordinator.allowsProjectHistory(row, projectA, projectB, projectA), false)
+    assert.equal(coordinator.allowsProjectHistory(row, projectA, projectB, projectA, undefined, true), true)
+    coordinator.useHistory('main-b', row, undefined, true)
+    assert.deepEqual(dispatch.snapshot('main-b').sources, ['src-a'])
+
+    fixture.setValid(false)
+    assert.equal(coordinator.allowsSession('main-b', projectB), false)
+    assert.equal(coordinator.transferStatus(evidenceA, projectB, true, undefined, true), 'stale')
+    assert.equal(coordinator.allowsProjectHistory(row, projectA, projectB, projectA, undefined, true), false)
+    assert.throws(() => coordinator.useHistory('main-b', row, undefined, true), { code: 'revision.conflict' })
+  } finally { store.close() }
 })

@@ -1519,9 +1519,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         : documents?.deletedFileCleanupPending(identity.workspace, identity.id) === true
     },
     cleanupPending: () => (notes?.storage.pendingCleanup() ?? 0) + (documents?.pendingCleanup() ?? 0) + (fileIndex?.pendingCleanup() ?? 0),
-    projectAllows(evidence: Pick<MemoryProvenance, 'files' | 'sources' | 'projects'>, project?: Origin['project'], acceptsFiles?: FileEvidenceCurrent) {
-      const allowed = (scope?: MemoryScope | null) => scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
-      return (evidence.projects ?? []).every(id => id === project?.id)
+    projectAllows(evidence: Pick<MemoryProvenance, 'files' | 'sources' | 'projects'>, project?: Origin['project'], acceptsFiles?: FileEvidenceCurrent, crossProject = false) {
+      const allowed = (scope?: MemoryScope | null) => crossProject || scope?.kind !== 'project' || Boolean(project && sameScope(scope, project))
+      return (crossProject || (evidence.projects ?? []).every(id => id === project?.id))
         && evidence.sources.every(id => allowed(store.readSource(id)?.project))
         && (acceptsFiles ? acceptsFiles(evidence.files ?? [], now(), []) : fileDependenciesCurrent(evidence.files ?? []))
         && (evidence.files ?? []).every(ref => {
