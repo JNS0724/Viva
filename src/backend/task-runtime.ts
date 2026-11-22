@@ -237,10 +237,24 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const entry = stored ?? tasks.get(taskId)
     if (!entry) return null
     if (stored?.resultErased) return ''
-    const held = attached.has(taskId)
-    const messages = (held ? taskWords.current(taskId) : null) ?? db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? []
-    const text = latestRunOutput(messages, typeof entry.runStart === 'number' ? entry.runStart : undefined)
-    return text.length > 0 ? text : null
+    const runStart = typeof entry.runStart === 'number' ? entry.runStart : undefined
+    const endedStored = Boolean(stored && isEnded(stored))
+    if (attached.has(taskId) && !endedStored) {
+      const live = taskWords.current(taskId)
+      if (live) {
+        const verified = live.map(message => db.retainMessage({
+          role: message.role,
+          text: message.text,
+          receipt: null,
+          ...(message.streamKey ? { key: message.streamKey } : {}),
+          ...(message.sourceId ? { sourceId: message.sourceId } : {}),
+        }, taskId))
+        return latestRunOutput(verified, runStart)
+      }
+    }
+    const segment = db.get(entry.segmentId)
+    if (!segment) return null
+    return latestRunOutput(segment.messages.slice(entry.keep ?? 0), runStart)
   }
 
   function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
@@ -389,7 +403,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
-    const reportOutput = terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (fullOutputOf(snapshot.taskId) ?? snapshot.resultPreview))
+    const reportOutput = terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (fullOutputOf(snapshot.taskId) ?? ''))
     const persistedTranscript = !resultFromTerminal
       ? latestRunOutput(db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? [], typeof entry.runStart === 'number' ? entry.runStart : undefined)
       : ''

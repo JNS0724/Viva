@@ -961,7 +961,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   return {
     reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
     addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, rebindMessageSession, eraseMemoryCopies, eraseFileRanges,
-    bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
+    bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, retainMessage: generated.forSave, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
     create, save, commit, get, getTail, sliceMessages, streamKeysBefore, workspaceOf: (id: string) => {
       const row = conversationOf(id)

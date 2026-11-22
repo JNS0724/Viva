@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { openHistoryDb as openProductionHistoryDb } from '../src/backend/history-db.ts'
 import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { MAX_TERMINAL_MESSAGE_CHARS } from '../src/backend/task-registry.ts'
@@ -810,13 +811,12 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   h.db.close()
 })
 
-test('production TaskStore with retainedReply distinguishes unkeyed outputs/errors from explicitly erased results', async () => {
+test('production openHistoryDb + TaskStore(retainedReply) enforces provenance on live/ended queries and reports while preserving verified replies and terminal errors', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-store-retained-'))
-  const db = openHistoryDb({ file: path.join(dir, 'history.db'), newId: (() => { let n = 0; return () => `c${++n}` })() })
+  const db = openProductionHistoryDb({ file: path.join(dir, 'history.db'), newId: (() => { let n = 0; return () => `c${++n}` })() })
   const appDb = new DatabaseSync(path.join(dir, 'app.db'))
   appDb.exec(APP_DB_PRAGMAS)
-  const retainedKeys = new Set<string>()
-  const store = createTaskStore({ db: appDb, retainedReply: (session, key) => retainedKeys.has(`${session}:${key}`) })
+  const store = createTaskStore({ db: appDb, retainedReply: db.retainedReply })
   const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('开始')])
   const queuedReports: Array<{ key: string, payload: ReportPayload }> = []
   let seq = 0
@@ -836,17 +836,29 @@ test('production TaskStore with retainedReply distinguishes unkeyed outputs/erro
     },
   })
   try {
-    // 1. Plain agent_message_chunk (no resultKey): store clears persisted resultPreview, but does NOT mark resultErased.
-    const plain = await runtime.agent.start('普通文本任务')
-    runtime.dsh.receive({ type: 'task_update', taskId: plain.taskId, update: chunk('普通文本完整结果') })
-    runtime.dsh.receive({ type: 'task_end', taskId: plain.taskId, stopReason: 'end_turn' })
-    const plainStored = store.list().find(item => item.id === plain.taskId)!
-    assert.equal(plainStored.resultPreview, '')
-    assert.equal(plainStored.resultErased, undefined)
-    assert.equal(queuedReports.find(item => item.payload.taskId === plain.taskId)?.payload.output, '普通文本完整结果')
-    assert.equal(runtime.agent.query({ op: 'get', taskId: plain.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '普通文本完整结果')
+    // 1. Unkeyed agent_message_chunk (no provenance proof): never exposed via live query, ended query, or report.
+    const unverified = await runtime.agent.start('未校验文本任务')
+    runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: chunk('UNVERIFIED_IN_MEMORY_TEXT') })
+    assert.equal(runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
+    runtime.dsh.receive({ type: 'task_end', taskId: unverified.taskId, stopReason: 'end_turn' })
+    const unverifiedStored = store.list().find(item => item.id === unverified.taskId)!
+    assert.equal(unverifiedStored.resultPreview, '')
+    assert.equal(queuedReports.find(item => item.payload.taskId === unverified.taskId)?.payload.output, '')
+    assert.equal(runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
 
-    // 2. Terminal error event.message (no resultKey): preserved by TaskStore even with retainedReply so it
+    // 2. Verified viva_stream reply (bound via bindGeneratedCopy): readable live, in report, and after restart.
+    const verified = await runtime.agent.start('已校验任务')
+    const verifiedText = `${'V'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(2000)}${'W'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+    assert.equal(db.bindGeneratedCopy(verified.taskId, 'verified-k', 'assistant', verifiedText, [{ sources: [], fileRanges: [] }]), true)
+    runtime.dsh.receive({ type: 'task_update', taskId: verified.taskId, update: { sessionUpdate: 'viva_stream', key: 'verified-k', kind: 'settle', blocks: [{ type: 'text', text: verifiedText }] } })
+    assert.equal(runtime.agent.query({ op: 'get', taskId: verified.taskId, includeOutput: true, outputOffset: 0, outputLimit: 1000 }, { kind: 'main' }).task!.resultPreview, 'V'.repeat(1000))
+    runtime.dsh.receive({ type: 'task_end', taskId: verified.taskId, stopReason: 'end_turn' })
+    const verifiedReport = queuedReports.find(item => item.payload.taskId === verified.taskId)?.payload.output ?? ''
+    assert.ok(verifiedReport.startsWith('V'.repeat(REPORT_OUTPUT_HEAD_CHARS)))
+    assert.match(verifiedReport, /outputOffset=1000/)
+    assert.equal(runtime.agent.query({ op: 'get', taskId: verified.taskId, includeOutput: true, outputOffset: 1000, outputLimit: 2000 }, { kind: 'main' }).task!.resultPreview, 'M'.repeat(2000))
+
+    // 3. Terminal error event.message (no resultKey): preserved by TaskStore even with retainedReply so it
     // survives restart and supports paginated reads and readable report pointers.
     const errored = await runtime.agent.start('报错任务')
     const longErr = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
@@ -868,7 +880,7 @@ test('production TaskStore with retainedReply distinguishes unkeyed outputs/erro
     assert.equal(errAfterRestart.outputTotalChars, longErr.length)
     assert.equal(errAfterRestart.nextOutputOffset, 4000)
 
-    // 3. Retired resultKey (retainedReply returns false): store marks resultErased=true and blocks transcript resurrection.
+    // 4. Unbound/retired viva_stream resultKey (retainedReply returns false): store marks resultErased=true and blocks output.
     const retired = await runtime.agent.start('已擦除任务')
     runtime.dsh.receive({ type: 'task_update', taskId: retired.taskId, update: { sessionUpdate: 'viva_stream', key: 'retired-k', kind: 'settle', blocks: [{ type: 'text', text: 'SENSITIVE_RETIRED' }] } })
     runtime.dsh.receive({ type: 'task_end', taskId: retired.taskId, stopReason: 'end_turn' })
