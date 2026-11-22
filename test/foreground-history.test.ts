@@ -1012,3 +1012,82 @@ test('HistoryValidationError isolates only invalid ops while preserving carried 
   assert.equal(checkpoints.length, 0, 'checkpoint stays pinned behind the isolated validation gap')
   assert.equal(errors.some(err => err instanceof HistoryValidationError), true)
 })
+
+test('single long viva_stream overflowing before settle clears its loss once persisted while keeping other stream gaps', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-single-big', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-single-big' }
+  const writer = createForegroundHistory({
+    commit: history.commit,
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markStreamPersisted: (id, key, upToCursor) => stream.markStreamPersisted(id, key, upToCursor),
+    onError: err => { throw err },
+  })
+  t.after(() => writer.close())
+
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  stream.send(startEvent)
+  writer.receive(startEvent)
+
+  // 1. Stream k-1 emits 1,100 deltas (>1024 count & >2 MiB bytes) before settling, plus k-2 also overflows provisional deltas
+  const piece = '长流片'.repeat(400)
+  for (let i = 0; i < 1100; i += 1) {
+    const delta = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-1', kind: 'delta', index: 0, blockType: 'text', text: piece } }
+    stream.send(delta)
+    writer.receive(delta)
+  }
+  for (let i = 0; i < 1100; i += 1) {
+    const delta = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-2', kind: 'delta', index: 0, blockType: 'text', text: piece } }
+    stream.send(delta)
+    writer.receive(delta)
+  }
+
+  // Before either stream settles, mid-turn reload MUST still detect an unreplayable gap
+  assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/)
+
+  // Settling k-1 clears k-1's loss, but k-2's unsettled loss MUST keep snapshot failing
+  const k1Text = '最终长回复-1'
+  history.bindGeneratedCopy('s-single-big', 'k-1', 'assistant', k1Text, [{ sources: [], fileRanges: [] }])
+  const settle1 = {
+    type: 'update', context,
+    update: { sessionUpdate: 'viva_stream', key: 'k-1', kind: 'settle', blocks: [{ type: 'reasoning', text: '完整推理-1' }, { type: 'text', text: k1Text }] },
+  }
+  stream.send(settle1)
+  writer.receive(settle1)
+  assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/, 'unsettled k-2 loss remains active')
+
+  // Once k-2 settles and persists, both stream losses are cleared and turn_started is still intact
+  const k2Text = '最终长回复-2'
+  history.bindGeneratedCopy('s-single-big', 'k-2', 'assistant', k2Text, [{ sources: [], fileRanges: [] }])
+  const settle2 = {
+    type: 'update', context,
+    update: { sessionUpdate: 'viva_stream', key: 'k-2', kind: 'settle', blocks: [{ type: 'text', text: k2Text }] },
+  }
+  stream.send(settle2)
+  writer.receive(settle2)
+
+  const snapAfterBoth = stream.snapshot(current.id, context)
+  assert.equal(snapAfterBoth.replay[0]?.type, 'turn_started')
+  assert.deepEqual(history.get(current.id)!.messages.map(m => m.text), [k1Text, k2Text])
+
+  // 2. A single >2 MiB settle itself triggers eviction inside stream.send() before writer.receive();
+  //    once writer.receive() commits it, its stream loss clears and turn_started stays intact.
+  const hugeText = '超长回复'.repeat(300_000) // ~1.2M chars -> ~2.4 MiB UTF-16 > 2 MiB replay byte limit
+  history.bindGeneratedCopy('s-single-big', 'k-huge', 'assistant', hugeText, [{ sources: [], fileRanges: [] }])
+  const hugeSettle = {
+    type: 'update', context,
+    update: { sessionUpdate: 'viva_stream', key: 'k-huge', kind: 'settle', blocks: [{ type: 'text', text: hugeText }] },
+  }
+  stream.send(hugeSettle)
+  assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/, 'oversized settle is gated before commit')
+  writer.receive(hugeSettle)
+  const snapAfterHuge = stream.snapshot(current.id, context)
+  assert.equal(snapAfterHuge.replay[0]?.type, 'turn_started')
+  assert.equal(history.get(current.id)!.messages.at(-1)?.text.length, hugeText.length)
+})

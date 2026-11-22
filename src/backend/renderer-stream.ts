@@ -7,7 +7,7 @@ import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, inHistory?: boolean, durable?: boolean, plainChunk?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, provisionalStream?: boolean, inHistory?: boolean, durable?: boolean, plainChunk?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -18,6 +18,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
   const key = (session: string | null, conversation: string | null) => JSON.stringify([session, conversation])
   // Streaming chunks normally evict consecutive rows for one scope; store its latest loss without repeated SQL writes.
   let lastLoss: { scope: string, cursor: number } | undefined
+  // Stream-keyed and plain-chunk evictions stay recoverable: they block mid-turn replay until their settlement or
+  // drained text commits to SQLite, at which point only the covered loss is cleared while unrelated gaps remain.
+  const streamLosses = new Map<string, { scope: string, conversationId: string | null, streamKey: string, cursor: number }>()
+  const plainLosses = new Map<string, { scope: string, conversationId: string | null, cursor: number }>()
   function recordLoss(scope: string, cursor: number) {
     if (lastLoss?.scope === scope) lastLoss.cursor = Math.max(lastLoss.cursor, cursor)
     else {
@@ -25,8 +29,36 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       lastLoss = { scope, cursor }
     }
   }
+  function recordStreamLoss(scope: string, conversationId: string | null, streamKey: string, cursor: number) {
+    const id = `${scope}\0${streamKey}`
+    const prior = streamLosses.get(id)
+    if (prior) prior.cursor = Math.max(prior.cursor, cursor)
+    else streamLosses.set(id, { scope, conversationId, streamKey, cursor })
+  }
+  function recordPlainLoss(scope: string, conversationId: string | null, cursor: number) {
+    const prior = plainLosses.get(scope)
+    if (prior) prior.cursor = Math.max(prior.cursor, cursor)
+    else plainLosses.set(scope, { scope, conversationId, cursor })
+  }
   function loss(scope: string): number {
-    return Math.max(watermark('loss', scope), lastLoss?.scope === scope ? lastLoss.cursor : 0)
+    let max = Math.max(watermark('loss', scope), lastLoss?.scope === scope ? lastLoss.cursor : 0)
+    const plain = plainLosses.get(scope)
+    if (plain && plain.cursor > max) max = plain.cursor
+    for (const entry of streamLosses.values()) {
+      if (entry.scope === scope && entry.cursor > max) max = entry.cursor
+    }
+    return max
+  }
+  function pickEvictionIndex(): number {
+    const durableIndex = held.findIndex(row => row.durable)
+    if (durableIndex >= 0) return durableIndex
+    const provisionalIndex = held.findIndex(row => row.provisionalStream)
+    if (provisionalIndex >= 0) return provisionalIndex
+    const streamIndex = held.findIndex(row => row.streamKey !== undefined)
+    if (streamIndex >= 0) return streamIndex
+    const plainIndex = held.findIndex(row => row.plainChunk)
+    if (plainIndex >= 0) return plainIndex
+    return 0
   }
 
   function send(input: { type: string, [key: string]: unknown }) {
@@ -37,18 +69,22 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       const update = event.type === 'update' && event.update && typeof event.update === 'object' ? event.update as Record<string, unknown> : null
       const plainChunk = update?.sessionUpdate === 'agent_message_chunk'
       const streamKey = update?.sessionUpdate === 'viva_stream' && typeof update.key === 'string' && update.key ? update.key : undefined
+      const provisionalStream = Boolean(streamKey && update?.kind !== 'settle')
       const questionId = event.type === 'question_answered' && typeof event.questionId === 'string' ? event.questionId : undefined
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
         reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
         ...(questionId ? { questionId } : {}),
         ...(streamKey ? { streamKey } : {}),
+        ...(provisionalStream ? { provisionalStream: true } : {}),
         ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
-        const durableIndex = held.findIndex(row => row.durable)
-        const removed = durableIndex >= 0 ? held.splice(durableIndex, 1)[0]! : held.shift()!
+        const removed = held.splice(pickEvictionIndex(), 1)[0]!
         bytes -= removed.bytes
-        if (!removed.durable) recordLoss(removed.scope, removed.cursor)
+        if (removed.durable) continue
+        if (removed.streamKey !== undefined) recordStreamLoss(removed.scope, removed.routing.context.conversationId, removed.streamKey, removed.cursor)
+        else if (removed.plainChunk) recordPlainLoss(removed.scope, removed.routing.context.conversationId, removed.cursor)
+        else recordLoss(removed.scope, removed.cursor)
       }
     }
     if (invalidatesConversationSnapshot(event)) {
@@ -71,6 +107,12 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
   function checkpoint(conversationId: string, upToCursor?: number) {
     const target = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
     write.run('save', conversationId, target)
+    for (const [id, entry] of streamLosses) {
+      if (entry.conversationId === conversationId && entry.cursor <= target) streamLosses.delete(id)
+    }
+    for (const [scope, entry] of plainLosses) {
+      if (entry.conversationId === conversationId && entry.cursor <= target) plainLosses.delete(scope)
+    }
   }
   /** Mark a persisted question_answered event by questionId (works immediately or after retry) so mid-turn replay does not duplicate its message. */
   function markQuestionPersisted(conversationId: string, questionId: string) {
@@ -87,13 +129,21 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       held.splice(index, 1)
       bytes -= row.bytes
     }
+    for (const [scope, entry] of plainLosses) {
+      if (entry.conversationId === conversationId && entry.cursor <= limit) plainLosses.delete(scope)
+    }
   }
   /**
-   * Reclaim already-persisted viva_stream text deltas and text-only settles up to `upToCursor`, so a long turn
-   * whose settled replies are already durable in SQLite does not overflow the replay buffer and trigger false gaps.
+   * Reclaim already-persisted viva_stream text deltas and text-only settles up to `upToCursor`, and clear any
+   * provisional eviction loss for that stream key while preserving gaps for other unsettled or unpersisted events.
    */
   function markStreamPersisted(conversationId: string, streamKey: string, upToCursor?: number) {
     const limit = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
+    for (const [id, entry] of streamLosses) {
+      if (entry.conversationId === conversationId && entry.streamKey === streamKey && entry.cursor <= limit) {
+        streamLosses.delete(id)
+      }
+    }
     for (let index = held.length - 1; index >= 0; index--) {
       const row = held[index]!
       if (row.streamKey !== streamKey || row.cursor > limit || row.routing.context.conversationId !== conversationId) continue
