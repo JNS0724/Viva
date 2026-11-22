@@ -661,13 +661,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
           if (prior) { ensureRow(); continue }
           const redacted = redactSingle(id, normalized, sourceSession)
           ensureRow(redacted)
-          const last = sql.lastMessage.get(id)
-          const pictures = redacted.images?.length ? JSON.stringify(redacted.images) : null
-          // Rewind of a legacy message without sourceId pre-saves the edited user row; attach the new sourceId in place.
-          if (last && last.role === 'user' && !last.source_id && redacted.sourceId && last.text === redacted.text && last.images === pictures) {
-            sql.update.run('user', redacted.text, last.receipt, pictures, last.source_key ?? null, redacted.sourceId, id, last.seq)
-            continue
-          }
           insertAt(nextSeq(), redacted)
           if (!existing.title_custom && !existing.title && redacted.text) {
             const title = autoTitle([redacted])

@@ -69,8 +69,11 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const edit = text !== words && original.sourceId && deps.commitEdit
       ? { oldSource: original.sourceId, newSource: randomUUID(), previous } : null
     if (edit && await deps.canEditSource?.(edit.oldSource) === false) return { ok: false, problem: t('main.memory.rewind.edit.unavailable') }
-    const sourceId = edit ? edit.newSource : text === words ? original.sourceId : undefined
-    if (sourceId && !edit && deps.replaySource && !await deps.replaySource(sourceId, text)) return { ok: false, problem: t('main.memory.context.stale') }
+    const reusedSource = text === words ? original.sourceId : undefined
+    if (reusedSource && !edit && deps.replaySource && !await deps.replaySource(reusedSource, text)) return { ok: false, problem: t('main.memory.context.stale') }
+    // Always bind the rewound prompt to a verified sourceId so the follow-up agent:prompt deduplicates by exact source_id.
+    const sourceId = edit ? edit.newSource : reusedSource ?? randomUUID()
+    const isNewSource = !reusedSource
     return selectSession(async ({ forkAgent, switchAgent, select }) => {
       const kept = stored.messages.slice(0, keep)
       const forked = edit ? { ok: false as const, reason: 'missing' } : await forkAgent({ words, occurrence })
@@ -101,7 +104,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       const messages = db.sliceMessages(next.id, offset, keep)
       return { ok: true, info: { ...started, conversationId: next.id },
         conversation: { id: next.id, messages, ...(offset > 0 ? { offset, total: keep } : {}), ...withRecords(next.id) },
-        folds: db.foldsOf(next.id), ...(sourceId ? { sourceId } : {}), ...(edit ? { newSource: true } : {}) }
+        folds: db.foldsOf(next.id), sourceId, ...(isNewSource ? { newSource: true } : {}) }
     })
   }
 

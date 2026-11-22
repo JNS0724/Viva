@@ -77,7 +77,11 @@ test('going back to a question forks before it and goes on in a new segment; the
   assert.deepEqual(result.folds, [{ id: before.id, at: 2, count: 2, kind: 'path' }])
   assert.equal(current().id, result.conversation.id)
   assert.equal(current().sessionId, 's2')
-  assert.deepEqual(db.get(current().id)!.messages.map((m) => m.text), ['做周报', '写好了', '口语一点'], 'stored at once, the new words with it')
+  const stored = db.get(current().id)!.messages
+  assert.deepEqual(stored.map((m) => m.text), ['做周报', '写好了', '口语一点'], 'stored at once, the new words with it')
+  assert.equal(typeof stored[2]?.sourceId, 'string', 'rewound message always receives a verified sourceId for exact follow-up dedup')
+  assert.equal((result as { sourceId?: string, newSource?: boolean }).sourceId, stored[2]?.sourceId)
+  assert.equal((result as { sourceId?: string, newSource?: boolean }).newSource, true)
   assert.deepEqual(db.segmentsBefore(current().id).segments, [], 'the old path is folded, not before it in the timeline')
 })
 

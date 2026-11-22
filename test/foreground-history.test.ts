@@ -42,7 +42,16 @@ test('foreground history persists prompts, steers, authenticated streams, receip
   })
   const context = { conversationId: current.id, sessionId: 's-1' }
 
-  // 1. User prompt with images and idempotent duplicate sourceId
+  // 1. User prompt with images and idempotent duplicate sourceId; identical text after a legacy sourceId-less user row still appends a new row
+  const legacy = history.create({ sessionId: 's-legacy', mode: 'live', model: 'V4', cwd: '/w' })
+  history.save(legacy, [{ role: 'user', text: '重复提问', receipt: null }])
+  const freshSource = randomUUID()
+  history.commit(legacy, [{ kind: 'append_user', message: { role: 'user', text: '重复提问', receipt: null, sourceId: freshSource } }])
+  const legacyAfter = history.get(legacy.id)!.messages
+  assert.equal(legacyAfter.length, 2, 'normal append_user must not merge into an older user row that has no sourceId')
+  assert.equal(legacyAfter[0]?.sourceId, undefined)
+  assert.equal(legacyAfter[1]?.sourceId, freshSource)
+
   const promptId = randomUUID()
   const picId = `${'a'.repeat(64)}.png`
   writer.userPrompt({ text: '帮我看下这张图', images: [{ id: picId }], sourceId: promptId, advanceCheckpoint: true })
