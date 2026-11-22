@@ -59,7 +59,7 @@ async function runRemeBridge<T>(pythonBin: string, command: string, payload: obj
   const { stderr } = await execFileAsync(pythonBin, [BRIDGE, command, '--input', inputPath, '--output', outputPath], {
     env: process.env,
     maxBuffer: 64 * 1024 * 1024,
-    timeout: 45 * 60 * 1000,
+    timeout: 90 * 60 * 1000,
   })
   if (stderr.trim()) process.stderr.write(`${stderr.trim()}\n`)
   return JSON.parse(readFileSync(outputPath, 'utf8')) as T
@@ -226,8 +226,11 @@ async function main() {
   const lmeDatasetPath = argValue('--lme-dataset=') ?? (remeRepo ? path.join(remeRepo, 'benchmark', 'longmemeval', 'dataset', 'longmemeval_s_reme_cleaned.json') : '')
   const lmePerType = Number(argValue('--lme-per-type=') ?? '2')
   const lmeMaxSessions = Number(argValue('--lme-max-sessions=') ?? '0')
+  const lmeExcludeReport = argValue('--lme-exclude-report=') ?? ''
   const concurrency = Number(argValue('--concurrency=') ?? '3')
   const vivaOnly = process.argv.includes('--viva-only')
+  const vivaIncludeAutoContext = !process.argv.includes('--viva-no-auto-context')
+  const remeEnableDream = process.argv.includes('--reme-enable-dream')
   const runId = new Date().toISOString().replaceAll(/[:.]/gu, '-')
   const outputDir = path.resolve(argValue('--output=') ?? path.join(ROOT, 'smoke', `memory-eval-${runId}`))
   mkdirSync(outputDir, { recursive: true })
@@ -481,7 +484,15 @@ async function main() {
         throw new Error(`LongMemEval dataset not found: ${lmeDatasetPath}`)
       }
       const allItems = loadLmeDataset(lmeDatasetPath)
-      const { items, sliceSha256 } = selectStratifiedLmeSlice(allItems, lmePerType)
+      const excludeIds = new Set<string>()
+      if (lmeExcludeReport && existsSync(lmeExcludeReport)) {
+        const prior = JSON.parse(readFileSync(lmeExcludeReport, 'utf8')) as { lme?: { results?: Array<{ questionId?: string }> } }
+        for (const r of prior.lme?.results ?? []) {
+          if (r.questionId) excludeIds.add(r.questionId)
+        }
+        process.stderr.write(`[eval][lme] excluding ${excludeIds.size} previously-evaluated dev IDs for strict held-out blind test\n`)
+      }
+      const { items, sliceSha256 } = selectStratifiedLmeSlice(allItems, lmePerType, excludeIds.size ? excludeIds : undefined)
       const tasks: PreparedLmeTask[] = items.map(item => ({
         questionId: item.question_id,
         questionType: item.question_type,
@@ -494,21 +505,23 @@ async function main() {
       report.lme = { sliceSha256, perType: lmePerType, maxSessions: lmeMaxSessions, results: [] }
       save()
 
-      process.stderr.write(`[eval][lme] running Viva (${tasks.length} items, slice=${sliceSha256.slice(0, 12)})...\n`)
+      process.stderr.write(`[eval][lme] running Viva (${tasks.length} items, slice=${sliceSha256.slice(0, 12)}, autoCtx=${vivaIncludeAutoContext})...\n`)
       const vivaLme = await runVivaLmeEval(llmCtx, tasks, {
         workDir: path.join(outputDir, 'viva-work', 'lme'),
         modelRoot: hasEmbedding ? modelRoot : undefined,
         runtimeRoot: hasEmbedding ? runtimeRoot : undefined,
-        modeLabel: hasEmbedding ? 'viva-hybrid-granite' : 'viva-bm25',
+        modeLabel: hasEmbedding
+          ? (vivaIncludeAutoContext ? 'viva-hybrid-granite' : 'viva-hybrid-react-only')
+          : 'viva-bm25',
         enableDream: true,
-        includeAutoContext: true,
+        includeAutoContext: vivaIncludeAutoContext,
         concurrency,
       })
       report.lme.results.push(...vivaLme)
       save()
 
       if (!vivaOnly) {
-        process.stderr.write(`[eval][lme] running ReMe (${tasks.length} items, slice=${sliceSha256.slice(0, 12)})...\n`)
+        process.stderr.write(`[eval][lme] running ReMe (${tasks.length} items, slice=${sliceSha256.slice(0, 12)}, dream=${remeEnableDream})...\n`)
         const remeLmeRaw = await runRemeBridge<{
           items: Array<{
             questionId: string
@@ -534,7 +547,7 @@ async function main() {
             llmModel: DEEPSEEK_DEFAULT.model,
             llmBaseUrl: 'https://api.deepseek.com/v1',
             ...(embeddingServer ? { embeddingUrl: embeddingServer.url, embeddingDims: embeddingServer.dimensions } : {}),
-            enableDream: false, // ReMe official LongMemEval benchmark preset leaves auto_dream disabled
+            enableDream: remeEnableDream, // ReMe official LongMemEval benchmark preset leaves auto_dream disabled by default
             indexSessions: true,
             concurrency,
           },

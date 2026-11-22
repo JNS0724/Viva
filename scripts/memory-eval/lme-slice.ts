@@ -62,7 +62,11 @@ export function sortAndFilterLmeSessions(item: LmeItem, maxSessions = 0): Sorted
 }
 
 /** Deterministic stratified slice across all 6 LongMemEval categories (guarantees abstention coverage when perType >= 2). */
-export function selectStratifiedLmeSlice(items: readonly LmeItem[], perType: number): {
+export function selectStratifiedLmeSlice(
+  items: readonly LmeItem[],
+  perType: number,
+  excludeIds?: ReadonlySet<string>,
+): {
   items: LmeItem[]
   sliceSha256: string
 } {
@@ -70,7 +74,7 @@ export function selectStratifiedLmeSlice(items: readonly LmeItem[], perType: num
   const selected: LmeItem[] = []
   for (const type of LME_QUESTION_TYPES) {
     const pool = items
-      .filter(item => item.question_type === type)
+      .filter(item => item.question_type === type && !excludeIds?.has(item.question_id))
       .sort((a, b) => a.question_id.localeCompare(b.question_id))
     const regular = pool.filter(item => !String(item.question_id).endsWith('_abs'))
     const abstention = pool.filter(item => String(item.question_id).endsWith('_abs'))

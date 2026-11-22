@@ -2,6 +2,7 @@
  * so ReMe can run hybrid vector+BM25 evaluation on the exact same embedding space with zero external API keys. */
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { MEMORY_EMBEDDING_BATCH } from '../../src/memory/contracts/embedding.ts'
 import { createMemoryEmbedder } from '../../src/memory/node/memory-embedder.ts'
 
 export interface LocalEmbeddingServer {
@@ -44,15 +45,16 @@ export async function startLocalEmbeddingServer(modelRoot: string, runtimeRoot: 
       const direct = await embedder.embedBatch([{ kind: 'passage', text: trimmed }])
       if (direct?.[0]) return normalize(direct[0])
     }
-    // Granite-97M maxTokens=128: sample up to 6 bounded 140-char windows (head + tail coverage) in ONE worker batch.
+    // Granite-97M maxTokens=128 (symmetric: queryPrefix="", passagePrefix="").
+    // Encode ALL bounded 140-char windows across the full chunk in vectorized batches so ReMe suffers zero middle truncation.
     const rawSlices = splitText(trimmed, 140)
-    const chosen = rawSlices.length <= 6
-      ? rawSlices
-      : [...rawSlices.slice(0, 3), ...rawSlices.slice(-3)]
-    const batch = await embedder.embedBatch(chosen.map(s => ({ kind: 'passage' as const, text: s })))
     const vectors: Float32Array[] = []
-    if (batch) {
-      for (const vec of batch) if (vec) vectors.push(vec)
+    for (let offset = 0; offset < rawSlices.length; offset += MEMORY_EMBEDDING_BATCH) {
+      const chunk = rawSlices.slice(offset, offset + MEMORY_EMBEDDING_BATCH)
+      const batch = await embedder.embedBatch(chunk.map(s => ({ kind: 'passage' as const, text: s })))
+      if (batch) {
+        for (const vec of batch) if (vec) vectors.push(vec)
+      }
     }
     if (!vectors.length) {
       const fallback = await embedder.embedBatch([{ kind: 'passage', text: trimmed.slice(0, 80) || ' ' }])

@@ -66,6 +66,12 @@ describe('memory-eval harness', () => {
     assert.equal(a.items.length, 12)
     assert.equal(a.sliceSha256, b.sliceSha256)
     assert.equal(a.items.filter(item => item.question_id.endsWith('_abs')).length, 3)
+
+    const exclude = new Set(a.items.map(item => item.question_id))
+    const heldOut = selectStratifiedLmeSlice(items, 2, exclude)
+    assert.equal(heldOut.items.length, 12)
+    assert.equal(heldOut.items.some(item => exclude.has(item.question_id)), false)
+    assert.notEqual(heldOut.sliceSha256, a.sliceSha256)
   })
 
   it('selects matching judge prompts and scores offline retrieval metrics cleanly', () => {
