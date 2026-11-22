@@ -314,6 +314,7 @@ function messageEntries(state: ThreadView, views: readonly View[], handlers: Han
   const editing = state.messages.findIndex((message) => message.id === state.rewind.editing)
   const later = editing < 0 ? 0 : state.messages.length - editing - 1
   const folds = foldAfter(state)
+  const earlierFolds = [...(folds[''] ?? []), ...state.messages.slice(0, start).flatMap((message) => folds[message.id] ?? [])]
   return state.messages.map((message, i) => {
     if (i < start) return []
     let view = views[i]
@@ -326,7 +327,7 @@ function messageEntries(state: ThreadView, views: readonly View[], handlers: Han
     const strip = (fold: Untyped) => foldStrip(fold, { opened: state.rewind.open[fold.id], handlers, messageView: (past: ThreadMessage) => pastMessageView(past, handlers), tasks: state.tasks,
       records: state.rewind.openRecords[fold.id], recordView: (record: ReportRecord) => reportRecord(record, handlers) })
     const strips = (folds[message.id] ?? []).flatMap(strip)
-    const before = i === start ? (folds[''] ?? []).flatMap(strip) : []
+    const before = i === start ? earlierFolds.flatMap(strip) : []
     return [...before, ...[view].flat(), ...strips]
   })
 }

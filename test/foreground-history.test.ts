@@ -180,7 +180,11 @@ test('renderer sliding window trims long sessions on idle turn_end and preserves
           { role: 'assistant', text: '旧回答', receipt: null },
         ],
         records: [{ reportId: 'r-401', at: 10, text: '汇报', after: 401 }],
-        folds: [{ id: 'f-1', at: 401, count: 2, kind: 'path' }],
+        folds: [
+          { id: 'f-root', at: 0, count: 3, kind: 'path' },
+          { id: 'f-before', at: 120, count: 2, kind: 'path' },
+          { id: 'f-1', at: 401, count: 2, kind: 'path' },
+        ],
       },
     },
   })
@@ -188,6 +192,7 @@ test('renderer sliding window trims long sessions on idle turn_end and preserves
   assert.equal(state.restored?.count, 402)
   assert.equal(state.messages[0]?.id, 'm400')
   assert.deepEqual(rewindTarget(state, 'm400'), { words: '旧问题', occurrence: 0, keep: 400 })
+  assert.deepEqual(foldAfter(state)['']?.map(f => f.id), ['f-root', 'f-before'], 'root and pre-window folds stay anchored at top of visible window')
   assert.deepEqual(foldAfter(state)['m400']?.map(f => f.id), ['f-1'])
   assert.deepEqual(placeOf(state, 'm401', 'thread'), { segmentId: 'seg-long', seq: 401 })
   assert.equal(hitTarget(state, { segmentId: 'seg-long', seq: 399, messageId: 1 }), null, 'messages before window open in Review')

@@ -45,15 +45,15 @@ export function rewindTarget(state: State, id: string): { words: string, occurre
 }
 
 /**
- * The folded paths by the message they hang after (its id; '' before everything): a fold at `at` follows the
- * `at`-th saved message.
+ * The folded paths by the message they hang after (its id; '' before the visible window): a fold at `at` follows the
+ * `at`-th saved message, and folds at or before `historyOffset` stay anchored at '' so earlier branches remain reachable.
  */
 export function foldAfter(state: Pick<State, 'messages' | 'folds'> & { historyOffset?: number }): Record<string, Fold[]> {
   const saved = state.messages.filter((message) => !message.open)
   const offset = state.historyOffset ?? 0
   return state.folds.reduce((byMessage: Record<string, Fold[]>, fold: Fold) => {
     const localAt = fold.at - offset
-    const key = fold.at === 0 && offset === 0 ? '' : localAt > 0 ? saved[localAt - 1]?.id : undefined
+    const key = localAt <= 0 ? '' : saved[localAt - 1]?.id
     return key === undefined ? byMessage : { ...byMessage, [key]: [...(byMessage[key] ?? []), fold] }
   }, {})
 }
