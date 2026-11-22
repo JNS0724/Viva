@@ -165,7 +165,13 @@ export const CONVERSATION_WINDOW_LIMIT = CONVERSATION_WINDOW_MESSAGES + 50
 const TRACE_TIMELINE_LIMIT = 500
 const TRACE_TIMELINE_KEEP = 400
 
-/** Keeps a long-lived foreground session bounded in memory without shifting indices mid-turn or while editing a rewind. */
+/**
+ * Keeps a long-lived foreground session bounded in memory without shifting indices mid-turn or while editing a rewind.
+ * Only trims messages already above `#thread`'s `THREAD_MAX` (`CONVERSATION_WINDOW_MESSAGES = 200`) viewport, which
+ * `#thread` never renders or offers rewind on (see `view/thread.ts` `restLine`, `timeline-search.ts`, and
+ * `test/smoke/smoke-perf.ts` `BUDGET.drawn`); earlier messages remain persisted in SQLite and reachable in 回顾 via
+ * `.thread-rest` -> `history:read`.
+ */
 export function trimConversationWindow(state: State): State {
   if (state.phase !== 'idle' || state.rewind.editing) return state
   let next = state

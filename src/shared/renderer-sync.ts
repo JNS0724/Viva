@@ -1,7 +1,12 @@
 import type { AgentInfo } from './agent-info.ts'
 import type { ConversationContext } from './conversation-context.ts'
 
-/** Maximum trailing messages included in a conversation snapshot or tail history load. */
+/**
+ * Maximum trailing messages included in a conversation snapshot, tail history load, or rendered `#thread`.
+ * Matches `view/thread.ts` `THREAD_MAX` and `test/smoke/smoke-perf.ts` (`BUDGET.drawn`): `#thread` only renders and
+ * offers rewind for the trailing 200 messages; earlier messages in the segment are read in 回顾 (`history:read`) via
+ * `.thread-rest` rather than paginated back into `#thread` (see `timeline-search.ts`).
+ */
 export const CONVERSATION_WINDOW_MESSAGES = 200
 
 export interface StreamMark { streamGeneration: string, eventCursor: number }

@@ -70,7 +70,11 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref?.())
   const handle = handlerOf(ipcMain)
 
-  /** The conversation on screen (trailing window), with the paths folded off it where the user went back (rewind-ipc.js). */
+  /**
+   * The conversation on screen (trailing `CONVERSATION_WINDOW_MESSAGES` window, matching `view/thread.ts` `THREAD_MAX`
+   * and `test/smoke/smoke-perf.ts` `BUDGET.drawn` — earlier messages in the segment are read in 回顾 via `.thread-rest`
+   * and `history:read`), with the paths folded off it where the user went back (rewind-ipc.ts).
+   */
   handle('history:load', () => {
     const view = viewOf(db.getTail(current().id, CONVERSATION_WINDOW_MESSAGES))
     return view && { ...view, folds: db.foldsOf(view.id) }
