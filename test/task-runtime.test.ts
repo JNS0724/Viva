@@ -765,6 +765,18 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(afterErrorRelaunch.nextOutputOffset, null)
   assert.equal(afterErrorRelaunch.outputTruncated, true)
 
+  // Terminal error whose trailing text collides verbatim with earlier assistant output must still win, live and after relaunch.
+  const colliding = await later.start('子串碰撞报错任务')
+  later.says(colliding.task.id, '准备调用接口，之前文档写过常见错误：rate limit exceeded')
+  later.emit({ type: 'task_end', taskId: colliding.task.id, stopReason: 'error', message: '请求失败\nrate limit exceeded' })
+  assert.equal(h.queuedReports.find(item => item.payload.taskId === colliding.task.id)?.payload.output, '请求失败\nrate limit exceeded')
+  const liveCollision = later.tasks.agent.query({ op: 'get', taskId: colliding.task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(liveCollision.resultPreview, '请求失败\nrate limit exceeded')
+  assert.equal(liveCollision.outputTotalChars, '请求失败\nrate limit exceeded'.length)
+  const relaunchedCollision = h.relaunch().tasks.agent.query({ op: 'get', taskId: colliding.task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(relaunchedCollision.resultPreview, '请求失败\nrate limit exceeded')
+  assert.equal(relaunchedCollision.outputTotalChars, '请求失败\nrate limit exceeded'.length)
+
   // Erased ended task preview (stored.resultErased === true) must never resurrect transcript text from historyDb.
   const stored = h.kept().find(entry => entry.id === task.id)!
   const erasedCheck = createTaskRuntime({

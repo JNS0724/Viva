@@ -87,13 +87,6 @@ function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknow
     .map(message => String(message.text))
     .join('\n')
 }
-/** Confirm `full` actually corresponds to `preview` so terminal error messages from `task_end` are never masked by earlier transcript text. */
-function matchesPreview(full: string, preview: string): boolean {
-  if (!preview) return true
-  const tailLine = preview.split('\n').map(line => line.trim()).filter(Boolean).at(-1) ?? preview
-  const sample = tailLine.slice(-Math.min(tailLine.length, 64))
-  return full.includes(sample)
-}
 
 /** A task's session as dsh started it (its id), or why not (acp-bridge.ts startTask). */
 type StartedTask = { ok: boolean, taskId?: string, reason?: string }
@@ -173,7 +166,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     seqs.set(taskId, taskSeq)
     publish({ ...event, type: String(event.type), taskId, runId, taskSeq })
   }
-  const registry = createTaskRegistry({ now, readOutput: (taskId, preview) => fullOutputOf(taskId, preview), changed: (snapshot) => {
+  const registry = createTaskRegistry({ now, readOutput: (taskId) => fullOutputOf(taskId), changed: (snapshot) => {
     queued = [...queued, snapshot]
     ended(snapshot)
     if (depth === 0) pushQueued()
@@ -238,7 +231,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     onError: (err) => emitDiagnosticFailure('task', err, { stage: 'checkpoint' }),
   })
 
-  function fullOutputOf(taskId: string, preview: string): string | null {
+  function fullOutputOf(taskId: string): string | null {
     if (revoked.has(taskId)) return ''
     const stored = store.list().find(item => item.id === taskId)
     const entry = stored ?? tasks.get(taskId)
@@ -247,8 +240,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const held = attached.has(taskId)
     const messages = (held ? taskWords.current(taskId) : null) ?? db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? []
     const text = latestRunOutput(messages, typeof entry.runStart === 'number' ? entry.runStart : undefined)
-    if (!text) return null
-    return matchesPreview(text, preview) ? text : null
+    return text.length > 0 ? text : null
   }
 
   function briefMessage(taskId: string, text: string, admission: BriefAdmission): StoredMessage {
@@ -380,8 +372,10 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
     const resultTruncated = registry.resultTruncatedOf(snapshot.taskId)
+    const resultFromTerminal = registry.resultFromTerminalOf(snapshot.taskId)
     store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview,
-      ...(resultTruncated ? { resultTruncated: true } : { resultTruncated: undefined }) })
+      ...(resultTruncated ? { resultTruncated: true } : { resultTruncated: undefined }),
+      ...(resultFromTerminal ? { resultFromTerminal: true } : { resultFromTerminal: undefined }) })
     const host = typeof entry.next === 'string' ? db.get(entry.next) : null
     const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
     const end = pendingEnds.get(snapshot.taskId)
@@ -392,7 +386,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
     const terminalMessage = typeof end?.event.message === 'string' && end.event.message ? end.event.message : null
-    const windowedOutput = windowReportOutput(terminalMessage ?? fullOutputOf(snapshot.taskId, snapshot.resultPreview) ?? snapshot.resultPreview)
+    const windowedOutput = windowReportOutput(terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (fullOutputOf(snapshot.taskId) ?? snapshot.resultPreview)))
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
       host: typeof entry.next === 'string' ? entry.next : null, output: windowedOutput.text,
       ...(windowedOutput.truncated ? { outputTruncated: true } : {}), token: randomUUID().replaceAll('-', ''),
@@ -477,7 +471,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const evidence = admit ? await admit(taskId) : true
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, text, evidence)
-    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultErased: _resultErased, ...going } = kept
+    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, resultErased: _resultErased, ...going } = kept
     const runId = newRunId()
     const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
@@ -521,7 +515,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = newRunId()
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
-    const { resultTruncated: _resultTruncated, resultErased: _resultErased, ...keptWithoutTruncated } = kept
+    const { resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, resultErased: _resultErased, ...keptWithoutTruncated } = kept
     const running = { ...keptWithoutTruncated, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)

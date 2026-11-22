@@ -4,8 +4,8 @@ import type { ActiveTool } from '../shared/ipc-results.ts'
 
 import type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
-interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string, previewTruncated: boolean }
-export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string, resultTruncated?: boolean }
+interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string, previewTruncated: boolean, resultFromTerminal: boolean }
+export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string, resultTruncated?: boolean, resultFromTerminal?: boolean }
 export type TaskScope = { kind: 'main', cwd?: string } | { taskId: string }
 export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, cwd?: string, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean, outputOffset?: number, outputLimit?: number }
 export const DEFAULT_OUTPUT_LIMIT = 4000
@@ -24,7 +24,7 @@ const directory = (value: string) => process.platform === 'win32' ? path.resolve
 export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskSnapshot) => {}, readOutput }: {
   now?: () => number
   changed?: (snapshot: TaskSnapshot) => void
-  readOutput?: (taskId: string, preview: string) => string | null | undefined
+  readOutput?: (taskId: string) => string | null | undefined
 } = {}) {
   const tasks = new Map<string, Task>()
   const waits = new Map<string, Map<string, 'permission' | 'answer'>>()
@@ -32,7 +32,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const streams = new Map<string, { key: string, blocks: Map<number, string> }>()
   const terminalMessages = new Map<string, string>()
   const published = new Map<string, string>()
-  const snapshot = ({ cwd: _cwd, request: _request, resultKey: _resultKey, previewTruncated: _previewTruncated, ...value }: Task): TaskSnapshot => ({ ...value })
+  const snapshot = ({ cwd: _cwd, request: _request, resultKey: _resultKey, previewTruncated: _previewTruncated, resultFromTerminal: _resultFromTerminal, ...value }: Task): TaskSnapshot => ({ ...value })
   function publish(task: Task) {
     task.updatedAt = now(); task.revision++
     // Text chunks already have their own UI event. Do not double renderer work on every token.
@@ -48,7 +48,8 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
     const rawPreview = meta.resultPreview ?? ''
     const task: Task = { taskId: meta.id, runId: meta.runId ?? '', title: meta.title.slice(0, 200), cwd: meta.cwd ?? '', request: (meta.words ?? '').slice(0, 20_000),
       status, currentAction: null, waitingFor: null, startedAt: meta.startedAt ?? now(), updatedAt: now(), endedAt: status === 'interrupted' ? null : meta.endedAt ?? null,
-      resultPreview: rawPreview.slice(-4000), resultKey: meta.resultKey, previewTruncated: Boolean(meta.resultTruncated) || rawPreview.length > 4000, revision: 0 }
+      resultPreview: rawPreview.slice(-4000), resultKey: meta.resultKey, previewTruncated: Boolean(meta.resultTruncated) || rawPreview.length > 4000,
+      resultFromTerminal: Boolean(meta.resultFromTerminal), revision: 0 }
     terminalMessages.delete(meta.id)
     tasks.set(meta.id, task)
     publish(task)
@@ -56,7 +57,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   function restart(id: string, runId = '') {
     const task = tasks.get(id); if (!task) return
     waits.delete(id); tools.delete(id); streams.delete(id); terminalMessages.delete(id)
-    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', resultKey: undefined, previewTruncated: false, startedAt: now() })
+    Object.assign(task, { runId, status: 'running', waitingFor: null, currentAction: null, endedAt: null, resultPreview: '', resultKey: undefined, previewTruncated: false, resultFromTerminal: false, startedAt: now() })
     publish(task)
   }
   /** How a task is now in every map, to be put back if the change it was part of is undone. */
@@ -100,6 +101,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       }
       if (kind === 'agent_message_chunk') {
         task.resultKey = undefined
+        task.resultFromTerminal = false
         const next = task.resultPreview + text(record(update.content).text)
         if (next.length > 4000) task.previewTruncated = true
         task.resultPreview = next.slice(-4000)
@@ -110,11 +112,13 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         if (!stream || stream.key !== key) { stream = { key, blocks: new Map() }; streams.set(id, stream) }
         if (update.kind === 'settle' && Array.isArray(update.blocks)) {
           task.resultKey = key || undefined
+          task.resultFromTerminal = false
           const next = update.blocks.map(record).filter(block => block.type === 'text').map(block => text(block.text)).join('\n')
           task.previewTruncated = next.length > 4000
           task.resultPreview = next.slice(-4000)
         } else if (update.blockType === 'text' && typeof update.index === 'number') {
           task.resultKey = key || undefined
+          task.resultFromTerminal = false
           const old = stream.blocks.get(update.index) ?? ''
           const nextBlock = update.kind === 'delta' ? old + text(update.text) : text(update.text)
           if (nextBlock.length > 4000) task.previewTruncated = true
@@ -138,6 +142,7 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       if (event.message) {
         const fullMessage = text(event.message)
         task.resultKey = undefined
+        task.resultFromTerminal = true
         task.previewTruncated = fullMessage.length > 4000
         task.resultPreview = fullMessage.slice(-4000)
         if (fullMessage.length <= MAX_TERMINAL_MESSAGE_CHARS) terminalMessages.set(id, fullMessage)
@@ -168,9 +173,11 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
         outputTruncated?: boolean
       } = { resultPreview: undefined }
       if (request.includeOutput) {
-        const resolved = readOutput?.(task.taskId, task.resultPreview)
-        const full = resolved ?? terminalMessages.get(task.taskId) ?? task.resultPreview
-        const previewOnlyTruncated = resolved == null && !terminalMessages.has(task.taskId) && task.previewTruncated
+        const resolved = task.resultFromTerminal
+          ? (terminalMessages.get(task.taskId) ?? null)
+          : readOutput?.(task.taskId)
+        const full = resolved ?? task.resultPreview
+        const previewOnlyTruncated = resolved == null && task.previewTruncated
         const total = full.length
         const start = Math.min(request.outputOffset ?? 0, total)
         const limit = Math.min(request.outputLimit ?? DEFAULT_OUTPUT_LIMIT, MAX_OUTPUT_LIMIT)
@@ -209,11 +216,12 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const revisionOf = (id: string): number | null => tasks.get(id)?.revision ?? null
   const resultKeyOf = (id: string) => tasks.get(id)?.resultKey
   const resultTruncatedOf = (id: string) => Boolean(tasks.get(id)?.previewTruncated)
+  const resultFromTerminalOf = (id: string) => Boolean(tasks.get(id)?.resultFromTerminal)
   /** The tool calls a task's run has at work now, in the order they began: for a window that opens (task-runtime.ts finished). */
   const activeTools = (id: string): ActiveTool[] => [...(tools.get(id) ?? new Map<string, string>())].map(([toolCallId, title]) => ({ toolCallId, title }))
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, resultKeyOf, resultTruncatedOf, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
+  return { put, restart, remove, resultKeyOf, resultTruncatedOf, resultFromTerminalOf, receive, interrupt, query, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 
