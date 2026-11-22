@@ -427,7 +427,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
   const allowMemorySession = async (id: string, cwd?: string) => memoryCoordination.allowsSession(id, await memoryProjectFor(id, cwd))
   const canTransferMemoryToModel = (_id: string) => Boolean(dsh.current?.memory.ready())
-  function historyForProject(project: ReturnType<typeof memoryProjectScope>) {
+  const isMainSession = (sessionId: string | null | undefined) => Boolean(sessionId && sessionId === sessions.current().sessionId)
+  function historyForProject(project: ReturnType<typeof memoryProjectScope>, crossProject = false) {
     const bySegment = new Map<string, string | undefined>()
     return async (row: HistoryEvidence) => {
       if (!historyDb.promptDeliverable(row.sourceId)) return false
@@ -437,7 +438,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         bySegment.set(row.segmentId, saved === undefined ? memoryProjectScope(location?.cwd)?.id : saved || undefined)
       }
       const sourceProject = bySegment.get(row.segmentId)
-      const allowed = await memoryCoordination.allowsProjectHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, project, await projectOfSession(row.sessionId ?? undefined))
+      const allowed = await memoryCoordination.allowsProjectHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, project, await projectOfSession(row.sessionId ?? undefined), crossProject)
       return allowed && historyDb.promptDeliverable(row.sourceId)
     }
   }
@@ -665,19 +666,28 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         }
         return { sourceIds: answerSources }
       },
-      historySearch: async (query, range, session) => (!memoryBusy() && dsh.current?.memory.ready() && historyDb
-        ? historyRecallAsync(historyDb, historyForProject(await projectOfSession(session)), row => usedHistory(session, row)).search(query, range) : []),
-      historyRead: async (ref, around, session) => (!memoryBusy() && dsh.current?.memory.ready() && historyDb
-        ? historyRecallAsync(historyDb, historyForProject(await projectOfSession(session)), row => usedHistory(session, row)).read(ref, around) : { status: 'deleted' as const }),
+      historySearch: async (query, range, session) => {
+        if (memoryBusy() || !dsh.current?.memory.ready() || !historyDb) return []
+        const crossProject = isMainSession(session)
+        return historyRecallAsync(historyDb, historyForProject(await projectOfSession(session), crossProject), row => usedHistory(session, row, crossProject)).search(query, range)
+      },
+      historyRead: async (ref, around, session) => {
+        if (memoryBusy() || !dsh.current?.memory.ready() || !historyDb) return { status: 'deleted' as const }
+        const crossProject = isMainSession(session)
+        return historyRecallAsync(historyDb, historyForProject(await projectOfSession(session), crossProject), row => usedHistory(session, row, crossProject)).read(ref, around)
+      },
       taskRead: async (request, sessionId) => {
         if (memoryBusy() || (request.op === 'get' && await staleMemorySession(request.taskId))) throw new Error(t('main.memory.context.stale'))
-        const result = requireTasks().agent.query(request, sessionId === lastInfo.sessionId ? { cwd: workDirNow() ?? '' } : { taskId: sessionId })
+        const main = isMainSession(sessionId)
+        const result = requireTasks().agent.query(request, main ? { kind: 'main', cwd: workDirNow() ?? '' } : { taskId: sessionId })
+        const sessionProject = await projectOfSession(sessionId)
+        const ready = Boolean(dsh.current?.memory.ready())
         if (request.op === 'get' && request.taskId) {
-          if (!await memoryCoordination.inherit(request.taskId, sessionId, await projectOfSession(request.taskId), await projectOfSession(sessionId), Boolean(dsh.current?.memory.ready()))) throw new Error(t('main.memory.context.stale'))
+          if (!await memoryCoordination.inherit(request.taskId, sessionId, await projectOfSession(request.taskId), sessionProject, ready, main)) throw new Error(t('main.memory.context.stale'))
         }
         if ('tasks' in result && result.tasks) {
           const tasks = []
-          for (const task of result.tasks) if (!task.taskId || await memoryCoordination.inherit(task.taskId, sessionId, await projectOfSession(task.taskId), await projectOfSession(sessionId), Boolean(dsh.current?.memory.ready()))) tasks.push(task)
+          for (const task of result.tasks) if (!task.taskId || await memoryCoordination.inherit(task.taskId, sessionId, await projectOfSession(task.taskId), sessionProject, ready, main)) tasks.push(task)
           return { ...result, tasks }
         }
         return result
@@ -839,14 +849,14 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
    * it: no words of the user's.
    */
   async function eligibleTaskReport(taskId: string, session: string, evidence?: MemoryProvenance) {
-    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready())
-    if (evidence) return await memoryCoordination.transferStatus(evidence, project, ready) === 'ready'
-    return memoryCoordination.canInherit(taskId, await projectOfSession(taskId), project, ready)
+    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready()), crossProject = isMainSession(session)
+    if (evidence) return await memoryCoordination.transferStatus(evidence, project, ready, crossProject) === 'ready'
+    return memoryCoordination.canInherit(taskId, await projectOfSession(taskId), project, ready, crossProject)
   }
   async function inheritTaskReport(taskId: string, session: string, evidence?: MemoryProvenance) {
-    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready())
-    if (evidence) return memoryCoordination.transfer(session, evidence, project, ready)
-    return memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), project, ready)
+    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready()), crossProject = isMainSession(session)
+    if (evidence) return memoryCoordination.transfer(session, evidence, project, ready, crossProject)
+    return memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), project, ready, crossProject)
   }
   const taskReports = createTaskReports({
     eligible: eligibleTaskReport,
@@ -1304,7 +1314,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const stale = await staleMemorySession(id)
     assertAdmitted()
     assertFeedSelected()
-    const projectAllowed = stale || !id || await mayUseProjectEvidence(await memory.provenance(id), currentMemoryProject())
+    const projectAllowed = stale || !id || await allowMemorySession(id, workDirNow() ?? undefined)
+    if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
     assertAdmitted()
     assertFeedSelected()
     if (stale || !projectAllowed) {
@@ -1818,10 +1829,10 @@ ${question}` : question
     registerTaskIpc(ipcMain, taskRuntime.window)
     // The main conversation's requests: each decision's task actions go to the task runtime. A task starts from the
     // conversation on screen (task-runtime.ts), so only while that is still the request's: a decision outliving its
-    // turn (stopped meanwhile) must not start its remaining work in another conversation. Only tasks of the request's
-    // working folder are stopped or messaged.
+    // turn (stopped meanwhile) must not start its remaining work in another conversation. The main conversation can
+    // inspect, message and stop any of its background tasks regardless of working directory.
     const tasks = taskRuntime.agent
-    const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { cwd: cwd ?? '' }) }
+    const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { kind: 'main', cwd: cwd ?? '' }) }
     async function requestEvidence(place: RequestPlace) {
       const bridge = dsh.current
       const here = () => {
@@ -1834,12 +1845,12 @@ ${question}` : question
         || !here() || historyDb.evidenceErased(place.memory)) throw new Error(t('main.memory.context.stale'))
       return place.memory
     }
-    function admitTask(place: RequestPlace, evidence: MemoryProvenance | undefined, targetCwd?: string) {
+    function admitTask(place: RequestPlace, evidence: MemoryProvenance | undefined, targetCwd?: string, crossProject = false) {
       return async (taskId: string) => {
         if (sessions.current().sessionId !== place.sessionId || !await allowMemorySession(place.sessionId, place.cwd ?? undefined)
           || !await allowMemorySession(taskId, targetCwd) || !canTransferMemoryToModel(taskId)) return false
         const project = targetCwd === undefined ? await projectOfSession(taskId) : memoryProjectScope(targetCwd)
-        if (!await memoryCoordination.transfer(taskId, evidence, project, Boolean(dsh.current?.memory.ready()))
+        if (!await memoryCoordination.transfer(taskId, evidence, project, Boolean(dsh.current?.memory.ready()), crossProject)
           || sessions.current().sessionId !== place.sessionId) return false
         return evidence ?? true
       }
@@ -1851,12 +1862,12 @@ ${question}` : question
       tasks: {
         start: async ({ title, brief }, place) => {
           const evidence = await requestEvidence(place)
-          return tasks.start(brief, title, admitTask(place, evidence, place.cwd ?? workDirNow() ?? undefined))
+          return tasks.start(brief, title, admitTask(place, evidence, place.cwd ?? workDirNow() ?? undefined, true))
         },
         message: async (taskId, text, place) => {
           const evidence = await requestEvidence(place)
           visible(taskId, place.cwd)
-          return tasks.message(taskId, text, admitTask(place, evidence))
+          return tasks.message(taskId, text, admitTask(place, evidence, undefined, true))
         },
         stop: async (taskId, place) => {
           await requestEvidence(place)

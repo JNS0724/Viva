@@ -51,18 +51,25 @@ test('what is said of a task not known yet is no task\'s: nothing waits for it, 
   assert.equal(registry.query({ op: 'get', taskId: 'b' }, { taskId: 'b' }).task!.status, 'running')
 })
 
-test('queries restrict workspace and background callers, paginate, and omit request/output by default', () => {
+test('queries let main see all workspaces with optional cwd filter, keep background callers self-only, paginate, and omit request/output by default', () => {
   const registry = createTaskRegistry()
   for (const [id, cwd] of [['a', '/one'], ['b', '/one'], ['c', '/two']]) registry.put({ id: id!, cwd, title: id!, words: 'private' })
-  const list = registry.query({ op: 'list', limit: 1 }, { cwd: '/one' })
-  assert.equal(list.total, 2); assert.equal(list.tasks!.length, 1); assert.equal(list.nextOffset, 1)
+  const list = registry.query({ op: 'list', limit: 1 }, { kind: 'main', cwd: '/one' })
+  assert.equal(list.total, 3); assert.equal(list.tasks!.length, 1); assert.equal(list.nextOffset, 1)
   assert.equal(JSON.stringify(list).includes('private'), false)
+  assert.ok(list.tasks![0]!.cwd)
+  const onlyOne = registry.query({ op: 'list', cwd: '/one' }, { kind: 'main', cwd: '/two' })
+  assert.equal(onlyOne.total, 2)
+  assert.deepEqual(onlyOne.tasks!.map(task => task.cwd), ['/one', '/one'])
+  const crossGet = registry.query({ op: 'get', taskId: 'c' }, { kind: 'main', cwd: '/one' })
+  assert.equal(crossGet.task!.taskId, 'c')
+  assert.equal(crossGet.task!.cwd, '/two')
   assert.equal(registry.query({ op: 'list' }, { taskId: 'a' }).total, 1)
-  assert.throws(() => registry.query({ op: 'get', taskId: 'c' }, { cwd: '/one' }), /不存在/)
   assert.throws(() => registry.query({ op: 'get', taskId: 'b' }, { taskId: 'a' }), /不存在/)
   registry.remove('a'); assert.equal(registry.query({ op: 'list' }, { taskId: 'a' }).total, 0)
-  assert.equal(parseTaskQuery({ op: 'list', limit: 100 }).limit, 30)
-  for (const request of [{ op: 'stop' }, { op: 'get' }, { op: 'list', offset: -1 }, { op: 'list', includeOutput: 'yes' }, { op: 'list', status: 'fake' }]) assert.throws(() => parseTaskQuery(request))
+  assert.equal(parseTaskQuery({ op: 'list', limit: 100, cwd: ' /one ' }).limit, 30)
+  assert.equal(parseTaskQuery({ op: 'list', cwd: ' /one ' }).cwd, '/one')
+  for (const request of [{ op: 'stop' }, { op: 'get' }, { op: 'list', offset: -1 }, { op: 'list', includeOutput: 'yes' }, { op: 'list', status: 'fake' }, { op: 'list', cwd: '   ' }, { op: 'list', cwd: 123 }]) assert.throws(() => parseTaskQuery(request))
 })
 
 test('plugin IPC carries session identity, rejects stale sessions, and returns structured query data', async () => {
@@ -150,7 +157,7 @@ test('task query IPC waits for async owner authorization before serializing data
     read: async (request, session) => {
       await admitted
       if (session === 'revoked') throw new Error('owner rejected stale dependencies')
-      return registry.query(request, { cwd: '/work' })
+      return registry.query(request, { kind: 'main', cwd: '/work' })
     },
   })
   const channel = createTasksChannel({ send: message => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })

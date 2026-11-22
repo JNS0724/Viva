@@ -56,13 +56,13 @@ export interface HostMemoryApi {
   /** Trusted native adapter only: rebuild an idle model surface and acknowledge its durable replacement. */
   recoverContext: Args<[session: string], boolean>
   transferable: Args<[evidence: MemoryProvenance | null | undefined], boolean>
-  transferStatus: Args<[evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean], 'ready' | 'stale' | 'memory-unavailable'>
-  transfer: Args<[session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean], boolean>
-  canInherit: Args<[source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
-  inherit: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
+  transferStatus: Args<[evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], 'ready' | 'stale' | 'memory-unavailable'>
+  transfer: Args<[session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], boolean>
+  canInherit: Args<[source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], boolean>
+  inherit: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], boolean>
   inheritFork: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
-  allowsProjectHistory: Args<[row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject], boolean>
-  useHistory: Args<[session: string | undefined, row: MemoryHistoryOccurrence], void>
+  allowsProjectHistory: Args<[row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject, crossProject?: boolean], boolean>
+  useHistory: Args<[session: string | undefined, row: MemoryHistoryOccurrence, crossProject?: boolean], void>
   provenance: Args<[session: string], MemoryProvenance>
   nativeOutputEvidence: { input: { session: string, seq: number, digest: string }, output: MemoryErasureEvidence[] | null }
   authorizedProvenance: { input: { session: string, prior?: MemoryProvenance, sourceId?: string }, output: MemoryProvenance | null }
@@ -101,8 +101,9 @@ const args = <T extends z.ZodTuple>(schema: T) => z.strictObject({ args: z.prepr
   ? value.map((item, index) => item === null && schema.def.items[index] && z.safeParse(schema.def.items[index], undefined).success ? undefined : item)
   : value, schema) })
 const empty = args(z.tuple([]))
-const transfer = [maybeProvenance, project.optional(), z.boolean()] as const
-const inheritance = [key, project.optional(), project.optional(), z.boolean()] as const
+const transfer = [maybeProvenance, project.optional(), z.boolean(), z.boolean().optional()] as const
+const inheritance = [key, project.optional(), project.optional(), z.boolean(), z.boolean().optional()] as const
+const forkInheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
   profile: empty, dreamStatus: args(z.tuple([z.uuid().optional()])), requestDream: args(z.tuple([z.uuid().optional()])),
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
@@ -117,9 +118,9 @@ export const hostMemoryInputSchemas = {
   allowsSession: args(z.tuple([key, project.optional()])), recoverContext: args(z.tuple([key])), transferable: args(z.tuple([maybeProvenance])),
   transferStatus: args(z.tuple(transfer)), transfer: args(z.tuple([key, ...transfer])),
   canInherit: args(z.tuple(inheritance)), inherit: args(z.tuple([key, ...inheritance])),
-  inheritFork: args(z.tuple([key, ...inheritance])),
-  allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional()])),
-  useHistory: args(z.tuple([key.optional(), occurrence])), provenance: args(z.tuple([key])), authorizedProvenance: z.strictObject({ session: key, prior: provenance.optional(), sourceId: key.optional() }),
+  inheritFork: args(z.tuple([key, ...forkInheritance])),
+  allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional(), z.boolean().optional()])),
+  useHistory: args(z.tuple([key.optional(), occurrence, z.boolean().optional()])), provenance: args(z.tuple([key])), authorizedProvenance: z.strictObject({ session: key, prior: provenance.optional(), sourceId: key.optional() }),
   nativeOutputEvidence: z.strictObject({ session: key, seq: integer, digest: z.string().regex(/^[a-f0-9]{64}$/u) }),
   recordSession: args(z.tuple([key])), sessionProject: args(z.tuple([key])), recordSessionProject: args(z.tuple([key, z.string()])),
   recordDeliveredSource: args(z.tuple([key, key, z.boolean(), key])), isDerivedDelivery: args(z.tuple([key])),

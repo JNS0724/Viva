@@ -12,7 +12,8 @@ export function createMemoryHostClient(call: HostMemoryCaller, state: () => Memo
     stale: method('stale'), allowsSession: method('allowsSession'), transferable: method('transferable'),
     transferStatus: method('transferStatus'), transfer: method('transfer'), canInherit: method('canInherit'), inherit: method('inherit'),
     allowsProjectHistory: (...[row, ...scope]: HostMemoryApi['allowsProjectHistory']['input']['args']) => call('allowsProjectHistory', { args: [occurrence(row), ...scope] }),
-    useHistory: (session: string | undefined, row: MemoryHistoryOccurrence) => call('useHistory', { args: [session, occurrence(row)] }), provenance: method('provenance'),
+    useHistory: (session: string | undefined, row: MemoryHistoryOccurrence, crossProject?: boolean) =>
+      call('useHistory', { args: crossProject === undefined ? [session, occurrence(row)] : [session, occurrence(row), crossProject] }), provenance: method('provenance'),
     recordSession: method('recordSession'), sessionProject: method('sessionProject'), recordSessionProject: method('recordSessionProject'),
     recordDeliveredSource: method('recordDeliveredSource'), isDerivedDelivery: method('isDerivedDelivery'), replaySources: method('replaySources'),
   }

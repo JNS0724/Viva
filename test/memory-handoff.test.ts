@@ -1713,7 +1713,7 @@ test('startup completes a history withdrawal interrupted by process death before
 
 // This case spans two process starts, project switches, a fork and topic recovery.
 // Its individual waits retain their existing bounds.
-test('source-backed project files, exact recall and chat history remain in their Git workspace', { timeout: 90_000 }, async t => {
+test('source-backed project files and exact recall remain in their Git workspace while main chat history spans the single timeline', { timeout: 90_000 }, async t => {
   const began = performance.now()
   const timings: { step: string, startedMs: number, elapsedMs?: number }[] = []
   let inspect: () => unknown = () => ({ state: 'setting-up' })
@@ -1752,11 +1752,13 @@ test('source-backed project files, exact recall and chat history remain in their
   let scheduleId: string | undefined
   const app = await step('setup', () => setup(t, request => {
     const last = request.messages.at(-1)
+    const hasImage = request.messages.some(message => Array.isArray(message.content) && message.content.some((part: { type?: string }) => part.type === 'image'))
+    if (hasImage && JSON.stringify(last).includes('tool_result')) return { text: rawHistoryText }
     if (JSON.stringify(last).includes('tool_result')) return null
-    if (Array.isArray(last?.content) && last.content.some((part: { type?: string }) => part.type === 'image')) return { text: rawHistoryText }
     const question = questionOf(request.messages)
     if (question === recall) return { tool: { name: 'memory_recall', input: { query: '构建标记', scope: 'project' } } }
     if (question === history) return { tool: { name: 'search_conversations', input: { query: '构建标记' } } }
+    if (question === '查甲项目的构建标记') return { tool: { name: 'search_conversations', input: { query: firstMarker } } }
     if (question === imageHistory) return { tool: { name: 'search_conversations', input: { query: '图像转录合成标记' } } }
     if (question === scheduleTitle) return { tool: { name: 'schedule_create', input: {
       title: scheduleTitle, prompt: '汇总甲项目的当前状态', kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
@@ -1799,20 +1801,37 @@ test('source-backed project files, exact recall and chat history remain in their
     assert.ok(detail?.sources.some(source => source.link))
     return switched.info
   }
-  const check = async (label: string, present: string, excluded: string) => {
+  const check = async (label: string, present: string, excluded: string, { crossProjectHistory = false } = {}) => {
     const count = app.model.requests.length
     await step(`${label}:profile-prompt`, () => app.ask('查看本项目构建标记的基本资料'))
     await step(`${label}:recall`, () => app.ask(recall))
+    const beforeHistory = app.model.requests.length
     await step(`${label}:search-history`, () => app.ask(history))
-    const messages = app.model.requests.slice(count).map(raw => (raw as Request).messages)
-    assert.ok(messages.some(rows => {
+    const scopedMessages = app.model.requests.slice(count, beforeHistory).map(raw => (raw as Request).messages)
+    const historyMessages = app.model.requests.slice(beforeHistory).map(raw => (raw as Request).messages)
+    assert.ok(scopedMessages.some(rows => {
       const last = JSON.stringify(rows.at(-1))
       return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(present)
     }))
-    for (const name of ['memory_recall', 'search_conversations']) assert.ok(messages.some(rows =>
-      modelToolResults({ messages: rows }, name).some(result => JSON.stringify(result).includes(present))),
-    JSON.stringify({ name, results: messages.flatMap(rows => modelToolResults({ messages: rows }, name)) }))
-    assert.ok(messages.every(rows => !JSON.stringify(rows).includes(excluded)), JSON.stringify({ excluded, leaked: messages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
+    assert.ok(scopedMessages.some(rows =>
+      modelToolResults({ messages: rows }, 'memory_recall').some(result => JSON.stringify(result).includes(present))),
+    JSON.stringify({ name: 'memory_recall', results: scopedMessages.flatMap(rows => modelToolResults({ messages: rows }, 'memory_recall')) }))
+    assert.ok(scopedMessages.every(rows => !JSON.stringify(rows).includes(excluded)),
+      JSON.stringify({ excluded, leaked: scopedMessages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
+    const searchResults = historyMessages.flatMap(rows => modelToolResults({ messages: rows }, 'search_conversations'))
+    assert.ok(searchResults.some(result => JSON.stringify(result).includes(present)),
+      JSON.stringify({ name: 'search_conversations', results: searchResults }))
+    if (crossProjectHistory) {
+      const crossOffset = app.model.requests.length
+      await step(`${label}:cross-project-history`, () => app.ask('查甲项目的构建标记'))
+      const crossResults = (app.model.requests.slice(crossOffset) as Request[]).flatMap(request => modelToolResults(request, 'search_conversations'))
+      assert.ok(crossResults.some(result => JSON.stringify(result).includes(excluded) && JSON.stringify(result).includes(projectA)),
+        JSON.stringify({ name: 'search_conversations', expectedCrossProject: excluded, results: crossResults }))
+    } else {
+      assert.ok(historyMessages.every(rows => !JSON.stringify(rows).includes(excluded)),
+        JSON.stringify({ excluded, leaked: historyMessages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
+    }
+    return beforeHistory
   }
   const sessionA = await enter('project-a', projectA, firstFact)
   await check('project-a', firstMarker, secondMarker)
@@ -1841,7 +1860,7 @@ test('source-backed project files, exact recall and chat history remain in their
   const beforeSwitch = app.model.requests.length
   const sessionB = await enter('project-b', projectB, secondFact)
   assert.notEqual(sessionA.sessionId, sessionB.sessionId)
-  await check('project-b', secondMarker, firstMarker)
+  const beforeProjectBHistory = await check('project-b', secondMarker, firstMarker, { crossProjectHistory: true })
   const restrictedOffset = app.model.requests.length
   await step('project-b:restricted-list', () => app.ask(listSchedules))
   const modelLists = (app.model.requests.slice(restrictedOffset) as Request[]).flatMap(request => modelToolResults(request, 'schedule_list'))
@@ -1851,9 +1870,9 @@ test('source-backed project files, exact recall and chat history remain in their
   await step('project-b:rejected-update', () => app.ask(updateSchedule))
   assert.ok((app.model.requests.slice(updateOffset) as Request[]).some(request => modelToolResults(request, 'schedule_update').length))
   assert.equal(schedules().find(item => item.id === scheduleId)?.title, scheduleTitle)
-  const afterSwitch = app.model.requests.slice(beforeSwitch) as Request[]
-  assert.ok(afterSwitch.some(request => questionOf(request.messages) === secondFact && JSON.stringify(request.system).includes('个人工作助手')))
-  assert.ok(afterSwitch.filter(request => JSON.stringify(request.system).includes('个人工作助手')
+  const afterSwitchBeforeHistory = app.model.requests.slice(beforeSwitch, beforeProjectBHistory) as Request[]
+  assert.ok(afterSwitchBeforeHistory.some(request => questionOf(request.messages) === secondFact && JSON.stringify(request.system).includes('个人工作助手')))
+  assert.ok(afterSwitchBeforeHistory.filter(request => JSON.stringify(request.system).includes('个人工作助手')
     || questionOf(request.messages).includes(secondMarker)).every(request => !JSON.stringify(request).includes(firstMarker)))
 
   // A picture-only conversation has delivery provenance without a memory source to recover its original project from.
@@ -1878,19 +1897,19 @@ test('source-backed project files, exact recall and chat history remain in their
   assert.ok(await step('cold-start-without-git', () => app.startBackend()))
   assert.notEqual(app.call<AgentInfo>('agent:info').sessionId, pictureTopic.sessionId)
   await step('without-git:continue', () => app.ask('继续查看现在可以用的记录'))
+  const beforeOutsideHistory = app.model.requests.length
   const outside = join(app.directory, 'workspace')
   const loose = await step('outside:switch', () => app.call<Promise<{ ok: boolean }>>('workdir:switch', outside, { confirmed: true }))
   assert.ok(loose.ok)
-  await step('outside:search-history', () => app.ask(history))
+  await step('outside:search-history', () => app.ask('查甲项目的构建标记'))
   await step('outside:search-picture-history', () => app.ask(imageHistory))
-  const outsideRequests = (app.model.requests.slice(outsideOffset) as Request[])
+  const beforeSearchRequests = (app.model.requests.slice(outsideOffset, beforeOutsideHistory) as Request[])
     .filter(request => JSON.stringify(request.system).includes('个人工作助手'))
-  assert.ok(outsideRequests.some(request => JSON.stringify(request.messages.at(-1)).includes('tool_result')))
-  const leaked = outsideRequests.filter(request => {
-    const text = JSON.stringify(request.messages)
-    return text.includes(firstMarker) || text.includes(rawHistoryText)
-  })
-  assert.deepEqual(leaked.map(request => JSON.stringify(request.messages.at(-1))), [])
+  assert.ok(beforeSearchRequests.every(request => !JSON.stringify(request.messages).includes(firstMarker) && !JSON.stringify(request.messages).includes(rawHistoryText)))
+  const outsideSearchResults = (app.model.requests.slice(beforeOutsideHistory) as Request[])
+    .flatMap(request => modelToolResults(request, 'search_conversations'))
+  assert.ok(outsideSearchResults.some(result => JSON.stringify(result).includes(firstMarker)), JSON.stringify({ outsideSearchResults }))
+  assert.ok(outsideSearchResults.some(result => JSON.stringify(result).includes(rawHistoryText)), JSON.stringify({ outsideSearchResults }))
 })
 
 test('deleting a memory file preserves the original chat and the task and report that read it after restart', { timeout: 45_000 }, async t => {
@@ -2497,4 +2516,141 @@ test('removing the last model from an unconfirmed stop enters setup without reta
   assert.equal(snapshot().stopUnconfirmed, false)
   await app.call('settings:clear-key')
   assert.equal(snapshot().activeTurn, null)
+})
+
+test('main session oversees background tasks across git repos while background tasks stay isolated', { timeout: 90_000 }, async t => {
+  let taskAId = '', repoA = '', repoB = ''
+  let releaseTaskA!: () => void
+  const holdTaskA = new Promise<void>(resolve => { releaseTaskA = resolve })
+  let releaseHoldStop!: () => void
+  const holdStop = new Promise<void>(resolve => { releaseHoldStop = resolve })
+  const briefA = '在甲仓库盘点接口清单'
+  const outputA1 = '甲仓库盘点完成：共 12 个接口'
+  const followUpText = '把这 12 个接口按模块分组'
+  const outputA2 = '甲仓库分组完成：3 个模块'
+  const holdFollowUpText = '再做一轮深度静态扫描'
+  const briefB = '在乙仓库核对自检边界'
+  const firstRequestIdOf = (messages: Request['messages']) => [...JSON.stringify(messages).matchAll(/【请求 ID：([A-Za-z0-9-]{1,64})】/g)].at(-1)?.[1]
+  const app = await setup(t, request => {
+    const last = request.messages.at(-1)
+    const lastJson = JSON.stringify(last)
+    const question = questionOf(request.messages)
+    if (question === holdFollowUpText) return { text: '不会完成的扫描', waitFor: holdStop }
+    if (question === followUpText) return { text: outputA2 }
+    if (question === briefA) return { text: outputA1, waitFor: holdTaskA }
+    if (JSON.stringify(request.messages[0]).includes(briefB)) {
+      const historyJson = JSON.stringify(request.messages)
+      if (!historyJson.includes('list_background_tasks')) return { tool: { name: 'list_background_tasks', input: {} } }
+      if (!historyJson.includes('search_conversations')) return { tool: { name: 'search_conversations', input: { query: '盘点接口' } } }
+      return { text: '乙仓库自检完成' }
+    }
+    if (lastJson.includes('tool_result')) return null
+    if (question === '查看全部后台任务') return { tool: { name: 'list_background_tasks', input: {} } }
+    if (question === '按乙仓库过滤后台任务') return { tool: { name: 'list_background_tasks', input: { cwd: repoB } } }
+    if (question === '按甲仓库过滤后台任务') return { tool: { name: 'list_background_tasks', input: { cwd: repoA } } }
+    if (question === '读取甲仓库任务详情' && taskAId) return { tool: { name: 'get_background_task', input: { taskId: taskAId, includeRequest: true, includeOutput: true } } }
+    if (question === '给甲仓库任务接着派活' && taskAId) return { tool: { name: 'message_background_task', input: { taskId: taskAId, text: followUpText } } }
+    if (question === '让甲仓库任务开始深度扫描' && taskAId) return { tool: { name: 'message_background_task', input: { taskId: taskAId, text: holdFollowUpText } } }
+    if (question === '停掉甲仓库任务' && taskAId) {
+      const requestId = firstRequestIdOf(request.messages)
+      if (requestId) return { tool: { name: 'commit_route', input: { requestId, notice: '已停掉甲仓库任务',
+        goals: [{ goal: '停掉甲仓库任务', disposition: 'stop_task' }], actions: [{ kind: 'stop', taskId: taskAId }] } } }
+    }
+    return null
+  })
+  app.defer(releaseTaskA)
+  app.defer(releaseHoldStop)
+  const makeRepo = (name: string) => {
+    const dir = join(app.directory, name)
+    mkdirSync(join(dir, '.git', 'objects'), { recursive: true })
+    writeFileSync(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    return dir
+  }
+  repoA = makeRepo('overseer-a')
+  repoB = makeRepo('overseer-b')
+
+  assert.equal((await app.call<Promise<{ ok: boolean }>>('workdir:switch', repoA, { confirmed: true })).ok, true)
+  await app.ask(`后台做：${briefA}`)
+  const startedA = await eventually(() => app.tasks().find(task => task.task.title === briefA))
+  assert.ok(startedA)
+  taskAId = startedA.task.id
+
+  // Switch across .git repos while taskA is still running in repoA.
+  const switchedB = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', repoB, { confirmed: true })
+  assert.equal(switchedB.ok, true)
+  const sessionBId = switchedB.info.sessionId
+  assert.ok(sessionBId)
+
+  const listAllOffset = app.model.requests.length
+  await app.ask('查看全部后台任务')
+  const listAllResults = (app.model.requests.slice(listAllOffset) as Request[]).flatMap(request => modelToolResults(request, 'list_background_tasks'))
+  assert.ok(listAllResults.some(result => JSON.stringify(result).includes(taskAId) && JSON.stringify(result).includes(repoA)),
+    JSON.stringify({ listAllResults }))
+
+  const filterBOffset = app.model.requests.length
+  await app.ask('按乙仓库过滤后台任务')
+  const filterBResults = (app.model.requests.slice(filterBOffset) as Request[]).flatMap(request => modelToolResults(request, 'list_background_tasks'))
+  assert.equal(JSON.parse(String(filterBResults.at(-1))).total, 0, JSON.stringify({ filterBResults }))
+
+  const filterAOffset = app.model.requests.length
+  await app.ask('按甲仓库过滤后台任务')
+  const filterAResults = (app.model.requests.slice(filterAOffset) as Request[]).flatMap(request => modelToolResults(request, 'list_background_tasks'))
+  assert.ok(JSON.stringify(filterAResults.at(-1)).includes(taskAId), JSON.stringify({ filterAResults }))
+
+  // Finish taskA after switching to repoB; its report must reach repoB's main session without stalling.
+  const report1Offset = app.model.requests.length
+  releaseTaskA()
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === taskAId && task.endedAt)))
+  assert.ok(await eventually(() => (app.model.requests.slice(report1Offset) as Request[]).some(request => JSON.stringify(request.messages).includes(outputA1))),
+    'taskA report must be delivered to repoB main session')
+
+  // Inspect taskA details from repoB.
+  const getOffset = app.model.requests.length
+  await app.ask('读取甲仓库任务详情')
+  const getResults = (app.model.requests.slice(getOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
+  assert.ok(getResults.some(result => JSON.stringify(result).includes(outputA1) && JSON.stringify(result).includes(repoA)),
+    JSON.stringify({ getResults }))
+
+  // Message taskA from repoB and verify its updated report arrives back in repoB.
+  const report2Offset = app.model.requests.length
+  await app.ask('给甲仓库任务接着派活')
+  assert.ok(await eventually(() => (app.model.requests.slice(report2Offset) as Request[]).some(request => JSON.stringify(request.messages).includes(outputA2))),
+    'follow-up report from cross-repo messaged taskA must arrive in repoB')
+
+  // Main session in repoB must stay alive without being forcibly reopened by cross-repo provenance.
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, sessionBId)
+
+  // Start a fresh taskB in repoB after receiving cross-repo reports; taskB stays isolated from repoA's tasks and history.
+  const taskBOffset = app.model.requests.length
+  await app.ask(`后台做：${briefB}`)
+  const taskB = await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === briefB))
+  assert.ok(taskB)
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, sessionBId)
+  const taskBRequests = (app.model.requests.slice(taskBOffset) as Request[]).filter(request => JSON.stringify(request.messages[0]).includes(briefB))
+  const taskBListResults = taskBRequests.flatMap(request => modelToolResults(request, 'list_background_tasks'))
+  assert.ok(taskBListResults.some(result => JSON.stringify(result).includes(taskB.task.id)), JSON.stringify({ taskBId: taskB.task.id, taskBListResults, taskBRequests }))
+  assert.ok(taskBListResults.every(result => !JSON.stringify(result).includes(taskAId)), 'background task cannot see other tasks')
+  const taskBHistoryResults = taskBRequests.flatMap(request => modelToolResults(request, 'search_conversations'))
+  assert.ok(taskBHistoryResults.length > 0 && taskBHistoryResults.every(result => !JSON.stringify(result).includes(briefA)),
+    'background task cannot read cross-project history')
+
+  // Stop a running repoA task from repoB.
+  await app.ask('让甲仓库任务开始深度扫描')
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === taskAId && task.status === 'running')))
+  await app.ask('停掉甲仓库任务')
+  assert.ok(await eventually(() => app.tasks().some(task => task.task.id === taskAId && task.status === 'stopped')))
+  releaseHoldStop()
+
+  // Switching to a nested directory within the same Git repo after cross-project reads/reports must fork cleanly.
+  const nestedB = join(repoB, 'nested')
+  mkdirSync(nestedB)
+  const beforeNested = app.call<AgentInfo>('agent:info')
+  const forkedB = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('workdir:switch', nestedB, { confirmed: true })
+  assert.equal(forkedB.ok, true)
+  assert.equal(forkedB.info.topicId, beforeNested.topicId)
+  assert.notEqual(forkedB.info.sessionId, beforeNested.sessionId)
+  const nestedGetOffset = app.model.requests.length
+  await app.ask('读取甲仓库任务详情')
+  const nestedGetResults = (app.model.requests.slice(nestedGetOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
+  assert.ok(nestedGetResults.some(result => JSON.stringify(result).includes(repoA)), JSON.stringify({ nestedGetResults }))
 })

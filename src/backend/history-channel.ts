@@ -43,6 +43,7 @@ export function historyAnswer(_query: string, hits: readonly HistoryHit[]): stri
     `${i + 1}. ${when(hit.at)}${topicOf(hit.title)} · ${SPEAKERS[hit.role] ?? '记录'}：${hit.snippet.before}${hit.snippet.hit}${hit.snippet.after}`,
     nearby('前一句', hit.before),
     nearby('后一句', hit.after),
+    hit.cwd ? `   目录：${hit.cwd}` : null,
     `   原文：${linkTo(hit)}`,
   ].filter((line): line is string => line !== null))
   const more = hits.length > shown.length ? `（还有 ${hits.length - shown.length} 条更早的，没有列出）` : ''

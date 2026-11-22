@@ -16,7 +16,10 @@ export interface MemoryCoordinationRuntime {
   staleSession(session: string): boolean
   sessionProject(session: string): string | undefined
   recordSessionProject(session: string, project: string): void
-  projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent): boolean
+  sessionCrossProject?(session: string): boolean
+  recordSessionCrossProject?(session: string): void
+  tx?<T>(work: () => T): T
+  projectAllows(evidence: Pick<MemoryProvenance, 'sources' | 'projects' | 'files'>, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent, crossProject?: boolean): boolean
   computeAdmission(job: string): { current(): boolean, deadline: number | null } | null
 }
 
@@ -60,8 +63,14 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     const saved = session ? runtime()?.sessionProject(session) : undefined
     return saved !== undefined && saved !== (project?.id ?? '')
   }
-  const allowsEvidence = (evidence: MemoryProvenance | null | undefined, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) =>
-    !evidence || Boolean(runtime()?.projectAllows(evidence, project, acceptsFiles))
+  const sessionCrossProject = (session: string | null | undefined) => Boolean(session && runtime()?.sessionCrossProject?.(session))
+  const markCrossProject = (session: string) => { runtime()?.recordSessionCrossProject?.(session) }
+  const atomic = <T>(work: () => T): T => {
+    const tx = runtime()?.tx
+    return tx ? tx(work) : work()
+  }
+  const allowsEvidence = (evidence: MemoryProvenance | null | undefined, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent, crossProject = false) =>
+    !evidence || Boolean(runtime()?.projectAllows(evidence, project, acceptsFiles, crossProject))
   function bindProject(session: string, project?: MemoryProject) {
     const owner = runtime()
     if (!owner || projectChanged(session, project)) return false
@@ -75,7 +84,8 @@ export function createMemoryCoordination({ runtime, dispatch }: {
       || Boolean(dispatch()?.stale(session, acceptsFiles))
   }
   function allowsSession(session: string, project?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
-    return !busy() && !stale(session, project, acceptsFiles) && allowsEvidence(dispatch()?.snapshot(session), project, acceptsFiles)
+    return !busy() && !stale(session, project, acceptsFiles)
+      && allowsEvidence(dispatch()?.snapshot(session), project, acceptsFiles, sessionCrossProject(session))
   }
   const canTransferToModel = (session: string, transportReady: boolean) =>
     transportReady || !needsMemoryTransport(dispatch()?.snapshot(session))
@@ -94,10 +104,11 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     const leases = dispatch()
     if (acquired.has(id) || !owner || !leases || blocked.has(session) || owner.staleSession(session)) return false
     const admission = leases.admission(session, acceptsFiles)
-    if (!admission.allowed || !allowsEvidence(admission.evidence, project, acceptsFiles) || !bindProject(session, project)) return false
+    if (!admission.allowed || !allowsEvidence(admission.evidence, project, acceptsFiles, sessionCrossProject(session)) || !bindProject(session, project)) return false
     leases.acquireSession(id, session, admission, () => runtime() === owner && dispatch() === leases
       && !owner.staleSession(session)
-      && !projectChanged(session, currentProject()) && allowsEvidence(admission.evidence, currentProject(), acceptsFiles), acceptsFiles)
+      && !projectChanged(session, currentProject())
+      && allowsEvidence(admission.evidence, currentProject(), acceptsFiles, sessionCrossProject(session)), acceptsFiles)
     acquired.set(id, leases)
     return { allowed: true as const, evidence: admission.evidence, deadline: admission.deadline }
   }
@@ -114,22 +125,36 @@ export function createMemoryCoordination({ runtime, dispatch }: {
   }
 
   const transferable = (evidence: MemoryProvenance | null | undefined, acceptsFiles?: FileEvidenceCurrent) => !evidence || Boolean(dispatch()?.transferable(evidence, acceptsFiles))
-  function transferStatus(evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent): 'ready' | 'stale' | 'memory-unavailable' {
-    if (!allowsEvidence(evidence, project, acceptsFiles) || !transferable(evidence, acceptsFiles)) return 'stale'
+  function transferStatus(evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent, crossProject = false): 'ready' | 'stale' | 'memory-unavailable' {
+    if (!allowsEvidence(evidence, project, acceptsFiles, crossProject) || !transferable(evidence, acceptsFiles)) return 'stale'
     if (needsMemoryTransport(evidence) && !transportReady) return 'memory-unavailable'
     return 'ready'
   }
-  function transfer(session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent) {
-    if (transferStatus(evidence, project, transportReady, acceptsFiles) !== 'ready') return false
-    if (evidence) dispatch()!.attach(session, evidence)
+  function transfer(session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent, crossProject = false) {
+    const allowCross = Boolean(crossProject || sessionCrossProject(session))
+    if (transferStatus(evidence, project, transportReady, acceptsFiles, allowCross) !== 'ready') return false
+    if (evidence) {
+      const crosses = allowCross && !allowsEvidence(evidence, project, acceptsFiles, false)
+      atomic(() => {
+        if (crosses) markCrossProject(session)
+        dispatch()!.attach(session, evidence)
+      })
+    }
     return true
   }
-  function canInherit(source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent) {
-    return !stale(source, sourceProject, acceptsFiles) && canTransferToModel(source, transportReady) && allowsEvidence(dispatch()?.snapshot(source), targetProject, acceptsFiles)
+  function canInherit(source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent, crossProject = false) {
+    return !stale(source, sourceProject, acceptsFiles) && canTransferToModel(source, transportReady)
+      && allowsEvidence(dispatch()?.snapshot(source), targetProject, acceptsFiles, crossProject)
   }
-  function inherit(source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent) {
-    if (!canInherit(source, sourceProject, targetProject, transportReady, acceptsFiles)) return false
-    dispatch()?.inherit(source, target)
+  function inherit(source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, acceptsFiles?: FileEvidenceCurrent, crossProject = false) {
+    const allowCross = Boolean(crossProject || (source === target && sessionCrossProject(target)))
+    if (!canInherit(source, sourceProject, targetProject, transportReady, acceptsFiles, allowCross)) return false
+    const snapshot = dispatch()?.snapshot(source)
+    const crosses = allowCross && (sessionCrossProject(source) || !allowsEvidence(snapshot, targetProject, acceptsFiles, false))
+    atomic(() => {
+      if (crosses) markCrossProject(target)
+      dispatch()?.inherit(source, target)
+    })
     return true
   }
   function allowsHistory(row: MemoryHistoryOccurrence, sourceProject?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
@@ -137,12 +162,14 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     return Boolean(owner?.allowedHistory(row) && (!row.sourceId || owner.sourceCurrent(row.sourceId))
       && ((row.role === 'user' && Boolean(row.sourceId)) || !stale(row.sessionId, sourceProject, acceptsFiles)))
   }
-  function allowsProjectHistory(row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject, acceptsFiles?: FileEvidenceCurrent) {
-    if (sourceProject?.id !== targetProject?.id || !allowsHistory(row, sessionProject, acceptsFiles)) return false
-    if (row.sourceId && !runtime()?.projectAllows({ sources: [row.sourceId] }, targetProject)) return false
-    return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId || allowsEvidence(dispatch()?.snapshot(row.sessionId), targetProject, acceptsFiles)
+  function allowsProjectHistory(row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject, acceptsFiles?: FileEvidenceCurrent, crossProject = false) {
+    if (!crossProject && sourceProject?.id !== targetProject?.id) return false
+    if (!allowsHistory(row, sessionProject, acceptsFiles)) return false
+    if (!crossProject && row.sourceId && !runtime()?.projectAllows({ sources: [row.sourceId] }, targetProject)) return false
+    return (row.role === 'user' && Boolean(row.sourceId)) || !row.sessionId
+      || allowsEvidence(dispatch()?.snapshot(row.sessionId), targetProject, acceptsFiles, crossProject)
   }
-  function useHistory(session: string | undefined, row: MemoryHistoryOccurrence, acceptsFiles?: FileEvidenceCurrent) {
+  function useHistory(session: string | undefined, row: MemoryHistoryOccurrence, acceptsFiles?: FileEvidenceCurrent, crossProject = false) {
     const owner = runtime()
     const leases = dispatch()
     const sourceProject = row.sessionId ? owner?.sessionProject(row.sessionId) : undefined
@@ -152,12 +179,21 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     if (!session) return
     const targetProject = owner.sessionProject(session)
     const project = targetProject ? { kind: 'project' as const, id: targetProject } : undefined
-    if (row.sourceId && !owner.projectAllows({ sources: [row.sourceId] }, project)
-      || row.sessionId && (row.role !== 'user' || !row.sourceId) && !allowsEvidence(leases.snapshot(row.sessionId), project, acceptsFiles)) {
+    const allowCross = Boolean(crossProject)
+    const sourceSnapshot = row.sessionId && (row.role !== 'user' || !row.sourceId) ? leases.snapshot(row.sessionId) : undefined
+    if (!allowCross && row.sourceId && !owner.projectAllows({ sources: [row.sourceId] }, project)
+      || sourceSnapshot && !allowsEvidence(sourceSnapshot, project, acceptsFiles, allowCross)) {
       throw new MemoryDomainError('revision.conflict')
     }
-    if (row.sourceId) leases.recordSource(session, row.sourceId)
-    if (row.sessionId && (row.role !== 'user' || !row.sourceId)) leases.inherit(row.sessionId, session)
+    const crosses = allowCross && (
+      Boolean(row.sourceId && !owner.projectAllows({ sources: [row.sourceId] }, project))
+      || Boolean(sourceSnapshot && (sessionCrossProject(row.sessionId) || !allowsEvidence(sourceSnapshot, project, acceptsFiles, false)))
+    )
+    atomic(() => {
+      if (crosses) markCrossProject(session)
+      if (row.sourceId) leases.recordSource(session, row.sourceId)
+      if (row.sessionId && (row.role !== 'user' || !row.sourceId)) leases.inherit(row.sessionId, session)
+    })
   }
 
   async function mutate<T>(work: () => T | Promise<T>, prepare?: () => void | Promise<void>): Promise<T> {
@@ -194,6 +230,6 @@ export function createMemoryCoordination({ runtime, dispatch }: {
     acquired.delete(id)
   }
 
-  return { busy, projectChanged, bindProject, allowsEvidence, stale, allowsSession, canTransferToModel,
+  return { busy, projectChanged, bindProject, sessionCrossProject, allowsEvidence, stale, allowsSession, canTransferToModel,
     allowsTransport, beginSession, beginJob, transferable, transferStatus, transfer, canInherit, inherit, allowsHistory, allowsProjectHistory, useHistory, mutate, endDispatch }
 }
