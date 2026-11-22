@@ -243,7 +243,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const stored = store.list().find(item => item.id === taskId)
     const entry = stored ?? tasks.get(taskId)
     if (!entry) return null
-    if (stored && isEnded(stored) && stored.resultPreview === '') return ''
+    if (stored?.resultErased) return ''
     const held = attached.has(taskId)
     const messages = (held ? taskWords.current(taskId) : null) ?? db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? []
     const text = latestRunOutput(messages, typeof entry.runStart === 'number' ? entry.runStart : undefined)
@@ -477,7 +477,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const evidence = admit ? await admit(taskId) : true
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, text, evidence)
-    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, ...going } = kept
+    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultErased: _resultErased, ...going } = kept
     const runId = newRunId()
     const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
@@ -521,7 +521,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = newRunId()
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
-    const { resultTruncated: _resultTruncated, ...keptWithoutTruncated } = kept
+    const { resultTruncated: _resultTruncated, resultErased: _resultErased, ...keptWithoutTruncated } = kept
     const running = { ...keptWithoutTruncated, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)

@@ -9,7 +9,9 @@ import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
-import type { StoredTask } from '../src/backend/task-store.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { APP_DB_PRAGMAS } from '../src/backend/app-db.ts'
+import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
 import type { Effects } from '../src/backend/effects.ts'
 import { REPORT_OUTPUT_HEAD_CHARS, REPORT_OUTPUT_TAIL_CHARS, type ReportPayload } from '../src/backend/task-reports.ts'
 import type { IpcRegistry } from '../src/shared/ipc-contract.ts'
@@ -763,11 +765,11 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(afterErrorRelaunch.nextOutputOffset, null)
   assert.equal(afterErrorRelaunch.outputTruncated, true)
 
-  // Erased ended task preview (stored.resultPreview === '') must never resurrect transcript text from historyDb.
+  // Erased ended task preview (stored.resultErased === true) must never resurrect transcript text from historyDb.
   const stored = h.kept().find(entry => entry.id === task.id)!
   const erasedCheck = createTaskRuntime({
     db: h.db,
-    store: { list: () => [{ ...stored, resultPreview: '', resultKey: undefined }], add: () => {}, remove: () => {} },
+    store: { list: () => [{ ...stored, resultPreview: '', resultKey: undefined, resultErased: true }], add: () => {}, remove: () => {} },
     current: () => h.current(),
     agentInfo: () => ({ mode: 'live', model: 'V4' }),
     agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
@@ -777,6 +779,67 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(erasedQuery.outputTotalChars, 0)
 
   h.db.close()
+})
+
+test('production TaskStore with retainedReply distinguishes unkeyed outputs/errors from explicitly erased results', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-store-retained-'))
+  const db = openHistoryDb({ file: path.join(dir, 'history.db'), newId: (() => { let n = 0; return () => `c${++n}` })() })
+  const appDb = new DatabaseSync(path.join(dir, 'app.db'))
+  appDb.exec(APP_DB_PRAGMAS)
+  const retainedKeys = new Set<string>()
+  const store = createTaskStore({ db: appDb, retainedReply: (session, key) => retainedKeys.has(`${session}:${key}`) })
+  const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('开始')])
+  const queuedReports: Array<{ key: string, payload: ReportPayload }> = []
+  let seq = 0
+  const runtime = createTaskRuntime({
+    db, store,
+    effects: {
+      queue: (_kind: string, key: string, payload: unknown) => { queuedReports.push({ key, payload: payload as ReportPayload }) },
+      cancel: () => {}, cancelStarting: () => {},
+    } as unknown as Effects,
+    current: () => current,
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    agent: {
+      closeTask: async () => {}, cancelTask: async () => {},
+      steerTask: async () => ({ ok: true }), resumeTask: async () => ({ ok: true }),
+      promptTask: async () => {},
+      startTask: async () => ({ ok: true, taskId: `t-${++seq}` }),
+    },
+  })
+  try {
+    // 1. Plain agent_message_chunk (no resultKey): store clears persisted resultPreview, but does NOT mark resultErased.
+    const plain = await runtime.agent.start('普通文本任务')
+    runtime.dsh.receive({ type: 'task_update', taskId: plain.taskId, update: chunk('普通文本完整结果') })
+    runtime.dsh.receive({ type: 'task_end', taskId: plain.taskId, stopReason: 'end_turn' })
+    const plainStored = store.list().find(item => item.id === plain.taskId)!
+    assert.equal(plainStored.resultPreview, '')
+    assert.equal(plainStored.resultErased, undefined)
+    assert.equal(queuedReports.find(item => item.payload.taskId === plain.taskId)?.payload.output, '普通文本完整结果')
+    assert.equal(runtime.agent.query({ op: 'get', taskId: plain.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '普通文本完整结果')
+
+    // 2. Terminal error event.message (no resultKey): neither report nor get_background_task is blanked.
+    const errored = await runtime.agent.start('报错任务')
+    runtime.dsh.receive({ type: 'task_update', taskId: errored.taskId, update: chunk('前面说过的话') })
+    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: 'Upstream 502 bad gateway' })
+    const errStored = store.list().find(item => item.id === errored.taskId)!
+    assert.equal(errStored.resultPreview, '')
+    assert.equal(errStored.resultErased, undefined)
+    assert.equal(queuedReports.find(item => item.payload.taskId === errored.taskId)?.payload.output, 'Upstream 502 bad gateway')
+    assert.equal(runtime.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, 'Upstream 502 bad gateway')
+
+    // 3. Retired resultKey (retainedReply returns false): store marks resultErased=true and blocks transcript resurrection.
+    const retired = await runtime.agent.start('已擦除任务')
+    runtime.dsh.receive({ type: 'task_update', taskId: retired.taskId, update: { sessionUpdate: 'viva_stream', key: 'retired-k', kind: 'settle', blocks: [{ type: 'text', text: 'SENSITIVE_RETIRED' }] } })
+    runtime.dsh.receive({ type: 'task_end', taskId: retired.taskId, stopReason: 'end_turn' })
+    const retiredStored = store.list().find(item => item.id === retired.taskId)!
+    assert.equal(retiredStored.resultErased, true)
+    assert.equal(queuedReports.find(item => item.payload.taskId === retired.taskId)?.payload.output, '')
+    assert.equal(runtime.agent.query({ op: 'get', taskId: retired.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
+  } finally {
+    appDb.close()
+    db.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('mid-run steers and question answers keep earlier output from the same run in reports and paginated queries, while a new run resets the run boundary', async () => {
