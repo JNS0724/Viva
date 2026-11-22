@@ -69,11 +69,11 @@ test('taskCard renders inline action strip for waiting permissions, single-choic
     assert.equal(Array.isArray(running), false)
     assert.equal((running as unknown as FakeElement).className, 'task-line task-card')
 
-    // 2. Waiting permission with options -> [button, inlineDiv]; primary allow calls handlers.respond.
+    // 2. Waiting permission with options -> [button, inlineDiv]; shows full command/parameters above buttons, primary allow calls handlers.respond.
     const waitingPerm = taskCard({
       id: 't-perm', title: '跑脚本', status: 'waiting', startedAt: 100, endedAt: null,
       permission: {
-        requestId: 'req-1', title: '运行命令', rawInput: { command: 'npm test' },
+        requestId: 'req-1', title: '运行命令', rawInput: { command: 'rm -rf tmp && npm test', description: '清理缓存后跑测试' },
         options: [
           { optionId: 'allow_once', name: '允许本次', kind: 'allow_once' },
           { optionId: 'reject', name: '拒绝', kind: 'reject_once' },
@@ -85,7 +85,13 @@ test('taskCard renders inline action strip for waiting permissions, single-choic
     assert.equal(waitingPerm[0].className, 'task-line task-card')
     assert.equal(waitingPerm[1].className, 'task-inline')
     assert.equal(waitingPerm[1].attrs['data-kind'], 'permission')
-    const [allowBtn, rejectBtn] = waitingPerm[1].children as FakeElement[]
+    const [permInfo, permActions] = waitingPerm[1].children as [FakeElement, FakeElement]
+    assert.equal(permInfo.className, 'task-inline-info')
+    const permText = permInfo.children.map((node) => typeof node === 'string' ? node : node.textContent).join('\n')
+    assert.ok(permText.includes('rm -rf tmp && npm test'), 'inline permission must display the exact command before approval')
+    assert.ok(permText.includes('清理缓存后跑测试'), 'inline permission must display the description/reason when provided')
+    assert.equal(permActions.className, 'task-inline-actions')
+    const [allowBtn, rejectBtn] = permActions.children as FakeElement[]
     assert.ok(allowBtn.className.includes('btn-primary'))
     assert.ok(rejectBtn.className.includes('btn-secondary'))
     allowBtn.click()
@@ -105,19 +111,21 @@ test('taskCard renders inline action strip for waiting permissions, single-choic
     }, handlers, 120)
     assert.equal(Array.isArray(emptyPerm), false)
 
-    // 4. Waiting single-choice question -> [button, inlineDiv] with option buttons + skip.
+    // 4. Waiting single-choice question -> [button, inlineDiv] with full question text + option buttons + skip.
     calls.length = 0
     const singleQ = taskCard({
       id: 't-q1', title: '部署', status: 'waiting', startedAt: 100, endedAt: null,
       question: {
         questionId: 'q-1',
-        questions: [{ id: 'env', question: '选环境', multiSelect: false, options: [{ label: 'staging' }, { label: 'prod' }] }],
+        questions: [{ id: 'env', question: '请选择本次要部署的目标环境', multiSelect: false, options: [{ label: 'staging' }, { label: 'prod' }] }],
       },
       view: baseView,
     }, handlers, 120) as unknown as [FakeElement, FakeElement]
     assert.equal(Array.isArray(singleQ), true)
     assert.equal(singleQ[1].attrs['data-kind'], 'question')
-    const qBtns = singleQ[1].children as FakeElement[]
+    const [qInfo, qActions] = singleQ[1].children as [FakeElement, FakeElement]
+    assert.ok(qInfo.children.some((node) => typeof node !== 'string' && node.textContent.includes('请选择本次要部署的目标环境')))
+    const qBtns = qActions.children as FakeElement[]
     assert.equal(qBtns.length, 3)
     qBtns[0].click()
     qBtns[2].click()
@@ -144,7 +152,8 @@ test('taskCard renders inline action strip for waiting permissions, single-choic
     }, handlers, 120) as unknown as [FakeElement, FakeElement]
     assert.equal(Array.isArray(interrupted), true)
     assert.equal(interrupted[1].attrs['data-kind'], 'interrupted')
-    const [resumeBtn, closeBtn] = interrupted[1].children as FakeElement[]
+    const [intActions] = interrupted[1].children as [FakeElement]
+    const [resumeBtn, closeBtn] = intActions.children as FakeElement[]
     assert.ok(resumeBtn.className.includes('btn-primary'))
     resumeBtn.click()
     closeBtn.click()

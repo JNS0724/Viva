@@ -275,7 +275,7 @@ The fast lane decides in about 1.4 seconds. Corrections to the current answer we
 
 ### 10.2 Slots
 
-At most 5 tasks actively run (`running`) at once. Tasks waiting on user input (`waiting`) release their active execution slot so new work is not deadlocked behind an unanswered prompt, while a separate total cap (`MAX_LIVE = 15`) bounds the combined number of `running` and `waiting` task sessions. When either limit is reached, the handover fails with a clear reason and the user is told. Work is not queued, and the main agent does not do it itself instead.
+At most 5 tasks actively run (`running`) at once. Tasks waiting on user input (`waiting`) release their active execution slot so new work is not deadlocked behind an unanswered prompt, while a separate total cap (`MAX_LIVE = 15`) bounds the combined number of `running` and `waiting` task sessions. Resuming a `waiting` task back to `running` (via permission approval, question answer, or `answer_background_task`) re-acquires an active `MAX_RUNNING` slot before resolving the wait; if all 5 active slots are busy, the wait stays pending and the user is told instead of exceeding the cap. Work is not queued, and the main agent does not do it itself instead.
 
 ### 10.3 App operations
 

@@ -493,6 +493,7 @@ async function imagesChange(run: () => Promise<unknown>, done: string) {
 }
 
 /** What a toast's button does. */
+const respondingPermissions = new Set<string>()
 const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>) => unknown>> = {
   'open-profile': () => memoryActions.openProfile(),
   'open-settings': () => handlers.openSettings(),
@@ -634,8 +635,20 @@ const handlers = {
   cancel: conversationActions.cancel,
   respond(requestId: string, optionId: string | null) {
     if (state.initialization.status !== 'ready') return
-    dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
-    api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+    const isTaskPermission = liveTasks(state).some((task) => task.permission?.requestId === requestId)
+    if (!isTaskPermission) {
+      dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
+      api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+      return
+    }
+    if (respondingPermissions.has(requestId)) return
+    respondingPermissions.add(requestId)
+    api.respondPermission(requestId, optionId)
+      .then((accepted) => {
+        if (accepted) dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
+      })
+      .catch((err) => historyActions.showToast(errorMessage(err)))
+      .finally(() => { respondingPermissions.delete(requestId) })
   },
   /** ⌘N, or 开新话题 in the label's menu: the assistant starts afresh; what was said stays above, dimmed. */
   newSession: createNewTopicAction({

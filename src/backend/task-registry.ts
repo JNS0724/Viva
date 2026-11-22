@@ -243,11 +243,19 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
   const resultFromTerminalOf = (id: string) => Boolean(tasks.get(id)?.resultFromTerminal)
   /** The tool calls a task's run has at work now, in the order they began: for a window that opens (task-runtime.ts finished). */
   const activeTools = (id: string): ActiveTool[] => [...(tools.get(id) ?? new Map<string, string>())].map(([toolCallId, title]) => ({ toolCallId, title }))
+  /** The task that owns a currently pending permission (`p:`) or question (`q:`), or null. */
+  const taskOfWait = (kind: 'permission' | 'answer', id: string): string | null => {
+    const key = `${kind === 'permission' ? 'p' : 'q'}:${id}`
+    for (const [taskId, pending] of waits) if (pending.has(key)) return taskId
+    return null
+  }
+  /** How many waits a task currently holds (permissions + questions). */
+  const waitCountOf = (taskId: string): number => waits.get(taskId)?.size ?? 0
   /** Tasks actively working (excluding those waiting on the user), this launch. */
   const running = () => [...tasks.values()].filter((task) => task.status === 'running').length
   /** Tasks at work or waiting on the user, this launch. */
   const live = () => [...tasks.values()].filter((task) => task.status === 'running' || task.status === 'waiting').length
-  return { put, restart, remove, resultKeyOf, resultTruncatedOf, resultFromTerminalOf, receive, interrupt, query, running, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
+  return { put, restart, remove, resultKeyOf, resultTruncatedOf, resultFromTerminalOf, receive, interrupt, query, taskOfWait, waitCountOf, running, live, runOf, revisionOf, snapshotOf, activeTools, checkpoint }
 }
 export type TaskRegistry = ReturnType<typeof createTaskRegistry>
 

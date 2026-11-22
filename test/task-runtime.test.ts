@@ -996,6 +996,57 @@ test(`waiting tasks free active MAX_RUNNING (${MAX_RUNNING}) slots while MAX_LIV
   h.db.close()
 })
 
+test(`resuming a waiting task via permission or question re-acquires an active MAX_RUNNING (${MAX_RUNNING}) slot`, async () => {
+  const h = setup()
+  const ids: string[] = []
+  for (let i = 0; i < MAX_RUNNING; i++) {
+    ids.push((await h.tasks.agent.start(`任务 ${i}`)).taskId)
+  }
+  // Park task 0 on a permission and task 1 on a question, then start 2 more tasks so 5 are actively running again.
+  h.emit({ type: 'permission', taskId: ids[0], requestId: 'p-gate-0' })
+  h.emit({ type: 'task_question', taskId: ids[1], questionId: 'q-gate-1', questions: [{ id: 'a', question: '确认？', options: [{ label: '是' }] }] })
+  const extra1 = (await h.tasks.agent.start('补位 1')).taskId
+  const extra2 = (await h.tasks.agent.start('补位 2')).taskId
+  assert.ok(extra1 && extra2)
+
+  // All 5 active slots are now full -> resuming either waiting task is refused.
+  const permDenied = h.tasks.dsh.reserveWaitResume('permission', 'p-gate-0')
+  assert.ok('problem' in permDenied && /最多 5 个/.test(permDenied.problem))
+  const answerDenied = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.ok('problem' in answerDenied && /最多 5 个/.test(answerDenied.problem))
+
+  // Once 1 running task finishes, 1 active slot opens: reserving p-gate-0 consumes it so neither q-gate-1 nor a new start can race past MAX_RUNNING.
+  h.ends(extra2)
+  const permAllowed = h.tasks.dsh.reserveWaitResume('permission', 'p-gate-0')
+  assert.equal('problem' in permAllowed, false)
+  assert.ok('problem' in h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1'), 'second waiting task cannot race past MAX_RUNNING')
+  await assert.rejects(h.tasks.agent.start('并发抢槽'), /最多 5 个/)
+
+  // Closing p-gate-0 flips task 0 to running and hands the reserved wait slot over without double-counting.
+  h.emit({ type: 'task_permission_closed', taskId: ids[0], requestId: 'p-gate-0' })
+  assert.ok('problem' in h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1'), 'still full once task 0 is running')
+
+  // Multi-wait task: resolving its first wait when a second wait remains does not consume an active slot,
+  // while resolving the second wait simultaneously DOES require an active slot.
+  h.emit({ type: 'permission', taskId: ids[1], requestId: 'p-gate-1-second' })
+  const firstOfTwo = h.tasks.dsh.reserveWaitResume('permission', 'p-gate-1-second')
+  assert.equal('problem' in firstOfTwo, false, 'still another wait pending on task 1')
+  const secondOfTwo = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.ok('problem' in secondOfTwo, 'resolving the final remaining wait must still pass MAX_RUNNING')
+  if (!('problem' in firstOfTwo)) firstOfTwo.release()
+
+  // Freeing a slot lets task 1's question resolve after releasing its failed/aborted attempt cleanly.
+  h.ends(extra1)
+  h.emit({ type: 'task_permission_closed', taskId: ids[1], requestId: 'p-gate-1-second' })
+  const answerAllowed = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.equal('problem' in answerAllowed, false)
+  if (!('problem' in answerAllowed)) answerAllowed.release()
+  const retryAllowed = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.equal('problem' in retryAllowed, false, 'releasing a failed resolution frees the reserved slot')
+
+  h.db.close()
+})
+
 test('get_background_task exposes pendingQuestion only while waitingFor is answer', async () => {
   const questionPayload = {
     questionId: 'q-pending-1',

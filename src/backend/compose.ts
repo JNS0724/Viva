@@ -807,11 +807,18 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           throw new Error(t('main.memory.context.stale'))
         }
       }
+      const slot = taskRuntime?.dsh.reserveWaitResume('answer', request.questionId)
+      if (slot && 'problem' in slot) throw new Error(slot.problem)
       const keep = taskRuntime?.dsh.holdQuestion(request.questionId) ?? null
-      const accepted = await bridge.answerQuestion(request.questionId, checked, undefined, { recordMemory: false })
-      if (!accepted) throw new Error(t('main.tasks-channel.question.not.found'))
-      keep?.(checked, undefined, answerKey)
-      return { ok: true, taskId: request.taskId, questionId: request.questionId }
+      let accepted = false
+      try {
+        accepted = await bridge.answerQuestion(request.questionId, checked, undefined, { recordMemory: false })
+        if (!accepted) throw new Error(t('main.tasks-channel.question.not.found'))
+        keep?.(checked, undefined, answerKey)
+        return { ok: true, taskId: request.taskId, questionId: request.questionId }
+      } finally {
+        if (!accepted) slot?.release()
+      }
     }
     if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
     const memoryReady = dsh.current?.memory.ready()
@@ -1191,18 +1198,32 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:permission', (_event, requestId, optionId) => {
       const id = assertText(requestId, 'requestId', 200)
       const option = optionId === null ? null : assertText(optionId, 'optionId', 200)
-      return dsh.current?.respondPermission(id, option) ?? false
+      const slot = taskRuntime?.dsh.reserveWaitResume('permission', id)
+      if (slot && 'problem' in slot) throw new Error(slot.problem)
+      let accepted = false
+      try {
+        accepted = dsh.current?.respondPermission(id, option) ?? false
+        return accepted
+      } finally {
+        if (!accepted) slot?.release()
+      }
     })
     ipcMain.handle('agent:answer', async (_event, questionId, answers, operation) => {
       if (memoryBusy()) return false
       const id = assertText(questionId, 'questionId', 200)
+      const slot = taskRuntime?.dsh.reserveWaitResume('answer', id)
+      if (slot && 'problem' in slot) throw new Error(slot.problem)
       // Held first: dsh closes the question while it takes the answer, and what was asked goes with it.
       const keep = taskRuntime?.dsh.holdQuestion(id) ?? null
+      let accepted = false
       try {
-        const accepted = await dsh.current?.answerQuestion(id, answers, operation) ?? false
+        accepted = await dsh.current?.answerQuestion(id, answers, operation) ?? false
         if (accepted) keep?.(answers, taskAnswerSources.get(id))
         return accepted
-      } finally { taskAnswerSources.delete(id) }
+      } finally {
+        if (!accepted) slot?.release()
+        taskAnswerSources.delete(id)
+      }
     })
     // Keys the user typed for a server the model set up: straight to the encrypted store, never to dsh.
     ipcMain.handle('agent:secrets', (_event, requestId, values) => {

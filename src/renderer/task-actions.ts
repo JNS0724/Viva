@@ -39,6 +39,8 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   let notifiedInterrupted = new Set<string>()
   /** Tasks with a resume IPC currently in flight, preventing duplicate clicks from flashing an error toast. */
   let resuming = new Set<string>()
+  /** Questions with an answer IPC currently in flight, avoiding double-submit while keeping the prompt visible if refused. */
+  let answering = new Set<string>()
   /**
    * While the tasks are read (loadKept): what the live channel says meanwhile of any task, in order, to be taken once
    * the read is, over it. Null when no read is under way.
@@ -139,14 +141,19 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
 
   const questionOf = (taskId: string) => taskById(taskId)?.view.question ?? null
 
-  /** Answers what a task asks; the reply joins the task at once, as in the conversation (app.js answer). */
+  /** Answers what a task asks; waits for backend admission so a slot-full refusal keeps the question intact. */
   function answerTask(taskId: string, answers: QuestionAnswer[]) {
     const question = questionOf(taskId)
-    if (!question) return
-    dispatch({ type: 'task_question_answered', taskId, questionId: question.questionId, answers, at: Date.now() })
-    api.answerQuestion(question.questionId, answers)
-      .then((accepted: boolean) => accepted || showToast(t("app.this.question.has.ended.your.answer.was")))
+    if (!question || answering.has(question.questionId)) return
+    const questionId = question.questionId
+    answering = new Set([...answering, questionId])
+    api.answerQuestion(questionId, answers)
+      .then((accepted: boolean) => {
+        if (accepted) dispatch({ type: 'task_question_answered', taskId, questionId, answers, at: Date.now() })
+        else showToast(t("app.this.question.has.ended.your.answer.was"))
+      })
       .catch((err: unknown) => showToast(errorMessage(err)))
+      .finally(() => { answering = new Set([...answering].filter((id) => id !== questionId)) })
   }
 
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */

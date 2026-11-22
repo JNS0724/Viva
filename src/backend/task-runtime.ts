@@ -300,14 +300,53 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   const detach = (taskId: string) => { attached = new Set([...attached].filter((id) => id !== taskId)) }
 
   /**
-   * Runs being begun and not yet kept, each holding a place among the MAX_RUNNING. Every run (a new task, one asked
-   * again, one taken up) begins through `reserveRun`, before anything it awaits, so runs begun together cannot all
-   * pass the count; the place goes once the run is kept (counted as at work by the registry) or has failed.
+   * Runs being begun and not yet kept, each holding a place among the MAX_RUNNING and MAX_LIVE limits. Every new run
+   * (a new task, one asked again, one taken up) begins through `reserveRun`, before anything it awaits, so runs begun
+   * together cannot all pass the count; the place goes once the run is kept (counted as at work by the registry) or
+   * has failed.
    */
   let places = new Set<string>()
+  /**
+   * Waiting tasks whose last wait is being resolved (`waitKey` → `taskId`): already counted in `registry.live()`, so
+   * they reserve only an active `MAX_RUNNING` slot until the close event flips them back to `running` (or fails).
+   */
+  let waitPlaces = new Map<string, string>()
+  /** Non-final waits currently being resolved (`waitKey` → `taskId`), so simultaneous multi-wait closes still gate the last one. */
+  let resolvingWaits = new Map<string, string>()
   /** Tasks beginning a run now: one session takes one turn at a time. */
   let beginning = new Set<string>()
   let runsBegun = 0
+  const releaseWaitPlace = (waitKey: string) => {
+    if (waitPlaces.has(waitKey)) waitPlaces = new Map([...waitPlaces].filter(([key]) => key !== waitKey))
+    if (resolvingWaits.has(waitKey)) resolvingWaits = new Map([...resolvingWaits].filter(([key]) => key !== waitKey))
+  }
+  const clearTaskWaitPlaces = (taskId: string) => {
+    if ([...waitPlaces.values()].includes(taskId)) waitPlaces = new Map([...waitPlaces].filter(([, owner]) => owner !== taskId))
+    if ([...resolvingWaits.values()].includes(taskId)) resolvingWaits = new Map([...resolvingWaits].filter(([, owner]) => owner !== taskId))
+  }
+  /**
+   * Reserve an active `MAX_RUNNING` slot before resolving a waiting background task's permission or question.
+   * Only required when the wait belongs to a `waiting` task and resolving it will leave zero pending waits (causing
+   * the task to resume running). Returns a `release` handle to call if the resolution is rejected or fails.
+   */
+  function reserveWaitResume(kind: 'permission' | 'answer', id: string): { release: () => void } | { problem: string } {
+    const taskId = registry.taskOfWait(kind, id)
+    if (!taskId) return { release: () => {} }
+    const stands = registry.snapshotOf(taskId)
+    if (!stands || stands.status !== 'waiting') return { release: () => {} }
+    const waitKey = `${kind === 'permission' ? 'p' : 'q'}:${id}`
+    if (waitPlaces.has(waitKey) || resolvingWaits.has(waitKey)) return { release: () => {} }
+    const inFlight = [...waitPlaces.values(), ...resolvingWaits.values()].filter((owner) => owner === taskId).length
+    if (registry.waitCountOf(taskId) - inFlight > 1) {
+      resolvingWaits = new Map([...resolvingWaits, [waitKey, taskId]])
+      return { release: () => releaseWaitPlace(waitKey) }
+    }
+    if (registry.running() + places.size + waitPlaces.size >= MAX_RUNNING) {
+      return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
+    }
+    waitPlaces = new Map([...waitPlaces, [waitKey, taskId]])
+    return { release: () => releaseWaitPlace(waitKey) }
+  }
   /**
    * A place for a run to begin, or why not: all taken, or (`taskId` given) that task already beginning a run (whether
    * it is at work is each way's own to say: 接着问 only when it ended, taken up only when no session of it is held).
@@ -317,7 +356,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    */
   function reserveRun(taskId: string | null): { counted: () => void, release: () => void } | { problem: string } {
     if (taskId !== null && beginning.has(taskId)) return { problem: taskProblems().going }
-    if (registry.running() + places.size >= MAX_RUNNING) return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
+    if (registry.running() + places.size + waitPlaces.size >= MAX_RUNNING) return { problem: t('main.task-ipc.full', { max: MAX_RUNNING }) }
     if (registry.live() + places.size >= MAX_LIVE) return { problem: t('main.task-ipc.live.full', { max: MAX_LIVE }) }
     runsBegun += 1
     const place = `run:${runsBegun}`
@@ -462,6 +501,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       registry.remove(taskId)
     })
     letEndGo(taskId)
+    clearTaskWaitPlaces(taskId)
     taskWords.drop(taskId)
     tasks.delete(taskId)
     detach(taskId)
@@ -656,12 +696,17 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = registry.runOf(taskId)
     // No task's: dsh speaks of one unknown, or no longer at work.
     if (revoked.has(taskId) || runId === null) return
-    if (event.type === 'task_end') return captureEnd(taskId, runId, event)
+    if (event.type === 'task_end') {
+      clearTaskWaitPlaces(taskId)
+      return captureEnd(taskId, runId, event)
+    }
     // Taken in first, its piece then, the snapshot it changed after (queued, not pushed, while it is taken in).
     depth += 1
     try {
       taskWords.receive(event)
       registry.receive(event)
+      if (event.type === 'task_permission_closed' && typeof event.requestId === 'string') releaseWaitPlace(`p:${event.requestId}`)
+      if (event.type === 'task_question_closed' && typeof event.questionId === 'string') releaseWaitPlace(`q:${event.questionId}`)
     } finally {
       depth -= 1
     }
@@ -731,6 +776,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   function gone() {
     taskWords.flush()
     attached = new Set()
+    waitPlaces = new Map()
+    resolvingWaits = new Map()
     registry.interrupt(new Set(pendingEnds.keys()))
   }
 
@@ -761,6 +808,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     for (const id of sessionIds) revoked.add(id)
     for (const id of ids) {
       letEndGo(id)
+      clearTaskWaitPlaces(id)
       taskWords.drop(id)
       tasks.delete(id)
       registry.remove(id)
@@ -813,6 +861,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     /** What dsh reports and asks of tasks. */
     dsh: {
       receive,
+      /** Reserve an active MAX_RUNNING slot before resolving a waiting task's permission or question. */
+      reserveWaitResume,
       /** The user's answer to a question dsh took: it joins the task that asked it. */
       answer: taskWords.answer,
       /** Before the answer goes to dsh (which closes the question as it takes it): how to keep it once taken. */

@@ -1,4 +1,6 @@
 import { t } from '../../shared/i18n/translate.ts'
+import { objectOf } from '../../shared/unknown-value.ts'
+import { optionName } from '../approval.ts'
 import { permissionCard, promptButtons } from '../prompt-card.ts'
 import { formatListTime } from '../selectors.ts'
 import { taskPreview } from '../tasks-state.ts'
@@ -66,48 +68,61 @@ function inlineActions(task: BackgroundTask, handlers: Handlers): HTMLElement | 
   if (task.status === 'waiting') {
     const permission = task.permission
     if (permission && Array.isArray(permission.options) && permission.options.length > 0) {
+      const rawInput = objectOf(permission.rawInput)
+      const { title, detail, command } = permissionCard(permission)
+      const reason = rawInput?.description && typeof rawInput.description === 'string'
+        ? h('p', { class: 'confirm-reason task-inline-meta', text: t('handoff.approval.reason', { reason: rawInput.description }) }) : null
+      const scope = command ? h('p', { class: 'confirm-hint task-inline-meta', text: t('handoff.approval.command.scope') }) : null
+      const params = detail
+        ? h('pre', { class: 'confirm-detail task-inline-detail', text: detail })
+        : h('p', { class: 'task-inline-meta', text: title })
       return h('div', { class: 'task-inline', 'data-task': task.id, 'data-kind': 'permission' },
-        promptButtons(permission.options).map((option) => h('button', {
-          class: option.role === 'primary' ? 'btn btn-primary task-inline-btn' : 'btn btn-secondary task-inline-btn',
-          type: 'button',
-          text: option.name,
-          onClick: () => handlers.respond(permission.requestId, option.optionId),
-        })))
+        h('div', { class: 'task-inline-info' }, reason, scope, params),
+        h('div', { class: 'task-inline-actions' },
+          promptButtons(permission.options).map((option) => h('button', {
+            class: option.role === 'primary' ? 'btn btn-primary task-inline-btn' : 'btn btn-secondary task-inline-btn',
+            type: 'button',
+            text: optionName(option),
+            onClick: () => handlers.respond(permission.requestId, option.optionId),
+          }))))
     }
     const questions = task.question?.questions
     const first = Array.isArray(questions) && questions.length === 1 ? questions[0] : null
     if (first && !first.multiSelect && Array.isArray(first.options) && first.options.length > 0) {
       return h('div', { class: 'task-inline', 'data-task': task.id, 'data-kind': 'question' },
-        first.options.map((option: { label: string, description?: string }) => h('button', {
-          class: 'btn btn-secondary task-inline-btn',
-          type: 'button',
-          title: option.description ?? null,
-          text: option.label,
-          onClick: () => handlers.pickTaskOption(task.id, first.id, option.label),
-        })),
-        h('button', {
-          class: 'btn btn-text task-inline-btn',
-          type: 'button',
-          text: t('island-dom.skip'),
-          onClick: () => handlers.skipTaskQuestion(task.id),
-        }))
+        first.question ? h('div', { class: 'task-inline-info' }, h('p', { class: 'task-inline-question', text: first.question })) : null,
+        h('div', { class: 'task-inline-actions' },
+          first.options.map((option: { label: string, description?: string }) => h('button', {
+            class: 'btn btn-secondary task-inline-btn',
+            type: 'button',
+            title: option.description ?? null,
+            text: option.label,
+            onClick: () => handlers.pickTaskOption(task.id, first.id, option.label),
+          })),
+          h('button', {
+            class: 'btn btn-text task-inline-btn',
+            type: 'button',
+            text: t('island-dom.skip'),
+            onClick: () => handlers.skipTaskQuestion(task.id),
+          })))
     }
     return null
   }
   if (task.status === 'interrupted') {
     return h('div', { class: 'task-inline', 'data-task': task.id, 'data-kind': 'interrupted' },
-      h('button', {
-        class: 'btn btn-primary task-inline-btn',
-        type: 'button',
-        text: t('task-card.resume'),
-        onClick: () => handlers.resumeTask(task.id),
-      }),
-      h('button', {
-        class: 'btn btn-secondary task-inline-btn',
-        type: 'button',
-        text: t('task-card.close'),
-        onClick: () => handlers.closeTask(task.id),
-      }))
+      h('div', { class: 'task-inline-actions' },
+        h('button', {
+          class: 'btn btn-primary task-inline-btn',
+          type: 'button',
+          text: t('task-card.resume'),
+          onClick: () => handlers.resumeTask(task.id),
+        }),
+        h('button', {
+          class: 'btn btn-secondary task-inline-btn',
+          type: 'button',
+          text: t('task-card.close'),
+          onClick: () => handlers.closeTask(task.id),
+        })))
   }
   return null
 }

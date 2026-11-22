@@ -452,11 +452,16 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .task-state { flex: none; font-size: 13px; font-weight: 400; color: var(--ink-3); }
 /* Inline quick actions below a waiting or interrupted task line (view/task-card.ts). */
 .task-inline {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
-  margin-top: -6px; padding: 6px 12px 8px;
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: -6px; padding: 8px 12px 10px;
   border: 1px solid color-mix(in srgb, var(--orange) 40%, var(--line)); border-top: none;
   border-radius: 0 0 10px 10px; background: color-mix(in srgb, var(--orange) 5%, transparent);
 }
+.task-inline-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.task-inline-meta { margin: 0; font-size: 12px; color: var(--ink-2); }
+.task-inline-question { margin: 0; font-size: 13px; color: var(--ink); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.task-inline-detail { margin: 0; max-height: 160px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.task-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .task-inline-btn { height: 28px; padding: 0 12px; border-radius: 8px; font-size: 12px; }
 /* A background task's result the model was given, where it came (view/report-record.ts): one quiet line, opened on the note. */
 .msg-delivered { margin-left: var(--record-indent); display: flex; flex-direction: column; gap: var(--record-gap); font-size: var(--record-text); color: var(--ink-3); }
