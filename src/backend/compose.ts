@@ -1196,18 +1196,23 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     // Pictures are already visible and saved while they wait for a separate turn.
     // A pending feed continuation is not saved; replay IDs may belong to earlier messages.
     const userMessage = !feedItemId && typeof operation === 'string'
+    if (userMessage && foregroundHistory) {
+      try {
+        foregroundHistory.userPrompt({
+          text: question,
+          images: imageRefs,
+          sourceId: operation,
+          advanceCheckpoint: !turn.active && !foregroundRequests.busy(),
+          strict: true,
+        })
+      } catch (error) {
+        return Promise.reject(error)
+      }
+      emitToRenderer({ type: 'prompt_persisted', sourceId: operation, context: origin })
+    }
     if (userMessage && origin.sessionId) records.beforeUser(foregroundRequests.openingReports(), origin.sessionId, operation)
     const interjectable = userMessage && !pictures.length
     historyDb.reservePromptDelivery(sources)
-    if (userMessage) {
-      foregroundHistory?.userPrompt({
-        text: question,
-        images: imageRefs,
-        sourceId: operation,
-        advanceCheckpoint: !turn.active && !foregroundRequests.busy(),
-      })
-      emitToRenderer({ type: 'prompt_persisted', sourceId: operation, context: origin })
-    }
     let nativeStarted = false, deliveryError: unknown
     let accepted = (_value: IpcResults['agent:prompt']) => {}, refused = (_error: unknown) => {}
     // Feed IPC acknowledges native admission early; the scheduling lease below

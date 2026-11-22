@@ -553,29 +553,53 @@ export function createForegroundHistory({
     return after !== undefined ? { ready: true, after } : { ready: true }
   }
 
-  function userPrompt({ text, images, sourceId, advanceCheckpoint = false }: {
+  function userPrompt({ text, images, sourceId, advanceCheckpoint: shouldAdvance = false, strict = false }: {
     text: string
     images?: readonly ImageRef[]
     sourceId?: string
     advanceCheckpoint?: boolean
+    strict?: boolean
   }) {
     const selected = current()
+    const prevLast = active?.conversationId === selected.id ? active.lastTurnMessage : undefined
     const plain = active?.conversationId === selected.id ? drainPlainOps(active) : []
-    if (active?.conversationId === selected.id) active.lastTurnMessage = { role: 'user' }
-    const ops: HistoryMessageMutation[] = [
-      ...plain,
-      {
-        kind: 'append_user',
-        message: {
-          role: 'user',
-          text,
-          receipt: null,
-          ...(images?.length ? { images: [...images] } : {}),
-          ...(sourceId ? { sourceId } : {}),
-        },
+    const userOp: HistoryMessageMutation = {
+      kind: 'append_user',
+      message: {
+        role: 'user',
+        text,
+        receipt: null,
+        ...(images?.length ? { images: [...images] } : {}),
+        ...(sourceId ? { sourceId } : {}),
       },
-    ]
-    const result = persist(ops, undefined, { plainPersisted: plain.length > 0, deferCheckpoint: advanceCheckpoint })
+    }
+    if (strict) {
+      if (plain.length > 0 || pendingWrites.has(selected.id)) {
+        const flushed = persist(plain, undefined, { plainPersisted: plain.length > 0 })
+        if (!flushed.ok || pendingWrites.has(selected.id)) {
+          if (active?.conversationId === selected.id && prevLast !== undefined) active.lastTurnMessage = prevLast
+          throw new Error('Failed to persist pending history before user prompt')
+        }
+      }
+      const base = current()
+      const { mode, model } = agentInfo()
+      const target: Conversation = { ...base, mode: mode ?? base.mode, model: model ?? base.model }
+      const cursor = shouldAdvance ? streamCursor?.() : undefined
+      try {
+        const saved = commit(target, [userOp], { sourceSession: sourceSession() })
+        if (current().id === saved.id) setCurrent(saved)
+        if (active?.conversationId === selected.id) active.lastTurnMessage = { role: 'user' }
+        if (shouldAdvance) advanceCheckpoint(saved.id, cursor)
+        return saved
+      } catch (error) {
+        if (active?.conversationId === selected.id && prevLast !== undefined) active.lastTurnMessage = prevLast
+        onError(error)
+        throw error
+      }
+    }
+    if (active?.conversationId === selected.id) active.lastTurnMessage = { role: 'user' }
+    const ops: HistoryMessageMutation[] = [...plain, userOp]
+    const result = persist(ops, undefined, { plainPersisted: plain.length > 0, deferCheckpoint: shouldAdvance })
     return result.saved
   }
 

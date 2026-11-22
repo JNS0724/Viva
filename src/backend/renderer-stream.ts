@@ -7,7 +7,7 @@ import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, provisionalStream?: boolean, inHistory?: boolean, durable?: boolean, plainChunk?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, provisionalStream?: boolean, reasoningRetained?: boolean, inHistory?: boolean, plainChunk?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -50,11 +50,9 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     return max
   }
   function pickEvictionIndex(): number {
-    const durableIndex = held.findIndex(row => row.durable)
-    if (durableIndex >= 0) return durableIndex
     const provisionalIndex = held.findIndex(row => row.provisionalStream)
     if (provisionalIndex >= 0) return provisionalIndex
-    const streamIndex = held.findIndex(row => row.streamKey !== undefined)
+    const streamIndex = held.findIndex(row => row.streamKey !== undefined && !row.reasoningRetained)
     if (streamIndex >= 0) return streamIndex
     const plainIndex = held.findIndex(row => row.plainChunk)
     if (plainIndex >= 0) return plainIndex
@@ -70,19 +68,23 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       const plainChunk = update?.sessionUpdate === 'agent_message_chunk'
       const streamKey = update?.sessionUpdate === 'viva_stream' && typeof update.key === 'string' && update.key ? update.key : undefined
       const provisionalStream = Boolean(streamKey && update?.kind !== 'settle')
+      const reasoningRetained = Boolean(
+        streamKey && update?.kind === 'settle' && Array.isArray(update.blocks)
+        && update.blocks.some(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text'),
+      )
       const questionId = event.type === 'question_answered' && typeof event.questionId === 'string' ? event.questionId : undefined
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
         reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
         ...(questionId ? { questionId } : {}),
         ...(streamKey ? { streamKey } : {}),
         ...(provisionalStream ? { provisionalStream: true } : {}),
+        ...(reasoningRetained ? { reasoningRetained: true } : {}),
         ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
         const removed = held.splice(pickEvictionIndex(), 1)[0]!
         bytes -= removed.bytes
-        if (removed.durable) continue
-        if (removed.streamKey !== undefined) recordStreamLoss(removed.scope, removed.routing.context.conversationId, removed.streamKey, removed.cursor)
+        if (removed.streamKey !== undefined && !removed.reasoningRetained) recordStreamLoss(removed.scope, removed.routing.context.conversationId, removed.streamKey, removed.cursor)
         else if (removed.plainChunk) recordPlainLoss(removed.scope, removed.routing.context.conversationId, removed.cursor)
         else recordLoss(removed.scope, removed.cursor)
       }
@@ -169,7 +171,8 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       bytes += nextBytes - row.bytes
       row.json = shrunk
       row.bytes = nextBytes
-      row.durable = true
+      // Reasoning blocks are not persisted in history_db; keep them subject to replay gap detection if evicted.
+      row.reasoningRetained = true
     }
   }
   function snapshot(conversationId: string, context: ConversationContext, stopped = false, hiddenStreamKeys?: ReadonlySet<string>) {

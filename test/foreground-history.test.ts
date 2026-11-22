@@ -845,11 +845,11 @@ test('unpersisted stream overflow when commit fails still triggers unreplayable 
   assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/)
 })
 
-test('evicting >1024 durable reasoning settles drops oldest durable thoughts without losing turn_started', t => {
+test('evicting >1024 unpersisted reasoning settles triggers unreplayable gap instead of silently dropping thoughts', t => {
   const { db, history } = openMemoryHistory(t)
   const stream = createRendererStream(() => {}, db)
-  let current: Conversation = history.create({ sessionId: 's-durable', mode: 'live', model: 'V4', cwd: '/w' })
-  const context = { conversationId: current.id, sessionId: 's-durable' }
+  let current: Conversation = history.create({ sessionId: 's-reasoning-gap', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-reasoning-gap' }
   const writer = createForegroundHistory({
     commit: history.commit,
     current: () => current,
@@ -861,6 +861,7 @@ test('evicting >1024 durable reasoning settles drops oldest durable thoughts wit
     markStreamPersisted: (id, key, upToCursor) => stream.markStreamPersisted(id, key, upToCursor),
     onError: err => { throw err },
   })
+  t.after(() => writer.close())
 
   const startEvent = { type: 'turn_started', by: 'user', context }
   stream.send(startEvent)
@@ -873,9 +874,45 @@ test('evicting >1024 durable reasoning settles drops oldest durable thoughts wit
     stream.send(settle)
     writer.receive(settle)
   }
-  const snap = stream.snapshot(current.id, context)
-  assert.equal(snap.replay[0]?.type, 'turn_started', 'non-durable turn_started is preserved while oldest durable thoughts evict')
-  assert.equal(snap.replay.length, 1024)
+  assert.throws(
+    () => stream.snapshot(current.id, context),
+    /unreplayable gap/,
+    'evicting unpersisted reasoning blocks records a replay gap instead of silently losing thoughts',
+  )
+})
+
+test('strict userPrompt throws when SQLite is busy without queueing the rejected prompt into pendingWrites', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-strict', mode: 'live', model: 'V4', cwd: '/w' })
+  let failCommit = true
+  const writer = createForegroundHistory({
+    commit: (conv, ops, opts) => {
+      if (failCommit) throw new Error('sqlite busy')
+      return history.commit(conv, ops, opts)
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    onError: () => {},
+    retryBaseDelayMs: 1000,
+  })
+  t.after(() => writer.close())
+
+  assert.throws(
+    () => writer.userPrompt({ text: '写入失败不能确认', sourceId: randomUUID(), strict: true }),
+    /sqlite busy/,
+  )
+  assert.equal(writer.hasPendingWrites(), false, 'strict rejection does not enqueue the unpersisted prompt')
+  assert.equal(history.get(current.id), null)
+
+  failCommit = false
+  const saved = writer.userPrompt({ text: '恢复后重新发送', sourceId: randomUUID(), strict: true, advanceCheckpoint: true })
+  assert.ok(saved)
+  assert.deepEqual(history.get(current.id)!.messages.map(m => m.text), ['恢复后重新发送'])
 })
 
 test('transient write failure on final turn_end retries automatically with backoff and cancels timer on success or close', async t => {
