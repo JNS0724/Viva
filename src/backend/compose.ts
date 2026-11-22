@@ -908,7 +908,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     apply: applyChange,
     current: sessions.current,
     show: emitToRenderer,
-    beforeRecord: (conversationId, reportId) => foregroundHistory?.beforeReportRecord(conversationId, reportId),
+    beforeRecord: (conversationId, reportId) => foregroundHistory ? foregroundHistory.beforeReportRecord(conversationId, reportId) : true,
   })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
   const wakeEffects = () => { void effects?.wake() }
@@ -1699,6 +1699,7 @@ ${question}` : question
           && (task.status === 'running' || task.status === 'waiting' || task.endedAt === undefined || task.endedAt === null
             || !recordsList.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= endedAt)))
       },
+      onPendingDrained: () => wakeEffects(),
       onError: err => emitDiagnosticFailure('storage', err, { stage: 'checkpoint' }),
     })
     registerHistoryIpc(ipcMain, {

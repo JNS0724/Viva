@@ -5,6 +5,7 @@ import { test, type TestContext } from 'node:test'
 import { createForegroundHistory } from '../src/backend/foreground-history.ts'
 import { openHistoryDb, type Conversation } from '../src/backend/history-db.ts'
 import { HistoryValidationError } from '../src/backend/history-schema.ts'
+import { createReportRecords } from '../src/backend/report-records.ts'
 import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../src/shared/renderer-sync.ts'
 import { SILENT_REPLY } from '../src/shared/task-report.ts'
@@ -1190,5 +1191,83 @@ test('report_delivered flushes and closes buffered plain assistant text before r
   assert.deepEqual(
     viewState.records.map(r => ({ reportId: r.reportId, after: r.after })),
     stored.records.map(r => ({ reportId: r.reportId, after: r.after })),
+  )
+})
+
+test('report-records defers recording when foreground plain flush fails transiently, then anchors after retry succeeds', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-rep-defer', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-rep-defer' }
+  let failCommit = true
+  let drainedCount = 0
+  const writer = createForegroundHistory({
+    commit: (conv, ops) => {
+      if (failCommit) throw new Error('sqlite busy')
+      return history.commit(conv, ops, { sourceSession: null })
+    },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => null,
+    streamCursor: () => stream.cursor(),
+    onPendingDrained: () => { drainedCount += 1 },
+    onError: () => {},
+    retryBaseDelayMs: 1000,
+  })
+  t.after(() => writer.close())
+
+  // Minimal in-memory effect stub for createReportRecords.read()
+  let finished = false
+  const effect = {
+    id: 1, kind: 'task.report', key: 'rep-defer', generation: 1,
+    payload: {
+      taskId: 't-1', runId: 'r-1', status: 'done', title: '报告', host: current.id,
+      output: '汇总完成', token: 'a'.repeat(32), deliveredTo: 's-rep-defer', via: 'steer' as const,
+    },
+    attempts: 0, nextAt: 0, createdAt: 100, updatedAt: 100,
+  }
+  const effects = {
+    get: () => (finished ? null : effect),
+    holds: () => !finished,
+    finishGeneration: () => { finished = true; return true },
+    amend: () => true,
+  }
+  const shown: unknown[] = []
+  const records = createReportRecords({
+    history: () => history,
+    effects: () => effects,
+    apply: (_kind, _payload, run) => ({ seq: 1, value: run() }),
+    current: () => current,
+    show: event => { shown.push(event) },
+    beforeRecord: (conversationId, reportId) => writer.beforeReportRecord(conversationId, reportId),
+    now: () => 500,
+  })
+
+  // 1. Assistant emits plain text before report arrives, then SQLite is transiently busy during report read
+  writer.receive({ type: 'turn_started', by: 'user', context })
+  writer.receive({ type: 'update', context, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '回报前的正文' } } })
+
+  assert.throws(
+    () => records.read(effect as never),
+    /pending writes/,
+    'report-records defers recording instead of anchoring at after_seq=0 while preceding text failed to persist',
+  )
+  assert.equal(finished, false, 'effect stays queued for retry')
+  assert.equal(history.recordsOf(current.id).length, 0, 'no premature report record written at seq 0')
+  assert.equal(writer.hasPendingWrites(), true)
+
+  // 2. Database recovers -> pending write commits first, wakes effects, and report records at after_seq = 1
+  failCommit = false
+  assert.equal(writer.retryPending(), true)
+  assert.equal(drainedCount, 1, 'onPendingDrained wakes effects once pending writes clear')
+  records.read(effect as never)
+  assert.equal(finished, true)
+  assert.equal(shown.length, 1)
+  assert.equal(history.get(current.id)!.messages.length, 1)
+  assert.deepEqual(
+    history.recordsOf(current.id).map(r => ({ reportId: r.reportId, after: r.after })),
+    [{ reportId: 'rep-defer', after: 1 }],
+    'report record anchors AFTER the retried preceding assistant message',
   )
 })

@@ -24,6 +24,7 @@ export interface ForegroundHistoryDeps {
   markPlainPersisted?: (conversationId: string, upToCursor?: number) => void
   markStreamPersisted?: (conversationId: string, streamKey: string, upToCursor?: number) => void
   delegatedDuringTurn?: (startedAt: number, endedAt: number) => boolean
+  onPendingDrained?: () => void
   onError?: (error: unknown) => void
   now?: () => number
   retryBaseDelayMs?: number
@@ -127,6 +128,7 @@ export function createForegroundHistory({
   markPlainPersisted,
   markStreamPersisted,
   delegatedDuringTurn,
+  onPendingDrained,
   onError = () => {},
   now = Date.now,
   retryBaseDelayMs = 250,
@@ -334,6 +336,7 @@ export function createForegroundHistory({
       return { ok: false, saved: result.saved }
     }
 
+    const hadPending = pendingWrites.size > 0
     pendingWrites.delete(id)
     if (meta.plainBoundary && !plainFailed) markPlainPersisted?.(id, meta.plainBoundary.cursor)
     for (const item of meta.streamKeys) {
@@ -343,7 +346,10 @@ export function createForegroundHistory({
       for (const questionId of meta.questionIds) markQuestionPersisted?.(id, questionId)
     }
     if (meta.checkpointBoundary) advanceCheckpoint(id, meta.checkpointBoundary.cursor)
-    if (pendingWrites.size === 0) cancelRetry()
+    if (pendingWrites.size === 0) {
+      cancelRetry()
+      if (hadPending) onPendingDrained?.()
+    }
     return { ok: !result.hadValidationError, saved: result.saved }
   }
 
@@ -433,19 +439,25 @@ export function createForegroundHistory({
     return true
   }
 
-  function beforeReportRecord(conversationId: string, reportId: string, sessionId?: string | null) {
+  function beforeReportRecord(conversationId: string, reportId: string, sessionId?: string | null): boolean {
     const first = reportId ? rememberReport(reportId) : true
     const selected = current()
+    let attempted = false
     if (first && active?.conversationId === conversationId) {
       active.openPlainThought = false
       const plain = drainPlainOps(active)
       if (plain.length) {
         const session = sessionId ?? active.sessionId
-        if (selected.id === conversationId) persist(plain, session, { plainPersisted: true })
-        else queuePending(active.conversation, plain, session, { plainPersistedPending: { cursor: streamCursor?.() } })
+        if (selected.id === conversationId) {
+          attempted = true
+          persist(plain, session, { plainPersisted: true })
+        } else {
+          queuePending(active.conversation, plain, session, { plainPersistedPending: { cursor: streamCursor?.() } })
+        }
       }
     }
-    if (pendingWrites.has(conversationId)) retryPending()
+    if (!attempted && pendingWrites.has(conversationId)) retryPending()
+    return !pendingWrites.has(conversationId)
   }
 
   function userPrompt({ text, images, sourceId, advanceCheckpoint = false }: {

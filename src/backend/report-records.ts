@@ -50,8 +50,8 @@ export interface ReportRecordsDeps {
   /** The conversation on screen. */
   current: () => Conversation
   show: (event: RecordShown) => void
-  /** Flush any in-memory foreground text before a report record counts persisted messages. */
-  beforeRecord?: (conversationId: string, reportId: string) => void
+  /** Flush any in-memory foreground text before a report record counts persisted messages; return false to defer recording. */
+  beforeRecord?: (conversationId: string, reportId: string) => boolean | void
   now?: () => number
 }
 
@@ -117,7 +117,9 @@ export function createReportRecords({ history, effects, apply, current, show, be
       return
     }
     const at = timeOf(effect)
-    beforeRecord?.(target.id, effect.key)
+    if (beforeRecord?.(target.id, effect.key) === false) {
+      throw new Error('foreground history has pending writes before report record')
+    }
     const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
       if (!queue.finishGeneration(effect)) return false
       const memory = effect.payload.memory
