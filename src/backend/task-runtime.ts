@@ -7,7 +7,7 @@ import type { Apply } from './journal.ts'
 import type { Effects } from './effects.ts'
 import { GATHER_MS, REPORT, reportId, reportsOf, REQUEST_CHARS, windowReportOutput, type ReportPayload } from './task-reports.ts'
 import type { StoredTask, TaskStore } from './task-store.ts'
-import { createTaskRegistry, endedStatus, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
+import { createTaskRegistry, endedStatus, MAX_TERMINAL_MESSAGE_CHARS, type TaskQuery, type TaskScope, type TaskSnapshot } from './task-registry.ts'
 import { createTaskWords, type TaskWordsDeps } from './task-words.ts'
 import type { KeptMessage, KeptTask, TaskOpening, TaskStartResult, TaskSummary } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS as MAX_TEXT_CHARS } from '../shared/text-limits.ts'
@@ -371,22 +371,32 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (snapshot.endedAt === null || !ENDED_STATUSES.has(snapshot.status)) return
     const entry = store.list().find((item) => item.id === snapshot.taskId)
     if (!entry || (entry.endedAt === snapshot.endedAt && entry.status === snapshot.status)) return
+    const end = pendingEnds.get(snapshot.taskId)
+    const terminalMessage = typeof end?.event.message === 'string' && end.event.message ? end.event.message : null
+    const persistedTerminalMessage = terminalMessage && terminalMessage.length <= MAX_TERMINAL_MESSAGE_CHARS ? terminalMessage : undefined
     const resultTruncated = registry.resultTruncatedOf(snapshot.taskId)
     const resultFromTerminal = registry.resultFromTerminalOf(snapshot.taskId)
     store.add({ ...entry, runId: snapshot.runId, endedAt: snapshot.endedAt, status: snapshot.status, resultKey: registry.resultKeyOf(snapshot.taskId), resultPreview: snapshot.resultPreview,
       ...(resultTruncated ? { resultTruncated: true } : { resultTruncated: undefined }),
-      ...(resultFromTerminal ? { resultFromTerminal: true } : { resultFromTerminal: undefined }) })
+      ...(resultFromTerminal ? { resultFromTerminal: true } : { resultFromTerminal: undefined }),
+      ...(persistedTerminalMessage ? { terminalMessage: persistedTerminalMessage } : { terminalMessage: undefined }) })
+    const saved = store.list().find((item) => item.id === snapshot.taskId)
     const host = typeof entry.next === 'string' ? db.get(entry.next) : null
     const titleRow = host?.messages.find(row => row.role === 'user' && row.text.trim())
-    const end = pendingEnds.get(snapshot.taskId)
     const captured = end?.runId === snapshot.runId ? end.memory : undefined
     const memory = captured ? combineMemoryProvenance(entry.requestMemory ?? null, captured) : undefined
     // A title can change independently of the task, including after a derived feed continuation.
     const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
-    const terminalMessage = typeof end?.event.message === 'string' && end.event.message ? end.event.message : null
-    const windowedOutput = windowReportOutput(terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (fullOutputOf(snapshot.taskId) ?? snapshot.resultPreview)))
+    const reportOutput = terminalMessage ?? (resultFromTerminal ? snapshot.resultPreview : (fullOutputOf(snapshot.taskId) ?? snapshot.resultPreview))
+    const persistedTranscript = !resultFromTerminal
+      ? latestRunOutput(db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? [], typeof entry.runStart === 'number' ? entry.runStart : undefined)
+      : ''
+    const durablyReadable = terminalMessage
+      ? saved?.terminalMessage === terminalMessage
+      : (!resultFromTerminal && !saved?.resultErased && persistedTranscript.length >= reportOutput.length && reportOutput.length > 0)
+    const windowedOutput = windowReportOutput(reportOutput, { readable: durablyReadable })
     const report: ReportPayload = { taskId: snapshot.taskId, runId: snapshot.runId, title: snapshot.title, status: snapshot.status,
       host: typeof entry.next === 'string' ? entry.next : null, output: windowedOutput.text,
       ...(windowedOutput.truncated ? { outputTruncated: true } : {}), token: randomUUID().replaceAll('-', ''),
@@ -471,7 +481,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const evidence = admit ? await admit(taskId) : true
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, text, evidence)
-    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, resultErased: _resultErased, ...going } = kept
+    const { endedAt: _endedAt, status: _status, resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, resultErased: _resultErased, ...going } = kept
     const runId = newRunId()
     const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
@@ -515,7 +525,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const runId = newRunId()
     const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const runStart = before.length
-    const { resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, resultErased: _resultErased, ...keptWithoutTruncated } = kept
+    const { resultTruncated: _resultTruncated, resultFromTerminal: _resultFromTerminal, terminalMessage: _terminalMessage, resultErased: _resultErased, ...keptWithoutTruncated } = kept
     const running = { ...keptWithoutTruncated, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)

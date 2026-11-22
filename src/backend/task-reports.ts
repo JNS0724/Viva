@@ -82,13 +82,16 @@ export const TYPING_DEFER_MS = 8_000
 
 const STATUS_WORDS: Readonly<Record<string, string>> = { done: '做完了', stopped: '停下了', error: '出错了' }
 
-export function windowReportOutput(output: string): { text: string, totalChars: number, truncated: boolean } {
+export function windowReportOutput(output: string, { readable = true }: { readable?: boolean } = {}): { text: string, totalChars: number, truncated: boolean } {
   if (output.length <= REPORT_OUTPUT_MAX_CHARS) return { text: output, totalChars: output.length, truncated: false }
   const head = output.slice(0, REPORT_OUTPUT_HEAD_CHARS)
   const tail = output.slice(-REPORT_OUTPUT_TAIL_CHARS)
   const omitted = output.length - REPORT_OUTPUT_HEAD_CHARS - REPORT_OUTPUT_TAIL_CHARS
+  const hint = readable
+    ? `如需查看省略部分，调用 get_background_task 并传 includeOutput=true, outputOffset=${REPORT_OUTPUT_HEAD_CHARS}`
+    : '完整正文未持久保存，仅保留头尾摘录，无法通过 get_background_task 分段读取'
   return {
-    text: `${head}\n\n……（已省略中间 ${omitted} 字，全文共 ${output.length} 字；如需查看省略部分，调用 get_background_task 并传 includeOutput=true, outputOffset=${REPORT_OUTPUT_HEAD_CHARS}）……\n\n${tail}`,
+    text: `${head}\n\n……（已省略中间 ${omitted} 字，全文共 ${output.length} 字；${hint}）……\n\n${tail}`,
     totalChars: output.length,
     truncated: true,
   }
@@ -115,8 +118,8 @@ export function noteFor(tasks: readonly EndedTask[], { inTurn = false } = {}): s
     ].join('\n')
   })
   const tell = inTurn
-    ? `${IN_TURN_MARK}，可能来自之前的话题。和手头的事有关就用上；无关就在这一轮回答里用一两句话顺带告诉用户是哪件事、结果如何，以及需要用户做什么（如果有）。输出有省略或要细看可以用 get_background_task 分段读取。`
-    : '你负责把它反馈给用户：用一两句话说明是哪件事（它来自之前的话题时先点明）、结果如何，以及需要用户做什么（如果有）。输出有省略或要细看可以用 get_background_task 分段读取。'
+    ? `${IN_TURN_MARK}，可能来自之前的话题。和手头的事有关就用上；无关就在这一轮回答里用一两句话顺带告诉用户是哪件事、结果如何，以及需要用户做什么（如果有）。如输出标注可分段读取或要查任务状态，可用 get_background_task。`
+    : '你负责把它反馈给用户：用一两句话说明是哪件事（它来自之前的话题时先点明）、结果如何，以及需要用户做什么（如果有）。如输出标注可分段读取或要查任务状态，可用 get_background_task。'
   return [
     `${REPORT_HEAD}这不是用户说的话，是 Viva 告诉你后台任务的结果。`,
     ...blocks,

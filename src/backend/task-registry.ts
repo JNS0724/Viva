@@ -5,12 +5,12 @@ import type { ActiveTool } from '../shared/ipc-results.ts'
 import type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 export type { TaskStatus, TaskSnapshot } from '../shared/ipc-results.ts'
 interface Task extends TaskSnapshot { cwd: string, request: string, resultKey?: string, previewTruncated: boolean, resultFromTerminal: boolean }
-export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string, resultTruncated?: boolean, resultFromTerminal?: boolean }
+export interface TaskMetadata { id: string, runId?: string, title: string, cwd?: string, words?: string, startedAt?: number, endedAt?: number, status?: string, resultPreview?: string, resultKey?: string, resultTruncated?: boolean, resultFromTerminal?: boolean, terminalMessage?: string }
 export type TaskScope = { kind: 'main', cwd?: string } | { taskId: string }
 export type TaskQuery = { op: 'list' | 'get', taskId?: string, status?: TaskStatus, cwd?: string, limit?: number, offset?: number, includeRequest?: boolean, includeOutput?: boolean, outputOffset?: number, outputLimit?: number }
 export const DEFAULT_OUTPUT_LIMIT = 4000
 export const MAX_OUTPUT_LIMIT = 4000
-const MAX_TERMINAL_MESSAGE_CHARS = 200_000
+export const MAX_TERMINAL_MESSAGE_CHARS = 200_000
 const statuses = new Set<string>(['running', 'waiting', 'done', 'stopped', 'error', 'interrupted'])
 const terminal = new Set<TaskStatus>(['done', 'stopped', 'error', 'interrupted'])
 /** How a task's turn ended (acp-bridge task_end's stopReason), as its status. */
@@ -50,7 +50,11 @@ export function createTaskRegistry({ now = Date.now, changed = (_snapshot: TaskS
       status, currentAction: null, waitingFor: null, startedAt: meta.startedAt ?? now(), updatedAt: now(), endedAt: status === 'interrupted' ? null : meta.endedAt ?? null,
       resultPreview: rawPreview.slice(-4000), resultKey: meta.resultKey, previewTruncated: Boolean(meta.resultTruncated) || rawPreview.length > 4000,
       resultFromTerminal: Boolean(meta.resultFromTerminal), revision: 0 }
-    terminalMessages.delete(meta.id)
+    if (typeof meta.terminalMessage === 'string' && meta.terminalMessage.length > 0 && meta.terminalMessage.length <= MAX_TERMINAL_MESSAGE_CHARS) {
+      terminalMessages.set(meta.id, meta.terminalMessage)
+    } else {
+      terminalMessages.delete(meta.id)
+    }
     tasks.set(meta.id, task)
     publish(task)
   }

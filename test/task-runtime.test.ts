@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
+import { MAX_TERMINAL_MESSAGE_CHARS } from '../src/backend/task-registry.ts'
 import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
@@ -741,8 +742,8 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(afterRelaunch.outputTotalChars, full.length)
   assert.equal(afterRelaunch.nextOutputOffset, 1000)
 
-  // Terminal error event.message (including >4000 chars) is preserved in full live, windowed in reports,
-  // and explicitly marked truncated (outputTotalChars: null) when only the 4000-char preview survives relaunch.
+  // Terminal error event.message (<= MAX_TERMINAL_MESSAGE_CHARS) is persisted for full pagination live and after relaunch,
+  // while an oversized (> MAX_TERMINAL_MESSAGE_CHARS) error explicitly marks the report non-paginatable and returns outputTotalChars: null.
   const failed = await later.start('会报错的任务')
   later.says(failed.task.id, '正在尝试请求…')
   const longError = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'X'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
@@ -751,6 +752,7 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(failedReport?.payload.outputTruncated, true)
   assert.ok(failedReport?.payload.output.startsWith('E'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'report keeps head of long error')
   assert.ok(failedReport?.payload.output.endsWith('Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'report keeps tail of long error')
+  assert.match(failedReport?.payload.output ?? '', /outputOffset=1000/)
   const failedPage1 = later.tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
   assert.equal(failedPage1.resultPreview, longError.slice(0, 4000))
   assert.equal(failedPage1.outputTotalChars, longError.length)
@@ -759,11 +761,26 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(failedPage2.resultPreview, longError.slice(4000))
   assert.equal(failedPage2.nextOutputOffset, null)
 
-  const afterErrorRelaunch = h.relaunch().tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true }, { kind: 'main' }).task!
-  assert.equal(afterErrorRelaunch.resultPreview, longError.slice(-4000))
-  assert.equal(afterErrorRelaunch.outputTotalChars, null)
-  assert.equal(afterErrorRelaunch.nextOutputOffset, null)
+  const afterErrorRelaunch = h.relaunch().tasks.agent.query({ op: 'get', taskId: failed.task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(afterErrorRelaunch.resultPreview, longError.slice(0, 4000))
+  assert.equal(afterErrorRelaunch.outputTotalChars, longError.length)
+  assert.equal(afterErrorRelaunch.nextOutputOffset, 4000)
   assert.equal(afterErrorRelaunch.outputTruncated, true)
+
+  const huge = await later.start('超大报错任务')
+  const hugeError = `${'A'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'B'.repeat(MAX_TERMINAL_MESSAGE_CHARS)}${'C'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  later.emit({ type: 'task_end', taskId: huge.task.id, stopReason: 'error', message: hugeError })
+  const hugeReport = h.queuedReports.find(item => item.payload.taskId === huge.task.id)
+  assert.equal(hugeReport?.payload.outputTruncated, true)
+  assert.match(hugeReport?.payload.output ?? '', /无法通过 get_background_task 分段读取/)
+  assert.doesNotMatch(hugeReport?.payload.output ?? '', /outputOffset=/)
+  for (const instance of [later, h.relaunch()]) {
+    const hugeQuery = instance.tasks.agent.query({ op: 'get', taskId: huge.task.id, includeOutput: true }, { kind: 'main' }).task!
+    assert.equal(hugeQuery.resultPreview, hugeError.slice(-4000))
+    assert.equal(hugeQuery.outputTotalChars, null)
+    assert.equal(hugeQuery.nextOutputOffset, null)
+    assert.equal(hugeQuery.outputTruncated, true)
+  }
 
   // Terminal error whose trailing text collides verbatim with earlier assistant output must still win, live and after relaunch.
   const colliding = await later.start('子串碰撞报错任务')
@@ -829,15 +846,20 @@ test('production TaskStore with retainedReply distinguishes unkeyed outputs/erro
     assert.equal(queuedReports.find(item => item.payload.taskId === plain.taskId)?.payload.output, '普通文本完整结果')
     assert.equal(runtime.agent.query({ op: 'get', taskId: plain.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '普通文本完整结果')
 
-    // 2. Terminal error event.message (no resultKey): neither report nor get_background_task is blanked.
+    // 2. Terminal error event.message (no resultKey): neither report nor get_background_task is blanked;
+    // when truncated and not durably persisted by retainedReply, the report avoids promising pagination.
     const errored = await runtime.agent.start('报错任务')
+    const longUnpersistedErr = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(1000)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
     runtime.dsh.receive({ type: 'task_update', taskId: errored.taskId, update: chunk('前面说过的话') })
-    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: 'Upstream 502 bad gateway' })
+    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: longUnpersistedErr })
     const errStored = store.list().find(item => item.id === errored.taskId)!
     assert.equal(errStored.resultPreview, '')
+    assert.equal(errStored.terminalMessage, undefined)
     assert.equal(errStored.resultErased, undefined)
-    assert.equal(queuedReports.find(item => item.payload.taskId === errored.taskId)?.payload.output, 'Upstream 502 bad gateway')
-    assert.equal(runtime.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, 'Upstream 502 bad gateway')
+    const errReport = queuedReports.find(item => item.payload.taskId === errored.taskId)?.payload.output ?? ''
+    assert.match(errReport, /无法通过 get_background_task 分段读取/)
+    assert.doesNotMatch(errReport, /outputOffset=/)
+    assert.equal(runtime.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, longUnpersistedErr)
 
     // 3. Retired resultKey (retainedReply returns false): store marks resultErased=true and blocks transcript resurrection.
     const retired = await runtime.agent.start('已擦除任务')
