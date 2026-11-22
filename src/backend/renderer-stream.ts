@@ -7,7 +7,7 @@ import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, inHistory?: boolean, plainChunk?: boolean, skipReplay?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, inHistory?: boolean, durable?: boolean, plainChunk?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -45,8 +45,10 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
         ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
-        const removed = held.shift()!
-        bytes -= removed.bytes; recordLoss(removed.scope, removed.cursor)
+        const durableIndex = held.findIndex(row => row.durable)
+        const removed = durableIndex >= 0 ? held.splice(durableIndex, 1)[0]! : held.shift()!
+        bytes -= removed.bytes
+        if (!removed.durable) recordLoss(removed.scope, removed.cursor)
       }
     }
     if (invalidatesConversationSnapshot(event)) {
@@ -76,11 +78,48 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       if (row.questionId === questionId && row.routing.context.conversationId === conversationId) row.inHistory = true
     }
   }
-  /** Exclude already-persisted plain assistant chunks up to the given (or current) cursor from mid-turn replay. */
+  /** Reclaim already-persisted plain assistant chunks up to the given (or current) cursor from mid-turn replay. */
   function markPlainPersisted(conversationId: string, upToCursor?: number) {
     const limit = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
-    for (const row of held) {
-      if (row.plainChunk && row.cursor <= limit && row.routing.context.conversationId === conversationId) row.skipReplay = true
+    for (let index = held.length - 1; index >= 0; index--) {
+      const row = held[index]!
+      if (!row.plainChunk || row.cursor > limit || row.routing.context.conversationId !== conversationId) continue
+      held.splice(index, 1)
+      bytes -= row.bytes
+    }
+  }
+  /**
+   * Reclaim already-persisted viva_stream text deltas and text-only settles up to `upToCursor`, so a long turn
+   * whose settled replies are already durable in SQLite does not overflow the replay buffer and trigger false gaps.
+   */
+  function markStreamPersisted(conversationId: string, streamKey: string, upToCursor?: number) {
+    const limit = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
+    for (let index = held.length - 1; index >= 0; index--) {
+      const row = held[index]!
+      if (row.streamKey !== streamKey || row.cursor > limit || row.routing.context.conversationId !== conversationId) continue
+      const parsed = JSON.parse(row.json) as Record<string, unknown>
+      const update = parsed.update && typeof parsed.update === 'object' ? parsed.update as Record<string, unknown> : null
+      if (!update) continue
+      if (update.kind !== 'settle') {
+        // Provisional delta/block chunks for a settled stream are superseded once the settlement commits.
+        held.splice(index, 1)
+        bytes -= row.bytes
+        continue
+      }
+      const nonText = Array.isArray(update.blocks)
+        ? update.blocks.filter(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text')
+        : []
+      if (!nonText.length) {
+        held.splice(index, 1)
+        bytes -= row.bytes
+        continue
+      }
+      const shrunk = JSON.stringify({ ...parsed, update: { ...update, blocks: nonText, textInHistory: true } })
+      const nextBytes = Math.max(shrunk.length * 2, Buffer.byteLength(shrunk)) + 128
+      bytes += nextBytes - row.bytes
+      row.json = shrunk
+      row.bytes = nextBytes
+      row.durable = true
     }
   }
   function snapshot(conversationId: string, context: ConversationContext, stopped = false, hiddenStreamKeys?: ReadonlySet<string>) {
@@ -93,7 +132,7 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     }
     const replay: Array<Record<string, unknown>> = []
     for (const row of held) {
-      if (row.skipReplay || row.cursor <= cutoff || !belongsTo(row.routing, context)) continue
+      if (row.cursor <= cutoff || !belongsTo(row.routing, context)) continue
       const parsed = JSON.parse(row.json) as Record<string, unknown>
       // Streams already persisted before the trailing history window must not re-append text into the window,
       // while reasoning blocks stay replayable so turn thought state stays accurate.
@@ -105,7 +144,7 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
             ? update.blocks.filter(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text')
             : []
           if (!blocks.length) continue
-          replay.push({ ...parsed, update: { ...update, blocks } })
+          replay.push({ ...parsed, update: { ...update, blocks, textInHistory: true } })
           continue
         }
         if (update.blockType === 'text') continue
@@ -114,5 +153,5 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     }
     return { streamGeneration, cutoverCursor: eventCursor, replay }
   }
-  return { send, cursor: () => eventCursor, checkpoint, markQuestionPersisted, markPlainPersisted, snapshot }
+  return { send, cursor: () => eventCursor, checkpoint, markQuestionPersisted, markPlainPersisted, markStreamPersisted, snapshot }
 }

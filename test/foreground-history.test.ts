@@ -699,3 +699,164 @@ test('userPrompt queued mid-turn after assistant output updates lastTurnMessage 
   assert.equal(stored[2]?.role, 'note')
   assert.equal(stored[2]?.receipt?.stopReason, 'end_turn')
 })
+
+test('long unfinished turn reclaims persisted viva_stream events so mid-turn reload avoids false replay gaps', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-long', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-long' }
+  const writer = createForegroundHistory({
+    commit: history.commit,
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
+    markPlainPersisted: (id, upToCursor) => stream.markPlainPersisted(id, upToCursor),
+    markStreamPersisted: (id, key, upToCursor) => stream.markStreamPersisted(id, key, upToCursor),
+    onError: err => { throw err },
+  })
+
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  stream.send(startEvent)
+  writer.receive(startEvent)
+
+  // Emit 260 settled messages * (4 deltas + 1 settle) = 1,300 events and >2.6 MiB of text in one unfinished turn.
+  // Message 250 also carries a reasoning block (in-window); message 0 carries a reasoning block (out-of-window);
+  // plus a reasoning-only stream with deltas.
+  const total = 260
+  const chunk = '长文片段'.repeat(650) // ~2.6 KiB per delta (~10.4 KiB per settled message, >2.6 MiB across 260 messages)
+  for (let i = 0; i < total; i += 1) {
+    const key = `long-${i}`
+    const fullText = `第${i}条:${chunk}${chunk}${chunk}${chunk}`
+    for (let d = 0; d < 4; d += 1) {
+      const delta = {
+        type: 'update', context,
+        update: { sessionUpdate: 'viva_stream', key, kind: 'delta', index: 0, blockType: 'text', text: d === 0 ? `第${i}条:${chunk}` : chunk },
+      }
+      stream.send(delta)
+      writer.receive(delta)
+    }
+    history.bindGeneratedCopy('s-long', key, 'assistant', fullText, [{ sources: [], fileRanges: [] }])
+    const blocks = (i === 0 || i === 250)
+      ? [{ type: 'reasoning', text: `推理-${i}` }, { type: 'text', text: fullText }]
+      : [{ type: 'text', text: fullText }]
+    const settle = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks } }
+    stream.send(settle)
+    writer.receive(settle)
+  }
+  // Reasoning-only tool step with deltas should also collapse to a single durable settle
+  for (let d = 0; d < 10; d += 1) {
+    const delta = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'r-only', kind: 'delta', index: 0, blockType: 'reasoning', text: '思考' } }
+    stream.send(delta)
+    writer.receive(delta)
+  }
+  const rSettle = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'r-only', kind: 'settle', blocks: [{ type: 'reasoning', text: '仅推理' }] } }
+  stream.send(rSettle)
+  writer.receive(rSettle)
+
+  // Mid-turn reload succeeds without throwing 'unreplayable gap'
+  const tail = history.getTail(current.id, CONVERSATION_WINDOW_MESSAGES)!
+  assert.equal(tail.offset, total - CONVERSATION_WINDOW_MESSAGES)
+  assert.equal(tail.total, total)
+  const hiddenKeys = history.streamKeysBefore(current.id, tail.offset)
+  const snap = stream.snapshot(current.id, context, false, hiddenKeys)
+  assert.equal(snap.replay[0]?.type, 'turn_started', 'turn_started stays intact in replay buffer')
+
+  let state: State = reduce(initialState, {
+    type: 'initialization_snapshot',
+    snapshot: {
+      streamGeneration: snap.streamGeneration,
+      cutoverCursor: snap.cutoverCursor,
+      context,
+      info: { mode: 'live', model: 'V4', cwd: '/w', conversationId: current.id, sessionId: 's-long' },
+      replay: [],
+      history: {
+        id: tail.conversation.id,
+        createdAt: tail.conversation.createdAt,
+        updatedAt: tail.conversation.updatedAt,
+        parentId: tail.conversation.parentId,
+        offset: tail.offset,
+        total: tail.total,
+        messages: tail.messages,
+        records: tail.records,
+        folds: [],
+      },
+    },
+  })
+  for (const event of snap.replay) {
+    if (event.type === 'turn_started') state = reduce(state, { type: 'agent_turn_started', by: 'user', at: 100 })
+    else if (event.type === 'update') state = reduce(state, { type: 'acp_update', update: event.update as ConversationUpdate, at: 101 })
+  }
+  assert.equal(state.phase, 'working')
+  assert.equal(state.messages.length, CONVERSATION_WINDOW_MESSAGES)
+  assert.equal(state.messages.some(m => m.streamKey === 'long-250' && m.text.startsWith('第250条:')), true,
+    'in-window persisted message with reasoning block is NOT deleted when its reasoning-only settle replays')
+  assert.deepEqual(state.thoughts.map(item => item.text), ['推理-0', '推理-250', '仅推理'])
+})
+
+test('unpersisted stream overflow when commit fails still triggers unreplayable gap on mid-turn reload', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-gap', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-gap' }
+  const writer = createForegroundHistory({
+    commit: () => { throw new Error('sqlite busy') },
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markStreamPersisted: (id, key, upToCursor) => stream.markStreamPersisted(id, key, upToCursor),
+    onError: () => {},
+  })
+
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  stream.send(startEvent)
+  writer.receive(startEvent)
+  for (let i = 0; i < 1050; i += 1) {
+    const settle = {
+      type: 'update', context,
+      update: { sessionUpdate: 'viva_stream', key: `fail-${i}`, kind: 'settle', blocks: [{ type: 'text', text: `未落盘-${i}` }] },
+    }
+    stream.send(settle)
+    writer.receive(settle)
+  }
+  assert.throws(() => stream.snapshot(current.id, context), /unreplayable gap/)
+})
+
+test('evicting >1024 durable reasoning settles drops oldest durable thoughts without losing turn_started', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-durable', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-durable' }
+  const writer = createForegroundHistory({
+    commit: history.commit,
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markStreamPersisted: (id, key, upToCursor) => stream.markStreamPersisted(id, key, upToCursor),
+    onError: err => { throw err },
+  })
+
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  stream.send(startEvent)
+  writer.receive(startEvent)
+  for (let i = 0; i < 1050; i += 1) {
+    const settle = {
+      type: 'update', context,
+      update: { sessionUpdate: 'viva_stream', key: `r-${i}`, kind: 'settle', blocks: [{ type: 'reasoning', text: `r-${i}` }] },
+    }
+    stream.send(settle)
+    writer.receive(settle)
+  }
+  const snap = stream.snapshot(current.id, context)
+  assert.equal(snap.replay[0]?.type, 'turn_started', 'non-durable turn_started is preserved while oldest durable thoughts evict')
+  assert.equal(snap.replay.length, 1024)
+})

@@ -1689,6 +1689,7 @@ ${question}` : question
       checkpoint: (conversationId, upToCursor) => rendererStream.checkpoint(conversationId, upToCursor),
       markQuestionPersisted: (conversationId, questionId) => rendererStream.markQuestionPersisted(conversationId, questionId),
       markPlainPersisted: (conversationId, upToCursor) => rendererStream.markPlainPersisted(conversationId, upToCursor),
+      markStreamPersisted: (conversationId, key, upToCursor) => rendererStream.markStreamPersisted(conversationId, key, upToCursor),
       delegatedDuringTurn: (startedAt, endedAt) => {
         const list = taskStore?.list() ?? []
         const recordsList = historyDb.recordsOf(sessions.current().id)

@@ -74,7 +74,7 @@ export interface ConversationState {
 }
 export type VivaStreamUpdate = { sessionUpdate: 'viva_stream', key: string } & (
   | { kind: 'delta' | 'block', index: number, blockType: 'text' | 'reasoning', text: string }
-  | { kind: 'settle', blocks: readonly { type: string, text?: string }[], before?: { text?: string, reasoning?: string } }
+  | { kind: 'settle', blocks: readonly { type: string, text?: string }[], before?: { text?: string, reasoning?: string }, textInHistory?: boolean }
 )
 type ChunkKind = 'agent_message_chunk' | 'agent_thought_chunk'
 type ToolKind = 'tool_call' | 'tool_call_update'

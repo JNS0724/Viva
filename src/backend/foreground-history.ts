@@ -22,6 +22,7 @@ export interface ForegroundHistoryDeps {
   checkpoint?: (conversationId: string, upToCursor?: number) => void
   markQuestionPersisted?: (conversationId: string, questionId: string) => void
   markPlainPersisted?: (conversationId: string, upToCursor?: number) => void
+  markStreamPersisted?: (conversationId: string, streamKey: string, upToCursor?: number) => void
   delegatedDuringTurn?: (startedAt: number, endedAt: number) => boolean
   onError?: (error: unknown) => void
   now?: () => number
@@ -62,6 +63,7 @@ interface PendingWrite {
   checkpointPending?: StreamBoundary
   plainPersistedPending?: StreamBoundary
   questionIds: string[]
+  streamKeys: Array<{ key: string, cursor?: number }>
 }
 
 const mergeBoundary = (a?: StreamBoundary, b?: StreamBoundary): StreamBoundary | undefined => {
@@ -121,6 +123,7 @@ export function createForegroundHistory({
   checkpoint,
   markQuestionPersisted,
   markPlainPersisted,
+  markStreamPersisted,
   delegatedDuringTurn,
   onError = () => {},
   now = Date.now,
@@ -181,11 +184,23 @@ export function createForegroundHistory({
     return ops
   }
 
+  function mergeStreamKeys(
+    prior: ReadonlyArray<{ key: string, cursor?: number }> | undefined,
+    incoming: ReadonlyArray<{ key: string, cursor?: number }> | undefined,
+  ): Array<{ key: string, cursor?: number }> {
+    if (!prior?.length && !incoming?.length) return []
+    const map = new Map<string, StreamBoundary>()
+    for (const item of [...(prior ?? []), ...(incoming ?? [])]) {
+      map.set(item.key, mergeBoundary(map.get(item.key), { cursor: item.cursor }) ?? {})
+    }
+    return [...map.entries()].map(([key, boundary]) => ({ key, ...(boundary.cursor !== undefined ? { cursor: boundary.cursor } : {}) }))
+  }
+
   function queuePending(
     conversation: Conversation,
     ops: readonly HistoryMessageMutation[],
     session: string | null,
-    flags: { checkpointPending?: StreamBoundary, plainPersistedPending?: StreamBoundary, questionIds?: readonly string[] } = {},
+    flags: { checkpointPending?: StreamBoundary, plainPersistedPending?: StreamBoundary, questionIds?: readonly string[], streamKeys?: ReadonlyArray<{ key: string, cursor?: number }> } = {},
   ) {
     const prior = pendingWrites.get(conversation.id)
     const questionIds = [...new Set([...(prior?.questionIds ?? []), ...(flags.questionIds ?? [])])]
@@ -196,6 +211,7 @@ export function createForegroundHistory({
       checkpointPending: mergeBoundary(prior?.checkpointPending, flags.checkpointPending),
       plainPersistedPending: mergeBoundary(prior?.plainPersistedPending, flags.plainPersistedPending),
       questionIds,
+      streamKeys: mergeStreamKeys(prior?.streamKeys, flags.streamKeys),
     })
   }
 
@@ -218,6 +234,7 @@ export function createForegroundHistory({
           pendingWrites.delete(id)
           if (current().id === saved.id) setCurrent(saved)
           if (entry.plainPersistedPending) markPlainPersisted?.(saved.id, entry.plainPersistedPending.cursor)
+          for (const item of entry.streamKeys) markStreamPersisted?.(saved.id, item.key, item.cursor)
           for (const questionId of entry.questionIds) markQuestionPersisted?.(saved.id, questionId)
           if (entry.checkpointPending) advanceCheckpoint(saved.id, entry.checkpointPending.cursor)
         } catch (error) {
@@ -237,10 +254,11 @@ export function createForegroundHistory({
   function persist(
     ops: readonly HistoryMessageMutation[],
     sessionOverride?: string | null,
-    { plainPersisted = false, deferCheckpoint = false, questionIds = [] }: {
+    { plainPersisted = false, deferCheckpoint = false, questionIds = [], streamKeys = [] }: {
       plainPersisted?: boolean
       deferCheckpoint?: boolean
       questionIds?: readonly string[]
+      streamKeys?: readonly string[]
     } = {},
   ): { ok: boolean, saved: Conversation | null } {
     const base = current()
@@ -249,12 +267,15 @@ export function createForegroundHistory({
     const carried = pendingWrites.get(base.id)
     const allOps = carried ? [...carried.ops, ...ops] : [...ops]
     const allQuestionIds = [...new Set([...(carried?.questionIds ?? []), ...questionIds])]
-    const boundary = (plainPersisted || deferCheckpoint) ? { cursor: streamCursor?.() } : undefined
+    const currentCursor = (plainPersisted || deferCheckpoint || streamKeys.length > 0) ? streamCursor?.() : undefined
+    const allStreamKeys = mergeStreamKeys(carried?.streamKeys, streamKeys.map(key => ({ key, ...(currentCursor !== undefined ? { cursor: currentCursor } : {}) })))
+    const boundary = (plainPersisted || deferCheckpoint) ? { cursor: currentCursor } : undefined
     const plainBoundary = mergeBoundary(carried?.plainPersistedPending, plainPersisted ? boundary : undefined)
     const checkpointBoundary = mergeBoundary(carried?.checkpointPending, deferCheckpoint ? boundary : undefined)
     if (!allOps.length) {
       if (carried) pendingWrites.delete(base.id)
       if (plainBoundary) markPlainPersisted?.(base.id, plainBoundary.cursor)
+      for (const item of allStreamKeys) markStreamPersisted?.(base.id, item.key, item.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(base.id, questionId)
       if (checkpointBoundary) advanceCheckpoint(base.id, checkpointBoundary.cursor)
       return { ok: true, saved: null }
@@ -271,6 +292,7 @@ export function createForegroundHistory({
       pendingWrites.delete(base.id)
       if (current().id === saved.id) setCurrent(saved)
       if (plainBoundary) markPlainPersisted?.(saved.id, plainBoundary.cursor)
+      for (const item of allStreamKeys) markStreamPersisted?.(saved.id, item.key, item.cursor)
       for (const questionId of allQuestionIds) markQuestionPersisted?.(saved.id, questionId)
       if (checkpointBoundary) advanceCheckpoint(saved.id, checkpointBoundary.cursor)
       return { ok: true, saved }
@@ -287,6 +309,7 @@ export function createForegroundHistory({
           checkpointPending: checkpointBoundary,
           plainPersistedPending: plainBoundary,
           questionIds: allQuestionIds,
+          streamKeys: allStreamKeys,
         })
       }
       onError(error)
@@ -371,7 +394,7 @@ export function createForegroundHistory({
         { kind: 'upsert_assistant', message: { role: 'assistant', text, receipt: null, key }, ...(beforeKey ? { beforeKey } : {}) },
       ]
       // Track the settled stream in the logical turn even if commit fails so retries and turn_end stay ordered.
-      persist(ops, sessionId, { plainPersisted: plain.length > 0 })
+      persist(ops, sessionId, { plainPersisted: plain.length > 0, streamKeys: [key] })
       turn.persistedStreamKeys.add(key)
       if (!beforeKey || !turn.lastTurnMessage || (turn.lastTurnMessage.role === 'assistant' && turn.lastTurnMessage.key === key)) {
         turn.lastTurnMessage = { role: 'assistant', text, key }
@@ -379,12 +402,14 @@ export function createForegroundHistory({
       return
     }
     if (turn.persistedStreamKeys.has(key)) {
-      persist([{ kind: 'remove_stream', key }], sessionId)
+      persist([{ kind: 'remove_stream', key }], sessionId, { streamKeys: [key] })
       turn.persistedStreamKeys.delete(key)
       if (turn.lastTurnMessage?.role === 'assistant' && turn.lastTurnMessage.key === key) {
         const lastPlain = turn.pendingPlainSegments.at(-1)
         turn.lastTurnMessage = lastPlain !== undefined ? { role: 'assistant', text: lastPlain } : null
       }
+    } else {
+      persist([], sessionId, { streamKeys: [key] })
     }
   }
 

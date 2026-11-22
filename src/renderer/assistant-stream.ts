@@ -23,7 +23,9 @@ export function assistantStream(state: ConversationView, update: VivaStreamUpdat
     const position = before === undefined ? -1 : list.findIndex(old => old.streamKey === before)
     return position < 0 ? [...list, item] : [...list.slice(0, position), item, ...list.slice(position)]
   }
-  const messages = change(state.messages, 'text', (base, prior) => ({ ...prior, ...base, role: 'assistant', shown: base.text.length, receipt: prior?.receipt ?? null }))
+  const messages = update.kind === 'settle' && update.textInHistory
+    ? state.messages
+    : change(state.messages, 'text', (base, prior) => ({ ...prior, ...base, role: 'assistant', shown: base.text.length, receipt: prior?.receipt ?? null }))
   const thoughts = change(state.thoughts, 'reasoning', (base, prior) => ({ ...prior, ...base }))
   const old = state.thoughts.find(item => item.streamKey === key), thought = thoughts.find(item => item.streamKey === key)
   const timeline: readonly ConversationTrace[] = old && !thought ? state.timeline.filter(item => !(item.kind === 'thought' && item.ref === old.id))
