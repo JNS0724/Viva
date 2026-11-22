@@ -1028,11 +1028,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (sessions.isChanging()) throw new Error('Conversation selection is changing; retry initialization')
       const selected = sessions.current(), context = rendererContext()
       const found = historyDb.getTail(selected.id, CONVERSATION_WINDOW_MESSAGES)
+      const hiddenStreamKeys = found && found.offset > 0 ? historyDb.streamKeysBefore(selected.id, found.offset) : undefined
       // No await between the history read and publication cutoff: both share this boundary.
       const history = found ? { id: found.conversation.id, updatedAt: found.conversation.updatedAt,
         createdAt: found.conversation.createdAt, parentId: found.conversation.parentId,
         messages: found.messages, offset: found.offset, total: found.total, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
-      return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null), context, history, stopUnconfirmed: Boolean(stoppedContext),
+      return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null, hiddenStreamKeys), context, history, stopUnconfirmed: Boolean(stoppedContext),
         activeTurn: turn.active && !stoppedContext ? { id: turn.id, by: turn.by, startedAt: turn.startedAt, stopping: turn.stopping } : null,
         info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
     })

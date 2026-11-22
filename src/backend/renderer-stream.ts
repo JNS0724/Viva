@@ -7,7 +7,7 @@ import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, inHistory?: boolean, plainChunk?: boolean, skipReplay?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, inHistory?: boolean, plainChunk?: boolean, skipReplay?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -36,10 +36,12 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       const json = JSON.stringify(event), size = Math.max(json.length * 2, Buffer.byteLength(json)) + 128
       const update = event.type === 'update' && event.update && typeof event.update === 'object' ? event.update as Record<string, unknown> : null
       const plainChunk = update?.sessionUpdate === 'agent_message_chunk'
+      const streamKey = update?.sessionUpdate === 'viva_stream' && typeof update.key === 'string' && update.key ? update.key : undefined
       const questionId = event.type === 'question_answered' && typeof event.questionId === 'string' ? event.questionId : undefined
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
         reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
         ...(questionId ? { questionId } : {}),
+        ...(streamKey ? { streamKey } : {}),
         ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
@@ -81,7 +83,7 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       if (row.plainChunk && row.cursor <= limit && row.routing.context.conversationId === conversationId) row.skipReplay = true
     }
   }
-  function snapshot(conversationId: string, context: ConversationContext, stopped = false) {
+  function snapshot(conversationId: string, context: ConversationContext, stopped = false, hiddenStreamKeys?: ReadonlySet<string>) {
     const cutoff = watermark('save', conversationId)
     if (cutoff < Math.max(loss(key(context.sessionId, context.conversationId)), loss(key(context.sessionId, null)))) {
       // The execution is fenced. Its saved checkpoint and restart action remain usable
@@ -89,11 +91,28 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       if (stopped) return { streamGeneration, cutoverCursor: eventCursor, replay: [], stoppedReplayLost: true }
       throw new Error('Conversation stream has an unreplayable gap')
     }
-    return { streamGeneration, cutoverCursor: eventCursor,
-      replay: held.filter(row => !row.skipReplay && row.cursor > cutoff && belongsTo(row.routing, context)).map(row => {
-        const parsed = JSON.parse(row.json) as Record<string, unknown>
-        return row.inHistory ? { ...parsed, inHistory: true } : parsed
-      }) }
+    const replay: Array<Record<string, unknown>> = []
+    for (const row of held) {
+      if (row.skipReplay || row.cursor <= cutoff || !belongsTo(row.routing, context)) continue
+      const parsed = JSON.parse(row.json) as Record<string, unknown>
+      // Streams already persisted before the trailing history window must not re-append text into the window,
+      // while reasoning blocks stay replayable so turn thought state stays accurate.
+      if (row.streamKey && hiddenStreamKeys?.has(row.streamKey)) {
+        const update = parsed.update && typeof parsed.update === 'object' ? parsed.update as Record<string, unknown> : null
+        if (!update) continue
+        if (update.kind === 'settle') {
+          const blocks = Array.isArray(update.blocks)
+            ? update.blocks.filter(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text')
+            : []
+          if (!blocks.length) continue
+          replay.push({ ...parsed, update: { ...update, blocks } })
+          continue
+        }
+        if (update.blockType === 'text') continue
+      }
+      replay.push(row.inHistory ? { ...parsed, inHistory: true } : parsed)
+    }
+    return { streamGeneration, cutoverCursor: eventCursor, replay }
   }
   return { send, cursor: () => eventCursor, checkpoint, markQuestionPersisted, markPlainPersisted, snapshot }
 }

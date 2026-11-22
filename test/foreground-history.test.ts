@@ -8,6 +8,7 @@ import { createRendererStream } from '../src/backend/renderer-stream.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../src/shared/renderer-sync.ts'
 import { SILENT_REPLY } from '../src/shared/task-report.ts'
 import { CONVERSATION_WINDOW_LIMIT, initialState, reduce } from '../src/renderer/state.ts'
+import type { ConversationUpdate } from '../src/renderer/conversation-types.ts'
 import { foldAfter, rewindTarget } from '../src/renderer/rewind-state.ts'
 import { recordsAt } from '../src/renderer/report-state.ts'
 import { placeOf } from '../src/renderer/stars.ts'
@@ -575,4 +576,126 @@ test('retrying an earlier pending write advances checkpoint and plain dedup only
     .filter(e => e.type === 'update' && (e.update as Record<string, unknown>)?.sessionUpdate === 'agent_message_chunk')
     .map(e => ((e.update as Record<string, unknown>).content as Record<string, unknown>).text)
   assert.deepEqual(plainTexts, ['插话后的新文本'])
+})
+
+test('mid-turn reload with >200 settled viva_stream messages skips out-of-window stream text without losing thoughts', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-wide', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-wide' }
+  const writer = createForegroundHistory({
+    commit: history.commit,
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    markQuestionPersisted: (id, qid) => stream.markQuestionPersisted(id, qid),
+    markPlainPersisted: (id, upToCursor) => stream.markPlainPersisted(id, upToCursor),
+    onError: err => { throw err },
+  })
+
+  const total = CONVERSATION_WINDOW_MESSAGES + 5
+  const startEvent = { type: 'turn_started', by: 'user', context }
+  stream.send(startEvent)
+  writer.receive(startEvent)
+  for (let i = 0; i < total; i += 1) {
+    const key = `k-${i}`
+    const text = `第 ${i} 条`
+    history.bindGeneratedCopy('s-wide', key, 'assistant', text, [{ sources: [], fileRanges: [] }])
+    const blocks = i === 0
+      ? [{ type: 'reasoning', text: '首条推理' }, { type: 'text', text }]
+      : [{ type: 'text', text }]
+    const settle = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks } }
+    stream.send(settle)
+    writer.receive(settle)
+  }
+
+  // Reload mid-turn before turn_end: snapshot returns the trailing 200 messages + filtered replay
+  const tail = history.getTail(current.id, CONVERSATION_WINDOW_MESSAGES)!
+  assert.equal(tail.offset, 5)
+  assert.equal(tail.total, total)
+  const hiddenKeys = history.streamKeysBefore(current.id, tail.offset)
+  assert.deepEqual([...hiddenKeys].sort(), ['k-0', 'k-1', 'k-2', 'k-3', 'k-4'])
+
+  const snap = stream.snapshot(current.id, context, false, hiddenKeys)
+  // Out-of-window k-1..k-4 have no reasoning blocks and are omitted; k-0 retains ONLY its reasoning block
+  assert.equal(snap.replay.some(e => e.type === 'update' && (e.update as Record<string, unknown>)?.key === 'k-1'), false)
+  const k0Replay = snap.replay.find(e => e.type === 'update' && (e.update as Record<string, unknown>)?.key === 'k-0')
+  assert.ok(k0Replay, 'out-of-window stream with reasoning still replays its reasoning block')
+  assert.deepEqual(((k0Replay.update as Record<string, unknown>).blocks as Array<Record<string, unknown>>).map(b => b.type), ['reasoning'])
+
+  // Reduce snapshot + replay in renderer state: no out-of-window text is re-appended and thoughts stay intact
+  let state: State = reduce(initialState, {
+    type: 'initialization_snapshot',
+    snapshot: {
+      streamGeneration: snap.streamGeneration,
+      cutoverCursor: snap.cutoverCursor,
+      context,
+      info: { mode: 'live', model: 'V4', cwd: '/w', conversationId: current.id, sessionId: 's-wide' },
+      replay: [],
+      history: {
+        id: tail.conversation.id,
+        createdAt: tail.conversation.createdAt,
+        updatedAt: tail.conversation.updatedAt,
+        parentId: tail.conversation.parentId,
+        offset: tail.offset,
+        total: tail.total,
+        messages: tail.messages,
+        records: tail.records,
+        folds: [],
+      },
+    },
+  })
+  for (const event of snap.replay) {
+    if (event.type === 'turn_started') state = reduce(state, { type: 'agent_turn_started', by: 'user', at: 100 })
+    else if (event.type === 'update') state = reduce(state, { type: 'acp_update', update: event.update as ConversationUpdate, at: 101 })
+  }
+  assert.equal(state.historyOffset, 5)
+  assert.equal(state.messages.length, CONVERSATION_WINDOW_MESSAGES)
+  assert.equal(state.historyOffset + state.messages.length, total, 'total count stays exact without duplicate appends')
+  assert.equal(state.messages[0]?.text, '第 5 条')
+  assert.equal(state.messages.at(-1)?.text, `第 ${total - 1} 条`)
+  assert.equal(state.thoughts.length, 1)
+  assert.equal(state.thoughts[0]?.text, '首条推理')
+})
+
+test('userPrompt queued mid-turn after assistant output updates lastTurnMessage so turn_end appends a note like renderer', t => {
+  const { db, history } = openMemoryHistory(t)
+  const stream = createRendererStream(() => {}, db)
+  let current: Conversation = history.create({ sessionId: 's-report', mode: 'live', model: 'V4', cwd: '/w' })
+  const context = { conversationId: current.id, sessionId: 's-report' }
+  const writer = createForegroundHistory({
+    commit: history.commit,
+    current: () => current,
+    setCurrent: next => { current = next },
+    agentInfo: () => ({ mode: 'live', model: 'V4' }),
+    sourceSession: () => current.sessionId,
+    streamCursor: () => stream.cursor(),
+    checkpoint: (id, upToCursor) => stream.checkpoint(id, upToCursor),
+    onError: err => { throw err },
+  })
+
+  // Background report turn outputs assistant text, then user submits a queued image prompt before report turn ends
+  writer.receive({ type: 'turn_started', by: 'task', context })
+  history.bindGeneratedCopy('s-report', 'k-rep', 'assistant', '后台报告正文', [{ sources: [], fileRanges: [] }])
+  writer.receive({
+    type: 'update', context,
+    update: { sessionUpdate: 'viva_stream', key: 'k-rep', kind: 'settle', blocks: [{ type: 'text', text: '后台报告正文' }] },
+  })
+  const picId = `${'b'.repeat(64)}.png`
+  const queuedSource = randomUUID()
+  writer.userPrompt({ text: '顺便看下这张图', images: [{ id: picId }], sourceId: queuedSource })
+  writer.receive({ type: 'turn_end', stopReason: 'end_turn', finalReply: true, context })
+
+  const stored = history.get(current.id)!.messages
+  assert.equal(stored.length, 3, 'backend appends a turn note after the queued user message, matching renderer')
+  assert.equal(stored[0]?.role, 'assistant')
+  assert.equal(stored[0]?.receipt, null, 'earlier assistant message does not steal the receipt after a queued user prompt')
+  assert.equal(stored[1]?.role, 'user')
+  assert.equal(stored[1]?.text, '顺便看下这张图')
+  assert.deepEqual(stored[1]?.images, [{ id: picId }])
+  assert.equal(stored[2]?.role, 'note')
+  assert.equal(stored[2]?.receipt?.stopReason, 'end_turn')
 })

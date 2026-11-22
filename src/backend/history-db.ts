@@ -275,6 +275,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? AND seq >= ? ORDER BY seq`),
     sliceMessages: db.prepare(`SELECT role, text, receipt, images, source_key, source_id, session_id,
       (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages WHERE conversation_id = ? AND seq >= ? AND seq < ? ORDER BY seq`),
+    keysBefore: db.prepare('SELECT source_key FROM messages WHERE conversation_id = ? AND seq < ? AND source_key IS NOT NULL'),
     messageBySource: db.prepare('SELECT seq, role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? AND source_id = ? ORDER BY seq DESC LIMIT 1'),
     messageByKey: db.prepare('SELECT seq, role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? AND source_key = ? ORDER BY seq DESC LIMIT 1'),
     lastMessage: db.prepare('SELECT seq, role, text, receipt, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1'),
@@ -499,6 +500,14 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     const start = Math.max(0, Math.trunc(from))
     const end = Math.max(start, Math.trunc(to))
     return start < end ? sql.sliceMessages.all(cid, start, end).map(toMessage) : []
+  }
+
+  /** Stream keys already persisted before `offset`, so mid-turn replay does not re-append out-of-window streams. */
+  function streamKeysBefore(id: unknown, offset: number): Set<string> {
+    const cid = assertId(id)
+    const limit = Math.max(0, Math.trunc(offset))
+    if (limit <= 0) return new Set()
+    return new Set(sql.keysBefore.all(cid, limit).map(row => String(row.source_key)))
   }
 
   /** The task records a conversation shows, in their places (report_records). */
@@ -953,7 +962,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, rebindMessageSession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
-    create, save, commit, get, getTail, sliceMessages, workspaceOf: (id: string) => {
+    create, save, commit, get, getTail, sliceMessages, streamKeysBefore, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null
     }, latest, list, search, rename, setPinned, softDelete, restore, purgeDeleted, sessionIds, topicOf, locate, sourceLink,

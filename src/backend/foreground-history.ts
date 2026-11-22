@@ -302,6 +302,7 @@ export function createForegroundHistory({
   }) {
     const selected = current()
     const plain = active?.conversationId === selected.id ? drainPlainOps(active) : []
+    if (active?.conversationId === selected.id) active.lastTurnMessage = { role: 'user' }
     const ops: HistoryMessageMutation[] = [
       ...plain,
       {
