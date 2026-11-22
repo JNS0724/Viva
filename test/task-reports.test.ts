@@ -453,8 +453,8 @@ test('a blank new topic (no id in the window yet): a record for its session is d
   assert.equal(reduce(blank, delivered('c-backend-id', 12, 's-other')), blank, 'another session: not here')
   const leaving = reduce(blank, { type: 'new_session_pending', at: 2 })
   assert.equal(reduce(leaving, delivered('c-backend-id', 12, 's-fresh')).records.length, 0, 'a topic being left for a new one: not drawn on it')
-  const saved = reduce(recorded, { type: 'conversation_saved', id: 'c-backend-id' })
-  assert.equal(reduce(saved, delivered('c-backend-id', 13, 's-fresh')), saved, 'saved, it is known by its id, and the record is one')
+  const known = reduce(recorded, { type: 'ready', info: { ...initialState.info, sessionId: 's-fresh', conversationId: 'c-backend-id' } })
+  assert.equal(reduce(known, delivered('c-backend-id', 13, 's-fresh')), known, 'once known by its id, the record is one')
 })
 
 test('in the timeline: an earlier topic draws its records after the messages before them; the topic left keeps those it had', () => {

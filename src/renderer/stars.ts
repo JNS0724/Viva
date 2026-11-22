@@ -28,7 +28,7 @@ export function placeOf(state: State, msgId: string, where: 'thread' | 'row'): M
   let places = messagePlaces.get(state.messages)
   if (!places) {
     places = new Map()
-    let seq = 0
+    let seq = state.historyOffset ?? 0
     for (const message of state.messages) {
       if (message.open) continue
       if (!places.has(message.id)) places.set(message.id, seq)

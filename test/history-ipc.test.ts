@@ -11,8 +11,7 @@ import type { StoredMessage } from '../src/backend/history-schema.ts'
 const question = (text: string): StoredMessage => ({ role: 'user', text, receipt: null })
 type HistoryDb = ReturnType<typeof openHistoryDb>
 type Replies = {
-  'history:save': Pick<Conversation, 'id' | 'title' | 'updatedAt'>,
-  'history:load': { messages: StoredMessage[], folds: ReturnType<HistoryDb['foldsOf']> },
+  'history:load': { messages: StoredMessage[], offset: number, total: number, folds: ReturnType<HistoryDb['foldsOf']> },
   'history:read': ReturnType<HistoryDb['read']>,
   'history:list': ReturnType<HistoryDb['list']>,
   'history:delete': ReturnType<HistoryDb['softDelete']>,
@@ -58,14 +57,15 @@ function setup(t: TestContext, { exportPath = null, traceDb, readNativeTrace }: 
   return { db, dir, call, scheduled, switches, current: () => conversation, startNew: (sessionId: string) => { conversation = db.create({ sessionId }) } }
 }
 
-test('saving the conversation on screen records the model and returns its title', async t => {
-  const { call, db } = setup(t)
-
-  const summary = await call('history:save', [{ ...question('第一个问题') }])
+test('loading the conversation on screen returns its trailing window, offset and folds', async t => {
+  const { call, db, current } = setup(t)
+  const summary = db.commit({ ...current(), mode: 'live', model: 'V4' }, [{ kind: 'append_user', message: question('第一个问题') }])
   const loaded = await call('history:load')
 
   assert.equal(summary.title, '第一个问题')
   assert.deepEqual(loaded.messages, [question('第一个问题')])
+  assert.equal(loaded.offset, 0)
+  assert.equal(loaded.total, 1)
   assert.deepEqual(loaded.folds, [], 'no path folded off it yet')
   assert.equal(db.get(summary.id)!.conversation.model, 'V4')
 })

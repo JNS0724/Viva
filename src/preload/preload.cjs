@@ -108,7 +108,6 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   removeModelProvider: (id) => ipcRenderer.invoke('models:remove', id),
   discoverModels: (input, providerId) => ipcRenderer.invoke('models:discover', input, providerId),
   loadHistory: () => ipcRenderer.invoke('history:load'),
-  saveHistory: (messages, mark) => ipcRenderer.invoke('history:save', messages, ...mark ? [mark] : []),
   listHistory: (offset) => ipcRenderer.invoke('history:list', offset),
   searchHistory: (query) => ipcRenderer.invoke('history:search', query),
   /** 回到这个话题 / 撤销 a new topic: { info, parentId } (history-ipc.js). */

@@ -182,7 +182,7 @@ const examples = {
   question_answered: { type: 'question_answered', context, questionId: 'q', answers: [{ id: 'city', selected: [], custom: 'Shanghai' }] },
   secret_request: { type: 'secret_request', context, ...secret }, secret_closed: { type: 'secret_closed', context, requestId: 'secret' }, waits: { type: 'waits', context, permissions: [permission], questions: [question], secrets: [secret] },
   memory_context: { type: 'memory_context', context, injected: [{ at: 1, fixed: 'profile', pushed: [{ names: ['work'], text: 'context' }] }] },
-  report_delivered: { type: 'report_delivered', context, ...context, reportId: 'r', text: 'result', at: 1 }, reports_removed: { type: 'reports_removed', reportIds: ['r'] }, error: { type: 'error', message: 'fixture' },
+  report_delivered: { type: 'report_delivered', context, ...context, reportId: 'r', text: 'result', at: 1 }, prompt_persisted: { type: 'prompt_persisted', context, sourceId: 'op-1' }, reports_removed: { type: 'reports_removed', reportIds: ['r'] }, error: { type: 'error', message: 'fixture' },
   schedule_propose: { type: 'schedule_propose', context, proposal: { proposalId: 'p', title: 'job', prompt: 'do', firstAt: '2026-11-09', rule: { kind: 'at' } } },
   mcp_status: { type: 'mcp_status', mcp: { active: ['mail'], connecting: [{ name: 'docs', reason: 'timed out' }], dropped: [] } },
   memory_changed: { type: 'memory_changed' }, files_changed: { type: 'files_changed', path: 'notes.md' }, feed_changed: { type: 'feed_changed' }, schedules_changed: { type: 'schedules_changed' },

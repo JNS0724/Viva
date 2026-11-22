@@ -13,6 +13,7 @@ import { sideEffectsOf } from './side-effects.ts'
 import type { ReadNativeTrace } from './dsh-log.ts'
 import type { StoredMessage } from './history-schema.ts'
 import type { MemoryHistoryEdit } from './memory-withdrawal.ts'
+import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 import { randomUUID } from 'node:crypto'
 
 const MAX_TEXT_CHARS = 20_000
@@ -68,8 +69,11 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const edit = text !== words && original.sourceId && deps.commitEdit
       ? { oldSource: original.sourceId, newSource: randomUUID(), previous } : null
     if (edit && await deps.canEditSource?.(edit.oldSource) === false) return { ok: false, problem: t('main.memory.rewind.edit.unavailable') }
-    const sourceId = edit ? edit.newSource : text === words ? original.sourceId : undefined
-    if (sourceId && !edit && deps.replaySource && !await deps.replaySource(sourceId, text)) return { ok: false, problem: t('main.memory.context.stale') }
+    const reusedSource = text === words ? original.sourceId : undefined
+    if (reusedSource && !edit && deps.replaySource && !await deps.replaySource(reusedSource, text)) return { ok: false, problem: t('main.memory.context.stale') }
+    // Always bind the rewound prompt to a verified sourceId so the follow-up agent:prompt deduplicates by exact source_id.
+    const sourceId = edit ? edit.newSource : reusedSource ?? randomUUID()
+    const isNewSource = !reusedSource
     return selectSession(async ({ forkAgent, switchAgent, select }) => {
       const kept = stored.messages.slice(0, keep)
       const forked = edit ? { ok: false as const, reason: 'missing' } : await forkAgent({ words, occurrence })
@@ -96,9 +100,11 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       if (carried?.turns) {
         await deps.publishCarry?.(next, carried)
       }
-      const messages = db.get(next.id)?.messages.slice(0, keep) ?? []
-      return { ok: true, info: { ...started, conversationId: next.id }, conversation: { id: next.id, messages, ...withRecords(next.id) },
-        folds: db.foldsOf(next.id), ...(sourceId ? { sourceId } : {}), ...(edit ? { newSource: true } : {}) }
+      const offset = Math.max(0, keep - CONVERSATION_WINDOW_MESSAGES)
+      const messages = db.sliceMessages(next.id, offset, keep)
+      return { ok: true, info: { ...started, conversationId: next.id },
+        conversation: { id: next.id, messages, ...(offset > 0 ? { offset, total: keep } : {}), ...withRecords(next.id) },
+        folds: db.foldsOf(next.id), sourceId, ...(isNewSource ? { newSource: true } : {}) }
     })
   }
 
@@ -137,7 +143,7 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const path = foldedOff(id)
     if (!path) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
     const previous = current()
-    const { conversation, messages } = path.found
+    const { conversation } = path.found
     return selectSession(async ({ switchAgent, select }) => {
       const started = await switchAgent(conversation.sessionId, conversation.cwd)
       db.unfold(id)
@@ -145,10 +151,14 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
       db.moveRecords({ from: previous.id, to: conversation.id, upTo: path.fold.at })
       select({ ...conversation, sessionId: started.sessionId, cwd: started.cwd ?? conversation.cwd })
       await deps.onContinuation?.(conversation, started)
+      const tail = db.getTail(conversation.id, CONVERSATION_WINDOW_MESSAGES)
+      const messages = tail?.messages ?? path.found.messages
+      const offset = tail?.offset ?? 0
+      const total = tail?.total ?? messages.length
       return {
         ok: true,
         info: { ...started, remembersHistory: started.resumed, conversationId: conversation.id },
-        conversation: { id, messages, ...withRecords(conversation.id) },
+        conversation: { id, messages, ...(offset > 0 ? { offset, total } : {}), ...withRecords(conversation.id) },
         folds: db.foldsOf(id),
       }
     })

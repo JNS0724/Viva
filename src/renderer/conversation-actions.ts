@@ -8,13 +8,12 @@ import { sameContext, type ConversationContext } from '../shared/conversation-co
 /** Conversation effects; the page supplies state and UI callbacks, never a document or the app entry. */
 type ConversationDeps = Pick<ActionDeps, 'getState' | 'dispatch' | 'errorMessage' | 'showToast'> & {
   api: Pick<AgentApi, 'prompt' | 'steer' | 'answerQuestion' | 'provideSecrets'> & Partial<Pick<AgentApi, 'cancel' | 'recover'>>
-  saveBeforeRecovery?: () => Promise<void>
   beforePrompt: () => void
   keepPicture: (id: string) => void
   now?: () => number
 }
 
-export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, saveBeforeRecovery, keepPicture, now = Date.now }: ConversationDeps) {
+export function createConversationActions({ api, getState, dispatch, errorMessage, showToast, beforePrompt, keepPicture, now = Date.now }: ConversationDeps) {
   const steerLost = () => t("app.your.message.did.not.reach.the.assistant")
   const context = (): ConversationContext => ({ conversationId: getState().conversationId ?? getState().info.conversationId ?? null, sessionId: getState().info.sessionId ?? null })
   const belongsHere = (origin: ConversationContext) => sameContext(origin, context())
@@ -23,6 +22,16 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     && !selectionPending()
   const promptFailed = (origin: ConversationContext, epoch: number) => (error: unknown) => {
     if (canReply(origin, epoch)) dispatch({ type: 'error', message: errorMessage(error) })
+  }
+  const promptRejected = (origin: ConversationContext, epoch: number, sourceId: string, onRejected?: () => void) => (error: unknown) => {
+    // If the backend rejected before entering foregroundHistory.userPrompt, retract the optimistic bubble
+    // so renderer indices stay aligned with SQLite and let the caller restore the user's draft.
+    const unpersisted = getState().messages.some(message => message.sourceId === sourceId && !message.persisted)
+    if (unpersisted) {
+      dispatch({ type: 'prompt_retracted', sourceId })
+      if (canReply(origin, epoch)) onRejected?.()
+    }
+    promptFailed(origin, epoch)(error)
   }
   const promptFinished = (origin: ConversationContext, epoch: number, sources: readonly string[]) =>
     (result: Awaited<ReturnType<AgentApi['prompt']>>) => {
@@ -40,9 +49,10 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
    * as a new question (not into a running turn).
    * @returns {boolean} false when the agent can't take it now
    */
-  function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }>, sourceId, newSource = false, feedItemId, admitted }: {
+  function ask(text: string, { via = null as string | null, images = [] as Array<{ id: string }>, sourceId, newSource = false, feedItemId, admitted, onRejected }: {
     via?: string | null, images?: Array<{ id: string }>, sourceId?: string, newSource?: boolean, feedItemId?: string,
     admitted?: (accepted: boolean, problem?: string) => void,
+    onRejected?: () => void,
   } = {}): boolean {
     if (text.length > MAX_MESSAGE_CHARS) {
       showToast(MESSAGE_TOO_LONG)
@@ -56,29 +66,30 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       return false
     }
     if (feedItemId) return sendNewPrompt(text, images, via, { id: feedItemId, admitted })
-    if (images.length) return askWithImages(text, images, via)
+    if (images.length) return askWithImages(text, images, via, onRejected)
     if (isBusy(getState())) return sourceId && !newSource ? false : steer(text, via, sourceId)
     const origin = context(), epoch = ++sendEpoch
     beforePrompt()
     const operation = sourceId ?? globalThis.crypto.randomUUID()
     const turnId = crypto.randomUUID()
     dispatch({ type: 'user_prompt', text, at: now(), via, sourceId: operation, turnId })
+    const onError = sourceId ? promptFailed(origin, epoch) : promptRejected(origin, epoch, operation, onRejected)
     api.prompt(text, undefined, sourceId && !newSource ? [sourceId] : operation, undefined, turnId)
-      .then(promptFinished(origin, epoch, [operation]), promptFailed(origin, epoch))
+      .then(promptFinished(origin, epoch, [operation]), onError)
     return true
   }
 
   /** A question with pictures: only as the next question of the conversation on screen. */
-  function askWithImages(text: string, images: Array<{ id: string }>, via: string | null) {
+  function askWithImages(text: string, images: Array<{ id: string }>, via: string | null, onRejected?: () => void) {
     if (isBusy(getState())) {
       showToast(t("app.the.assistant.is.working.send.images.after"))
       return false
     }
-    return sendNewPrompt(text, images, via)
+    return sendNewPrompt(text, images, via, undefined, onRejected)
   }
 
   function sendNewPrompt(text: string, images: Array<{ id: string }>, via: string | null,
-    feed?: { id: string, admitted?: (accepted: boolean, problem?: string) => void }) {
+    feed?: { id: string, admitted?: (accepted: boolean, problem?: string) => void }, onRejected?: () => void) {
     beforePrompt()
     const origin = context(), epoch = ++sendEpoch
     // Kept just now (here, or on the desktop island): shown even if the folder was emptied earlier.
@@ -103,7 +114,7 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
         feed.admitted?.(accepted)
       }, error => refused(errorMessage(error)))
     } else api.prompt(text, images, operation, undefined, turnId)
-      .then(promptFinished(origin, epoch, [operation]), promptFailed(origin, epoch))
+      .then(promptFinished(origin, epoch, [operation]), promptRejected(origin, epoch, operation, onRejected))
     return true
   }
 
@@ -238,7 +249,6 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     recovering = true
     const conversation = context().conversationId
     try {
-      if (saveBeforeRecovery) await saveBeforeRecovery()
       if (!getState().stopUnconfirmed || context().conversationId !== conversation) return
       if (await api.recover() && context().conversationId === conversation) dispatch({ type: 'turn_recovered' })
     } catch (error) { showToast(errorMessage(error)) }

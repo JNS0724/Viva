@@ -8,7 +8,7 @@ import type { CapabilityTab, ImportKind, ImportScanView, ImportSourceView } from
 
 type Info = AgentInfo
 type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' | 'sourceId' | 'delivery'> & { key?: string }
-type ReadConversation = { id: string, messages: readonly SavedMessage[], records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
+type ReadConversation = { id: string, messages: readonly SavedMessage[], offset?: number, total?: number, records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
 type Settings = Partial<State['settings']>
 type Review = State['review']
 export type MemoryFileSelection = { identity: MemoryManagedFileIdentity, restrictionId?: string }
@@ -45,8 +45,7 @@ export interface ActionPayloads extends ConversationPayloads {
   initialization_turn: { turn: import('../shared/renderer-sync.ts').ActiveTurnSnapshot }
   initialization_snapshot: { snapshot: import('../shared/renderer-sync.ts').RendererSnapshot }
   config_applied: { info: Partial<Info> }
-  history_loaded: { conversationId?: string | null, messages: readonly SavedMessage[], records?: readonly unknown[], savedAt?: number, folds?: State['folds'], parentId?: string | null, createdAt?: number | null }
-  conversation_saved: { id: string }
+  history_loaded: { conversationId?: string | null, messages: readonly SavedMessage[], offset?: number, records?: readonly unknown[], savedAt?: number, folds?: State['folds'], parentId?: string | null, createdAt?: number | null }
   session_switching: {}
   session_switch_failed: {}
   new_session_pending: { at: number }
@@ -83,7 +82,6 @@ export interface ActionPayloads extends ConversationPayloads {
   toggle_island: {}
   close_island: {}
   hub_close: {}
-  archived_conversation_saved: { sessionId: string, id: string }
   earlier_loading: {}
   earlier_loaded: { segments: readonly Segment[], hasMore: boolean }
   earlier_failed: {}

@@ -51,20 +51,21 @@ export const QUESTION_ACTIONS = {
     return { ...state, question: { ...question, picks } }
   },
 
-  question_answered: (state, { questionId, answers, at, sourceId, sourceIds }) => {
+  question_answered: (state, { questionId, answers, at, sourceId, sourceIds, inHistory }) => {
     if (state.question?.questionId !== questionId) return state
     const { questions } = state.question
     const text = answerText(questions, answers)
     const parts = sourceIds && Object.keys(sourceIds).length ? questions.map(question => ({
       text: answerText([question], answers), asked: question.question, sourceId: Object.hasOwn(sourceIds, question.id) ? sourceIds[question.id] : undefined,
     })) : [{ text, asked: askedText(questions), sourceId }]
-    const replies = parts.map((part, index) => ({ id: `m${state.messages.length + index}`, role: 'user', text: part.text, asked: part.asked,
+    const base = (state.historyOffset ?? 0) + state.messages.length
+    const replies = inHistory ? [] : parts.map((part, index) => ({ id: `m${base + index}`, role: 'user', text: part.text, asked: part.asked,
       ...(part.sourceId ? { sourceId: part.sourceId } : {}), open: false, receipt: null }))
     return {
       ...state,
       phase: 'working',
       question: null,
-      messages: [...state.messages, ...replies],
+      messages: replies.length ? [...state.messages, ...replies] : state.messages,
       timeline: [...state.timeline, { kind: 'answer', ref: questionId, at, title: text, answered: true }],
     }
   },

@@ -58,6 +58,8 @@ interface Segment {
   /** What it went on from (topics.ts). */
   parentId?: string | null
   createdAt: number
+  /** Number of messages before `messages[0]` when kept from a trimmed foreground window. */
+  offset?: number
   messages: ReadonlyArray<SegmentMessage>
   /** Its task records, each after the messages before it (history-db.ts recordsOf). */
   records?: ReadonlyArray<ReportRecord>
@@ -108,6 +110,7 @@ type View = Node | string | null | false | undefined | ReadonlyArray<View>
 
 /** The window's state: what state.ts's initialState can become. */
 type State = Omit<Widened<typeof import('./state.ts').initialState>, keyof ConversationView | 'info' | 'diagnostics' | 'memory'> & ConversationView & {
+  historyOffset: number
   memory: Omit<Widened<typeof import('./personal-state.ts').initialMemory>, 'dream'> & { dream: import('../memory/contracts/dream-status.ts').MemoryDreamStatus | null }
   info: AgentInfo, diagnostics: import('./diagnostics-types.ts').DiagnosticsState
 }
@@ -184,7 +187,6 @@ interface AgentApi extends DraftApi {
   removeModelProvider: Invoke<'models:remove'>
   discoverModels: Invoke<'models:discover'>
   loadHistory: Invoke<'history:load'>
-  saveHistory: Invoke<'history:save'>
   listHistory: Invoke<'history:list'>
   searchHistory: Invoke<'history:search'>
   resumeTopic: Invoke<'history:resume-topic'>

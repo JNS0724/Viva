@@ -10,6 +10,8 @@ export interface ConversationMessage extends StreamText {
   sourceId?: string
   delivery?: 'pending' | 'not-sent'
   pending?: boolean
+  /** True once backend confirmed this prompt entered the foreground history writer (cannot be retracted on later errors). */
+  persisted?: boolean
   feedItemId?: string
   shown?: number
   receipt?: TurnReceipt | null
@@ -49,6 +51,8 @@ export interface AskedSecret { requestId: string, server: string, names: readonl
 export interface ConversationState {
   phase: 'idle' | 'working' | 'waiting' | 'asking' | 'stopping' | 'error'
   messages: readonly ConversationMessage[]
+  /** Earlier persisted messages omitted before `messages[0]` in the foreground sliding window. */
+  historyOffset?: number
   thoughts: readonly StreamText[]
   tools: Readonly<Record<string, ConversationTool>>
   modelCalls: Readonly<Record<string, ModelCallSummary>>
@@ -72,7 +76,7 @@ export interface ConversationState {
 }
 export type VivaStreamUpdate = { sessionUpdate: 'viva_stream', key: string } & (
   | { kind: 'delta' | 'block', index: number, blockType: 'text' | 'reasoning', text: string }
-  | { kind: 'settle', blocks: readonly { type: string, text?: string }[], before?: { text?: string, reasoning?: string } }
+  | { kind: 'settle', blocks: readonly { type: string, text?: string }[], before?: { text?: string, reasoning?: string }, textInHistory?: boolean }
 )
 type ChunkKind = 'agent_message_chunk' | 'agent_thought_chunk'
 type ToolKind = 'tool_call' | 'tool_call_update'
@@ -94,6 +98,8 @@ export interface ForegroundWaits {
 export interface ConversationPayloads {
   user_prompt: { text: string, sourceId?: string, at: number, via?: string | null, images?: readonly { id: string }[], pending?: boolean, feedItemId?: string, turnId?: string }
   prompt_admitted: { sourceId: string, accepted: boolean }
+  prompt_persisted: { sourceId: string }
+  prompt_retracted: { sourceId: string }
   user_steer: { text: string, sourceId?: string, via?: string | null }
   steer_failed: { id: string | undefined }
   steer_delivery: { sourceId: string, delivery: 'pending' | 'not-sent' | 'sent' }
@@ -105,7 +111,7 @@ export interface ConversationPayloads {
   permission_closed: { requestId: string, at?: number }
   question_request: { questionId: string, questions: readonly QuestionItem[], at: number }
   question_pick: { id: string, label: string }
-  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number }
+  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number, inHistory?: boolean }
   question_closed: { questionId: string, at: number }
   secret_request: AskedSecret & { at: number }
   secret_resolved: { requestId: string, provided: boolean, at: number }

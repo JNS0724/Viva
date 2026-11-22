@@ -54,6 +54,8 @@ import { clientPlaces, loginShellTools, mcpSources } from './mcp-import.ts'
 import { pluginsView, readOnlyToolsOf, registerPluginsIpc } from './plugins-ipc.ts'
 import { registerFilesIpc } from './files-ipc.ts'
 import { openHistoryDb, type Conversation } from './history-db.ts'
+import { createForegroundHistory, type ForegroundHistory } from './foreground-history.ts'
+import { checkImages, type ImageRef } from '../shared/images.ts'
 import { imagesForPrompt, registerImageIpc } from './image-ipc.ts'
 import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { createImageStore } from './image-store.ts'
@@ -88,7 +90,7 @@ import type { HistoryEvidence } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import { createRendererStream } from './renderer-stream.ts'
-import type { RendererSnapshot } from '../shared/renderer-sync.ts'
+import { CONVERSATION_WINDOW_MESSAGES, type RendererSnapshot } from '../shared/renderer-sync.ts'
 import { createTaskSignals, taskEventOf } from './task-signals.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
@@ -116,7 +118,7 @@ type Bridge = ReturnType<typeof createAcpBridge>
 type AgentInfo = import('../shared/agent-info.ts').AgentInfo
 
 /** The writes of the stores on the app database, each recorded with its event (journal.ts). */
-const HISTORY_WRITES = Object.freeze(['save', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar', 'reservePromptDelivery', 'settlePromptDelivery'] as const)
+const HISTORY_WRITES = Object.freeze(['save', 'commit', 'addRecord', 'moveRecords', 'rename', 'setPinned', 'softDelete', 'restore', 'purgeDeleted', 'fold', 'unfold', 'setStar', 'reservePromptDelivery', 'settlePromptDelivery'] as const)
 
 const isFolder = (dir: string) => {
   try {
@@ -156,6 +158,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** Model providers the user added besides DeepSeek; see model-providers.ts. */
   let modelStore!: ReturnType<typeof createModelStore>
   let historyDb!: HistoryDb
+  /** Backend single-writer for the foreground conversation on screen (foreground-history.ts). */
+  let foregroundHistory: ForegroundHistory | null = null
   /** Pictures pasted into questions, and dsh's copies of them, in a folder the user may move (image-store.ts). */
   let imageStore!: ReturnType<typeof createImageStore>
   /** The user's MCP servers, encrypted where they hold keys (mcp-config.ts). */
@@ -250,6 +254,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
     changed: () => {
+      foregroundHistory?.retryPending()
       wakeEffects()
       syncProjectView()
     },
@@ -263,6 +268,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     if (event.type === 'config') lastInfo = { ...lastInfo, ...event.info }
     if (core) core.transient(event)
     else host.window.send({ ...event, seq: 0, transient: true })
+    foregroundHistory?.receive(event)
   }
 
   /** What dsh reports of tasks: to the task runtime first, then its signal recorded (task-signals.ts). */
@@ -372,6 +378,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         emitToRenderer({ type: 'turn_end', stopReason: 'cancelled', context: sessions.context() })
         finishForegroundTurn()
       }
+      foregroundHistory?.flush()
       // Its requests too: the retired generation's turn_end never reaches endRequests.
       const left = sessions.context().sessionId
       if (left) endRequests({ type: 'turn_end', stopReason: 'cancelled' }, left)
@@ -901,6 +908,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     apply: applyChange,
     current: sessions.current,
     show: emitToRenderer,
+    beforeRecord: (conversationId, reportId) => foregroundHistory ? foregroundHistory.beforeReportRecord(conversationId, reportId) : { ready: true },
   })
   /** Runs the effects due: after a change that queued one, and whenever the conversation may be free for them. */
   const wakeEffects = () => { void effects?.wake() }
@@ -1020,12 +1028,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ipcMain.handle('agent:snapshot', (): RendererSnapshot => {
       if (sessions.isChanging()) throw new Error('Conversation selection is changing; retry initialization')
       const selected = sessions.current(), context = rendererContext()
-      const found = historyDb.get(selected.id)
+      const found = historyDb.getTail(selected.id, CONVERSATION_WINDOW_MESSAGES)
+      const hiddenStreamKeys = found && found.offset > 0 ? historyDb.streamKeysBefore(selected.id, found.offset) : undefined
       // No await between the history read and publication cutoff: both share this boundary.
       const history = found ? { id: found.conversation.id, updatedAt: found.conversation.updatedAt,
         createdAt: found.conversation.createdAt, parentId: found.conversation.parentId,
-        messages: found.messages, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
-      return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null), context, history, stopUnconfirmed: Boolean(stoppedContext),
+        messages: found.messages, offset: found.offset, total: found.total, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
+      return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null, hiddenStreamKeys), context, history, stopUnconfirmed: Boolean(stoppedContext),
         activeTurn: turn.active && !stoppedContext ? { id: turn.id, by: turn.by, startedAt: turn.startedAt, stopping: turn.stopping } : null,
         info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
     })
@@ -1043,6 +1052,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // With pictures the words may be left out.
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
       const pictures = imagesForPrompt(imageStore, images)
+      const imageRefs = checkImages(images) ?? []
       const agent = requireBridge()
       if (stoppedContext || agent.needsRecovery()) throw new Error(t('conversation.stop.unconfirmed'))
       // Mid-switch a question would go to the session being left, and be cut off when that one closes. The window
@@ -1055,7 +1065,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // canonical replay arrays still undergo the owner's exact source checks.
       const following = foregroundRequests.busy() && (Array.isArray(operation) || typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent')
       if ((turn.active || foregroundRequests.busy()) && !foregroundRequests.deferred() && !retrying && !following) throw new Error(t('main.main.wait.for.this.turn.to.finish.before'))
-      return sendHumanPrompt(question, pictures, operation, feedItemId, turnId)
+      return sendHumanPrompt(question, pictures, operation, feedItemId, turnId, imageRefs)
     })
     /** Words said while a turn runs go to that turn; 'idle' when it has just ended, so the window asks them anew. */
     ipcMain.handle('agent:steer', async (_event, text, operation) => {
@@ -1068,8 +1078,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           : { ok: true, delivery: 'sent' as const }
       }
       if (historyDb.promptPending([deliveryId])) throw new Error(t('main.memory.change.pending'))
-      historyDb.reservePromptDelivery([deliveryId])
       const agent = requireBridge(), origin = sessions.context(), generation = foregroundRequests.lease(), admitted = humanAdmission, originalTurn = turn
+      historyDb.reservePromptDelivery([deliveryId])
+      foregroundHistory?.userSteer({ text: words, sourceId: deliveryId })
       const selected = () => generation() && dsh.current === agent
         && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
@@ -1094,6 +1105,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (foregroundRecovery) return foregroundRecovery
       if (!stoppedContext && !dsh.current?.needsRecovery()) return lastInfo
       foregroundRecovery = (async () => {
+        foregroundHistory?.flush()
         await stopBridge()
         return startBridge({ carryHistory: true })
       })()
@@ -1166,7 +1178,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   /** A retained prompt keeps its original selection and operation through a report turn. */
-  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string, turnId: string = randomUUID()): Promise<IpcResults['agent:prompt']> {
+  function sendHumanPrompt(question: string, pictures: ReturnType<typeof imagesForPrompt>, operation: string | string[] = randomUUID(), feedItemId?: string, turnId: string = randomUUID(), imageRefs: readonly ImageRef[] = []): Promise<IpcResults['agent:prompt']> {
     const agent = requireBridge()
     let origin = sessions.context()
     const retained = foregroundRequests.deferred()
@@ -1184,6 +1196,20 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     // Pictures are already visible and saved while they wait for a separate turn.
     // A pending feed continuation is not saved; replay IDs may belong to earlier messages.
     const userMessage = !feedItemId && typeof operation === 'string'
+    if (userMessage && foregroundHistory) {
+      try {
+        foregroundHistory.userPrompt({
+          text: question,
+          images: imageRefs,
+          sourceId: operation,
+          advanceCheckpoint: !turn.active && !foregroundRequests.busy(),
+          strict: true,
+        })
+      } catch (error) {
+        return Promise.reject(error)
+      }
+      emitToRenderer({ type: 'prompt_persisted', sourceId: operation, context: origin })
+    }
     if (userMessage && origin.sessionId) records.beforeUser(foregroundRequests.openingReports(), origin.sessionId, operation)
     const interjectable = userMessage && !pictures.length
     historyDb.reservePromptDelivery(sources)
@@ -1199,6 +1225,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const own = { turnId, started: false, completed: [] as Promise<void>[], delivered() {
         own.started = true
         nativeStarted = true
+        if (feedItemId && typeof operation === 'string') {
+          foregroundHistory?.userPrompt({ text: question, images: imageRefs, sourceId: operation })
+        }
         // This callback runs after connection.prompt. A failed receipt must not
         // throw out of native onStart or turn an unknown delivery into not-sent.
         try { historyDb.settlePromptDelivery(sources, true) }
@@ -1208,6 +1237,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (dsh.current !== agent || origin.conversationId !== recovered.conversationId
           || agent.currentSession() !== recovered.sessionId || sessions.isChanging()) throw new ForegroundRequestRetired()
         origin = recovered
+        if (userMessage && origin.conversationId && origin.sessionId) {
+          historyDb.rebindMessageSession(origin.conversationId, operation, origin.sessionId)
+        }
       } }
       humanAdmission = own
       try {
@@ -1654,6 +1686,29 @@ ${question}` : question
     historyDb = journaled(openHistoryDb({ db: appDb.db }), 'history', HISTORY_WRITES, applyChange)
     historyDb.purgeDeleted({ olderThanMs: 0 })
     sessions.open(config.cwd)
+    foregroundHistory = createForegroundHistory({
+      commit: historyDb.commit,
+      current: sessions.current,
+      setCurrent: sessions.select,
+      agentInfo: () => lastInfo,
+      sourceSession: () => rendererContext().sessionId,
+      streamCursor: () => rendererStream.cursor(),
+      messageCount: id => historyDb.getTail(id, 0)?.total ?? 0,
+      checkpoint: (conversationId, upToCursor) => rendererStream.checkpoint(conversationId, upToCursor),
+      markQuestionPersisted: (conversationId, questionId) => rendererStream.markQuestionPersisted(conversationId, questionId),
+      markPlainPersisted: (conversationId, upToCursor) => rendererStream.markPlainPersisted(conversationId, upToCursor),
+      markStreamPersisted: (conversationId, key, upToCursor) => rendererStream.markStreamPersisted(conversationId, key, upToCursor),
+      delegatedDuringTurn: (startedAt, endedAt) => {
+        const list = taskStore?.list() ?? []
+        const recordsList = historyDb.recordsOf(sessions.current().id)
+        return list.some(task => task.status !== 'interrupted' && typeof task.startedAt === 'number'
+          && task.startedAt >= startedAt
+          && (task.status === 'running' || task.status === 'waiting' || task.endedAt === undefined || task.endedAt === null
+            || !recordsList.some(record => record.reportId === `${task.id}:${task.runId}` && record.at <= endedAt)))
+      },
+      onPendingDrained: () => wakeEffects(),
+      onError: err => emitDiagnosticFailure('storage', err, { stage: 'checkpoint' }),
+    })
     registerHistoryIpc(ipcMain, {
       db: historyDb,
       schedule: (run, ms) => {
@@ -1667,12 +1722,6 @@ ${question}` : question
       // A report waiting for this conversation (task-reports.ts) may go now.
       setCurrent: sessions.select,
       agentInfo: () => lastInfo,
-      historySourceSession: () => rendererContext().sessionId,
-      validateSave: (id, mark) => {
-        if (mark && !sameContext(mark.context, rendererContext())) throw new Error('Conversation save belongs to an old selection')
-        rendererStream.validateSave(id, mark)
-      },
-      historySaved: rendererStream.save,
       selectSession: sessions.withSelection,
       chooseExportPath,
       isBusy: () => turn.active || memoryBusy(),
@@ -1893,6 +1942,8 @@ ${question}` : question
     memoryHostEffects?.close()
     scheduleRuns?.close()
     feedSourceRuns?.close()
+    foregroundHistory?.flush()
+    foregroundHistory?.close()
     taskRuntime?.dispose()
     historyDb?.close()
     appDb?.close()

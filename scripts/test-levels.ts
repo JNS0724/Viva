@@ -111,6 +111,7 @@ export const testLevels = {
     'feed-state',
     'feed-store',
     'files-state',
+    'foreground-history',
     'frame',
     'fresh-sessions',
     'full-screen',

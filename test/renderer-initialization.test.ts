@@ -143,20 +143,22 @@ test('hung required snapshots stop accumulation on count, bytes, age and deadlin
   }
 })
 
-test('backend publication snapshots use saved history cutoffs, bound replay storage and reject invented save watermarks', t => {
+test('backend publication snapshots use backend-owned history cutoffs, bound replay storage and annotate mid-turn persisted questions', t => {
   const sent: Array<Record<string, unknown>> = []
   const stream = backendStream(t, event => sent.push(event))
   stream.send({ type: 'update', context, update: { text: 'one' } })
-  const first = stream.snapshot(context.conversationId, context)
-  stream.save(context.conversationId, { streamGeneration: first.streamGeneration, eventCursor: first.cutoverCursor })
-  stream.send({ type: 'update', context, update: { text: 'two' } })
   assert.equal(stream.snapshot(context.conversationId, context).replay.length, 1)
-  assert.throws(() => stream.save(context.conversationId, { streamGeneration: 'old', eventCursor: 1 }), /Stale/)
-  assert.throws(() => stream.save(context.conversationId, { streamGeneration: first.streamGeneration, eventCursor: 99 }), /Stale/)
+  stream.checkpoint(context.conversationId)
+  stream.send({ type: 'question_answered', context, questionId: 'q1', answers: [] })
+  stream.markQuestionPersisted(context.conversationId, 'q1')
+  stream.send({ type: 'update', context, update: { text: 'two' } })
+  const replayed = stream.snapshot(context.conversationId, context).replay as Array<Record<string, unknown>>
+  assert.equal(replayed.length, 2)
+  assert.equal(replayed[0]?.inHistory, true, 'replayed persisted question answers signal reload dedup')
+  assert.equal(sent.find(event => event.type === 'question_answered')?.inHistory, undefined, 'live publication stays unflagged')
   for (let i = 0; i < 1030; i++) stream.send({ type: 'update', context, update: { text: 'bounded' } })
   assert.throws(() => stream.snapshot(context.conversationId, context), /gap/)
-  const last = sent.at(-1)!
-  stream.save(context.conversationId, { streamGeneration: String(last.streamGeneration), eventCursor: Number(last.eventCursor) })
+  stream.checkpoint(context.conversationId)
   assert.deepEqual(stream.snapshot(context.conversationId, context).replay, [])
 })
 
@@ -310,8 +312,7 @@ test('replay loss is scoped to the segment and session-wide configuration only b
   for (let i = 0; i < 1024; i++) stream.send({ type: 'update', context: other })
   assert.throws(() => stream.snapshot(sibling.conversationId, sibling), /gap/)
   assert.equal(stream.snapshot(other.conversationId, other).replay.length, 1024)
-  const mark = stream.snapshot(other.conversationId, other)
-  stream.save(sibling.conversationId, { streamGeneration: mark.streamGeneration, eventCursor: mark.cutoverCursor })
+  stream.checkpoint(sibling.conversationId)
   assert.deepEqual(stream.snapshot(sibling.conversationId, sibling).replay, [])
 })
 
@@ -355,10 +356,8 @@ test('an old snapshot and an interleaved late old push cannot retire a live repl
 test('an inactive saved segment still has its cutoff after other segments have been saved', t => {
   const stream = backendStream(t)
   stream.send({ type: 'update', context })
-  const first = stream.snapshot(context.conversationId, context)
-  const mark = { streamGeneration: first.streamGeneration, eventCursor: first.cutoverCursor }
-  stream.save(context.conversationId, mark)
-  for (let i = 0; i < 130; i++) stream.save('other-' + i, mark)
+  stream.checkpoint(context.conversationId)
+  for (let i = 0; i < 130; i++) stream.checkpoint('other-' + i)
   assert.deepEqual(stream.snapshot(context.conversationId, context).replay, [])
 })
 

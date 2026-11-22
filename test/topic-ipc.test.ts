@@ -45,15 +45,19 @@ function setup({ busy = false } = {}) {
     carryNext: (conversationId, text) => { carried.push([conversationId, text]) },
   })
   const call = async (channel: string, ...args: unknown[]): Promise<any> => handlers.get(channel)!({}, ...args)
+  const save = (messages: Message[]) => {
+    conversation = db.save({ ...conversation, mode: info.mode, model: info.model }, messages)
+    return conversation
+  }
   const startNew = (fields: Parameters<typeof db.create>[0]) => { conversation = db.create(fields) }
-  return { db, call, switches, carried, current: () => conversation, startNew }
+  return { db, call, save, switches, carried, current: () => conversation, startNew }
 }
 
 test('going back to a topic takes up exactly its session, and what follows is a new segment going on from it', async () => {
-  const { db, call, switches, current, startNew } = setup()
-  const first = await call('history:save', [question('周报')])
+  const { db, call, save, switches, current, startNew } = setup()
+  const first = save([question('周报')])
   startNew({ sessionId: 'live-2', cwd: '/w' })
-  await call('history:save', [question('别的事')])
+  save([question('别的事')])
 
   const resumed = await call('history:resume-topic', first.id)
 
@@ -64,29 +68,29 @@ test('going back to a topic takes up exactly its session, and what follows is a 
   assert.equal(current().parentId, first.id, 'the segment from now on goes on from that topic')
   assert.notEqual(current().id, first.id, 'a new segment, at the end of the timeline')
   assert.equal(db.get(current().id), null, 'written with its first message, like any new conversation')
-  const loaded = await call('history:save', [question('接着周报')])
+  const loaded = save([question('接着周报')])
   assert.equal((await call('history:load')).parentId, first.id)
   assert.equal(loaded.id, current().id)
 })
 
 test('before going back: the directory, whether it is there, whether it is the one in use', async () => {
-  const { call, startNew } = setup()
+  const { call, save, startNew } = setup()
   startNew({ sessionId: 'live-1', cwd: '/other' })
-  const elsewhere = await call('history:save', [question('另一个目录里的事')])
+  const elsewhere = save([question('另一个目录里的事')])
   startNew({ sessionId: 'live-2', cwd: '/gone-dir' })
-  const lost = await call('history:save', [question('目录删掉了')])
+  const lost = save([question('目录删掉了')])
   assert.deepEqual(await call('history:resume-check', elsewhere.id), { cwd: '/other', exists: true, same: false })
   assert.deepEqual(await call('history:resume-check', lost.id), { cwd: '/gone-dir', exists: false, same: false })
 })
 
 test('a topic that cannot be taken up says why, the agent where it was; nothing new is opened', async () => {
-  const { call, startNew, current } = setup()
+  const { call, save, startNew, current } = setup()
   startNew({ sessionId: 'gone', cwd: '/w' })
-  const lost = await call('history:save', [question('很久以前')])
+  const lost = save([question('很久以前')])
   startNew({ sessionId: 'flaky', cwd: '/w' })
-  const flaky = await call('history:save', [question('网络断了那次')])
+  const flaky = save([question('网络断了那次')])
   startNew({ sessionId: 'live-3', cwd: '/gone-dir' })
-  const moved = await call('history:save', [question('目录不在了')])
+  const moved = save([question('目录不在了')])
   startNew({ sessionId: 'live-4', cwd: '/w' })
   const here = current().id
 
@@ -101,9 +105,9 @@ test('a topic that cannot be taken up says why, the agent where it was; nothing 
 })
 
 test('a topic whose session is gone goes on in a new one, in the directory chosen, with its latest turns carried', async () => {
-  const { call, startNew, current, carried, switches } = setup()
+  const { call, save, startNew, current, carried, switches } = setup()
   startNew({ sessionId: 'gone', cwd: '/gone-dir' })
-  const lost = await call('history:save', [question('合同的付款期限'), answer('改成 60 天'), question('违约金呢'), answer('按 0.05% 每天')])
+  const lost = save([question('合同的付款期限'), answer('改成 60 天'), question('违约金呢'), answer('按 0.05% 每天')])
 
   await assert.rejects(call('history:continue-from-records', lost.id, '/nowhere'), /目录不在了/)
   const went = await call('history:continue-from-records', lost.id, '/other')

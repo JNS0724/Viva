@@ -1,24 +1,27 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { belongsTo, contextOf, isConversationEvent, type ConversationContext } from '../shared/conversation-context.ts'
-import { invalidatesConversationSnapshot, type StreamMark } from '../shared/renderer-sync.ts'
+import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 
-/** Publication, saved history and replay cutoffs share a synchronous boundary on this backend connection. */
+/** Publication, backend-persisted history cutoffs and replay share a synchronous boundary on this connection. */
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, provisionalStream?: boolean, reasoningRetained?: boolean, inHistory?: boolean, plainChunk?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
   db.exec('CREATE TEMP TABLE renderer_watermarks (kind TEXT, scope TEXT, cursor INTEGER NOT NULL, PRIMARY KEY(kind, scope)) WITHOUT ROWID')
   const read = db.prepare('SELECT cursor FROM temp.renderer_watermarks WHERE kind = ? AND scope = ?')
   const write = db.prepare('INSERT INTO temp.renderer_watermarks VALUES (?, ?, ?) ON CONFLICT(kind, scope) DO UPDATE SET cursor = MAX(cursor, excluded.cursor)')
-  const removeSave = db.prepare("DELETE FROM temp.renderer_watermarks WHERE kind = 'save' AND scope = ?")
   const watermark = (kind: 'loss' | 'save', scope: string): number => Number(read.get(kind, scope)?.cursor ?? 0)
   const key = (session: string | null, conversation: string | null) => JSON.stringify([session, conversation])
   // Streaming chunks normally evict consecutive rows for one scope; store its latest loss without repeated SQL writes.
   let lastLoss: { scope: string, cursor: number } | undefined
+  // Stream-keyed and plain-chunk evictions stay recoverable: they block mid-turn replay until their settlement or
+  // drained text commits to SQLite, at which point only the covered loss is cleared while unrelated gaps remain.
+  const streamLosses = new Map<string, { scope: string, conversationId: string | null, streamKey: string, cursor: number }>()
+  const plainLosses = new Map<string, { scope: string, conversationId: string | null, cursor: number }>()
   function recordLoss(scope: string, cursor: number) {
     if (lastLoss?.scope === scope) lastLoss.cursor = Math.max(lastLoss.cursor, cursor)
     else {
@@ -26,8 +29,34 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       lastLoss = { scope, cursor }
     }
   }
+  function recordStreamLoss(scope: string, conversationId: string | null, streamKey: string, cursor: number) {
+    const id = `${scope}\0${streamKey}`
+    const prior = streamLosses.get(id)
+    if (prior) prior.cursor = Math.max(prior.cursor, cursor)
+    else streamLosses.set(id, { scope, conversationId, streamKey, cursor })
+  }
+  function recordPlainLoss(scope: string, conversationId: string | null, cursor: number) {
+    const prior = plainLosses.get(scope)
+    if (prior) prior.cursor = Math.max(prior.cursor, cursor)
+    else plainLosses.set(scope, { scope, conversationId, cursor })
+  }
   function loss(scope: string): number {
-    return Math.max(watermark('loss', scope), lastLoss?.scope === scope ? lastLoss.cursor : 0)
+    let max = Math.max(watermark('loss', scope), lastLoss?.scope === scope ? lastLoss.cursor : 0)
+    const plain = plainLosses.get(scope)
+    if (plain && plain.cursor > max) max = plain.cursor
+    for (const entry of streamLosses.values()) {
+      if (entry.scope === scope && entry.cursor > max) max = entry.cursor
+    }
+    return max
+  }
+  function pickEvictionIndex(): number {
+    const provisionalIndex = held.findIndex(row => row.provisionalStream)
+    if (provisionalIndex >= 0) return provisionalIndex
+    const streamIndex = held.findIndex(row => row.streamKey !== undefined && !row.reasoningRetained)
+    if (streamIndex >= 0) return streamIndex
+    const plainIndex = held.findIndex(row => row.plainChunk)
+    if (plainIndex >= 0) return plainIndex
+    return 0
   }
 
   function send(input: { type: string, [key: string]: unknown }) {
@@ -35,12 +64,29 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     const origin = contextOf(event)
     if (origin && belongsTo(event, origin) && isConversationEvent(event)) {
       const json = JSON.stringify(event), size = Math.max(json.length * 2, Buffer.byteLength(json)) + 128
+      const update = event.type === 'update' && event.update && typeof event.update === 'object' ? event.update as Record<string, unknown> : null
+      const plainChunk = update?.sessionUpdate === 'agent_message_chunk'
+      const streamKey = update?.sessionUpdate === 'viva_stream' && typeof update.key === 'string' && update.key ? update.key : undefined
+      const provisionalStream = Boolean(streamKey && update?.kind !== 'settle')
+      const reasoningRetained = Boolean(
+        streamKey && update?.kind === 'settle' && Array.isArray(update.blocks)
+        && update.blocks.some(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text'),
+      )
+      const questionId = event.type === 'question_answered' && typeof event.questionId === 'string' ? event.questionId : undefined
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
-        reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined, bytes: size })
+        reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
+        ...(questionId ? { questionId } : {}),
+        ...(streamKey ? { streamKey } : {}),
+        ...(provisionalStream ? { provisionalStream: true } : {}),
+        ...(reasoningRetained ? { reasoningRetained: true } : {}),
+        ...(plainChunk ? { plainChunk: true } : {}), bytes: size })
       bytes += size
       while (held.length > 1024 || bytes > 2 * 1024 * 1024) {
-        const removed = held.shift()!
-        bytes -= removed.bytes; recordLoss(removed.scope, removed.cursor)
+        const removed = held.splice(pickEvictionIndex(), 1)[0]!
+        bytes -= removed.bytes
+        if (removed.streamKey !== undefined && !removed.reasoningRetained) recordStreamLoss(removed.scope, removed.routing.context.conversationId, removed.streamKey, removed.cursor)
+        else if (removed.plainChunk) recordPlainLoss(removed.scope, removed.routing.context.conversationId, removed.cursor)
+        else recordLoss(removed.scope, removed.cursor)
       }
     }
     if (invalidatesConversationSnapshot(event)) {
@@ -59,16 +105,77 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
     }
     publish(event)
   }
-  function validateSave(conversationId: string, mark?: StreamMark) {
-    if (!mark) return
-    if (mark.streamGeneration !== streamGeneration || mark.eventCursor > eventCursor || mark.eventCursor < watermark('save', conversationId)) throw new Error('Stale conversation save boundary')
+  /** Advance the backend-owned durable history watermark to the given (or current) publication cursor. */
+  function checkpoint(conversationId: string, upToCursor?: number) {
+    const target = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
+    write.run('save', conversationId, target)
+    for (const [id, entry] of streamLosses) {
+      if (entry.conversationId === conversationId && entry.cursor <= target) streamLosses.delete(id)
+    }
+    for (const [scope, entry] of plainLosses) {
+      if (entry.conversationId === conversationId && entry.cursor <= target) plainLosses.delete(scope)
+    }
   }
-  function save(conversationId: string, mark?: StreamMark) {
-    validateSave(conversationId, mark)
-    if (mark) write.run('save', conversationId, mark.eventCursor)
-    else removeSave.run(conversationId)
+  /** Mark a persisted question_answered event by questionId (works immediately or after retry) so mid-turn replay does not duplicate its message. */
+  function markQuestionPersisted(conversationId: string, questionId: string) {
+    for (const row of held) {
+      if (row.questionId === questionId && row.routing.context.conversationId === conversationId) row.inHistory = true
+    }
   }
-  function snapshot(conversationId: string, context: ConversationContext, stopped = false) {
+  /** Reclaim already-persisted plain assistant chunks up to the given (or current) cursor from mid-turn replay. */
+  function markPlainPersisted(conversationId: string, upToCursor?: number) {
+    const limit = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
+    for (let index = held.length - 1; index >= 0; index--) {
+      const row = held[index]!
+      if (!row.plainChunk || row.cursor > limit || row.routing.context.conversationId !== conversationId) continue
+      held.splice(index, 1)
+      bytes -= row.bytes
+    }
+    for (const [scope, entry] of plainLosses) {
+      if (entry.conversationId === conversationId && entry.cursor <= limit) plainLosses.delete(scope)
+    }
+  }
+  /**
+   * Reclaim already-persisted viva_stream text deltas and text-only settles up to `upToCursor`, and clear any
+   * provisional eviction loss for that stream key while preserving gaps for other unsettled or unpersisted events.
+   */
+  function markStreamPersisted(conversationId: string, streamKey: string, upToCursor?: number) {
+    const limit = upToCursor === undefined ? eventCursor : Math.min(upToCursor, eventCursor)
+    for (const [id, entry] of streamLosses) {
+      if (entry.conversationId === conversationId && entry.streamKey === streamKey && entry.cursor <= limit) {
+        streamLosses.delete(id)
+      }
+    }
+    for (let index = held.length - 1; index >= 0; index--) {
+      const row = held[index]!
+      if (row.streamKey !== streamKey || row.cursor > limit || row.routing.context.conversationId !== conversationId) continue
+      const parsed = JSON.parse(row.json) as Record<string, unknown>
+      const update = parsed.update && typeof parsed.update === 'object' ? parsed.update as Record<string, unknown> : null
+      if (!update) continue
+      if (update.kind !== 'settle') {
+        // Provisional delta/block chunks for a settled stream are superseded once the settlement commits.
+        held.splice(index, 1)
+        bytes -= row.bytes
+        continue
+      }
+      const nonText = Array.isArray(update.blocks)
+        ? update.blocks.filter(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text')
+        : []
+      if (!nonText.length) {
+        held.splice(index, 1)
+        bytes -= row.bytes
+        continue
+      }
+      const shrunk = JSON.stringify({ ...parsed, update: { ...update, blocks: nonText, textInHistory: true } })
+      const nextBytes = Math.max(shrunk.length * 2, Buffer.byteLength(shrunk)) + 128
+      bytes += nextBytes - row.bytes
+      row.json = shrunk
+      row.bytes = nextBytes
+      // Reasoning blocks are not persisted in history_db; keep them subject to replay gap detection if evicted.
+      row.reasoningRetained = true
+    }
+  }
+  function snapshot(conversationId: string, context: ConversationContext, stopped = false, hiddenStreamKeys?: ReadonlySet<string>) {
     const cutoff = watermark('save', conversationId)
     if (cutoff < Math.max(loss(key(context.sessionId, context.conversationId)), loss(key(context.sessionId, null)))) {
       // The execution is fenced. Its saved checkpoint and restart action remain usable
@@ -76,8 +183,28 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       if (stopped) return { streamGeneration, cutoverCursor: eventCursor, replay: [], stoppedReplayLost: true }
       throw new Error('Conversation stream has an unreplayable gap')
     }
-    return { streamGeneration, cutoverCursor: eventCursor,
-      replay: held.filter(row => row.cursor > cutoff && belongsTo(row.routing, context)).map(row => JSON.parse(row.json) as unknown) }
+    const replay: Array<Record<string, unknown>> = []
+    for (const row of held) {
+      if (row.cursor <= cutoff || !belongsTo(row.routing, context)) continue
+      const parsed = JSON.parse(row.json) as Record<string, unknown>
+      // Streams already persisted before the trailing history window must not re-append text into the window,
+      // while reasoning blocks stay replayable so turn thought state stays accurate.
+      if (row.streamKey && hiddenStreamKeys?.has(row.streamKey)) {
+        const update = parsed.update && typeof parsed.update === 'object' ? parsed.update as Record<string, unknown> : null
+        if (!update) continue
+        if (update.kind === 'settle') {
+          const blocks = Array.isArray(update.blocks)
+            ? update.blocks.filter(block => Boolean(block) && typeof block === 'object' && (block as Record<string, unknown>).type !== 'text')
+            : []
+          if (!blocks.length) continue
+          replay.push({ ...parsed, update: { ...update, blocks, textInHistory: true } })
+          continue
+        }
+        if (update.blockType === 'text') continue
+      }
+      replay.push(row.inHistory ? { ...parsed, inHistory: true } : parsed)
+    }
+    return { streamGeneration, cutoverCursor: eventCursor, replay }
   }
-  return { send, save, validateSave, snapshot }
+  return { send, cursor: () => eventCursor, checkpoint, markQuestionPersisted, markPlainPersisted, markStreamPersisted, snapshot }
 }

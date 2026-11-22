@@ -92,7 +92,7 @@ test('a restored trace goes before anything the live session adds; a missing one
 test('history_loaded at launch remembers which conversation is on screen', () => {
   const state = run([{ ...saved, savedAt: NOW }])
   assert.deepEqual([state.conversationId, state.restoredTrace], ['b', 'loading'])
-  assert.equal(run([{ type: 'conversation_saved', id: 'z' }]).conversationId, 'z')
+  assert.equal(run([{ type: 'ready', info: { ...initialState.info, conversationId: 'z' } }]).conversationId, 'z')
 })
 
 test('toasts show one at a time and only the matching one is hidden', () => {

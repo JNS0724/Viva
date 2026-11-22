@@ -9,7 +9,7 @@ import { CARRY_TURNS, carriedRecords, type HistoryCarry } from './history-carry.
 import { ResumeError } from './resume-failure.ts'
 import { handlerOf, type IpcRegistry } from '../shared/ipc-contract.ts'
 import type { openTraceDb } from '../../plugins/trace/lib/store.ts'
-import type { HistorySaveMark } from '../shared/renderer-sync.ts'
+import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 
 /** How long "已删除 · 撤销" stays up; the conversation is purged for good after that. */
 export const UNDO_WINDOW_MS = 8000
@@ -24,8 +24,8 @@ type SelectSession = <T>(work: (ops: { switchAgent: SwitchAgent, select: (conver
 
 const summaryOf = (conversation: Pick<Conversation, 'id' | 'title' | 'updatedAt'>) => ({ id: conversation.id, title: conversation.title, updatedAt: conversation.updatedAt })
 /** With what it goes on from and when it began: the window draws where its topic starts (renderer/topics.js). */
-const viewOf = (found: ReturnType<HistoryDb['get']>) => (found
-  ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages, records: found.records }
+const viewOf = (found: ReturnType<HistoryDb['getTail']>) => (found
+  ? { ...summaryOf(found.conversation), parentId: found.conversation.parentId, createdAt: found.conversation.createdAt, messages: found.messages, offset: found.offset, total: found.total, records: found.records }
   : null)
 let BUSY = t("main.history-ipc.wait.for.this.turn.to.finish.before")
 let GONE = t("main.history-ipc.cannot.resume.that.topic.the.assistant.no")
@@ -44,11 +44,8 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   dshHome: string,
   traceDb?: () => ReturnType<typeof openTraceDb> | null,
   readNativeTrace?: ReadNativeTrace,
-  current: () => Conversation, setCurrent: (conversation: Conversation) => void,
+  current: () => Conversation, setCurrent?: (conversation: Conversation) => void,
   agentInfo: () => { mode: string | null, model: string | null },
-  historySourceSession?: () => string | null
-  validateSave?: (conversationId: string, mark?: HistorySaveMark) => void,
-  historySaved?: (conversationId: string, mark?: HistorySaveMark) => void,
   selectSession: SelectSession,
   chooseExportPath: (defaultName: string) => Promise<string | null>,
   schedule?: (fn: () => void, ms: number) => void,
@@ -64,7 +61,7 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   recordSession?: (id: string | null) => void | Promise<void>,
   deleteHistory?: (id: string) => Promise<void>,
 }) {
-  const { db, dshHome, traceDb, current, setCurrent, agentInfo, chooseExportPath } = deps
+  const { db, dshHome, traceDb, current, agentInfo, chooseExportPath } = deps
   const selectSession = deps.selectSession
   const folderExists = deps.folderExists ?? (() => true)
   const workDir = deps.workDir ?? (() => null)
@@ -73,19 +70,14 @@ export function registerHistoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms).unref?.())
   const handle = handlerOf(ipcMain)
 
-  /** The conversation on screen, with the paths folded off it where the user went back (rewind-ipc.js). */
+  /**
+   * The conversation on screen (trailing `CONVERSATION_WINDOW_MESSAGES` window, matching `view/thread.ts` `THREAD_MAX`
+   * and `test/smoke/smoke-perf.ts` `BUDGET.drawn` — earlier messages in the segment are read in 回顾 via `.thread-rest`
+   * and `history:read`), with the paths folded off it where the user went back (rewind-ipc.ts).
+   */
   handle('history:load', () => {
-    const view = viewOf(db.get(current().id))
+    const view = viewOf(db.getTail(current().id, CONVERSATION_WINDOW_MESSAGES))
     return view && { ...view, folds: db.foldsOf(view.id) }
-  })
-
-  handle('history:save', (messages, mark) => {
-    deps.validateSave?.(current().id, mark)
-    const { mode, model } = agentInfo()
-    const saved = db.save({ ...current(), mode, model }, messages, { sourceSession: deps.historySourceSession?.() })
-    deps.historySaved?.(saved.id, mark)
-    setCurrent(saved)
-    return summaryOf(saved)
   })
 
   handle('history:list', (offset = 0) => db.list({ offset: Number(offset) || 0 }))
