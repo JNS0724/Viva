@@ -846,20 +846,27 @@ test('production TaskStore with retainedReply distinguishes unkeyed outputs/erro
     assert.equal(queuedReports.find(item => item.payload.taskId === plain.taskId)?.payload.output, '普通文本完整结果')
     assert.equal(runtime.agent.query({ op: 'get', taskId: plain.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '普通文本完整结果')
 
-    // 2. Terminal error event.message (no resultKey): neither report nor get_background_task is blanked;
-    // when truncated and not durably persisted by retainedReply, the report avoids promising pagination.
+    // 2. Terminal error event.message (no resultKey): preserved by TaskStore even with retainedReply so it
+    // survives restart and supports paginated reads and readable report pointers.
     const errored = await runtime.agent.start('报错任务')
-    const longUnpersistedErr = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(1000)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+    const longErr = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
     runtime.dsh.receive({ type: 'task_update', taskId: errored.taskId, update: chunk('前面说过的话') })
-    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: longUnpersistedErr })
+    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: longErr })
     const errStored = store.list().find(item => item.id === errored.taskId)!
-    assert.equal(errStored.resultPreview, '')
-    assert.equal(errStored.terminalMessage, undefined)
+    assert.equal(errStored.resultPreview, longErr.slice(-4000))
+    assert.equal(errStored.terminalMessage, longErr)
+    assert.equal(errStored.resultFromTerminal, true)
     assert.equal(errStored.resultErased, undefined)
     const errReport = queuedReports.find(item => item.payload.taskId === errored.taskId)?.payload.output ?? ''
-    assert.match(errReport, /无法通过 get_background_task 分段读取/)
-    assert.doesNotMatch(errReport, /outputOffset=/)
-    assert.equal(runtime.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, longUnpersistedErr)
+    assert.match(errReport, /outputOffset=1000/)
+    const relaunched = createTaskRuntime({
+      db, store, current: () => current, agentInfo: () => ({ mode: 'live', model: 'V4' }),
+      agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
+    })
+    const errAfterRestart = relaunched.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+    assert.equal(errAfterRestart.resultPreview, longErr.slice(0, 4000))
+    assert.equal(errAfterRestart.outputTotalChars, longErr.length)
+    assert.equal(errAfterRestart.nextOutputOffset, 4000)
 
     // 3. Retired resultKey (retainedReply returns false): store marks resultErased=true and blocks transcript resurrection.
     const retired = await runtime.agent.start('已擦除任务')
