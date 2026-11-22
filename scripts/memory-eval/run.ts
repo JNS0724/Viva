@@ -227,6 +227,7 @@ async function main() {
   const lmePerType = Number(argValue('--lme-per-type=') ?? '2')
   const lmeMaxSessions = Number(argValue('--lme-max-sessions=') ?? '0')
   const concurrency = Number(argValue('--concurrency=') ?? '3')
+  const vivaOnly = process.argv.includes('--viva-only')
   const runId = new Date().toISOString().replaceAll(/[:.]/gu, '-')
   const outputDir = path.resolve(argValue('--output=') ?? path.join(ROOT, 'smoke', `memory-eval-${runId}`))
   mkdirSync(outputDir, { recursive: true })
@@ -237,10 +238,12 @@ async function main() {
   const hasEmbedding = existsSync(modelRoot) && existsSync(runtimeRoot)
 
   const vivaCommit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
-  const remeCommit = remeRepo && existsSync(remeRepo)
+  const remeCommit = !vivaOnly && remeRepo && existsSync(remeRepo)
     ? execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: remeRepo, encoding: 'utf8' }).trim()
-    : 'unknown'
-  const remeVersion = execFileSync(remePython, ['-c', 'import reme; print(reme.__version__)'], { encoding: 'utf8' }).trim()
+    : 'skipped'
+  const remeVersion = !vivaOnly
+    ? execFileSync(remePython, ['-c', 'import reme; print(reme.__version__)'], { encoding: 'utf8' }).trim()
+    : 'skipped'
 
   const manifest: EvalManifest = {
     runId,
@@ -254,7 +257,7 @@ async function main() {
   }
 
   let embeddingServer: LocalEmbeddingServer | null = null
-  if (hasEmbedding && (suites.includes('offline') || suites.includes('chinese') || suites.includes('lme'))) {
+  if (!vivaOnly && hasEmbedding && (suites.includes('offline') || suites.includes('chinese') || suites.includes('lme'))) {
     process.stderr.write('[eval] starting local Granite-97M OpenAI proxy for ReMe iso-embedding...\n')
     embeddingServer = await startLocalEmbeddingServer(modelRoot, runtimeRoot)
     process.stderr.write(`[eval] Granite-97M proxy ready at ${embeddingServer.url} (${embeddingServer.dimensions}d)\n`)
@@ -300,6 +303,10 @@ async function main() {
         report.offline.push(await runVivaOfflineEval(dataset, { mode: 'viva-bm25' }))
         if (hasEmbedding) {
           report.offline.push(await runVivaOfflineEval(dataset, { mode: 'viva-hybrid-granite', modelRoot, runtimeRoot }))
+        }
+        if (vivaOnly) {
+          save()
+          continue
         }
         const bundle = buildOfflineBundle(dataset)
         const nodeExpected = new Map(bundle.nodeQueries.map(q => [q.id, q.expectedIds]))
@@ -381,14 +388,16 @@ async function main() {
         runtimeRoot: hasEmbedding ? runtimeRoot : undefined,
         includeHybrid: hasEmbedding,
       }))
-      process.stderr.write('[eval][scale] running ReMe scale bench (BM25)...\n')
-      const remeScale = await runRemeBridge<{ points: ScaleBenchmarkResult['points'] }>(
-        remePython,
-        'scale-bench',
-        { workDir: path.join(outputDir, 'reme-work', 'scale-bm25'), docCounts },
-        path.join(outputDir, 'bridge', 'scale-bm25'),
-      )
-      report.scale.push({ system: 'reme', mode: 'reme-bm25', points: remeScale.points })
+      if (!vivaOnly) {
+        process.stderr.write('[eval][scale] running ReMe scale bench (BM25)...\n')
+        const remeScale = await runRemeBridge<{ points: ScaleBenchmarkResult['points'] }>(
+          remePython,
+          'scale-bench',
+          { workDir: path.join(outputDir, 'reme-work', 'scale-bm25'), docCounts },
+          path.join(outputDir, 'bridge', 'scale-bm25'),
+        )
+        report.scale.push({ system: 'reme', mode: 'reme-bm25', points: remeScale.points })
+      }
       save()
     }
 
@@ -406,61 +415,63 @@ async function main() {
       report.chinese.push(...vivaCn)
       save()
 
-      process.stderr.write('[eval][chinese] running ReMe (Hybrid Granite-97M + Dream) on 7 frozen Chinese cases...\n')
-      const remeCnRaw = await runRemeBridge<{
-        cases: Array<{
-          caseId: string
-          phases: Array<{ phaseId: string, recallQuery: string, recallSnippetCount: number, answer: string }>
-          workspace: WorkspaceStats
-          telemetry: LiveTelemetry
-          error?: string
-        }>
-      }>(
-        remePython,
-        'chinese-eval',
-        {
-          workDir: path.join(outputDir, 'reme-work', 'chinese-hybrid'),
-          cases: memorySemanticCases,
-          llmModel: DEEPSEEK_DEFAULT.model,
-          llmBaseUrl: 'https://api.deepseek.com/v1',
-          ...(embeddingServer ? { embeddingUrl: embeddingServer.url, embeddingDims: embeddingServer.dimensions } : {}),
-          indexSessions: true,
-        },
-        path.join(outputDir, 'bridge', 'chinese-hybrid'),
-      )
-      for (const raw of remeCnRaw.cases) {
-        const fixture = memorySemanticCases.find(c => c.id === raw.caseId)!
-        const judgedPhases: ChineseCaseSystemResult['phases'] = []
-        for (const p of raw.phases) {
-          const phaseDef = fixture.phases.find(x => x.id === p.phaseId)!
-          const required = phaseDef.expectations.filter(e => e.disposition === 'required')
-          const judge = await judgeChineseSemanticAnswer(llmCtx, {
-            question: phaseDef.recallQuery,
-            requiredSemantics: required.map(e => e.semantic),
-            forbiddenSemantics: phaseDef.forbidden.map(f => f.semantic),
-            answer: p.answer,
-          })
-          judgedPhases.push({
-            ...p,
-            judgeVerdict: judge.verdict,
-            judgeReason: judge.reason,
-            patternHits: required.filter(e => checkPatterns(p.answer, e.claimPatterns)).length,
-            patternTotal: required.length,
-            forbiddenHits: phaseDef.forbidden.filter(f => checkPatterns(p.answer, f.claimPatterns)).length,
+      if (!vivaOnly) {
+        process.stderr.write('[eval][chinese] running ReMe (Hybrid Granite-97M + Dream) on 7 frozen Chinese cases...\n')
+        const remeCnRaw = await runRemeBridge<{
+          cases: Array<{
+            caseId: string
+            phases: Array<{ phaseId: string, recallQuery: string, recallSnippetCount: number, answer: string }>
+            workspace: WorkspaceStats
+            telemetry: LiveTelemetry
+            error?: string
+          }>
+        }>(
+          remePython,
+          'chinese-eval',
+          {
+            workDir: path.join(outputDir, 'reme-work', 'chinese-hybrid'),
+            cases: memorySemanticCases,
+            llmModel: DEEPSEEK_DEFAULT.model,
+            llmBaseUrl: 'https://api.deepseek.com/v1',
+            ...(embeddingServer ? { embeddingUrl: embeddingServer.url, embeddingDims: embeddingServer.dimensions } : {}),
+            indexSessions: true,
+          },
+          path.join(outputDir, 'bridge', 'chinese-hybrid'),
+        )
+        for (const raw of remeCnRaw.cases) {
+          const fixture = memorySemanticCases.find(c => c.id === raw.caseId)!
+          const judgedPhases: ChineseCaseSystemResult['phases'] = []
+          for (const p of raw.phases) {
+            const phaseDef = fixture.phases.find(x => x.id === p.phaseId)!
+            const required = phaseDef.expectations.filter(e => e.disposition === 'required')
+            const judge = await judgeChineseSemanticAnswer(llmCtx, {
+              question: phaseDef.recallQuery,
+              requiredSemantics: required.map(e => e.semantic),
+              forbiddenSemantics: phaseDef.forbidden.map(f => f.semantic),
+              answer: p.answer,
+            })
+            judgedPhases.push({
+              ...p,
+              judgeVerdict: judge.verdict,
+              judgeReason: judge.reason,
+              patternHits: required.filter(e => checkPatterns(p.answer, e.claimPatterns)).length,
+              patternTotal: required.length,
+              forbiddenHits: phaseDef.forbidden.filter(f => checkPatterns(p.answer, f.claimPatterns)).length,
+            })
+          }
+          report.chinese.push({
+            system: 'reme',
+            mode: embeddingServer ? 'reme-hybrid-granite' : 'reme-bm25',
+            caseId: raw.caseId,
+            category: fixture.category,
+            phases: judgedPhases,
+            workspace: raw.workspace,
+            telemetry: raw.telemetry,
+            ...(raw.error ? { error: raw.error } : {}),
           })
         }
-        report.chinese.push({
-          system: 'reme',
-          mode: embeddingServer ? 'reme-hybrid-granite' : 'reme-bm25',
-          caseId: raw.caseId,
-          category: fixture.category,
-          phases: judgedPhases,
-          workspace: raw.workspace,
-          telemetry: raw.telemetry,
-          ...(raw.error ? { error: raw.error } : {}),
-        })
+        save()
       }
-      save()
     }
 
     // ── M1: LongMemEval Stratified Real-Model Scouting Pass ─────────────────
@@ -496,68 +507,70 @@ async function main() {
       report.lme.results.push(...vivaLme)
       save()
 
-      process.stderr.write(`[eval][lme] running ReMe (${tasks.length} items, slice=${sliceSha256.slice(0, 12)})...\n`)
-      const remeLmeRaw = await runRemeBridge<{
-        items: Array<{
-          questionId: string
-          answer: string
-          sessionsIngested: number
-          dreamTriggers: number
-          workspace: WorkspaceStats
-          telemetry: LiveTelemetry
-          error?: string
-        }>
-      }>(
-        remePython,
-        'lme-eval',
-        {
-          workDir: path.join(outputDir, 'reme-work', 'lme-hybrid'),
-          items: tasks.map(t => ({
-            question_id: t.questionId,
-            question_type: t.questionType,
-            question: t.question,
-            queryTimeIso: t.queryTimeIso,
-            sessions: t.sessions,
-          })),
-          llmModel: DEEPSEEK_DEFAULT.model,
-          llmBaseUrl: 'https://api.deepseek.com/v1',
-          ...(embeddingServer ? { embeddingUrl: embeddingServer.url, embeddingDims: embeddingServer.dimensions } : {}),
-          enableDream: false, // ReMe official LongMemEval benchmark preset leaves auto_dream disabled
-          indexSessions: true,
-          concurrency,
-        },
-        path.join(outputDir, 'bridge', 'lme-hybrid'),
-      )
-      for (const raw of remeLmeRaw.items) {
-        const task = tasks.find(t => t.questionId === raw.questionId)!
-        const judge = raw.error
-          ? { verdict: 'error' as const, reason: raw.error }
-          : await judgeLmeAnswer(llmCtx, {
-              question: task.question,
-              groundTruth: task.groundTruth,
-              answer: raw.answer,
-              questionType: task.questionType,
-              isAbstention: task.isAbstention,
-            })
-        report.lme.results.push({
-          system: 'reme',
-          mode: embeddingServer ? 'reme-lme-granite' : 'reme-lme-bm25',
-          questionId: task.questionId,
-          questionType: task.questionType,
-          isAbstention: task.isAbstention,
-          question: task.question,
-          groundTruth: task.groundTruth,
-          answer: raw.answer,
-          verdict: judge.verdict,
-          judgeReason: judge.reason,
-          sessionsIngested: raw.sessionsIngested,
-          dreamTriggers: raw.dreamTriggers,
-          workspace: raw.workspace,
-          telemetry: raw.telemetry,
-          ...(raw.error ? { error: raw.error } : {}),
-        })
+      if (!vivaOnly) {
+        process.stderr.write(`[eval][lme] running ReMe (${tasks.length} items, slice=${sliceSha256.slice(0, 12)})...\n`)
+        const remeLmeRaw = await runRemeBridge<{
+          items: Array<{
+            questionId: string
+            answer: string
+            sessionsIngested: number
+            dreamTriggers: number
+            workspace: WorkspaceStats
+            telemetry: LiveTelemetry
+            error?: string
+          }>
+        }>(
+          remePython,
+          'lme-eval',
+          {
+            workDir: path.join(outputDir, 'reme-work', 'lme-hybrid'),
+            items: tasks.map(t => ({
+              question_id: t.questionId,
+              question_type: t.questionType,
+              question: t.question,
+              queryTimeIso: t.queryTimeIso,
+              sessions: t.sessions,
+            })),
+            llmModel: DEEPSEEK_DEFAULT.model,
+            llmBaseUrl: 'https://api.deepseek.com/v1',
+            ...(embeddingServer ? { embeddingUrl: embeddingServer.url, embeddingDims: embeddingServer.dimensions } : {}),
+            enableDream: false, // ReMe official LongMemEval benchmark preset leaves auto_dream disabled
+            indexSessions: true,
+            concurrency,
+          },
+          path.join(outputDir, 'bridge', 'lme-hybrid'),
+        )
+        for (const raw of remeLmeRaw.items) {
+          const task = tasks.find(t => t.questionId === raw.questionId)!
+          const judge = raw.error
+            ? { verdict: 'error' as const, reason: raw.error }
+            : await judgeLmeAnswer(llmCtx, {
+                question: task.question,
+                groundTruth: task.groundTruth,
+                answer: raw.answer,
+                questionType: task.questionType,
+                isAbstention: task.isAbstention,
+              })
+          report.lme.results.push({
+            system: 'reme',
+            mode: embeddingServer ? 'reme-lme-granite' : 'reme-lme-bm25',
+            questionId: task.questionId,
+            questionType: task.questionType,
+            isAbstention: task.isAbstention,
+            question: task.question,
+            groundTruth: task.groundTruth,
+            answer: raw.answer,
+            verdict: judge.verdict,
+            judgeReason: judge.reason,
+            sessionsIngested: raw.sessionsIngested,
+            dreamTriggers: raw.dreamTriggers,
+            workspace: raw.workspace,
+            telemetry: raw.telemetry,
+            ...(raw.error ? { error: raw.error } : {}),
+          })
+        }
+        save()
       }
-      save()
     }
   } finally {
     manifest.finishedAt = new Date().toISOString()

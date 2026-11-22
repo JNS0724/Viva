@@ -234,14 +234,15 @@ export async function runVivaOfflineEval(
         hits: res.hits.map(h => ({ id: ids.get(h.id) ?? h.id, text: h.text, score: h.score })),
       })
     }
-    const nodeHits = nodeQueries.map(nq => {
-      const nr = retrieval.nodeSearch({ query: nq.text, limit: 5, allows })
-      return {
+    const nodeHits: Array<{ id: string, expectedIds: string[], returnedIds: string[] }> = []
+    for (const nq of nodeQueries) {
+      const nr = await retrieval.nodeSearchAsync({ query: nq.text, limit: 5, allows })
+      nodeHits.push({
         id: nq.id,
         expectedIds: nq.expectedIds,
         returnedIds: nr.nodes.map(n => ids.get(n.id) ?? n.id),
-      }
-    })
+      })
+    }
     return scoreOfflineQueries(queries, rawResults, {
       system: 'viva',
       mode: opts.mode,
@@ -556,7 +557,7 @@ async function runVivaAgenticAnswer(
           origin,
         )
       } else if (call.name === 'memory_node_search') {
-        content = owner.runtime.handle(
+        content = await owner.runtime.handleModelRequest(
           {
             op: 'node_search',
             session: readerSessionId,
@@ -564,6 +565,8 @@ async function runVivaAgenticAnswer(
             ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
           },
           origin,
+          () => true,
+          AbortSignal.timeout(20_000),
         )
       }
       messages.push(createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: content }], isError: false }))

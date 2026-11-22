@@ -192,12 +192,14 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate, readPhysicalFile, digestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate, readPhysicalFile, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
-  digestNodes?: MemoryFileIndex['digestNodes'], readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
+  digestNodes?: MemoryFileIndex['digestNodes'],
+  searchDigestNodes?: (workspace: string, query: string, limit: number, signal?: AbortSignal) => Promise<Array<{ id: string, path: string, score: number }>>,
+  readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(diagnosticPort)
@@ -268,9 +270,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         : documents.fileRegistry(workspace)
       return entries.filter(row => row.state === 'active')
     }
-    async function candidates(query: string, signal?: AbortSignal) {
+    async function candidates(query: string, limit: number, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
+      const hybridScores = new Map<string, number>()
+      if (searchDigestNodes) {
+        try {
+          const hits = await searchDigestNodes(workspace, query, limit, signal)
+          for (const hit of hits) hybridScores.set(hit.id, Math.max(hybridScores.get(hit.id) ?? 0, hit.score))
+        } catch { /* Fall back to local lexical candidate scan. */ }
+      }
       const matches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
       let yieldAt = performance.now() + 4
       for (const row of activeEntries()) {
@@ -297,8 +306,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             }
           }
         }
-        const score = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
+        const lexicalScore = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
           ? [...new Set(words.filter(word => terms.has(word)))].length : 0
+        const hybridScore = hybridScores.get(row.id) ?? 0
+        const score = hybridScore > 0 ? hybridScore * 100 + lexicalScore : lexicalScore
         if (!words || score > 0) matches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score })
       }
       return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
@@ -309,11 +320,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       list: () => policy.list(workspace, 'digest'),
       async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
         signal?.throwIfAborted()
-        const matches = search ? await candidates(search.query, signal) : []
         const limit = Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
+        const matches = search ? await candidates(search.query, limit, signal) : []
         const fingerprint = search ? identity.hash(JSON.stringify(matches)) : ''
         const offset = search?.page?.fingerprint === fingerprint ? search.page.offset : 0
-        const selected = matches.slice(offset, offset + limit).map(match => match.path)
+        const pageSlice = matches.slice(offset, offset + limit)
+        const selected = pageSlice.map(match => match.path)
+        const scored = searchDigestNodes && pageSlice.some(match => match.score > 0)
+          ? new Map(pageSlice.map(match => [match.path, match.score]))
+          : undefined
         const locations = (paths: string[]) => paths.map(path => ({ workspace, path }))
         const requiredSet = new Set(required)
         const mandatory = await loadFiles(locations([...requiredSet]), signal)
@@ -336,7 +351,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         })
         const nextOffset = unread ? offset : offset + selected.length
         const partial = unread || nextOffset < matches.length
-        return { read, list: () => list, partial, next: partial ? { fingerprint, offset: nextOffset } : undefined }
+        return { read, list: () => list, ...(scored ? { scored } : {}), partial, next: partial ? { fingerprint, offset: nextOffset } : undefined }
       },
     }
   }

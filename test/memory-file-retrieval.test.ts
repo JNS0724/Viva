@@ -674,3 +674,25 @@ test('republishing an unchanged digest returns zero accepted and skips redundant
     assert.equal(vectorChecks, checksAfterFirst)
   }
 })
+
+test('nodeSearch and nodeSearchAsync match digest body chunks and semantic vectors while returning metadata only', async t => {
+  const { embedder } = encoder()
+  const hidden = view('secret-digest', 'needle body-only-secret-token')
+  const matched = view('opaque-topic', 'contains needle and deep-body-fact-42')
+  const daily = view('daily-only', 'contains needle and deep-body-fact-42', { kind: 'daily', day: '2026-11-16', path: 'daily/2026-11-16/a.md' })
+  const unrelated = view('other-topic', 'completely unrelated note')
+  const { retrieval } = setup(t, [hidden, matched, daily, unrelated], embedder)
+
+  // Sync nodeSearch should match digest body chunks lexically, skip daily files, enforce allows, and omit body text.
+  const lexical = retrieval.nodeSearch({ query: 'deep-body-fact-42', allows: item => item.id !== 'secret-digest' })
+  assert.deepEqual(lexical.nodes.map(node => node.id), ['opaque-topic'])
+  assert.equal('text' in lexical.nodes[0]!, false)
+  assert.equal(JSON.stringify(lexical.nodes).includes('deep-body-fact-42'), false)
+
+  // Async nodeSearchAsync should match digest semantically via vectors even with zero lexical overlap in title/description/body.
+  assert.equal(await retrieval.prepareVectors(), true)
+  const semantic = await retrieval.nodeSearchAsync({ query: 'needle-equivalent', allows: item => item.id !== 'secret-digest' })
+  assert.equal(semantic.nodes[0]?.id, 'opaque-topic')
+  assert.equal(semantic.nodes.some(node => node.id === 'secret-digest' || node.id === 'daily-only'), false)
+  assert.equal(JSON.stringify(semantic.nodes).includes('deep-body-fact-42'), false)
+})

@@ -8,7 +8,7 @@ import { fileDependency, type MemoryDocumentReadBatch, type MemoryDocumentView }
 import type { MemoryLineChange } from './memory-line-history.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryFileIndex, MemoryFileIdentity, MemoryFileSnapshot, MemoryFileHit, MemoryFileChunkRef, MemoryFileQueryScope, MemoryFileNode } from './ports/file-index.ts'
-import { dailySearchLimit, rankDailyMemory } from './memory-daily-search.ts'
+import { dailySearchLimit } from './memory-daily-search.ts'
 import { memoryFileLexicalQuery, memoryIdentifierTokens, memorySearchTokens } from './search-tokens.ts'
 import { memoryFileEmbeddingPassages, splitMemoryFileEmbeddingPassage } from './memory-file-passages.ts'
 import type { MemoryFileEmbeddingPassage } from './memory-file-passages.ts'
@@ -575,39 +575,120 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const limit = checkedLimit(input.limit)
     const scope = searchScope(input)
     const query = memoryFileLexicalQuery(input.query)
-    const candidates = index.nodeCandidates(query, scope, candidateProbe(Math.min(defaults.searchMaxCandidates, limit * defaults.searchCandidateMultiplier)))
-    return { query, limit, candidates }
+    const probe = candidateProbe(Math.min(defaults.searchMaxCandidates, limit * defaults.searchCandidateMultiplier))
+    const candidates = index.nodeCandidates(query, scope, probe)
+    const chunkLexical = index.lexicalCandidates(query, scope, probe)
+    return { query, limit, scope, probe, candidates, chunkLexical }
   }
-  function nodeSearch(input: NodeSearchInput, plan?: ReturnType<typeof planNodeSearch>, batch?: MemoryDocumentReadBatch) {
+  function dedupeDigestNodes(files: readonly MemoryFileIdentity[]): MemoryFileNode[] {
+    const seen = new Set<string>()
+    const out: MemoryFileNode[] = []
+    for (const file of files) {
+      if (file.kind !== 'digest') continue
+      const key = identityKey(file)
+      if (seen.has(key)) continue
+      const node = index.nodeAt(file.workspace, file.path) ?? index.snapshot(file.workspace, file.id)
+      if (!node || node.kind !== 'digest' || !sameVersion(file, node)) continue
+      seen.add(key)
+      out.push(node)
+    }
+    return out
+  }
+  function rankHybridNodes(
+    titleNodes: readonly MemoryFileNode[],
+    chunkLexicalNodes: readonly MemoryFileNode[],
+    vectorNodes: readonly MemoryFileNode[],
+  ): Array<{ file: MemoryFileNode, score: number }> {
+    const lexicalMerged: MemoryFileNode[] = []
+    const seenLex = new Set<string>()
+    for (const list of [titleNodes, chunkLexicalNodes]) {
+      for (const file of list) {
+        const key = identityKey(file)
+        if (seenLex.has(key)) continue
+        seenLex.add(key)
+        lexicalMerged.push(file)
+      }
+    }
+    const scores = new Map<string, { file: MemoryFileNode, score: number }>()
+    const addLane = (rows: readonly MemoryFileNode[], weight: number) => {
+      const seen = new Set<string>()
+      for (const file of rows) {
+        const key = identityKey(file)
+        if (seen.has(key)) continue
+        seen.add(key)
+        const contrib = weight / (defaults.reciprocalRankK + seen.size)
+        const prev = scores.get(key)
+        scores.set(key, { file: prev?.file ?? file, score: (prev?.score ?? 0) + contrib })
+      }
+    }
+    addLane(vectorNodes, defaults.vectorWeight)
+    addLane(lexicalMerged, 1 - defaults.vectorWeight)
+    return [...scores.values()].sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path))
+  }
+  function nodeSearch(
+    input: NodeSearchInput,
+    plan?: ReturnType<typeof planNodeSearch>,
+    batch?: MemoryDocumentReadBatch,
+    vectorNodes: readonly MemoryFileNode[] = [],
+  ) {
     if (closed || input.signal?.aborted) return {nodes:[],files:[],sourceIds:[],partial:false}
-    const { query, limit, candidates } = plan ?? planNodeSearch(input)
+    const { limit, candidates, chunkLexical } = plan ?? planNodeSearch(input)
     const checks = verifier(input.allows, undefined, batch)
-    const rows = candidates.rows.flatMap(file => {
-      const view = checks.verify(file)
-      return view?.kind === 'digest'
-        ? [{ key: identityKey(file), text: `${file.name}
-${file.description}`, file, view }] : []
-    })
-    const ranked = rankDailyMemory(rows,query,limit,0)
-    return { nodes: ranked.hits.map(({ document, score }) => {
-      const { id, workspace, path, name, description } = document.file
-      return { id, workspace, path, name, description, score }
-    }), ...readSet(ranked.hits.map(hit => hit.document.view)), partial: ranked.partial || candidates.incomplete || checks.incomplete() }
+    const chunkLexNodes = dedupeDigestNodes(chunkLexical.rows.map(hit => hit.file))
+    const ranked = rankHybridNodes(candidates.rows, chunkLexNodes, vectorNodes)
+    const verified: Array<{ file: MemoryFileNode, view: MemoryDocumentView, score: number }> = []
+    for (const item of ranked) {
+      const view = checks.verify(item.file)
+      if (view?.kind !== 'digest') continue
+      verified.push({ file: item.file, view, score: item.score })
+      if (verified.length >= limit) break
+    }
+    return {
+      nodes: verified.map(({ file, score }) => ({
+        id: file.id, workspace: file.workspace, path: file.path, name: file.name, description: file.description, score,
+      })),
+      ...readSet(verified.map(item => item.view)),
+      partial: ranked.length > verified.length || candidates.incomplete || chunkLexical.incomplete || checks.incomplete(),
+    }
   }
   async function nodeSearchAsync(input: NodeSearchInput, batch = policy.readBatch?.(input.signal)) {
-    if (!batch || closed || input.signal?.aborted) return nodeSearch(input)
+    if (closed || input.signal?.aborted) return {nodes:[],files:[],sourceIds:[],partial:false}
     const plan = planNodeSearch(input)
+    let vectorNodes: MemoryFileNode[] = []
+    if (embedder && plan.scope.workspaces.length) {
+      const run = scopedController(input.signal)
+      try {
+        const state = index.vectorState()
+        const target = space()
+        const ready = state.active && state.space?.fingerprint === target.fingerprint && state.space.dimensions === target.dimensions
+        if (!ready) prepareAfterSearch()
+        else if (!run.controller.signal.aborted) {
+          const output = await boundedQuery(input.query, defaults.automaticQueryTimeoutMs, input.signal, false)
+          if (output?.[0] && !run.controller.signal.aborted) {
+            const page = await index.vectorCandidates(
+              output[0], target, plan.scope, plan.probe,
+              () => !closed && !input.signal?.aborted,
+              performance.now() + defaults.automaticQueryTimeoutMs,
+            )
+            if (page) vectorNodes = dedupeDigestNodes(page.rows.map(hit => hit.file))
+          }
+        }
+      } catch { /* Fall back cleanly to lexical node + chunk search. */ }
+      finally { run.done() }
+    }
+    if (!batch) return nodeSearch(input, plan, undefined, vectorNodes)
     const until = performance.now() + defaults.fileVerificationBudgetMs
-    await loadFiles(batch, plan.candidates.rows, defaults.fileVerificationBudgetMs, input.signal)
-    let result = nodeSearch(input, plan, batch)
-    const size = candidateProbe(Math.min(defaults.searchMaxCandidates, plan.limit * defaults.searchCandidateMultiplier))
+    const allFiles = [...plan.candidates.rows, ...dedupeDigestNodes(plan.chunkLexical.rows.map(hit => hit.file)), ...vectorNodes]
+    await loadFiles(batch, allFiles, defaults.fileVerificationBudgetMs, input.signal)
+    let result = nodeSearch(input, plan, batch, vectorNodes)
+    const size = plan.probe
     for (let offset = size; !closed && !input.signal?.aborted && plan.candidates.incomplete && result.nodes.length < plan.limit && offset < 512 && performance.now() < until; offset += size) {
-      const page = index.nodeCandidates(plan.query, searchScope(input), size, offset)
+      const page = index.nodeCandidates(plan.query, plan.scope, size, offset)
       await loadFiles(batch, page.rows, until - performance.now(), input.signal)
       if (closed || input.signal?.aborted) break
       plan.candidates.rows.push(...page.rows)
       plan.candidates.incomplete = page.incomplete
-      result = nodeSearch(input, plan, batch)
+      result = nodeSearch(input, plan, batch, vectorNodes)
     }
     return result
   }
