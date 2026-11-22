@@ -72,11 +72,15 @@ const titleOf = (words: string) => {
   const line = words.trim().split('\n')[0]
   return line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS)}…` : line
 }
-/** Latest run's full assistant text (messages after the last user prompt), preserving both head and tail. */
-function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknown }>): string {
+/** Latest run's full assistant text, anchored at `runStart` when tracked so mid-run steers and question answers never drop earlier output from the same run. */
+function latestRunOutput(messages: ReadonlyArray<{ role?: unknown, text?: unknown }>, runStart?: number): string {
   let start = 0
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'user') { start = i + 1; break }
+  if (typeof runStart === 'number' && Number.isSafeInteger(runStart) && runStart >= 0) {
+    start = runStart
+  } else {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i]?.role === 'user') { start = i + 1; break }
+    }
   }
   return messages.slice(start)
     .filter(message => message.role === 'assistant' && typeof message.text === 'string' && message.text.length > 0)
@@ -242,7 +246,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (stored && isEnded(stored) && stored.resultPreview === '') return ''
     const held = attached.has(taskId)
     const messages = (held ? taskWords.current(taskId) : null) ?? db.get(entry.segmentId)?.messages.slice(entry.keep ?? 0) ?? []
-    const text = latestRunOutput(messages)
+    const text = latestRunOutput(messages, typeof entry.runStart === 'number' ? entry.runStart : undefined)
     if (!text) return null
     return matchesPreview(text, preview) ? text : null
   }
@@ -338,14 +342,14 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const segment = db.save(db.create({ sessionId: taskId, mode, model, cwd: main.cwd, parentId: main.id }), [initial])
       db.fold(segment.id, { into: main.id, at: db.get(main.id)?.messages.length ?? 0, kind: 'side' })
       const begun: TaskSummary = { id: taskId, segmentId: segment.id, title: titleOf(name?.trim() || text), words: text }
-      store.add({ ...begun, runId, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent',
+      store.add({ ...begun, runId, runStart: 0, keep: 0, next: main.id, cwd: main.cwd ?? '', startedAt: now(), by: 'agent',
         ...(typeof evidence === 'object' ? { requestMemory: evidence } : {}) })
       opens(taskId, { words: text, task: begun, hostSession: main.sessionId ?? null })
       registry.put({ ...begun, runId, cwd: main.cwd ?? '' })
       return { initial, task: begun }
     }))
     counted()
-    tasks.set(task.id, { ...task, keep: 0, next: main.id })
+    tasks.set(task.id, { ...task, runStart: 0, keep: 0, next: main.id })
     attached = new Set([...attached, task.id])
     taskWords.track(task.id, [initial])
     agent.promptTask(task.id, text)
@@ -472,7 +476,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const brief = briefMessage(taskId, text, evidence)
     const { endedAt: _endedAt, status: _status, ...going } = kept
     const runId = newRunId()
-    const running = { ...going, runId }
+    const before = (taskWords.has(taskId) ? taskWords.current(taskId) : null) ?? db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const runStart = before.length
+    const running = { ...going, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
@@ -481,7 +487,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     })
     counted()
     tasks.set(taskId, running)
-    if (!taskWords.has(taskId)) taskWords.track(taskId, db.get(kept.segmentId)?.messages.slice(kept.keep) ?? [])
+    if (!taskWords.has(taskId)) taskWords.track(taskId, before)
     taskWords.userSaid(taskId, text, brief.key)
     agent.promptTask(taskId, text)
     return { ok: true }
@@ -510,7 +516,9 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (!admitted(taskId, evidence)) return { ok: false, problem: t('main.memory.context.stale') }
     const brief = briefMessage(taskId, words, evidence)
     const runId = newRunId()
-    const running = { ...kept, runId }
+    const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
+    const runStart = before.length
+    const running = { ...kept, runId, runStart }
     change('task.restarted', { taskId, runId }, () => {
       cancelReport(kept)
       store.add(running)
@@ -521,7 +529,6 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     letEndGo(taskId)
     tasks.set(taskId, running)
     attached = new Set([...attached, taskId])
-    const before = db.get(kept.segmentId)?.messages.slice(kept.keep) ?? []
     const said = [...before, brief]
     taskWords.track(taskId, said)
     agent.promptTask(taskId, words)

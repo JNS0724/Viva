@@ -17,7 +17,7 @@ const SCHEMA = `
 `
 
 /** A task as kept; task-runtime.ts adds what else it needs (words, cwd, startedAt, endedAt, status). */
-export interface StoredTask { id: string, segmentId: string, title: string, requestMemory?: MemoryProvenance, resultKey?: string, [field: string]: any }
+export interface StoredTask { id: string, segmentId: string, title: string, runStart?: number, requestMemory?: MemoryProvenance, resultKey?: string, [field: string]: any }
 
 const isText = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const isTask = (entry: any): entry is StoredTask => Boolean(entry) && typeof entry === 'object' && isText(entry.id) && isText(entry.segmentId) && isText(entry.title)

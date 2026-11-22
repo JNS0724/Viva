@@ -763,3 +763,50 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
 
   h.db.close()
 })
+
+test('mid-run steers and question answers keep earlier output from the same run in reports and paginated queries, while a new run resets the run boundary', async () => {
+  const h = setup()
+  const { task } = await h.start('梳理架构变更')
+  const part1 = `${'H'.repeat(REPORT_OUTPUT_HEAD_CHARS)}第一段详细分析`
+  const part2 = `${'M'.repeat(2200)}${'T'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
+  h.says(task.id, part1)
+  await h.tasks.agent.message(task.id, '顺便补充风险评估')
+  const city = { id: 'scope', question: '覆盖范围？', options: [{ label: '全量' }] }
+  h.tasks.dsh.receive({ type: 'task_question', taskId: task.id, questionId: 'q1', questions: [city] })
+  h.tasks.dsh.answer('q1', [{ id: 'scope', selected: ['全量'] }])
+  h.says(task.id, part2)
+  h.ends(task.id)
+
+  const expectedRun1 = `${part1}\n${part2}`
+  const run1Report = h.queuedReports.find(item => item.payload.taskId === task.id && item.payload.runId === 'run-1')
+  assert.ok(run1Report, 'run-1 report queued')
+  assert.equal(run1Report.payload.outputTruncated, true)
+  assert.ok(run1Report.payload.output.startsWith('H'.repeat(REPORT_OUTPUT_HEAD_CHARS)), 'keeps pre-steer head in report')
+  assert.ok(run1Report.payload.output.endsWith('T'.repeat(REPORT_OUTPUT_TAIL_CHARS)), 'keeps post-steer tail in report')
+
+  // Live paginated query includes both pre-steer and post-steer output.
+  const firstPage = h.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(firstPage.outputTotalChars, expectedRun1.length)
+  assert.equal(firstPage.resultPreview, expectedRun1.slice(0, 4000))
+  assert.equal(firstPage.nextOutputOffset, 4000)
+  const secondPage = h.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 4000, outputLimit: 4000 }, { kind: 'main' }).task!
+  assert.equal(secondPage.resultPreview, expectedRun1.slice(4000))
+  assert.equal(secondPage.nextOutputOffset, null)
+
+  // Persisted runStart survives relaunch.
+  const later = h.relaunch()
+  const afterRelaunch = later.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true, outputOffset: 0, outputLimit: 100 }, { kind: 'main' }).task!
+  assert.equal(afterRelaunch.outputTotalChars, expectedRun1.length)
+  assert.equal(afterRelaunch.resultPreview, expectedRun1.slice(0, 100))
+
+  // Starting a brand-new run (follow-up after task_end) advances runStart so run-1 output is excluded.
+  await later.tasks.agent.message(task.id, '单独总结风险清单')
+  later.says(task.id, '第二轮风险清单：无阻塞项。')
+  later.ends(task.id)
+  const run2Query = later.tasks.agent.query({ op: 'get', taskId: task.id, includeOutput: true }, { kind: 'main' }).task!
+  assert.equal(run2Query.resultPreview, '第二轮风险清单：无阻塞项。')
+  assert.equal(run2Query.outputTotalChars, '第二轮风险清单：无阻塞项。'.length)
+  assert.equal(run2Query.outputTruncated, false)
+
+  h.db.close()
+})
