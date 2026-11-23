@@ -46,6 +46,7 @@ export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number,
 export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, nativeMessageDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
 type Options = Pick<NodeMemoryRuntimeOptions, 'compute' | 'route' | 'quiesce'> & {
   diagnostics?: DiagnosticPort
+  now?: () => number
   root: string, hostNamespace?: string, dailyNotes?: NodeMemoryRuntimeOptions['dailyNotes'], embedding?: { modelRoot: string, runtimeRoot?: string },
   onChange?: NodeMemoryRuntimeOptions['changed'],
   onContextUsed?: (notice: Omit<MemoryOwnerContextUsed, 'type' | 'protocol' | 'epoch'>) => void,
@@ -71,7 +72,7 @@ function hostDiagnosticOperation(method: HostMemoryCommand['method']): Diagnosti
 /** Single storage owner shared by every adapter. Host callers never receive its DB or runtime. */
 export function openMemoryOwner(options: Options) {
   const lock = lockMemoryRoot(options.root)
-  const store = (() => { try { return openMemoryStore(path.join(lock.root, 'memory.db')) } catch (error) { lock.close(); throw error } })()
+  const store = (() => { try { return openMemoryStore(path.join(lock.root, 'memory.db'), options.now) } catch (error) { lock.close(); throw error } })()
   try { return assembleOwner(options, lock, store) }
   catch (error) { try { store.close() } finally { lock.close() }; throw error }
 }
@@ -112,6 +113,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   const nativeSpills = createNativeSpills(db)
   const toolReadScope = new AsyncLocalStorage<NativeToolReadScope>()
   const runtime = createMemoryRuntime({ store, compute: options.compute, route: options.route, diagnostics: options.diagnostics,
+    ...(options.now ? { now: options.now } : {}),
     dailyNotes: options.dailyNotes ?? true,
     ...(options.embedding ? { embedder: createMemoryEmbedder(options.embedding) } : {}),
     quiesce: options.quiesce, changed: change => { options.onChange?.(change) },

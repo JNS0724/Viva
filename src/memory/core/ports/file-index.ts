@@ -35,6 +35,8 @@ export interface MemoryFileQueryScope {
   from?: string
   through?: string
   asOf?: number
+  kind?: 'daily' | 'digest'
+  dedupeByFile?: boolean
 }
 export interface MemoryFilePage<T> { rows: T[], incomplete: boolean }
 export interface MemoryFileNode extends MemoryFileIdentity {
@@ -49,7 +51,7 @@ export interface MemoryFileIndex {
   chunks(authorized: readonly MemoryFileIdentity[]): MemoryFilePassage[]
   /** Candidate pages contain trusted projections. Current access and revision are checked by core. */
   lexicalCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileHit> & { mode: 'fts' | 'fallback' }
-  nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode>
+  nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset?: number): MemoryFilePage<MemoryFileNode> & { mode?: 'fts' | 'fallback' }
   vectorCandidates(query: Float32Array, space: MemoryVectorSpace, scope: MemoryFileQueryScope, limit: number, current?: () => boolean, deadline?: number): Promise<MemoryFilePage<MemoryFileHit> | null>
   digestNodes(workspace: string): MemoryFileNode[]
   nodeAt(workspace: string, path: string): MemoryFileNode | null

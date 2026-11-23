@@ -152,13 +152,30 @@ ${file.description}`))
       return {...chunk,score}
     }).filter(hit => hit.score > 0).sort((a,b) => b.score-a.score || key(a.ref).localeCompare(key(b.ref)))
   }
+  function nodeFallback(query: string, candidates: MemoryFileNode[]): MemoryFileNode[] {
+    const terms = [...new Set(memorySearchTokens(query, false))]
+    if (!terms.length) return []
+    const documents = candidates.map(item => ({ item, tokens: memorySearchTokens(`${item.name}\n${item.description}`, true) }))
+    const average = documents.reduce((sum, d) => sum + d.tokens.length, 0) / Math.max(documents.length, 1)
+    return documents.map(({ item, tokens }) => {
+      let score = 0
+      for (const term of terms) {
+        const tf = tokens.filter(t => t === term).length
+        if (!tf) continue
+        const df = documents.filter(d => d.tokens.includes(term)).length
+        score += Math.log(1 + (documents.length - df + 0.5) / (df + 0.5)) * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * tokens.length / Math.max(average, 1)))
+      }
+      return { item, score }
+    }).filter(hit => hit.score > 0).sort((a, b) => b.score - a.score || a.item.path.localeCompare(b.item.path)).map(hit => hit.item)
+  }
   function scopeArgs(scope: MemoryFileQueryScope) {
-    return [JSON.stringify(scope.workspaces), scope.from ?? null, scope.through ?? null, scope.asOf ?? null]
+    return [JSON.stringify(scope.workspaces), scope.from ?? null, scope.through ?? null, scope.asOf ?? null, scope.kind ?? null]
   }
   const withinScope = `n.workspace IN (SELECT value FROM json_each(?))
     AND (n.kind <> 'daily' OR n.day IS NULL OR n.day >= coalesce(?,n.day))
     AND (n.kind <> 'daily' OR n.day IS NULL OR n.day <= coalesce(?,n.day))
-    AND (n.updated_at = 0 OR n.updated_at <= coalesce(?,n.updated_at))`
+    AND (n.updated_at = 0 OR n.updated_at <= coalesce(?,n.updated_at))
+    AND n.kind = coalesce(?,n.kind)`
   const chunksInScope = `JOIN memory_file_index_nodes n ON c.workspace=n.workspace AND c.file_id=n.id WHERE ${withinScope}`
   function passagePage(scope: MemoryFileQueryScope, limit: number, offset: number) {
     const rows = db.prepare(`SELECT c.payload FROM memory_file_index_chunks c ${chunksInScope}
@@ -179,17 +196,18 @@ ${file.description}`))
   }
   function nodeCandidates(query: string, scope: MemoryFileQueryScope, limit: number, offset = 0) {
     const match = queryOf(query)
-    if (!match || !limitOf(limit)) return { rows: [], incomplete: false }
+    if (!match || !limitOf(limit)) return { rows: [], incomplete: false, mode: lexicalReady ? 'fts' as const : 'fallback' as const }
     if (lexicalReady) try {
       const rows = db.prepare(`SELECT n.payload FROM memory_file_index_node_fts
         JOIN memory_file_index_nodes n ON n.rowid=memory_file_index_node_fts.rowid
         WHERE ${withinScope} AND memory_file_index_node_fts MATCH ?
         ORDER BY bm25(memory_file_index_node_fts),n.workspace,n.id LIMIT ? OFFSET ?`).all(...scopeArgs(scope), match, limit + 1, offset)
-      return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
+      return { ...page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit), mode: 'fts' as const }
     } catch { lexicalReady = false; setMeta('fts-dirty','1') }
     const rows = db.prepare(`SELECT n.payload FROM memory_file_index_nodes n WHERE ${withinScope} AND n.kind='digest'
       ORDER BY n.workspace,n.id LIMIT ? OFFSET ?`).all(...scopeArgs(scope), limit + 1, offset)
-    return page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
+    const paged = page(rows.map(row => JSON.parse(String(row.payload)) as MemoryFileNode), limit)
+    return { ...paged, rows: nodeFallback(query, paged.rows), mode: 'fallback' as const }
   }
   function nodeAt(workspace: string, path: string) {
     const row = db.prepare('SELECT payload FROM memory_file_index_nodes WHERE workspace=? AND path=?').get(workspace, path)
@@ -272,11 +290,13 @@ ${file.description}`))
       AND (n.kind <> 'daily' OR n.day IS NULL OR n.day >= coalesce(?,n.day))
       AND (n.kind <> 'daily' OR n.day IS NULL OR n.day <= coalesce(?,n.day))
       AND (n.updated_at = 0 OR n.updated_at <= coalesce(?,n.updated_at))
+      AND n.kind = coalesce(?,n.kind)
       ORDER BY c.file_id,c.ordinal LIMIT 32`)
     const scored = db.prepare('SELECT vector FROM memory_file_index_vectors WHERE generation=? AND ref=?')
     const lookup = db.prepare('SELECT payload FROM memory_file_index_chunks WHERE workspace=? AND file_id=? AND ordinal=?')
     type Match = { ref: MemoryFileChunkRef, score: number, key: string }
     const matches: Match[] = []
+    const bestByFile = scope.dedupeByFile ? new Map<string, Match>() : null
     const rank = (a: Match, b: Match) => b.score - a.score || a.key.localeCompare(b.key)
     const norm = Math.sqrt(query.reduce((sum, v) => sum + v*v, 0))
     let incomplete = false, yieldAt = performance.now() + 4
@@ -284,7 +304,7 @@ ${file.description}`))
       let fileId = '', ordinal = -1
       do {
         if (!current() || performance.now() >= deadline) { incomplete = true; break search }
-        const rows = chunksPage.all(workspace, fileId, ordinal, scope.from ?? null, scope.through ?? null, scope.asOf ?? null)
+        const rows = chunksPage.all(workspace, fileId, ordinal, scope.from ?? null, scope.through ?? null, scope.asOf ?? null, scope.kind ?? null)
         for (const row of rows) {
           fileId = String(row.file_id); ordinal = Number(row.ordinal)
           const ref = JSON.parse(String(row.ref)) as MemoryFileChunkRef
@@ -301,9 +321,27 @@ ${file.description}`))
             }
             if (squared > 0) score = Math.max(score, dot / (norm * Math.sqrt(squared)))
           }
-          if (Number.isFinite(score)) matches.push({ ref, score, key: tag })
+          if (Number.isFinite(score)) {
+            const candidate: Match = { ref, score, key: tag }
+            if (bestByFile) {
+              const fileKey = JSON.stringify([ref.workspace, ref.fileId])
+              const prev = bestByFile.get(fileKey)
+              if (!prev || rank(candidate, prev) < 0) bestByFile.set(fileKey, candidate)
+            } else {
+              matches.push(candidate)
+            }
+          }
         }
-        if (matches.length > limit) { matches.sort(rank); matches.length = limit; incomplete = true }
+        if (bestByFile) {
+          if (bestByFile.size > limit) {
+            const kept = [...bestByFile.values()].sort(rank).slice(0, limit)
+            bestByFile.clear()
+            for (const item of kept) bestByFile.set(JSON.stringify([item.ref.workspace, item.ref.fileId]), item)
+            incomplete = true
+          }
+        } else if (matches.length > limit) {
+          matches.sort(rank); matches.length = limit; incomplete = true
+        }
         if (rows.length < 32) break
         if (performance.now() >= yieldAt) {
           await new Promise<void>(resolve => setImmediate(resolve))
@@ -314,7 +352,8 @@ ${file.description}`))
     // A caller can retire the owner or replace a generation while scoring yielded.
     if (!current()) return { rows: [], incomplete: true }
     if (vectorState().generation !== state.generation) return null
-    const rows = matches.sort(rank).flatMap(({ ref, score, key: tag }) => {
+    const rankedMatches = (bestByFile ? [...bestByFile.values()] : matches).sort(rank)
+    const rows = rankedMatches.flatMap(({ ref, score, key: tag }) => {
       const row = lookup.get(ref.workspace, ref.fileId, ref.ordinal)
       const passage = row && JSON.parse(String(row.payload)) as MemoryFilePassage | undefined
       return passage && key(passage.ref) === tag ? [{ ...passage, score }] : []
