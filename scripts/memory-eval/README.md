@@ -21,9 +21,15 @@ DEEPSEEK_API_KEY=... npm run memory:eval -- --suite=chinese,lme \
   --reme-python=/path/to/reme-venv/bin/python \
   --reme-repo=/path/to/ReMe
 
-# 3. Full-haystack LongMemEval run (no session cap)
+# 3. Strictly held-out LongMemEval blind test (excluding prior dev slice IDs, pure ReAct mode, exact HTTP token/cache metering)
 DEEPSEEK_API_KEY=... npm run memory:eval -- --suite=lme \
-  --lme-per-type=10 --lme-max-sessions=0 --concurrency=6 \
+  --lme-exclude-report=/path/to/prior-report.json \
+  --lme-per-type=3 --lme-max-sessions=20 --viva-no-auto-context --concurrency=9 \
   --reme-python=/path/to/reme-venv/bin/python \
   --reme-repo=/path/to/ReMe
+
+# Optional flags:
+#   --viva-only             Run only Viva (skip ReMe bridge and local embedding proxy)
+#   --viva-no-auto-context  Disable automatic context pre-injection so both systems answer via ReAct tools only
+#   --reme-enable-dream     Enable auto_dream during ReMe LME runs (disabled by default to match ReMe's LME preset)
 ```
