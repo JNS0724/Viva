@@ -1,7 +1,7 @@
 /** Deterministic stratified LongMemEval cleaned-S sampler & date parser (aligned with ReMe run.py). */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import type { LmeItem, LmeSessionMessage } from './types.ts'
+import type { LmeItem, LmeSessionMessage, LmeSessionSampling } from './types.ts'
 
 export const LME_QUESTION_TYPES = [
   'single-session-user',
@@ -33,8 +33,13 @@ export function parseLmeDate(dateStr: string): { timestampMs: number, dateStr: s
   return { timestampMs, dateStr: isoDate, isoStr }
 }
 
-/** Sort sessions chronologically and drop sessions strictly after question_date (same as ReMe run.py). */
-export function sortAndFilterLmeSessions(item: LmeItem, maxSessions = 0): SortedLmeSession[] {
+/** Sort sessions chronologically and drop sessions strictly after question_date (same as ReMe run.py).
+ * Defaults to label-free 'recent' truncation when maxSessions > 0; 'answer-aware' requires explicit opt-in. */
+export function sortAndFilterLmeSessions(
+  item: LmeItem,
+  maxSessions = 0,
+  sampling: LmeSessionSampling = 'recent',
+): SortedLmeSession[] {
   const questionMs = item.question_date ? parseLmeDate(item.question_date).timestampMs : Number.POSITIVE_INFINITY
   const entries: SortedLmeSession[] = item.haystack_sessions.map((messages, originalIndex) => {
     const parsed = parseLmeDate(item.haystack_dates[originalIndex]!)
@@ -48,7 +53,11 @@ export function sortAndFilterLmeSessions(item: LmeItem, maxSessions = 0): Sorted
   entries.sort((a, b) => a.timestampMs - b.timestampMs || a.originalIndex - b.originalIndex)
   const filtered = entries.filter(entry => entry.timestampMs <= questionMs)
   if (maxSessions <= 0 || filtered.length <= maxSessions) return filtered
-  // If capped, preserve all answer_session_ids first, then fill with evenly spaced distractors in chronological order.
+  if (sampling === 'recent') {
+    // Label-free truncation: keep the latest maxSessions sessions chronologically without consulting answer_session_ids.
+    return filtered.slice(-maxSessions)
+  }
+  // Explicit opt-in answer-aware sampling: preserve answer_session_ids first, then fill with evenly spaced distractors.
   const answerSet = new Set(item.answer_session_ids)
   const mustKeep = filtered.filter(entry => answerSet.has(entry.sessionId))
   const distractors = filtered.filter(entry => !answerSet.has(entry.sessionId))

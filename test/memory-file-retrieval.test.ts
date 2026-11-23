@@ -716,3 +716,53 @@ test('nodeSearchAsync paginates chunk lexical candidates past disallowed/daily h
   // Final page after all verified candidates are exhausted must report partial: false even when disallowed candidates were filtered out.
   assert.equal(page2.partial, false, 'filtered/disallowed candidates must not keep nodeSearch partial: true once exhausted')
 })
+
+test('nodeSearchAsync scopes vectorCandidates to digests deduplicated per file and filters zero-match FTS fallback nodes', async t => {
+  const embedder: MemoryEmbedder = {
+    fingerprint: 'digest-dedupe-embedder',
+    dimensions: 2,
+    close() {},
+    async embedBatch(inputs) {
+      return inputs.map(item => {
+        if (item.kind === 'query') return new Float32Array([1, 0])
+        if (item.text.includes('daily-noise') || item.text.includes('big-digest-chunk')) return new Float32Array([1, 0])
+        if (item.text.includes('semantic-target-fact')) return new Float32Array([0.85, 0.52])
+        return new Float32Array([0, 1])
+      })
+    },
+  }
+  const dailies = Array.from({ length: 6 }, (_, i) =>
+    view(`daily-noise-${i}`, `daily-noise entry ${i}`, {
+      kind: 'daily', day: `2026-11-${String(10 + i).padStart(2, '0')}`,
+      path: `daily/2026-11-${String(10 + i).padStart(2, '0')}/n${i}.md`,
+    }))
+  const manyChunks = Array.from({ length: 8 }, (_, i) => `## Part ${i}\n${'big-digest-chunk '.repeat(120)}`).join('\n\n')
+  const bigDigest = view('big-digest', manyChunks, { path: 'digest/personal/big.md' })
+  const semanticTarget = view('semantic-target', 'Contains semantic-target-fact inside body.', {
+    path: 'digest/personal/target.md',
+    markdown: '---\nname: Target Heading\ndescription: Opaque summary\n---\nContains semantic-target-fact inside body.',
+  })
+  const zeroMatch = view('zero-match-digest', 'Unrelated text only.', {
+    path: 'digest/personal/unrelated.md',
+    markdown: '---\nname: Completely Unrelated\ndescription: Nothing relevant here\n---\nUnrelated text only.',
+  })
+  const { db, index, retrieval } = setup(t, [...dailies, bigDigest, semanticTarget, zeroMatch], embedder)
+
+  assert.equal(await retrieval.prepareVectors(), true)
+  // Direct vectorCandidates with digest+dedupeByFile limit=2 must return both digests (0 daily rows, 1 row per digest).
+  const vecPage = await index.vectorCandidates(
+    new Float32Array([1, 0]),
+    index.vectorState().space!,
+    { workspaces: [workspace], kind: 'digest', dedupeByFile: true },
+    2,
+  )
+  assert.ok(vecPage)
+  assert.equal(vecPage.rows.every(r => r.file.kind === 'digest'), true)
+  assert.deepEqual(vecPage.rows.map(r => r.file.id), ['big-digest', 'semantic-target'])
+
+  // Corrupt node FTS so nodeCandidates enters fallback mode; unrelated zero-match digests must be filtered out.
+  db.exec('DROP TABLE memory_file_index_node_fts')
+  const fallbackRes = retrieval.nodeSearch({ query: 'Heading', limit: 5, allows })
+  assert.deepEqual(fallbackRes.nodes.map(n => n.id), ['semantic-target'])
+  assert.equal(fallbackRes.nodes.some(n => n.id === 'zero-match-digest'), false)
+})

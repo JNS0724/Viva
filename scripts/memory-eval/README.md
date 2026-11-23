@@ -29,9 +29,12 @@ DEEPSEEK_API_KEY=... npm run memory:eval -- --suite=lme \
   --reme-repo=/path/to/ReMe
 
 # Optional flags:
-#   --viva-only             Run only Viva (skip ReMe bridge and local embedding proxy)
-#   --viva-no-auto-context  Disable automatic context pre-injection so both systems answer via ReAct tools only
-#   --reme-enable-dream     Enable auto_dream during ReMe LME runs (disabled by default to match ReMe's LME preset)
+#   --viva-only                         Run only Viva (skip ReMe bridge and local embedding proxy)
+#   --viva-no-auto-context              Disable automatic context pre-injection so both systems answer via ReAct tools only
+#   --reme-enable-dream                 Enable auto_dream during ReMe LME runs (disabled by default to match ReMe's LME preset)
+#   --lme-session-sampling=recent|answer-aware
+#                                       How to truncate histories when --lme-max-sessions > 0 (default: label-free "recent";
+#                                       "answer-aware" preserves answer_session_ids + evenly spaced distractors for controlled-length experiments)
 ```
 
 ## External Datasets & Licensing

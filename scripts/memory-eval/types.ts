@@ -20,7 +20,8 @@ export interface OfflineModeSummary {
   mode: string
   dataset: 'evaluation' | 'validation'
   indexMs: number
-  vectorPrepMs: number
+  /** Null when the system bundles vector preparation inside indexMs and cannot measure them separately. */
+  vectorPrepMs: number | null
   answerCount: number
   hit1: number
   hit5: number
@@ -151,6 +152,8 @@ export interface LmeCaseSystemResult {
   error?: string
 }
 
+export type LmeSessionSampling = 'recent' | 'answer-aware'
+
 export interface EvalManifest {
   runId: string
   startedAt: string
@@ -161,4 +164,7 @@ export interface EvalManifest {
   llmModel: string
   embeddingModel: string
   suites: string[]
+  vivaAutoContext?: boolean
+  remeEnableDream?: boolean
+  lmeSessionSampling?: LmeSessionSampling
 }

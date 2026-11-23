@@ -711,16 +711,19 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
         enable_dream=enable_dream,
         index_sessions=bool(payload.get("indexSessions", True)),
     )
-    app = Application(**cfg)
-    await app.start()
     telemetry = _empty_telemetry()
     phase_ref = ["ingest"]
-    _install_llm_meter(app, telemetry, phase_ref)
     dream_triggers = 0
     answer = ""
     err = None
     sessions = item["sessions"]
+    app = None
+    started = False
     try:
+        app = Application(**cfg)
+        await app.start()
+        started = True
+        _install_llm_meter(app, telemetry, phase_ref)
         prev_date = None
         dreamed_dates: set[str] = set()
         for sess in sessions:
@@ -779,7 +782,11 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
         err = f"{type(exc).__name__}: {exc}"
     finally:
         stats = _workspace_stats(ws)
-        await app.close()
+        if app is not None and started:
+            try:
+                await app.close()
+            except Exception:
+                pass
 
     return {
         "questionId": qid,

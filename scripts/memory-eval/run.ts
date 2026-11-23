@@ -38,6 +38,7 @@ import type {
   EvalManifest,
   LiveTelemetry,
   LmeCaseSystemResult,
+  LmeSessionSampling,
   OfflineModeSummary,
   ScaleBenchmarkResult,
   WorkspaceStats,
@@ -76,7 +77,7 @@ export function renderSummaryMarkdown(report: {
   offline?: OfflineModeSummary[]
   scale?: ScaleBenchmarkResult[]
   chinese?: ChineseCaseSystemResult[]
-  lme?: { sliceSha256: string, perType: number, maxSessions: number, results: LmeCaseSystemResult[] }
+  lme?: { sliceSha256: string, perType: number, maxSessions: number, sessionSampling?: LmeSessionSampling, results: LmeCaseSystemResult[] }
 }): string {
   const lines: string[] = []
   lines.push('# Viva vs. ReMe 记忆系统摸底测评报告')
@@ -86,6 +87,15 @@ export function renderSummaryMarkdown(report: {
   lines.push(`- **ReMe Commit / Version**: \`${report.manifest.remeCommit}\` (\`${report.manifest.remeVersion}\`)`)
   lines.push(`- **统一 LLM 模型**: \`${report.manifest.llmModel}\``)
   lines.push(`- **本地 Embedding 模型**: \`${report.manifest.embeddingModel}\``)
+  if (report.manifest.vivaAutoContext !== undefined) {
+    lines.push(`- **Viva Auto Context**: \`${report.manifest.vivaAutoContext}\``)
+  }
+  if (report.manifest.remeEnableDream !== undefined) {
+    lines.push(`- **ReMe LME Dream**: \`${report.manifest.remeEnableDream}\``)
+  }
+  if (report.manifest.lmeSessionSampling !== undefined) {
+    lines.push(`- **LME 会话截取策略**: \`${report.manifest.lmeSessionSampling}\``)
+  }
   lines.push(`- **执行时间**: ${report.manifest.startedAt} → ${report.manifest.finishedAt ?? ''}`)
   lines.push('')
 
@@ -97,13 +107,18 @@ export function renderSummaryMarkdown(report: {
     for (const row of report.offline) {
       const g = (k: string) => row.groups[k] ? `${row.groups[k]!.hit5}/${row.groups[k]!.count}` : '-'
       const ns = row.nodeSearchCount ? `${row.nodeSearchHit5}/${row.nodeSearchCount}` : '-'
+      const vecPrep = row.vectorPrepMs === null ? 'N/A (含于索引)' : String(row.vectorPrepMs)
       lines.push(
         `| ${row.dataset} | \`${row.mode}\` | ${row.hit1}/${row.answerCount} (${(row.hit1 / row.answerCount * 100).toFixed(1)}%) | ` +
         `${row.hit5}/${row.answerCount} (${(row.hit5 / row.answerCount * 100).toFixed(1)}%) | ${row.mrr5.toFixed(3)} | ` +
         `${g('chinese-paraphrase')} | ${g('cross-language')} | ${g('tail-structure')} | ${g('condition-time')} | ` +
         `${row.ambiguousAllEvidenceHit5}/${row.ambiguousCount} | ${row.absentReturnedAny}/${row.absentCount} | ${ns} | ` +
-        `${row.indexMs} | ${row.vectorPrepMs} | ${row.p50Ms} | ${row.p95Ms} | ${row.safetyLeaks} |`,
+        `${row.indexMs} | ${vecPrep} | ${row.p50Ms} | ${row.p95Ms} | ${row.safetyLeaks} |`,
       )
+    }
+    if (report.offline.some(row => row.vectorPrepMs === null)) {
+      lines.push('')
+      lines.push('> 注：`N/A (含于索引)` 表示该系统的 `index_update` 同时执行全文索引与向量准备，无法独立拆分计时。')
     }
     lines.push('')
   }
@@ -187,7 +202,12 @@ export function renderSummaryMarkdown(report: {
   }
 
   if (report.lme?.results.length) {
-    lines.push(`## 4. M1 LongMemEval cleaned-s 真实模型摸底（冻结分层切片 SHA256 \`${report.lme.sliceSha256.slice(0, 12)}\`）`)
+    const samplingLabel = report.lme.maxSessions > 0 ? `, sampling=${report.lme.sessionSampling ?? 'recent'}` : ''
+    lines.push(`## 4. M1 LongMemEval cleaned-s 真实模型摸底（冻结分层切片 SHA256 \`${report.lme.sliceSha256.slice(0, 12)}\`, maxSessions=${report.lme.maxSessions}${samplingLabel}）`)
+    if (report.lme.maxSessions > 0 && report.lme.sessionSampling === 'answer-aware') {
+      lines.push('')
+      lines.push('> 注意：本次运行显式启用了 `answer-aware` 截断（按答案会话标签保底并均匀补齐干扰会话），属于受控上下文长度实验，不代表无标签全历史检索分数。')
+    }
     lines.push('')
     const modes = [...new Set(report.lme.results.map(r => r.mode))]
     lines.push('| 题目类别 | ' + modes.map(m => `\`${m}\``).join(' | ') + ' |')
@@ -274,6 +294,11 @@ async function main() {
   const vivaOnly = process.argv.includes('--viva-only')
   const vivaIncludeAutoContext = !process.argv.includes('--viva-no-auto-context')
   const remeEnableDream = process.argv.includes('--reme-enable-dream')
+  const rawSampling = argValue('--lme-session-sampling=') ?? 'recent'
+  if (rawSampling !== 'recent' && rawSampling !== 'answer-aware') {
+    throw new Error(`Invalid --lme-session-sampling value (expected "recent" or "answer-aware"): ${rawSampling}`)
+  }
+  const lmeSessionSampling: LmeSessionSampling = rawSampling
   const runId = new Date().toISOString().replaceAll(/[:.]/gu, '-')
   const outputDir = path.resolve(argValue('--output=') ?? path.join(ROOT, 'smoke', `memory-eval-${runId}`))
   mkdirSync(outputDir, { recursive: true })
@@ -300,6 +325,9 @@ async function main() {
     llmModel: DEEPSEEK_DEFAULT.model,
     embeddingModel: hasEmbedding ? 'granite-embedding-97m-multilingual-r2-ONNX (q8, 384d)' : 'disabled',
     suites,
+    vivaAutoContext: vivaIncludeAutoContext,
+    remeEnableDream,
+    ...(suites.includes('lme') ? { lmeSessionSampling } : {}),
   }
 
   let embeddingServer: LocalEmbeddingServer | null = null
@@ -312,7 +340,7 @@ async function main() {
     offline?: OfflineModeSummary[]
     scale?: ScaleBenchmarkResult[]
     chinese?: ChineseCaseSystemResult[]
-    lme?: { sliceSha256: string, perType: number, maxSessions: number, results: LmeCaseSystemResult[] }
+    lme?: { sliceSha256: string, perType: number, maxSessions: number, sessionSampling?: LmeSessionSampling, results: LmeCaseSystemResult[] }
   } = { manifest }
 
   const save = () => {
@@ -414,7 +442,7 @@ async function main() {
             mode: 'reme-hybrid-granite',
             dataset,
             indexMs: remeHybrid.indexMs,
-            vectorPrepMs: 0,
+            vectorPrepMs: null,
             nodeHits: remeHybrid.nodeQueries.map(nq => ({
               id: nq.id,
               expectedIds: nodeExpected.get(nq.id) ?? [],
@@ -552,19 +580,19 @@ async function main() {
         question: item.question,
         groundTruth: String(item.answer),
         queryTimeIso: item.question_date ? parseLmeDate(item.question_date).isoStr : '',
-        sessions: sortAndFilterLmeSessions(item, lmeMaxSessions),
+        sessions: sortAndFilterLmeSessions(item, lmeMaxSessions, lmeSessionSampling),
       }))
-      report.lme = { sliceSha256, perType: lmePerType, maxSessions: lmeMaxSessions, results: [] }
+      report.lme = { sliceSha256, perType: lmePerType, maxSessions: lmeMaxSessions, sessionSampling: lmeSessionSampling, results: [] }
       save()
 
-      process.stderr.write(`[eval][lme] running Viva (${tasks.length} items, slice=${sliceSha256.slice(0, 12)}, autoCtx=${vivaIncludeAutoContext})...\n`)
+      process.stderr.write(`[eval][lme] running Viva (${tasks.length} items, slice=${sliceSha256.slice(0, 12)}, autoCtx=${vivaIncludeAutoContext}, sampling=${lmeSessionSampling})...\n`)
       const vivaLme = await runVivaLmeEval(llmCtx, tasks, {
         workDir: path.join(outputDir, 'viva-work', 'lme'),
         modelRoot: hasEmbedding ? modelRoot : undefined,
         runtimeRoot: hasEmbedding ? runtimeRoot : undefined,
         modeLabel: hasEmbedding
           ? (vivaIncludeAutoContext ? 'viva-hybrid-granite' : 'viva-hybrid-react-only')
-          : 'viva-bm25',
+          : (vivaIncludeAutoContext ? 'viva-bm25' : 'viva-bm25-react-only'),
         enableDream: true,
         includeAutoContext: vivaIncludeAutoContext,
         concurrency,
@@ -619,7 +647,7 @@ async function main() {
               })
           report.lme.results.push({
             system: 'reme',
-            mode: embeddingServer ? 'reme-lme-granite' : 'reme-lme-bm25',
+            mode: (embeddingServer ? 'reme-lme-granite' : 'reme-lme-bm25') + (remeEnableDream ? '-dream' : ''),
             questionId: task.questionId,
             questionType: task.questionType,
             isAbstention: task.isAbstention,

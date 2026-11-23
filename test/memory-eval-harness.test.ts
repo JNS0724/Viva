@@ -29,6 +29,21 @@ describe('memory-eval harness', () => {
     }
     const sorted = sortAndFilterLmeSessions(item)
     assert.deepEqual(sorted.map(s => s.sessionId), ['s1', 's2'])
+
+    // Default maxSessions truncation is label-free ('recent'), ignoring answer_session_ids; 'answer-aware' is explicit opt-in.
+    const multi: LmeItem = {
+      ...item,
+      answer_session_ids: ['s1'],
+      haystack_dates: ['2023/05/10 (Wed) 08:00', '2023/05/12 (Fri) 08:00', '2023/05/19 (Fri) 10:00'],
+      haystack_session_ids: ['s1', 's2', 's3'],
+      haystack_sessions: [
+        [{ role: 'user', content: 'old answer' }],
+        [{ role: 'user', content: 'mid distractor' }],
+        [{ role: 'user', content: 'latest distractor' }],
+      ],
+    }
+    assert.deepEqual(sortAndFilterLmeSessions(multi, 2).map(s => s.sessionId), ['s2', 's3'])
+    assert.deepEqual(sortAndFilterLmeSessions(multi, 2, 'answer-aware').map(s => s.sessionId), ['s1', 's2'])
   })
 
   it('produces deterministic stratified slices with abstention coverage across all 6 categories', () => {
@@ -146,8 +161,11 @@ describe('memory-eval harness', () => {
         llmModel: 'deepseek-flash',
         embeddingModel: 'granite-97m',
         suites: ['offline', 'chinese'],
+        vivaAutoContext: false,
+        remeEnableDream: true,
+        lmeSessionSampling: 'recent',
       },
-      offline: [perfect],
+      offline: [perfect, { ...perfect, system: 'reme', mode: 'reme-hybrid-granite', vectorPrepMs: null }],
       chinese: [{
         system: 'viva',
         mode: 'viva-hybrid-granite',
@@ -174,5 +192,8 @@ describe('memory-eval harness', () => {
     // dated-location-correction has 2 expected phases; completing only phase 1 must report 1/2 (50.0%) and surface phase 2 error.
     assert.match(md, /1\/2 \(50\.0%\)/)
     assert.match(md, /dated-location-correction\/explicit-relocation.*ERR \(phase-2 timeout\)/)
+    assert.match(md, /N\/A \(含于索引\)/)
+    assert.match(md, /Viva Auto Context.*false/)
+    assert.match(md, /ReMe LME Dream.*true/)
   })
 })

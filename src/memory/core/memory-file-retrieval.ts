@@ -576,12 +576,25 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid-memory-file-search')
     const limit = checkedLimit(input.limit)
     const need = offset + limit
-    const scope = searchScope(input)
+    const scope: MemoryFileQueryScope = { ...searchScope(input), kind: 'digest', dedupeByFile: true }
     const query = memoryFileLexicalQuery(input.query)
     const probe = candidateProbe(Math.min(defaults.searchMaxCandidates, Math.max(limit * defaults.searchCandidateMultiplier, need * 2)))
     const candidates = index.nodeCandidates(query, scope, probe)
     const chunkLexical = index.lexicalCandidates(query, scope, probe)
     return { query, limit, offset, need, scope, probe, candidates, chunkLexical }
+  }
+  function filterFallbackTitleNodes(query: string, nodes: readonly MemoryFileNode[]): MemoryFileNode[] {
+    const terms = new Set(memorySearchTokens(query, false))
+    if (!terms.size) return []
+    return nodes
+      .map(node => {
+        const tokens = memorySearchTokens(`${node.name}\n${node.description}`, true)
+        const hits = [...new Set(tokens.filter(token => terms.has(token)))].length
+        return { node, hits }
+      })
+      .filter(entry => entry.hits > 0)
+      .sort((a, b) => b.hits - a.hits || a.node.path.localeCompare(b.node.path))
+      .map(entry => entry.node)
   }
   function dedupeDigestNodes(files: readonly MemoryFileIdentity[]): MemoryFileNode[] {
     const seen = new Set<string>()
@@ -638,8 +651,9 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     if (closed || input.signal?.aborted) return {nodes:[],files:[],sourceIds:[],partial:false}
     const { offset, need, candidates, chunkLexical } = plan ?? planNodeSearch(input)
     const checks = verifier(input.allows, undefined, batch)
+    const titleNodes = candidates.mode === 'fallback' ? filterFallbackTitleNodes(input.query, candidates.rows) : candidates.rows
     const chunkLexNodes = dedupeDigestNodes(chunkLexical.rows.map(hit => hit.file))
-    const ranked = rankHybridNodes(candidates.rows, chunkLexNodes, vectorNodes)
+    const ranked = rankHybridNodes(titleNodes, chunkLexNodes, vectorNodes)
     const verified: Array<{ file: MemoryFileNode, view: MemoryDocumentView, score: number }> = []
     let hasMoreVerified = false
     for (const item of ranked) {

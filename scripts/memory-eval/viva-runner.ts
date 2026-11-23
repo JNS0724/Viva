@@ -109,7 +109,7 @@ export function scoreOfflineQueries(
     mode: string
     dataset: 'evaluation' | 'validation'
     indexMs: number
-    vectorPrepMs: number
+    vectorPrepMs: number | null
     nodeHits?: Array<{ id: string, expectedIds: string[], returnedIds: string[] }>
   },
 ): OfflineModeSummary {
@@ -167,7 +167,7 @@ export function scoreOfflineQueries(
     mode: meta.mode,
     dataset: meta.dataset,
     indexMs: Number(meta.indexMs.toFixed(1)),
-    vectorPrepMs: Number(meta.vectorPrepMs.toFixed(1)),
+    vectorPrepMs: meta.vectorPrepMs === null ? null : Number(meta.vectorPrepMs.toFixed(1)),
     answerCount: answers.length,
     hit1: answers.filter(c => c.hit1).length,
     hit5: answers.filter(c => c.hit5).length,
@@ -651,26 +651,29 @@ export function checkPatterns(text: string, patterns: { allOf: readonly string[]
   return allOk && anyOk && noneOk
 }
 
-/** Wait for pending memory.note / memory.dream retries (e.g. transient API/JSON retry with 1-4s backoff). */
+/** Wait for pending memory.note / memory.dream retries (e.g. transient API/JSON retry with 1-4s backoff); throws if jobs remain unfinished. */
 async function drainVivaJobs(owner: ReturnType<typeof openMemoryOwner>, dbPath: string, kinds: readonly string[], maxPasses = 4) {
+  const inspectPending = (): Array<{ kind: string, due_at: number, attempts: number }> => {
+    const db = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const rows = db.prepare(`SELECT kind, due_at, attempts FROM effects WHERE kind IN (${kinds.map(() => '?').join(',')})`).all(...kinds) as Array<{ kind: string, due_at: number, attempts: number }>
+      const horizon = Date.now() + 15_000
+      return rows.filter(row => row.attempts > 0 || row.due_at <= horizon)
+    } finally { db.close() }
+  }
   await owner.runtime.wake()
   for (let pass = 0; pass < maxPasses; pass++) {
-    let nextDue = 0
-    try {
-      const db = new DatabaseSync(dbPath, { readOnly: true })
-      try {
-        const rows = db.prepare(`SELECT kind, due_at, attempts FROM effects WHERE kind IN (${kinds.map(() => '?').join(',')})`).all(...kinds) as Array<{ kind: string, due_at: number, attempts: number }>
-        for (const row of rows) {
-          if (row.attempts > 0 || row.due_at <= Date.now() + 15_000) {
-            if (!nextDue || row.due_at < nextDue) nextDue = row.due_at
-          }
-        }
-      } finally { db.close() }
-    } catch { return }
-    if (!nextDue) return
+    const pending = inspectPending()
+    if (!pending.length) return
+    const nextDue = Math.min(...pending.map(row => row.due_at))
     const waitMs = Math.max(0, Math.min(15_000, nextDue - Date.now() + 100))
     if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs))
     await owner.runtime.wake()
+  }
+  const remaining = inspectPending()
+  if (remaining.length) {
+    const summary = remaining.map(row => `${row.kind}(attempts=${row.attempts})`).join(', ')
+    throw new Error(`Viva background jobs still pending/retrying after ${maxPasses} drain passes: ${summary}`)
   }
 }
 
