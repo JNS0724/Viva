@@ -87,10 +87,10 @@ export type ConversationUpdate = VivaModelCallUpdate | VivaStreamUpdate
   | { [K in ToolKind]: { sessionUpdate: K, toolCallId: string, title?: string | null, kind?: string | null, status?: string | null, locations?: readonly { path: string, line?: number | null }[] | null, rawInput?: unknown, rawOutput?: unknown } }[ToolKind]
   | { sessionUpdate: 'usage_update', used: number, size: number }
   | { [K in Exclude<SessionUpdate['sessionUpdate'], ChunkKind | ToolKind | 'usage_update'>]: { sessionUpdate: K } }[Exclude<SessionUpdate['sessionUpdate'], ChunkKind | ToolKind | 'usage_update'>]
-export interface PermissionRequest { requestId: string, toolCall: { toolCallId?: string, title?: string | null, kind?: string | null, rawInput?: unknown }, options: readonly PermissionOption[] }
+export interface PermissionRequest { requestId: string, toolCall: { toolCallId?: string, title?: string | null, kind?: string | null, rawInput?: unknown }, options: readonly PermissionOption[], requestedAt?: number }
 export interface ForegroundWaits {
   permissions: readonly PermissionRequest[]
-  questions: readonly { questionId: string, questions: readonly QuestionItem[] }[]
+  questions: readonly { questionId: string, questions: readonly QuestionItem[], requestedAt?: number }[]
   secrets: readonly AskedSecret[]
 }
 

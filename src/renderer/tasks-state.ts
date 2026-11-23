@@ -308,8 +308,8 @@ export function taskActions() {
         if (!LIVE.has(status)) return settled({ ...task, ...markOf(mark), startedAt: endedAt ?? undefined, endedAt, status, view: savedView(messages) })
         const at = startedAt ?? 0
         const requests = decodeWaits(waits ?? {}) ?? { permissions: [], questions: [], secrets: [] }
-        const asked = requests.permissions.reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at }), withTools(savedView(messages, at), tools ?? [], at))
-        const view = requests.questions.reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at }), asked)
+        const asked = requests.permissions.reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at: wait.requestedAt ?? at }), withTools(savedView(messages, at), tools ?? [], at))
+        const view = requests.questions.reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at: wait.requestedAt ?? at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
       // The read is the baseline of each task it is given (task-actions.ts loadKept gives those the window cannot go on

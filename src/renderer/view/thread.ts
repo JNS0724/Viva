@@ -23,6 +23,7 @@ import { keepTyped, proposalCard } from './proposal-card.ts'
 import { proposalHost } from '../proposal-state.ts'
 import { waitingTaskPrompts } from '../tasks-state.ts'
 import { questionNeedsText } from '../question-state.ts'
+import { MAX_QUESTION_ANSWER_CHARS } from '../../shared/question-answer.ts'
 import type { AskedQuestion } from '../conversation-types.ts'
 import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
@@ -267,6 +268,7 @@ function questionCard(question: AskedQuestion, handlers: Handlers, { primary = t
             class: 'field',
             type: 'text',
             name: JSON.stringify([taskId, questionId, item.id]),
+            maxlength: MAX_QUESTION_ANSWER_CHARS,
             'aria-label': item.question,
             value: question.custom?.[item.id] ?? '',
             onInput: (event: Event) => {

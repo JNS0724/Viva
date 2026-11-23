@@ -190,7 +190,7 @@ function jumpToCard(taskId?: string) {
       ? [...dom.thread.querySelectorAll<HTMLElement>(':scope > .confirm[data-task]')].find(card => card.dataset.task === taskId)
       : dom.thread.querySelector<HTMLElement>(':scope > .confirm:not([data-task]):not(.fu-card)')
     if (!card) return
-    const field = card.querySelector<HTMLElement>('.confirm-actions button:not(:disabled), input:not(:disabled)') ?? dom.input
+    const field = card.querySelector<HTMLElement>('.ask-option:not(:disabled), input:not(:disabled), .confirm-actions button:not(:disabled)') ?? dom.input
     return () => { field.focus({ preventScroll: true }); card.scrollIntoView({ block: 'center' }) }
   })
 }

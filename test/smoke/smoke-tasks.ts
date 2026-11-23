@@ -284,7 +284,7 @@ async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expe
   await capture(win, outDir, 'tasks-question')
   await run(win, escape)
   await run(win, `document.querySelector('#island .isl-head')?.click()`)
-  await until(win, `(${backgroundCard})?.contains(document.activeElement)`, 'the capsule focuses the task question')
+  await until(win, `(${backgroundCard})?.contains(document.activeElement) && document.activeElement.matches('.ask-option')`, 'the capsule focuses the first available choice')
   await run(win, `[...(${backgroundCard}).querySelectorAll('.ask-option')].find(el => el.textContent === '上海').click()`)
   await run(win, escape)
   const report = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'done' && card.text })()`, "the task's report after the answer")

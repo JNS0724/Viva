@@ -12,7 +12,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'update': return { type: 'acp_update', update: event.update, at }
       case 'turn_started': return { type: 'agent_turn_started', by: event.by ?? null, turnId: event.turnId, at }
       case 'permission': return event.taskId !== undefined
-        ? { type: 'task_permission_request', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, requestId: event.requestId, toolCall: event.toolCall, options: event.options, at }
+        ? { type: 'task_permission_request', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, requestId: event.requestId, toolCall: event.toolCall, options: event.options, at: event.requestedAt ?? at }
         : { type: 'permission_request', requestId: event.requestId, toolCall: event.toolCall, options: event.options, at }
       case 'task_update': return { type: 'task_update', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, update: event.update, at }
       case 'task_closed': return { type: 'task_closed', taskId: event.taskId }
@@ -22,7 +22,7 @@ export function createEventActions({ now = Date.now }: { now?: () => number } = 
       case 'prompt_persisted': return { type: 'prompt_persisted', sourceId: event.sourceId }
       case 'reports_removed': return { type: 'reports_removed', reportIds: event.reportIds }
       case 'task_end': return { type: 'task_end', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, stopReason: event.stopReason, message: event.message ?? null, at }
-      case 'task_question': return { type: 'task_question', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, questions: event.questions, at }
+      case 'task_question': return { type: 'task_question', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, questions: event.questions, at: event.requestedAt ?? at }
       case 'task_question_closed': return { type: 'task_question_closed', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, questionId: event.questionId, at }
       case 'task_steered': return { type: 'task_steer', taskId: event.taskId, runId: event.runId, seq: event.taskSeq, text: event.text, at }
       case 'question': return { type: 'question_request', questionId: event.questionId, questions: event.questions, at }

@@ -3,7 +3,7 @@ import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, setupProblem, traceTail, truncate } from './selectors.ts'
 import { questionNeedsText } from './question-state.ts'
-import { liveTasks } from './tasks-state.ts'
+import { liveTasks, waitingTaskPrompts } from './tasks-state.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 
 /**
@@ -131,8 +131,9 @@ function afterTurn(state: State, base: IslandBase, background: IslandBackground 
 function backgroundOf(state: State): IslandBackground | null {
   const live: BackgroundTask[] = liveTasks(state)
   if (!live.length) return null
-  const items: IslandTask[] = live
-    .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
+  const pending = waitingTaskPrompts(state)
+  const present = new Set(pending.map(task => task.id))
+  const items: IslandTask[] = [...pending, ...live.filter(task => !present.has(task.id))]
     .map((task) => ({
       id: task.id, title: task.title, status: task.status, now: task.now, startedAt: task.startedAt,
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),
