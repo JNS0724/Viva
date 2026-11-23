@@ -689,7 +689,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         else if (!run.controller.signal.aborted) {
           const output = await boundedQuery(input.query, defaults.automaticQueryTimeoutMs, input.signal, false)
           if (output?.[0] && !run.controller.signal.aborted) {
-            const vectorProbe = Math.min(512, Math.max(plan.probe, plan.need * 2))
+            const vectorProbe = Math.max(plan.probe, plan.need * 2)
             const page = await index.vectorCandidates(
               output[0], target, plan.scope, vectorProbe,
               () => !closed && !input.signal?.aborted,
@@ -706,6 +706,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     }
     const until = performance.now() + defaults.fileVerificationBudgetMs
     const size = plan.probe
+    const refillCap = Math.max(512, plan.need * 2)
     if (batch) {
       const allFiles = [...plan.candidates.rows, ...dedupeDigestNodes(plan.chunkLexical.rows.map(hit => hit.file)), ...vectorNodes]
       await loadFiles(batch, allFiles, defaults.fileVerificationBudgetMs, input.signal)
@@ -716,18 +717,18 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     while (
       !closed && !input.signal?.aborted
       && result.nodes.length < plan.limit
-      && ((plan.candidates.incomplete && nodeOffset < 512) || (plan.chunkLexical.incomplete && chunkOffset < 512))
+      && ((plan.candidates.incomplete && nodeOffset < refillCap) || (plan.chunkLexical.incomplete && chunkOffset < refillCap))
       && performance.now() < until
     ) {
       const newlyLoaded: MemoryFileNode[] = []
-      if (plan.candidates.incomplete && nodeOffset < 512) {
+      if (plan.candidates.incomplete && nodeOffset < refillCap) {
         const page = index.nodeCandidates(plan.query, plan.scope, size, nodeOffset)
         nodeOffset += size
         plan.candidates.rows.push(...page.rows)
         plan.candidates.incomplete = page.incomplete
         newlyLoaded.push(...page.rows)
       }
-      if (plan.chunkLexical.incomplete && chunkOffset < 512) {
+      if (plan.chunkLexical.incomplete && chunkOffset < refillCap) {
         const page = index.lexicalCandidates(plan.query, plan.scope, size, chunkOffset)
         chunkOffset += size
         plan.chunkLexical.rows.push(...page.rows)

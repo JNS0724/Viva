@@ -218,6 +218,13 @@ describe('memory-eval harness', () => {
             workspace: { dailyFiles: 1, digestFiles: 1, sessionFiles: 0, totalBytes: 100, filePaths: [] },
             telemetry: { llmCalls: 1, inputTokens: 10, outputTokens: 5, ingestMs: 1, dreamMs: 1, answerMs: 1, toolCalls: 1, toolNames: {} },
           },
+          {
+            system: 'viva', mode: 'viva-hybrid-react-only', questionId: 'q-jerr', questionType: 'knowledge-update',
+            isAbstention: false, question: 'q3', groundTruth: 'a3', answer: 'valid answer', verdict: 'error', judgeReason: 'judge timeout',
+            sessionsIngested: 2, dreamTriggers: 1,
+            workspace: { dailyFiles: 1, digestFiles: 1, sessionFiles: 0, totalBytes: 100, filePaths: [] },
+            telemetry: { llmCalls: 1, inputTokens: 10, outputTokens: 5, ingestMs: 1, dreamMs: 1, answerMs: 1, toolCalls: 1, toolNames: {} },
+          },
         ],
       },
     })
@@ -231,6 +238,8 @@ describe('memory-eval harness', () => {
     assert.match(md, /ReMe LME Dream.*true/)
     assert.match(md, /OVERALL \(完整证据\).*\*\*1\/1 \(100\.0%\)\*\*/)
     assert.match(md, /证据被截断跳过.*1 题/)
+    assert.match(md, /裁判错误排除.*1 题/)
     assert.match(md, /TRUNCATED: Information not found/)
+    assert.match(md, /JUDGE_ERR: valid answer/)
   })
 })

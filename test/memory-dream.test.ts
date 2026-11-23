@@ -1127,28 +1127,58 @@ test('Dream existingDigests catalog enforces full policy.read checks and exclude
   assert.ok(h.documents.read(incoming.note.workspace, okPath)!.markdown.includes('Jasmine tea.'))
 })
 
-test('Dream node_search stays partial: true if hybrid pagination hits the 512 ceiling while backend still reports partial', async t => {
+test('Dream node_search continues past offset 512 and deduplicates hybrid/lexical hits without skipping or repeating', async t => {
+  const seenOffsets: number[] = []
+  let firstId = ''
   const h = harness(t, {
-    searchDigestNodes: async () => ({ nodes: [], partial: true }),
+    searchDigestNodes: async (_workspace, query, limit, offset) => {
+      if (query === 'past-512') {
+        seenOffsets.push(offset)
+        return { nodes: [], partial: offset + limit <= 550 }
+      }
+      // On query 'shared-term', page 0 returns firstId (which also matches lexically) and page 1 finishes empty.
+      if (offset === 0) return { nodes: [{ id: firstId, path: 'digest/personal/shared-a.md', score: 0.9 }], partial: true }
+      return { nodes: [], partial: false }
+    },
   })
-  const seed = h.add('Seed note.', 'Seed')
+  const s1 = h.add('First shared note.', 'S1')
+  const s2 = h.add('Second shared note.', 'S2')
+  const recA = h.documents.commit({
+    operationId: randomUUID(), workspace: s1.note.workspace, path: 'digest/personal/shared-a.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Shared Term A', description: 'shared-term alpha' }, body: 'Alpha.' }),
+    sources: h.notes.references(s1.key), reads: [],
+  })
+  firstId = recA.documentId
   h.documents.commit({
-    operationId: randomUUID(), workspace: seed.note.workspace, path: 'digest/personal/existing.md', action: 'CREATE', expectedRevision: null,
-    markdown: formatMemoryDocument({ metadata: { name: 'Existing', description: 'Unrelated' }, body: 'Body.' }),
-    sources: h.notes.references(seed.key), reads: [],
+    operationId: randomUUID(), workspace: s2.note.workspace, path: 'digest/personal/shared-b.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Shared Term B', description: 'shared-term beta' }, body: 'Beta.' }),
+    sources: h.notes.references(s2.key), reads: [],
   })
   h.add('Incoming note.', 'Incoming')
-  let lastPartial: boolean | undefined
+
+  const visitedShared: string[] = []
+  let completedPast512 = false
   h.setModel(async request => {
-    // 11 pages × limit 50 = 550 > 512 ceiling; final page must STILL report partial: true instead of silently completing.
-    for (let i = 0; i < 11; i++) {
-      const res = await request.tools!.executeTool({ callId: `s${i}`, name: 'node_search', input: { query: 'never-ends', limit: 50 } })
+    // 1. Pagination past offset 512 keeps advancing until backend finishes (partial=false) so CREATE is never deadlocked.
+    for (let i = 0; i < 12; i++) {
+      const res = await request.tools!.executeTool({ callId: `c${i}`, name: 'node_search', input: { query: 'past-512', limit: 50 } })
       assert.equal(res.state, 'completed')
       const parsed = JSON.parse(res.content!) as { partial?: boolean } | unknown[]
-      lastPartial = Array.isArray(parsed) ? false : Boolean(parsed.partial)
+      if (Array.isArray(parsed)) { completedPast512 = true; break }
+    }
+    // 2. Mixed hybrid + lexical paging with limit=1 must return shared-a then shared-b exactly once with no duplicates or skips.
+    for (let i = 0; i < 4; i++) {
+      const res = await request.tools!.executeTool({ callId: `m${i}`, name: 'node_search', input: { query: 'shared-term', limit: 1 } })
+      assert.equal(res.state, 'completed')
+      const parsed = JSON.parse(res.content!) as { partial?: boolean, nodes?: Array<{ path: string }> } | Array<{ path: string }>
+      const rows = Array.isArray(parsed) ? parsed : (parsed.nodes ?? [])
+      visitedShared.push(...rows.map(r => r.path))
+      if (Array.isArray(parsed)) break
     }
     return JSON.stringify({ operations: [] })
   })
   await h.run()
-  assert.equal(lastPartial, true)
+  assert.equal(completedPast512, true)
+  assert.ok(seenOffsets.some(offset => offset > 512), `expected pagination to advance past 512, saw ${JSON.stringify(seenOffsets)}`)
+  assert.deepEqual(visitedShared, ['digest/personal/shared-a.md', 'digest/personal/shared-b.md'])
 })

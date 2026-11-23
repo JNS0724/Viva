@@ -155,13 +155,15 @@ export function renderSummaryMarkdown(report: {
       expectedByCase.set(cid, phaseIds)
     }
     const totalExpectedPhases = [...expectedByCase.values()].reduce((sum, list) => sum + list.length, 0)
-    lines.push('| 系统 / 模式 | 阶段通过率 (Judge) | 必要模式命中 | 禁止违规 | 跨项目/跨范围泄漏 | Daily / Digest | 总耗时(s) | HTTP LLM 调用 | Input Tokens (Cache命中) | Output Tokens |')
-    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+    lines.push('| 系统 / 模式 | 阶段通过率 (Judge) | 裁判错误 | 必要模式命中 | 禁止违规 | 跨项目/跨范围泄漏 | Daily / Digest | 总耗时(s) | HTTP LLM 调用 | Input Tokens (Cache命中) | Output Tokens |')
+    lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for (const mode of modes) {
       const items = report.chinese.filter(r => r.mode === mode)
       const phases = items.flatMap(i => i.phases)
       const yes = phases.filter(p => p.judgeVerdict === 'yes').length
-      const denominator = Math.max(totalExpectedPhases, phases.length, 1)
+      const judgeErrors = phases.filter(p => p.judgeVerdict === 'error').length
+      const denominator = Math.max(totalExpectedPhases, phases.length) - judgeErrors
+      const passRate = denominator > 0 ? `${yes}/${denominator} (${(yes / denominator * 100).toFixed(1)}%)` : '-'
       const patHit = phases.reduce((s, p) => s + p.patternHits, 0)
       const patTot = phases.reduce((s, p) => s + p.patternTotal, 0)
       const forb = phases.reduce((s, p) => s + p.forbiddenHits, 0)
@@ -175,7 +177,7 @@ export function renderSummaryMarkdown(report: {
       const cacheTok = items.reduce((s, i) => s + (i.telemetry.cacheReadTokens ?? 0), 0)
       const outTok = items.reduce((s, i) => s + i.telemetry.outputTokens, 0)
       const cachePct = inTok > 0 ? `${(cacheTok / inTok * 100).toFixed(0)}%` : '-'
-      lines.push(`| \`${mode}\` | ${yes}/${denominator} (${(yes / denominator * 100).toFixed(1)}%) | ${patHit}/${patTot} | ${forb} | ${hasIso ? leaks : 'N/A (无原生项目隔离)'} | ${daily} / ${digest} | ${totalS.toFixed(1)} | ${calls} | ${inTok.toLocaleString()} (${cachePct}) | ${outTok.toLocaleString()} |`)
+      lines.push(`| \`${mode}\` | ${passRate} | ${judgeErrors} | ${patHit}/${patTot} | ${forb} | ${hasIso ? leaks : 'N/A (无原生项目隔离)'} | ${daily} / ${digest} | ${totalS.toFixed(1)} | ${calls} | ${inTok.toLocaleString()} (${cachePct}) | ${outTok.toLocaleString()} |`)
     }
     lines.push('')
     lines.push('### 中文语义逐题明细')
@@ -208,10 +210,16 @@ export function renderSummaryMarkdown(report: {
       lines.push('')
       lines.push('> 注意：本次运行显式启用了 `answer-aware` 截断（按答案会话标签保底并均匀补齐干扰会话），属于受控上下文长度实验，不代表无标签全历史检索分数。')
     }
+    const isJudgeError = (r: LmeCaseSystemResult) => r.verdict === 'error' && !r.error
     const hasTruncated = report.lme.results.some(r => r.evidenceTruncated)
+    const hasJudgeErrors = report.lme.results.some(isJudgeError)
     if (hasTruncated) {
       lines.push('')
       lines.push('> 注意：以下准确率仅统计保留了全部答案会话的**完整证据样本**；被 `recent` 截断丢弃答案会话的题目已从准确率分母中排除并单独列示。')
+    }
+    if (hasJudgeErrors) {
+      lines.push('')
+      lines.push('> 注意：裁判请求失败/超时的题目已从准确率分母中排除，并在「裁判错误排除」及错误列中单独统计。')
     }
     lines.push('')
     const modes = [...new Set(report.lme.results.map(r => r.mode))]
@@ -219,14 +227,14 @@ export function renderSummaryMarkdown(report: {
     lines.push('| --- | ' + modes.map(() => '---:').join(' | ') + ' |')
     for (const type of LME_QUESTION_TYPES) {
       const cols = modes.map(m => {
-        const sub = report.lme!.results.filter(r => r.mode === m && r.questionType === type && !r.evidenceTruncated)
+        const sub = report.lme!.results.filter(r => r.mode === m && r.questionType === type && !r.evidenceTruncated && !isJudgeError(r))
         const yes = sub.filter(r => r.verdict === 'yes').length
         return sub.length ? `${yes}/${sub.length} (${(yes / sub.length * 100).toFixed(0)}%)` : '-'
       })
       lines.push(`| ${type} | ${cols.join(' | ')} |`)
     }
     const overallCols = modes.map(m => {
-      const sub = report.lme!.results.filter(r => r.mode === m && !r.evidenceTruncated)
+      const sub = report.lme!.results.filter(r => r.mode === m && !r.evidenceTruncated && !isJudgeError(r))
       const yes = sub.filter(r => r.verdict === 'yes').length
       return sub.length ? `**${yes}/${sub.length} (${(yes / sub.length * 100).toFixed(1)}%)**` : '-'
     })
@@ -238,10 +246,17 @@ export function renderSummaryMarkdown(report: {
       })
       lines.push(`| 证据被截断跳过 | ${truncCols.join(' | ')} |`)
     }
+    if (hasJudgeErrors) {
+      const judgeErrCols = modes.map(m => {
+        const count = report.lme!.results.filter(r => r.mode === m && !r.evidenceTruncated && isJudgeError(r)).length
+        return `${count} 题`
+      })
+      lines.push(`| 裁判错误排除 | ${judgeErrCols.join(' | ')} |`)
+    }
     lines.push('')
     lines.push('### 效率、Token 成本与工作区产出对比（单题均值）')
     lines.push('')
-    lines.push('| 系统 / 模式 | Ingest(s) | Dream(s) | Answer(s) | HTTP 调用(Ing/Drm/Ans) | Input Tokens (Cache命中) | Output Tokens | 工具调用 | Daily / Digest | 错误数 |')
+    lines.push('| 系统 / 模式 | Ingest(s) | Dream(s) | Answer(s) | HTTP 调用(Ing/Drm/Ans) | Input Tokens (Cache命中) | Output Tokens | 工具调用 | Daily / Digest | 错误数(系统/裁判) |')
     lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for (const m of modes) {
       const sub = report.lme.results.filter(r => r.mode === m)
@@ -255,11 +270,13 @@ export function renderSummaryMarkdown(report: {
       const drmCalls = avg(r => r.telemetry.phaseTokens?.dream.calls ?? 0)
       const ansCalls = avg(r => r.telemetry.phaseTokens?.answer.calls ?? 0)
       const callsStr = `${avg(r => r.telemetry.llmCalls).toFixed(1)} (${ingCalls.toFixed(1)}/${drmCalls.toFixed(1)}/${ansCalls.toFixed(1)})`
+      const sysErrors = sub.filter(r => Boolean(r.error)).length
+      const judgeErrors = sub.filter(isJudgeError).length
       lines.push(
         `| \`${m}\` | ${(avg(r => r.telemetry.ingestMs) / 1000).toFixed(1)} | ${(avg(r => r.telemetry.dreamMs) / 1000).toFixed(1)} | ` +
         `${(avg(r => r.telemetry.answerMs) / 1000).toFixed(1)} | ${callsStr} | ${Math.round(inAvg).toLocaleString()} (${cachePct}) | ` +
         `${Math.round(outAvg).toLocaleString()} | ${avg(r => r.telemetry.toolCalls).toFixed(2)} | ` +
-        `${avg(r => r.workspace.dailyFiles).toFixed(1)} / ${avg(r => r.workspace.digestFiles).toFixed(1)} | ${sub.filter(r => r.error).length} |`,
+        `${avg(r => r.workspace.dailyFiles).toFixed(1)} / ${avg(r => r.workspace.digestFiles).toFixed(1)} | ${sysErrors} / ${judgeErrors} |`,
       )
     }
     lines.push('')
@@ -273,7 +290,11 @@ export function renderSummaryMarkdown(report: {
       const cols = modes.map(m => {
         const hit = report.lme!.results.find(r => r.questionId === qid && r.mode === m)
         if (!hit) return '-'
-        const tag = hit.evidenceTruncated ? 'TRUNCATED' : hit.verdict === 'yes' ? 'PASS' : hit.verdict === 'no' ? 'FAIL' : 'ERR'
+        const tag = hit.evidenceTruncated
+          ? 'TRUNCATED'
+          : isJudgeError(hit)
+            ? 'JUDGE_ERR'
+            : hit.verdict === 'yes' ? 'PASS' : hit.verdict === 'no' ? 'FAIL' : 'ERR'
         return `${tag}: ${hit.answer.slice(0, 60).replaceAll('\n', ' ').replaceAll('|', '/')}`
       })
       lines.push(`| \`${qid}\` | ${ref.questionType} | ${ref.isAbstention ? 'Y' : ''} | ${cols.join(' | ')} |`)

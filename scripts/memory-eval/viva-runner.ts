@@ -928,8 +928,13 @@ export async function runVivaLmeEval(
       const telemetry = emptyTelemetry()
       let activePhase: EvalPhase = 'ingest'
       const meteredCtx = createMeteringLlmCtx(ctx, telemetry, () => activePhase)
+      // Inject a controlled replay clock so Dream and note jobs always align with session timestamps regardless of host date.
+      const firstSessionMs = task.sessions[0]?.timestampMs ?? Date.now()
+      let simOffsetMs = firstSessionMs - Date.now()
+      const simNow = () => Date.now() + simOffsetMs
       const owner = openMemoryOwner({
         root: path.join(dir, 'memory'),
+        now: simNow,
         dailyNotes: { noteInterval: 5, timezone: 'UTC', scanDays: 3650, dreamUnits: 5 },
         ...(opts.modelRoot && opts.runtimeRoot ? { embedding: { modelRoot: opts.modelRoot, runtimeRoot: opts.runtimeRoot } } : {}),
         route: () => ({ ...DEEPSEEK_DEFAULT }),
@@ -951,16 +956,18 @@ export async function runVivaLmeEval(
           if (prevDate !== null && prevDate !== sess.dateStr) {
             daysSinceDream++
             if (opts.enableDream && daysSinceDream >= 4 && !dreamedDates.has(prevDate)) {
+              simOffsetMs = Date.parse(`${prevDate}T23:30:00Z`) - Date.now()
               activePhase = 'dream'
               const tDr = performance.now()
               await owner.runtime.runDocumentDream()
-              await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 2)
+              await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 2, simNow)
               telemetry.dreamMs += performance.now() - tDr
               dreamedDates.add(prevDate)
               daysSinceDream = 0
               dreamTriggers++
             }
           }
+          simOffsetMs = (sess.timestampMs + Math.max(1, sess.messages.length) * 1000) - Date.now()
           const sessionId = sess.sessionId || randomUUID()
           owner.initializeSession({ sessionId })
           activePhase = 'ingest'
@@ -997,21 +1004,26 @@ export async function runVivaLmeEval(
             })
           }
           owner.runtime.flushNoteTurns?.(sessionId)
-          await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.note'], 2)
+          await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.note'], 2, simNow)
           telemetry.ingestMs += performance.now() - tIng
           sessionsIngested++
           prevDate = sess.dateStr
         }
         if (opts.enableDream && prevDate !== null && !dreamedDates.has(prevDate)) {
+          simOffsetMs = Date.parse(`${prevDate}T23:30:00Z`) - Date.now()
           activePhase = 'dream'
           const tDr = performance.now()
           await owner.runtime.runDocumentDream()
-          await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 2)
+          await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 2, simNow)
           telemetry.dreamMs += performance.now() - tDr
           dreamedDates.add(prevDate)
           dreamTriggers++
         }
 
+        if (task.queryTimeIso) {
+          const parsedQueryMs = Date.parse(`${task.queryTimeIso}Z`)
+          if (Number.isFinite(parsedQueryMs)) simOffsetMs = parsedQueryMs - Date.now()
+        }
         const reader = randomUUID()
         owner.initializeSession({ sessionId: reader })
         if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader)

@@ -289,7 +289,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
       const hybridScores = new Map<string, number>()
       let hybridPartial = false
-      if (searchDigestNodes && hybridOffset >= 0 && hybridOffset < 512) {
+      if (searchDigestNodes && hybridOffset >= 0) {
         try {
           const res = await searchDigestNodes(workspace, query, limit, hybridOffset, signal)
           for (const hit of res.nodes) hybridScores.set(hit.id, Math.max(hybridScores.get(hit.id) ?? 0, hit.score))
@@ -328,7 +328,9 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const hybridScore = hybridScores.get(row.id) ?? 0
         if (hybridScore > 0) {
           hybridMatches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score: hybridScore * 100 + lexicalScore })
-        } else if (!words || lexicalScore > 0) {
+        }
+        // Keep lexicalMatches invariant across hybrid pages so lexical pagination never shifts or skips candidates.
+        if (!words || lexicalScore > 0) {
           lexicalMatches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score: lexicalScore })
         }
       }
@@ -376,11 +378,25 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const samePage = search?.page?.fingerprint === baseFingerprint
         const offset = samePage ? search!.page!.offset : 0
         const hybridOffset = searchDigestNodes ? (samePage ? (search!.page!.hybridOffset ?? 0) : 0) : -1
+        const seenPaths = new Set<string>(samePage ? (search!.page!.seenPaths ?? []) : [])
         const { hybridMatches, lexicalMatches, hybridPartial } = search
           ? await candidates(search.query, pageLimit, hybridOffset, signal)
           : { hybridMatches: [], lexicalMatches: [], hybridPartial: false }
-        const hybridSlice = hybridMatches.slice(0, pageLimit)
-        const lexicalSlice = lexicalMatches.slice(offset, offset + Math.max(0, pageLimit - hybridSlice.length))
+        const unseenHybrid = hybridMatches.filter(match => !seenPaths.has(match.path))
+        const hybridSlice = unseenHybrid.slice(0, pageLimit)
+        const pagePaths = new Set(hybridSlice.map(match => match.path))
+        const lexicalSlice: typeof lexicalMatches = []
+        let lexCursor = offset
+        while (lexCursor < lexicalMatches.length && hybridSlice.length + lexicalSlice.length < pageLimit) {
+          const item = lexicalMatches[lexCursor++]!
+          if (seenPaths.has(item.path) || pagePaths.has(item.path)) continue
+          lexicalSlice.push(item)
+          pagePaths.add(item.path)
+        }
+        // Advance past any already-returned lexical items so trailing duplicates do not keep partial=true.
+        while (lexCursor < lexicalMatches.length && (seenPaths.has(lexicalMatches[lexCursor]!.path) || pagePaths.has(lexicalMatches[lexCursor]!.path))) {
+          lexCursor++
+        }
         const pageSlice = [...hybridSlice, ...lexicalSlice].sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
         const selected = pageSlice.map(match => match.path)
         const scored = searchDigestNodes && pageSlice.some(match => match.score > 0)
@@ -406,20 +422,24 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (view === undefined) unread = true
           return view ?? []
         })
-        const nextOffset = unread ? offset : offset + lexicalSlice.length
-        const moreHybridInPage = hybridMatches.length > hybridSlice.length
+        const nextOffset = unread ? offset : lexCursor
+        const moreHybridInPage = unseenHybrid.length > hybridSlice.length
         const hybridHasMore = Boolean(searchDigestNodes && !unread && (hybridPartial || moreHybridInPage) && hybridOffset >= 0)
         const hybridStep = moreHybridInPage ? Math.max(1, hybridSlice.length) : pageLimit
         const nextHybridOffset = !searchDigestNodes ? -1
           : unread ? hybridOffset
-            : hybridHasMore && hybridOffset + hybridStep < 512
-              ? hybridOffset + hybridStep
-              : -1
-        const hybridCappedIncomplete = hybridHasMore && nextHybridOffset < 0
-        const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0 || hybridCappedIncomplete
+            : hybridHasMore ? hybridOffset + hybridStep : -1
+        const nextSeenPaths = unread ? [...seenPaths] : [...seenPaths, ...pagePaths]
+        const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0
         return {
           read, list: () => list, ...(scored ? { scored } : {}), partial,
-          next: partial && !hybridCappedIncomplete ? { fingerprint: baseFingerprint, offset: nextOffset, ...(searchDigestNodes ? { hybridOffset: nextHybridOffset } : {}) } : undefined,
+          next: partial
+            ? {
+                fingerprint: baseFingerprint,
+                offset: nextOffset,
+                ...(searchDigestNodes ? { hybridOffset: nextHybridOffset, seenPaths: nextSeenPaths } : {}),
+              }
+            : undefined,
         }
       },
     }
