@@ -232,6 +232,7 @@ export async function checkExpansionInteractions(page: Page) {
       const failed = stopped === 2 && timeouts === 1 && retry.button.dataset.expandFailed === 'true' && !retry.target.hasAttribute('aria-busy')
         && retry.button.isConnected && retry.target.firstChild === preview && retry.target.querySelectorAll('p').length === 1
       window.Worker = NativeWorker
+      window.setTimeout = nativeTimeout
       await retry.draw()
       return {detached, pendingStyle, failed, retried: !retry.button.isConnected && retry.target.firstChild === preview && retry.target.querySelectorAll('p').length === 2}
     } finally { window.Worker = NativeWorker; window.setTimeout = nativeTimeout; host.remove() }
