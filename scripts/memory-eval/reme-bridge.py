@@ -408,7 +408,7 @@ async def cmd_scale_bench_point(payload: dict[str, Any]) -> dict[str, Any]:
     await app.start()
     try:
         t0 = time.perf_counter()
-        await app.run_job("index_update")
+        _require_job_success(await app.run_job("index_update"), f"scale/index_update(docCount={doc_count})")
         index_ms = (time.perf_counter() - t0) * 1000.0
 
         queries = [
@@ -418,9 +418,9 @@ async def cmd_scale_bench_point(payload: dict[str, Any]) -> dict[str, Any]:
             for k in range(30)
         ]
         latencies = []
-        for q in queries:
+        for idx, q in enumerate(queries):
             qs = time.perf_counter()
-            await app.run_job("search", query=q, limit=5)
+            _require_job_success(await app.run_job("search", query=q, limit=5), f"scale/search(docCount={doc_count},q={idx})")
             latencies.append((time.perf_counter() - qs) * 1000.0)
 
         rss_mb = _peak_rss_mb()

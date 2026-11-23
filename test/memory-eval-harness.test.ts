@@ -349,13 +349,22 @@ describe('memory-eval harness', () => {
         `    r1 = await mod._run_one_lme_item(item, {"workDir": ${JSON.stringify(tempDir)}, "enableDream": False}, "k")`,
         '    fail_stage = "agentic_answer"',
         `    r2 = await mod._run_one_lme_item(item, {"workDir": ${JSON.stringify(tempDir)}, "enableDream": False}, "k")`,
-        '    print(json.dumps({"ingestFail": r1, "answerFail": r2}))',
+        '    scale_errors = {}',
+        '    for stage in ("index_update", "search"):',
+        '        fail_stage = stage',
+        '        try:',
+        `            await mod.cmd_scale_bench_point({"workDir": ${JSON.stringify(tempDir)} + "/scale-" + stage, "docCount": 2})`,
+        '            scale_errors[stage] = ""',
+        '        except RuntimeError as exc:',
+        '            scale_errors[stage] = str(exc)',
+        '    print(json.dumps({"ingestFail": r1, "answerFail": r2, "scaleErrors": scale_errors}))',
         'asyncio.run(main())',
       ].join('\n')
       const out = execFileSync(pythonCmd, ['-c', script], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
       const parsed = JSON.parse(out.trim()) as {
         ingestFail: { sessionsIngested: number, error?: string, answer: string }
         answerFail: { sessionsIngested: number, error?: string, answer: string }
+        scaleErrors: { index_update: string, search: string }
       }
       assert.equal(parsed.ingestFail.sessionsIngested, 0, 'failed ingest job must not increment sessionsIngested')
       assert.match(parsed.ingestFail.error ?? '', /auto_memory.*success=False/)
@@ -363,6 +372,8 @@ describe('memory-eval harness', () => {
       assert.equal(parsed.answerFail.sessionsIngested, 1)
       assert.match(parsed.answerFail.error ?? '', /agentic_answer.*success=False/)
       assert.equal(parsed.answerFail.answer, '')
+      assert.match(parsed.scaleErrors.index_update, /scale\/index_update.*success=False/)
+      assert.match(parsed.scaleErrors.search, /scale\/search.*success=False/)
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
