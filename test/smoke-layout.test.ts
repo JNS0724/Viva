@@ -26,10 +26,11 @@ test('the source smoke tests cover independent memory, schedules and real task r
   const source = (file: string) => fs.readFileSync(path.join(import.meta.dirname, 'smoke', file), 'utf8')
   const specs = ['critical.spec.ts', ...integrationSpecs()]
   const titles = specs.flatMap(file => [...source(file).matchAll(/\btest\('([^']+)'/g)].map(match => match[1]))
-  assert.equal(titles.length, 17)
+  assert.equal(titles.length, 18)
   for (const title of [
     'MCP import menu stays inside its sidebar and cancelling an edit restores the saved server',
     'desktop portrait releases without undoing the drag or opening the panel',
+    'closing the reopened main window restores a usable desktop island while web fonts are pending',
     'desktop island preserves draft and focus while showing requests and compact states',
     'setup and source management @setup',
     'walkthrough and persisted relaunch @walkthrough @relaunch',
