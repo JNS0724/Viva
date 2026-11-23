@@ -196,8 +196,14 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   await closeProfile(win)
   expect((await run(win, fileDetail(note.identity)))?.markdown.includes(REPORT_MEMORY), 'the current file survives index rebuilding')
 
+  // Rebuilding indexes clears FTS/vectors synchronously and repopulates them asynchronously via INDEX_SEED.
   const question = '周报提交约定'
-  const sent = await askUsingMemory(win, hooks, question)
+  let sent: object[] = []
+  for (let attempt = 0; attempt < 4; attempt++) {
+    sent = await askUsingMemory(win, hooks, question)
+    if (sent.some(request => readsFileMemory(request, REPORT_MEMORY))) break
+    await wait(500)
+  }
   expect(sent.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a request in the source conversation receives the stored note', sent.length)
   await run(win, `document.getElementById('toggle-drawer').click()`)
   await until(win, `[...document.querySelectorAll('.trace-row')].some(row => row.textContent.includes(${JSON.stringify(REPORT_MEMORY)}))`,
@@ -423,11 +429,21 @@ async function rewindSteps(win: SmokeWindow, outDir: string, expect: Expect, hoo
   expect(editing.value === SECOND_ASK && editing.focused && editing.dimmed > 0, 'the message should turn into an editor with the keyboard, what follows dimmed', { opened, editing })
   await capture(win, outDir, 'rewind-edit')
 
-  await run(win, `(() => {
-    const field = document.querySelector('#thread .rewind-field')
-    field.value = ${JSON.stringify(EDITED_ASK)}
-    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-  })()`)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await run(win, `(() => {
+      const field = document.querySelector('#thread .rewind-field')
+      if (!field) return
+      field.value = ${JSON.stringify(EDITED_ASK)}
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })()`)
+    const sent = await until(win, `(() => {
+      if ([...document.querySelectorAll('#thread .msg-user')].some((el) => el.textContent === ${JSON.stringify(EDITED_ASK)})) return 'sent'
+      if (document.querySelector('#thread .rewind-field') && document.querySelector('.toast')) return 'retry'
+      return false
+    })()`, 'the edited words sent')
+    if (sent === 'sent') break
+    await wait(1000)
+  }
   await until(win, `[...document.querySelectorAll('#thread .msg-user')].some((el) => el.textContent === ${JSON.stringify(EDITED_ASK)})`, 'the edited words sent')
   await finishTurn(win)
   await wait(UI_WAIT_MS)

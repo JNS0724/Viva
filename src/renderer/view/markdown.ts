@@ -333,6 +333,12 @@ function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before
       yield
     } else if (sameElement(previous, part.node)) {
       yield* revealParts(previous, part.children, null, previous === last ? onAdded : undefined)
+    } else if (!previous && part.node.tagName === 'TR') {
+      // Assemble each new row off-DOM so a frame slice never paints a partial row or triggers per-cell table/AX updates.
+      yield* revealParts(part.node, part.children)
+      parent.insertBefore(part.node, before)
+      onAdded?.(part.node)
+      yield
     } else {
       // A new container can grow right where it belongs. Keep a mismatched preview slot until its substitute is ready.
       if (!previous) { parent.insertBefore(part.node, before); onAdded?.(part.node) }
@@ -358,7 +364,7 @@ export function refreshExpansionLabel(button: HTMLElement, remaining: number) {
 
 const REVEAL_SLICE_MS = 5
 // DOM changes also cost layout and accessibility work after this script yields, especially table rows.
-const REVEAL_SLICE_NODES = 300
+const REVEAL_SLICE_NODES = 500
 
 /** Parse the full source together so later reference definitions still affect the opening. */
 export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string,

@@ -544,7 +544,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .markdown blockquote { margin: 0 0 .9em; padding: 2px 0 2px 14px; border-left: 3px solid var(--line-2); color: var(--ink-2); }
 .markdown hr { margin: 1.2em 0; border: none; border-top: 1px solid var(--line); }
 .markdown .md-table-wrap { margin: 0 0 .9em; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
-.markdown .md-table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.6; }
+.markdown .md-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; line-height: 1.6; }
 .markdown .md-table th, .markdown .md-table td { padding: 8px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 .markdown .md-table th { background: var(--panel-2); font-weight: 700; color: var(--ink); white-space: nowrap; }
 .markdown .md-table tr:last-child td { border-bottom: none; }
