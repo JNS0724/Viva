@@ -48,6 +48,22 @@ const execFileAsync = promisify(execFile)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const BRIDGE = path.join(ROOT, 'scripts', 'memory-eval', 'reme-bridge.py')
 
+const VALID_EVAL_SUITES = new Set(['offline', 'scale', 'chinese', 'lme'])
+
+export function parseEvalSuites(suiteArg = 'all'): string[] {
+  const suites = suiteArg === 'all'
+    ? ['offline', 'scale', 'chinese', 'lme']
+    : suiteArg.split(',').map(s => s.trim()).filter(Boolean)
+  if (!suites.length) {
+    throw new Error('Invalid --suite value: must specify "all" or at least one of offline, scale, chinese, lme')
+  }
+  const unknown = suites.filter(s => !VALID_EVAL_SUITES.has(s))
+  if (unknown.length) {
+    throw new Error(`Unknown --suite value(s): ${unknown.join(', ')} (supported: offline, scale, chinese, lme, all)`)
+  }
+  return [...new Set(suites)]
+}
+
 function argValue(prefix: string): string | undefined {
   return process.argv.find(a => a.startsWith(prefix))?.slice(prefix.length)
 }
@@ -126,17 +142,24 @@ export function renderSummaryMarkdown(report: {
   if (report.scale?.length) {
     lines.push('## 2. M2 本地规模与延迟压测（100 ~ 3,000 篇文档）')
     lines.push('')
-    lines.push('| 系统 / 模式 | 文档数 | 索引构建(ms) | 向量准备(ms) | Lexical p50/p95(ms) | Hybrid p50/p95(ms) | Auto p50/p95(ms) | Auto 超时率 | RSS(MB) |')
+    lines.push('| 系统 / 模式 | 文档数 | 索引构建(ms) | 向量准备(ms) | Lexical p50/p95(ms) | Hybrid p50/p95(ms) | Auto p50/p95(ms) | Auto 超时率 | RSS(MB) [口径] |')
     lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for (const bench of report.scale) {
+      const rssTag = bench.rssMetric === 'isolated-peak-rss'
+        ? '子进程峰值'
+        : bench.rssMetric === 'process-current-rss'
+          ? '主进程瞬时'
+          : bench.system === 'reme' ? '子进程峰值' : '主进程瞬时'
       for (const p of bench.points) {
         const lex = p.lexicalP50Ms > 0 ? `${p.lexicalP50Ms} / ${p.lexicalP95Ms}` : '-'
         const hyb = p.hybridP50Ms !== null ? `${p.hybridP50Ms} / ${p.hybridP95Ms}` : '-'
         const auto = p.automaticP50Ms !== undefined && p.automaticP50Ms !== null ? `${p.automaticP50Ms} / ${p.automaticP95Ms}` : '-'
         const timeout = p.automaticTimeoutRate !== undefined && p.automaticTimeoutRate !== null ? `${(p.automaticTimeoutRate * 100).toFixed(1)}%` : '-'
-        lines.push(`| \`${bench.mode}\` | ${p.docCount} | ${p.indexMs} | ${p.vectorPrepMs} | ${lex} | ${hyb} | ${auto} | ${timeout} | ${p.rssMb} |`)
+        lines.push(`| \`${bench.mode}\` | ${p.docCount} | ${p.indexMs} | ${p.vectorPrepMs} | ${lex} | ${hyb} | ${auto} | ${timeout} | ${p.rssMb} (${rssTag}) |`)
       }
     }
+    lines.push('')
+    lines.push('> 注：Viva 采集同进程瞬时 RSS（含已加载本地模型），ReMe 采集每档独立子进程峰值 RSS，两类内存口径不可直接横向比较。')
     lines.push('')
   }
 
@@ -306,8 +329,7 @@ export function renderSummaryMarkdown(report: {
 }
 
 async function main() {
-  const suiteArg = argValue('--suite=') ?? 'all'
-  const suites = suiteArg === 'all' ? ['offline', 'scale', 'chinese', 'lme'] : suiteArg.split(',').map(s => s.trim()).filter(Boolean)
+  const suites = parseEvalSuites(argValue('--suite=') ?? 'all')
   const remePython = argValue('--reme-python=') ?? 'python3'
   const remeRepo = argValue('--reme-repo=') ?? ''
   const lmeDatasetPath = argValue('--lme-dataset=') ?? (remeRepo ? path.join(remeRepo, 'benchmark', 'longmemeval', 'dataset', 'longmemeval_s_reme_cleaned.json') : '')
@@ -527,7 +549,7 @@ async function main() {
           { workDir: path.join(outputDir, 'reme-work', 'scale-bm25'), docCounts },
           path.join(outputDir, 'bridge', 'scale-bm25'),
         )
-        report.scale.push({ system: 'reme', mode: 'reme-bm25', points: remeScale.points })
+        report.scale.push({ system: 'reme', mode: 'reme-bm25', rssMetric: 'isolated-peak-rss', points: remeScale.points })
       }
       save()
     }

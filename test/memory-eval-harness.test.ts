@@ -3,8 +3,9 @@ import path from 'node:path'
 import { describe, it } from 'node:test'
 import { hasTruncatedAnswerEvidence, LME_QUESTION_TYPES, parseLmeDate, selectStratifiedLmeSlice, sortAndFilterLmeSessions } from '../scripts/memory-eval/lme-slice.ts'
 import { lmeJudgePrompt } from '../scripts/memory-eval/judge.ts'
+import { splitTextByCodePoints } from '../scripts/memory-eval/embedding-server.ts'
 import { buildOfflineBundle, checkPatterns, safeWorkSubdir, scoreOfflineQueries } from '../scripts/memory-eval/viva-runner.ts'
-import { renderSummaryMarkdown } from '../scripts/memory-eval/run.ts'
+import { parseEvalSuites, renderSummaryMarkdown } from '../scripts/memory-eval/run.ts'
 import type { LmeItem } from '../scripts/memory-eval/types.ts'
 
 describe('memory-eval harness', () => {
@@ -56,6 +57,24 @@ describe('memory-eval harness', () => {
     const safe = safeWorkSubdir(root, '../../etc/passwd')
     assert.equal(safe.startsWith(`${root}${path.sep}`), true)
     assert.equal(safe.includes('..'), false)
+
+    // answer-aware sampling must reject when pre-question answer sessions exceed maxSessions.
+    assert.throws(
+      () => sortAndFilterLmeSessions({ ...multi, answer_session_ids: ['s1', 's2', 's3'] }, 2, 'answer-aware'),
+      /exceeding maxSessions=2/,
+    )
+
+    // parseEvalSuites rejects unknown or empty suites instead of silently skipping them.
+    assert.deepEqual(parseEvalSuites('offline,scale'), ['offline', 'scale'])
+    assert.throws(() => parseEvalSuites('offine'), /Unknown --suite/)
+    assert.throws(() => parseEvalSuites(''), /Invalid --suite/)
+
+    // splitTextByCodePoints never splits UTF-16 surrogate pairs (e.g. emoji) across window boundaries.
+    const emojiStr = 'a'.repeat(139) + '🚀' + 'b'.repeat(10)
+    const parts = splitTextByCodePoints(emojiStr, 140)
+    assert.equal(parts.length, 2)
+    assert.equal(parts[0]!.endsWith('🚀'), true)
+    assert.equal(parts.some(p => /[\uD800-\uDFFF]/u.test(p.replaceAll(/\p{Emoji_Presentation}/gu, ''))), false)
   })
 
   it('produces deterministic stratified slices with abstention coverage across all 6 categories', () => {
@@ -135,6 +154,20 @@ describe('memory-eval harness', () => {
     const retiredIds = new Set(bundle.documents.flatMap(d => d.supersedes ? [d.supersedes.id] : []))
     assert.ok(retiredIds.size > 0)
     assert.equal(bundle.remeDocuments.some(d => retiredIds.has(d.id)), false, 'superseded docs must be excluded from ReMe corpus')
+
+    const emptyTextHits = scoreOfflineQueries(
+      bundle.queries,
+      bundle.queries.map(q => ({
+        id: q.id,
+        elapsedMs: 1.5,
+        hits: q.evidence.map(e => ({ id: e.id, text: '', score: 1 })),
+      })),
+      { system: 'reme', mode: 'test', dataset: 'evaluation', indexMs: 10, vectorPrepMs: null },
+    )
+    assert.equal(emptyTextHits.hit1, 0, 'empty-text hit must not count as quote evidence hit')
+    assert.equal(emptyTextHits.hit5, 0)
+    assert.equal(emptyTextHits.mrr5, 0)
+    assert.equal(emptyTextHits.docIdHit5, emptyTextHits.answerCount)
 
     const wrongSnippet = scoreOfflineQueries(
       bundle.queries,

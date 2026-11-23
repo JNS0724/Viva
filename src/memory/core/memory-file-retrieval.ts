@@ -687,17 +687,26 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         const ready = state.active && state.space?.fingerprint === target.fingerprint && state.space.dimensions === target.dimensions
         if (!ready) prepareAfterSearch()
         else if (!run.controller.signal.aborted) {
-          const output = await boundedQuery(input.query, defaults.automaticQueryTimeoutMs, input.signal, false)
+          const vectorBudgetMs = defaults.fileVerificationBudgetMs
+          const output = await boundedQuery(input.query, vectorBudgetMs, input.signal, false)
           if (output?.[0] && !run.controller.signal.aborted) {
             const vectorProbe = Math.max(plan.probe, plan.need * 2)
+            const vectorDeadline = performance.now() + vectorBudgetMs
             const page = await index.vectorCandidates(
               output[0], target, plan.scope, vectorProbe,
               () => !closed && !input.signal?.aborted,
-              performance.now() + defaults.automaticQueryTimeoutMs,
+              vectorDeadline,
             )
             if (page) {
-              vectorNodes = dedupeDigestNodes(page.rows.map(hit => hit.file))
-              vectorIncomplete = page.incomplete
+              // If the vector scan timed out before covering the index, degrade cleanly to deterministic lexical pagination
+              // instead of looping forever with an unadvanceable vectorIncomplete=true.
+              if (page.incomplete && performance.now() >= vectorDeadline) {
+                vectorNodes = []
+                vectorIncomplete = false
+              } else {
+                vectorNodes = dedupeDigestNodes(page.rows.map(hit => hit.file))
+                vectorIncomplete = page.incomplete
+              }
             }
           }
         }

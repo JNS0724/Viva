@@ -19,12 +19,14 @@ function normalize(vector: Float32Array): number[] {
   return Array.from(vector, v => v / norm)
 }
 
-function splitText(text: string, maxChars: number): string[] {
+/** Split text into bounded windows by Unicode code points (never splitting UTF-16 surrogate pairs). */
+export function splitTextByCodePoints(text: string, maxCodePoints: number): string[] {
   const clean = text.trim()
   if (!clean) return [' ']
+  const chars = Array.from(clean)
   const parts: string[] = []
-  for (let i = 0; i < clean.length; i += maxChars) {
-    const slice = clean.slice(i, i + maxChars).trim()
+  for (let i = 0; i < chars.length; i += maxCodePoints) {
+    const slice = chars.slice(i, i + maxCodePoints).join('').trim()
     if (slice) parts.push(slice)
   }
   return parts.length ? parts : [' ']
@@ -74,7 +76,7 @@ export async function startLocalEmbeddingServer(modelRoot: string, runtimeRoot: 
     const trimmed = text.trim() || ' '
     // Granite-97M maxTokens=128 (symmetric: queryPrefix="", passagePrefix="").
     // Encode ALL bounded windows across the full chunk, bisecting any slice that exceeds 128 tokens, and fail explicitly on encoder errors.
-    const rawSlices = splitText(trimmed, 140)
+    const rawSlices = splitTextByCodePoints(trimmed, 140)
     const vectors = await encodeSlicesWithRetry(rawSlices)
     if (!vectors.length) {
       throw new Error('Local Granite-97M embedder produced zero vectors')

@@ -120,8 +120,9 @@ export function scoreOfflineQueries(
     const res = byId.get(query.id) ?? { id: query.id, elapsedMs: 0, hits: [] }
     times.push(res.elapsedMs)
     const top5 = res.hits.slice(0, 5)
+    // Require quote text coverage strictly; empty-text hits with matching IDs are tracked separately in docIdHit5.
     const covered = (hits: typeof top5, label: { id: string, quote: string }) =>
-      hits.some(hit => hit.id === label.id && (hit.text.length === 0 || hit.text.includes(label.quote)))
+      hits.some(hit => hit.id === label.id && hit.text.includes(label.quote))
     const hit1 = query.evidence.some(label => covered(top5.slice(0, 1), label))
     const hit5 = query.evidence.some(label => covered(top5, label))
     const allEvidenceHit5 = query.evidence.length > 0 && query.evidence.every(label => covered(top5, label))
@@ -149,6 +150,11 @@ export function scoreOfflineQueries(
     })
   }
   const answers = cases.filter(c => c.kind === 'answer')
+  const answerQueriesById = new Map(queries.filter(q => q.kind === 'answer').map(q => [q.id, q]))
+  const docIdHit5 = answers.filter(c => {
+    const q = answerQueriesById.get(c.id)
+    return Boolean(q && q.evidence.some(label => c.topIds.includes(label.id)))
+  }).length
   const ambiguous = cases.filter(c => c.kind === 'ambiguous')
   const absent = cases.filter(c => c.kind === 'absent')
   const groups: Record<string, { hit1: number, hit5: number, count: number }> = {}
@@ -181,6 +187,7 @@ export function scoreOfflineQueries(
     p50Ms: Number(percentile(times, 0.5).toFixed(2)),
     p95Ms: Number(percentile(times, 0.95).toFixed(2)),
     ...(nodeSearchCount !== undefined ? { nodeSearchHit1, nodeSearchHit5, nodeSearchCount } : {}),
+    docIdHit5,
     cases,
   }
 }
@@ -383,7 +390,7 @@ export async function runVivaScaleBench(
       retrieval.close()
       db.close()
     }
-    return { system: 'viva', mode: embedder ? 'viva-hybrid-granite' : 'viva-bm25', points }
+    return { system: 'viva', mode: embedder ? 'viva-hybrid-granite' : 'viva-bm25', rssMetric: 'process-current-rss', points }
   } finally {
     await embedder?.close()
   }
@@ -695,12 +702,41 @@ async function drainVivaJobs(
   }
 }
 
-/** Ensure Viva background vector index is prepared before QA begins so hybrid search runs fairly; throws on failure/timeout. */
-async function ensureVivaVectorsReady(owner: ReturnType<typeof openMemoryOwner>, readerSessionId: string, maxWaitMs = 60_000) {
+/** Ensure Viva background vector index is active AND covers every currently published chunk before QA begins; throws on failure/timeout. */
+async function ensureVivaVectorsReady(
+  owner: ReturnType<typeof openMemoryOwner>,
+  readerSessionId: string,
+  dbPath: string,
+  maxWaitMs = 60_000,
+) {
   const origin = owner.sessionContext(readerSessionId)
+  const inspectVectorCoverage = (): { chunkCount: number, active: boolean, missingChunks: number } => {
+    const db = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const metaRow = db.prepare("SELECT value FROM memory_file_index_meta WHERE key = 'vectors'").get() as { value?: string } | undefined
+      const state = metaRow?.value ? JSON.parse(metaRow.value) as { active?: boolean, generation?: number } : { active: false, generation: 0 }
+      const chunkRows = db.prepare('SELECT payload FROM memory_file_index_chunks').all() as Array<{ payload: string }>
+      if (!chunkRows.length) return { chunkCount: 0, active: Boolean(state.active), missingChunks: 0 }
+      const generation = state.generation ?? 0
+      const coveredRefs = new Set(
+        (db.prepare('SELECT DISTINCT ref FROM memory_file_index_vectors WHERE generation = ?').all(generation) as Array<{ ref: string }>)
+          .map(row => row.ref),
+      )
+      let missingChunks = 0
+      for (const row of chunkRows) {
+        const ref = (JSON.parse(row.payload) as { ref: { workspace: string, fileId: string, ordinal: number, revision: string, usageVersion: number, policyToken: string } }).ref
+        const refKey = JSON.stringify([ref.workspace, ref.fileId, ref.ordinal, ref.revision, ref.usageVersion, ref.policyToken])
+        if (!coveredRefs.has(refKey)) missingChunks++
+      }
+      return { chunkCount: chunkRows.length, active: Boolean(state.active), missingChunks }
+    } finally { db.close() }
+  }
+  await owner.runtime.wake()
   const deadline = performance.now() + maxWaitMs
   let lastReasons: string[] = []
+  let lastCoverage = { chunkCount: 0, active: false, missingChunks: 0 }
   while (performance.now() < deadline) {
+    lastCoverage = inspectVectorCoverage()
     const raw = await owner.runtime.handleModelRequest(
       { op: 'recall', session: readerSessionId, query: 'warmup check', limit: 1 },
       origin,
@@ -717,10 +753,19 @@ async function ensureVivaVectorsReady(owner: ReturnType<typeof openMemoryOwner>,
     if (parsed.status === 'unavailable') {
       throw new Error(`Viva retrieval unavailable during vector warmup: ${reasons.join(', ') || 'unavailable'}`)
     }
-    if (!reasons.includes('semantic-index-incomplete')) return
+    const coverageAfter = inspectVectorCoverage()
+    lastCoverage = coverageAfter
+    if (
+      !reasons.includes('semantic-index-incomplete')
+      && (coverageAfter.chunkCount === 0 || (coverageAfter.active && coverageAfter.missingChunks === 0))
+    ) {
+      return
+    }
     await new Promise(resolve => setTimeout(resolve, 250))
   }
-  throw new Error(`Viva vector index not ready within ${maxWaitMs}ms (${lastReasons.join(', ') || 'timeout'})`)
+  throw new Error(
+    `Viva vector index not ready within ${maxWaitMs}ms (active=${lastCoverage.active}, missingChunks=${lastCoverage.missingChunks}/${lastCoverage.chunkCount}, reasons=${lastReasons.join(', ') || 'timeout'})`,
+  )
 }
 
 export async function runVivaChineseEval(
@@ -804,7 +849,7 @@ export async function runVivaChineseEval(
 
         const reader = randomUUID()
         owner.initializeSession({ sessionId: reader, cwd: projectDir })
-        if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader)
+        if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader, path.join(dir, 'memory', 'memory.db'))
         const recallRaw = await owner.runtime.handleModelRequest(
           { op: 'recall', session: reader, query: phase.recallQuery, limit: 5 },
           owner.sessionContext(reader),
@@ -1026,7 +1071,7 @@ export async function runVivaLmeEval(
         }
         const reader = randomUUID()
         owner.initializeSession({ sessionId: reader })
-        if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader)
+        if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader, path.join(dir, 'memory', 'memory.db'))
         activePhase = 'answer'
         answer = await runVivaAgenticAnswer(
           meteredCtx,

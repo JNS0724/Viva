@@ -37,6 +37,7 @@ export interface OfflineModeSummary {
   nodeSearchHit1?: number
   nodeSearchHit5?: number
   nodeSearchCount?: number
+  docIdHit5?: number
   cases: OfflineQueryResult[]
 }
 
@@ -60,6 +61,8 @@ export interface ScalePointResult {
 export interface ScaleBenchmarkResult {
   system: EvalSystem
   mode: string
+  /** Measurement methodology so current-process RSS and isolated-subprocess peak RSS are never conflated. */
+  rssMetric?: 'process-current-rss' | 'isolated-peak-rss'
   points: ScalePointResult[]
 }
 

@@ -60,6 +60,9 @@ export function sortAndFilterLmeSessions(
   // Explicit opt-in answer-aware sampling: preserve answer_session_ids first, then fill with evenly spaced distractors.
   const answerSet = new Set(item.answer_session_ids)
   const mustKeep = filtered.filter(entry => answerSet.has(entry.sessionId))
+  if (mustKeep.length > maxSessions) {
+    throw new Error(`Item "${item.question_id}" has ${mustKeep.length} pre-question answer sessions, exceeding maxSessions=${maxSessions} under answer-aware sampling`)
+  }
   const distractors = filtered.filter(entry => !answerSet.has(entry.sessionId))
   const remaining = Math.max(0, maxSessions - mustKeep.length)
   const step = remaining > 0 ? distractors.length / remaining : 1

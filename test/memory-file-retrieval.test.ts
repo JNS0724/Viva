@@ -766,3 +766,26 @@ test('nodeSearchAsync scopes vectorCandidates to digests deduplicated per file a
   assert.deepEqual(fallbackRes.nodes.map(n => n.id), ['semantic-target'])
   assert.equal(fallbackRes.nodes.some(n => n.id === 'zero-match-digest'), false)
 })
+
+test('nodeSearchAsync degrades to complete lexical search when vectorCandidates hits its deadline', async t => {
+  const { embedder } = encoder()
+  const doc = view('deadline-digest', 'deadline-unique-token inside digest body')
+  const { index, retrieval } = setup(t, [doc], embedder)
+  assert.equal(await retrieval.prepareVectors(), true)
+
+  const origVec = index.vectorCandidates
+  index.vectorCandidates = async (_query, _space, _scope, _limit, _current, deadline = Infinity) => {
+    // Simulate vector scan exceeding its deadline and returning an incomplete partial scan.
+    const remaining = deadline - performance.now()
+    if (remaining > 0 && remaining < 5_000) {
+      await new Promise(resolve => setTimeout(resolve, Math.ceil(remaining) + 5))
+    }
+    return { rows: [], incomplete: true }
+  }
+  t.after(() => { index.vectorCandidates = origVec })
+
+  // Run with a short timeout-like vector mock: we expect lexical fallback to succeed with partial: false.
+  const res = await retrieval.nodeSearchAsync({ query: 'deadline-unique-token', limit: 5, allows })
+  assert.deepEqual(res.nodes.map(n => n.id), ['deadline-digest'])
+  assert.equal(res.partial, false)
+})
