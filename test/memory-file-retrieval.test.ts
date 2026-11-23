@@ -674,3 +674,118 @@ test('republishing an unchanged digest returns zero accepted and skips redundant
     assert.equal(vectorChecks, checksAfterFirst)
   }
 })
+
+test('nodeSearch and nodeSearchAsync match digest body chunks and semantic vectors while returning metadata only', async t => {
+  const { embedder } = encoder()
+  const hidden = view('secret-digest', 'needle body-only-secret-token')
+  const matched = view('opaque-topic', 'contains needle and deep-body-fact-42')
+  const daily = view('daily-only', 'contains needle and deep-body-fact-42', { kind: 'daily', day: '2026-11-16', path: 'daily/2026-11-16/a.md' })
+  const unrelated = view('other-topic', 'completely unrelated note')
+  const { retrieval } = setup(t, [hidden, matched, daily, unrelated], embedder)
+
+  // Sync nodeSearch should match digest body chunks lexically, skip daily files, enforce allows, and omit body text.
+  const lexical = retrieval.nodeSearch({ query: 'deep-body-fact-42', allows: item => item.id !== 'secret-digest' })
+  assert.deepEqual(lexical.nodes.map(node => node.id), ['opaque-topic'])
+  assert.equal('text' in lexical.nodes[0]!, false)
+  assert.equal(JSON.stringify(lexical.nodes).includes('deep-body-fact-42'), false)
+
+  // Async nodeSearchAsync should match digest semantically via vectors even with zero lexical overlap in title/description/body.
+  assert.equal(await retrieval.prepareVectors(), true)
+  const semantic = await retrieval.nodeSearchAsync({ query: 'needle-equivalent', allows: item => item.id !== 'secret-digest' })
+  assert.equal(semantic.nodes[0]?.id, 'opaque-topic')
+  assert.equal(semantic.nodes.some(node => node.id === 'secret-digest' || node.id === 'daily-only'), false)
+  assert.equal(JSON.stringify(semantic.nodes).includes('deep-body-fact-42'), false)
+})
+
+test('nodeSearchAsync paginates chunk lexical candidates past disallowed/daily hits and supports offset paging', async t => {
+  const fillers = Array.from({ length: 40 }, (_, i) =>
+    view(`daily-filler-${String(i).padStart(2, '0')}`, 'deep-paginated-token body', {
+      kind: 'daily', day: '2026-11-16', path: `daily/2026-11-16/f-${String(i).padStart(2, '0')}.md`,
+    }))
+  const targetA = view('opaque-digest-a', 'deep-paginated-token body')
+  const targetB = view('opaque-digest-b', 'deep-paginated-token body')
+  const { retrieval } = setup(t, [...fillers, targetA, targetB])
+
+  const page1 = await retrieval.nodeSearchAsync({ query: 'deep-paginated-token', limit: 1, allows })
+  assert.equal(page1.nodes.length, 1)
+  assert.equal(page1.partial, true)
+  const page2 = await retrieval.nodeSearchAsync({ query: 'deep-paginated-token', limit: 1, offset: 1, allows })
+  assert.equal(page2.nodes.length, 1)
+  assert.notEqual(page2.nodes[0]!.id, page1.nodes[0]!.id)
+  assert.deepEqual([page1.nodes[0]!.id, page2.nodes[0]!.id].sort(), ['opaque-digest-a', 'opaque-digest-b'])
+  // Final page after all verified candidates are exhausted must report partial: false even when disallowed candidates were filtered out.
+  assert.equal(page2.partial, false, 'filtered/disallowed candidates must not keep nodeSearch partial: true once exhausted')
+})
+
+test('nodeSearchAsync scopes vectorCandidates to digests deduplicated per file and filters zero-match FTS fallback nodes', async t => {
+  const embedder: MemoryEmbedder = {
+    fingerprint: 'digest-dedupe-embedder',
+    dimensions: 2,
+    close() {},
+    async embedBatch(inputs) {
+      return inputs.map(item => {
+        if (item.kind === 'query') return new Float32Array([1, 0])
+        if (item.text.includes('daily-noise') || item.text.includes('big-digest-chunk')) return new Float32Array([1, 0])
+        if (item.text.includes('semantic-target-fact')) return new Float32Array([0.85, 0.52])
+        return new Float32Array([0, 1])
+      })
+    },
+  }
+  const dailies = Array.from({ length: 6 }, (_, i) =>
+    view(`daily-noise-${i}`, `daily-noise entry ${i}`, {
+      kind: 'daily', day: `2026-11-${String(10 + i).padStart(2, '0')}`,
+      path: `daily/2026-11-${String(10 + i).padStart(2, '0')}/n${i}.md`,
+    }))
+  const manyChunks = Array.from({ length: 8 }, (_, i) => `## Part ${i}\n${'big-digest-chunk '.repeat(120)}`).join('\n\n')
+  const bigDigest = view('big-digest', manyChunks, { path: 'digest/personal/big.md' })
+  const semanticTarget = view('semantic-target', 'Contains semantic-target-fact inside body.', {
+    path: 'digest/personal/target.md',
+    markdown: '---\nname: Target Heading\ndescription: Opaque summary\n---\nContains semantic-target-fact inside body.',
+  })
+  const zeroMatch = view('zero-match-digest', 'Unrelated text only.', {
+    path: 'digest/personal/unrelated.md',
+    markdown: '---\nname: Completely Unrelated\ndescription: Nothing relevant here\n---\nUnrelated text only.',
+  })
+  const { db, index, retrieval } = setup(t, [...dailies, bigDigest, semanticTarget, zeroMatch], embedder)
+
+  assert.equal(await retrieval.prepareVectors(), true)
+  // Direct vectorCandidates with digest+dedupeByFile limit=2 must return both digests (0 daily rows, 1 row per digest).
+  const vecPage = await index.vectorCandidates(
+    new Float32Array([1, 0]),
+    index.vectorState().space!,
+    { workspaces: [workspace], kind: 'digest', dedupeByFile: true },
+    2,
+  )
+  assert.ok(vecPage)
+  assert.equal(vecPage.rows.every(r => r.file.kind === 'digest'), true)
+  assert.deepEqual(vecPage.rows.map(r => r.file.id), ['big-digest', 'semantic-target'])
+
+  // Corrupt node FTS so nodeCandidates enters fallback mode; unrelated zero-match digests must be filtered out.
+  db.exec('DROP TABLE memory_file_index_node_fts')
+  const fallbackRes = retrieval.nodeSearch({ query: 'Heading', limit: 5, allows })
+  assert.deepEqual(fallbackRes.nodes.map(n => n.id), ['semantic-target'])
+  assert.equal(fallbackRes.nodes.some(n => n.id === 'zero-match-digest'), false)
+})
+
+test('nodeSearchAsync degrades to complete lexical search when vectorCandidates hits its deadline', async t => {
+  const { embedder } = encoder()
+  const doc = view('deadline-digest', 'deadline-unique-token inside digest body')
+  const { index, retrieval } = setup(t, [doc], embedder)
+  assert.equal(await retrieval.prepareVectors(), true)
+
+  const origVec = index.vectorCandidates
+  index.vectorCandidates = async (_query, _space, _scope, _limit, _current, deadline = Infinity) => {
+    // Simulate vector scan exceeding its deadline and returning an incomplete partial scan.
+    const remaining = deadline - performance.now()
+    if (remaining > 0 && remaining < 5_000) {
+      await new Promise(resolve => setTimeout(resolve, Math.ceil(remaining) + 5))
+    }
+    return { rows: [], incomplete: true }
+  }
+  t.after(() => { index.vectorCandidates = origVec })
+
+  // Run with a short timeout-like vector mock: we expect lexical fallback to succeed with partial: false.
+  const res = await retrieval.nodeSearchAsync({ query: 'deadline-unique-token', limit: 5, allows })
+  assert.deepEqual(res.nodes.map(n => n.id), ['deadline-digest'])
+  assert.equal(res.partial, false)
+})

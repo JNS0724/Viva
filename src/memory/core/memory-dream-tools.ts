@@ -84,8 +84,15 @@ export function searchMemoryNodes<S extends DreamDocumentSnapshot>(snapshots: re
 }
 
 /** Opaque to the model; repeating a partial query continues through the same candidate set. */
-export type DreamSearchPage = { fingerprint: string, offset: number }
-type DreamFiles<S> = { partial?: boolean, next?: DreamSearchPage, read(path: string): S | null, list(): readonly S[] }
+export type DreamSearchPage = { fingerprint: string, offset: number, hybridOffset?: number, seenPaths?: readonly string[] }
+type DreamFiles<S> = {
+  partial?: boolean
+  next?: DreamSearchPage
+  /** Pre-ranked hybrid scores keyed by workspace-relative path (preserves semantic matches without body-only lexical leaks). */
+  scored?: ReadonlyMap<string, number>
+  read(path: string): S | null
+  list(): readonly S[]
+}
 
 /** Read-only Dream exploration sandbox: node_search + read with readset version locking. */
 export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ documents, onRead = () => {} }: {
@@ -145,10 +152,30 @@ export function createMemoryDreamTools<S extends DreamDocumentSnapshot>({ docume
       switch (invocation.name) {
         case 'node_search': {
           const input = inputSchemas.node_search.parse(invocation.input)
-          result = searchMemoryNodes(files.list(), input.query, input.limit).map(({ snapshot, summary, score }) => {
-            observe(snapshot)
-            return { path: snapshot.path, revision: snapshot.revision, ...summary, score }
-          })
+          const limit = input.limit ?? 10
+          if (files.scored && files.scored.size > 0) {
+            const lexical = new Map(searchMemoryNodes(files.list(), input.query, limit).map(hit => [hit.snapshot.path, hit]))
+            const merged = files.list()
+              .filter(snapshot => digestPath.safeParse(snapshot.path).success)
+              .map(snapshot => {
+                const lex = lexical.get(snapshot.path)
+                const hybridScore = files.scored!.get(snapshot.path) ?? 0
+                const score = hybridScore + (lex ? lex.score * 0.01 : 0)
+                return { snapshot, summary: lex?.summary ?? dreamNodeMetadata(snapshot), score }
+              })
+              .filter(item => item.score > 0)
+              .sort((a, b) => b.score - a.score || a.snapshot.path.localeCompare(b.snapshot.path))
+              .slice(0, limit)
+            result = merged.map(({ snapshot, summary, score }) => {
+              observe(snapshot)
+              return { path: snapshot.path, revision: snapshot.revision, ...summary, score }
+            })
+          } else {
+            result = searchMemoryNodes(files.list(), input.query, input.limit).map(({ snapshot, summary, score }) => {
+              observe(snapshot)
+              return { path: snapshot.path, revision: snapshot.revision, ...summary, score }
+            })
+          }
           if (files.partial) {
             incompleteSearches.set(input.query, files.next)
             result = { partial: true, nodes: result }

@@ -22,6 +22,7 @@ export const testLevels = {
     'memory-file-index',
     'memory-file-evaluation',
     'memory-semantic-evaluation',
+    'memory-eval-harness',
     'memory-file-ranking',
     'memory-embedding-assets',
     'memory-embedding-recipe',

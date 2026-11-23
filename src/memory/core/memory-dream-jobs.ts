@@ -113,15 +113,29 @@ function applyRefineEdits(beforeBody: string, edits: readonly DreamEdit[]): stri
   return body
 }
 
+function stripAccidentalFrontmatter(text: string): string {
+  if (!/^---\r?\n/u.test(text)) return text
+  try {
+    const parsed = parseMemoryDocument(text)
+    if (typeof parsed.metadata.name === 'string' || typeof parsed.metadata.description === 'string') {
+      return parsed.body
+    }
+  } catch { /* Ordinary Markdown starting with a thematic break `---`. */ }
+  return text
+}
+
 function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
   const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
-  const draftBody = operation.action === 'CREATE'
+  const rawDraftBody = operation.action === 'CREATE'
     ? operation.body
     : operation.body !== undefined
       ? operation.body
       : applyRefineEdits(beforeParsed!.body, operation.edits!)
+  // Strip accidental YAML frontmatter only when it parses with digest metadata keys (never break thematic `---` rules).
+  const draftBody = stripAccidentalFrontmatter(rawDraftBody)
   const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
-  const bodyLinks = memoryDocumentLinks(draftBody)
+  // Wrap the body in empty frontmatter so a leading Markdown horizontal rule `---` is parsed as body, not frontmatter.
+  const bodyLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftBody }))
   const presentExact = new Set(bodyLinks)
   const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
   const missingExisting = existingLinks.filter(link => !presentExact.has(link))
@@ -192,12 +206,14 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate, readPhysicalFile, digestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate, readPhysicalFile, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
-  digestNodes?: MemoryFileIndex['digestNodes'], readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
+  digestNodes?: MemoryFileIndex['digestNodes'],
+  searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
+  readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(diagnosticPort)
@@ -268,10 +284,20 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         : documents.fileRegistry(workspace)
       return entries.filter(row => row.state === 'active')
     }
-    async function candidates(query: string, signal?: AbortSignal) {
+    async function candidates(query: string, limit: number, hybridOffset: number, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
-      const matches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
+      const hybridScores = new Map<string, number>()
+      let hybridPartial = false
+      if (searchDigestNodes && hybridOffset >= 0) {
+        try {
+          const res = await searchDigestNodes(workspace, query, limit, hybridOffset, signal)
+          for (const hit of res.nodes) hybridScores.set(hit.id, Math.max(hybridScores.get(hit.id) ?? 0, hit.score))
+          hybridPartial = res.partial
+        } catch { /* Fall back to local lexical candidate scan. */ }
+      }
+      const hybridMatches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
+      const lexicalMatches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
       let yieldAt = performance.now() + 4
       for (const row of activeEntries()) {
         if (performance.now() >= yieldAt) {
@@ -297,23 +323,85 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             }
           }
         }
-        const score = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
+        const lexicalScore = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
           ? [...new Set(words.filter(word => terms.has(word)))].length : 0
-        if (!words || score > 0) matches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score })
+        const hybridScore = hybridScores.get(row.id) ?? 0
+        if (hybridScore > 0) {
+          hybridMatches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score: hybridScore * 100 + lexicalScore })
+        }
+        // Keep lexicalMatches invariant across hybrid pages so lexical pagination never shifts or skips candidates.
+        if (!words || lexicalScore > 0) {
+          lexicalMatches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score: lexicalScore })
+        }
       }
-      return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      const byScore = (a: { score: number, path: string }, b: { score: number, path: string }) => b.score - a.score || a.path.localeCompare(b.path)
+      return {
+        hybridMatches: hybridMatches.sort(byScore),
+        lexicalMatches: lexicalMatches.sort(byScore),
+        hybridPartial,
+      }
+    }
+    const catalog = async (maxEntries = 30) => {
+      const rows = [...activeEntries()].sort((a, b) => a.path.localeCompare(b.path))
+      const scanLimit = Math.min(rows.length, maxEntries * 2)
+      const candidates = rows.slice(0, scanLimit)
+      const batch = candidates.length
+        ? await loadFiles(candidates.map(row => ({ workspace, path: row.path })), undefined, true)
+        : undefined
+      const items: Array<{ path: string, name: string }> = []
+      let hasMoreAuthorized = false
+      for (const row of candidates) {
+        const view = batch ? batch.read(workspace, row.path) : policy.read(workspace, row.path)
+        if (!view) continue
+        if (items.length >= maxEntries) {
+          hasMoreAuthorized = true
+          break
+        }
+        const name = dreamNodeMetadata(view).name
+        const trimmed = [...(name || row.path.split('/').at(-1)!.replace(/\.md$/u, ''))].slice(0, 80).join('')
+        items.push({ path: row.path, name: trimmed })
+      }
+      return { items, truncated: hasMoreAuthorized || rows.length > scanLimit }
     }
     return {
       countActive: () => activeEntries().length,
+      catalog,
       read: (path: string) => policy.read(workspace, path),
       list: () => policy.list(workspace, 'digest'),
       async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
         signal?.throwIfAborted()
-        const matches = search ? await candidates(search.query, signal) : []
-        const limit = Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
-        const fingerprint = search ? identity.hash(JSON.stringify(matches)) : ''
-        const offset = search?.page?.fingerprint === fingerprint ? search.page.offset : 0
-        const selected = matches.slice(offset, offset + limit).map(match => match.path)
+        // When hybrid search is active, match memory-dream-tools' displayed page size so no ranked candidates are skipped across pages.
+        const pageLimit = searchDigestNodes
+          ? Math.min(defaults.searchMaxCandidates, search?.limit ?? 10)
+          : Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
+        const baseFingerprint = search ? identity.hash(JSON.stringify({ query: search.query, entries: activeEntries().map(r => [r.path, r.revision, r.usageVersion]) })) : ''
+        const samePage = search?.page?.fingerprint === baseFingerprint
+        const offset = samePage ? search!.page!.offset : 0
+        const hybridOffset = searchDigestNodes ? (samePage ? (search!.page!.hybridOffset ?? 0) : 0) : -1
+        const seenPaths = new Set<string>(samePage ? (search!.page!.seenPaths ?? []) : [])
+        const { hybridMatches, lexicalMatches, hybridPartial } = search
+          ? await candidates(search.query, pageLimit, hybridOffset, signal)
+          : { hybridMatches: [], lexicalMatches: [], hybridPartial: false }
+        const unseenHybrid = hybridMatches.filter(match => !seenPaths.has(match.path))
+        const hybridSlice = unseenHybrid.slice(0, pageLimit)
+        const pagePaths = new Set(hybridSlice.map(match => match.path))
+        const lexicalSlice: typeof lexicalMatches = []
+        let lexCursor = offset
+        while (lexCursor < lexicalMatches.length && hybridSlice.length + lexicalSlice.length < pageLimit) {
+          const item = lexicalMatches[lexCursor++]!
+          if (seenPaths.has(item.path) || pagePaths.has(item.path)) continue
+          lexicalSlice.push(item)
+          pagePaths.add(item.path)
+        }
+        // Advance past any already-returned lexical items so trailing duplicates do not keep partial=true.
+        while (lexCursor < lexicalMatches.length && (seenPaths.has(lexicalMatches[lexCursor]!.path) || pagePaths.has(lexicalMatches[lexCursor]!.path))) {
+          lexCursor++
+        }
+        const pageSlice = [...hybridSlice, ...lexicalSlice].sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+        const selected = pageSlice.map(match => match.path)
+        const scored = searchDigestNodes && pageSlice.some(match => match.score > 0)
+          ? new Map(pageSlice.map(match => [match.path, match.score]))
+          : undefined
         const locations = (paths: string[]) => paths.map(path => ({ workspace, path }))
         const requiredSet = new Set(required)
         const mandatory = await loadFiles(locations([...requiredSet]), signal)
@@ -334,9 +422,25 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (view === undefined) unread = true
           return view ?? []
         })
-        const nextOffset = unread ? offset : offset + selected.length
-        const partial = unread || nextOffset < matches.length
-        return { read, list: () => list, partial, next: partial ? { fingerprint, offset: nextOffset } : undefined }
+        const nextOffset = unread ? offset : lexCursor
+        const moreHybridInPage = unseenHybrid.length > hybridSlice.length
+        const hybridHasMore = Boolean(searchDigestNodes && !unread && (hybridPartial || moreHybridInPage) && hybridOffset >= 0)
+        const hybridStep = moreHybridInPage ? Math.max(1, hybridSlice.length) : pageLimit
+        const nextHybridOffset = !searchDigestNodes ? -1
+          : unread ? hybridOffset
+            : hybridHasMore ? hybridOffset + hybridStep : -1
+        const nextSeenPaths = unread ? [...seenPaths] : [...seenPaths, ...pagePaths]
+        const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0
+        return {
+          read, list: () => list, ...(scored ? { scored } : {}), partial,
+          next: partial
+            ? {
+                fingerprint: baseFingerprint,
+                offset: nextOffset,
+                ...(searchDigestNodes ? { hybridOffset: nextHybridOffset, seenPaths: nextSeenPaths } : {}),
+              }
+            : undefined,
+        }
       },
     }
   }
@@ -568,6 +672,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         })
         const restrictions = documents.sourceRestrictions(workspace)
         const existingDigestCount = scope.countActive()
+        const existingCatalog = existingDigestCount > 0 ? await scope.catalog(30) : { items: [], truncated: false }
 
         const batchSourceMap = new Map<string, DocumentSourceRef>()
         for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources))) batchSourceMap.set(ref.id, ref)
@@ -665,6 +770,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const input = {
             maxOperations: remainingAtStart,
             existingDigestCount,
+            ...(existingCatalog.items.length ? { existingDigests: existingCatalog.items } : {}),
+            ...(existingCatalog.truncated ? { existingDigestsTruncated: true } : {}),
             notes: batch.map((note, index) => {
               const snapshot = seen[index]!
               const name = parseMemoryDocument(snapshot.markdown).metadata.name

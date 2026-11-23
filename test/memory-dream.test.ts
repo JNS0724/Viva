@@ -28,6 +28,7 @@ function harness(t: TestContext, options: {
   units?: number, budget?: number, readPhysicalFile?: ReadMemoryPhysicalFile,
   checkpoint?: Parameters<typeof openMemoryDocuments>[0]['checkpoint'],
   diagnostics?: DiagnosticPort, mutate?: <T>(work: () => T) => Promise<T>, eligible?: () => boolean,
+  searchDigestNodes?: Parameters<typeof createMemoryDreamJobs>[0]['searchDigestNodes'],
 } = {}) {
   let now = Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(':memory:', () => now)
@@ -51,7 +52,7 @@ function harness(t: TestContext, options: {
   let beforeMutation = () => {}
   let afterCommit: (receipt: DocumentReceipt) => void = () => {}
   const start = () => createMemoryDreamJobs({ store, notes, documents, effects, identity: { newId: randomUUID, hash: memoryHash }, now: () => now,
-    diagnostics: options.diagnostics, readPhysicalFile: options.readPhysicalFile,
+    diagnostics: options.diagnostics, readPhysicalFile: options.readPhysicalFile, searchDigestNodes: options.searchDigestNodes,
     settings: { timezone: 'UTC', dreamUnits: options.units ?? 5, dreamBatchBytes: options.budget ?? 40_000 },
     readable, eligible: options.eligible ?? (() => true), source: id => store.readSource(id) ?? undefined,
     reference: id => { const original = store.readSource(id); return original ? { namespace: 'canonical', sourceId: id, revision: original.version } : null },
@@ -858,4 +859,326 @@ test('withdraw scrubs a persisted pendingBatch while Dream is sleeping for retry
   assert.equal(afterRow.payload.includes('banana-secret-42'), false)
   await h.retry()
   assert.equal(h.documents.read(note.note.workspace, 'digest/wiki/two.md'), null)
+})
+
+test('Dream passes a bounded metadata-only existingDigests catalog for active dimensions without leaking bodies or disabled files', async t => {
+  const h = harness(t)
+  const first = h.add('User drinks warm water and avoids coffee.', 'Drinks')
+  const dietPath = 'digest/personal/diet-and-drinks.md'
+  h.documents.commit({
+    operationId: randomUUID(), workspace: first.note.workspace, path: dietPath, action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({
+      metadata: { name: 'Diet & Drinks', description: 'Ongoing beverage and food preferences' },
+      body: '## Beverages\n- Warm water only; no coffee.\nSECRET_BODY_CANARY_99',
+    }),
+    sources: h.notes.references(first.key), reads: [],
+  })
+  const disabledNote = h.add('Private disabled topic.', 'Disabled')
+  const disabledRec = h.documents.commit({
+    operationId: randomUUID(), workspace: first.note.workspace, path: 'digest/personal/disabled-topic.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Disabled Secret', description: 'Hidden' }, body: 'Hidden body' }),
+    sources: h.notes.references(disabledNote.key), reads: [],
+  })
+  h.documents.setEnabled({
+    operationId: randomUUID(), workspace: first.note.workspace, documentId: disabledRec.documentId,
+    expectedRevision: disabledRec.revision!, expectedUsageVersion: disabledRec.usageVersion, enabled: false,
+  })
+
+  const second = h.add('User also prefers unsweetened green tea in the afternoon.', 'Afternoon tea')
+  let sawCatalog: Array<{ path: string, name: string }> | undefined
+  h.setModel(async request => {
+    const input = request.input as { existingDigestCount: number, existingDigests?: Array<{ path: string, name: string }>, notes: Array<{ path: string, sourceIds: string[] }> }
+    sawCatalog = input.existingDigests
+    assert.equal(input.existingDigestCount, 1)
+    assert.equal(JSON.stringify(input).includes('SECRET_BODY_CANARY_99'), false)
+    assert.equal(JSON.stringify(input).includes('Disabled Secret'), false)
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: dietPath } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: dietPath,
+        name: 'Diet & Drinks',
+        description: 'Ongoing beverage and food preferences including afternoon tea',
+        edits: [{ oldText: '- Warm water only; no coffee.', newText: '- Warm water only; no coffee.\n- Unsweetened green tea in the afternoon.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+  await h.run()
+  assert.deepEqual(sawCatalog, [{ path: dietPath, name: 'Diet & Drinks' }])
+  const updated = h.documents.read(second.note.workspace, dietPath)
+  assert.ok(updated?.markdown.includes('Unsweetened green tea in the afternoon.'))
+})
+
+test('formatDigestMarkdown preserves leading Markdown horizontal rules while stripping accidental YAML frontmatter', async t => {
+  const h = harness(t)
+  const note = h.add('Record divider-based notes and clean echoed metadata.', 'Divider')
+  h.setModel(async request => {
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    const dailyPaths = [input.notes[0]!.path]
+    const sourceIds = input.notes[0]!.sourceIds
+    return JSON.stringify({
+      operations: [
+        {
+          action: 'CREATE',
+          path: 'digest/personal/thematic-break.md',
+          name: 'Thematic Break',
+          description: 'Body starts with Markdown horizontal rule',
+          body: '---\n## Section A\nKeep this block.\n---\n## Section B\nAnd this block.',
+          dailyPaths,
+          sourceIds,
+        },
+        {
+          action: 'CREATE',
+          path: 'digest/personal/echoed-frontmatter.md',
+          name: 'Echoed Meta',
+          description: 'Clean description',
+          body: '---\nname: Echoed Meta\ndescription: Clean description\n---\nActual body content.',
+          dailyPaths,
+          sourceIds,
+        },
+      ],
+    })
+  })
+  await h.run()
+  assert.equal(h.status().lastCheckResult, 'processed')
+  const thematic = h.documents.read(note.note.workspace, 'digest/personal/thematic-break.md')!
+  assert.ok(thematic.markdown.includes('## Section A\nKeep this block.'))
+  assert.ok(thematic.markdown.includes('## Section B\nAnd this block.'))
+  const echoed = h.documents.read(note.note.workspace, 'digest/personal/echoed-frontmatter.md')!
+  assert.equal(echoed.markdown.match(/^---$/gmu)?.length, 2, 'duplicate YAML frontmatter must be stripped')
+  assert.ok(echoed.markdown.includes('Actual body content.'))
+})
+
+test('Dream node_search propagates hybrid partial status and advances offset across pages', async t => {
+  const seenOffsets: number[] = []
+  let secondId = ''
+  const h = harness(t, {
+    searchDigestNodes: async (_workspace, _query, _limit, offset) => {
+      seenOffsets.push(offset)
+      if (offset === 0) return { nodes: [], partial: true }
+      return { nodes: [{ id: secondId, path: 'digest/personal/second-page.md', score: 0.9 }], partial: false }
+    },
+  })
+  const seedA = h.add('Alpha semantic seed.', 'Alpha')
+  const seedB = h.add('Beta semantic seed.', 'Beta')
+  h.documents.commit({
+    operationId: randomUUID(), workspace: seedA.note.workspace, path: 'digest/personal/first-page.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Alpha Topic', description: 'Unrelated title' }, body: 'Alpha details.' }),
+    sources: h.notes.references(seedA.key), reads: [],
+  })
+  const recB = h.documents.commit({
+    operationId: randomUUID(), workspace: seedB.note.workspace, path: 'digest/personal/second-page.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Beta Topic', description: 'Unrelated title' }, body: 'Beta details.' }),
+    sources: h.notes.references(seedB.key), reads: [],
+  })
+  secondId = recB.documentId
+
+  const incoming = h.add('Follow-up semantic fact for page two.', 'Followup')
+  let pagesSeen = 0
+  let foundSecondPage = false
+  h.setModel(async request => {
+    const first = await request.tools!.executeTool({ callId: 's1', name: 'node_search', input: { query: 'semantic synonym', limit: 1 } })
+    assert.equal(first.state, 'completed')
+    const firstData = JSON.parse(first.content!) as { partial: boolean, nodes: Array<{ path: string }> }
+    assert.equal(firstData.partial, true)
+    assert.deepEqual(firstData.nodes, [])
+    pagesSeen++
+    const second = await request.tools!.executeTool({ callId: 's2', name: 'node_search', input: { query: 'semantic synonym', limit: 1 } })
+    assert.equal(second.state, 'completed')
+    const secondData = JSON.parse(second.content!) as Array<{ path: string }>
+    assert.ok(Array.isArray(secondData))
+    pagesSeen++
+    foundSecondPage = secondData.some(hit => hit.path === 'digest/personal/second-page.md')
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: 'digest/personal/second-page.md' } })
+    assert.equal(readRes.state, 'completed')
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: 'digest/personal/second-page.md',
+        name: 'Beta Topic',
+        description: 'Updated via hybrid page 2',
+        edits: [{ oldText: 'Beta details.', newText: 'Beta details.\nFollow-up semantic fact.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+
+  await h.run()
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.equal(pagesSeen, 2)
+  assert.equal(foundSecondPage, true)
+  assert.ok(seenOffsets.some(offset => offset > 0), `expected hybrid pagination to advance offset, saw ${JSON.stringify(seenOffsets)}`)
+  assert.ok(h.documents.read(incoming.note.workspace, 'digest/personal/second-page.md')!.markdown.includes('Follow-up semantic fact.'))
+})
+
+test('Dream node_search with limit: 1 visits every hybrid candidate across pages without skipping undisplayed hits', async t => {
+  const ordered: Array<{ id: string, path: string, score: number }> = []
+  const seenCalls: Array<{ limit: number, offset: number }> = []
+  const h = harness(t, {
+    searchDigestNodes: async (_workspace, _query, limit, offset) => {
+      seenCalls.push({ limit, offset })
+      const slice = ordered.slice(offset, offset + limit)
+      return { nodes: slice, partial: offset + limit < ordered.length }
+    },
+  })
+  const s1 = h.add('First seed.', 'S1')
+  const s2 = h.add('Second seed.', 'S2')
+  const s3 = h.add('Third seed.', 'S3')
+  for (const [idx, [seed, slug, score]] of [
+    [s1, 'hit-a', 0.9],
+    [s2, 'hit-b', 0.8],
+    [s3, 'hit-c', 0.7],
+  ].entries()) {
+    const s = seed as ReturnType<typeof h.add>
+    const rec = h.documents.commit({
+      operationId: randomUUID(), workspace: s.note.workspace, path: `digest/personal/${slug}.md`, action: 'CREATE', expectedRevision: null,
+      markdown: formatMemoryDocument({ metadata: { name: `Topic ${idx + 1}`, description: 'Opaque' }, body: `Body ${idx + 1}.` }),
+      sources: h.notes.references(s.key), reads: [],
+    })
+    ordered.push({ id: rec.documentId, path: `digest/personal/${slug}.md`, score: score as number })
+  }
+
+  const incoming = h.add('New fact belonging to hit-b.', 'Incoming')
+  const visitedPaths: string[] = []
+  h.setModel(async request => {
+    for (let i = 0; i < 3; i++) {
+      const res = await request.tools!.executeTool({ callId: `p${i}`, name: 'node_search', input: { query: 'opaque semantic', limit: 1 } })
+      assert.equal(res.state, 'completed')
+      const parsed = JSON.parse(res.content!) as { partial?: boolean, nodes?: Array<{ path: string }> } | Array<{ path: string }>
+      if (Array.isArray(parsed)) {
+        assert.equal(i, 2, 'final page must complete on the 3rd hit')
+        visitedPaths.push(...parsed.map(n => n.path))
+      } else {
+        assert.equal(parsed.partial, true)
+        visitedPaths.push(...(parsed.nodes ?? []).map(n => n.path))
+      }
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: 'digest/personal/hit-b.md' } })
+    assert.equal(readRes.state, 'completed')
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: 'digest/personal/hit-b.md',
+        name: 'Topic 2',
+        description: 'Updated hit-b',
+        edits: [{ oldText: 'Body 2.', newText: 'Body 2.\nNew fact belonging to hit-b.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+
+  await h.run()
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.deepEqual(visitedPaths, ['digest/personal/hit-a.md', 'digest/personal/hit-b.md', 'digest/personal/hit-c.md'])
+  assert.deepEqual(seenCalls, [{ limit: 1, offset: 0 }, { limit: 1, offset: 1 }, { limit: 1, offset: 2 }])
+  assert.ok(h.documents.read(incoming.note.workspace, 'digest/personal/hit-b.md')!.markdown.includes('New fact belonging to hit-b.'))
+})
+
+test('Dream existingDigests catalog enforces full policy.read checks and excludes unreadable or withdrawn-source digests', async t => {
+  const h = harness(t)
+  const okNote = h.add('User drinks oolong tea.', 'Tea')
+  const okPath = 'digest/personal/drinks.md'
+  h.documents.commit({
+    operationId: randomUUID(), workspace: okNote.note.workspace, path: okPath, action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Drinks', description: 'Beverage preferences' }, body: 'Oolong tea.' }),
+    sources: h.notes.references(okNote.key), reads: [],
+  })
+  const withdrawnNote = h.add('Secret project codename.', 'Secret')
+  const withdrawnPath = 'digest/personal/withdrawn-topic.md'
+  h.documents.commit({
+    operationId: randomUUID(), workspace: okNote.note.workspace, path: withdrawnPath, action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Withdrawn Secret Title', description: 'Should never leak' }, body: 'Secret body.' }),
+    sources: h.notes.references(withdrawnNote.key), reads: [],
+  })
+  // Withdraw source in store without purging document row yet so activeEntries() still sees it, while policy.read rejects it.
+  h.store.withdrawSource(withdrawnNote.source.id)
+
+  const incoming = h.add('User also enjoys jasmine tea.', 'Jasmine')
+  let sawCatalog: Array<{ path: string, name: string }> | undefined
+  h.setModel(async request => {
+    const input = request.input as { existingDigests?: Array<{ path: string, name: string }>, notes: Array<{ path: string, sourceIds: string[] }> }
+    sawCatalog = input.existingDigests
+    assert.equal(JSON.stringify(input).includes('Withdrawn Secret Title'), false)
+    assert.equal(JSON.stringify(input).includes(withdrawnPath), false)
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: okPath } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: okPath,
+        name: 'Drinks',
+        description: 'Beverage preferences',
+        edits: [{ oldText: 'Oolong tea.', newText: 'Oolong tea.\nJasmine tea.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+  await h.run()
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.deepEqual(sawCatalog, [{ path: okPath, name: 'Drinks' }])
+  assert.ok(h.documents.read(incoming.note.workspace, okPath)!.markdown.includes('Jasmine tea.'))
+})
+
+test('Dream node_search continues past offset 512 and deduplicates hybrid/lexical hits without skipping or repeating', async t => {
+  const seenOffsets: number[] = []
+  let firstId = ''
+  const h = harness(t, {
+    searchDigestNodes: async (_workspace, query, limit, offset) => {
+      if (query === 'past-512') {
+        seenOffsets.push(offset)
+        return { nodes: [], partial: offset + limit <= 550 }
+      }
+      // On query 'shared-term', page 0 returns firstId (which also matches lexically) and page 1 finishes empty.
+      if (offset === 0) return { nodes: [{ id: firstId, path: 'digest/personal/shared-a.md', score: 0.9 }], partial: true }
+      return { nodes: [], partial: false }
+    },
+  })
+  const s1 = h.add('First shared note.', 'S1')
+  const s2 = h.add('Second shared note.', 'S2')
+  const recA = h.documents.commit({
+    operationId: randomUUID(), workspace: s1.note.workspace, path: 'digest/personal/shared-a.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Shared Term A', description: 'shared-term alpha' }, body: 'Alpha.' }),
+    sources: h.notes.references(s1.key), reads: [],
+  })
+  firstId = recA.documentId
+  h.documents.commit({
+    operationId: randomUUID(), workspace: s2.note.workspace, path: 'digest/personal/shared-b.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Shared Term B', description: 'shared-term beta' }, body: 'Beta.' }),
+    sources: h.notes.references(s2.key), reads: [],
+  })
+  h.add('Incoming note.', 'Incoming')
+
+  const visitedShared: string[] = []
+  let completedPast512 = false
+  h.setModel(async request => {
+    // 1. Pagination past offset 512 keeps advancing until backend finishes (partial=false) so CREATE is never deadlocked.
+    for (let i = 0; i < 12; i++) {
+      const res = await request.tools!.executeTool({ callId: `c${i}`, name: 'node_search', input: { query: 'past-512', limit: 50 } })
+      assert.equal(res.state, 'completed')
+      const parsed = JSON.parse(res.content!) as { partial?: boolean } | unknown[]
+      if (Array.isArray(parsed)) { completedPast512 = true; break }
+    }
+    // 2. Mixed hybrid + lexical paging with limit=1 must return shared-a then shared-b exactly once with no duplicates or skips.
+    for (let i = 0; i < 4; i++) {
+      const res = await request.tools!.executeTool({ callId: `m${i}`, name: 'node_search', input: { query: 'shared-term', limit: 1 } })
+      assert.equal(res.state, 'completed')
+      const parsed = JSON.parse(res.content!) as { partial?: boolean, nodes?: Array<{ path: string }> } | Array<{ path: string }>
+      const rows = Array.isArray(parsed) ? parsed : (parsed.nodes ?? [])
+      visitedShared.push(...rows.map(r => r.path))
+      if (Array.isArray(parsed)) break
+    }
+    return JSON.stringify({ operations: [] })
+  })
+  await h.run()
+  assert.equal(completedPast512, true)
+  assert.ok(seenOffsets.some(offset => offset > 512), `expected pagination to advance past 512, saw ${JSON.stringify(seenOffsets)}`)
+  assert.deepEqual(visitedShared, ['digest/personal/shared-a.md', 'digest/personal/shared-b.md'])
 })

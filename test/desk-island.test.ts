@@ -203,7 +203,7 @@ test('an image import retires its hidden window, accepts one matching batch, and
   const desk = deskIsland(env)
   const first = env.windows[0]
   const sender = first.webContents as unknown as WebContents
-  first.handlers['did-finish-load']()
+  first.handlers['dom-ready']()
   const ticket = desk.beginImport(sender, 'original')!
   desk.setAway(false)
   assert.deepEqual([first.visible, first.destroyed, desk.owns(sender)], [false, false, false])
@@ -211,7 +211,7 @@ test('an image import retires its hidden window, accepts one matching batch, and
   assert.equal(desk.claimImport(sender, 'other', ticket), false)
   assert.equal(desk.claimImport({} as WebContents, 'original', ticket), false)
   assert.equal(desk.claimImport(sender, 'original', 'missing'), false)
-  first.handlers['did-finish-load']()
+  first.handlers['dom-ready']()
   first.handlers.focus()
   first.handlers.blur()
   assert.equal(desk.webContents(), null, 'late retired events cannot revive a hidden window')
@@ -257,7 +257,7 @@ test('the shortcut opens the input, which takes the keyboard until it is closed'
   const desk = deskIsland(env, { enabled: false })
   assert.equal(desk.openInput(), true)
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   assert.deepEqual([win.visible, win.focused, win.lastView().form], [true, true, 'input'], 'shown and focused, though switched off')
   desk.setView(view('working'))
   desk.closeInput({ sent: true })
@@ -277,7 +277,7 @@ test('the island stays on top of other windows after its input opens and closes'
   const [win] = env.windows
   assert.equal(win.onTop, true, 'shown on top')
   desk.openInput()
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   assert.deepEqual([win.focused, win.onTop], [true, true], 'taking the keyboard, still on top')
   desk.closeInput()
   assert.deepEqual([win.focusable, win.onTop], [process.platform === 'win32', true], 'giving the keyboard back, still on top')
@@ -320,7 +320,7 @@ test('native topmost loss after activation is repaired without taking focus', (t
   const env = fakes()
   const desk = deskIsland(env)
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.openInput()
   win.onTop = false
   win.handlers.focus()
@@ -361,7 +361,7 @@ test('dragged, the portrait follows the pointer at each frame and is remembered 
   const desk = deskIsland(env)
   desk.setView(view('working'))
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.startDrag({ x: 720, y: 81 })
   desk.setIslandRect({ x: 260, y: 136, width: 80, height: 80 }, win.lastView().layoutVersion, true)
   const initial = dragBounds({ x: 40, y: 65 })
@@ -392,7 +392,7 @@ test('closed to the tray the cat stays on the desktop; the window shown again ta
   const desk = deskIsland(env)
   desk.setView(view('idle'))
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   assert.deepEqual([win.visible, win.lastView().form], [true, 'mini'])
   desk.setAway(false)
   assert.equal(win.visible, false)
@@ -404,7 +404,7 @@ test('done stays up while the pointer rests on it, and a moment after it leaves'
   const env = fakes({ cursor: { x: 700, y: 50 } })
   const desk = deskIsland(env)
   const [win] = (desk.setView(view('done')), env.windows)
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   const anchor = win.lastView().anchor
   Object.assign(env.cursor, { x: win.bounds.x + anchor.x, y: win.bounds.y + anchor.y })
   desk.setIslandRect({ x: anchor.x - 40, y: anchor.y - 40, width: 80, height: 80 })
@@ -425,7 +425,7 @@ test('a click on the cat opens what its state needs: the request, how it ended, 
   const desk = deskIsland(env)
   desk.setView(view('idle'))
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   const opened = (form: string) => {
     desk.setView(view(form))
     desk.togglePanel()
@@ -458,7 +458,7 @@ test('switching off the desktop island closes an expanded input panel and clears
   const desk = deskIsland(env)
   desk.setView(view('idle'))
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   assert.equal(desk.openInput(), true)
   assert.equal(desk.inputOpen(), true)
   assert.equal(win.visible, true)
@@ -500,7 +500,7 @@ test('the debug menu previews eight states in a separate window and resumes the 
   assert.equal(env.windows[0].destroyed, true)
   const previewWindow = env.windows[1]
   assert.ok(previewWindow)
-  previewWindow.handlers['did-finish-load']()
+  previewWindow.handlers['dom-ready']()
   assert.equal(items()[0].checked, true)
   click('下一组')
   assert.equal(items()[1].checked, true)
@@ -513,7 +513,7 @@ test('the debug menu previews eight states in a separate window and resumes the 
   live.setView(view('working'))
   click('退出预览')
   assert.equal(previewWindow.destroyed, true)
-  env.windows[2].handlers['did-finish-load']()
+  env.windows[2].handlers['dom-ready']()
   assert.equal(env.windows[2].lastView().form, 'working')
   live.destroy()
 })
@@ -544,7 +544,7 @@ test('drag resizing waits for the current compact layout and rejects stale or in
   const env = fakes({ cursor: { x: 700, y: 200 } })
   const desk = deskIsland(env)
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.startDrag({ x: 720, y: 81 })
   const version = win.lastView().layoutVersion
   const compact = { x: 260, y: 136, width: 80, height: 80 }
@@ -565,7 +565,7 @@ test('a quick release saves the latest cursor and invalidates the outstanding co
   const env = fakes({ cursor: { x: 700, y: 200 } })
   const desk = deskIsland(env)
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.startDrag({ x: 720, y: 81 })
   const oldVersion = win.lastView().layoutVersion
   Object.assign(env.cursor, { x: 1080, y: 681.25 })
@@ -585,7 +585,7 @@ test('a fixed host follows a drag immediately and keeps its canvas, anchor and h
   const desk = deskIsland(env)
   t.after(() => desk.destroy())
   const win = env.windows[0]
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.openInput()
   const anchor = win.lastView().anchor
   const rect = { x: anchor.x - 40, y: anchor.y - 40, width: 80, height: 80 }
@@ -628,7 +628,7 @@ test('fixed-host placement reports the screen viewport and invalidates acknowled
   const env = fakes(), desk = deskIsland(env)
   t.after(() => desk.destroy())
   const win = env.windows[0]
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   const homeVersion = win.lastView().layoutVersion
   desk.placeAt('right-bottom')
   const movedVersion = win.lastView().layoutVersion
@@ -646,7 +646,7 @@ test('a delayed renderer keeps a full surface until its compact acknowledgement 
   const env = fakes({ cursor: { x: 900, y: 500 } })
   const desk = deskIsland(env)
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.startDrag({ x: 720, y: 81 })
   const version = win.lastView().layoutVersion
   t.mock.timers.tick(LAYOUT_READY_MS + 1)
@@ -677,7 +677,7 @@ test('dragging preserves an off-centre grab, and cancellation restores position 
   const desk = deskIsland(env)
   desk.openInput()
   const win = env.windows[0]
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   const original = { ...win.bounds }
   desk.startDrag({ x: 740, y: 100 })
   desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 }, win.lastView().layoutVersion, true)
@@ -696,7 +696,7 @@ test('native hit regions preserve the transparent gap between the portrait and i
   t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
   const env = fakes(), desk = deskIsland(env)
   const win = env.windows[0]
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.setIslandRect({ x: 20, y: 10, width: 80, height: 80 }, 0, true, [
     { x: 20, y: 10, width: 80, height: 80 }, { x: 112, y: 10, width: 440, height: 260 },
   ])
@@ -713,7 +713,7 @@ test('its 已完成 card read and closed tells the window it was seen; other car
   let read = 0
   const desk = deskIsland(env, { onDoneRead: () => { read += 1 } })
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   desk.setView(view('done'))
   desk.closeInput()
   assert.equal(read, 0, 'nothing open: nothing read')
@@ -736,7 +736,7 @@ test('its 已完成 card read and closed, the island rests at once: never 已完
   const env = fakes()
   const desk = deskIsland(env, { onDoneRead: () => {} })
   const [win] = env.windows
-  win.handlers['did-finish-load']()
+  win.handlers['dom-ready']()
   const shown = () => { const sent = win.lastView() as unknown as { form: string, view: { form: string, tone: string } }; return [sent.form, sent.view.form, sent.view.tone] }
   desk.setView(view('done', { tone: 'done', mood: 'done' }))
   desk.togglePanel()

@@ -24,8 +24,8 @@ const IDLE_VIEW: IslandShown = Object.freeze({ form: 'idle', tone: 'idle', mood:
 const api = window.desk
 let languageReady = false
 /**
- * The main process sends the view once the page has loaded, which does not wait for the language (asked of the
- * backend, in its own process): a view that comes meanwhile is kept here and handed on below.
+ * Subscribe before asking the backend for the language. The shell sends the first view at DOM readiness,
+ * and the renderer can apply it as soon as initialization finishes.
  */
 let earlyView: unknown = null
 const stopEarly = api.onView((next) => { earlyView = next })

@@ -81,3 +81,28 @@ test('memoryDocumentLinks ignores wikilinks inside code blocks and preserves anc
   const md = 'See [[digest/wiki/guide.md#Spring]] and `[[digest/wiki/fake.md]]`.\n```md\n[[daily/2026-11-16/code.md]]\n```'
   assert.deepEqual(memoryDocumentLinks(md), ['digest/wiki/guide.md#Spring'])
 })
+
+test('dream node_search preserves pre-ranked hybrid semantic scores without leaking body content', async () => {
+  const semanticDoc = doc('digest/wiki/opaque.md', 'Opaque Node', 'General note', 'SECRET_BODY_VALUE')
+  const otherDoc = doc('digest/wiki/other.md', 'Other Node', 'Another note', 'Nothing relevant')
+  const tools = createMemoryDreamTools({
+    documents: {
+      list: () => [semanticDoc, otherDoc],
+      read: p => [semanticDoc, otherDoc].find(item => item.path === p) ?? null,
+      async load(_paths, search) {
+        if (!search) return { list: () => [], read: p => [semanticDoc, otherDoc].find(item => item.path === p) ?? null }
+        return {
+          list: () => [semanticDoc, otherDoc],
+          read: p => [semanticDoc, otherDoc].find(item => item.path === p) ?? null,
+          scored: new Map([[semanticDoc.path, 0.92]]),
+        }
+      },
+    },
+  })
+
+  const res = await tools.executeTool({ callId: 'sem-1', name: 'node_search', input: { query: 'completely paraphrased concept' } })
+  assert.equal(res.state, 'completed')
+  const parsed = JSON.parse(res.content) as Array<{ path: string, name: string, description: string }>
+  assert.deepEqual(parsed.map(n => n.path), [semanticDoc.path])
+  assert.equal(res.content.includes('SECRET_BODY_VALUE'), false)
+})

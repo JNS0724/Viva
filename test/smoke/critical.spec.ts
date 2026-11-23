@@ -275,6 +275,44 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   } finally { await desk.force(false) }
 })
 
+test('closing the reopened main window restores a usable desktop island while web fonts are pending', async ({ scenario }) => {
+  const run = await scenario({ phase: 'memory', bridge: 'real' })
+  const { application, page } = await run.start('desktop-reopen')
+  const main = await application.browserWindow(page)
+  await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(true)
+  await application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
+  const fontUrl = /https:\/\/fonts\.googleapis\.com\//
+  let releaseFonts!: () => void
+  const pendingFonts = new Promise<void>(resolve => { releaseFonts = resolve })
+  let fontRequested = false
+  try {
+    for (let cycle = 0; cycle < 2; cycle++) {
+      if (cycle === 1) {
+        await application.context().route(fontUrl, async route => {
+          fontRequested = true
+          await pendingFonts
+          await route.fulfill({ contentType: 'text/css', body: '' })
+        })
+      }
+      await main.evaluate(window => window.close())
+      await expect.poll(() => main.evaluate(window => window.isVisible()), { message: `main window hidden on close ${cycle + 1}` }).toBe(false)
+      await expect.poll(() => application.windows().some(window => window.url().endsWith('/desk.html')), { message: `desktop island created on close ${cycle + 1}` }).toBe(true)
+      const desktop = application.windows().find(window => window.url().endsWith('/desk.html'))!
+      if (cycle === 1) await expect.poll(() => fontRequested).toBe(true)
+      const avatar = desktop.locator('.isl-anchor')
+      await expect(avatar).toHaveAttribute('aria-expanded', 'false')
+      await avatar.click()
+      await expect(avatar).toHaveAttribute('aria-expanded', 'true')
+      if (cycle === 1) releaseFonts()
+      await desktop.getByRole('button', { name: '打开 Viva', exact: true }).click()
+      await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(true)
+      await expect.poll(() => desktop.isClosed()).toBe(true)
+    }
+  } finally {
+    releaseFonts()
+  }
+})
+
 test('desktop island preserves draft and focus while showing requests and compact states', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'setup', bridge: 'real' })
   const session = await run.start('desktop-redesign')
