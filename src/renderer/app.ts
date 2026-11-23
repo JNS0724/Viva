@@ -10,6 +10,7 @@ import { createComposerDraftActions } from './composer-draft-actions.ts'
 import { draftTarget } from './draft-target.ts'
 import type { DraftFile } from '../shared/composer-draft.ts'
 import { h } from './view/dom.ts'
+import { queueLayout } from './view/reconcile.ts'
 import { insertText, pastedParts } from './paste.ts'
 import { markAllGone, pictureKept } from './view/pictures.ts'
 import { PERMISSION_LEVELS } from './view/permission-picker.ts'
@@ -177,15 +178,21 @@ function publishIsland() {
   migrateDraft = false
 }
 
+const requestFocus = {}
+const taskAnswerFocus = {}
+
 /** The card the agent waits on, brought into view with its first button focused. */
-function jumpToCard() {
-  const card = dom.thread.querySelector(':scope > .confirm:not(.fu-card)') ?? dom.thread.querySelector('.confirm:not(.fu-card)')
-  if (!card) return
-  if (state.drawer && getComputedStyle(dom.drawer).position === 'absolute') dispatch({ type: 'close_drawer' })
+function jumpToCard(taskId?: string) {
+  if (state.drawer) dispatch({ type: 'close_drawer' })
   if (hubPage(state)) dispatch({ type: 'hub_close' })
-  const field = card.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? dom.input
-  field.focus({ preventScroll: true })
-  card.scrollIntoView({ block: 'center' })
+  queueLayout(requestFocus, () => {
+    const card = taskId
+      ? [...dom.thread.querySelectorAll<HTMLElement>(':scope > .confirm[data-task]')].find(card => card.dataset.task === taskId)
+      : dom.thread.querySelector<HTMLElement>(':scope > .confirm:not([data-task]):not(.fu-card)')
+    if (!card) return
+    const field = card.querySelector<HTMLElement>('.ask-option:not(:disabled), input:not(:disabled), .confirm-actions button:not(:disabled)') ?? dom.input
+    return () => { field.focus({ preventScroll: true }); card.scrollIntoView({ block: 'center' }) }
+  })
 }
 
 /** The task in the background that asks `questionId`, if one does. */
@@ -200,11 +207,11 @@ type IslandAction = { kind?: string, [field: string]: any }
  */
 const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>> = {
   toggle: () => dispatch({ type: 'toggle_island' }),
-  jump: jumpToCard,
+  jump: ({ taskId }) => jumpToCard(taskId),
   cancel: () => isBusy(state) && handlers.cancel(),
   trace: () => handlers.openDrawer('trace'),
   /** A task's line in the island's 后台 list: that task on the 后台 page. */
-  task: ({ taskId }) => handlers.openTasks(taskId),
+  task: ({ taskId, focusQuestion }) => handlers.openTasks(taskId, focusQuestion),
   /** The count at the island's tail: the 后台 page. */
   tasks: () => handlers.openTasks(),
   settings: () => handlers.openSettings(),
@@ -222,12 +229,12 @@ const ISLAND_ACTIONS: Readonly<Record<string, (action: IslandAction) => unknown>
   answer: ({ questionId, id, label }) => {
     if (state.question?.questionId === questionId) return handlers.pickOption(id, label)
     const task = askingTask(questionId)
-    return task ? handlers.pickTaskOption(task.id, id, label) : undefined
+    return task ? handlers.pickTaskOption(task.id, questionId, id, label) : undefined
   },
   skip: ({ questionId }) => {
     if (state.question?.questionId === questionId) return handlers.skipQuestion()
     const task = askingTask(questionId)
-    return task ? handlers.skipTaskQuestion(task.id) : undefined
+    return task ? handlers.skipTaskQuestion(task.id, questionId) : undefined
   },
   /** Asked on the desktop island, with the files dropped and pictures pasted there: into this conversation, as if typed here. */
   ask: ({ text, files, images = [], targetKey, receiptId, expiresAt, feedItemId }) => {
@@ -541,7 +548,8 @@ const handlers = {
   stopTask: (taskId: string) => taskActions.stopTask(taskId),
   closeTask: (taskId: string) => taskActions.closeTask(taskId),
   resumeTask: (taskId: string) => taskActions.resumeTask(taskId),
-  pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
+  pickTaskOption: taskActions.pickTaskOption,
+  inputTaskAnswer: taskActions.inputTaskAnswer,
   /** The 后台 page's list folded to its strip, or unfolded; kept for the next launch. */
   foldTaskList: (folded: boolean) => {
     dispatch({ type: 'tasks_list_folded', folded })
@@ -549,8 +557,8 @@ const handlers = {
   },
   /** 恢复默认宽度 in the topic label's menu: the conversation column back to its default width. */
   resetColumn: () => column.reset(),
-  submitTaskAnswer: (taskId: string) => taskActions.submitTaskAnswer(taskId),
-  skipTaskQuestion: (taskId: string) => taskActions.skipTaskQuestion(taskId),
+  submitTaskAnswer: taskActions.submitTaskAnswer,
+  skipTaskQuestion: taskActions.skipTaskQuestion,
   send() {
     if (state.initialization.status !== 'ready' || state.phase === 'stopping'
       || state.stopUnconfirmed || api && !composerDraft?.ready()) return
@@ -719,8 +727,15 @@ const handlers = {
   /** ← 返回, Esc, or the 关于你 icon again: back to the conversation. */
   closeHub: () => dispatch({ type: 'hub_close' }),
   /** The 后台 page, on `taskId` or the one it was on (view/tasks-page.js). */
-  openTasks: (taskId: string | null = null) => {
+  openTasks: (taskId: string | null = null, focusQuestion?: string) => {
     dispatch({ type: 'tasks_page_open', taskId })
+    if (taskId && focusQuestion) queueLayout(taskAnswerFocus, () => {
+      if (state.tasks.page.selected !== taskId || !state.tasks.page.open) return
+      const card = [...dom.tasksPage.querySelectorAll<HTMLElement>('.confirm[data-question]')]
+        .find(card => card.dataset.task === taskId && card.dataset.question === focusQuestion)
+      const field = card?.querySelector<HTMLInputElement>('input:not(:disabled)')
+      return field ? () => field.focus() : undefined
+    })
   },
   selectTask: (taskId: string) => dispatch({ type: 'tasks_page_select', taskId }),
   selectFeed: (kind: 'item' | 'schedule' | 'source', id: string) => dispatch({ type: 'feed_select', kind, id }),

@@ -11,6 +11,9 @@ export type { QuestionAnswer }
 
 /** What the agent asks while it waits (state.question): its questions, and what is picked so far, by question. */
 
+export const questionNeedsText = (question: Pick<AskedQuestion, 'questions'>) =>
+  question.questions.some(item => item.options.length === 0)
+
 const askedText = (questions: readonly QuestionItem[]) => questions.map((question) => question.question).join('\n')
 
 /** The answers to send: what was picked per question, with `text` (typed in the composer) for the ones it answers. */
@@ -18,11 +21,10 @@ export function answersFrom(question: AskedQuestion, text = ''): QuestionAnswer[
   const typed = text.trim()
   // Typed words go to the first question without a pick (the last one when all have picks).
   const target = question.questions.find((item) => !(question.picks[item.id] ?? []).length) ?? question.questions.at(-1)
-  return question.questions.map((item) => ({
-    id: item.id,
-    selected: [...(question.picks[item.id] ?? [])],
-    ...(typed && item.id === target?.id ? { custom: typed } : {}),
-  }))
+  return question.questions.map((item) => {
+    const custom = question.custom?.[item.id]?.trim() || (item.id === target?.id ? typed : '')
+    return { id: item.id, selected: [...(question.picks[item.id] ?? [])], ...(custom ? { custom } : {}) }
+  })
 }
 
 function togglePick(item: QuestionItem, current: readonly string[], label: string) {

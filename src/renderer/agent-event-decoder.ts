@@ -73,7 +73,8 @@ export function decodePermission(value: unknown): PermissionRequest | null {
   const item = objectOf(value), tool = objectOf(item?.toolCall)
   if (!item || !string(item.requestId) || !tool || !optional(tool.toolCallId, string) || !optional(tool.title, nullableText) || !optional(tool.kind, nullableText)) return null
   const options = list(item.options, value => { const row = objectOf(value); return row && string(row.optionId) && string(row.name) && optional(row.kind, string) ? { optionId: row.optionId, name: row.name, kind: row.kind } : null })
-  return options ? { requestId: item.requestId, toolCall: { toolCallId: tool.toolCallId, title: tool.title, kind: tool.kind, rawInput: tool.rawInput }, options } : null
+  return options ? { requestId: item.requestId, toolCall: { toolCallId: tool.toolCallId, title: tool.title, kind: tool.kind, rawInput: tool.rawInput }, options,
+    ...(natural(item.requestedAt) ? { requestedAt: item.requestedAt } : {}) } : null
 }
 const secret = (value: unknown): AskedSecret | null => {
   const item = objectOf(value), names = texts(item?.names)
@@ -83,7 +84,11 @@ export function decodeWaits(value: unknown): ForegroundWaits | null {
   const item = objectOf(value)
   if (!item) return null
   const permissions = list(item.permissions ?? [], decodePermission)
-  const questions = list(item.questions ?? [], value => { const row = objectOf(value), questions = decodeQuestions(row?.questions); return row && string(row.questionId) && questions ? { questionId: row.questionId, questions } : null })
+  const questions = list(item.questions ?? [], value => {
+    const row = objectOf(value), questions = decodeQuestions(row?.questions)
+    return row && string(row.questionId) && questions ? { questionId: row.questionId, questions,
+      ...(natural(row.requestedAt) ? { requestedAt: row.requestedAt } : {}) } : null
+  })
   const secrets = list(item.secrets ?? [], secret)
   return permissions && questions && secrets ? { permissions, questions, secrets } : null
 }
@@ -217,7 +222,11 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   }
   if (type === 'task_update') { const update = decodeUpdate(item.update); return task && update ? { type, ...task, update } : null }
   if (type === 'task_permission_closed') return task && string(item.requestId) ? { type, ...task, requestId: item.requestId } : null
-  if (type === 'task_question') { const questions = decodeQuestions(item.questions); return task && string(item.questionId) && questions ? { type, ...task, questionId: item.questionId, questions } : null }
+  if (type === 'task_question') {
+    const questions = decodeQuestions(item.questions)
+    return task && string(item.questionId) && questions ? { type, ...task, questionId: item.questionId, questions,
+      ...(natural(item.requestedAt) ? { requestedAt: item.requestedAt } : {}) } : null
+  }
   if (type === 'task_question_closed') return task && string(item.questionId) ? { type, ...task, questionId: item.questionId } : null
   if (type === 'task_steered') return task && string(item.text) ? { type, ...task, text: item.text } : null
   if (type === 'task_end') return task && optional(item.stopReason, string) && optional(item.message, nullableText) ? { type, ...task, stopReason: item.stopReason, message: item.message } : null

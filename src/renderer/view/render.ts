@@ -30,6 +30,7 @@ import { renderTopicLabel } from './topic-label.ts'
 import { renderPermissionPicker } from './permission-picker.ts'
 import { renderWorkDir } from './workdir.ts'
 import { cardedTasks } from './task-card.ts'
+import { waitingTaskPrompts } from '../tasks-state.ts'
 
 let renderedSettings: unknown[] = []
 let renderedProfile: unknown = null
@@ -210,7 +211,7 @@ function renderComposer(dom: Dom, state: State, handlers: Handlers) {
 
 /** Cards are conversation content even when no foreground user bubble was created. */
 export const showsHome = (state: State) => state.messages.length === 0 && state.earlier.segments.length === 0
-  && cardedTasks(state).length === 0
+  && cardedTasks(state).length === 0 && waitingTaskPrompts(state).length === 0
   && !state.newTopicPending && !state.stopUnconfirmed && state.phase !== 'stopping' && state.phase !== 'error'
 
 /** Full render of every region. The composer textarea is static markup, so typing is never interrupted. */

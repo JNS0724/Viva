@@ -87,6 +87,16 @@ export const liveTasks = (state: State): BackgroundTask[] => state.tasks.list.fi
 export const isUnseen = (state: Pick<State, 'tasks'>, task: BackgroundTask): boolean =>
   task.endedAt !== null && !LIVE.has(task.status) && task.status !== 'interrupted' && !state.tasks.seen.includes(task.id)
 
+export function waitingTaskPrompts(state: Pick<State, 'tasks'>) {
+  return state.tasks.list.flatMap(task => {
+    const ref = task.permission?.requestId ?? task.question?.questionId
+    if (task.status !== 'waiting' || !ref) return []
+    const requestedAt = task.view.timeline.findLast(entry =>
+      (entry.kind === 'permission' || entry.kind === 'question') && entry.ref === ref)?.at
+    return [{ task, requestedAt: requestedAt ?? task.startedAt ?? 0 }]
+  }).sort((a, b) => a.requestedAt - b.requestedAt).map(entry => entry.task)
+}
+
 /** Ended tasks the user has not been told of yet. */
 export const unseenEnded = (state: State): BackgroundTask[] => state.tasks.list.filter((task) => isUnseen(state, task))
 
@@ -298,8 +308,8 @@ export function taskActions() {
         if (!LIVE.has(status)) return settled({ ...task, ...markOf(mark), startedAt: endedAt ?? undefined, endedAt, status, view: savedView(messages) })
         const at = startedAt ?? 0
         const requests = decodeWaits(waits ?? {}) ?? { permissions: [], questions: [], secrets: [] }
-        const asked = requests.permissions.reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at }), withTools(savedView(messages, at), tools ?? [], at))
-        const view = requests.questions.reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at }), asked)
+        const asked = requests.permissions.reduce<ConversationView>((view, wait) => reduceConversation(view, { ...wait, type: 'permission_request', at: wait.requestedAt ?? at }), withTools(savedView(messages, at), tools ?? [], at))
+        const view = requests.questions.reduce<ConversationView>((current, wait) => reduceConversation(current, { ...wait, type: 'question_request', at: wait.requestedAt ?? at }), asked)
         return settled({ ...task, ...markOf(mark), startedAt: at, endedAt: null, status, now: null, view })
       })
       // The read is the baseline of each task it is given (task-actions.ts loadKept gives those the window cannot go on
@@ -364,7 +374,16 @@ export function taskActions() {
  * @returns the state, or null when the action is the conversation's own
  */
 export function routeToTask(state: State, action: Action): State | null {
-  if (action.type === 'task_question_pick') return inView(state, action.taskId, { type: 'question_pick', id: action.id, label: action.label })
+  if (action.type === 'task_question_pick' || action.type === 'task_question_custom') {
+    const question = state.tasks.list.find(task => task.id === action.taskId)?.view.question
+    if (question?.questionId !== action.questionId) return state
+    if (action.type === 'task_question_pick') return inView(state, action.taskId, { type: 'question_pick', id: action.id, label: action.label })
+    const item = question.questions.find(item => item.id === action.id)
+    if (!item || item.options.length || (question.custom?.[item.id] ?? '') === action.text) return state
+    return mapTask(state, action.taskId, task => ({ ...task, view: { ...task.view,
+      question: { ...question, custom: { ...question.custom, [item.id]: action.text } },
+    } }))
+  }
   if (action.type === 'task_question_answered') return inView(state, action.taskId, { type: 'question_answered', questionId: action.questionId, answers: action.answers, at: action.at, ...(action.questions ? { questions: action.questions } : {}) })
   if (action.type === 'task_permission_request') return takePiece(state, action, taken => inView(taken, action.taskId, { ...action, type: 'permission_request' }))
   if (action.type === 'permission_resolved' && state.permission?.requestId !== action.requestId) {

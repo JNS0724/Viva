@@ -36,7 +36,7 @@ export type AgentEvent =
   | { type: 'task_snapshot', snapshot: WindowSnapshot }
   | ({ type: 'task_update' } & Position & Payload<'acp_update'>)
   | ({ type: 'task_permission_closed' } & Position & Payload<'permission_closed'>)
-  | ({ type: 'task_question' } & Position & Payload<'question_request'>)
+  | ({ type: 'task_question', requestedAt?: number } & Position & Payload<'question_request'>)
   | ({ type: 'task_question_closed' } & Position & Payload<'question_closed'>)
   | ({ type: 'task_steered', text: string } & Position)
   | ({ type: 'task_end', stopReason?: string, message?: string | null } & Position)

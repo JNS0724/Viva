@@ -250,6 +250,15 @@ async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expe
   await run(win, `(${cardOf(ASKS_LATER)}).scrollIntoView({ block: 'center' })`)
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-line-waiting')
+  const backgroundCard = `[...document.querySelectorAll('#thread > .confirm[data-task]')].find(el => el.dataset.task === (${cardOf(ASKS_LATER)})?.dataset.task)`
+  expect(await run(win, `Boolean((${backgroundCard})?.querySelector('.confirm-actions button'))`),
+    'the task approval appears in the main thread')
+  await run(win, `document.querySelector('#open-profile')?.click()`)
+  await until(win, `document.getElementById('hub').dataset.open === 'true'`, 'the About You hub page')
+  await run(win, `document.querySelector('#island .isl-head')?.click()`)
+  await until(win, `document.getElementById('hub').dataset.open !== 'true'
+    && (${backgroundCard})?.contains(document.activeElement)`, 'the capsule returns focus to the background approval')
+  await capture(win, outDir, 'tasks-thread-approval')
   // Its page has the approval, and its steps unfold there.
   await openFromLine(win, ASKS_LATER)
   await run(win, `document.querySelector('#tasks-page .tp-toggle')?.click()`)
@@ -273,7 +282,10 @@ async function laterQuestionSteps(win: SmokeWindow, outDir: string, expect: Expe
   expect(choices, "the task's question should be answered on its page")
   await wait(UI_WAIT_MS)
   await capture(win, outDir, 'tasks-question')
-  await run(win, `${pageButton('上海')}.click()`)
+  await run(win, escape)
+  await run(win, `document.querySelector('#island .isl-head')?.click()`)
+  await until(win, `(${backgroundCard})?.contains(document.activeElement) && document.activeElement.matches('.ask-option')`, 'the capsule focuses the first available choice')
+  await run(win, `[...(${backgroundCard}).querySelectorAll('.ask-option')].find(el => el.textContent === '上海').click()`)
   await run(win, escape)
   const report = await until(win, `(() => { const card = ${cardState(ASKS_LATER)}; return card?.status === 'done' && card.text })()`, "the task's report after the answer")
   expect(report.includes('按上海来看'), 'answered, the task should carry on and report what it said', report)

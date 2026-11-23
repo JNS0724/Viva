@@ -165,6 +165,8 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
   let depth = 0
   /** taskId → the last piece of its stream numbered (one count per task, across its runs). */
   const seqs = new Map<string, number>()
+  const waitArrivals = new Map<string, { taskId: string, at: number }>()
+  let lastWaitAt = 0
   /** taskId → what the run a change begins starts with, for the snapshot that goes out once it commits. */
   let openings = new Map<string, TaskOpening>()
   const seqOf = (taskId: string) => seqs.get(taskId) ?? 0
@@ -321,6 +323,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     if (resolvingWaits.has(waitKey)) resolvingWaits = new Map([...resolvingWaits].filter(([key]) => key !== waitKey))
   }
   const clearTaskWaitPlaces = (taskId: string) => {
+    for (const [key, wait] of waitArrivals) if (wait.taskId === taskId) waitArrivals.delete(key)
     if ([...waitPlaces.values()].includes(taskId)) waitPlaces = new Map([...waitPlaces].filter(([, owner]) => owner !== taskId))
     if ([...resolvingWaits.values()].includes(taskId)) resolvingWaits = new Map([...resolvingWaits].filter(([, owner]) => owner !== taskId))
   }
@@ -526,7 +529,16 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       const stands = registry.snapshotOf(entry.id)
       const status = stands?.status ?? (isEnded(entry) ? entry.status : 'interrupted')
       if (status === 'running' || status === 'waiting') {
-        return [{ task: restoredSummary(entry), status, endedAt: null, startedAt: stands?.startedAt ?? entry.startedAt ?? null, messages, waits: waitsOf(entry.id), tools: registry.activeTools(entry.id), ...mark }]
+        const waits = waitsOf(entry.id)
+        const withArrival = (value: unknown, kind: 'p' | 'q', field: 'requestId' | 'questionId') => {
+          if (!value || typeof value !== 'object') return value
+          const wait = value as Record<string, unknown>
+          const arrival = waitArrivals.get(`${kind}:${wait[field]}`)
+          return arrival?.taskId === entry.id ? { ...wait, requestedAt: arrival.at } : value
+        }
+        return [{ task: restoredSummary(entry), status, endedAt: null, startedAt: stands?.startedAt ?? entry.startedAt ?? null, messages,
+          waits: { permissions: waits.permissions.map(wait => withArrival(wait, 'p', 'requestId')),
+            questions: waits.questions.map(wait => withArrival(wait, 'q', 'questionId')) }, tools: registry.activeTools(entry.id), ...mark }]
       }
       return [{ task: restoredSummary(entry), status, endedAt: stands?.endedAt ?? entry.endedAt ?? entry.startedAt ?? now(), messages, ...mark }]
     })
@@ -691,7 +703,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
    */
   function receive(raw: unknown) {
     if (disposed) return
-    const event = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    let event = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
     const taskId = typeof event.taskId === 'string' ? event.taskId : ''
     const runId = registry.runOf(taskId)
     // No task's: dsh speaks of one unknown, or no longer at work.
@@ -700,13 +712,27 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       clearTaskWaitPlaces(taskId)
       return captureEnd(taskId, runId, event)
     }
+    const waitKey = event.type === 'permission' && typeof event.requestId === 'string' ? `p:${event.requestId}`
+      : event.type === 'task_question' && typeof event.questionId === 'string' ? `q:${event.questionId}` : null
+    if (waitKey) {
+      const previous = waitArrivals.get(waitKey)
+      const at = previous?.at ?? (lastWaitAt = Math.max(now(), lastWaitAt + 1))
+      waitArrivals.set(waitKey, { taskId, at })
+      event = { ...event, requestedAt: at }
+    }
     // Taken in first, its piece then, the snapshot it changed after (queued, not pushed, while it is taken in).
     depth += 1
     try {
       taskWords.receive(event)
       registry.receive(event)
-      if (event.type === 'task_permission_closed' && typeof event.requestId === 'string') releaseWaitPlace(`p:${event.requestId}`)
-      if (event.type === 'task_question_closed' && typeof event.questionId === 'string') releaseWaitPlace(`q:${event.questionId}`)
+      if (event.type === 'task_permission_closed' && typeof event.requestId === 'string') {
+        waitArrivals.delete(`p:${event.requestId}`)
+        releaseWaitPlace(`p:${event.requestId}`)
+      }
+      if (event.type === 'task_question_closed' && typeof event.questionId === 'string') {
+        waitArrivals.delete(`q:${event.questionId}`)
+        releaseWaitPlace(`q:${event.questionId}`)
+      }
     } finally {
       depth -= 1
     }

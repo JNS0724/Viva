@@ -250,7 +250,8 @@ export interface TaskPayloads {
   task_question_closed: TaskStream & ConversationPayloads['question_closed']
   task_steer: TaskStream & ConversationPayloads['user_steer']
   task_end: TaskStream & ConversationPayloads['turn_end'] & { message?: string | null }
-  task_question_pick: { taskId: string } & ConversationPayloads['question_pick']
+  task_question_pick: { taskId: string, questionId: string } & ConversationPayloads['question_pick']
+  task_question_custom: { taskId: string, questionId: string, id: string, text: string }
   task_question_answered: { taskId: string } & ConversationPayloads['question_answered']
   task_snapshot: { snapshot: import('../shared/ipc-results.ts').WindowSnapshot }
 }

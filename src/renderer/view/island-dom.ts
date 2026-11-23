@@ -88,11 +88,14 @@ const NEEDS_USER = new Set(['waiting', 'asking'])
 
 const elapsedSince = (view: IslandShown, now: number) => formatElapsed(now - (view.startedAt ?? now))
 
-export type BarAction = { kind: 'jump' } | { kind: 'tasks' } | { kind: 'task', taskId: string }
+export type BarAction = { kind: 'jump', taskId?: string } | { kind: 'tasks' } | { kind: 'task', taskId: string, focusQuestion: string }
 
 /** Title-bar badge clicks jump to a foreground request, open a waiting background task, or open background work when tasks run; idle is display-only. */
 export function barActionFor(view: IslandShown): BarAction | null {
-  if (NEEDS_USER.has(view.form)) return view.taskId ? { kind: 'task', taskId: view.taskId } : { kind: 'jump' }
+  if (NEEDS_USER.has(view.form)) {
+    if (view.taskId && view.question?.needsText) return { kind: 'task', taskId: view.taskId, focusQuestion: view.question.questionId }
+    return view.taskId ? { kind: 'jump', taskId: view.taskId } : { kind: 'jump' }
+  }
   if ((view.background?.count ?? 0) > 0) return { kind: 'tasks' }
   return null
 }
