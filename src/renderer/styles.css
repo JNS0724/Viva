@@ -529,7 +529,7 @@ body:has(.hub[data-open="true"]) .titlebar, body:has(.drawer[data-open="true"]) 
 .markdown li > ul, .markdown li > ol { margin: .2em 0 .3em; }
 .markdown li::marker { color: var(--ink-3); }
 .markdown .md-task { list-style: none; }
-.markdown ul:has(> .md-task) { padding-left: .2em; }
+.markdown ul[data-task-list="true"] { padding-left: .2em; }
 /* A list under a task item starts below its text, past the checkbox. */
 .markdown .md-task > ul, .markdown .md-task > ol { margin-left: 1.5em; }
 .markdown .md-task input { margin: 0 .5em 0 0; vertical-align: -0.1em; accent-color: var(--accent); }

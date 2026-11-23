@@ -925,7 +925,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
   }, { dailyNotes: true, ptc: true, ptcDrainSpill: !nextFails })
   const seedId = randomUUID()
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before PTC revision.' })
-  assert.equal(created.status, 'applied')
+  assert.equal(created.status, 'applied', JSON.stringify(created))
   const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
     operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
@@ -1027,7 +1027,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
   }, { dailyNotes: true, ptc: true, ptcFailure: failure })
   const seedId = randomUUID()
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before prepare revision.' })
-  assert.equal(created.status, 'applied')
+  assert.equal(created.status, 'applied', JSON.stringify(created))
   const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
     operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
@@ -1098,7 +1098,7 @@ test('a real DSH tool read archives and erases native results even when the next
   }, { dailyNotes: true })
   const seedId = randomUUID(), editId = randomUUID()
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before tool revision.' })
-  assert.equal(created.status, 'applied')
+  assert.equal(created.status, 'applied', JSON.stringify(created))
   const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
     operationId: editId, identity: created.receipt.identity, version: seeded.version, text,

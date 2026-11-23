@@ -111,7 +111,10 @@ function* blockParts(token: Token, ctx: Context, tight = false): IterableIterato
       function* items(): IterableIterator<MarkdownPart> {
         for (const item of list.items) yield { node: h('li', { class: item.task ? 'md-task' : null }), children: listContents(item, ctx) }
       }
-      yield { node: h(list.ordered ? 'ol' : 'ul', { start: list.ordered && list.start !== 1 ? list.start : null }), children: items() }
+      yield { node: h(list.ordered ? 'ol' : 'ul', {
+        start: list.ordered && list.start !== 1 ? list.start : null,
+        'data-task-list': !list.ordered && list.items.some(item => item.task) ? 'true' : null,
+      }), children: items() }
       break
     }
     case 'table': {
@@ -292,10 +295,22 @@ function lexOffThread(text: string, target: HTMLElement, active: () => boolean):
   })
 }
 
-/** Same shape and link handler. The renderer always handles the same href with the same answer's openLink. */
+/** Same shape and link handler. Presentation hints derived from child count/items sync without replacing the container. */
+const REVEAL_HINT_ATTRS = new Set(['data-large', 'data-task-list'])
+
 function sameElement(previous: ChildNode | null, next: HTMLElement): previous is HTMLElement {
-  return previous instanceof HTMLElement && previous.tagName === next.tagName && previous.attributes.length === next.attributes.length
-    && [...next.attributes].every(({ name, value }) => previous.getAttribute(name) === value)
+  if (!(previous instanceof HTMLElement) || previous.tagName !== next.tagName) return false
+  const prevAttrs = [...previous.attributes].filter(({ name }) => !REVEAL_HINT_ATTRS.has(name))
+  const nextAttrs = [...next.attributes].filter(({ name }) => !REVEAL_HINT_ATTRS.has(name))
+  return prevAttrs.length === nextAttrs.length && nextAttrs.every(({ name, value }) => previous.getAttribute(name) === value)
+}
+
+function syncHintAttributes(previous: HTMLElement, next: HTMLElement): void {
+  for (const name of REVEAL_HINT_ATTRS) {
+    const value = next.getAttribute(name)
+    if (value === null) previous.removeAttribute(name)
+    else previous.setAttribute(name, value)
+  }
 }
 
 /** Keep preview slots in place. A different subtree gets built before its old slot is replaced. */
@@ -335,6 +350,7 @@ function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before
       }
       yield
     } else if (sameElement(previous, part.node)) {
+      syncHintAttributes(previous, part.node)
       yield* revealParts(previous, part.children, null, previous === last ? onAdded : undefined)
     } else if (!previous && (part.node.tagName === 'TR' || part.node.tagName === 'LI')) {
       // Assemble each new row/item off-DOM so a frame slice never paints a partial row/item or triggers per-child AX updates.
@@ -366,11 +382,12 @@ export function refreshExpansionLabel(button: HTMLElement, remaining: number) {
 }
 
 const REVEAL_SLICE_MS = 5
-// DOM changes also cost layout and accessibility work after this script yields, especially table rows and full AX trees.
-const REVEAL_SLICE_NODES_MAX = 480
-const REVEAL_SLICE_NODES_MIN = 180
-const REVEAL_SLICE_NODES_INITIAL = 220
-const REVEAL_TARGET_FRAME_MS = 24
+// DOM changes also trigger periodic layout and full accessibility tree serialization (~200 ms cadence),
+// so keep per-frame node volume bounded and hold a damped ceiling after burst frames.
+const REVEAL_SLICE_NODES_MAX = 250
+const REVEAL_SLICE_NODES_MIN = 175
+const REVEAL_SLICE_NODES_INITIAL = 210
+const REVEAL_TARGET_FRAME_MS = 28
 
 /** Parse the full source together so later reference definitions still affect the opening. */
 export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string,
@@ -389,6 +406,7 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
     let firstAdded: HTMLElement | null = null
     const draw = revealParts(target, blocks(tokens, { openLink, image: null }), button, node => { firstAdded ??= node })
     let lastFrame = performance.now()
+    let maxSliceNodes = REVEAL_SLICE_NODES_MAX
     let sliceNodes = REVEAL_SLICE_NODES_INITIAL
     for (let done = false; !done;) {
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
@@ -397,9 +415,10 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
       const frameMs = now - lastFrame
       lastFrame = now
       if (frameMs > REVEAL_TARGET_FRAME_MS) {
-        sliceNodes = Math.max(REVEAL_SLICE_NODES_MIN, Math.floor(sliceNodes * (REVEAL_TARGET_FRAME_MS / frameMs)))
+        maxSliceNodes = Math.max(REVEAL_SLICE_NODES_MIN, Math.floor(maxSliceNodes * 0.85))
+        sliceNodes = Math.max(REVEAL_SLICE_NODES_MIN, Math.min(maxSliceNodes, Math.floor(sliceNodes * (REVEAL_TARGET_FRAME_MS / frameMs))))
       } else if (frameMs < 18) {
-        sliceNodes = Math.min(REVEAL_SLICE_NODES_MAX, Math.ceil(sliceNodes * 1.25))
+        sliceNodes = Math.min(maxSliceNodes, Math.ceil(sliceNodes * 1.05))
       }
       const until = now + REVEAL_SLICE_MS
       let remainingNodes = sliceNodes
@@ -418,9 +437,6 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
           else clearTabIndex()
         }
       }
-    }
-    for (const table of target.querySelectorAll<HTMLTableElement>('table.md-table')) {
-      if (table.tBodies[0] && table.tBodies[0].rows.length >= 200) table.dataset.large = 'true'
     }
     button.remove()
   } catch {
