@@ -24,7 +24,7 @@ export interface MemoryRuntimeResources {
   identity: MemoryIdentity
   effects: Effects
   openFileRestrictions(): MemoryFileRestrictions
-  openFileIndex(): MemoryFileIndex
+  openFileIndex(onCleanupPending: () => void): MemoryFileIndex
   readFileRevisionAtCommit(workspace: string, path: string): string | undefined
   readPhysicalFile?: ReadMemoryPhysicalFile
   openNotes(readable: (id: string) => boolean, currentJob: (key: string, generation: number) => boolean, options?: { onCommitted(): void, index?: MemoryFileIndexChanges, deferRecovery?: boolean }): MemoryNotes

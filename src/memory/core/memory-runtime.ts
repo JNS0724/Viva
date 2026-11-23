@@ -255,7 +255,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     },
   })
 
-  const fileIndex = resources.openFileIndex()
+  const queueIndexCleanup = () => effects.queue(DOCUMENT_CLEANUP, 'index', null)
+  const fileIndex = resources.openFileIndex(queueIndexCleanup)
+  // Older databases can have a pending checkpoint with no durable cleanup job.
+  if (fileIndex.pendingCleanup()) queueIndexCleanup()
   const documentEvidence = notes && documents ? createMemoryDocumentEvidence({ notes: notes.storage, documents, hash: memoryHash,
       readable: id => fileSourceCurrent(id), source: id => store.readSource(id) ?? undefined,
       allowsText: (text) => !looksSecret(text),
@@ -396,7 +399,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     store.tx(() => {
       if (!effects.holds(job)) return
       apply()
-      if (fileIndex?.pendingCleanup()) effects.queue('memory.document-cleanup', 'index', null)
       if (!unresolved.size) effects.finishGeneration(job)
     })
     return unresolved
@@ -1148,10 +1150,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     if (files) {
       effects.queue(INDEX_SEED, 'all', null)
       void effects.wake()
-      if (fileIndex?.pendingCleanup()) {
-        effects.queue(DOCUMENT_CLEANUP, 'index', null)
-        void effects.wake()
-      }
       void fileRetrieval?.prepareVectors().catch(() => {})
     }
     return { fullText: Boolean(files), semantic: Boolean(files), ...(files ? { files } : {}) }

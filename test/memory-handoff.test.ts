@@ -17,6 +17,7 @@ import { createAssistantMessage, createToolResultMessage, createUserMessage, Too
 import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
+import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
@@ -830,7 +831,9 @@ for (const failure of ['invalid-json', 'http-error'] as const) {
     const app = await setup(t, request => {
       const system = JSON.stringify(request.system)
       if (system.includes('整理最近完成的会话回合')) return { text: JSON.stringify({ status: 'write', title: '周报', markdown: '周报提交邮箱已记录。' }) }
-      if (system.includes('Consolidate reusable abstractions')) {
+      const blocks: readonly unknown[] = Array.isArray(request.system) ? request.system : [request.system]
+      if (blocks.some(block => block === DREAM_CONSOLIDATE_SYSTEM
+        || (typeof block === 'object' && block !== null && 'text' in block && block.text === DREAM_CONSOLIDATE_SYSTEM))) {
         dreamRequests++
         return failure === 'http-error' ? { httpError: 503 } : { text: 'not JSON' }
       }
