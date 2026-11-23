@@ -563,7 +563,10 @@ async function main() {
         workDir: path.join(outputDir, 'viva-work', 'chinese'),
         modelRoot: hasEmbedding ? modelRoot : undefined,
         runtimeRoot: hasEmbedding ? runtimeRoot : undefined,
-        modeLabel: hasEmbedding ? 'viva-hybrid-granite' : 'viva-bm25',
+        modeLabel: hasEmbedding
+          ? (vivaIncludeAutoContext ? 'viva-hybrid-granite' : 'viva-hybrid-react-only')
+          : (vivaIncludeAutoContext ? 'viva-bm25' : 'viva-bm25-react-only'),
+        includeAutoContext: vivaIncludeAutoContext,
       })
       report.chinese.push(...vivaCn)
       save()

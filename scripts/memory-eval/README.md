@@ -43,7 +43,7 @@ This repository does **not** redistribute LongMemEval datasets, per-item ground-
 
 - **Original LongMemEval cleaned dataset**: [`xiaowu0162/longmemeval-cleaned`](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) (dataset card lists **MIT License**).
 - **ReMe revised LongMemEval-S dataset**: [`agentscope-ai/ReMe_longmemeval_clean_s_v2`](https://huggingface.co/datasets/agentscope-ai/ReMe_longmemeval_clean_s_v2) (documents data corrections and requests citing the original LongMemEval paper; check upstream dataset terms before redistributing cleaned JSON, ground-truth answers, or raw dialogues).
-- **Third-party judge prompt notices**: The four English LongMemEval judge prompts in [`judge.ts`](./judge.ts) are ported from `agentscope-ai/ReMe` (`54fa338`, Apache-2.0) and upstream `xiaowu0162/LongMemEval` (MIT, Copyright (c) 2024 Di Wu). See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) and [`../licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt). Viva's own code remains licensed under the [MIT License](../../LICENSE).
+- **Third-party prompt notices**: The four English LongMemEval judge prompts in [`judge.ts`](./judge.ts) and the ReAct answering prompt (`VIVA_AGENTIC_ANSWER_SYSTEM`) in [`viva-runner.ts`](./viva-runner.ts) are ported from `agentscope-ai/ReMe` (`54fa338`, Apache-2.0) and upstream `xiaowu0162/LongMemEval` (MIT, Copyright (c) 2024 Di Wu). See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) and [`../licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt). Viva's own code remains licensed under the [MIT License](../../LICENSE).
 
 ## Benchmark Scope Note
 

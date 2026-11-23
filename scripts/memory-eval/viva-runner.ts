@@ -396,8 +396,12 @@ export async function runVivaScaleBench(
   }
 }
 
-/** ReAct answering prompt aligned verbatim with ReMe plugins/lme/src/reme_lme/agentic_answer.yaml,
- * adapted only for Viva's native memory tool names so the answering strategy & budget are identical. */
+/**
+ * ReAct answering prompt ported from agentscope-ai/ReMe (commit 54fa338,
+ * plugins/lme/src/reme_lme/agentic_answer.yaml, Apache-2.0), adapted to Viva's native
+ * memory tool names (memory_recall, memory_read, memory_node_search) so answering strategy
+ * and tool budget match apples-to-apples. See ./THIRD_PARTY_NOTICES.md and ../licenses/Apache-2.0.txt.
+ */
 const VIVA_AGENTIC_ANSWER_SYSTEM = [
   'You are a memory retrieval assistant. You MUST use the memory_recall tool to find information before answering.',
   '- Your total number of tool calls should be at most 9 times.',
@@ -474,9 +478,9 @@ const VIVA_ANSWER_TOOLS: ToolSchema[] = [
   },
 ]
 
-async function runVivaAgenticAnswer(
+export async function runVivaAgenticAnswer(
   ctx: Pick<Context, 'llm'>,
-  owner: ReturnType<typeof openMemoryOwner>,
+  owner: Pick<ReturnType<typeof openMemoryOwner>, 'sessionContext' | 'runtime'>,
   readerSessionId: string,
   question: string,
   queryTimeIso: string,
@@ -771,7 +775,7 @@ async function ensureVivaVectorsReady(
 export async function runVivaChineseEval(
   ctx: Pick<Context, 'llm'>,
   cases: readonly MemorySemanticCase[],
-  opts: { workDir: string, modelRoot?: string, runtimeRoot?: string, modeLabel: string },
+  opts: { workDir: string, modelRoot?: string, runtimeRoot?: string, modeLabel: string, includeAutoContext?: boolean },
 ): Promise<ChineseCaseSystemResult[]> {
   const results: ChineseCaseSystemResult[] = []
   for (const fixture of cases) {
@@ -865,7 +869,7 @@ export async function runVivaChineseEval(
           phase.recallQuery,
           `2026-11-${String(10 + pIdx).padStart(2, '0')}T23:30:00`,
           telemetry,
-          { includeAutoContext: true },
+          { includeAutoContext: opts.includeAutoContext ?? true },
         )
 
         let isolationLeaks: number | undefined

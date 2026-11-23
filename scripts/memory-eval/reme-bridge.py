@@ -35,6 +35,22 @@ def _safe_work_subdir(work_dir: str, item_id: str) -> Path:
         raise ValueError(f"Refusing unsafe work directory outside root: {item_id}")
     return target
 
+
+def _require_job_success(resp: Any, stage: str) -> Any:
+    """Fail explicitly when a ReMe run_job() returns success=False instead of raising."""
+    if resp is None:
+        raise RuntimeError(f"ReMe job '{stage}' returned None")
+    success = resp.get("success", True) if isinstance(resp, dict) else getattr(resp, "success", True)
+    if success is False:
+        detail = (
+            (resp.get("error") or resp.get("message") or resp.get("answer"))
+            if isinstance(resp, dict)
+            else (getattr(resp, "error", None) or getattr(resp, "message", None) or getattr(resp, "answer", None))
+        )
+        msg = str(detail or "unknown failure").strip()[:240]
+        raise RuntimeError(f"ReMe job '{stage}' returned success=False: {msg}")
+    return resp
+
 try:
     import resource
 except ImportError:  # Windows does not provide POSIX resource module
@@ -311,7 +327,7 @@ async def cmd_offline_eval(payload: dict[str, Any]) -> dict[str, Any]:
     await app.start()
     try:
         t0 = time.perf_counter()
-        await app.run_job("index_update")
+        _require_job_success(await app.run_job("index_update"), "offline/index_update")
         index_ms = (time.perf_counter() - t0) * 1000.0
 
         query_results = []
@@ -322,7 +338,7 @@ async def cmd_offline_eval(payload: dict[str, Any]) -> dict[str, Any]:
                 kwargs["start_date"] = q["from"]
             if q.get("through"):
                 kwargs["end_date"] = q["through"]
-            resp = await app.run_job("search", **kwargs)
+            resp = _require_job_success(await app.run_job("search", **kwargs), f"offline/search({q['id']})")
             elapsed_ms = (time.perf_counter() - qs) * 1000.0
             hits = _extract_hits_from_search_response(resp, path_to_id)
             query_results.append({
@@ -334,7 +350,7 @@ async def cmd_offline_eval(payload: dict[str, Any]) -> dict[str, Any]:
         node_results = []
         for q in payload.get("nodeQueries", []):
             qs = time.perf_counter()
-            resp = await app.run_job("node_search", query=q["text"], limit=5)
+            resp = _require_job_success(await app.run_job("node_search", query=q["text"], limit=5), f"offline/node_search({q['id']})")
             elapsed_ms = (time.perf_counter() - qs) * 1000.0
             nodes = _extract_nodes_from_node_search_response(resp, path_to_id)
             node_results.append({
@@ -632,14 +648,17 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
             enable_dream=True,
             index_sessions=bool(payload.get("indexSessions", True)),
         )
-        app = Application(**cfg)
-        await app.start()
         telemetry = _empty_telemetry()
         phase_ref = ["ingest"]
-        _install_llm_meter(app, telemetry, phase_ref)
         phase_outputs = []
         case_error = None
+        app = None
+        started = False
         try:
+            app = Application(**cfg)
+            await app.start()
+            started = True
+            _install_llm_meter(app, telemetry, phase_ref)
             for p_idx, phase in enumerate(case["phases"]):
                 day_str = f"2026-11-{10 + p_idx:02d}"
                 formatted = []
@@ -650,32 +669,44 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
 
                 phase_ref[0] = "ingest"
                 t_ing = time.perf_counter()
-                await app.run_job(
-                    "auto_memory",
-                    messages=formatted,
-                    session_id=f"{case['id']}-{phase['id']}",
-                    date=day_str,
+                _require_job_success(
+                    await app.run_job(
+                        "auto_memory",
+                        messages=formatted,
+                        session_id=f"{case['id']}-{phase['id']}",
+                        date=day_str,
+                    ),
+                    f"auto_memory({phase['id']})",
                 )
-                await app.run_job("index_update")
+                _require_job_success(await app.run_job("index_update"), f"index_update/ingest({phase['id']})")
                 telemetry["ingestMs"] += (time.perf_counter() - t_ing) * 1000.0
 
                 phase_ref[0] = "dream"
                 t_dr = time.perf_counter()
-                await app.run_job("auto_dream", date=day_str, scan_days=2, max_units=5)
-                await app.run_job("index_update")
-                await app.run_job("digest_update")
+                _require_job_success(
+                    await app.run_job("auto_dream", date=day_str, scan_days=2, max_units=5),
+                    f"auto_dream({phase['id']})",
+                )
+                _require_job_success(await app.run_job("index_update"), f"index_update/dream({phase['id']})")
+                _require_job_success(await app.run_job("digest_update"), f"digest_update({phase['id']})")
                 telemetry["dreamMs"] += (time.perf_counter() - t_dr) * 1000.0
 
                 # Also capture raw search hits + agentic answer
-                search_resp = await app.run_job("search", query=phase["recallQuery"], limit=5)
+                search_resp = _require_job_success(
+                    await app.run_job("search", query=phase["recallQuery"], limit=5),
+                    f"search({phase['id']})",
+                )
                 hits = _extract_hits_from_search_response(search_resp, {})
 
                 phase_ref[0] = "answer"
                 t_ans = time.perf_counter()
-                ans_resp = await app.run_job(
-                    "agentic_answer",
-                    query=phase["recallQuery"],
-                    query_time=f"{day_str}T23:30:00",
+                ans_resp = _require_job_success(
+                    await app.run_job(
+                        "agentic_answer",
+                        query=phase["recallQuery"],
+                        query_time=f"{day_str}T23:30:00",
+                    ),
+                    f"agentic_answer({phase['id']})",
                 )
                 telemetry["answerMs"] += (time.perf_counter() - t_ans) * 1000.0
 
@@ -689,7 +720,11 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
             case_error = f"{type(exc).__name__}: {exc}"
         finally:
             stats = _workspace_stats(ws)
-            await app.close()
+            if app is not None and started:
+                try:
+                    await app.close()
+                except Exception:
+                    pass
 
         results.append({
             "caseId": case["id"],
@@ -744,8 +779,11 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
             if enable_dream and prev_date is not None and prev_date != date_str and prev_date not in dreamed_dates:
                 phase_ref[0] = "dream"
                 t_dr = time.perf_counter()
-                await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5)
-                await app.run_job("index_update")
+                _require_job_success(
+                    await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5),
+                    f"auto_dream({prev_date})",
+                )
+                _require_job_success(await app.run_job("index_update"), f"index_update/dream({prev_date})")
                 telemetry["dreamMs"] += (time.perf_counter() - t_dr) * 1000.0
                 dreamed_dates.add(prev_date)
                 dream_triggers += 1
@@ -761,13 +799,16 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
             ]
             phase_ref[0] = "ingest"
             t_ing = time.perf_counter()
-            await app.run_job(
-                "auto_memory",
-                messages=formatted,
-                session_id=sess["sessionId"],
-                date=date_str,
+            _require_job_success(
+                await app.run_job(
+                    "auto_memory",
+                    messages=formatted,
+                    session_id=sess["sessionId"],
+                    date=date_str,
+                ),
+                f"auto_memory({sess['sessionId']})",
             )
-            await app.run_job("index_update")
+            _require_job_success(await app.run_job("index_update"), f"index_update/ingest({sess['sessionId']})")
             telemetry["ingestMs"] += (time.perf_counter() - t_ing) * 1000.0
             sessions_ingested += 1
             prev_date = date_str
@@ -775,20 +816,26 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
         if enable_dream and prev_date is not None and prev_date not in dreamed_dates:
             phase_ref[0] = "dream"
             t_dr = time.perf_counter()
-            await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5)
-            await app.run_job("index_update")
+            _require_job_success(
+                await app.run_job("auto_dream", date=prev_date, scan_days=2, max_units=5),
+                f"auto_dream({prev_date})",
+            )
+            _require_job_success(await app.run_job("index_update"), f"index_update/dream({prev_date})")
             telemetry["dreamMs"] += (time.perf_counter() - t_dr) * 1000.0
             dreamed_dates.add(prev_date)
             dream_triggers += 1
 
-        await app.run_job("digest_update")
+        _require_job_success(await app.run_job("digest_update"), "digest_update")
 
         phase_ref[0] = "answer"
         t_ans = time.perf_counter()
-        ans_resp = await app.run_job(
+        ans_resp = _require_job_success(
+            await app.run_job(
+                "agentic_answer",
+                query=item["question"],
+                query_time=item["queryTimeIso"],
+            ),
             "agentic_answer",
-            query=item["question"],
-            query_time=item["queryTimeIso"],
         )
         telemetry["answerMs"] += (time.perf_counter() - t_ans) * 1000.0
         answer = str(ans_resp.answer or "").strip()

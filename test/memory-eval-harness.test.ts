@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
+import type { Context } from '@deepseek-ai/cordis'
 import { hasTruncatedAnswerEvidence, LME_QUESTION_TYPES, parseLmeDate, selectStratifiedLmeSlice, sortAndFilterLmeSessions } from '../scripts/memory-eval/lme-slice.ts'
 import { lmeJudgePrompt } from '../scripts/memory-eval/judge.ts'
 import { splitTextByCodePoints } from '../scripts/memory-eval/embedding-server.ts'
-import { buildOfflineBundle, checkPatterns, safeWorkSubdir, scoreOfflineQueries } from '../scripts/memory-eval/viva-runner.ts'
+import { buildOfflineBundle, checkPatterns, runVivaAgenticAnswer, safeWorkSubdir, scoreOfflineQueries } from '../scripts/memory-eval/viva-runner.ts'
 import { parseEvalSuites, renderSummaryMarkdown } from '../scripts/memory-eval/run.ts'
 import type { LmeItem } from '../scripts/memory-eval/types.ts'
 
@@ -274,5 +278,93 @@ describe('memory-eval harness', () => {
     assert.match(md, /裁判错误排除.*1 题/)
     assert.match(md, /TRUNCATED: Information not found/)
     assert.match(md, /JUDGE_ERR: valid answer/)
+  })
+
+  it('runVivaAgenticAnswer skips auto-context when includeAutoContext is false and sends only the raw question', async () => {
+    const contextCalls: unknown[] = []
+    const sentFirstMessages: string[] = []
+    const fakeOwner = {
+      sessionContext: () => ({ scope: { kind: 'user' as const, id: 'u1' } }),
+      runtime: {
+        async handleModelRequest(req: { op: string }) {
+          if (req.op === 'context') {
+            contextCalls.push(req)
+            return '<memory_context>PREINJECTED_SECRET</memory_context>'
+          }
+          return '{"status":"empty"}'
+        },
+        handle() { return '{"status":"empty"}' },
+      },
+    } as unknown as Parameters<typeof runVivaAgenticAnswer>[1]
+    const fakeCtx = {
+      llm: {
+        async *stream(req: { messages: Array<{ content: Array<{ type: string, text?: string }> }> }) {
+          const firstText = req.messages[0]?.content.find(c => c.type === 'text')?.text ?? ''
+          sentFirstMessages.push(firstText)
+          yield { type: 'text-delta', delta: 'Direct answer.' }
+        },
+      },
+    } as unknown as Pick<Context, 'llm'>
+    const telemetry = { llmCalls: 0, inputTokens: 0, outputTokens: 0, ingestMs: 0, dreamMs: 0, answerMs: 0, toolCalls: 0, toolNames: {} }
+
+    const rawQ = '评审技术方案应该按什么顺序回答？'
+    await runVivaAgenticAnswer(fakeCtx, fakeOwner, 's1', rawQ, '2026-11-10T23:30:00', telemetry, { includeAutoContext: false })
+    assert.equal(contextCalls.length, 0, 'includeAutoContext=false must not request op=context')
+    assert.equal(sentFirstMessages[0], rawQ, 'first user message must contain only the raw question')
+
+    await runVivaAgenticAnswer(fakeCtx, fakeOwner, 's1', rawQ, '2026-11-10T23:30:00', telemetry, { includeAutoContext: true })
+    assert.equal(contextCalls.length, 1)
+    assert.match(sentFirstMessages[1]!, /PREINJECTED_SECRET/)
+  })
+
+  it('reme-bridge marks item as error and does not count sessionsIngested when run_job returns success=False', () => {
+    const pythonCmd = process.platform === 'win32' ? 'python' : 'python3'
+    let hasPython = false
+    try { execFileSync(pythonCmd, ['--version'], { stdio: 'ignore' }); hasPython = true } catch { /* skip if no python */ }
+    if (!hasPython) return
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'reme-bridge-test-'))
+    try {
+      const bridgePath = path.resolve('scripts/memory-eval/reme-bridge.py')
+      const script = [
+        'import asyncio, importlib.util, json, sys, types',
+        'fail_stage = "auto_memory"',
+        'class FakeApp:',
+        '    def __init__(self, **cfg): self.cfg = cfg; self.started = False',
+        '    async def start(self): self.started = True',
+        '    async def close(self): self.started = False',
+        '    async def run_job(self, name, **kwargs):',
+        '        if name == fail_stage:',
+        '            return types.SimpleNamespace(success=False, answer=f"error in {name}")',
+        '        return types.SimpleNamespace(success=True, answer="ok")',
+        'fake_reme = types.ModuleType("reme")',
+        'fake_reme.Application = FakeApp',
+        'sys.modules["reme"] = fake_reme',
+        `spec = importlib.util.spec_from_file_location("reme_bridge", ${JSON.stringify(bridgePath)})`,
+        'mod = importlib.util.module_from_spec(spec)',
+        'spec.loader.exec_module(mod)',
+        'mod._configure_app_dict = lambda *a, **k: {}',
+        'async def main():',
+        '    global fail_stage',
+        '    item = {"question_id": "q-fail", "question_type": "single-session-user", "question": "q", "queryTimeIso": "2023-05-20T12:00:00", "sessions": [{"sessionId": "s1", "dateStr": "2023-05-10", "isoStr": "2023-05-10T10:00:00", "messages": [{"role": "user", "content": "hi"}]}]}',
+        `    r1 = await mod._run_one_lme_item(item, {"workDir": ${JSON.stringify(tempDir)}, "enableDream": False}, "k")`,
+        '    fail_stage = "agentic_answer"',
+        `    r2 = await mod._run_one_lme_item(item, {"workDir": ${JSON.stringify(tempDir)}, "enableDream": False}, "k")`,
+        '    print(json.dumps({"ingestFail": r1, "answerFail": r2}))',
+        'asyncio.run(main())',
+      ].join('\n')
+      const out = execFileSync(pythonCmd, ['-c', script], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
+      const parsed = JSON.parse(out.trim()) as {
+        ingestFail: { sessionsIngested: number, error?: string, answer: string }
+        answerFail: { sessionsIngested: number, error?: string, answer: string }
+      }
+      assert.equal(parsed.ingestFail.sessionsIngested, 0, 'failed ingest job must not increment sessionsIngested')
+      assert.match(parsed.ingestFail.error ?? '', /auto_memory.*success=False/)
+      assert.equal(parsed.ingestFail.answer, '')
+      assert.equal(parsed.answerFail.sessionsIngested, 1)
+      assert.match(parsed.answerFail.error ?? '', /agentic_answer.*success=False/)
+      assert.equal(parsed.answerFail.answer, '')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })
