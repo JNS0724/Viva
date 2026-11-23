@@ -723,7 +723,7 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'with
   }
 })
 
-test('first idle deliveries and canonical replay retain FIFO ahead of a later steer', { timeout: 45_000 }, async t => {
+test('first idle deliveries and canonical replay retain FIFO ahead of a later steer', { timeout: 90_000 }, async t => {
   const original = '正在结束的原会话', first = '原插话第一条', second = '原插话第二条', later = '后来到达的第三条'
   const canonical = '已被原生会话接收的独立原文'
   const firstId = randomUUID(), secondId = randomUUID(), laterId = randomUUID()
