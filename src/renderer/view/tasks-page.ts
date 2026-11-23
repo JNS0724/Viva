@@ -148,12 +148,23 @@ type StepItem = ReturnType<typeof traceItems>[number]
 export const STEPS_SHOWN = 100
 const stepRows = new WeakMap<HTMLElement, Map<string, { item: StepItem, node: HTMLElement }>>()
 
+// A panel toggle reuses the immutable task view. Keep its formatted trace across collapse and expansion.
+const taskTraces = new WeakMap<BackgroundTask['view'], { locale: ReturnType<typeof getLocale>, items: StepItem[] }>()
+function taskTrace(view: BackgroundTask['view']): StepItem[] {
+  const locale = getLocale()
+  const cached = taskTraces.get(view)
+  if (cached?.locale === locale) return cached.items
+  const items = traceItems(view)
+  taskTraces.set(view, { locale, items })
+  return items
+}
+
 function stepRow(item: StepItem, handlers: Handlers) {
   return traceNode(item as TraceItem, handlers)
 }
 
 function updateSteps(section: HTMLElement, state: State, task: BackgroundTask, handlers: Handlers) {
-  const items = traceItems(task.view)
+  const items = taskTrace(task.view)
   const open = state.tasks.page.steps
   const toggle = section.querySelector<HTMLButtonElement>('.tp-toggle')!
   const label = t("tasks-page.activity.steps", { length: items.length, value2: open ? t("tasks-page.collapse") : t("tasks-page.expand") })
@@ -188,7 +199,7 @@ function updateSteps(section: HTMLElement, state: State, task: BackgroundTask, h
 }
 
 function stepsView(state: State, task: BackgroundTask, handlers: Handlers) {
-  if (!traceItems(task.view).length) return null
+  if (!taskTrace(task.view).length) return null
   const section = h('section', { class: 'tp-steps', 'aria-label': t("drawer.activity") },
     h('button', { class: 'tp-toggle', type: 'button', onClick: () => handlers.toggleTaskSteps() },
       ''))
@@ -215,7 +226,7 @@ function mainView(state: State, handlers: Handlers, now: number) {
     return h('div', { class: 'tp-main tp-empty' },
       h('p', { class: 'help', text: t("tasks-page.no.background.work.yet.type.a.request") }))
   }
-  const selectedDetail = state.traceDetail ? traceItems(task.view).find(item => item.key === state.traceDetail!.key) : null
+  const selectedDetail = state.traceDetail ? taskTrace(task.view).find(item => item.key === state.traceDetail!.key) : null
   if (selectedDetail) {
     const detailState: State = { ...state, ...task.view, conversationId: task.segmentId, traceDetail: state.traceDetail }
     return h('div', { class: 'tp-main tp-detail', 'data-task': task.id },

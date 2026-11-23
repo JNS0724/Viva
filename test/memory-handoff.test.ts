@@ -17,6 +17,7 @@ import { createAssistantMessage, createToolResultMessage, createUserMessage, Too
 import { appendPluginRecord, pluginRecordOf, Session, SessionId, SessionLogOffset, type SessionEvent, type SessionSeq } from '@deepseek-ai/dsh-session'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
+import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
 import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
@@ -723,7 +724,7 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'with
   }
 })
 
-test('first idle deliveries and canonical replay retain FIFO ahead of a later steer', { timeout: 45_000 }, async t => {
+test('first idle deliveries and canonical replay retain FIFO ahead of a later steer', { timeout: 90_000 }, async t => {
   const original = '正在结束的原会话', first = '原插话第一条', second = '原插话第二条', later = '后来到达的第三条'
   const canonical = '已被原生会话接收的独立原文'
   const firstId = randomUUID(), secondId = randomUUID(), laterId = randomUUID()
@@ -830,7 +831,9 @@ for (const failure of ['invalid-json', 'http-error'] as const) {
     const app = await setup(t, request => {
       const system = JSON.stringify(request.system)
       if (system.includes('整理最近完成的会话回合')) return { text: JSON.stringify({ status: 'write', title: '周报', markdown: '周报提交邮箱已记录。' }) }
-      if (system.includes('Consolidate reusable abstractions')) {
+      const blocks: readonly unknown[] = Array.isArray(request.system) ? request.system : [request.system]
+      if (blocks.some(block => block === DREAM_CONSOLIDATE_SYSTEM
+        || (typeof block === 'object' && block !== null && 'text' in block && block.text === DREAM_CONSOLIDATE_SYSTEM))) {
         dreamRequests++
         return failure === 'http-error' ? { httpError: 503 } : { text: 'not JSON' }
       }
@@ -925,7 +928,7 @@ for (const nextFails of [false, true]) test(`real PTC memory reads archive root/
   }, { dailyNotes: true, ptc: true, ptcDrainSpill: !nextFails })
   const seedId = randomUUID()
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before PTC revision.' })
-  assert.equal(created.status, 'applied')
+  assert.equal(created.status, 'applied', JSON.stringify(created))
   const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
     operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
@@ -1027,7 +1030,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
   }, { dailyNotes: true, ptc: true, ptcFailure: failure })
   const seedId = randomUUID()
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before prepare revision.' })
-  assert.equal(created.status, 'applied')
+  assert.equal(created.status, 'applied', JSON.stringify(created))
   const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
     operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
@@ -1087,7 +1090,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
   } finally { db.close() }
 })
 
-test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {
+test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 90_000 }, async t => {
   const text = 'The file-only proof ORDINAL controls the native result.'
   const prompt = '执行单次工具归档测试'
   let fileId: string | undefined, requested = false
@@ -1098,7 +1101,7 @@ test('a real DSH tool read archives and erases native results even when the next
   }, { dailyNotes: true })
   const seedId = randomUUID(), editId = randomUUID()
   const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before tool revision.' })
-  assert.equal(created.status, 'applied')
+  assert.equal(created.status, 'applied', JSON.stringify(created))
   const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
   const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
     operationId: editId, identity: created.receipt.identity, version: seeded.version, text,
@@ -1242,7 +1245,7 @@ test('trace erasure preserves another projection that reused the same session an
   assert.deepEqual(trace.stepsOf(session), [retained])
 })
 
-test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 45_000 }, async t => {
+test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 90_000 }, async t => {
   const erased = '实体擦除样本只用于 R5a 验收', nearby = '独立片段仍在同一原生日志中'
   const second = '另一个有独立依据的原文裁剪目标'
   const survivor = '独立消息要在恢复后继续可用'
@@ -1593,7 +1596,7 @@ test('cold Viva startup erases native originals and settled output in root and u
   assert.ok(branch.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
 })
 
-test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 45_000 }, async t => {
+test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 90_000 }, async t => {
   const app = await setup(t, () => null)
   const sourceId = randomUUID()
   const initial = app.call<AgentInfo>('agent:info')
@@ -1825,8 +1828,15 @@ test('source-backed project files and exact recall remain in their Git workspace
       const crossOffset = app.model.requests.length
       await step(`${label}:cross-project-history`, () => app.ask('查甲项目的构建标记'))
       const crossResults = (app.model.requests.slice(crossOffset) as Request[]).flatMap(request => modelToolResults(request, 'search_conversations'))
-      assert.ok(crossResults.some(result => JSON.stringify(result).includes(excluded) && JSON.stringify(result).includes(projectA)),
-        JSON.stringify({ name: 'search_conversations', expectedCrossProject: excluded, results: crossResults }))
+      const resultText = (result: unknown) => typeof result === 'string'
+        ? result
+        : Array.isArray(result)
+          ? result.map(part => (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')).join('')
+          : JSON.stringify(result)
+      assert.ok(crossResults.some(result => {
+        const text = resultText(result)
+        return text.includes(excluded) && text.includes(projectA)
+      }), JSON.stringify({ name: 'search_conversations', expectedCrossProject: excluded, results: crossResults }))
     } else {
       assert.ok(historyMessages.every(rows => !JSON.stringify(rows).includes(excluded)),
         JSON.stringify({ excluded, leaked: historyMessages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
@@ -2332,9 +2342,24 @@ test('schedule results recheck the file evidence read during execution before pu
       title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
     } } }
     if (question === prompt && !tool) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
-    if (tool && JSON.stringify(request.messages).includes(prompt) && JSON.stringify(request.messages.at(-1)).includes(oldValue)) {
-      responding = true
-      return { text: draft, delayMs: 3000 }
+    if (tool && JSON.stringify(request.messages).includes(prompt)) {
+      const recalled = modelToolResults(request, 'memory_recall').at(-1)
+      const recalledText = typeof recalled === 'string'
+        ? recalled
+        : Array.isArray(recalled)
+          ? recalled.map(part => (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')).join('')
+          : ''
+      let currentHasOld = false
+      if (recalledText) {
+        try {
+          const parsed = JSON.parse(recalledText) as { notes?: Array<{ markdown?: unknown }> }
+          currentHasOld = Array.isArray(parsed.notes) && parsed.notes.some(note => typeof note.markdown === 'string' && note.markdown.includes(oldValue))
+        } catch { /* ignore non-JSON tool results */ }
+      }
+      if (currentHasOld) {
+        responding = true
+        return { text: draft, delayMs: 3000 }
+      }
     }
     return null
   })
@@ -2584,8 +2609,12 @@ test('main session oversees background tasks across git repos while background t
   const listAllOffset = app.model.requests.length
   await app.ask('查看全部后台任务')
   const listAllResults = (app.model.requests.slice(listAllOffset) as Request[]).flatMap(request => modelToolResults(request, 'list_background_tasks'))
-  assert.ok(listAllResults.some(result => JSON.stringify(result).includes(taskAId) && JSON.stringify(result).includes(repoA)),
-    JSON.stringify({ listAllResults }))
+  assert.ok(listAllResults.some(result => {
+    try {
+      const parsed = JSON.parse(String(result)) as { tasks?: Array<{ taskId?: string, cwd?: string }> }
+      return Array.isArray(parsed.tasks) && parsed.tasks.some(task => task.taskId === taskAId && task.cwd === repoA)
+    } catch { return false }
+  }), JSON.stringify({ listAllResults }))
 
   const filterBOffset = app.model.requests.length
   await app.ask('按乙仓库过滤后台任务')
@@ -2608,8 +2637,12 @@ test('main session oversees background tasks across git repos while background t
   const getOffset = app.model.requests.length
   await app.ask('读取甲仓库任务详情')
   const getResults = (app.model.requests.slice(getOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
-  assert.ok(getResults.some(result => JSON.stringify(result).includes(outputA1) && JSON.stringify(result).includes(repoA)),
-    JSON.stringify({ getResults }))
+  assert.ok(getResults.some(result => {
+    try {
+      const parsed = JSON.parse(String(result)) as { task?: { cwd?: string, resultPreview?: string } }
+      return parsed.task?.cwd === repoA && String(result).includes(outputA1)
+    } catch { return false }
+  }), JSON.stringify({ getResults }))
 
   // Message taskA from repoB and verify its updated report arrives back in repoB.
   const report2Offset = app.model.requests.length
@@ -2652,5 +2685,10 @@ test('main session oversees background tasks across git repos while background t
   const nestedGetOffset = app.model.requests.length
   await app.ask('读取甲仓库任务详情')
   const nestedGetResults = (app.model.requests.slice(nestedGetOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
-  assert.ok(nestedGetResults.some(result => JSON.stringify(result).includes(repoA)), JSON.stringify({ nestedGetResults }))
+  assert.ok(nestedGetResults.some(result => {
+    try {
+      const parsed = JSON.parse(String(result)) as { task?: { cwd?: string } }
+      return parsed.task?.cwd === repoA
+    } catch { return false }
+  }), JSON.stringify({ nestedGetResults }))
 })

@@ -16,6 +16,25 @@ function fixture(t: test.TestContext) {
   db.exec(APP_DB_PRAGMAS); temp.defer(()=>db.close())
   return {db,path,index:openMemoryFileIndex({db}),defer:temp.defer}
 }
+test('the first vector generation needs no cleanup and replacing stored vectors schedules a checkpoint', t => {
+  const { db } = fixture(t)
+  let queued = 0
+  const index = openMemoryFileIndex({ db, onCleanupPending: () => { queued++ } })
+  const space = { fingerprint: 'initial', dimensions: 2 }
+  const generation = index.beginVectors(space)
+  assert.equal(index.pendingCleanup(), 0)
+  assert.equal(queued, 0)
+  index.accept(file('tea'), null)
+  const refs = index.missingVectors(generation).map(chunk => chunk.ref)
+  assert.ok(refs.length)
+  index.stageVectors(generation, refs.map(ref => ({ ref, vectors: [new Float32Array([1, 0])] })))
+  index.beginVectors({ ...space, fingerprint: 'replacement' })
+  assert.equal(queued, 1)
+  assert.equal(index.pendingCleanup(), 1)
+  index.recover()
+  assert.equal(index.pendingCleanup(), 0)
+})
+
 test('accepted snapshot CAS and versioned chunks enforce optimistic concurrency',t=>{
   const {index}=fixture(t), authorized=file('authorized','tea tea tea'), hidden=file('hidden','tea')
   index.accept(hidden,null); index.accept(authorized,null)

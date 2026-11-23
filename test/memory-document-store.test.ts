@@ -501,10 +501,14 @@ for (const point of ['intent', 'receipt', 'checkpoint'] as const) {
 
 test('openMemoryDocuments refuses pre-v11 schemas before mutating tables or opening the journal', t => {
   const root = mkdtempSync(join(tmpdir(), 'memory-documents-legacy-'))
-  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const dbs: DatabaseSync[] = []
+  t.after(() => {
+    for (const db of dbs) db.close()
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
 
   const standaloneDb = new DatabaseSync(join(root, 'standalone.db'))
-  t.after(() => standaloneDb.close())
+  dbs.push(standaloneDb)
   standaloneDb.exec(`CREATE TABLE memory_documents (
     id TEXT PRIMARY KEY, workspace TEXT NOT NULL, path TEXT NOT NULL, revision TEXT NOT NULL,
     usage_version INTEGER NOT NULL, enabled INTEGER NOT NULL, forgotten INTEGER NOT NULL DEFAULT 0,
@@ -520,7 +524,7 @@ test('openMemoryDocuments refuses pre-v11 schemas before mutating tables or open
   )
 
   const versionedDb = new DatabaseSync(join(root, 'versioned.db'))
-  t.after(() => versionedDb.close())
+  dbs.push(versionedDb)
   versionedDb.exec('PRAGMA user_version = 10')
   assert.throws(
     () => openMemoryDocuments({ db: versionedDb, root, source: () => undefined }),

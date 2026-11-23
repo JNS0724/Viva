@@ -1,7 +1,7 @@
 import { localeRevision, onLocaleChange } from '../../shared/i18n/locale.ts'
 import { t } from '../../shared/i18n/translate.ts'
 import { h } from './dom.ts'
-import { queueLayout } from './reconcile.ts'
+import { queueLayout, reconcileChildren } from './reconcile.ts'
 import { takeReaderControl } from './scroll-follow.ts'
 
 /**
@@ -50,16 +50,14 @@ const questionText = (bubble: Element) => bubble.querySelector('.msg-user-text')
   .map((node) => node.textContent ?? '')
   .join(' ')
 
-const sameList = (a: readonly Element[], b: readonly Element[]) => a.length === b.length && a.every((el, i) => el === b[i])
-
 export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
   let places: HTMLElement[] = []
   let marks: HTMLButtonElement[] = []
   let active = -1
   let dirty = true
 
-  const jump = (index: number) => {
-    const place = places[index]
+  const markFor = new WeakMap<HTMLElement, HTMLButtonElement>()
+  const jump = (place: HTMLElement) => {
     const target = place?.matches(FOLDED) ? place : place?.closest<HTMLElement>('.msg-user-row') ?? place
     if (!target) return
     takeReaderControl(scroll)
@@ -78,15 +76,27 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
 
   const rebuild = () => {
     let turn = 0
-    marks = places.map((place, index) => {
+    const selected = marks[active]
+    marks = places.map(place => {
       const folded = place.matches(FOLDED)
       const tip = folded ? t("rail.topic", { p0: place.dataset.title ?? '' }) : t("rail.turn", { p0: turn += 1, p1: turnPreview(questionText(place)) })
-      return h('button', {
-        class: folded ? 'turn-mark turn-topic' : 'turn-mark', type: 'button', tabindex: '-1', 'aria-label': tip, 'data-tip': tip, onclick: () => jump(index),
-      })
+      let mark = markFor.get(place)
+      if (!mark) {
+        mark = h('button', { class: folded ? 'turn-mark turn-topic' : 'turn-mark', type: 'button', tabindex: '-1', onclick: () => jump(place) })
+        markFor.set(place, mark)
+      }
+      if (mark.dataset.tip !== tip) {
+        mark.dataset.tip = tip
+        mark.setAttribute('aria-label', tip)
+      }
+      return mark
     })
-    active = -1
-    rail.replaceChildren(...marks)
+    active = selected ? marks.indexOf(selected) : -1
+    if (selected && active < 0) {
+      selected.removeAttribute('aria-current')
+      selected.tabIndex = -1
+    }
+    reconcileChildren(rail, marks)
     rail.hidden = places.length < MIN_TURNS
   }
 
@@ -94,7 +104,7 @@ export function attachTurnRail(scroll: HTMLElement, rail: HTMLElement) {
   const schedule = () => queueLayout(rail, () => {
     // A question inside a folded topic is that topic's dot, not a line of its own.
     const found = dirty ? [...scroll.querySelectorAll<HTMLElement>(PLACES)].filter((place) => place.matches(FOLDED) || !place.closest(FOLDED)) : places
-    const changed = dirty || !sameList(found, places) || shownLocale !== localeRevision()
+    const changed = dirty || shownLocale !== localeRevision()
     dirty = false
     const box = scroll.getBoundingClientRect()
     const index = activeTurn(found.length, index => found[index].getBoundingClientRect().top, box.top + box.height * READING_LINE)

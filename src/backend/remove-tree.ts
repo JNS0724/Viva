@@ -16,6 +16,12 @@ export function removeTree(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true, ...RETRIES })
 }
 
+/** Async sibling for cleanup hooks so Windows retries yield to the event loop while async FileHandles finish closing. */
+export async function removeTreeAsync(dir: string): Promise<void> {
+  unlinkLinks(dir)
+  await fs.promises.rm(dir, { recursive: true, force: true, ...RETRIES })
+}
+
 const OWNER_WRITE = 0o200
 
 function unlinkLinks(dir: string): void {

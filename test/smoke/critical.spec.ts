@@ -2,7 +2,7 @@ import { test, expect } from './fixtures.ts'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { JSHandle } from '@playwright/test'
+import type { ElectronApplication, JSHandle } from '@playwright/test'
 import { checkDeskSignals, checkIslandLayouts } from './island-layout.ts'
 import { checkDesktopDragRelease, checkDesktopHost } from './desktop-host.ts'
 import { checkDesktopRedesign } from './desktop-states.ts'
@@ -80,20 +80,25 @@ test('MCP import menu stays inside its sidebar and cancelling an edit restores t
   await page.screenshot({ path: info.outputPath('mcp-edit-cancelled.png') })
 })
 
-test('desktop drafts retain text, real images and files through collapse and window recreation, then return editing to the main window', async ({ scenario }, info) => {
-  const run = await scenario({ phase: 'memory', bridge: 'real' })
-  const session = await run.start('shared-draft')
-  const { page } = session, desk = session.hooks.desk()
-  const nativeAudit = await session.application.evaluateHandle(({ app, BrowserWindow }) => {
-    const entries: Array<{ at: number, event: string, windowId: number, focusedWindowId: number | null, inputOpen: boolean | null }> = []
+function auditNativeWindows(application: ElectronApplication) {
+  return application.evaluateHandle(({ app, BrowserWindow }) => {
+    const entries: Array<{ at: number, event: string, windowId: number, visible: boolean, focusedWindowId: number | null, inputOpen: boolean | null }> = []
     const remove: Array<() => void> = []
     const watch = (window: ReturnType<typeof BrowserWindow.getAllWindows>[number]) => {
-      const record = (event: string) => entries.push({ at: Date.now(), event, windowId: window.id,
+      const id = window.id
+      const record = (event: string) => entries.push({ at: Date.now(), event, windowId: id, visible: !window.isDestroyed() && window.isVisible(),
         focusedWindowId: BrowserWindow.getFocusedWindow()?.id ?? null,
         inputOpen: globalThis.vivaAutomation?.desk()?.inputOpen() ?? null })
       const focus = () => record('focus'), blur = () => record('blur'), show = () => record('show'), hide = () => record('hide')
+      record('observed')
+      const closed = () => record('closed')
+      const activate = () => record('app-activate')
+      app.on('activate', activate)
+      window.once('closed', closed)
       window.on('focus', focus); window.on('blur', blur); window.on('show', show); window.on('hide', hide)
       remove.push(() => {
+        app.removeListener('activate', activate)
+        window.removeListener('closed', closed)
         window.removeListener('focus', focus); window.removeListener('blur', blur)
         window.removeListener('show', show); window.removeListener('hide', hide)
       })
@@ -103,6 +108,13 @@ test('desktop drafts retain text, real images and files through collapse and win
     app.on('browser-window-created', created)
     return { entries, dispose() { app.removeListener('browser-window-created', created); for (const stop of remove) stop() } }
   })
+}
+
+test('desktop drafts retain text, real images and files through collapse and window recreation, then return editing to the main window', async ({ scenario }, info) => {
+  const run = await scenario({ phase: 'memory', bridge: 'real' })
+  const session = await run.start('shared-draft')
+  const { page } = session, desk = session.hooks.desk()
+  const nativeAudit = await auditNativeWindows(session.application)
   let rendererAudit: JSHandle<{ entries: DeskDraftFocusEvent[], dispose(): void }> | undefined
   await page.evaluate(() => {
     window.vivaDraftAudit = []
@@ -275,12 +287,13 @@ test('fresh app opens usable settings without a model', async ({ scenario }, inf
   } finally { await desk.force(false) }
 })
 
-test('closing the reopened main window restores a usable desktop island while web fonts are pending', async ({ scenario }) => {
+test('closing the reopened main window restores a usable desktop island while web fonts are pending', async ({ scenario }, info) => {
   const run = await scenario({ phase: 'memory', bridge: 'real' })
   const { application, page } = await run.start('desktop-reopen')
   const main = await application.browserWindow(page)
   await expect.poll(() => main.evaluate(window => window.isVisible())).toBe(true)
   await application.evaluate(() => globalThis.vivaAutomation!.desk()!.setEnabled(true))
+  const audit = await auditNativeWindows(application)
   const fontUrl = /https:\/\/fonts\.googleapis\.com\//
   let releaseFonts!: () => void
   const pendingFonts = new Promise<void>(resolve => { releaseFonts = resolve })
@@ -294,7 +307,11 @@ test('closing the reopened main window restores a usable desktop island while we
           await route.fulfill({ contentType: 'text/css', body: '' })
         })
       }
-      await main.evaluate(window => window.close())
+      await main.evaluate((window, cycle) => {
+        window.close()
+        // Replay a queued native show notification after the second close.
+        if (cycle === 1 && !window.isVisible()) window.emit('show')
+      }, cycle)
       await expect.poll(() => main.evaluate(window => window.isVisible()), { message: `main window hidden on close ${cycle + 1}` }).toBe(false)
       await expect.poll(() => application.windows().some(window => window.url().endsWith('/desk.html')), { message: `desktop island created on close ${cycle + 1}` }).toBe(true)
       const desktop = application.windows().find(window => window.url().endsWith('/desk.html'))!
@@ -310,6 +327,9 @@ test('closing the reopened main window restores a usable desktop island while we
     }
   } finally {
     releaseFonts()
+    await info.attach('reopen-window-events', { body: JSON.stringify(await audit.evaluate(audit => audit.entries)), contentType: 'application/json' })
+    await audit.evaluate(audit => audit.dispose())
+    await audit.dispose()
   }
 })
 

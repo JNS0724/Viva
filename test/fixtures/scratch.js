@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { removeTree } from '../../src/backend/remove-tree.ts'
+import { removeTreeAsync } from '../../src/backend/remove-tree.ts'
 
 /**
  * A temporary directory for one test, removed after it. `t.after` hooks run in the order they were added,
@@ -19,7 +19,7 @@ export function scratch(t, prefix) {
     try {
       for (const close of [...closers].reverse()) await close()
     } finally {
-      removeTree(dir)
+      await removeTreeAsync(dir)
     }
   })
   return { dir, defer: (close) => { closers.push(close) } }

@@ -38,21 +38,44 @@ async function sha256(file: string) {
   return hash.digest('hex')
 }
 
-async function prepareModel(dest: string, local?: string) {
-  for (const [name, size, hash] of files) {
-    const file = path.join(dest, name)
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    if (local) await fs.copyFile(path.join(local, name), file)
-    else {
-      const response = await fetch(new URL(name, modelUrl), { signal: AbortSignal.timeout(15 * 60_000) })
-      if (!response.ok || !response.body) throw new Error(`Could not download pinned embedding asset ${name} (HTTP ${response.status})`)
+const DOWNLOAD_RETRY_DELAYS_MS = [2_000, 5_000, 10_000] as const
+
+async function downloadPinnedAsset(name: string, size: number, file: string) {
+  const url = new URL(name, modelUrl)
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(15 * 60_000) })
+      if (!response.ok || !response.body) {
+        const retryable = response.status === 429 || response.status >= 500
+        const error = new Error(`Could not download pinned embedding asset ${name} (HTTP ${response.status})`)
+        if (!retryable || attempt >= DOWNLOAD_RETRY_DELAYS_MS.length) throw error
+        console.warn(`[embedding] ${error.message}; retrying in ${DOWNLOAD_RETRY_DELAYS_MS[attempt]} ms`)
+        await new Promise(resolve => setTimeout(resolve, DOWNLOAD_RETRY_DELAYS_MS[attempt]))
+        continue
+      }
       let seen = 0
       const bounded = new Transform({ transform(chunk: Buffer, _encoding, callback) {
         seen += chunk.length
         callback(seen > size ? new Error(`Embedding asset ${name} exceeds its pinned size`) : null, chunk)
       } })
       await pipeline(Readable.fromWeb(response.body as ReadableStream<Uint8Array>), bounded, createWriteStream(file, { flags: 'wx' }))
+      return
+    } catch (error) {
+      await fs.rm(file, { force: true })
+      const permanent = error instanceof Error && (error.message.includes('exceeds its pinned size') || error.message.includes('(HTTP 4'))
+      if (permanent || attempt >= DOWNLOAD_RETRY_DELAYS_MS.length) throw error
+      console.warn(`[embedding] failed downloading ${name} (${error instanceof Error ? error.message : String(error)}); retrying in ${DOWNLOAD_RETRY_DELAYS_MS[attempt]} ms`)
+      await new Promise(resolve => setTimeout(resolve, DOWNLOAD_RETRY_DELAYS_MS[attempt]))
     }
+  }
+}
+
+async function prepareModel(dest: string, local?: string) {
+  for (const [name, size, hash] of files) {
+    const file = path.join(dest, name)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    if (local) await fs.copyFile(path.join(local, name), file)
+    else await downloadPinnedAsset(name, size, file)
     if (!await verified(file, size, hash)) throw new Error(`Embedding asset ${name} failed SHA-256 verification`)
   }
   await fs.copyFile(path.join(source, licensePath), path.join(dest, 'LICENSE'))

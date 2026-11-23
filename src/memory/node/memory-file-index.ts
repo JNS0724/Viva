@@ -18,7 +18,7 @@ const page = <T>(rows: T[], limit: number): MemoryFilePage<T> => ({
 const limitOf = (limit: number) => Number.isSafeInteger(limit) && limit > 0 ? limit : 0
 
 /** Accepted projections are the only inputs. This adapter deliberately has no filesystem dependency. */
-export function openMemoryFileIndex({ db, checkpoint = () => {} }: { db: DatabaseSync, now?: () => number, checkpoint?: (point: string) => void }): MemoryFileIndex {
+export function openMemoryFileIndex({ db, checkpoint = () => {}, onCleanupPending }: { db: DatabaseSync, now?: () => number, checkpoint?: (point: string) => void, onCleanupPending?: () => void }): MemoryFileIndex {
   db.exec(`PRAGMA secure_delete=ON;
     CREATE TABLE IF NOT EXISTS memory_file_index_nodes(rowid INTEGER PRIMARY KEY,workspace TEXT NOT NULL,id TEXT NOT NULL,path TEXT NOT NULL,kind TEXT NOT NULL,day TEXT,updated_at INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,id),UNIQUE(workspace,path));
     CREATE TABLE IF NOT EXISTS memory_file_index_chunks(rowid INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,file_id TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,file_id,ordinal));
@@ -72,7 +72,11 @@ ${entry.description}`))
   }
   const vectorState = (): MemoryVectorState => JSON.parse(meta('vectors')!) as MemoryVectorState
   const saveState = (state: MemoryVectorState) => { setMeta('vectors', JSON.stringify(state)) }
-  const dirty = () => { setMeta('erase-pending', '1') }
+  const dirty = () => {
+    if (meta('erase-pending')) return
+    setMeta('erase-pending', '1')
+    onCleanupPending?.()
+  }
   function recover() {
     if (!meta('erase-pending')) return
     checkpoint('before-truncate')
@@ -228,7 +232,7 @@ ${file.description}`))
     return transaction(db, () => {
       const state = vectorState()
       if (state.space?.fingerprint === space.fingerprint && state.space.dimensions === space.dimensions && vectorsValid(state)) return state.generation
-      db.exec('DELETE FROM memory_file_index_vectors'); dirty()
+      if (db.prepare('DELETE FROM memory_file_index_vectors').run().changes) dirty()
       saveState({space,generation:state.generation+1,active:false})
       return state.generation+1
     })

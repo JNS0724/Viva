@@ -22,8 +22,27 @@ export class MemoryFileError extends Error {
 export const memoryFileRevision = (text: string) => createHash('sha256').update(text).digest('hex')
 
 const MAX_PHYSICAL_FILE_BYTES = 4 * 1024 * 1024
-const PHYSICAL_FILE_TIMEOUT_MS = 250
+// Windows NTFS metadata + open/read chains on loaded runners routinely exceed 250 ms; stay below fileVerificationBudgetMs (2500 ms).
+const PHYSICAL_FILE_TIMEOUT_MS = process.platform === 'win32' ? 2_000 : 250
 const PHYSICAL_FILE_CONCURRENCY = 3
+const WIN32_TRANSIENT_OPEN_CODES = new Set(['EBUSY', 'EACCES', 'EPERM'])
+
+async function openForRead(target: string, flags: number, signal: AbortSignal) {
+  for (;;) {
+    signal.throwIfAborted()
+    try {
+      return await open(target, flags)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (process.platform !== 'win32' || !code || !WIN32_TRANSIENT_OPEN_CODES.has(code) || signal.aborted) throw error
+      await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
+        const timer = setTimeout(done, 25)
+        signal.addEventListener('abort', done, { once: true })
+      })
+    }
+  }
+}
 
 /** Native I/O can outlive its caller. Hold the slot until the operation actually ends,
  * so multiple timeouts cannot fill the owner's filesystem thread pool. */
@@ -49,7 +68,7 @@ export function createMemoryPhysicalFileReader(root: () => string) {
       return info
     }
     const expected = await safeStat()
-    const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const handle = await openForRead(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), signal)
     try {
       signal.throwIfAborted()
       const stat = await handle.stat()

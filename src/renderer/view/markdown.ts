@@ -111,12 +111,18 @@ function* blockParts(token: Token, ctx: Context, tight = false): IterableIterato
       function* items(): IterableIterator<MarkdownPart> {
         for (const item of list.items) yield { node: h('li', { class: item.task ? 'md-task' : null }), children: listContents(item, ctx) }
       }
-      yield { node: h(list.ordered ? 'ol' : 'ul', { start: list.ordered && list.start !== 1 ? list.start : null }), children: items() }
+      yield { node: h(list.ordered ? 'ol' : 'ul', {
+        start: list.ordered && list.start !== 1 ? list.start : null,
+        'data-task-list': !list.ordered && list.items.some(item => item.task) ? 'true' : null,
+      }), children: items() }
       break
     }
     case 'table': {
       const { header, rows, align } = token as Tokens.Table
-      yield { node: h('div', { class: 'md-table-wrap' }), children: [{ node: h('table', { class: 'md-table' }), children: [
+      yield { node: h('div', { class: 'md-table-wrap' }), children: [{ node: h('table', {
+        class: 'md-table',
+        'data-large': rows.length >= 200 ? 'true' : null,
+      }), children: [
         { node: h('thead'), children: tableRows([header], 'th', align, ctx) },
         { node: h('tbody'), children: tableRows(rows, 'td', align, ctx) },
       ] }] }
@@ -289,20 +295,62 @@ function lexOffThread(text: string, target: HTMLElement, active: () => boolean):
   })
 }
 
-/** Same shape and link handler. The renderer always handles the same href with the same answer's openLink. */
+/** Same shape and link handler. Presentation hints derived from child count/items sync without replacing the container. */
+const REVEAL_HINT_ATTRS = new Set(['data-large', 'data-task-list'])
+
 function sameElement(previous: ChildNode | null, next: HTMLElement): previous is HTMLElement {
-  return previous instanceof HTMLElement && previous.tagName === next.tagName && previous.attributes.length === next.attributes.length
-    && [...next.attributes].every(({ name, value }) => previous.getAttribute(name) === value)
+  if (!(previous instanceof HTMLElement) || previous.tagName !== next.tagName) return false
+  const prevAttrs = [...previous.attributes].filter(({ name }) => !REVEAL_HINT_ATTRS.has(name))
+  const nextAttrs = [...next.attributes].filter(({ name }) => !REVEAL_HINT_ATTRS.has(name))
+  return prevAttrs.length === nextAttrs.length && nextAttrs.every(({ name, value }) => previous.getAttribute(name) === value)
+}
+
+function syncHintAttributes(previous: HTMLElement, next: HTMLElement): void {
+  for (const name of REVEAL_HINT_ATTRS) {
+    const value = next.getAttribute(name)
+    if (value === null) previous.removeAttribute(name)
+    else previous.setAttribute(name, value)
+  }
+}
+
+type RevealBatch = {
+  append(parent: HTMLElement, node: ChildNode, before: ChildNode | null): void
+  flush(): void
+}
+
+function createRevealBatch(): RevealBatch {
+  let parent: HTMLElement | null = null
+  let before: ChildNode | null = null
+  let fragment: DocumentFragment | null = null
+  function flush() {
+    if (!parent || !fragment) return
+    parent.insertBefore(fragment, before)
+    parent = null
+    before = null
+    fragment = null
+  }
+  return {
+    append(target, node, anchor) {
+      if (parent !== target || before !== anchor) flush()
+      parent = target
+      before = anchor
+      fragment ??= document.createDocumentFragment()
+      fragment.append(node)
+    },
+    flush,
+  }
 }
 
 /** Keep preview slots in place. A different subtree gets built before its old slot is replaced. */
 function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before: ChildNode | null = null,
-  onAdded?: (node: HTMLElement) => void): IterableIterator<void> {
+  onAdded?: (node: HTMLElement) => void, batch?: RevealBatch): IterableIterator<void> {
   const last = before ? before.previousSibling : parent.lastChild
   let cursor = parent.firstChild
   let staged: { previous: Text, content: DocumentFragment, sourceLeft: number } | undefined
   function commitStaged() {
-    if (staged) staged.previous.replaceWith(staged.content)
+    if (!staged) return
+    batch?.flush()
+    staged.previous.replaceWith(staged.content)
     staged = undefined
   }
   for (const part of parts) {
@@ -325,6 +373,7 @@ function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before
       continue
     }
     if (!('children' in part)) {
+      batch?.flush()
       if (previous && !previous.isEqualNode(node)) previous.replaceWith(node)
       else if (!previous) {
         parent.insertBefore(node, before)
@@ -332,16 +381,27 @@ function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before
       }
       yield
     } else if (sameElement(previous, part.node)) {
-      yield* revealParts(previous, part.children, null, previous === last ? onAdded : undefined)
+      batch?.flush()
+      syncHintAttributes(previous, part.node)
+      yield* revealParts(previous, part.children, null, previous === last ? onAdded : undefined, batch)
+    } else if (!previous && (part.node.tagName === 'TR' || part.node.tagName === 'LI')) {
+      // Assemble each new row/item off-DOM and commit the frame's new siblings in one batch to reduce layout/AX churn.
+      yield* revealParts(part.node, part.children)
+      if (batch) batch.append(parent, part.node, before)
+      else parent.insertBefore(part.node, before)
+      onAdded?.(part.node)
+      yield
     } else {
+      batch?.flush()
       // A new container can grow right where it belongs. Keep a mismatched preview slot until its substitute is ready.
       if (!previous) { parent.insertBefore(part.node, before); onAdded?.(part.node) }
       yield
-      yield* revealParts(part.node, part.children)
-      if (previous) { previous.replaceWith(part.node); yield }
+      yield* revealParts(part.node, part.children, null, undefined, previous ? undefined : batch)
+      if (previous) { batch?.flush(); previous.replaceWith(part.node); yield }
     }
   }
   if (staged) { commitStaged(); yield }
+  batch?.flush()
   while (cursor && cursor !== before) {
     const next = cursor.nextSibling
     cursor.remove()
@@ -357,8 +417,12 @@ export function refreshExpansionLabel(button: HTMLElement, remaining: number) {
 }
 
 const REVEAL_SLICE_MS = 5
-// DOM changes also cost layout and accessibility work after this script yields, especially table rows.
-const REVEAL_SLICE_NODES = 500
+// DOM changes also trigger periodic layout and full accessibility tree serialization (~200 ms cadence),
+// so keep per-frame node volume bounded and hold a damped ceiling after burst frames.
+const REVEAL_SLICE_NODES_MAX = 280
+const REVEAL_SLICE_NODES_MIN = 210
+const REVEAL_SLICE_NODES_INITIAL = 240
+const REVEAL_TARGET_FRAME_MS = 28
 
 /** Parse the full source together so later reference definitions still affect the opening. */
 export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string,
@@ -375,13 +439,27 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
     if (!tokens || !active()) return
     const language = localeRevision()
     let firstAdded: HTMLElement | null = null
-    const draw = revealParts(target, blocks(tokens, { openLink, image: null }), button, node => { firstAdded ??= node })
+    const batch = createRevealBatch()
+    const draw = revealParts(target, blocks(tokens, { openLink, image: null }), button, node => { firstAdded ??= node }, batch)
+    let lastFrame = performance.now()
+    let maxSliceNodes = REVEAL_SLICE_NODES_MAX
+    let sliceNodes = REVEAL_SLICE_NODES_INITIAL
     for (let done = false; !done;) {
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
       if (!active()) return
-      const until = performance.now() + REVEAL_SLICE_MS
-      let remainingNodes = REVEAL_SLICE_NODES
+      const now = performance.now()
+      const frameMs = now - lastFrame
+      lastFrame = now
+      if (frameMs > REVEAL_TARGET_FRAME_MS) {
+        maxSliceNodes = Math.max(REVEAL_SLICE_NODES_MIN, Math.floor(maxSliceNodes * 0.85))
+        sliceNodes = Math.max(REVEAL_SLICE_NODES_MIN, Math.min(maxSliceNodes, Math.floor(sliceNodes * (REVEAL_TARGET_FRAME_MS / frameMs))))
+      } else if (frameMs < 18) {
+        sliceNodes = Math.min(maxSliceNodes, Math.ceil(sliceNodes * 1.05))
+      }
+      const until = now + REVEAL_SLICE_MS
+      let remainingNodes = sliceNodes
       do { done = draw.next().done === true } while (!done && --remainingNodes > 0 && performance.now() < until)
+      batch.flush()
     }
     if (language !== localeRevision()) refreshMarkdownLanguage(target)
     if (target.ownerDocument.activeElement === button && button.matches(':focus-visible')) {

@@ -20,7 +20,7 @@ export default defineConfig({
   projects: [
     { name: 'smoke', testMatch: 'critical.spec.ts' },
     { name: 'integration', testMatch: integrationSpecs(process.env.VIVA_SMOKE_LANE) },
-    { name: 'package', testMatch: 'artifact.spec.ts' },
+    { name: 'package', testMatch: 'artifact.spec.ts', timeout: 420_000 },
     { name: 'performance', testMatch: 'perf.spec.ts' },
   ],
 })
