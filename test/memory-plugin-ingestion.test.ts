@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Session, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { createSessionIngestion, retrievalQuestion } from '../plugins/memory/lib/ingestion.ts'
+import { createSessionIngestion, humanMessages } from '../plugins/memory/lib/ingestion.ts'
 import type { ReceivedSource, CompletedTurn } from '../plugins/memory/lib/owner-port.ts'
 
 function fixture(flush = async () => true) {
@@ -27,8 +27,8 @@ test('live intake uses human originals and skips generated context', async () =>
   const session = Session.create(SessionId('step-three'))
   const message = userWords('补充：我现在负责结算')
   const context = createUserMessage({ content: [{ type: 'text', text: 'retrieved content' }], source: { kind: 'viva-memory' } })
-  const receipts = await ingestion.receive(session, [message, context], 1, 3)
-  assert.equal(retrievalQuestion(receipts), '补充：我现在负责结算')
+  assert.deepEqual(humanMessages([message, context]), [{ id: message.id, text: '补充：我现在负责结算' }])
+  await ingestion.receive(session, [message, context], 1, 3)
   assert.deepEqual(received.map(item => [item.messageId, item.admitted, item.live, item.step, item.requiresAlias]),
     [[message.id, true, true, 3, true]])
 })

@@ -7,7 +7,7 @@ type Owner = ReturnType<typeof openMemoryOwner>
 export type OwnerSendOrigin = Parameters<Owner['acquireSend']>[1]
 export type RemoteToolReadScope = Pick<NativeToolReadScope, 'call' | 'calls'> & { readCut?: NativeToolReadCut }
 export type OwnerActiveTurn = { sessionId: string, turn: number }
-export type OwnerCallOptions = { signal?: AbortSignal, budgetMs?: number, waitForCompletion?: boolean }
+export type OwnerCallOptions = { signal?: AbortSignal, budgetMs?: number, deadlineAt?: number, waitForCompletion?: boolean }
 export type OwnerAdapterApi = Pick<Owner,
   'noteInheritedNativeCut' | 'receiveSource'
   | 'prepareContextRecovery' | 'bindContextRecovery' | 'rememberStandaloneFile'
@@ -33,7 +33,7 @@ export type OwnerAdapterApi = Pick<Owner,
   inheritNativeToolRead(scope: RemoteToolReadScope, evidence: Parameters<Owner['inheritNativeToolRead']>[1]): void
   admitNativeSpillRead(id: string, scope: RemoteToolReadScope): Promise<boolean>
   modelRequest(input: MemoryRequest, session: string, generation: number, scope?: RemoteToolReadScope, unknownProject?: boolean): ReturnType<Owner['runtime']['handleModelRequest']>
-  sidecarRequest(input: MemoryRequest, cwd?: string): Promise<string | null>
+  sidecarRequest(input: MemoryRequest, cwd?: string, originals?: { requiresAlias: boolean, messages: readonly { id: string, text: string }[] }): Promise<string | null>
   acquireSend(id: string, origin: OwnerSendOrigin, digest: string): Promise<void>
   outputCurrent(origin: OwnerSendOrigin): Promise<boolean>
   recordSendBody(id: string): Promise<void>

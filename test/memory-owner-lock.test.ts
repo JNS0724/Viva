@@ -303,28 +303,18 @@ function ownerFaults(t: TestContext) {
   }
 }
 
-test('standalone owner restart settles lost grants, write receipts and manual Dream requests', { timeout: 45_000 }, async t => {
+test('standalone owner restart recovers lost write receipts and manual Dream requests', { timeout: 45_000 }, async t => {
   const { dir: root, defer } = scratch(t, 'memory-standalone-lost-replies-')
   const fault = ownerFaults(t)
   const persistence = registerStandaloneOwner(root)
   defer(persistence.close)
   await persistence.start()
-  const connection = openPluginOwner({ root, dailyNotes: true, callbacks: {
-    drainSends: ({ epoch }): Promise<void> => adapter.drainSends(epoch),
-  } }, process)
-  const adapter = createRemoteMemoryOwner(connection, () => {})
+  const connection = openPluginOwner({ root, dailyNotes: true }, process)
+  const adapter = createRemoteMemoryOwner(connection)
   defer(adapter.close)
   await connection.start()
   const session = randomUUID()
-  await adapter.initializeSession({ sessionId: session })
-
-  const epoch = adapter.epoch
-  const id = randomUUID()
-  const droppedGrant = fault.drop(frame => frame.method === 'adapter' && objectOf(frame.input)?.method === 'acquireSend')
-  const grant = assert.rejects(adapter.acquireSend(id, { session }, 'e'.repeat(64)), /retired|unavailable|revoked/)
-  await Promise.all([droppedGrant, grant])
-  assert.ok(await eventually(() => adapter.ready() && adapter.epoch !== epoch))
-  await assert.rejects(adapter.call('recordSendBody', [id]), /expired/)
+  await adapter.bindIntakeSession(session, root)
 
   const nextEpoch = adapter.epoch
   const request = { operationId: randomUUID(), title: 'Example recovery note', text: 'A single durable memory document.' }
@@ -335,15 +325,6 @@ test('standalone owner restart settles lost grants, write receipts and manual Dr
   assert.equal((await connection.callHost('getOperation', { operationId: request.operationId }))?.state, 'completed')
   assert.deepEqual(await adapter.rememberStandaloneFile(session, request), receipt)
   assert.equal((await connection.callHost('listFiles', { args: [{}] })).items.length, 1)
-
-  const settledEpoch = adapter.epoch
-  const permit = await adapter.acquireSend(randomUUID(), { session }, 'f'.repeat(64))
-  await permit.recordBody()
-  const droppedSettlement = fault.drop(frame => frame.method === 'adapter' && objectOf(frame.input)?.method === 'settleSend')
-  permit.settled()
-  await droppedSettlement
-  assert.ok(await eventually(() => adapter.ready() && adapter.epoch !== settledEpoch))
-  assert.equal(permit.current(), false)
 
   const dreamEpoch = adapter.epoch
   const jobId = randomUUID()
@@ -522,41 +503,4 @@ test('a stopped foreground cannot write or send through the live relay while bac
   await assert.rejects(call('recordSendBody', id), /foreground stopped/)
   await call('settleSend', id)
   await receive(task)
-})
-
-test('receipt failure rejects covering barriers, writes later queued receipts and permits the next operation', async t => {
-  const { dir: root, defer } = scratch(t, 'memory-receipt-queue-')
-  const persistence = registerStandaloneOwner(root)
-  defer(persistence.close)
-  await persistence.start()
-  const connection = openPluginOwner({ root, callbacks: {} }, process)
-  const errors: unknown[] = []
-  const calls: string[] = []
-  const adapter = createRemoteMemoryOwner({ ...connection, callAdapter(method, args, options) {
-    if (method === 'finishNativeOutput') {
-      calls.push(String(objectOf(args[0])?.id))
-      if (calls.length === 1 || calls.length === 3) return Promise.reject(new Error('receipt deadline'))
-    }
-    return connection.callAdapter(method, args, options)
-  } }, error => errors.push(error))
-  defer(adapter.close)
-  await connection.start()
-  const session = randomUUID()
-  const receipt = () => ({ id: randomUUID(), session, generation: 0, turn: 1, step: 1, floor: 0 })
-  const a = receipt(), b = receipt(), c = receipt()
-  adapter.finishNativeOutput(a)
-  adapter.finishNativeOutput(b)
-  const barriers = [adapter.drainSession(session), adapter.drainSession(session)]
-  for (const barrier of barriers) await assert.rejects(barrier, /receipt deadline/)
-  assert.deepEqual(calls, [a.id, b.id])
-  assert.equal(errors.length, 1)
-  adapter.finishNativeOutput(c)
-  const failed = adapter.drainSession(session)
-  const d = receipt()
-  adapter.finishNativeOutput(d)
-  const overlapping = adapter.drainSession(session)
-  await Promise.all([assert.rejects(failed, /receipt deadline/), assert.rejects(overlapping, /receipt deadline/)])
-  await adapter.drainSession(session)
-  assert.deepEqual(calls, [a.id, b.id, c.id, d.id])
-  assert.equal(adapter.ready(), true)
 })

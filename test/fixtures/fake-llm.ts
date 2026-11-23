@@ -340,6 +340,8 @@ export function decide(raw: object): Answer {
   // after its route receipt. Ordinary completed routes may answer the report.
   const appRoute = use?.name === ROUTE && Array.isArray(use.input?.actions)
     && use.input.actions.some((action: unknown) => objectOf(action)?.kind === 'app_action')
+  const taskReport = currentTurnTextParts(trailingUserTexts(messages)).map(text => TASK_REPORT.exec(text)).find(Boolean)
+  if (taskReport && !appRoute) return { text: `已看过后台结果：${taskReport[1]}` }
   const result = appRoute ? trailingToolResult(messages) : partsOf(last).find((part) => part.type === 'tool_result') ?? trailingToolResult(messages)
   // Once a request is routed, the rules go on with its words, as if just asked.
   const routed = result && toolUses(messages).at(-1)?.name === ROUTE
@@ -353,7 +355,6 @@ export function decide(raw: object): Answer {
     const text = remember[1].trim()
     return { tool: { name: 'memory_remember', input: { text } } }
   }
-  const taskReport = TASK_REPORT.exec(question)
   if (taskReport) return { text: `已看过后台结果：${taskReport[1]}` }
   if (WEATHER.test(question)) return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: CITY_QUESTION.question }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }

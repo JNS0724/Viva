@@ -1843,15 +1843,16 @@ test('deleting a memory file preserves the original chat and the task and report
   const sourceId = await app.ask(oldFact)
   const file = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
   assert.ok(file)
-  const brief = '核对我的周报提交邮箱'
+  const brief = '查一下 周报提交邮箱'
   await app.ask(`后台做：${brief}`)
   const task = await eventually(() => app.tasks().find(item => item.endedAt && item.task.title === brief))
   assert.ok(task)
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   app.defer(() => history.close())
-  const reports = () => history.prepare(`SELECT r.report_id,r.text FROM report_records r JOIN memory_report_proofs p
-    ON p.report_id=r.report_id WHERE p.memory LIKE ? ORDER BY r.report_id`).all('%' + file.identity.id + '%')
-  assert.ok(await eventually(() => reports().length > 0), 'the saved report carries this file as evidence')
+  assert.ok(app.model.requests.some(request => modelToolResults(request, 'memory_recall').some(result => JSON.stringify(result).includes(oldValue))),
+    'the task actually read the memory file')
+  const reports = () => history.prepare('SELECT report_id,text FROM report_records WHERE report_id LIKE ?').all(`${task.task.id}:%`)
+  assert.ok(await eventually(() => reports().length > 0), 'the task report reached history before deletion')
   const before = reports()
   const result = await app.call<Promise<IpcResults['memory:forget-file']>>('memory:forget-file', {
     operationId: randomUUID(), identity: file.identity, version: file.version,
@@ -1949,6 +1950,46 @@ test('Viva chats and runs a saved schedule with an incompatible memory database'
   assert.ok(await eventually(() => app.feed().find(item => item.title === title)))
   assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === scheduled))
   assert.deepEqual(fs.readFileSync(file), before)
+})
+
+test('a late owner alias cannot write after a foreground prompt falls back', { timeout: 30_000 }, async t => {
+  const operationId = randomUUID()
+  const words = '这段原话应在 owner 超时后正常发送'
+  let release: (() => void) | undefined
+  let frameId: string | undefined
+  let ownerResponse: unknown
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.operationId === operationId) {
+          frameId = frame.id
+          release = () => { Reflect.apply(send, this, [message, ...rest]) }
+          return true
+        }
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
+    }
+    const frame = args[0] as { type?: string, kind?: string, id?: string } | undefined
+    if (event === 'message' && frameId && frame?.type === 'memory_owner_rpc' && frame.kind === 'result' && frame.id === frameId) ownerResponse = frame
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const app = await setup(t, () => null)
+  await app.files()
+  await app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', words, [], operationId)
+  assert.ok(release, 'the alias request was held until the prompt completed')
+  assert.ok(app.model.requests.some(request => questionOf(request.messages) === words))
+  release()
+  assert.ok(await eventually(() => ownerResponse), 'the owner evaluated the expired request')
+  assert.equal((ownerResponse as { ok?: boolean }).ok, false)
+  const database = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  try {
+    assert.equal(database.prepare('SELECT 1 FROM owner_aliases WHERE source=?').get(operationId), undefined)
+    assert.equal(database.prepare('SELECT 1 FROM memory_sources WHERE id=?').get(operationId), undefined)
+  } finally { database.close() }
 })
 
 test('a new memory database starts after existing DSH events and resumes from a persisted cursor', { timeout: 45_000 }, async t => {

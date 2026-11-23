@@ -17,7 +17,7 @@ import { emitDiagnostic, emitDiagnosticFailure, installDiagnosticPort } from '..
 import type { MemoryPluginConfig } from './config.ts'
 import { openPluginOwner } from './standalone-owner.ts'
 import { createRemoteMemoryOwner } from './remote-owner.ts'
-import { createSessionIngestion, retrievalQuestion } from './ingestion.ts'
+import { createSessionIngestion, humanMessages } from './ingestion.ts'
 import { completeMemoryModel, memoryProviderFailure } from './model.ts'
 import { registerMemoryTools } from './tools.ts'
 import { registerMemoryFileCommands } from './file-commands.ts'
@@ -63,7 +63,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       },
     },
   }, port)
-  const owner = createRemoteMemoryOwner(connection, report)
+  const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
   const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session), Boolean(config.host))
   const context = new WeakMap<object, { epoch: string | undefined, turn: number, text: string }>()
@@ -84,12 +84,19 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   function observe(session: Session) {
     if (available()) void intake.synchronize(session).catch(report)
   }
+  let readyEpoch: string | undefined
   const unsubscribe = connection.subscribe(raw => {
     const message = memoryOwnerState.safeParse(raw)
     if (!message.success || lifetime.signal.aborted) return
     const { epoch, state } = message.data
-    connection.reconciled?.(epoch, state === 'ready')
-    if (state !== 'ready') return
+    if (state !== 'ready') {
+      readyEpoch = undefined
+      connection.reconciled?.(epoch, false)
+      return
+    }
+    if (epoch === readyEpoch) return
+    readyEpoch = epoch
+    connection.reconciled?.(epoch, true)
     publishRoute()
     for (const session of ctx.sessions.list()) observe(session)
   })
@@ -116,16 +123,15 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     if (decision.kind === 'reject' || signal.aborted || !available()) return decision
     route = { provider: modelSelection.provider, model: modelSelection.model }
     publishRoute()
+    const messages = humanMessages(decision.messages)
+    if (!messages.length) return decision
+    void intake.receive(agent.session, decision.messages, turn, step).catch(report)
     const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs, signal)
     try {
       const epoch = owner.epoch
-      const text = await budget.run(() => owner.inEpoch(epoch, async () => {
-        const question = retrievalQuestion(await intake.receive(agent.session, decision.messages, turn, step))
-        budget.signal.throwIfAborted()
-        if (!question) return null
-        const request: MemoryRequest = { op: 'context', session: String(agent.session.id), turn, question }
-        return owner.call('sidecarRequest', [request, agent.session.header.cwd], { signal: budget.signal, budgetMs: budget.remainingMs() })
-      }))
+      const request: MemoryRequest = { op: 'context', session: String(agent.session.id), turn, question: '' }
+      const text = await budget.run(() => owner.call('sidecarRequest', [request, agent.session.header.cwd, { messages, requiresAlias: Boolean(config.host) }],
+        { signal: budget.signal, budgetMs: budget.remainingMs() }))
       if (text && !signal.aborted && available() && owner.epoch === epoch) context.set(agent, { epoch, turn, text })
     } catch (error) {
       if (!budget.signal.aborted && available()) report(error)
@@ -138,7 +144,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const budget = createRequestBudget(request.op === 'remember' ? APP_WRITE_TIMEOUT_MS : MEMORY_READ_BUDGET_MS, signal)
     try {
       return await budget.run(async () => {
-        await intake.synchronize(agent.session)
+        if (request.op === 'remember') await intake.synchronize(agent.session)
         budget.signal.throwIfAborted()
         return owner.call('sidecarRequest', [request, agent.session.header.cwd], { signal: budget.signal, budgetMs: budget.remainingMs() })
       })
@@ -174,12 +180,6 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     }
   }, 'memory owner')
 
-  void connection.start().then(() => {
-    if (!available()) return
-    const epoch = owner.epoch
-    if (epoch) connection.reconciled?.(epoch, true)
-    publishRoute()
-    for (const session of ctx.sessions.list()) observe(session)
-  }).catch(report)
+  void connection.start().catch(report)
   return owner
 }

@@ -124,7 +124,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     runDocumentMutation: work => Promise.resolve().then(work),
     fileDependencies(session, files, sources) {
       const scope = toolReadScope.getStore()
-      if (!files.length || scope?.call.session !== session) return dispatch.recordFiles(session, files, sources)
+      if (!files.length || scope?.call.session !== session) return
       if (!scope.current() || scope.call.generation !== contextRecovery.contextGeneration(session)) throw new Error('Native tool changed before its read was committed')
       store.tx(() => {
         for (const call of scope.calls) {
@@ -367,7 +367,30 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (hash(text) !== textHash) throw new Error('Source alias wire spans changed')
     return { ...metadata, text, wireText, wireSpans: spans }
   }
-  function alias(input: MemorySourceAlias) {
+  function aliasesForWire(session: string, wireHash: string, requiresAlias: boolean) {
+    return db.prepare('SELECT payload FROM owner_aliases WHERE session=? AND wire_hash=? AND payload IS NOT NULL AND (?=0 OR delivery=1) AND revoked=0 ORDER BY rowid')
+      .all(session, wireHash, Number(requiresAlias)).map(row => JSON.parse(String(row.payload)) as StoredAlias)
+  }
+
+  function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[], requiresAlias: boolean) {
+    return messages.flatMap(({ id, text }) => {
+      const wireHash = hash(text)
+      const known = db.prepare('SELECT source,kind FROM owner_messages WHERE id=? AND hash=?').get(id, wireHash)
+      if (known?.kind === 'original') {
+        const source = store.readSource(String(known.source))
+        const sourceProject = source?.project?.kind === 'project' ? source.project.id : undefined
+        return source?.text && sourceProject === project?.id && !source.erasure ? [source.text] : []
+      }
+      if (known) return []
+      const aliases = aliasesForWire(session, wireHash, requiresAlias)
+      const first = aliases[0]
+      if (first && first.origin !== 'derived' && first.project?.id === project?.id && aliases.every(alias => alias.sourceId === first.sourceId)) {
+        return [restoreAlias(first, text).text]
+      }
+      return requiresAlias || first ? [] : [text]
+    }).filter(Boolean).join('\n').slice(0, 20_000)
+  }
+  function alias(input: MemorySourceAlias, assertCurrent = () => {}) {
     requireReady()
     const previous = db.prepare('SELECT * FROM owner_sessions WHERE session=?').get(input.session) as Session | undefined
     const bound = previous?.context ? JSON.parse(previous.context) as MemoryScope : undefined
@@ -387,6 +410,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const encodedContext = JSON.stringify(context)
     if (previous && previous.project !== (input.project?.id ?? null)) throw new Error('Session project context changed')
     store.tx(() => {
+      assertCurrent()
       db.prepare('INSERT OR IGNORE INTO owner_aliases(id,fingerprint,session,wire_hash,payload,source,conversation) VALUES (?,?,?,?,?,?,?)').run(input.operationId, fingerprint, input.session, hash(input.wireText ?? input.text), JSON.stringify(saved), input.sourceId, input.conversation)
       db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,?,?)').run(input.session, input.conversation, encodedContext, input.project?.id ?? null)
       db.prepare('UPDATE owner_sessions SET conversation=?,context=?,project=? WHERE session=?').run(input.conversation, encodedContext, input.project?.id ?? null, input.session)
@@ -422,6 +446,11 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     const known = db.prepare(`SELECT m.*, r.spans AS query_spans FROM owner_messages m
       LEFT JOIN owner_message_wires r ON r.message=m.id AND r.source_hash IS NULL WHERE m.id=?`).get(input.messageId) as
       { source: string, hash: string, kind: string, query_start: number | null, query_end: number | null, query_spans: string | null } | undefined
+    if (known?.kind === 'ignored' || input.unknownProject) {
+      db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'ignored')").run(input.messageId, input.messageId, hash(input.text))
+      markLiveTurn(input)
+      return { sourceId: input.messageId, text: '', handledIntent: true as const }
+    }
     if (known?.kind === 'host-derived' && known.hash === hash(input.text)) {
       await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: [], inherited: input.inherited })
       markLiveTurn(input)
@@ -443,15 +472,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       throw new Error('Unregistered inherited source')
     }
     if (db.prepare('SELECT 1 FROM owner_aliases WHERE session=? AND wire_hash=? AND revoked=1').get(input.sessionId, hash(input.text))) throw new Error('Source delivery was withdrawn')
-    const candidates = db.prepare('SELECT payload FROM owner_aliases WHERE session=? AND wire_hash=? AND payload IS NOT NULL AND (?=0 OR delivery=1) ORDER BY rowid')
-      .all(input.sessionId, hash(input.text), Number(Boolean(input.requiresAlias))).map(row => JSON.parse(String(row.payload)) as StoredAlias)
+    const candidates = aliasesForWire(input.sessionId, hash(input.text), Boolean(input.requiresAlias))
     const first = candidates[0]
     const unambiguous = first && candidates.every(candidate => candidate.sourceId === first.sourceId || candidate.origin === 'derived' && first.origin === 'derived')
     if (!known && first && !unambiguous && !input.requiresAlias) throw new Error('Ambiguous source alias')
     const mapped = !known && unambiguous ? restoreAlias(first, input.text) : undefined
-    if (!known && (input.unknownProject || input.requiresAlias && !mapped)) {
+    const boundContext = sessionContext(input.sessionId)
+    if (!known && input.requiresAlias && (!mapped || mapped.project?.id !== boundContext.project?.id)) {
+      db.prepare("INSERT OR IGNORE INTO owner_messages(id,source,hash,kind) VALUES (?,?,?,'ignored')").run(input.messageId, input.messageId, hash(input.text))
       markLiveTurn(input)
-      return { sourceId: input.messageId, text: '', handledIntent: true as const, retrievalQuery: mapped?.text }
+      return { sourceId: input.messageId, text: '', handledIntent: true as const }
     }
     if (mapped?.origin === 'derived') {
       const sources = mapped.dependencies?.sources ?? []
@@ -469,7 +499,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (store.sourceExcluded(sourceId)) throw new Error('Source was withdrawn')
     if ((known || store.readSource(sourceId)) && !runtime.dispatchSourceCurrent(sourceId)) throw new Error('Source is withdrawn or unavailable')
     const text = mapped?.text ?? (known ? store.readSource(sourceId)?.text ?? '' : input.text)
-    const boundContext = sessionContext(input.sessionId)
     if (boundContext.context?.kind === 'task' && mapped?.context
       && memoryScopeKey(mapped.context) !== memoryScopeKey(boundContext.context)) throw new Error('Source alias task context changed')
     let context = mapped ? { ...boundContext, conversation: mapped.conversation, context: mapped.context ?? boundContext.context, project: mapped.project } : boundContext
@@ -1013,20 +1042,24 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return pending + new Set([...native, ...host]).size
   }
 
-  function handleHost(method: unknown, input: unknown, signal?: AbortSignal): Promise<unknown> {
+  function handleHost(method: unknown, input: unknown, signal?: AbortSignal, deadlineAt?: number): Promise<unknown> {
     try {
     const command = parseHostMemoryCommand(method, input)
     const kind = hostDiagnosticOperation(command.method)
-    if (!kind) return executeHost(command, signal)
+    if (!kind) return executeHost(command, signal, deadlineAt)
     const raw = 'args' in command.input ? command.input.args[0] : command.input
     const requestId = raw !== null && typeof raw === 'object' && 'operationId' in raw && typeof raw.operationId === 'string'
       ? raw.operationId : command.method === 'setProfile' ? command.input.args[1] : undefined
-    return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command, signal), {
+    return observeDiagnosticAsync(options.diagnostics, kind, () => executeHost(command, signal, deadlineAt), {
       identities: { methodId: command.method, ownerEpoch: epoch, ...(requestId ? { requestId } : {}) },
     })
     } catch (error) { return Promise.reject(error) }
   }
-  async function executeHost(command: HostMemoryCommand, signal?: AbortSignal): Promise<unknown> {
+  async function executeHost(command: HostMemoryCommand, signal?: AbortSignal, deadlineAt?: number): Promise<unknown> {
+    const assertIntakeCurrent = () => {
+      signal?.throwIfAborted()
+      if (deadlineAt !== undefined && Date.now() >= deadlineAt) throw new RequestTimeout()
+    }
     switch (command.method) {
       case 'prepareSourceChange': return prepare(command.input)
       case 'commitSourceChange': return commit(command.input)
@@ -1055,7 +1088,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         if (acknowledged.changes && effect.kind === 'erase-copies') options.onProjectionChanged?.()
         return { accepted: true }
       }
-      case 'sourceAlias': return alias(command.input)
+      case 'sourceAlias': return alias(command.input, assertIntakeCurrent)
       case 'bindWireAlias': {
         requireReady()
         const [session, text, wireText, sourceId, suppliedSpans] = command.input.args
@@ -1083,7 +1116,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           }
         }
         store.tx(() => {
-          alias(input)
+          alias(input, assertIntakeCurrent)
           db.prepare('UPDATE owner_aliases SET delivery=1 WHERE id=?').run(delivery)
           // Keep earlier immutable delivery receipts until they are consumed; retries never rebind them.
           if (sourceId) db.prepare('UPDATE owner_aliases SET payload=NULL WHERE session=? AND source=? AND delivery=0').run(session, sourceId)
@@ -1108,6 +1141,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           && item.cards.some(card => card.id === input.questionId && card.question === input.question))
         if (!general) throw new Error('Question is no longer authorized')
         store.tx(() => {
+          assertIntakeCurrent()
           runtime.accept(input.text, { ...context, context: input.context }, sourceId,
             { question: input.question, requestId: input.requestId, questionId: input.questionId, custom: true },
             { deferAutomatic: true, at: Date.now(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
@@ -1278,7 +1312,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     rememberNativeFile: (text: string) => observeDiagnosticAsync(options.diagnostics, 'memory.write', () => rememberNativeFile(text), {
       identities: { sessionId: toolReadScope.getStore()?.call.session ?? null, requestId: toolReadScope.getStore()?.call.id ?? null } }),
     contextGeneration: contextRecovery.contextGeneration, contextRecovery: contextRecovery.contextRecovery, needsContextRecovery, loadSessionFileProof,
-    nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut,
+    nativeContextRewritten: nativeSurface.has, noteInheritedNativeCut, intakeQuery,
     prepareContextRecovery: contextRecovery.prepareContextRecovery, bindContextRecovery: contextRecovery.bindContextRecovery, commitContextRecovery: contextRecovery.commitContextRecovery,
     finishNativeOutput: nativeOutputs.finish,
     finishNativeToolRead: nativeToolReads.finish,

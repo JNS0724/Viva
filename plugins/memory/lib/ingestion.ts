@@ -1,7 +1,6 @@
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionLogOffset, type Session } from '@deepseek-ai/dsh-session'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { createRemoteMemoryOwner } from './remote-owner.ts'
-import type { SourceReceipt } from './owner-port.ts'
 import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
 
 type Owner = Pick<ReturnType<typeof createRemoteMemoryOwner>, 'epoch' | 'inEpoch' | 'bindIntakeSession' | 'receiveSource' | 'completeTurn'
@@ -21,8 +20,8 @@ const textOf = (message: { content: readonly { type: string, text?: string }[] }
   message.content.flatMap(part => part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('\n')
 const timezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone
 
-export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
-  return receipts.map(receipt => receipt.retrievalQuery ?? (!receipt.handledIntent ? receipt.text : '')).filter(Boolean).join('\n').slice(0, 20_000)
+export function humanMessages(messages: readonly UserMessage[]) {
+  return messages.filter(message => message.source.kind === 'user').map(message => ({ id: message.id, text: textOf(message) }))
 }
 
 /** The owner remembers committed turn boundaries. An interrupted scan can replay
@@ -58,60 +57,60 @@ export function createSessionIngestion(owner: Owner, flush: (session: Session) =
         && !('rpcId' in message.source && typeof message.source.rpcId === 'string') })
   }
 
-  async function scan(state: Replay, events: readonly SessionEvent[], persisted: Promise<unknown>) {
+  async function scan(state: Replay, end: SessionLogOffset, persisted: Promise<unknown>) {
     if (await persisted !== true) return
     const session = String(state.session.id)
+    const inherited = state.session.inheritedEventCount
     if (state.nextSeq === null) {
       const { createdAt, nextSeq } = await owner.intakeWatermark(session)
-      const first = events.find(event => event.time >= createdAt)
-      state.nextSeq = nextSeq ?? first?.seq ?? ((events.at(-1)?.seq ?? -1) + 1)
-      if (nextSeq === null) await owner.advanceIntake(session, state.nextSeq)
+      if (nextSeq === null) {
+        const first = state.session.snapshotEvents(inherited, end).find(event => event.time >= createdAt)
+        const start = first?.seq ?? end
+        await owner.advanceIntake(session, start)
+        state.nextSeq = start
+      } else state.nextSeq = nextSeq
     }
+    const from = Math.max(inherited, state.nextSeq)
+    if (from >= end) return
+    const events = state.session.snapshotEvents(SessionLogOffset(from), end)
     for (const event of events) {
-      if (event.seq < state.nextSeq) continue
-      if (event.seq >= state.session.inheritedEventCount) {
-        if (event.type === 'turn/start') {
-          state.turn = event.data.turn
-          state.step = 0
-          state.sources.clear()
-          state.assistant = []
-        }
-        if (event.type === 'step/start') { state.turn = event.data.turn; state.step = event.data.step }
-        if (event.type === 'user/message') {
-          const receipt = await original(state, event.data, event.time, false)
-          if (receipt && !receipt.handledIntent) state.sources.add(receipt.sourceId)
-        }
-        if (event.type === 'assistant/message' && !event.data.interrupted) state.assistant.push(textOf(event.data.message))
-        if (event.type === 'turn/end') {
-          await owner.completeTurn({ sessionId: session, turn: event.data.turn, eventSeq: event.seq,
-            sourceIds: [...state.sources], assistant: state.assistant.join('\n'), completed: event.data.reason.kind === 'completed',
-            at: event.time, timezone: timezone() })
-        }
+      if (event.type === 'turn/start') {
+        state.turn = event.data.turn
+        state.step = 0
+        state.sources.clear()
+        state.assistant = []
+      }
+      if (event.type === 'step/start') { state.turn = event.data.turn; state.step = event.data.step }
+      if (event.type === 'user/message') {
+        const receipt = await original(state, event.data, event.time, false)
+        if (receipt && !receipt.handledIntent) state.sources.add(receipt.sourceId)
+      }
+      if (event.type === 'assistant/message' && !event.data.interrupted) state.assistant.push(textOf(event.data.message))
+      if (event.type === 'turn/end') {
+        await owner.completeTurn({ sessionId: session, turn: event.data.turn, eventSeq: event.seq,
+          sourceIds: [...state.sources], assistant: state.assistant.join('\n'), completed: event.data.reason.kind === 'completed',
+          at: event.time, timezone: timezone() })
       }
       state.nextSeq = event.seq + 1
     }
   }
 
-  function synchronize(session: Session) {
-    const events = session.snapshotEvents()
+  function synchronize(session: Session, current?: { messages: readonly UserMessage[], turn: number, step: number }) {
+    const end = session.seq
     const persisted = flush(session)
     void persisted.catch(() => {})
-    return enqueue(session, state => scan(state, events, persisted))
+    return enqueue(session, async state => {
+      await scan(state, end, persisted)
+      if (!current) return
+      state.turn = current.turn
+      state.step = current.step
+      for (const message of current.messages) await original(state, message, Date.now(), true)
+    })
   }
   return {
     synchronize,
-    async receive(session: Session, messages: readonly UserMessage[], turn: number, step: number) {
-      await synchronize(session)
-      const receipts: SourceReceipt[] = []
-      await enqueue(session, async state => {
-        state.turn = turn
-        state.step = step
-        for (const message of messages) {
-          const receipt = await original(state, message, Date.now(), true)
-          if (receipt) receipts.push(receipt)
-        }
-      })
-      return receipts
+    receive(session: Session, messages: readonly UserMessage[], turn: number, step: number) {
+      return synchronize(session, { messages, turn, step })
     },
     release(session: Session) {
       if (sessions.get(session.id)?.session === session) sessions.delete(session.id)

@@ -261,7 +261,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   }
 
   function callHost<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], optionsForCall?: OwnerCallOptions) {
-    return callCurrent<HostMemoryApi[M]['output']>('host', { method, input, diagnostics: diagnosticContext() }, optionsForCall)
+    return callCurrent<HostMemoryApi[M]['output']>('host', { method, input, diagnostics: diagnosticContext(), deadlineAt: optionsForCall?.deadlineAt }, optionsForCall)
   }
 
   async function shutdown() {

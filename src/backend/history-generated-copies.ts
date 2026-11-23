@@ -35,11 +35,11 @@ export function createHistoryGeneratedCopies(db: DatabaseSync, affected: (proof:
     return !erased
   }
 
-  /** Persist generated text only under its exact, live proof. Human messages still use their source identities. */
+  /** Apply erasure only to messages explicitly registered by the former proof system. */
   function forSave(message: StoredMessage, session: string | null | undefined) {
     if (message.role === 'note') return message
     const replica = message.key && read(message.key)
-    if (!replica) return message.role === 'assistant' ? blank(message) : message
+    if (!replica) return message
     return !replica.erased && replica.session === session && replica.role === message.role
       && replica.digest === digestOf(message.text) ? message : blank(message)
   }

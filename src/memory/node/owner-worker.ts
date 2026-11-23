@@ -166,21 +166,27 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
       const proof = await current.loadSpillFileProof(id, signal)
       return current.admitNativeSpillRead(id, nativeScope(scope, signal), signal, proof).current()
     },
-    sidecarRequest: (raw, cwd) => {
+    sidecarRequest: (raw, cwd, originals) => {
       const request = memoryRequest.parse(raw)
-      const unknownProject = resolveMemoryProject(cwd).status === 'unknown'
       const session = request.session
       return sessions.run(session, async () => {
         if (!current.ready() || signal.aborted) return null
+        const resolved = resolveMemoryProject(cwd)
+        const origin = current.sessionContext(session)
+        const project = resolved.status === 'project' ? resolved.project : undefined
+        const scopeCurrent = resolved.status !== 'unknown' && project?.id === origin.project?.id
         if (request.op === 'remember') {
-          if (unknownProject) return '{"status":"unavailable"}'
+          if (!scopeCurrent) return '{"status":"unavailable"}'
           const result = await current.rememberSidecarFile(session, request.text.trim(), signal)
           return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
             : { status: 'rejected', reason: 'no-explicit-user-source' })
         }
-        const context = current.sessionContext(session)
-        const origin = unknownProject ? { ...context, project: undefined, context: { kind: 'user' as const } } : context
-        return current.runtime.handleModelRequest(request, origin, current.ready, signal)
+        const readScope = scopeCurrent ? origin : { ...origin, project, context: project ?? { kind: 'user' as const } }
+        if (request.op === 'context' && originals) {
+          request.question = current.intakeQuery(session, readScope.project, originals.messages, originals.requiresAlias)
+          if (!request.question) return null
+        }
+        return current.runtime.handleModelRequest(request, readScope, current.ready, signal)
       })
     },
     modelRequest: (request, session, generation, scope, unknownProject) => sessions.run(session, async () => {
@@ -297,9 +303,11 @@ const peer = createOwnerRpcPeer({
       if (method !== 'host') throw new Error('Unsupported memory owner operation')
       const envelope = objectOf(raw)
       signal.throwIfAborted()
+      const deadlineAt = typeof envelope?.deadlineAt === 'number' ? envelope.deadlineAt : undefined
+      if (deadlineAt !== undefined && Date.now() >= deadlineAt) throw new Error('Memory intake deadline elapsed')
       const host = owner
       const diagnostic = parseDiagnosticContext(envelope?.diagnostics)
-      return await withRemoteOperation(diagnostic, 'memory.owner', () => host.handleHost(envelope?.method, envelope?.input, signal),
+      return await withRemoteOperation(diagnostic, 'memory.owner', () => host.handleHost(envelope?.method, envelope?.input, signal, deadlineAt),
         { identities: { ownerEpoch: host.epoch, methodId: typeof envelope?.method === 'string' ? envelope.method : undefined } })
     } finally { publishState() }
   },

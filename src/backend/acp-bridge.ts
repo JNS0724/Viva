@@ -168,7 +168,7 @@ export function createAcpBridge({
   async function wireAlias(args: HostMemoryApi['bindWireAlias']['input']['args']) {
     const wire = args[2]
     if (!memory.ready()) return wire
-    try { return (await memory.call('bindWireAlias', { args })).wireText }
+    try { return (await ownerChannel.callIntake('bindWireAlias', { args })).wireText }
     catch { return wire }
   }
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}

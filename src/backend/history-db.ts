@@ -292,6 +292,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     promptPendingOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='pending'"),
     promptNotSentOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='not-sent'"),
     promptState: db.prepare('SELECT state FROM prompt_deliveries WHERE source=?'),
+    promptText: db.prepare("SELECT text FROM messages WHERE source_id=? AND role='user' LIMIT 1"),
     shiftMessagesUp: db.prepare('UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0'),
     shiftStarsUp: db.prepare('UPDATE stars SET seq = -seq WHERE conversation_id = ? AND seq < 0'),
     shiftMessagesDown: db.prepare('UPDATE messages SET seq = -seq - 2 WHERE conversation_id = ? AND seq < 0'),
@@ -957,9 +958,14 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const promptUndelivered = (sources: readonly string[]) => sources.filter(source => Boolean(sql.promptNotSentOne.get(source)))
   const promptDelivery = (source: string): 'pending' | 'not-sent' | 'sent' | undefined =>
     (sql.promptState.get(source) as { state: 'pending' | 'not-sent' | 'sent' } | undefined)?.state
+  function matchesPromptText(sources: readonly string[], text: string) {
+    if (!sources.length || new Set(sources).size !== sources.length) return false
+    const originals = sources.map(source => sql.promptText.get(source)?.text)
+    return originals.every(original => typeof original === 'string') && originals.join('\n\n') === text
+  }
 
   return {
-    reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
+    reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery, matchesPromptText,
     addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, rebindMessageSession, eraseMemoryCopies, eraseFileRanges,
     bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, retainMessage: generated.forSave, fileErasureRevision: memoryRanges.revision,
     evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
