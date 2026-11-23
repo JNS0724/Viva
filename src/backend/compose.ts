@@ -365,7 +365,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   }
 
   const memoryBusy = () => !memoryOffline() && memoryCoordination.busy()
-  const workspaceOfSession = (id: string | undefined) => isMainSession(id) ? workDirNow() : id ? historyDb.bySession(id)?.cwd : undefined
+  function workspaceOfSession(id: string | undefined) {
+    if (!id) return undefined
+    if (isMainSession(id)) return workDirNow()
+    const conversation = historyDb.bySession(id)
+    return conversation ? conversation.cwd : unattended.workspaceOf(id)
+  }
   const memoryProjectFor = (id: string | undefined) => memoryProjectScope(workspaceOfSession(id))
 
   function readNativeTrace<T>(sessions: readonly string[], read: (visible: readonly string[]) => T | Promise<T>) {

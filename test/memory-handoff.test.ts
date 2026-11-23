@@ -2348,6 +2348,8 @@ test('an Updates draft keeps the result identity until dispatch and never become
   app.wake()
   const item = await eventually(() => app.feed().find(item => item.title === title))
   assert.ok(item)
+  assert.ok(app.model.requests.some(request => questionOf(request.messages) === prompt && JSON.stringify(request).includes('【记忆规则】')),
+    'a verified unattended prompt receives automatic memory context')
   const text = await app.call<Promise<string>>('feed:continue', item.id)
   assert.ok(text.endsWith(draft))
   await app.newTopic()
@@ -2360,13 +2362,12 @@ test('an Updates draft keeps the result identity until dispatch and never become
   assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => JSON.stringify(raw).includes('解释这段结果'))))
   assert.ok(await eventually(() => app.events.slice(seen).find(event => event.type === 'turn_end')))
   const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'))
-  try { assert.equal(memoryDb.prepare('SELECT id FROM memory_sources WHERE id=?').get(operation), undefined) }
+  try {
+    assert.equal(memoryDb.prepare('SELECT id FROM memory_sources WHERE id=? OR text IN (?,?)').get(operation, prompt, draft), undefined)
+  }
   finally { memoryDb.close() }
   await app.replace()
-  const before = app.model.requests.length
-  await assert.rejects(async () => app.call('feed:continue', item.id), /已变更/)
-  await assert.rejects(() => send(text, item.id), /已变更/)
-  assert.ok(!app.model.requests.slice(before).some(raw => JSON.stringify(raw).includes(draft)))
+  assert.equal(await app.call('feed:continue', item.id), text)
   assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
 })
 
