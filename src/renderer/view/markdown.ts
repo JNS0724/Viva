@@ -358,7 +358,7 @@ export function refreshExpansionLabel(button: HTMLElement, remaining: number) {
 
 const REVEAL_SLICE_MS = 5
 // DOM changes also cost layout and accessibility work after this script yields, especially table rows.
-const REVEAL_SLICE_NODES = 500
+const REVEAL_SLICE_NODES = 300
 
 /** Parse the full source together so later reference definitions still affect the opening. */
 export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string,

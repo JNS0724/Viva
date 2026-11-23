@@ -2634,8 +2634,12 @@ test('main session oversees background tasks across git repos while background t
   const getOffset = app.model.requests.length
   await app.ask('读取甲仓库任务详情')
   const getResults = (app.model.requests.slice(getOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
-  assert.ok(getResults.some(result => JSON.stringify(result).includes(outputA1) && JSON.stringify(result).includes(repoA)),
-    JSON.stringify({ getResults }))
+  assert.ok(getResults.some(result => {
+    try {
+      const parsed = JSON.parse(String(result)) as { task?: { cwd?: string, resultPreview?: string } }
+      return parsed.task?.cwd === repoA && String(result).includes(outputA1)
+    } catch { return false }
+  }), JSON.stringify({ getResults }))
 
   // Message taskA from repoB and verify its updated report arrives back in repoB.
   const report2Offset = app.model.requests.length
@@ -2678,5 +2682,10 @@ test('main session oversees background tasks across git repos while background t
   const nestedGetOffset = app.model.requests.length
   await app.ask('读取甲仓库任务详情')
   const nestedGetResults = (app.model.requests.slice(nestedGetOffset) as Request[]).flatMap(request => modelToolResults(request, 'get_background_task'))
-  assert.ok(nestedGetResults.some(result => JSON.stringify(result).includes(repoA)), JSON.stringify({ nestedGetResults }))
+  assert.ok(nestedGetResults.some(result => {
+    try {
+      const parsed = JSON.parse(String(result)) as { task?: { cwd?: string } }
+      return parsed.task?.cwd === repoA
+    } catch { return false }
+  }), JSON.stringify({ nestedGetResults }))
 })
