@@ -57,10 +57,9 @@ export function createRequestRuntime({ store, apply, tasks, evidenceErased = () 
   const halted = new Set<string>()
 
   /** A request of the main conversation, as it arrives; its id goes into the header the agent reads it under. */
-  function receive({ sessionId, conversationId, cwd, kind, sourceId }: {
-    sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string,
+  function receive({ id = newId(), sessionId, conversationId, cwd, kind, sourceId }: {
+    id?: string, sessionId: string, conversationId: string | null, cwd: string | null, kind: RequestKind, sourceId?: string,
   }): string {
-    const id = newId()
     apply('request.received', { requestId: id, kind }, () => store.add({ id, sessionId, conversationId, cwd, kind, sourceId, at: now() }))
     emitDiagnostic({ event: 'state.changed', operation: 'task.route', stage: 'received', identities: { requestId: id, sessionId, conversationId } })
     return id

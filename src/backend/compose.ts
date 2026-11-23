@@ -408,28 +408,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     finally { dsh.current?.refreshMemoryQuestions(); scheduleRuns?.wake(); feedSourceRuns?.wake() }
   }
 
-  async function recordDeliveredSource(sourceId: string, origin = sessions.context(), { derived = false } = {}) {
-    if (memoryOffline()) return
-    if (!origin.conversationId || !origin.sessionId) return
-    await memoryOwner.channel.callIntake('recordDeliveredSource', { args: [sourceId, origin.conversationId, derived, origin.sessionId] })
-      .catch(error => emitDiagnosticFailure('memory.intake', error))
-  }
-
-  async function aliasMemory(text: string, operation: string, origin = sessions.context()) {
-    if (memoryOffline() || !origin.sessionId || !origin.conversationId) return operation
-    const scope = resolveMemoryProject(workspaceOfSession(origin.sessionId))
-    if (scope.status === 'unknown') return operation
-    const project = scope.status === 'project' ? scope.project : undefined
-    try {
-      const result = await memoryOwner.channel.callIntake('sourceAlias', { operationId: operation, sourceId: operation,
-        session: origin.sessionId, conversation: origin.conversationId, text, context: foregroundMemoryScope(project), project })
-      return result.sourceId
-    } catch (error) {
-      emitDiagnosticFailure('memory.intake', error)
-      return operation
-    }
-  }
-
   /** The permission level picked; one no longer offered (an older or edited file) reads as the default. */
   const permissionNow = () => (PERMISSION_LEVELS.includes(preferences.get().permission) ? preferences.get().permission : DEFAULT_PERMISSION)
 
@@ -535,15 +513,18 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         if (!memoryOffline()) void bindSessionProject(id, memoryProjectScope(targetCwd))
           .catch(error => emitDiagnosticFailure('memory.intake', error))
       },
-      taskSourceAlias: async (session, text) => {
+      recordSource: async ({ session, sourceId, text, wireText, wireSpans, task }) => {
+        if (memoryOffline()) return
+        const selected = sessions.context()
+        const conversation = task ? historyDb.bySession(session)?.id ?? session : selected.sessionId === session ? selected.conversationId : null
+        if (!conversation) return
+        const scope = resolveMemoryProject(workspaceOfSession(session))
+        if (scope.status === 'unknown') return
         const operationId = randomUUID()
-        if (memoryOffline() || resolveMemoryProject(workspaceOfSession(session)).status === 'unknown') return operationId
-        try {
-          await memoryOwner.channel.callIntake('sourceAlias', { operationId, sourceId: operationId, session, text, origin: 'derived',
-            conversation: historyDb.bySession(session)?.id ?? session, context: { kind: 'task', id: session },
-            project: memoryProjectFor(session) })
-        } catch (error) { emitDiagnosticFailure('memory.intake', error) }
-        return operationId
+        const project = scope.status === 'project' ? scope.project : undefined
+        await memoryOwner.channel.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session, conversation, text, wireText,
+          wireSpans, project, origin: sourceId ? 'original' : 'derived', context: task ? { kind: 'task', id: session } : foregroundMemoryScope(project) })
+          .catch(error => emitDiagnosticFailure('memory.intake', error))
       },
       readyMemory: () => { scheduleRuns?.wake(); feedSourceRuns?.wake() },
       allowGeneralQuestion: (session, turn, cards, _waiting, phase) => {
@@ -969,7 +950,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const selected = () => generation() && dsh.current === agent
         && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
-      return deliverHumanSteer(words, deliveryId, agent, origin, held, selected)
+      return deliverHumanSteer(words, deliveryId, agent, held, selected)
     })
     ipcMain.handle('agent:cancel', async (_event, target) => {
       const agent = dsh.current
@@ -1050,16 +1031,15 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
-  async function deliverHumanSteer(words: string, deliveryId: string, agent: Bridge, origin: ReturnType<typeof sessions.context>,
+  async function deliverHumanSteer(words: string, deliveryId: string, agent: Bridge,
     held: () => boolean, selected: () => boolean, onDispatch?: () => void): Promise<IpcResults['agent:steer']> {
     // A normally finished turn asks the renderer to resend as a new question;
     // cancellation or a replacement selection must never do so.
     const retiredReason = (): 'idle' | 'unavailable' => selected() ? 'idle' : 'unavailable'
     let dispatched = false
     try {
-      const sourceId = await aliasMemory(words, deliveryId, origin)
       const result = !held() ? { ok: false, reason: retiredReason(), delivery: 'not-sent' as const }
-        : await agent.steer(words, sourceId, held, retiredReason, () => { dispatched = true; onDispatch?.() })
+        : await agent.steer(words, deliveryId, held, retiredReason, () => { dispatched = true; onDispatch?.() })
       if (!closed && (result.ok || result.reason === 'idle' || result.delivery === 'not-sent')) historyDb.settlePromptDelivery([deliveryId], result.ok)
       return { ...result, delivery: closed ? result.delivery ?? (result.ok ? 'sent' as const : 'pending' as const) : historyDb.promptDelivery(deliveryId) }
     }
@@ -1082,6 +1062,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       : Promise.reject(new Error(t('main.memory.context.stale')))
     if (Array.isArray(operation) && !historyDb.matchesPromptText(operation, question)) {
       return Promise.reject(new Error(t('main.memory.context.stale')))
+    }
+    if (!feedItemId && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent'
+      && !historyDb.matchesPromptText([operation], question)) {
+      return Promise.reject(new Error(t('main.memory.operation.conflict')))
     }
     if (!feedItemId && !pictures.length && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'sent') {
       // The native steer may have acknowledged while this report is still running.
@@ -1154,7 +1138,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
       finally { if (humanAdmission === own) humanAdmission = null }
     }, interjectable ? async held => {
-      const result = await deliverHumanSteer(question, operation, agent, origin, held, selected, () => { nativeStarted = true })
+      const result = await deliverHumanSteer(question, operation, agent, held, selected, () => { nativeStarted = true })
       if (result.ok) return { result: undefined }
       if (result.delivery === 'not-sent') nativeStarted = false
       if (result.reason === 'idle' && result.delivery === 'not-sent' && selected()) {
@@ -1199,17 +1183,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     let feedCurrent: (() => boolean) | undefined
     if (feedItemId) {
       if (replay) throw new Error(t('main.memory.context.stale'))
-      const origin = { ...feedOrigin }
       feedCurrent = await admitFeedContinuation({ text: question, read: () => feedContinuation(feedItemId),
         current: feedSelected,
-        transfer: () => Promise.resolve(true),
-        record: () => recordDeliveredSource(operation, origin, { derived: true }),
       })
       if (!feedCurrent()) throw new Error(t('main.feed.memory.unavailable'))
-    } else if (!replay) {
-      await aliasMemory(question, operation)
-    } else {
-      for (const sourceId of operation) { await recordDeliveredSource(sourceId); assertAdmitted() }
     }
     assertAdmitted()
     turn = { active: true, by: 'user', stopping: false, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }

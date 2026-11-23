@@ -641,7 +641,7 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
   assert.ok(app.model.requests.every(request => !JSON.stringify(request).includes(question)))
 })
 
-for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error'] as const) test(`an ordinary steer held in source alias admission respects its original turn (${outcome})`, { timeout: 45_000 }, async t => {
+for (const outcome of ['replacement', 'ended', 'next-turn'] as const) test(`an ordinary steer held in source alias admission respects its original turn (${outcome})`, { timeout: 45_000 }, async t => {
   const before = '保持旧话题运行', after = '保持新话题运行', words = '只能送给旧话题的插话', operation = randomUUID()
   let releaseOld = () => {}, releaseNew = () => {}, releaseAlias = () => {}, aliasHeld = false
   const oldGate = new Promise<void>(resolve => { releaseOld = resolve }), newGate = new Promise<void>(resolve => { releaseNew = resolve })
@@ -651,15 +651,11 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error'] as co
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
+        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { sourceId?: string } } }
         if (!aliasHeld && frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'sourceAlias' && frame.input.input?.operationId === operation) {
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.sourceId === operation) {
           aliasHeld = true
-          releaseAlias = () => {
-            if (outcome === 'alias-error') this.emit('message', { type: 'memory_owner_rpc', kind: 'result', id: frame.id,
-              ok: false, error: { message: 'The original source alias was rejected.' } })
-            else Reflect.apply(send, this, [message, ...rest])
-          }
+          releaseAlias = () => { Reflect.apply(send, this, [message, ...rest]) }
           return true
         }
         return Reflect.apply(send, this, [message, ...rest]) as boolean
@@ -685,7 +681,7 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error'] as co
   void steered.catch(() => {})
   assert.ok(await eventually(() => aliasHeld))
   if (outcome === 'replacement') await cancelCurrent(app)
-  if (outcome !== 'alias-error') { releaseOld(); await original }
+  releaseOld(); await original
   if (outcome === 'replacement') await app.newTopic()
   const fresh = outcome === 'replacement' || outcome === 'next-turn' ? app.ask(after) : null
   void fresh?.catch(() => {})
@@ -695,8 +691,7 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error'] as co
   const result = await steered
   assert.equal(result.ok, false)
   assert.equal(result.delivery, 'not-sent')
-  assert.equal(result.reason, outcome === 'replacement' || outcome === 'alias-error' ? 'unavailable' : 'idle')
-  if (outcome === 'alias-error') assert.match(result.message ?? '', /The original source alias was rejected/)
+  assert.equal(result.reason, outcome === 'replacement' ? 'unavailable' : 'idle')
   releaseOld(); releaseNew(); await original; await fresh
   assert.ok(app.model.requests.slice(count).every(request => !JSON.stringify(request).includes(words)))
   if (outcome === 'ended' || outcome === 'next-turn') {
@@ -724,8 +719,8 @@ test('first idle deliveries and canonical replay retain FIFO ahead of a later st
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
-        const id = frame.input?.input?.operationId
+        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { sourceId?: string } } }
+        const id = frame.input?.input?.sourceId
         if (frame.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
           && frame.input?.method === 'sourceAlias' && id && (id === firstId || id === secondId) && !aliases.has(id)) {
           aliases.set(id, () => { Reflect.apply(send, this, [message, ...rest]) })
@@ -1963,9 +1958,9 @@ test('a late owner alias cannot write after a foreground prompt falls back', { t
     if (event === 'spawn' && this.send) {
       const send = this.send
       t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
+        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { sourceId?: string } } }
         if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'sourceAlias' && frame.input.input?.operationId === operationId) {
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.sourceId === operationId) {
           frameId = frame.id
           release = () => { Reflect.apply(send, this, [message, ...rest]) }
           return true

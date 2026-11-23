@@ -375,16 +375,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   function intakeQuery(session: string, project: MemoryProject | undefined, messages: readonly { id: string, text: string }[], requiresAlias: boolean) {
     return messages.flatMap(({ id, text }) => {
       const wireHash = hash(text)
-      const known = db.prepare('SELECT source,kind FROM owner_messages WHERE id=? AND hash=?').get(id, wireHash)
+      const known = db.prepare(`SELECT m.source,m.kind,m.query_start,m.query_end,r.spans AS query_spans FROM owner_messages m
+        LEFT JOIN owner_message_wires r ON r.message=m.id AND r.source_hash IS NULL WHERE m.id=? AND m.hash=?`).get(id, wireHash)
       if (known?.kind === 'original') {
         const source = store.readSource(String(known.source))
         const sourceProject = source?.project?.kind === 'project' ? source.project.id : undefined
         return source?.text && sourceProject === project?.id && !source.erasure ? [source.text] : []
       }
+      if (known?.kind === 'host-derived') {
+        if (known.query_spans) return [originalFromWire(text, JSON.parse(String(known.query_spans)) as TextSpan[])]
+        if (typeof known.query_start === 'number' && typeof known.query_end === 'number') return [text.slice(known.query_start, known.query_end)]
+      }
       if (known) return []
       const aliases = aliasesForWire(session, wireHash, requiresAlias)
       const first = aliases[0]
-      if (first && first.origin !== 'derived' && first.project?.id === project?.id && aliases.every(alias => alias.sourceId === first.sourceId)) {
+      if (first && first.project?.id === project?.id && aliases.every(alias => alias.sourceId === first.sourceId
+        || alias.origin === 'derived' && first.origin === 'derived')) {
         return [restoreAlias(first, text).text]
       }
       return requiresAlias || first ? [] : [text]
@@ -411,7 +417,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     if (previous && previous.project !== (input.project?.id ?? null)) throw new Error('Session project context changed')
     store.tx(() => {
       assertCurrent()
-      db.prepare('INSERT OR IGNORE INTO owner_aliases(id,fingerprint,session,wire_hash,payload,source,conversation) VALUES (?,?,?,?,?,?,?)').run(input.operationId, fingerprint, input.session, hash(input.wireText ?? input.text), JSON.stringify(saved), input.sourceId, input.conversation)
+      db.prepare('INSERT OR IGNORE INTO owner_aliases(id,fingerprint,session,wire_hash,payload,source,conversation,delivery) VALUES (?,?,?,?,?,?,?,?)')
+        .run(input.operationId, fingerprint, input.session, hash(input.wireText ?? input.text), JSON.stringify(saved), input.sourceId, input.conversation, Number(input.wireText !== undefined))
       db.prepare('INSERT OR IGNORE INTO owner_sessions VALUES (?,?,?,?)').run(input.session, input.conversation, encodedContext, input.project?.id ?? null)
       db.prepare('UPDATE owner_sessions SET conversation=?,context=?,project=? WHERE session=?').run(input.conversation, encodedContext, input.project?.id ?? null, input.session)
       runtime.recordSession(input.session)

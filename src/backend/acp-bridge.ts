@@ -5,6 +5,7 @@ import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import type { McpServerEntry } from '../shared/mcp-channel.ts'
 import { createMcpDesk } from './mcp-desk.ts'
 import fs from 'node:fs'
@@ -90,7 +91,7 @@ export function createAcpBridge({
   platform = process.platform, configActions = null as Parameters<typeof createConfigDesk>[0]['actions'] | null,
   taskRead = null, taskAct = null, historySearch = null, historyRead = null, prewarmSessions = false, onTiming, conversationContext,
   launch = null as object | null, routing, allowSession: sessionAllowed = () => true, onQuestionAnswer, admitTaskWaitResume, onSessionCreated, readyMemory, memoryStateChanged, memoryNotice, memoryContextUsed, memoryProjection, memoryRequired = false,
-  allowGeneralQuestion, taskSourceAlias, memoryOwner,
+  allowGeneralQuestion, recordSource, memoryOwner,
 }: {
   dshBin: string, nodeBin?: string, profile: string,
   /** Sent to dsh first, over IPC, for the app's entry to take before dsh boots (dsh-launch.ts); never in its environment. */
@@ -100,7 +101,8 @@ export function createAcpBridge({
   spawnFn?: typeof spawn, mcpServers?: () => McpServerEntry[],
   onExit?: ((exit: { code: number | null, signal: string | null, message: string }) => void) | null,
   platform?: string, configActions?: Parameters<typeof createConfigDesk>[0]['actions'] | null,
-  taskSourceAlias?: (session: string, text: string) => Promise<string>,
+  recordSource?: (input: { session: string, text: string, wireText: string, sourceId?: string,
+    wireSpans?: Array<{ start: number, end: number }>, task?: boolean }) => Promise<void>,
   taskRead?: TaskRead | null,
   /** Schedule actions from viva-tasks. */
   taskAct?: TaskAct | null,
@@ -165,12 +167,6 @@ export function createAcpBridge({
     return !isTask(id) && memory.ready() && await memory.call('recoverContext', { args: [id] }) && await allowSession(id, cwd)
   }
   const allowTask = (id: string, cwd?: string) => sessionAllowed(id, memory.ready(), true, cwd)
-  async function wireAlias(args: HostMemoryApi['bindWireAlias']['input']['args']) {
-    const wire = args[2]
-    if (!memory.ready()) return wire
-    try { return (await ownerChannel.callIntake('bindWireAlias', { args })).wireText }
-    catch { return wire }
-  }
   const scoped = (context: ConversationContext | null | undefined) => context ? { context } : {}
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.turn(id) ? operations.context(id) : null : undefined
@@ -238,8 +234,9 @@ export function createAcpBridge({
   /** The user's words as the main agent reads them: under the header of the request they are taken as. */
   const asRequest = (words: string, session: string, kind: 'prompt' | 'interjection', sourceId?: string, sourceText = words) => {
     const context = contextFor(session)
-    const requestId = routing.receive({ sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, ...(sourceId ? { sourceId } : {}) })
-    return { requestId, ...withRequestSource(words, requestId, sourceText) }
+    const requestId = randomUUID()
+    const request = { id: requestId, sessionId: session, conversationId: context?.conversationId ?? null, cwd: sessionCwd, kind, sourceId }
+    return { requestId, ...withRequestSource(words, requestId, sourceText), register: () => routing.receive(request) }
   }
   const operations = createAcpOperations({
     connection: live, streams,
@@ -395,14 +392,8 @@ export function createAcpBridge({
     },
     foreground: () => ({ sessionId, cwd: sessionCwd, config: configNow }), canResume: () => canResume, prepareFresh,
     operations, permissions: broker, questions, allowSession: allowTask,
-    preparePrompt: async (id, text) => {
-      const sourceId = await taskSourceAlias?.(id, text)
-      return wireAlias([id, text, text, sourceId])
-    },
-    steer: async (id, text) => {
-      const sourceId = await taskSourceAlias?.(id, text)
-      return steering.steer(await wireAlias([id, text, text, sourceId]), id)
-    },
+    preparePrompt: async (id, text) => { await recordSource?.({ session: id, text, wireText: text, task: true }); return text },
+    steer: async (id, text) => { await recordSource?.({ session: id, text, wireText: text, task: true }); return steering.steer(text, id) },
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
@@ -546,16 +537,12 @@ export function createAcpBridge({
     if (held && !held()) throw new Error(t('main.memory.context.stale'))
     const origin = contextFor(asked), context = origin ? { ...origin } : null
     const routed = request && asked ? asRequest(text, asked, 'prompt', sourceId, sourceText) : null
-    let words = routed?.text ?? text
-    try {
-      if (asked) words = await wireAlias([asked, sourceText ?? text, words, sourceId, routed?.spans])
-      // A new turn may already own this same session after cancellation during the alias write.
-      if (held && !held()) throw new ForegroundRequestRetired()
-      if (asked !== sessionId || isSwitching() || disposed || recoveryRequired) throw new Error(switchingMessage())
-    } catch (error) {
-      if (routed && asked) routing.fail({ requestId: routed.requestId, sessionId: asked, reason: 'undelivered' })
-      throw error
-    }
+    const words = routed?.text ?? text
+    if (asked) await recordSource?.({ session: asked, sourceId, text: sourceText ?? text, wireText: words, wireSpans: routed?.spans })
+    // An alias may finish after cancellation or a conversation switch.
+    if (held && !held()) throw new ForegroundRequestRetired()
+    if (asked !== sessionId || isSwitching() || disposed || recoveryRequired) throw new Error(switchingMessage())
+    routed?.register()
     const blocks: PromptBlocks = [
       ...images.map(({ data, mimeType }) => ({ type: 'image' as const, data, mimeType })),
       ...(words ? [{ type: 'text' as const, text: words }] : []),
@@ -738,27 +725,21 @@ export function createAcpBridge({
     const wrapped = interjection(request.text)
     const prefixLength = wrapped.length - request.text.length
     const spans = request.spans.map(({ start, end }) => ({ start: start + prefixLength, end: end + prefixLength }))
-    let dispatched = false
     const undelivered = () => routing.fail({ requestId: request.requestId, sessionId: asked, reason: 'undelivered' })
-    try {
-      const wire = await wireAlias([asked, text, wrapped, sourceId, spans])
-      if (!held()) { undelivered(); return retired() }
-      if (asked !== sessionId || isSwitching() || disposed) { undelivered(); return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const } }
-      dispatched = true
-      onDispatch?.()
-      const result = await steering.steer(wire, asked, { fast: memory.ready() })
-      // A lost transport receipt leaves the request routable if the native inbox took it.
-      if (!result.ok && result.reason !== NO_PLUGIN) undelivered()
-      return result
-    } catch (error) {
-      if (!dispatched) undelivered()
-      throw error
-    }
+    await recordSource?.({ session: asked, sourceId, text, wireText: wrapped, wireSpans: spans })
+    if (!held()) return retired()
+    if (asked !== sessionId || isSwitching() || disposed) return { ok: false as const, reason: 'unavailable', delivery: 'not-sent' as const }
+    request.register()
+    onDispatch?.()
+    const result = await steering.steer(wrapped, asked, { fast: memory.ready() })
+    // A lost transport receipt leaves the request routable if the native inbox took it.
+    if (!result.ok && result.reason !== NO_PLUGIN) undelivered()
+    return result
   }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */
   const deliverReport = async (session: string, reportId: string, token: string, text: string, held: () => boolean = () => true) => {
     if (recoveryRequired || !await allowSession(session) || !held()) return 'unavailable' as const
-    text = await wireAlias([session, text, text])
+    await recordSource?.({ session, text, wireText: text })
     if (!held() || session !== sessionId || isSwitching() || disposed) return 'unavailable' as const
     return steering.report(session, reportId, token, text)
   }
