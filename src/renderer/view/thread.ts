@@ -8,7 +8,7 @@ import { PROMPT_HEADS, permissionCard as cardOf, promptButtons } from '../prompt
 import { currentAction, receiptLine, restoredNote } from '../selectors.ts'
 import { maidFor } from './maid.ts'
 import type { MaidMood, MaidSlots } from './maid.ts'
-import { h, label } from './dom.ts'
+import { h, keepingInput, label } from './dom.ts'
 import { caretHost, revealMarkdown, refreshExpansionLabel, refreshMarkdownLanguage, renderMarkdown, streamMarkdown, type MarkdownStream } from './markdown.ts'
 import { LONG_ANSWER_CHARS, answerStart } from '../long-answer.ts'
 import { foldKey, foldTall } from './message-fold.ts'
@@ -21,6 +21,10 @@ import { sentPictures } from './pictures.ts'
 import { editorFocus, foldStrip, restoreEditorFocus, rewindBar, rewindEditor } from './rewind.ts'
 import { keepTyped, proposalCard } from './proposal-card.ts'
 import { proposalHost } from '../proposal-state.ts'
+import { waitingTaskPrompts } from '../tasks-state.ts'
+import { questionNeedsText } from '../question-state.ts'
+import { MAX_QUESTION_ANSWER_CHARS } from '../../shared/question-answer.ts'
+import type { AskedQuestion } from '../conversation-types.ts'
 import type { ProposalCard } from '../proposal-types.ts'
 import { userError } from '../user-error.ts'
 import { initializationNotice } from './initialization.ts'
@@ -39,9 +43,10 @@ const containerStreams = new WeakMap<HTMLElement, Map<string, MarkdownStream>>()
 const cardMaids: MaidSlots = new Map()
 
 /** A card that waits on the user, with her beside what it asks: handing over the clipboard, or listening. */
-function withMaid(className: string, label: string, mood: MaidMood, ...body: unknown[]) {
-  return h('section', { class: `${className} confirm-maid`, 'aria-label': label },
-    maidFor(cardMaids, className, mood, { size: CARD_MAID_PX, moving: true }),
+function withMaid(className: string, label: string, mood: MaidMood, task: string | undefined, ...body: unknown[]) {
+  const maids: MaidSlots = task === undefined ? cardMaids : new Map()
+  return h('section', { class: `${className} confirm-maid`, 'aria-label': label, 'data-task': task },
+    maidFor(maids, className, mood, { size: CARD_MAID_PX, moving: true }),
     h('div', { class: 'confirm-body' }, ...body))
 }
 
@@ -195,13 +200,21 @@ const BUTTON: Readonly<Record<string, string>> = Object.freeze({ primary: 'btn b
 
 const cardHead = (text: string) => h('div', { class: 'confirm-head' }, h('span', { text }), h('span', { class: 'pulse-dot' }))
 
-/** The conversation's request; a background task's is asked on its card (view/task-card.js). */
-function permissionCard(permission: NonNullable<State['permission']>, handlers: Handlers) {
+type TaskPrompt = Pick<BackgroundTask, 'id' | 'title'>
+const buttonRole = (role: string, primary: boolean) => BUTTON[role === 'primary' && !primary ? 'secondary' : role]
+
+function taskPromptHead(task: TaskPrompt | undefined, handlers: Handlers) {
+  return task ? h('div', { class: 'confirm-head' },
+    h('span', { class: 'ask-header', text: t('task.prompt.source', { title: task.title }) }),
+    h('button', { type: 'button', class: BUTTON.text, text: t('task.prompt.open'), onClick: () => handlers.openTasks(task.id) })) : null
+}
+
+function permissionCard(permission: NonNullable<State['permission']>, handlers: Handlers, primary = true, task?: TaskPrompt) {
   const rawInput = objectOf(permission.rawInput)
   const head = PROMPT_HEADS.permission
   const { title, detail, command } = cardOf(permission)
-  return withMaid('confirm', head, 'confirm',
-    cardHead(head),
+  return withMaid('confirm', head, 'confirm', task?.id,
+    taskPromptHead(task, handlers), cardHead(head),
     h('div', { class: 'confirm-title', text: title }),
     rawInput?.description && typeof rawInput.description === 'string'
       ? h('p', { class: 'confirm-reason', text: t("handoff.approval.reason", { reason: rawInput.description }) }) : null,
@@ -210,48 +223,66 @@ function permissionCard(permission: NonNullable<State['permission']>, handlers: 
       h('summary', { text: t("handoff.approval.parameters") }), h('pre', { class: 'confirm-detail', text: detail })) : null,
     h('div', { class: 'confirm-actions' },
       promptButtons(permission.options).map((option) => h('button', {
-        class: BUTTON[option.role],
+        class: buttonRole(option.role, primary),
         text: optionName(option),
         onClick: () => handlers.respond(permission.requestId, option.optionId),
       })),
       h('span', { class: 'confirm-hint', text: t("thread.risky.actions.require.your.approval") })))
 }
 
-/** The agent's question as the state keeps it: its questions, and what is picked so far for each. */
-type AskedQuestion = { questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[] | undefined>> }
-
-function questionItem(item: QuestionItem, question: AskedQuestion, handlers: Handlers) {
-  const picked = question.picks[item.id] ?? []
-  return h('div', { class: 'ask-item' },
-    item.header ? h('span', { class: 'ask-header', text: item.header }) : null,
-    h('div', { class: 'ask-question', text: item.question }),
-    item.options.length ? h('div', { class: 'ask-options', role: 'group', 'aria-label': item.question },
-      item.options.map((option) => h('button', {
-        class: `${picked.includes(option.label) ? BUTTON.primary : BUTTON.secondary} ask-option`,
-        'aria-pressed': String(picked.includes(option.label)),
-        title: option.description ?? null,
-        text: option.label,
-        onClick: () => handlers.pickOption(item.id, option.label),
-      }))) : null)
-}
-
-/**
- * The agent's question, mid-turn. A single question with single choice is answered by its option; otherwise
- * picks are gathered and sent with 提交. Words typed in the composer (Enter) answer it too.
- */
-function questionCard(question: AskedQuestion, handlers: Handlers, hasComposer = true) {
+function questionCard(question: AskedQuestion, handlers: Handlers, { primary = true, task, taskId = task?.id, inTasksPage = false }: {
+  primary?: boolean, task?: TaskPrompt, taskId?: string, inTasksPage?: boolean,
+} = {}) {
   const head = PROMPT_HEADS.question
-  const single = question.questions.length === 1 && !question.questions[0].multiSelect
-  const hint = single && question.questions[0].options.length
-    ? (hasComposer ? `${t('desk.interaction.immediate.answer')} ${t('thread.you.can.also.type.your.answer.below')}` : t('desk.interaction.immediate.answer'))
-    : (hasComposer ? t("thread.you.can.also.type.your.answer.below") : '')
-  return withMaid('confirm ask', head, 'ask',
-    cardHead(head),
-    question.questions.map((item) => questionItem(item, question, handlers)),
+  const single = question.questions.length === 1 && !question.questions[0].multiSelect && question.questions[0].options.length > 0
+  const { questionId } = question
+  if (task && questionNeedsText(question)) {
+    return withMaid('confirm ask', head, 'ask', task.id,
+      taskPromptHead(task, handlers), cardHead(head),
+      h('div', { class: 'ask-question', text: question.questions[0].question }),
+      h('div', { class: 'confirm-actions' },
+        h('button', { class: buttonRole('primary', primary), type: 'button', text: t('task.prompt.answer'),
+          onClick: () => handlers.openTasks(task.id, questionId) })))
+  }
+  const hasComposer = !taskId
+  const hint = single ? (hasComposer ? `${t('desk.interaction.immediate.answer')} ${t('thread.you.can.also.type.your.answer.below')}` : t('desk.interaction.immediate.answer'))
+    : (hasComposer ? t('thread.you.can.also.type.your.answer.below') : '')
+  const pick = (id: string, label: string) => taskId ? handlers.pickTaskOption(taskId, questionId, id, label) : handlers.pickOption(id, label)
+  const submit = () => taskId ? handlers.submitTaskAnswer(taskId, questionId) : handlers.submitAnswer()
+  const skip = () => taskId ? handlers.skipTaskQuestion(taskId, questionId) : handlers.skipQuestion()
+  const el = withMaid('confirm ask', head, 'ask', taskId,
+    taskPromptHead(task, handlers), cardHead(head),
+    question.questions.map(item => {
+      const picked = question.picks[item.id] ?? []
+      return h('div', { class: 'ask-item' },
+        item.header ? h('span', { class: 'ask-header', text: item.header }) : null,
+        h('div', { class: 'ask-question', text: item.question }),
+        item.options.length ? h('div', { class: 'ask-options', role: 'group', 'aria-label': item.question },
+          item.options.map((option, index) => h('button', {
+            class: `${buttonRole(single && index === 0 ? 'primary' : 'secondary', primary)} ask-option`,
+            'aria-pressed': String(picked.includes(option.label)),
+            title: option.description ?? null,
+            text: option.label,
+            onClick: () => pick(item.id, option.label),
+          }))) : inTasksPage && taskId ? h('input', {
+            class: 'field',
+            type: 'text',
+            name: JSON.stringify([taskId, questionId, item.id]),
+            maxlength: MAX_QUESTION_ANSWER_CHARS,
+            'aria-label': item.question,
+            value: question.custom?.[item.id] ?? '',
+            onInput: (event: Event) => {
+              if (!(event as InputEvent).isComposing) handlers.inputTaskAnswer(taskId, questionId, item.id, (event.target as HTMLInputElement).value)
+            },
+            onCompositionend: (event: CompositionEvent) => handlers.inputTaskAnswer(taskId, questionId, item.id, (event.target as HTMLInputElement).value),
+          }) : null)
+    }),
     h('div', { class: 'confirm-actions' },
-      single ? null : h('button', { class: `${BUTTON.primary} ask-submit`, text: t("thread.submit"), onClick: () => handlers.submitAnswer() }),
-      h('button', { class: `${BUTTON.text} ask-skip`, text: t("island-dom.skip"), onClick: () => handlers.skipQuestion() }),
+      single ? null : h('button', { class: `${buttonRole('primary', primary)} ask-submit`, text: t("thread.submit"), onClick: submit }),
+      h('button', { class: `${BUTTON.text} ask-skip`, text: t("island-dom.skip"), onClick: skip }),
       hint ? h('span', { class: 'confirm-hint', text: hint }) : null))
+  el.dataset.question = questionId
+  return el
 }
 
 /** Where the next answer will appear: what the agent is doing now (the title-bar island carries her portrait and the time). */
@@ -420,7 +451,7 @@ export type ThreadView = ConversationView & Pick<State, 'records' | 'conversatio
   | 'proposals' | 'tasks' | 'taskCards' | 'info'>
 
 /** Conversation column: only user text, assistant text, receipts, the confirmation card and the agent's question. */
-export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number, initialization?: State['initialization']) {
+export function renderThread(container: HTMLElement, state: ThreadView, handlers: Handlers, now: number, initialization?: State['initialization'], taskId?: string) {
   const streams = containerStreams.get(container) ?? new Map<string, MarkdownStream>()
   containerStreams.set(container, streams)
   const messageIds = new Set(state.messages.map(message => message.id))
@@ -479,6 +510,13 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
   const divided = note && state.restored.count >= hidden
     ? views.toSpliced(state.restored.count - hidden, 0, [part('divider', [note.when, note.memory], () => historyDivider(note))])
     : views
+  const waiting = taskId ? [] : waitingTaskPrompts(state)
+  const taskPrompts = waiting.map((task, index) => {
+    const primary = index === 0 && !state.permission && !state.question && !state.secret
+    return part(`task-prompt:${task.id}`, [task.title, task.permission, task.question, primary], () =>
+      task.permission ? permissionCard(task.permission, handlers, primary, task)
+        : questionCard(task.question!, handlers, { primary, task }))
+  })
   const focus = editorFocus()
   const nodes = [
     initialization && initialization.status !== 'ready' ? part('initialization', [initialization], () => initializationNotice({ initialization }, handlers)) : '',
@@ -489,8 +527,9 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
     ...proposalsAfter((at) => at < start),
     ...divided.flat().filter(isContent),
     state.permission ? part('permission', [state.permission], () => permissionCard(state.permission!, handlers)) : '',
-    state.question ? part('question', [state.question, !container.classList?.contains('tp-thread')], () => questionCard(state.question!, handlers, !container.classList?.contains('tp-thread'))) : '',
+    state.question ? part('question', [state.question, taskId], () => questionCard(state.question!, handlers, { taskId, inTasksPage: Boolean(taskId) })) : '',
     state.secret ? secretCard(state.secret, handlers) : '',
+    ...taskPrompts,
     state.phase === 'working' && !last?.open ? part('working', [currentAction(state)], () => workingRow(state)) : '',
     state.phase === 'stopping' ? part('stopping', [], () =>
       h('div', { class: 'msg-working', role: 'status', text: t('conversation.stop.pending') })) : '',
@@ -501,7 +540,10 @@ export function renderThread(container: HTMLElement, state: ThreadView, handlers
         h('button', { class: 'btn btn-outline btn-small', type: 'button', text: t('conversation.stop.recover'), onClick: handlers.recoverConversation }))) : '',
     state.phase === 'error' ? part('error', [state.error], () => errorRow(state.error ?? '')) : '',
   ].flat().filter(isContent)
-  const changed = reconcileChildren(container, nodes)
+  let changed = false
+  const reconcile = () => { changed = reconcileChildren(container, nodes) }
+  if (taskId) keepingInput(container, reconcile)
+  else reconcile()
   threadViews.set(container, cache)
   restoreEditorFocus(focus, state.rewind.editing)
   return changed

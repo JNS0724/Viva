@@ -138,9 +138,6 @@ const scopedHandlers = (handlers: Handlers, task: BackgroundTask): Handlers => (
   openDrawer: () => handlers.openTaskSteps(),
   openTraceDetail: (item: TraceItem) => handlers.openTraceDetail(item, task.segmentId),
   closeDrawer: () => { handlers.closeTraceDetail(); handlers.closeHub() },
-  pickOption: (id: string, label: string) => handlers.pickTaskOption(task.id, id, label),
-  submitAnswer: () => handlers.submitTaskAnswer(task.id),
-  skipQuestion: () => handlers.skipTaskQuestion(task.id),
 })
 
 type StepItem = ReturnType<typeof traceItems>[number]
@@ -233,7 +230,7 @@ function mainView(state: State, handlers: Handlers, now: number) {
       renderTraceDetail(detailState, selectedDetail, scopedHandlers(handlers, task) as DetailHandlers))
   }
   const thread = h('div', { class: 'thread tp-thread' })
-  renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
+  renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now, undefined, task.id)
   const scroll = h('div', { class: 'tp-scroll', onWheel: () => pendingScroll.delete(scroll) }, thread, stepsView(state, task, handlers))
   return h('div', { class: 'tp-main', 'data-task': task.id },
     h('header', { class: 'tp-head' },
@@ -316,7 +313,7 @@ export function renderTasksPage(container: HTMLElement, shown: State, handlers: 
       || (previousTask.status === 'interrupted') !== (task.status === 'interrupted')) {
       main.querySelector('.tp-acts')?.replaceChildren(...headerActions(task, handlers))
     }
-    renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now)
+    renderThread(thread, threadState(state, task), scopedHandlers(handlers, task), now, undefined, task.id)
     if (localeChanged || prior.state.tasks.page.steps !== state.tasks.page.steps || prior.state.tasks.page.allSteps !== state.tasks.page.allSteps
       || previousTask.view.timeline !== task.view.timeline
       || previousTask.view.thoughts !== task.view.thoughts

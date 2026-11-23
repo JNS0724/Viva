@@ -1,5 +1,7 @@
 import { t } from './i18n/translate.ts'
 
+export const MAX_QUESTION_ANSWER_CHARS = 2000
+
 /**
  * How an answer to the agent's questions reads in the conversation, the user's reply under what was asked: the
  * window shows it (renderer/question-state.ts), and the backend keeps it in a task's words (backend/task-transcript.ts).

@@ -2,7 +2,8 @@ import { t } from '../shared/i18n/translate.ts'
 import { optionName } from './approval.ts'
 import { PROMPT_HEADS, permissionCard, promptButtons } from './prompt-card.ts'
 import { catMood, currentAction, setupProblem, traceTail, truncate } from './selectors.ts'
-import { liveTasks } from './tasks-state.ts'
+import { questionNeedsText } from './question-state.ts'
+import { liveTasks, waitingTaskPrompts } from './tasks-state.ts'
 import { turnProblem } from '../shared/turn-outcome.ts'
 
 /**
@@ -21,7 +22,7 @@ const SUMMARY_LIMIT = 120
 type IslandForm = 'pending' | 'idle' | 'working' | 'waiting' | 'asking' | 'done' | 'error'
 type IslandStep = { title: string, tone: string }
 type IslandPermission = { requestId: string, title: string, command: string, options: Array<{ optionId: string, name: string, role: string }> }
-type IslandQuestion = { questionId: string, id: string, header?: string, text: string, options: string[], skippable?: boolean }
+type IslandQuestion = { questionId: string, id: string, header?: string, text: string, options: string[], skippable?: boolean, needsText?: boolean }
 /** A task in the background as the island lists it. */
 type IslandTask = {
   id: string, title: string, status: string, now?: string | null, startedAt?: number,
@@ -92,6 +93,7 @@ function questionView(question: { questionId: string, questions: readonly Questi
     text: first.question,
     options: single ? first.options.map((option) => option.label) : [],
     skippable: true,
+    ...(questionNeedsText(question) ? { needsText: true } : {}),
   }
 }
 
@@ -129,8 +131,9 @@ function afterTurn(state: State, base: IslandBase, background: IslandBackground 
 function backgroundOf(state: State): IslandBackground | null {
   const live: BackgroundTask[] = liveTasks(state)
   if (!live.length) return null
-  const items: IslandTask[] = live
-    .toSorted((a, b) => Number(b.status === 'waiting') - Number(a.status === 'waiting'))
+  const pending = waitingTaskPrompts(state)
+  const present = new Set(pending.map(task => task.id))
+  const items: IslandTask[] = [...pending, ...live.filter(task => !present.has(task.id))]
     .map((task) => ({
       id: task.id, title: task.title, status: task.status, now: task.now, startedAt: task.startedAt,
       ...(task.permission ? { permission: permissionView(task.permission) } : {}),

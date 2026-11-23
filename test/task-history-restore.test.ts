@@ -11,13 +11,25 @@ import { createTaskStore } from '../src/backend/task-store.ts'
 import { checkedIpc, type RawIpc } from '../src/shared/ipc-contract.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { cardedTasks, restoredTaskAnchors } from '../src/renderer/view/task-card.ts'
-import { taskPreview, unseenEnded } from '../src/renderer/tasks-state.ts'
+import { taskPreview, unseenEnded, waitingTaskPrompts } from '../src/renderer/tasks-state.ts'
+import { islandView } from '../src/renderer/island-view.ts'
 
 const user = (text: string) => ({ role: 'user', text, receipt: null })
 const answer = (text: string) => ({ role: 'assistant', text, receipt: null })
 const restored = (id: string, conversationId: string, at: number, order: number) => ({
   task: { id, segmentId: `segment-${id}`, words: `request-${id}`, title: id, host: { conversationId, at, order } }, status: 'done', endedAt: 10,
   messages: [user(`request-${id}`), answer(`result-${id}`)],
+})
+
+test('restored prompts and the title capsule use when each wait arrived', () => {
+  const post = (id: string, startedAt: number, requestedAt: number) => ({
+    ...restored(id, 'front', 0, 0), status: 'waiting' as const, endedAt: null, startedAt,
+    waits: { permissions: [], questions: [{ questionId: `q-${id}`, requestedAt,
+      questions: [{ id: 'item', question: 'Choose a city', header: '', options: [{ label: 'Shanghai' }], multiSelect: false }] }] }, tools: [],
+  })
+  const state = reduce(initialState, { type: 'tasks_restored', list: [post('A', 10, 40), post('B', 20, 30)] })
+  assert.deepEqual(waitingTaskPrompts(state).map(task => task.id), ['B', 'A'])
+  assert.equal(islandView(state).taskId, 'B')
 })
 
 test('persisted side links restore only retained tasks through the real IPC, at their own original anchors', async t => {

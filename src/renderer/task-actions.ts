@@ -139,13 +139,16 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     }
   }
 
-  const questionOf = (taskId: string) => taskById(taskId)?.view.question ?? null
+  const questionOf = (taskId: string, questionId: string) => {
+    const question = taskById(taskId)?.view.question
+    return question?.questionId === questionId ? question : null
+  }
 
   /** Answers what a task asks; snapshots questions so an earlier task_question_closed event still records the reply on ack. */
-  function answerTask(taskId: string, answers: QuestionAnswer[]) {
-    const question = questionOf(taskId)
+  function answerTask(taskId: string, questionId: string, answers: QuestionAnswer[]) {
+    const question = questionOf(taskId, questionId)
     if (!question || answering.has(question.questionId)) return
-    const { questionId, questions } = question
+    const { questions } = question
     answering = new Set([...answering, questionId])
     api.answerQuestion(questionId, answers)
       .then((accepted: boolean) => {
@@ -157,12 +160,12 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
   }
 
   /** One question, one choice: picking is answering. Otherwise picks wait for 提交. */
-  function pickTaskOption(taskId: string, id: string, label: string) {
-    const question = questionOf(taskId)
-    if (!question) return
+  function pickTaskOption(taskId: string, questionId: string, id: string, label: string) {
+    const question = questionOf(taskId, questionId)
+    if (!question?.questions.find(item => item.id === id && item.options.some(option => option.label === label))) return
     const only = question.questions.length === 1 && !question.questions[0].multiSelect
-    if (only) answerTask(taskId, [{ id, selected: [label] }])
-    else dispatch({ type: 'task_question_pick', taskId, id, label })
+    if (only) answerTask(taskId, questionId, [{ id, selected: [label] }])
+    else dispatch({ type: 'task_question_pick', taskId, questionId, id, label })
   }
 
   async function stopTask(taskId: string) {
@@ -194,13 +197,16 @@ export function createTaskActions({ api, getState, dispatch, showToast, errorMes
     resumeTask,
     pickTaskOption,
     loadKept,
-    submitTaskAnswer: (taskId: string) => {
-      const question = questionOf(taskId)
-      if (question) answerTask(taskId, answersFrom(question))
+    inputTaskAnswer: (taskId: string, questionId: string, id: string, text: string) => {
+      if (questionOf(taskId, questionId)) dispatch({ type: 'task_question_custom', taskId, questionId, id, text })
     },
-    skipTaskQuestion: (taskId: string) => {
-      const question = questionOf(taskId)
-      if (question) answerTask(taskId, question.questions.map((item: QuestionItem) => ({ id: item.id, selected: [] })))
+    submitTaskAnswer: (taskId: string, questionId: string) => {
+      const question = questionOf(taskId, questionId)
+      if (question) answerTask(taskId, questionId, answersFrom(question))
+    },
+    skipTaskQuestion: (taskId: string, questionId: string) => {
+      const question = questionOf(taskId, questionId)
+      if (question) answerTask(taskId, questionId, question.questions.map((item: QuestionItem) => ({ id: item.id, selected: [] })))
     },
   }
 }

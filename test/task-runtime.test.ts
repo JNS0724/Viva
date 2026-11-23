@@ -262,6 +262,18 @@ test('words into its turn and answers to its questions are kept with what the ta
   assert.equal(texts(task.segmentId)?.length, 5, 'an answer to no question of a task held changes nothing')
 })
 
+test('finishedTasks restores the same arrival time the live prompt published', async () => {
+  const question = { questionId: 'q-timed', questions: [{ id: 'city', question: '哪个城市？', options: [{ label: '上海' }] }] }
+  const { start, pushes, tasks } = setup({ waits: { permissions: [], questions: [question] } })
+  const { task } = await start('查询天气')
+  tasks.dsh.receive({ type: 'task_question', taskId: task.id, ...question })
+  const received = pushes.find(event => event.type === 'task_question')
+  const [kept] = tasks.window.finished()
+  assert.ok(kept && 'waits' in kept)
+  assert.ok(received && 'requestedAt' in received && typeof received.requestedAt === 'number')
+  assert.deepEqual(kept.waits.questions, [{ ...question, requestedAt: received.requestedAt }])
+})
+
 test('a task is kept while it goes on and once it ended, until it is closed; closed, what it said is saved', async () => {
   const ended = setup()
   const { task } = await ended.start('整理发布说明')

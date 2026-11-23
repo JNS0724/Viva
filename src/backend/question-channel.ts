@@ -1,5 +1,6 @@
 import { t } from '../shared/i18n/translate.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
+import { MAX_QUESTION_ANSWER_CHARS } from '../shared/question-answer.ts'
 /**
  * Questions the model asks the user, on the app's side of the questions contract (version 1, see
  * plugins/questions/lib/channel.js): dsh's viva-questions plugin sends them over the IPC channel opened when
@@ -11,7 +12,6 @@ const MAX_QUESTIONS = 6
 const MAX_OPTIONS = 8
 const MAX_QUESTION_CHARS = 1000
 const MAX_LABEL_CHARS = 200
-const MAX_ANSWER_CHARS = 2000
 const MAX_ID_CHARS = 128
 
 export interface QuestionOption { label: string, description?: string }
@@ -66,7 +66,7 @@ export function checkAnswers(questions: readonly Question[], answers: unknown): 
     if (!selected || !selected.every((label) => labels.has(label))) throw new Error(t("main.question-channel.invalid.option"))
     if (!question.multiSelect && selected.length > 1) throw new Error(t("main.question-channel.choose.only.one.option.for.this.question"))
     const custom = typeof answer.custom === 'string' ? answer.custom.trim() : ''
-    if (custom.length > MAX_ANSWER_CHARS) throw new Error(t("main.question-channel.answer.is.too.long.maximum.characters", { MAX_ANSWER_CHARS: MAX_ANSWER_CHARS }))
+    if (custom.length > MAX_QUESTION_ANSWER_CHARS) throw new Error(t("main.question-channel.answer.is.too.long.maximum.characters", { MAX_ANSWER_CHARS: MAX_QUESTION_ANSWER_CHARS }))
     return { id: question.id, selected: [...new Set(selected as string[])], ...(custom ? { custom } : {}) }
   })
 }
