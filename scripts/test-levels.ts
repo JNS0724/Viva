@@ -229,6 +229,7 @@ export const testLevels = {
     'steer-reports',
     'stop-in-time',
     'task-actions',
+    'task-card-inline',
     'task-history-restore',
     'task-list-fold',
     'task-load',

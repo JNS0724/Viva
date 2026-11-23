@@ -2332,9 +2332,24 @@ test('schedule results recheck the file evidence read during execution before pu
       title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
     } } }
     if (question === prompt && !tool) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
-    if (tool && JSON.stringify(request.messages).includes(prompt) && JSON.stringify(request.messages.at(-1)).includes(oldValue)) {
-      responding = true
-      return { text: draft, delayMs: 3000 }
+    if (tool && JSON.stringify(request.messages).includes(prompt)) {
+      const recalled = modelToolResults(request, 'memory_recall').at(-1)
+      const recalledText = typeof recalled === 'string'
+        ? recalled
+        : Array.isArray(recalled)
+          ? recalled.map(part => (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')).join('')
+          : ''
+      let currentHasOld = false
+      if (recalledText) {
+        try {
+          const parsed = JSON.parse(recalledText) as { notes?: Array<{ markdown?: unknown }> }
+          currentHasOld = Array.isArray(parsed.notes) && parsed.notes.some(note => typeof note.markdown === 'string' && note.markdown.includes(oldValue))
+        } catch { /* ignore non-JSON tool results */ }
+      }
+      if (currentHasOld) {
+        responding = true
+        return { text: draft, delayMs: 3000 }
+      }
     }
     return null
   })

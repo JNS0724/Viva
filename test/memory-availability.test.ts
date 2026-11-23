@@ -11,6 +11,7 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import path from 'node:path'
+import { realpathSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { scratch } from './fixtures/scratch.js'
@@ -264,29 +265,43 @@ test('a Dream provider grant and a late result each verify the current daily fil
   await owner.completeTurn({ sessionId: session, turn: 1, eventSeq: 3, sourceIds: [received.sourceId], assistant: 'Understood.', completed: true, at, timezone: 'UTC' })
   await owner.runtime.wake()
   const daily = (await client.listFiles({ kind: 'daily' })).items[0]!
-  const file = await fs.realpath(path.join(root, 'memory-files', daily.identity.workspace, daily.path))
+  // Match owner-lock.ts (realpathSync) so Windows 8.3 temp aliases compare equal against createMemoryPhysicalFileReader's lstat path.
+  const file = path.resolve(realpathSync(root), 'memory-files', daily.identity.workspace, ...daily.path.split('/'))
   const work = owner.runtime.runDocumentDream()
   const origin = { jobId: await requested }, signal = new AbortController().signal
-  const permit = owner.acquireSend(randomUUID(), origin, 'provider attempt', await owner.loadOutputProof(origin, signal))
-  let release!: () => void, entered!: () => void
+  let permit: ReturnType<typeof owner.acquireSend> | undefined
+  let release: (() => void) | undefined
+  let mocked: { mock: { restore: () => void } } | undefined
+  let settled = false
+  const settlePermit = () => { if (!settled && permit) { settled = true; permit.settled() } }
+  // Registered after owner.close() so LIFO cleanup releases permits and dream waiters before fence.close() drains.
+  defer(() => {
+    release?.()
+    mocked?.mock.restore()
+    syncBuiltinESMExports()
+    settlePermit()
+    finish('{"units":[]}')
+  })
+  permit = owner.acquireSend(randomUUID(), origin, 'provider attempt', await owner.loadOutputProof(origin, signal))
+  let entered!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
   const blocked = new Promise<void>(resolve => { entered = resolve })
   const original = fs.lstat
-  const mocked = t.mock.method(fs, 'lstat', async (...args: Parameters<typeof original>) => {
-    if (args[0] === file) { entered(); await gate }
+  mocked = t.mock.method(fs, 'lstat', async (...args: Parameters<typeof original>) => {
+    if (path.resolve(String(args[0])) === file) { entered(); await gate }
     return original(...args)
   })
   syncBuiltinESMExports()
   try {
     const denied = assert.rejects(owner.loadOutputProof(origin, signal), /timed out/)
-    await blocked
+    await Promise.race([blocked, denied])
     assert.match((await client.readFile(independent.identity))!.markdown, /Independently available memory/)
     await denied
   } finally {
-    release()
+    release?.()
     mocked.mock.restore()
     syncBuiltinESMExports()
-    permit.settled()
+    settlePermit()
   }
   await fs.writeFile(file, 'External edit after the admitted model request')
   const proof = await owner.loadOutputProof(origin, signal)
