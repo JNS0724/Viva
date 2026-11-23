@@ -22,7 +22,8 @@ export class MemoryFileError extends Error {
 export const memoryFileRevision = (text: string) => createHash('sha256').update(text).digest('hex')
 
 const MAX_PHYSICAL_FILE_BYTES = 4 * 1024 * 1024
-const PHYSICAL_FILE_TIMEOUT_MS = 250
+// Windows NTFS metadata + open/read chains on loaded runners routinely exceed 250 ms; stay well below fileVerificationBudgetMs (2500 ms).
+const PHYSICAL_FILE_TIMEOUT_MS = process.platform === 'win32' ? 1_200 : 250
 const PHYSICAL_FILE_CONCURRENCY = 3
 
 /** Native I/O can outlive its caller. Hold the slot until the operation actually ends,

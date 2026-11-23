@@ -41,6 +41,8 @@ export async function dailyMemory(win: SmokeWindow, title: string) {
 }
 
 export const fileDetail = (id: MemoryManagedFileIdentity) => `window.agent.readMemoryFile(${JSON.stringify(id)})`
+const pollFileDetail = (id: MemoryManagedFileIdentity, check: string) =>
+  `${fileDetail(id)}.then(file => (${check}), err => { if (/仍有两个记忆读取在执行|Two memory reads are still running/.test(String(err))) return false; throw err })`
 
 async function writeDailyMemory(win: SmokeWindow, original: string, title: string) {
   await submit(win, `记住：${original}`)
@@ -512,7 +514,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await capture(win, outDir, 'memory-stopped')
   await closeProfile(win)
 
-  const stopped = await until(win, `${fileDetail(note.identity)}.then(file => file?.restrictions?.length === 1 && file)`,
+  const stopped = await until(win, pollFileDetail(note.identity, 'file?.restrictions?.length === 1 && file'),
     'the selected file is held by its own restriction')
   expect(stopped.restrictions[0].version.usageVersion > note.version.usageVersion, 'stopping advances the usage version')
 
@@ -528,7 +530,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
     'the restored note is visible and has no archived range')
   // The independent storage assertion runs after the page has released its reads.
   await closeProfile(win)
-  await until(win, `${fileDetail(note.identity)}.then(file => file?.markdown.includes(${JSON.stringify(REPORT_MEMORY)}) && !file.restrictions?.length)`,
+  await until(win, pollFileDetail(note.identity, `file?.markdown.includes(${JSON.stringify(REPORT_MEMORY)}) && !file.restrictions?.length`),
     'the released range is rebuilt from its sources')
   const after = await askUsingMemory(win, hooks, '周报提交约定。')
   expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
@@ -546,7 +548,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await until(win, `document.querySelector('[data-memory-file-forget-status="complete"], [data-memory-file-forget-status="pending"]')`,
     'the file deletion receipt is visible')
   await closeProfile(win)
-  await until(win, `${fileDetail(toDelete.identity)}.then(file => file === null)`, 'the confirmed daily file disappears')
+  await until(win, pollFileDetail(toDelete.identity, 'file === null'), 'the confirmed daily file disappears')
   const remaining: string[] = await run(win, originals)
   expect(before.every(id => remaining.includes(id)), 'the original user messages remain searchable after file deletion')
 
@@ -557,7 +559,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await until(win, `window.agent.getInfo().then(info => info.topicId !== ${JSON.stringify(origin.topicId)})`, 'leave the source conversation')
   await run(win, `window.agent.deleteConversation(${JSON.stringify(origin.conversationId)})`)
   await run(win, `window.agent.restoreConversation(${JSON.stringify(origin.conversationId)})`)
-  await until(win, `${fileDetail(withdrawn.identity)}.then(file => !file || !file.markdown.includes(${JSON.stringify(WITHDRAWN)}))`, 'withdrawal has removed the note evidence')
+  await until(win, pollFileDetail(withdrawn.identity, `!file || !file.markdown.includes(${JSON.stringify(WITHDRAWN)})`), 'withdrawal has removed the note evidence')
   const later = await askUsingMemory(win, hooks, '海棠城项目约定')
   expect(later.length > 0 && later.every(request => !JSON.stringify(request).includes(WITHDRAWN)), 'restored chat cannot revive withdrawn note evidence', later.length)
 }

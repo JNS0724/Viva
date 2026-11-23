@@ -41,7 +41,7 @@ type Instance = {
   ready: Promise<void>
   epoch?: string
 }
-const STARTUP_BUDGET_MS = 15_000
+const STARTUP_BUDGET_MS = process.platform === 'win32' ? 30_000 : 15_000
 const HEARTBEAT_INTERVAL_MS = 6_000
 const STOP_GRACE_MS = 1_000
 const DRAIN_BUDGET_MS = 10_000

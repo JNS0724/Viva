@@ -1825,8 +1825,15 @@ test('source-backed project files and exact recall remain in their Git workspace
       const crossOffset = app.model.requests.length
       await step(`${label}:cross-project-history`, () => app.ask('查甲项目的构建标记'))
       const crossResults = (app.model.requests.slice(crossOffset) as Request[]).flatMap(request => modelToolResults(request, 'search_conversations'))
-      assert.ok(crossResults.some(result => JSON.stringify(result).includes(excluded) && JSON.stringify(result).includes(projectA)),
-        JSON.stringify({ name: 'search_conversations', expectedCrossProject: excluded, results: crossResults }))
+      const resultText = (result: unknown) => typeof result === 'string'
+        ? result
+        : Array.isArray(result)
+          ? result.map(part => (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')).join('')
+          : JSON.stringify(result)
+      assert.ok(crossResults.some(result => {
+        const text = resultText(result)
+        return text.includes(excluded) && text.includes(projectA)
+      }), JSON.stringify({ name: 'search_conversations', expectedCrossProject: excluded, results: crossResults }))
     } else {
       assert.ok(historyMessages.every(rows => !JSON.stringify(rows).includes(excluded)),
         JSON.stringify({ excluded, leaked: historyMessages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
@@ -2599,8 +2606,12 @@ test('main session oversees background tasks across git repos while background t
   const listAllOffset = app.model.requests.length
   await app.ask('查看全部后台任务')
   const listAllResults = (app.model.requests.slice(listAllOffset) as Request[]).flatMap(request => modelToolResults(request, 'list_background_tasks'))
-  assert.ok(listAllResults.some(result => JSON.stringify(result).includes(taskAId) && JSON.stringify(result).includes(repoA)),
-    JSON.stringify({ listAllResults }))
+  assert.ok(listAllResults.some(result => {
+    try {
+      const parsed = JSON.parse(String(result)) as { tasks?: Array<{ taskId?: string, cwd?: string }> }
+      return Array.isArray(parsed.tasks) && parsed.tasks.some(task => task.taskId === taskAId && task.cwd === repoA)
+    } catch { return false }
+  }), JSON.stringify({ listAllResults }))
 
   const filterBOffset = app.model.requests.length
   await app.ask('按乙仓库过滤后台任务')
