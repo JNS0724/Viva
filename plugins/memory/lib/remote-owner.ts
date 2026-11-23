@@ -170,6 +170,7 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
     completeTurn: (input: Parameters<OwnerAdapterApi['completeTurn']>[0]) => call('completeTurn', [input]),
     intakeWatermark: (session: string) => call('intakeWatermark', [session]),
     advanceIntake: (session: string, nextSeq: number) => call('advanceIntake', [session, nextSeq]),
+    bindIntakeSession: (...args: Parameters<OwnerAdapterApi['bindIntakeSession']>) => call('bindIntakeSession', args),
     dispatch: { snapshot: (...args: Parameters<OwnerAdapterApi['snapshot']>) => call('snapshot', args) },
     prepareContextRecovery: (input: Parameters<OwnerAdapterApi['prepareContextRecovery']>[0]) => call('prepareContextRecovery', [input]),
     bindContextRecovery: (input: BindMemoryContextRecovery) => call('bindContextRecovery', [input]),

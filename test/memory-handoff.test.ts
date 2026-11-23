@@ -795,7 +795,7 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   await app.ask(turns.at(-1)!)
   assert.ok(await eventually(() => incoming.length === 5))
   assert.deepEqual(incoming.map(turn => turn.user.map(source => source.text)), turns.map(text => [text]))
-  assert.ok(incoming[0]?.assistant.includes(turns[0]!))
+  assert.ok(incoming[0]?.assistant.includes(turns[0]!), JSON.stringify(incoming[0]))
   assert.equal((await app.files()).length, 0)
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {

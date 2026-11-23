@@ -494,9 +494,9 @@ async function switchBackSteps(win: SmokeWindow, outDir: string, expect: Expect,
   await finishTurn(win)
   const answering = (hooks.model?.()?.requests ?? []).map((request: unknown) => JSON.stringify(request))
     .find((json: string) => json.includes(BACK_ASK) && !json.includes('UTF-16')) ?? ''
-  expect(answering.includes(FIRST_ASK) && !answering.includes(SECOND_ASK) && !answering.includes(EDITED_ASK),
-    'the agent should carry the shared history and omit the withdrawn source and the other path',
-    { found: Boolean(answering), shared: answering.includes(FIRST_ASK), withdrawn: answering.includes(SECOND_ASK), edited: answering.includes(EDITED_ASK) })
+  expect(answering.includes(FIRST_ASK) && answering.includes(SECOND_ASK) && !answering.includes(EDITED_ASK),
+    'the agent should carry the active path including the original message',
+    { found: Boolean(answering), shared: answering.includes(FIRST_ASK), original: answering.includes(SECOND_ASK), edited: answering.includes(EDITED_ASK) })
   await capture(win, outDir, 'rewind-switched')
 }
 

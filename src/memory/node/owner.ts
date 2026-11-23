@@ -4,7 +4,7 @@ import type { DiagnosticOperation, DiagnosticPort } from '../../diagnostics/cont
 import { guardDiagnosticPort } from '../../diagnostics/contracts.ts'
 import { observeDiagnosticAsync } from '../../diagnostics/operation.ts'
 import { removeAbandonedMemoryTemps } from './memory-file-store.ts'
-import { memoryProjectScope } from './project-scope.ts'
+import { memoryProjectScope, resolveMemoryProject } from './project-scope.ts'
 import path from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID, createHmac } from 'node:crypto'
@@ -173,6 +173,22 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return { conversation: saved?.conversation ?? session, session, ...(turn ? { foregroundTurn: turn } : {}),
       ...(saved?.context ? { context: JSON.parse(saved.context) as MemoryScope } : {}),
       ...(project ? { project: { kind: 'project' as const, id: project } } : {}) }
+  }
+  function bindIntakeSession(session: string, cwd?: string, task = false) {
+    requireReady()
+    const resolved = resolveMemoryProject(cwd)
+    if (resolved.status === 'unknown') return
+    const existing = sessionContext(session)
+    const project = resolved.status === 'project' ? resolved.project : undefined
+    const context: MemoryScope = task ? { kind: 'task', id: session }
+      : existing.context?.kind === 'task' ? existing.context : project ?? { kind: 'user' }
+    store.tx(() => {
+      runtime.recordSession(session)
+      db.prepare(`INSERT INTO owner_sessions VALUES (?,?,?,?) ON CONFLICT(session) DO UPDATE SET context=excluded.context,project=excluded.project`)
+        .run(session, existing.conversation, JSON.stringify(context), project?.id ?? null)
+      db.prepare(`INSERT INTO memory_session_projects VALUES (?,?) ON CONFLICT(session) DO UPDATE SET project=excluded.project`)
+        .run(session, project?.id ?? '')
+    })
   }
   const hasPending = () => Boolean(db.prepare("SELECT 1 FROM owner_operations WHERE state IN ('intent','preparing','prepared','host-committed') LIMIT 1").get())
   type OutputProof = { files?: FileEvidenceCurrent, job?: SendAdmission | null }
@@ -427,9 +443,12 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       throw new Error('Unregistered inherited source')
     }
     if (db.prepare('SELECT 1 FROM owner_aliases WHERE session=? AND wire_hash=? AND revoked=1').get(input.sessionId, hash(input.text))) throw new Error('Source delivery was withdrawn')
-    const candidates = db.prepare('SELECT id,payload FROM owner_aliases WHERE session=? AND wire_hash=? AND payload IS NOT NULL').all(input.sessionId, hash(input.text)) as Array<{ id: string, payload: string }>
-    if (!known && candidates.length > 1) throw new Error('Ambiguous source alias')
-    const mapped = !known && candidates[0] ? restoreAlias(JSON.parse(candidates[0].payload) as StoredAlias, input.text) : undefined
+    const candidates = db.prepare('SELECT payload FROM owner_aliases WHERE session=? AND wire_hash=? AND payload IS NOT NULL AND (?=0 OR delivery=1) ORDER BY rowid')
+      .all(input.sessionId, hash(input.text), Number(Boolean(input.requiresAlias))).map(row => JSON.parse(String(row.payload)) as StoredAlias)
+    const first = candidates[0]
+    const unambiguous = first && candidates.every(candidate => candidate.sourceId === first.sourceId || candidate.origin === 'derived' && first.origin === 'derived')
+    if (!known && first && !unambiguous && !input.requiresAlias) throw new Error('Ambiguous source alias')
+    const mapped = !known && unambiguous ? restoreAlias(first, input.text) : undefined
     if (!known && (input.unknownProject || input.requiresAlias && !mapped)) {
       markLiveTurn(input)
       return { sourceId: input.messageId, text: '', handledIntent: true as const, retrievalQuery: mapped?.text }
@@ -847,6 +866,25 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       && sessionContext(call.session).foregroundTurn === String(call.turn))
   }
 
+  async function rememberSidecarFile(session: string, text: string, signal: AbortSignal) {
+    requireReady()
+    const origin = sessionContext(session)
+    if (!origin.foregroundTurn) return null
+    const current = () => !signal.aborted && !closed && sessionContext(session).foregroundTurn === origin.foregroundTurn
+    const sources = db.prepare(`SELECT source FROM owner_turn_sources WHERE session=? AND turn=?
+      UNION ALL SELECT source FROM owner_answer_sources WHERE session=? AND turn=?`).all(session, Number(origin.foregroundTurn), session, origin.foregroundTurn).map(row => String(row.source))
+    const source = runtime.explicitFileSource(text, origin, sources)
+    if (!source) return null
+    const digest = hash(['remember', session, origin.foregroundTurn, source.id, source.spans])
+    const id = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`
+    const plan = { session, source }
+    const previous = operation(id)
+    if (previous?.state === 'completed') return runtime.searchableReceipt((JSON.parse(previous.payload!) as { result: MemoryFileMutationResult }).result)
+    if (previous?.state === 'failed') return null
+    if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, hash(plan), JSON.stringify({ nativeRemember: plan }))
+    return completeNativeRemember(id, plan, current)
+  }
+
   type ManualFileCommand = Extract<HostMemoryCommand, { method: 'createFile' | 'editFile' }>
   type ManualFilePlan = { workspace: string, project?: MemoryProject, context?: MemoryScope }
   type ManualFilePending = { manual: ManualFilePlan }
@@ -1023,8 +1061,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         const [session, text, wireText, sourceId, suppliedSpans] = command.input.args
         const wireSpans = verifiedWireSpans(wireText, text, suppliedSpans)
         const delivery = randomUUID()
-        // The entire wire is matched against this trusted receipt. Never parse/strip a marker from user text.
-        const prepared = `${wireText}\n\n<memory-delivery id="${delivery}" />`
+        const prepared = wireText
         let input: MemorySourceAlias
         if (!sourceId) {
           const context = sessionContext(session)
@@ -1218,7 +1255,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   const tempCleanup = new AbortController()
   void removeAbandonedMemoryTemps(store.fileRoot, tempCleanup.signal)
-  return { runtime, dispatch, coordination, initializeSession, intakeWatermark, advanceIntake, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
+  return { runtime, dispatch, coordination, initializeSession, bindIntakeSession, intakeWatermark, advanceIntake, rememberSidecarFile, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
     recover: (preserveActiveTurns = false) => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(preserveActiveTurns), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
     receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => receiveSource(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.contextGeneration ?? 0 }, metrics: { count: 1, ok: input.admitted } }),

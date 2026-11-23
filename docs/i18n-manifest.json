@@ -77,8 +77,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "656a8526974851a3b04c96751d518c599af62a7f6dfca4f8b9d4105c672e1f12",
-      "zhHash": "e08c77e634df30b0f863403d7b8429876e203800235fcb1489c86a7f025cce22"
+      "enHash": "859bb6d7c6789490433ee770da59e0770dbdbe8eff43102f96e6a0060bab74f6",
+      "zhHash": "d998ef2a49b2adb0b8a3a8e1b7e60ead608aa1b06d441baf736231a21d4d7e3c"
     },
     {
       "en": "docs/architecture-health.md",
@@ -107,14 +107,14 @@
     {
       "en": "docs/memory-owner-isolation.md",
       "zh": "docs/memory-owner-isolation.zh-CN.md",
-      "enHash": "b110aaa4433b7cc8ff5972b87ccee932bf0ba4603dc54cc17124bb14bb02daea",
-      "zhHash": "53c70f820ca9b8431176b1acea689213d792b84d0f19dc65033bb168aa76cbd8"
+      "enHash": "79416ebdb353b6656128afd311267002704cf7335fe0a0cbb128302e7a089665",
+      "zhHash": "6ea4e0bb6cf4a037aadb3e54d32e47f03ed2a7057d95ef08f77c2dbe393c6e9a"
     },
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "b12bc7dbedc82ad4a540149208eff0ca6759b9e3302b609ab50553c34fbf0d43",
-      "zhHash": "b9b0a5f14f4f78e0577046349400bf4a7d908b6ea01b1d05b566ec2b425886cc"
+      "enHash": "271a3ca600b8e9faf9cf0ffdd696e3743e4ff1fbf604bffb2f98d5e4b2877e3e",
+      "zhHash": "3313d7e2ae69a6d257f69e123338cff2e617f6f3122858c78262116b9acef6c9"
     },
     {
       "en": "docs/logging-design.md",

@@ -85,7 +85,7 @@ const textParts = (message: Message) => rawTexts(message).map(withoutHeaders)
 
 /** Says what background came with the question: the fixed layer, and how many pushed memories. */
 function backgroundOf(texts: readonly string[]) {
-  const block = texts.find((text) => text.startsWith(CONTEXT_OPEN))
+  const block = texts.find(text => text.includes(CONTEXT_OPEN))
   if (!block) return ''
   const fixed = block.includes('【记忆规则】') ? '画像' : ''
   const pushed = block.split('\n').filter((line) => line.startsWith('- ') && line.endsWith('〕')).length
@@ -114,8 +114,6 @@ function trailingToolResult(messages: readonly Message[]): Part | undefined {
 }
 
 function currentWords(text: string) {
-  // Test responder ignores the trusted delivery suffix; production admission uses exact owner aliases.
-  text = text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
   if (!text.startsWith('以下是这个话题以前的记录（最近 ')) return text
   const end = text.lastIndexOf(CARRY_CLOSE)
   return end < 0 ? text : text.slice(end + CARRY_CLOSE.length).trimStart()
@@ -342,7 +340,7 @@ export function decide(raw: object): Answer {
   // after its route receipt. Ordinary completed routes may answer the report.
   const appRoute = use?.name === ROUTE && Array.isArray(use.input?.actions)
     && use.input.actions.some((action: unknown) => objectOf(action)?.kind === 'app_action')
-  const result = appRoute ? trailingToolResult(messages) : partsOf(last).find((part) => part.type === 'tool_result')
+  const result = appRoute ? trailingToolResult(messages) : partsOf(last).find((part) => part.type === 'tool_result') ?? trailingToolResult(messages)
   // Once a request is routed, the rules go on with its words, as if just asked.
   const routed = result && toolUses(messages).at(-1)?.name === ROUTE
   if (result && !routed) return afterTool(request, messages, result)

@@ -95,7 +95,7 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
     '```yaml', '- id: session-log-deepseek', '  config:', '    enabled: false',
     '- id: session-persistence-jsonl', '  disabled: true', '- insert:',
     '    - id: viva-memory-session-persistence', '      name: viva-memory/persistence', '      config:',
-    '        root: /absolute/private/dsh/sessions', '        storageRoot: /absolute/private/dsh/storages', '        memoryRoot: /absolute/private/memory',
+    '        root: /absolute/private/dsh/sessions', '        memoryRoot: /absolute/private/memory',
     '    - id: portable-memory', '      name: viva-memory', '      inject: [sessionPersistence]', '      config:',
     '        dataRoot: /absolute/private/memory', '        dailyNotes: true', '```', '',
     'Use `/memory-remember <text>` to save an entry and `/memory-forget <id>` to forget an entry by its saved or recalled ID.',

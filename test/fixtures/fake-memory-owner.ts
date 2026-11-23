@@ -57,7 +57,7 @@ export async function startFakeMemoryOwner() {
       let finished = false
       return {
         signal: permit.signal,
-        async settle(blocks: CommittedOutput['blocks']): Promise<NonNullable<CommittedOutput['native']>> {
+        async settle(blocks: CommittedOutput['blocks']): Promise<{ seq: number, digest: string }> {
           if (finished || permit.signal.aborted) throw new Error('The scripted output lease is no longer active')
           // This fixture has scripted stream events instead of a DSH provider log.
           // Bind the exact event body through the real owner before publishing its proof.

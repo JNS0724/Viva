@@ -2,6 +2,8 @@
 
 [简体中文](memory-reme-plan.zh-CN.md)
 
+**Current file memory (2026-11-23).** Daily and digest files use a whole-file switch. Chat history, tasks and schedules run independently of memory availability. Deleting or editing chat history leaves memory intact. The older milestones below describe the earlier architecture. [Current implementation](memory-owner-isolation.md)
+
 **File integrity (2026-11-20).** The owner verifies registered Markdown against its committed hash on read. The external-edit review, rename detection and periodic scans described in the historical milestones have been retired. [Current owner design](memory-owner-isolation.md)
 
 **Current behavior (2026-11-19).** Deleting a memory removes the selected daily or digest file and its search index entries. Original chats, other files and host records survive. Previously confirmed erasures recover under their original contract. The Auto Dream section describes current processing. Later milestone and acceptance notes record the earlier erasure, clarification and review behavior. See [the current system design](system-design.md).

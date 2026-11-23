@@ -61,7 +61,7 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
     launch: launchMessage({ pnpmCommand: pnpm, registry: REGISTRY, registryToken: TOKEN, scopes: ['@company'] }),
     emit: () => {},
   })
-  await memoryOwner.prepare(async () => {})
+  await memoryOwner.prepare()
   await bridge.start()
   const inspected = await bridge.plugins('inspect', { spec: '@company/search' })
   assert.ok(inspected.ok, inspected.ok ? '' : inspected.problem)

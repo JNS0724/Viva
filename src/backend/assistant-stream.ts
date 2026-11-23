@@ -1,19 +1,12 @@
-import { OWNER_RPC_DEFAULT_BUDGET_MS } from '../memory/contracts/owner-rpc.ts'
 import { randomUUID } from 'node:crypto'
 import { objectOf } from '../shared/unknown-value.ts'
 import { t } from '../shared/i18n/translate.ts'
 
 type OutputBlock = { type: 'text' | 'reasoning', text: string }
-export type CommittedOutput = { key: string, blocks: OutputBlock[], native?: { seq: number, digest: string }, requestId?: string }
-const nativeOutput = (value: unknown): value is NonNullable<CommittedOutput['native']> => {
-  const item = objectOf(value)
-  return typeof item?.seq === 'number' && Number.isSafeInteger(item.seq) && item.seq >= 0
-    && typeof item.digest === 'string' && /^[a-f0-9]{64}$/u.test(item.digest)
-}
+export type CommittedOutput = { key: string, blocks: OutputBlock[] }
 const committedOutput = (value: unknown): value is CommittedOutput => {
   const entry = objectOf(value)
-  return typeof entry?.key === 'string' && (entry.native === undefined || nativeOutput(entry.native))
-    && (entry.requestId === undefined || typeof entry.requestId === 'string') && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
+  return typeof entry?.key === 'string' && Array.isArray(entry.blocks) && entry.blocks.every((value: unknown) => {
     const block = objectOf(value)
     return (block?.type === 'text' || block?.type === 'reasoning') && typeof block.text === 'string'
   })
@@ -24,15 +17,12 @@ const committedOutput = (value: unknown): value is CommittedOutput => {
  * comes only from the plugin, which decides what may be shown (the main agent's routing steps are not). ACP's copy of
  * the text is never replayed; an operation whose output the plugin did not confirm ends in an error.
  */
-export function createAssistantStream({ send, emit, recordOutputs, timeoutMs }: {
+export function createAssistantStream({ send, emit, timeoutMs }: {
   send: (message: object) => void,
   emit: (sessionId: string, update: any) => void,
-  recordOutputs?: (sessionId: string, outputs: readonly CommittedOutput[]) => Promise<readonly CommittedOutput[]>,
   timeoutMs?: number,
 }) {
   const bindTimeout = timeoutMs ?? 1000
-  // A proof-bearing flush crosses the owner RPC before dsh can acknowledge the stream.
-  const flushTimeout = timeoutMs ?? (recordOutputs ? OWNER_RPC_DEFAULT_BUDGET_MS + bindTimeout : bindTimeout)
   let ready = false
   const instance = randomUUID()
   let sequence = 0
@@ -52,15 +42,14 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs }: 
       operation.live = await new Promise<boolean>(resolve => {
         const timer = setTimeout(() => { operation.resolve = undefined; resolve(false) }, bindTimeout)
         operation.resolve = live => { clearTimeout(timer); operation.resolve = undefined; resolve(live) }
-        send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId, ...(recordOutputs ? { proofs: true } : {}) })
+        send({ type: 'assistant_stream_bind', version: 1, operation: operation.id, sessionId })
       })
     }
     return operation
   }
   const finish = (operation: Operation) => {
     if (operations.get(operation.sessionId) !== operation) return
-    const unfinished = recordOutputs ? [...operation.keys].filter(key => !operation.settled.has(key)) : operation.active
-    for (const key of unfinished) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
+    for (const key of operation.active) emit(operation.sessionId, { sessionUpdate: 'viva_stream', key, kind: 'settle', blocks: [] })
     operation.resolve?.(false)
     operation.flushed?.(false)
     operations.delete(operation.sessionId)
@@ -96,8 +85,6 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs }: 
     }
     if (message.kind === 'settle' && Array.isArray(message.blocks)) {
       operation.active.delete(message.key); operation.closed.delete(message.key)
-      // In file mode a settled body must go through the owner before it can be published.
-      if (recordOutputs && message.blocks.length) return
       operation.settled.set(message.key, message.blocks)
       emit(message.sessionId, { sessionUpdate: 'viva_stream', key: message.key, kind: 'settle', blocks: message.blocks })
     }
@@ -112,13 +99,13 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs }: 
       if (operations.get(operation.sessionId) !== operation) return
       if (operation.live) {
         await new Promise<boolean>(resolve => {
-          const timer = setTimeout(() => { operation.flushed = undefined; resolve(false) }, flushTimeout)
+          const timer = setTimeout(() => { operation.flushed = undefined; resolve(false) }, bindTimeout)
           operation.flushed = ok => { clearTimeout(timer); operation.flushed = undefined; resolve(ok) }
           send({ type: 'assistant_stream_flush', version: 1, operation: operation.id })
         })
         if (operations.get(operation.sessionId) !== operation) return
         if (operation.committed) {
-          const committed = recordOutputs ? await recordOutputs(operation.sessionId, operation.committed) : operation.committed
+          const committed = operation.committed
           if (operations.get(operation.sessionId) !== operation) return
           const keys = new Set(committed.map(message => message.key))
           const before: { text?: string, reasoning?: string } = {}
@@ -141,7 +128,7 @@ export function createAssistantStream({ send, emit, recordOutputs, timeoutMs }: 
           operation.active.clear()
           operation.keys.clear()
           finish(operation)
-          return operation.finalReply && (committed.length === operation.committed.length || Boolean(lastText))
+          return operation.finalReply
         }
       }
       finish(operation)

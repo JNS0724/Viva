@@ -108,7 +108,7 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
     })
     const start = created.start
     created.start = async input => {
-      await memoryOwner.prepare(async () => {})
+      await memoryOwner.prepare()
       return start(input)
     }
     bridges.push(created)

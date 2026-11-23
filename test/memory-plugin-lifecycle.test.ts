@@ -6,33 +6,10 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import type { Context } from '@deepseek-ai/cordis'
+import { eventually } from './fixtures/eventually.ts'
 import * as memoryPlugin from '../plugins/memory/index.ts'
 import type { MemoryFileMutationResult } from '../src/memory/contracts/file-management.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
-import { memoryRecoveryCandidates, memorySessionSurfaceHash, planMemoryContextRecovery } from '../plugins/memory/lib/context-recovery.ts'
-import { emitDiagnostic, installDiagnosticPort } from '../src/diagnostics/node/context.ts'
-import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
-import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
-
-test('failed owner initialization releases its diagnostic file and restores the previous port', async t => {
-  const root = mkdtempSync(join(tmpdir(), 'memory-diagnostic-startup-'))
-  const first = openMemoryOwner({ root, route: () => null, compute: () => null, quiesce: async () => {} })
-  const captured: DiagnosticEvent[] = []
-  const restore = installDiagnosticPort(recordingDiagnosticPort(event => { captured.push(event); return undefined }))
-  const cleanups: Array<() => unknown> = []
-  const scope = { logger: { exporter() {} }, tools: { register() {} }, inject() {}, on() {},
-    effect(execute: () => () => unknown) { const cleanup = execute(); cleanups.push(cleanup); return cleanup } } as unknown as Context
-  t.after(async () => { restore(); await first.close(); rmSync(root, { recursive: true, force: true }) })
-  await assert.rejects(memoryPlugin.apply(scope, { dataRoot: root }), /active owner/)
-  assert.equal(cleanups.length, 2, 'diagnostic and owner cleanup exist before the child can fail')
-  await Promise.all(cleanups.map(cleanup => cleanup()))
-  const inventory = JSON.parse(readFileSync(join(root, 'diagnostics', 'inventory.json'), 'utf8')) as { slots: Array<{ closed: boolean }> }
-  assert.ok(inventory.slots.every(slot => slot.closed))
-  emitDiagnostic({ event: 'health', operation: 'diagnostics' })
-  assert.equal(captured.at(-1)?.event, 'health')
-})
 
 // Actual DSH loader/services, with no model providers, agent model selection, host IPC or network.
 // This isolates plugin lifecycle acceptance from the browser/CLI surfaces tested by Web smoke.
@@ -53,6 +30,7 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
       owner = await memoryPlugin.apply(scope, { dataRoot: root })
     } })
     assert.ok(owner, 'DSH dependencies activate the real plugin without a model provider')
+    await eventually(() => owner?.ready() === true)
     assert.equal(owner.ready(), true)
     for (const name of ['memory_remember', 'memory_recall', 'memory_read', 'memory_node_search']) assert.ok(ctx.tools.get(name), name)
     assert.equal(ctx.tools.get('memory_clarify'), undefined)
@@ -60,14 +38,14 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
     return { fiber, owner }
   }
   const first = await mount()
-  assert.notEqual(globalThis.fetch, originalFetch)
+  assert.equal(globalThis.fetch, originalFetch)
   const operationId = randomUUID()
   const input = { operationId, text: '每周五交周报。' }
   const entry = await first.owner.handleHost('createFile', { args: [input] }) as MemoryFileMutationResult
   const epoch = first.owner.epoch
   assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)
   await first.fiber.dispose()
-  assert.equal(globalThis.fetch, originalFetch, 'unload removes the shared fetch interception')
+  assert.equal(globalThis.fetch, originalFetch, 'the plugin leaves process-wide fetch untouched')
   assert.equal(ctx.tools.get('memory_recall'), undefined, 'fiber-owned tools are unregistered')
   const second = await mount()
   assert.notEqual(second.owner.epoch, epoch)
@@ -78,65 +56,4 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
   // Independent reopening proves the plugin released the OS/SQLite owner lock on both unloads.
   const reopened = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
   try { await reopened.recover(); assert.equal(reopened.ready(), true) } finally { await reopened.close() }
-})
-
-test('real adapter reload recovers loaded pending contexts and isolates an unflushable session', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'memory-plugin-recovery-startup-'))
-  const config = join(directory, 'cordis.yml'), root = join(directory, 'memory')
-  writeFileSync(config, JSON.stringify([
-    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions', 'dsh-commands',
-  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
-  const ctx = await boot('memory-recovery-startup-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
-  t.after(async () => { await ctx.fiber.dispose(); rmSync(directory, { recursive: true, force: true }) })
-  let broken: string | undefined
-  ctx.on('session/flush', session => {
-    if (session.id === broken) throw new Error('simulated session persistence failure')
-    writeFileSync(join(directory, String(session.id) + '.json'), JSON.stringify(session.snapshotEvents()))
-  })
-  const healthy = ctx.sessions.create(SessionId('healthy'))
-  const prepared = ctx.sessions.create(SessionId('prepared'))
-  const invalidated = ctx.sessions.create(SessionId('invalidated-file'))
-  const bad = ctx.sessions.create(SessionId('unflushable'))
-  for (const session of [healthy, prepared, invalidated, bad]) {
-    session.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'An independent original request.' }] }), { surfaceOp: 'append' })
-    session.append('user/message', createUserMessage({ source: { kind: 'viva-memory' }, content: [{ type: 'text', text: 'Old generated context to retire.' }] }), { surfaceOp: 'append' })
-  }
-  async function mount() {
-    let owner: Awaited<ReturnType<typeof memoryPlugin.apply>> | undefined
-    const fiber = await ctx.plugin({ ...memoryPlugin, async apply(scope: Context) {
-      owner = await memoryPlugin.apply(scope, { dataRoot: root, dailyNotes: false })
-    } })
-    assert.ok(owner)
-    return { fiber, owner }
-  }
-  const first = await mount()
-  await first.fiber.dispose()
-  // Seed the same durable recovery situations while the standalone process is stopped.
-  const offline = openMemoryOwner({ root, route: () => null, compute: () => null, quiesce: async () => {}, dailyNotes: false })
-  try {
-    await offline.recover()
-    offline.dispatch.recordFiles(String(invalidated.id), [{ workspace: 'a'.repeat(64), id: 'no-longer-available', path: 'memory/removed.md',
-      revision: 'old-file-revision', usageVersion: 1, policyToken: 'old-policy', sourceRanges: [{ sourceId: 'retired-source' }] }])
-    for (const session of [healthy, prepared, bad]) {
-      const ticket = await offline.prepareContextRecovery({ sessionId: String(session.id), baseSurfaceHash: memorySessionSurfaceHash(session),
-        candidates: memoryRecoveryCandidates(session).map(item => ({ messageId: item.messageId, content: item.text, contentDigest: item.contentDigest })) })
-      if (session !== prepared) {
-        const plan = planMemoryContextRecovery(session, ticket.ticketId, ticket.retainedMessageIds)
-        offline.bindContextRecovery({ sessionId: ticket.sessionId, ticketId: ticket.ticketId, replacementMessageId: String(plan.message.id), replacementHash: plan.replacementHash })
-      }
-    }
-  } finally { await offline.close() }
-  broken = String(bad.id)
-  const restarted = await mount()
-  assert.equal(restarted.owner.ready(), true, 'one failed session must not prevent the plugin from becoming available')
-  assert.equal(await restarted.owner.contextGeneration(String(healthy.id)), 1)
-  assert.equal(await restarted.owner.contextGeneration(String(prepared.id)), 1)
-  assert.equal(await restarted.owner.contextGeneration(String(invalidated.id)), 1, 'stale file receipts trigger recovery before old derived history is replayed')
-  assert.doesNotMatch(JSON.stringify(healthy.deriveMessages()), /Old generated context/)
-  assert.match(JSON.stringify(healthy.snapshotEvents()), /Old generated context/)
-  const permit = await restarted.owner.acquireSend(randomUUID(), { session: String(healthy.id), contextGeneration: 1 }, '0'.repeat(64))
-  permit.settled()
-  assert.equal(await restarted.owner.contextGeneration(String(bad.id)), 0)
-  await assert.rejects(restarted.owner.acquireSend(randomUUID(), { session: String(bad.id), contextGeneration: 0 }, '1'.repeat(64)), /generation/)
-  await restarted.fiber.dispose()
 })

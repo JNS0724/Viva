@@ -168,7 +168,7 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     })
     running = { bridge, owner }
     const start = performance.now()
-    await owner.prepare(async () => {})
+    await owner.prepare()
     await bridge.start()
     assert.ok(owner.pid() && bridge.pid() && owner.pid() !== bridge.pid())
     const startup = performance.now() - start

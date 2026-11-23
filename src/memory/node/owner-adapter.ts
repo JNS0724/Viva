@@ -14,6 +14,7 @@ export type OwnerAdapterApi = Pick<Owner,
   | 'finishNativeOutput' | 'finishNativeToolRead' | 'nativeToolEvidence' | 'nativeSpillGoverned'
   | 'beginNativeSpill' | 'finishNativeSpill' | 'nativeSpillCandidates'
   | 'intakeWatermark' | 'advanceIntake'
+  | 'bindIntakeSession'
 > & {
   forgetStandaloneFile(session: string, id: string, operationId: string): ReturnType<Owner['forgetStandaloneFile']>
   initializeSession(input: Parameters<Owner['initializeSession']>[0]): Promise<void>
@@ -32,6 +33,7 @@ export type OwnerAdapterApi = Pick<Owner,
   inheritNativeToolRead(scope: RemoteToolReadScope, evidence: Parameters<Owner['inheritNativeToolRead']>[1]): void
   admitNativeSpillRead(id: string, scope: RemoteToolReadScope): Promise<boolean>
   modelRequest(input: MemoryRequest, session: string, generation: number, scope?: RemoteToolReadScope, unknownProject?: boolean): ReturnType<Owner['runtime']['handleModelRequest']>
+  sidecarRequest(input: MemoryRequest, cwd?: string): Promise<string | null>
   acquireSend(id: string, origin: OwnerSendOrigin, digest: string): Promise<void>
   outputCurrent(origin: OwnerSendOrigin): Promise<boolean>
   recordSendBody(id: string): Promise<void>

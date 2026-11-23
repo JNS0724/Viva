@@ -13,6 +13,7 @@ import type { OwnerAdapterApi, OwnerSendOrigin, RemoteToolReadScope } from './ow
 import type { NativeToolReadScope } from './native-tool-reads.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 import { openMemoryOwner } from './owner.ts'
+import { resolveMemoryProject } from './project-scope.ts'
 
 type Owner = ReturnType<typeof openMemoryOwner>
 const routeSchema = z.strictObject({ provider: z.string().min(1).max(256), model: z.string().min(1).max(256) })
@@ -133,6 +134,7 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     receiveSource: input => sessions.run(input.sessionId, () => current.receiveSource(input)),
     registerDerived: input => current.registerDerived(input, signal),
     completeTurn: input => sessions.run(input.sessionId, () => current.completeTurn(input, signal)),
+    bindIntakeSession: (session, cwd, task) => current.bindIntakeSession(idSchema.parse(session), z.string().optional().parse(cwd), task === true),
     intakeWatermark: session => current.intakeWatermark(idSchema.parse(session)),
     advanceIntake: (session, nextSeq) => current.advanceIntake(idSchema.parse(session), z.int().nonnegative().parse(nextSeq)),
     prepareContextRecovery: current.prepareContextRecovery,
@@ -163,6 +165,23 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     admitNativeSpillRead: async (id, scope) => {
       const proof = await current.loadSpillFileProof(id, signal)
       return current.admitNativeSpillRead(id, nativeScope(scope, signal), signal, proof).current()
+    },
+    sidecarRequest: (raw, cwd) => {
+      const request = memoryRequest.parse(raw)
+      const unknownProject = resolveMemoryProject(cwd).status === 'unknown'
+      const session = request.session
+      return sessions.run(session, async () => {
+        if (!current.ready() || signal.aborted) return null
+        if (request.op === 'remember') {
+          if (unknownProject) return '{"status":"unavailable"}'
+          const result = await current.rememberSidecarFile(session, request.text.trim(), signal)
+          return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
+            : { status: 'rejected', reason: 'no-explicit-user-source' })
+        }
+        const context = current.sessionContext(session)
+        const origin = unknownProject ? { ...context, project: undefined, context: { kind: 'user' as const } } : context
+        return current.runtime.handleModelRequest(request, origin, current.ready, signal)
+      })
     },
     modelRequest: (request, session, generation, scope, unknownProject) => sessions.run(session, async () => {
       // The native DSH tools and runtime own argument semantics. Validate the operation

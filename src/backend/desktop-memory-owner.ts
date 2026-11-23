@@ -1,5 +1,6 @@
 import { createRequestBudget, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
 import path from 'node:path'
+import { emitDiagnosticFailure } from '../diagnostics/node/context.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
 import { isDailyMemoryStage } from '../memory/contracts/memory-contract.ts'
 import { MEMORY_HOST_PROTOCOL } from '../memory/contracts/host.ts'
@@ -24,7 +25,8 @@ function adapterSessions(method: keyof OwnerAdapterApi, args: unknown[]): unknow
     case 'finishNativeSpill': return [args[2]]
     case 'nativeToolEvidence': return Array.isArray(args[0]) ? args[0].map(call => objectOf(call)?.session) : []
     case 'sessionView': case 'snapshot': case 'rememberStandaloneFile': case 'forgetStandaloneFile': return [args[0]]
-    case 'intakeWatermark': case 'advanceIntake': return [args[0]]
+    case 'intakeWatermark': case 'advanceIntake': case 'bindIntakeSession': return [args[0]]
+    case 'sidecarRequest': return [first?.session]
     case 'modelRequest': return [args[1]]
     case 'acquireSend': return [second?.session]
     case 'admitNativeSpillRead': return [objectOf(second?.call)?.session]
@@ -158,14 +160,6 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     callbacks: {
       compute: (input, signal) => adapterCall<string>('compute', input, signal,
         isDailyMemoryStage(input.job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : MODEL_CALLBACK_MS),
-      quiesce: async (input, signal) => { if (adapter?.attached) await adapterCall('quiesce', input, signal, CALLBACK_MS) },
-      checkRecovery: (input, signal) => adapterCall<boolean>('checkRecovery', input, signal, CALLBACK_MS),
-      async drainSends(input) {
-        const link = adapter
-        if (!link?.attached) return
-        try { await link.peer.call('drainSends', input, { budgetMs: CALLBACK_MS }) }
-        catch (error) { if (adapter === link) throw error }
-      },
     },
   })
 
@@ -182,18 +176,12 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
   return {
     channel, bindDsh,
     pid: () => owner?.pid() ?? null,
-    async prepare(coldMaintenance: () => Promise<void>) {
+    async prepare() {
       if (closing) throw new MemoryOwnerUnavailable()
       await adapterRelease.catch(() => release())
-      if (owner) {
-        await owner.start()
-        if (!await owner.nativeMaintenancePending()) return
-        await release()
-      }
-      await coldMaintenance()
       if (closing) throw new MemoryOwnerUnavailable()
-      owner = create()
-      await owner.start()
+      owner ??= create()
+      void owner.start().catch(error => emitDiagnosticFailure('memory.owner', error, { stage: 'unavailable' }))
     },
     close() {
       closing = true

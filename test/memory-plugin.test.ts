@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import { questionOf, routeFixtureTools } from './fixtures/fake-llm.ts'
-import { delayNativeOutputReceipts, DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
+import { DSH_TIMEOUT_MS, eventually, replies, startHarness as setup } from './fixtures/dsh-harness.ts'
 import { ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { objectOf } from '../src/memory/contracts/unknown-value.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
@@ -34,7 +34,7 @@ function lastContext(llm: { requests: object[] }) {
   return JSON.stringify(foreground?.messages.at(-1) ?? '')
 }
 
-test('a resumed task publishes its committed answer after its native output receipt reaches the owner', { timeout: DSH_TIMEOUT_MS }, async t => {
+test('a resumed task publishes its own committed answer after restart', { timeout: DSH_TIMEOUT_MS }, async t => {
   const harness = await setup(t)
   const first = harness.bridge()
   await first.start()
@@ -42,22 +42,12 @@ test('a resumed task publishes its committed answer after its native output rece
   assert.ok(task.ok)
   await first.promptTask(task.taskId, '先记录昨天的进度')
   await first.dispose()
-  const kept: string[] = []
-  const second = harness.bridge({ recordOutputs: async (session, outputs) => {
-    const accepted = []
-    for (const output of outputs) {
-      if (!output.native || !await second.memory.call('nativeOutputEvidence', { session, ...output.native })) continue
-      accepted.push(output)
-      kept.push(...output.blocks.map(block => block.text))
-    }
-    return accepted
-  } })
+  const second = harness.bridge()
   await second.start()
   assert.ok((await second.resumeTask({ taskId: task.taskId })).ok)
-  const delayed = delayNativeOutputReceipts(t, second.pid, 150)
+  const before = harness.events.length
   await second.promptTask(task.taskId, '后来呢')
-  assert.ok(delayed() > 0)
-  assert.ok(kept.some(text => text.includes('后来呢')), 'only owner-confirmed text can be published')
+  assert.ok(harness.events.slice(before).some(event => event.type === 'task_update' && JSON.stringify(event).includes('后来呢')))
 })
 
 test('an idle interjection starts neither a fast request nor a routing decision', { timeout: DSH_TIMEOUT_MS }, async t => {
@@ -78,7 +68,7 @@ test('the plugin preserves Viva persona and normal conversation replies', { time
   assert.ok(replies(events).join('').includes('你好'))
 })
 
-test('automatic context reuses the admitted step and a missing evidence receipt lets the foreground continue', { timeout: DSH_TIMEOUT_MS }, async t => {
+test('automatic context times out without interrupting the request', { timeout: DSH_TIMEOUT_MS }, async t => {
   const { agent, call, ask, llm, events } = await setupMemory(t)
   await call('setProfile', { args: [{ role: 'injection-receipt-test' }, randomUUID()] })
   const pid = agent.pid(), emit = ChildProcess.prototype.emit
@@ -90,17 +80,17 @@ test('automatic context reuses the admitted step and a missing evidence receipt 
       const call = objectOf(frame.input), input = Array.isArray(call?.args) ? objectOf(call.args[0]) : null
       if (call?.method === 'receiveSource' && input?.admitted === true) admitted = true
       if (admitted && !lookup && call?.method === 'sessionView') extraSessionReads++
-      if (call?.method === 'modelRequest' && input?.op === 'context') lookup = true
-      if (lookup && lostReceiptBudget === undefined && call?.method === 'registerDerived' && input?.nativeUserSource === 'viva-memory') {
+      if (call?.method === 'sidecarRequest' && input?.op === 'context') {
+        lookup = true
         lostReceiptBudget = frame.budgetMs
-        return true // The owner never acknowledges this optional evidence write.
+        return true // The owner never returns this optional context lookup.
       }
     }
     return Reflect.apply(emit, this, [event, ...args]) as boolean
   })
   await ask('照常回复这一条消息')
   assert.ok(admitted && lookup)
-  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 100)
+  assert.ok(lostReceiptBudget !== undefined && lostReceiptBudget <= DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
   assert.equal(extraSessionReads, 0)
   assert.match(replies(events).join(''), /照常回复这一条消息/)
   assert.doesNotMatch(JSON.stringify(llm.requests), /injection-receipt-test/)

@@ -2,6 +2,8 @@
 
 English | [简体中文](system-design.zh-CN.md)
 
+**Memory availability.** Memory runs in a supervised sidecar. Foreground conversations, background tasks, their reports, and schedules can continue when memory is unavailable. Deleting or editing chat history changes only the local timeline. See [memory owner isolation](memory-owner-isolation.md).
+
 > The process split is based on PR #132 (`82a5bf3`, 2026-11-10); memory responsibilities, storage and plugin boundaries were checked against local commit `3085bad` on 2026-11-17. This is a local implementation snapshot: this round's PR CI has not run, and the snapshot does not imply a merge or completion of all delivery acceptance. The split's plan and implementation notes remain in git history; the later module-by-module work is recorded in the [architecture cleanup](architecture-health.md).
 
 ## 1. Overview

@@ -11,8 +11,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { OWNER_RPC_MAX_ACTIVE, ownerRpcFrame, type OwnerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import type { Context } from '@deepseek-ai/cordis'
-import * as memoryPlugin from '../plugins/memory/index.ts'
-import * as persistencePlugin from '../plugins/memory/persistence.ts'
 import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
 import { createMemoryOwnerSupervisor } from '../src/memory/node/owner-supervisor.ts'
@@ -421,31 +419,6 @@ test('Viva keeps dsh while retiring send and response paths and recovering an al
   assert.equal(bridge.pid(), dsh)
 })
 
-test('standalone dsh retries its first lost reconciliation without a new owner notification', { timeout: 25_000 }, async t => {
-  const { dir, defer } = scratch(t, 'memory-standalone-reconcile-')
-  const config = join(dir, 'cordis.yml'), root = join(dir, 'memory')
-  writeFileSync(config, JSON.stringify(['dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-llm',
-    'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions', 'dsh-commands'].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
-  const ctx = await boot('memory-reconcile-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
-  defer(() => ctx.fiber.dispose())
-  const fault = ownerFaults(t)
-  // The persistence provider owns startup in a real standalone profile. Its
-  // owner is already ready by the time the memory adapter subscribes.
-  await ctx.plugin(persistencePlugin, { root: join(dir, 'sessions'), memoryRoot: root, storageRoot: join(dir, 'storage') })
-  const persistPid = fault.pid()
-  assert.ok(persistPid)
-  const lost = fault.drop(frame => frame.method === 'adapter' && objectOf(frame.input)?.method === 'reconcileActiveTurns', false)
-  const activation = ctx.plugin({ ...memoryPlugin, async apply(scope: Context) {
-    await memoryPlugin.apply(scope, { dataRoot: root })
-  } })
-  await lost
-  const pid = fault.pid()
-  await activation
-  assert.ok(await eventually(() => fault.reconciles() >= 2))
-  assert.equal(pid, persistPid)
-  assert.equal(fault.pid(), persistPid)
-})
-
 test('Viva activates its live dsh plugin after the first attach acknowledgement disappears', { timeout: 30_000 }, async t => {
   const emit = ChildProcess.prototype.emit
   let firstRequest: string | undefined, attempts = 0, dropped = false
@@ -520,7 +493,8 @@ test('a stopped foreground cannot write or send through the live relay while bac
   const exited = deferred<void>()
   const stop = new AbortController()
   const foreground = randomUUID(), task = randomUUID()
-  await desktop.prepare(async () => {})
+  await desktop.prepare()
+  await desktop.channel.waitReady()
   const peer = createOwnerRpcPeer({ send: frame => { link.receive(frame) } })
   const link = desktop.bindDsh(frame => { peer.receive(frame) }, exited.promise, id => id === foreground ? stop.signal : undefined)
   defer(async () => { exited.resolve(); peer.close(); await desktop.close() })

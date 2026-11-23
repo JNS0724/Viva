@@ -167,7 +167,7 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
     },
   })
   try {
-    const { sessionId, model } = await withTimeout(memoryOwner.prepare(async () => {}).then(() => bridge.start()), TURN_TIMEOUT_MS, 'dsh 启动')
+    const { sessionId, model } = await withTimeout(memoryOwner.prepare().then(() => bridge.start()), TURN_TIMEOUT_MS, 'dsh 启动')
     const turns = []
     for (const question of questions) {
       const turn = await ask(bridge, events, question)
