@@ -116,7 +116,10 @@ function* blockParts(token: Token, ctx: Context, tight = false): IterableIterato
     }
     case 'table': {
       const { header, rows, align } = token as Tokens.Table
-      yield { node: h('div', { class: 'md-table-wrap' }), children: [{ node: h('table', { class: 'md-table' }), children: [
+      yield { node: h('div', { class: 'md-table-wrap' }), children: [{ node: h('table', {
+        class: 'md-table',
+        'data-large': rows.length >= 200 ? 'true' : null,
+      }), children: [
         { node: h('thead'), children: tableRows([header], 'th', align, ctx) },
         { node: h('tbody'), children: tableRows(rows, 'td', align, ctx) },
       ] }] }
@@ -415,6 +418,9 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
           else clearTabIndex()
         }
       }
+    }
+    for (const table of target.querySelectorAll<HTMLTableElement>('table.md-table')) {
+      if (table.tBodies[0] && table.tBodies[0].rows.length >= 200) table.dataset.large = 'true'
     }
     button.remove()
   } catch {

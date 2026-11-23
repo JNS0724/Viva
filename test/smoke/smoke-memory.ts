@@ -548,7 +548,12 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await closeProfile(win)
   await until(win, pollFileDetail(note.identity, `file?.markdown.includes(${JSON.stringify(REPORT_MEMORY)}) && !file.restrictions?.length`),
     'the released range is rebuilt from its sources')
-  const after = await askUsingMemory(win, hooks, '周报提交约定。')
+  let after: object[] = []
+  for (let attempt = 0; attempt < 4; attempt++) {
+    after = await askUsingMemory(win, hooks, '周报提交约定。')
+    if (after.some(request => readsFileMemory(request, REPORT_MEMORY))) break
+    await wait(500)
+  }
   expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
 
   // Keep the restored report note for the installed cross-language check after restart.
