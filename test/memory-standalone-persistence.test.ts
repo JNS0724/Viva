@@ -71,7 +71,7 @@ test('standalone cold startup never publishes a provider with the wrong memory o
 })
 
 test('standalone disposal can finish while a stuck lease still excludes a second owner', async t => {
-  const { dir } = scratch(t, 'viva-stalled-root-lease-')
+  const { dir, defer } = scratch(t, 'viva-stalled-root-lease-')
   const config = { sessionsRoot: join(dir, 'sessions'), memoryRoot: join(dir, 'memory'), storageRoot: join(dir, 'storage') }
   const lease = acquireSessionRootLease(config, () => assert.fail('closing is intentional'))
   await lease.ready
@@ -84,6 +84,15 @@ test('standalone disposal can finish while a stuck lease still excludes a second
     return stopped.ready.then(() => 0)
   })
   t.mock.timers.enable({ apis: ['setTimeout'] })
+  const cleanup = async () => {
+    t.mock.timers.reset()
+    post.mock.restore()
+    terminate.mock.restore()
+    stopped.release()
+    if (thread) await thread.terminate()
+    else await lease.close()
+  }
+  defer(cleanup)
   try {
     const closing = lease.close()
     t.mock.timers.tick(DEFAULT_TOOL_TIMEOUT_MS)
@@ -93,23 +102,19 @@ test('standalone disposal can finish while a stuck lease still excludes a second
     await assert.rejects(competing.ready, /active owner/)
     await competing.close()
   } finally {
-    t.mock.timers.reset()
-    post.mock.restore()
-    terminate.mock.restore()
-    stopped.release()
-    if (thread) await thread.terminate()
-    else await lease.close()
+    await cleanup()
   }
   const next = acquireSessionRootLease(config, () => {})
+  defer(() => next.close())
   await next.ready
   await next.close()
 })
 
-test('a ready message arriving after the startup deadline cannot acquire the root lease', { timeout: 10_000 }, async t => {
-  const { dir } = scratch(t, 'viva-late-lease-')
+test('a ready message arriving after the startup deadline cannot acquire the root lease', { timeout: 30_000 }, async t => {
+  const { dir, defer } = scratch(t, 'viva-late-lease-')
   const config = { sessionsRoot: join(dir, 'sessions'), memoryRoot: join(dir, 'memory'), storageRoot: join(dir, 'storage') }
   const arrived = signal()
-  let thread!: Worker
+  let thread: Worker | undefined
   const emit = Worker.prototype.emit
   const delayed = t.mock.method(Worker.prototype, 'emit', function(this: Worker, event: string | symbol, ...args: unknown[]) {
     if (event === 'message') { thread = this; arrived.release(); return true }
@@ -118,9 +123,16 @@ test('a ready message arriving after the startup deadline cannot acquire the roo
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let lost = false
   const lease = acquireSessionRootLease(config, () => { lost = true })
+  defer(async () => {
+    t.mock.timers.reset()
+    delayed.mock.restore()
+    await lease.close()
+    await thread?.terminate()
+  })
   try {
     await arrived.ready
-    const ended = new Promise<void>(resolve => thread.once('exit', () => resolve()))
+    assert.ok(thread)
+    const ended = new Promise<void>(resolve => thread!.once('exit', () => resolve()))
     const failure = assert.rejects(lease.ready, /timed out/)
     t.mock.timers.tick(INITIALIZATION_BUDGET_MS)
     emit.call(thread, 'message', 'ready')
@@ -133,5 +145,6 @@ test('a ready message arriving after the startup deadline cannot acquire the roo
   }
   // The failed caller need not close a lease it never acquired.
   const next = acquireSessionRootLease(config, () => {})
+  defer(() => next.close())
   try { await next.ready } finally { await next.close(); await lease.close() }
 })

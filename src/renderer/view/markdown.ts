@@ -333,8 +333,8 @@ function* revealParts(parent: HTMLElement, parts: Iterable<MarkdownPart>, before
       yield
     } else if (sameElement(previous, part.node)) {
       yield* revealParts(previous, part.children, null, previous === last ? onAdded : undefined)
-    } else if (!previous && part.node.tagName === 'TR') {
-      // Assemble each new row off-DOM so a frame slice never paints a partial row or triggers per-cell table/AX updates.
+    } else if (!previous && (part.node.tagName === 'TR' || part.node.tagName === 'LI')) {
+      // Assemble each new row/item off-DOM so a frame slice never paints a partial row/item or triggers per-child AX updates.
       yield* revealParts(part.node, part.children)
       parent.insertBefore(part.node, before)
       onAdded?.(part.node)
@@ -363,8 +363,11 @@ export function refreshExpansionLabel(button: HTMLElement, remaining: number) {
 }
 
 const REVEAL_SLICE_MS = 5
-// DOM changes also cost layout and accessibility work after this script yields, especially table rows.
-const REVEAL_SLICE_NODES = 500
+// DOM changes also cost layout and accessibility work after this script yields, especially table rows and full AX trees.
+const REVEAL_SLICE_NODES_MAX = 480
+const REVEAL_SLICE_NODES_MIN = 220
+const REVEAL_SLICE_NODES_INITIAL = 240
+const REVEAL_TARGET_FRAME_MS = 26
 
 /** Parse the full source together so later reference definitions still affect the opening. */
 export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElement, text: string,
@@ -382,11 +385,21 @@ export async function revealMarkdown(target: HTMLElement, button: HTMLButtonElem
     const language = localeRevision()
     let firstAdded: HTMLElement | null = null
     const draw = revealParts(target, blocks(tokens, { openLink, image: null }), button, node => { firstAdded ??= node })
+    let lastFrame = performance.now()
+    let sliceNodes = REVEAL_SLICE_NODES_INITIAL
     for (let done = false; !done;) {
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
       if (!active()) return
-      const until = performance.now() + REVEAL_SLICE_MS
-      let remainingNodes = REVEAL_SLICE_NODES
+      const now = performance.now()
+      const frameMs = now - lastFrame
+      lastFrame = now
+      if (frameMs > REVEAL_TARGET_FRAME_MS) {
+        sliceNodes = Math.max(REVEAL_SLICE_NODES_MIN, Math.floor(sliceNodes * (REVEAL_TARGET_FRAME_MS / frameMs)))
+      } else if (frameMs < 18) {
+        sliceNodes = Math.min(REVEAL_SLICE_NODES_MAX, Math.ceil(sliceNodes * 1.25))
+      }
+      const until = now + REVEAL_SLICE_MS
+      let remainingNodes = sliceNodes
       do { done = draw.next().done === true } while (!done && --remainingNodes > 0 && performance.now() < until)
     }
     if (language !== localeRevision()) refreshMarkdownLanguage(target)
