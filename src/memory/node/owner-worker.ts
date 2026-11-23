@@ -133,6 +133,8 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
     receiveSource: input => sessions.run(input.sessionId, () => current.receiveSource(input)),
     registerDerived: input => current.registerDerived(input, signal),
     completeTurn: input => sessions.run(input.sessionId, () => current.completeTurn(input, signal)),
+    intakeWatermark: session => current.intakeWatermark(idSchema.parse(session)),
+    advanceIntake: (session, nextSeq) => current.advanceIntake(idSchema.parse(session), z.int().nonnegative().parse(nextSeq)),
     prepareContextRecovery: current.prepareContextRecovery,
     bindContextRecovery: current.bindContextRecovery,
     snapshot: current.dispatch.snapshot,
@@ -162,7 +164,7 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
       const proof = await current.loadSpillFileProof(id, signal)
       return current.admitNativeSpillRead(id, nativeScope(scope, signal), signal, proof).current()
     },
-    modelRequest: (request, session, generation, scope) => sessions.run(session, async () => {
+    modelRequest: (request, session, generation, scope, unknownProject) => sessions.run(session, async () => {
       // The native DSH tools and runtime own argument semantics. Validate the operation
       // here without narrowing native file-tool input to the legacy memory RPC limits.
       if (!objectOf(request) || !memoryRequest.options.some(option => option.shape.op.value === request.op)) {
@@ -176,12 +178,14 @@ function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
       const allowed = () => sameOrigin() && !current.needsContextRecovery(session, undefined, acceptsFiles)
       if (!allowed()) throw new Error('Memory request origin is unavailable')
       if (request.op === 'remember') {
-        if (!scope) return '{"status":"unavailable"}'
+        if (!scope || unknownProject === true) return '{"status":"unavailable"}'
         const result = await current.withNativeToolRead(nativeScope(scope, signal), () => current.rememberNativeFile(request.text.trim()))
         return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
           : { status: 'rejected', reason: 'no-explicit-user-source' })
       }
-      const read = () => current.runtime.handleModelRequest(request, current.sessionContext(session), allowed, signal)
+      const context = current.sessionContext(session)
+      const origin = unknownProject === true ? { ...context, project: undefined, context: { kind: 'user' as const } } : context
+      const read = () => current.runtime.handleModelRequest(request, origin, allowed, signal)
       if (request.op === 'context') return read()
       return scope ? current.withNativeToolRead(nativeScope(scope, signal), read) : '{"status":"unavailable"}'
     }),

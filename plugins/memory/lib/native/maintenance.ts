@@ -16,7 +16,9 @@ import { auditNativeErasure } from './audit-native-erasure.ts'
 import { eraseNativeSpill } from './local-spills.ts'
 import { recoverNativePtcInputs } from './recover-ptc-inputs.ts'
 
-export class PendingNativePublication extends Error {}
+export class PendingNativePublication extends Error {
+  override name = 'PendingNativePublication'
+}
 
 /** Run inside the host's cold lifecycle gate with no live persistence readers. */
 export async function eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot, hostNamespace, isCold, trace }: {

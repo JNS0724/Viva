@@ -22,7 +22,7 @@ function aborted(signal:AbortSignal) {
     signal.addEventListener('abort',()=>{clearTimeout(timer);resolve()},{once:true})
   })
 }
-test('a live physical send permit must settle before an ordinary daily update can change its file version',async t=>{
+test('an ordinary daily update can commit while a physical send is still active',async t=>{
   const {dir,defer}=scratch(t,'memory-note-live-fence-')
   const owner=openMemoryOwner({root:dir,dailyNotes:{noteInterval:1,timezone:'UTC'},
     route:()=>({provider:'fake',model:'fake'}),quiesce:async()=>{},compute(job){
@@ -45,10 +45,9 @@ test('a live physical send permit must settle before an ordinary daily update ca
   const permit=owner.acquireSend(randomUUID(),{session},'request body containing the accepted daily')
   try {
     await turn(2,'I listen to quiet music.')
-    const work=owner.runtime.wake()
-    await aborted(permit.signal)
-    assert.deepEqual(db.prepare('SELECT revision,file_revision FROM memory_daily_notes').get(),before)
-    permit.settled();await work
+    await owner.runtime.wake()
+    assert.equal(permit.signal.aborted, false)
+    assert.equal(permit.current(), true)
     assert.ok(Number(db.prepare('SELECT revision FROM memory_daily_notes').get()?.revision)>Number(before.revision))
   } finally { permit.settled() }
 })

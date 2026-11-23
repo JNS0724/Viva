@@ -56,7 +56,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
     const authorized = authorizedRestrictions({ workspace, key, kind: 'daily' })
     if (!current && !authorized.length) return null
     const ownRanges = authorized.flatMap(item => item.record.sources)
-    const canStop = Boolean(current && daily && !daily.references(key).some(ref => documentSourceRestricted(ref, ownRanges)))
+    const canStop = Boolean(current?.enabled && daily && !daily.references(key).some(ref => documentSourceRestricted(ref, ownRanges)))
     const dailyState = { allocation, hasProjection: Boolean(current), canStop, restrictions: authorized.map(({ record, version }) => ({ record, version })) }
     const sources = [...new Map([...(current?.sources ?? []), ...authorized.flatMap(item => item.sources)].map(ref => [ref.sourceId, ref])).values()]
     if (current) return { ...current, sources, enabled: current.enabled, daily: dailyState }
@@ -109,7 +109,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       ...(view.day ? { day: view.day } : {}),
       ...(view.daily || view.detachedRestrictions ? { hasProjection: view.daily?.hasProjection ?? false,
         restrictions: (view.daily?.restrictions ?? view.detachedRestrictions ?? []).map(({ record, version }) => ({ id: record.id, version })) } : {}),
-      actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.canStop || view.daily.restrictions.length)),
+      actions: { setEnabled: view.kind === 'digest' || Boolean(view.daily && (view.daily.hasProjection || view.daily.restrictions.length)),
         ...(view.daily ? { stop: view.daily.canStop } : {}), edit: editSupported(view), forget: forgetSupported(view), undo: candidate ? { changeId: candidate.changeId } : null } }
   }
   function resolve(input: MemoryManagedFileIdentity, allows: Allows, read: ReadManagedFile = policy.managementRead): ManagedView | null {
@@ -234,7 +234,7 @@ export function createMemoryFileManagement({ policy, documents, workspaces, loca
       ? (view.daily?.restrictions ?? view.detachedRestrictions)?.find(item => item.record.id === command.restrictionId) : undefined
     if (view.kind === 'daily') {
       if (!view.daily || command.action !== 'setEnabled') throw failure('invalid.text')
-      if (command.enabled ? !selected : command.restrictionId !== undefined || !view.daily.canStop) throw failure('revision.conflict')
+      if (command.restrictionId !== undefined || !view.daily.hasProjection) throw failure('revision.conflict')
     } else if (view.detachedRestrictions) {
       if (!selected) throw failure('revision.conflict')
     } else if (command.action === 'setEnabled' && command.restrictionId !== undefined) throw failure('invalid.text')

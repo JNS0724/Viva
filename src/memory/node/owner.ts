@@ -23,8 +23,8 @@ import { MemoryDomainError } from '../core/presentation.ts'
 import { createMemorySendFence, type SendAdmission } from '../core/send-fence.ts'
 import { parseHostMemoryCommand } from '../contracts/host.ts'
 import type { MemorySourceAlias, SourceChangeInput, HostMemoryCommand, MemoryOwnerContextUsed, MemoryProject } from '../contracts/host.ts'
-import type { MemoryOperationOutcome, MemoryHostEffect, MemorySourceReference } from '../contracts/service.ts'
-import type { MemoryFileMutationResult, MemoryManagedFileIdentity, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
+import type { MemoryOperationOutcome, MemoryHostEffect } from '../contracts/service.ts'
+import type { MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from '../contracts/file-management.ts'
 import { memoryFileCreateRequest, memoryFileForgetRequest } from '../contracts/file-management.ts'
 import type { MemoryDomainErrorCode } from '../contracts/domain-error.ts'
 import type { MemoryScope } from '../contracts/memory-contract.ts'
@@ -40,7 +40,8 @@ import { createNativeDerivedMessages } from './native-derived-messages.ts'
 
 // Adapter-independent ingestion DTOs: the adapter authenticates identity and original/derived origin.
 export type ReceivedSource = { sessionId: string, messageId: string, text: string, at: number, timezone: string,
-  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, nativeMessageDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean }
+  turn: number, step: number, eventSeq?: number, contextGeneration?: number, contentDigest?: string, nativeMessageDigest?: string, admitted: boolean, inherited: boolean, project?: string, live?: boolean, derived?: boolean,
+  requiresAlias?: boolean, unknownProject?: boolean }
 export type CompletedTurn = { sessionId: string, turn: number, eventSeq: number, contextGeneration?: number, sourceIds: readonly string[],
   assistant: string, completed: boolean, at: number, timezone: string }
 export type DerivedSource = { verifiedDelivery?: true, contentDigest?: string, nativeUserSource?: string, nativeMessageDigest?: string, sessionId: string, messageId: string, eventSeq?: number, contextGeneration?: number, senderContextGeneration?: number, sourceIds: readonly string[], inherited?: boolean, senderSessionId?: string }
@@ -120,7 +121,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     injected: (session, turn, pushed) => options.onContextUsed?.({ session, turn, pushed, revision: store.revision(),
       conversation: sessionContext(session).conversation ?? null, at: Date.now() }),
     validateDispatch: dispatch.validateCommit,
-    runDocumentMutation: work => fence.mutate(work),
+    runDocumentMutation: work => Promise.resolve().then(work),
     fileDependencies(session, files, sources) {
       const scope = toolReadScope.getStore()
       if (!files.length || scope?.call.session !== session) return dispatch.recordFiles(session, files, sources)
@@ -421,11 +422,18 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       return { sourceId, text: '', handledIntent: true, retrievalQuery: input.text }
     }
     if (known && (known.hash !== hash(input.text) || known.kind !== 'original')) throw new Error('Source identity conflicts')
-    if (!known && input.inherited) throw new Error('Unregistered inherited source')
+    if (!known && input.inherited) {
+      if (input.requiresAlias) return { sourceId: input.messageId, text: '', handledIntent: true as const }
+      throw new Error('Unregistered inherited source')
+    }
     if (db.prepare('SELECT 1 FROM owner_aliases WHERE session=? AND wire_hash=? AND revoked=1').get(input.sessionId, hash(input.text))) throw new Error('Source delivery was withdrawn')
     const candidates = db.prepare('SELECT id,payload FROM owner_aliases WHERE session=? AND wire_hash=? AND payload IS NOT NULL').all(input.sessionId, hash(input.text)) as Array<{ id: string, payload: string }>
     if (!known && candidates.length > 1) throw new Error('Ambiguous source alias')
     const mapped = !known && candidates[0] ? restoreAlias(JSON.parse(candidates[0].payload) as StoredAlias, input.text) : undefined
+    if (!known && (input.unknownProject || input.requiresAlias && !mapped)) {
+      markLiveTurn(input)
+      return { sourceId: input.messageId, text: '', handledIntent: true as const, retrievalQuery: mapped?.text }
+    }
     if (mapped?.origin === 'derived') {
       const sources = mapped.dependencies?.sources ?? []
       await registerDerived({ sessionId: input.sessionId, messageId: input.messageId, contextGeneration: input.contextGeneration, contentDigest: input.contentDigest, nativeUserSource: 'user', nativeMessageDigest: input.nativeMessageDigest, sourceIds: sources })
@@ -542,6 +550,16 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       if (!old) runtime.recordDeliveredSource(canonical, sessionContext(input.sessionId).conversation, true)
     })
   }
+  function intakeWatermark(session: string) {
+    requireReady()
+    const cursor = db.prepare('SELECT next_seq FROM memory_session_cursors WHERE session=?').get(session)
+    return { createdAt: Number(store.meta('created_at')), nextSeq: cursor ? Number(cursor.next_seq) : null }
+  }
+  function advanceIntake(session: string, nextSeq: number) {
+    requireReady()
+    db.prepare(`INSERT INTO memory_session_cursors VALUES (?,?)
+      ON CONFLICT(session) DO UPDATE SET next_seq=MAX(next_seq,excluded.next_seq)`).run(session, nextSeq)
+  }
   async function completeTurn(input: CompletedTurn, signal?: AbortSignal) {
     requireReady()
     requireContextGeneration(input.sessionId, input.contextGeneration)
@@ -584,7 +602,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     })
     // File journal has its own crash receipt and must not be nested inside a SQLite transaction.
     if (input.completed) runtime.recordNoteTurn?.(input.sessionId, input.sourceIds, input.assistant, acceptsFiles)
-    db.prepare('INSERT INTO owner_turns VALUES (?,?,?,?)').run(input.sessionId, input.turn, input.eventSeq, input.completed ? 'completed' : 'cancelled')
+    store.tx(() => {
+      db.prepare('INSERT INTO owner_turns VALUES (?,?,?,?)').run(input.sessionId, input.turn, input.eventSeq, input.completed ? 'completed' : 'cancelled')
+      advanceIntake(input.sessionId, input.eventSeq + 1)
+    })
     for (const [key, question] of generalQuestions) if (question.session === input.sessionId) generalQuestions.delete(key)
     db.prepare('DELETE FROM owner_active_turns WHERE session=? AND turn=?').run(input.sessionId, String(input.turn))
     runtime.finishTurn(input.sessionId, input.completed)
@@ -781,15 +802,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return fence.mutate(write)
   }
   type FileWriteCommand = Extract<HostMemoryCommand, { method: 'setFileEnabled' | 'undoFile' | 'forgetFile' }>
-  type FileWritePayload = { command: FileWriteCommand, sources: MemorySourceReference[], sessions: string[], standaloneSession?: string }
-  function fileSessions(identity: MemoryManagedFileIdentity, sources: readonly MemorySourceReference[]): string[] {
-    const sourceIds = new Set(sources.map(ref => ref.sourceId))
-    return (db.prepare('SELECT id FROM memory_sessions').all() as Array<{ id: string }>).flatMap(({ id }) => {
-      const evidence = dispatch.snapshot(id)
-      return evidence.sources.some(source => sourceIds.has(source))
-        || evidence.files?.some(file => file.workspace === identity.workspace && file.id === identity.id) ? [id] : []
-    })
-  }
+  type FileWritePayload = { command: FileWriteCommand, standaloneSession?: string }
   type NativeRememberPlan = { session: string, source: DocumentSourceRef }
   type NativeRememberPayload = { nativeRemember: NativeRememberPlan }
   async function completeNativeRemember(id: string, plan: NativeRememberPlan, current: () => boolean) {
@@ -835,22 +848,13 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
 
   type ManualFileCommand = Extract<HostMemoryCommand, { method: 'createFile' | 'editFile' }>
-  type ManualFilePlan = { workspace: string, usageVersion: number | null, sessions: string[], project?: MemoryProject, context?: MemoryScope }
+  type ManualFilePlan = { workspace: string, project?: MemoryProject, context?: MemoryScope }
   type ManualFilePending = { manual: ManualFilePlan }
 
   async function completeManualFile(id: string, plan: ManualFilePlan, request?: MemoryFileCreateRequest | MemoryFileEditRequest) {
-    let notify = false
     try {
       const receipt = await runtime.writeManagedFile(id, plan.workspace, request, result => store.tx(() => {
         if (operation(id)?.state === 'completed') return
-        const sessions = plan.usageVersion !== null && plan.usageVersion !== result.usageVersion
-          ? [...new Set([...plan.sessions, ...fileSessions(result.identity, [])])] : []
-        if (options.hostNamespace && sessions.length) {
-          const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-            kind: 'invalidate-context', sources: [], sessions }
-          db.prepare('INSERT OR IGNORE INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
-          notify = true
-        }
         db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
       }), plan.project, plan.context, !replayingWrites)
       if (receipt) diagnostics.emit({ event: 'state.changed', operation: 'memory.write', stage: 'applied',
@@ -861,8 +865,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
         db.prepare("UPDATE owner_operations SET state='failed',payload=? WHERE id=?").run(JSON.stringify({ code: error.code }), id)
       }
       throw error
-    } finally {
-      if (notify && operation(id)?.state === 'completed') options.onHostEffects?.()
     }
   }
 
@@ -878,10 +880,9 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     }
     if (previous?.state === 'failed') throw new MemoryDomainError((JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }).code)
     const plan = previous?.payload ? (JSON.parse(previous.payload) as ManualFilePending).manual : 'identity' in request
-      ? { workspace: request.identity.workspace, usageVersion: request.version.usageVersion, sessions: fileSessions(request.identity, []) }
-      : { workspace: runtime.manualFileWorkspace(project, context), usageVersion: null, sessions: [], context, ...(project ? { project } : {}) }
-    // Only the file journal may retain a draft, with both its old and new backing proofs.
-    // Waiting for the send fence must not persist a detached copy of the submitted words.
+      ? { workspace: request.identity.workspace }
+      : { workspace: runtime.manualFileWorkspace(project, context), context, ...(project ? { project } : {}) }
+    // Keep the draft in the file journal so recovery can validate the expected revision.
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)")
       .run(id, fingerprint, JSON.stringify({ manual: plan } satisfies ManualFilePending))
     const receipt = await completeManualFile(id, plan, request)
@@ -889,8 +890,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
     return receipt
   }
 
-  /** The runtime owns the only send fence. The durable intent bridges its document receipt and
-   * this completion/outbox transaction if the process exits between the two commits. */
+  /** The durable intent lets a retry recover the file journal result after a process exit. */
   async function durableFileWrite(command: FileWriteCommand, standaloneSession?: string): Promise<MemoryFileMutationResult> {
     requireReady()
     const request = command.input.args[0], id = request.operationId, fingerprint = hash(standaloneSession ? { command, standaloneSession } : command)
@@ -905,26 +905,10 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       const failure = JSON.parse(previous.payload!) as { code: MemoryDomainErrorCode }
       throw new MemoryDomainError(failure.code)
     }
-    const pending = previous?.payload ? JSON.parse(previous.payload) as FileWritePayload : null
-    const sources = pending?.sources ?? (command.method === 'forgetFile' || request.identity.kind === 'daily' ? [] : runtime.readFile(request.identity)?.sources ?? [])
-    const sessions = pending?.sessions ?? (command.method === 'forgetFile' ? [] : fileSessions(request.identity, sources))
     if (!previous) db.prepare("INSERT INTO owner_operations VALUES (?,?,'running',?,NULL)").run(id, fingerprint,
-      JSON.stringify({ command, sources, sessions, standaloneSession } satisfies FileWritePayload))
-    let notify = false
-    const committed = (result: MemoryFileMutationResult, affectedSources: readonly MemorySourceReference[] = sources) => {
-      store.tx(() => {
-        if (operation(id)?.state === 'completed') return
-        // Include readers attached while the mutation waited for outstanding physical sends.
-        const affectedSessions = [...new Set([...sessions, ...fileSessions(request.identity, affectedSources)])]
-        if (options.hostNamespace && result.usageVersion !== request.version.usageVersion && (affectedSources.length || affectedSessions.length)) {
-          const effect: MemoryHostEffect = { effectId: id, causeOperationId: id, revision: store.revision(), hostNamespace: options.hostNamespace,
-            kind: 'invalidate-context', sources: [...affectedSources], sessions: affectedSessions }
-          db.prepare('INSERT OR IGNORE INTO owner_host_effects(id,payload) VALUES (?,?)').run(id, JSON.stringify(effect))
-          notify = true
-        }
-        // Retain only the public immutable receipt; no Markdown, previous body or source copies.
-        db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
-      })
+      JSON.stringify({ command, standaloneSession } satisfies FileWritePayload))
+    const committed = (result: MemoryFileMutationResult) => {
+      db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result }), id)
     }
     const finishForget = (result: MemoryFileMutationResult) => {
       db.prepare("UPDATE owner_operations SET state='completed',payload=? WHERE id=?").run(JSON.stringify({ result, standaloneSession }), id)
@@ -943,8 +927,6 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
       }
       // Storage/flush failures keep the intent for recovery, including a committed document receipt.
       throw error
-    } finally {
-      if (notify && operation(id)?.state === 'completed') options.onHostEffects?.()
     }
   }
   function standaloneFileOrigin(session: string) {
@@ -1236,7 +1218,7 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
   }
   const tempCleanup = new AbortController()
   void removeAbandonedMemoryTemps(store.fileRoot, tempCleanup.signal)
-  return { runtime, dispatch, coordination, initializeSession, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
+  return { runtime, dispatch, coordination, initializeSession, intakeWatermark, advanceIntake, epoch, ready: () => state === 'ready' && !replayingWrites && !hasPending(), status: () => state === 'ready' && (replayingWrites || hasPending()) ? 'recovering' as const : state,
     recover: (preserveActiveTurns = false) => observeDiagnosticAsync(options.diagnostics, 'memory.recover', () => recover(preserveActiveTurns), { stage: 'recovering', identities: { ownerEpoch: epoch } }),
     receiveSource: (input: ReceivedSource) => observeDiagnosticAsync(options.diagnostics, 'memory.intake', () => receiveSource(input), {
       stage: 'received', identities: { sessionId: input.sessionId, requestId: input.messageId, generation: input.contextGeneration ?? 0 }, metrics: { count: 1, ok: input.admitted } }),

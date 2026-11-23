@@ -1,4 +1,4 @@
-import type { MemoryManagedFileVersion, MemoryFileListResult } from '../memory/contracts/file-management.ts'
+import type { MemoryFileListResult } from '../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS } from '../shared/text-limits.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -131,15 +131,12 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     return refresh
   }
 
-  async function write(target: MemoryFileDetailView, command: (operationId: string) => Promise<unknown>, message: string, restoredRestriction?: string) {
+  async function write(target: MemoryFileDetailView, command: (operationId: string) => Promise<unknown>, message: string) {
     if (!active() || state().writing || state().detail !== target) return false
     const { selection } = state()
     dispatch({ type: 'memory_file_write_busy', busy: true })
     try {
       await command(globalThis.crypto.randomUUID())
-      if (active() && restoredRestriction && selection && sameMemoryFileSelection(state().selection, selection)) {
-        dispatch({ type: 'memory_file_select', selection: { identity: selection.identity } })
-      }
       showToast(message)
       return true
     } catch (error) {
@@ -312,22 +309,14 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       const { selection } = state()
       if (active() && selection) return read(selection)
     },
-    setManagedMemoryEnabled(target: MemoryFileDetailView, enabled: boolean, restrictionId?: string) {
-      if (!target.actions.setEnabled || target.stoppedSnapshot && !restrictionId) return false
-      let version: MemoryManagedFileVersion = target.version
-      if (restrictionId) {
-        const restriction = target.restrictions?.find(item => item.id === restrictionId)
-        if (!enabled || !restriction || target.stoppedSnapshot?.restrictionId !== restrictionId) return false
-        version = restriction.version
-      } else if (target.identity.kind === 'daily' ? enabled || !target.actions.stop : target.hasProjection === false || target.enabled === enabled) {
-        return false
-      }
-      return write(target, operationId => api.setMemoryFileEnabled({ operationId, identity: target.identity, version, enabled,
-        ...(restrictionId ? { restrictionId } : {}) }), t(enabled ? 'memory-files.restored' : 'memory-actions.memory.stopped'), restrictionId)
+    setManagedMemoryEnabled(target: MemoryFileDetailView, enabled: boolean) {
+      if (!target.actions.setEnabled || target.enabled === enabled) return false
+      return write(target, operationId => api.setMemoryFileEnabled({ operationId, identity: target.identity, version: target.version, enabled }),
+        t(enabled ? 'memory-files.restored' : 'memory-actions.memory.stopped'))
     },
     undoManagedMemory(target: MemoryFileDetailView) {
       const changeId = target.actions.undo?.changeId
-      if (!changeId || target.stoppedSnapshot) return false
+      if (!changeId) return false
       return write(target, operationId => api.undoMemoryFile({ operationId, identity: target.identity, version: target.version, changeId }),
         t('memory-actions.memory.change.undone'))
     },

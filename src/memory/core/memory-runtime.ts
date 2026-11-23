@@ -23,7 +23,6 @@ import { MAX_MESSAGE_CHARS } from '../contracts/text-limits.ts'
 import { mergeTextSpans } from '../contracts/text-spans.ts'
 import { localDay, nextDay } from './memory-calendar.ts'
 import { dateLine, packContext } from './memory-context.ts'
-import { createMemoryDailyUsage } from './memory-daily-usage.ts'
 import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-document-read-policy.ts'
 import type { FileEvidenceCurrent } from './memory-dispatch.ts'
 import { createMemoryDocumentEvidence, createMemoryDocumentReadPolicy, fileDependency } from './memory-document-read-policy.ts'
@@ -282,14 +281,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     daily: notes && documentEvidence ? {
       allocations: notes.storage.allocations, references: notes.storage.references, ledger: useRestrictions, sources: dailySources,
     } : undefined,
-  }) : null
-  const dailyUsage = notes ? createMemoryDailyUsage({ ledger: useRestrictions, notes: notes.storage, sourceReferences: dailySources,
-    hash: memoryHash, now, transaction: store.tx, revisionChanged: (workspace, key, refs) => {
-      queueFilePublication({ workspace, id: noteFileId(key), sources: refs.map(ref => ref.id) })
-      store.nextRevision()
-      validateDispatch()
-    },
-    queueRebuild: notes.queueRebuild, queueRestrictedRebuilds: notes.queueRestrictedRebuilds,
   }) : null
   // Only the trusted owner host API calls this management surface. Model requests retain
   // their narrower scoped fileAllowsOrigin checks and ordinary model read policy.
@@ -556,58 +547,36 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       ...(request.asOf ? { asOf: interval.to! - 1 } : {}),
       allows: (view: MemoryDocumentView) => fileAllowsOrigin(view, origin, scope) }
   }
-  // A local file deletion leaves previously consumed projections usable. Only the exact
-  // readable snapshot at deletion can qualify, and later source withdrawals or restrictions still win.
-  function deletedReadKey(ref: MemoryFileDependency) {
-    return 'deleted-file-read:' + memoryHash(JSON.stringify([ref.workspace, ref.id, ref.path, ref.revision, ref.usageVersion,
-      ref.policyToken, ref.sourceRanges.map(range => [range.sourceId, range.spans?.map(span => [span.start, span.end])])]))
-  }
-  function currentReadProof(ref: MemoryFileDependency) {
-    const sources: DocumentSourceRef[] = []
-    for (const range of ref.sourceRanges) {
-      const source = canonicalSource(range.sourceId)
-      if (!source || !fileSourceAllowsUse(source.id)) return null
-      sources.push({ id: source.id, token: resources.sourceToken(source), spans: range.spans })
-    }
-    return documentReferencesRestricted(sources) ? null : memoryHash(JSON.stringify(sources.map(source => source.token)))
-  }
   function fileDependenciesCurrent(refs: readonly MemoryFileDependency[], sourceIds: readonly string[] = [], priorRead = true, batch?: MemoryDocumentReadBatch): boolean {
     const unverified = new Set(sourceIds)
     for (const ref of refs) {
       if (!ref.sourceRanges?.length) return false
-      const view = batch ? batch.read(ref.workspace, ref.path) : filePolicy?.read(ref.workspace, ref.path)
-      if (view?.id === ref.id) {
-        if (view.revision !== ref.revision || view.usageVersion !== ref.usageVersion || view.policyToken !== ref.policyToken
-          || JSON.stringify(ref.sourceRanges) !== JSON.stringify(fileDependency(view).sourceRanges)) return false
-        for (const source of view.sourceTokens) unverified.delete(source.id)
-      } else {
-        const proof = priorRead && store.meta(deletedReadKey(ref))
-        if (!proof || currentReadProof(ref) !== proof) return false
-        for (const range of ref.sourceRanges) unverified.delete(range.sourceId)
+      if (priorRead) {
+        for (const range of ref.sourceRanges) {
+          if (!fileSourceAllowsUse(range.sourceId)) return false
+          unverified.delete(range.sourceId)
+        }
+        continue
       }
+      const view = batch ? batch.read(ref.workspace, ref.path) : filePolicy?.read(ref.workspace, ref.path)
+      if (!view || view.id !== ref.id || view.revision !== ref.revision || view.usageVersion !== ref.usageVersion || view.policyToken !== ref.policyToken
+        || JSON.stringify(ref.sourceRanges) !== JSON.stringify(fileDependency(view).sourceRanges)) return false
+      for (const range of ref.sourceRanges) unverified.delete(range.sourceId)
     }
     return unverified.size === 0
   }
-  async function loadFileEvidenceCheck(refs: readonly MemoryFileDependency[], signal?: AbortSignal): Promise<FileEvidenceCurrent> {
+  async function loadFileEvidenceCheck(_refs: readonly MemoryFileDependency[], signal?: AbortSignal): Promise<FileEvidenceCurrent> {
     signal?.throwIfAborted()
-    if (!refs.length) return (latest, _, sources) => !closed && !signal?.aborted && !latest.length && !sources.length
-    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.fileVerificationBudgetMs, signal)
-    const batch = filePolicy?.readBatch(signal, refs.length + 512)
-    if (!batch) { budget.close(); return () => false }
-    try {
-      await budget.run(() => batch.load(refs, budget.signal))
-      signal?.throwIfAborted()
-      // A temporary observation timeout does not mean a previously consumed file
-      // disappeared. Leave native recovery decisions for a verified observation.
-      if (batch.incomplete()) throw new RequestTimeout()
-      return (latest, _, sources) => !closed && !signal?.aborted && fileDependenciesCurrent(latest, sources, true, batch)
-    } finally { budget.close() }
+    return (latest, _, sources) => !closed && !signal?.aborted && fileDependenciesCurrent(latest, sources)
   }
   function sourceAllowsOrigin(source: MemorySource, origin: Origin, scope = origin.context ?? origin.scope) {
     return fileSourceAllowsUse(source.id) && (contextAllows(source.scope, scope) || contextAllows(source.scope, origin.project))
       && (!source.project || Boolean(origin.project && sameScope(source.project, origin.project)))
       && (!source.context || contextAllows(source.context, origin.context ?? origin.scope) || contextAllows(source.context, origin.project))
   }
+  const automaticAllows = (view: MemoryDocumentView, origin: Origin, session: string) =>
+    (view.kind !== 'daily' || view.session !== session) && fileAllowsOrigin(view, origin)
+
   function fileAllowsOrigin(view: MemoryDocumentView, origin: Origin, scope = origin.context ?? origin.scope) {
     return view.sourceTokens.length > 0 && view.sourceTokens.every(ref => {
       const source = store.readSource(ref.id)
@@ -1122,7 +1091,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       const batch = filePolicy?.readBatch(budget.signal)
       return budget.run(() => fileRetrieval.search({
         query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128,
-        signal: budget.signal, workspaces: visibleWorkspaces(origin), allows: view => fileAllowsOrigin(view, origin),
+        signal: budget.signal, workspaces: visibleWorkspaces(origin), allows: view => automaticAllows(view, origin, request.session),
       }, batch)).then(result => current() ? fileContext(request, result, batch) : '', error => {
         if (!(error instanceof RequestTimeout) && !signal?.aborted) throw error
         return current() ? fileContext(request, null) : ''
@@ -1191,7 +1160,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     }
     if (request.op === 'context') {
       const result = request.question.trim() && !looksSecret(request.question)
-        ? fileRetrieval?.searchCached({ workspaces: visibleWorkspaces(origin), query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128, allows: view => fileAllowsOrigin(view, origin, scope) }) : null
+        ? fileRetrieval?.searchCached({ workspaces: visibleWorkspaces(origin), query: request.question, automatic: true, limit: 3, maxChars: MAX_RECALL_CHARS - 128, allows: view => automaticAllows(view, origin, request.session) }) : null
       return fileContext(request, result ?? null)
     }
     return textOf({ status: 'rejected', reason: 'no-explicit-user-source' })
@@ -1337,10 +1306,6 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const result = store.tx(() => {
       const view = fileManagement.deletionTarget(input, managementAllows)
       const readable = filePolicy?.read(view.workspace, view.path)
-      if (readable?.id === view.id) {
-        const ref = fileDependency(readable), proof = currentReadProof(ref)
-        if (proof) store.setMeta(deletedReadKey(ref), proof)
-      }
       const sources = readable?.sourceTokens ?? (view.daily
         ? notes.storage.references(view.daily.allocation.key)
         : documents.registered(view.workspace).find(doc => doc.id === view.id)?.sources ?? [])
@@ -1370,12 +1335,35 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     const result = await runDocumentMutation(() => {
       if (closed) throw domainError('not.found')
       if (command.identity.kind === 'daily') {
-        if (!dailyUsage) throw domainError('not.found')
-        const applied = dailyUsage.command(command, () => fileManagement.validate(command, managementAllows))
-        changed = applied.changed
+        if (!notes || command.action !== 'setEnabled') throw domainError('invalid.text')
+        const storage = notes.storage
+        const key = 'daily-file-usage:' + command.operationId
+        const fingerprint = memoryHash(JSON.stringify(command))
+        const applied = store.tx(() => {
+          const prior = store.command(key)
+          if (prior) {
+            const saved = JSON.parse(prior.payload) as { fingerprint: string, result: MemoryFileMutationResult }
+            if (saved.fingerprint !== fingerprint) throw domainError('operation.conflict')
+            return saved.result
+          }
+          const { view } = fileManagement.validate(command, managementAllows)
+          const allocation = view.daily!.allocation
+          const changed = view.enabled !== command.enabled
+          if (changed) {
+            if (!storage.setEnabled(allocation.key, allocation.revision, command.enabled)) throw domainError('revision.conflict')
+            queueFilePublication({ workspace: view.workspace, id: view.id })
+            store.nextRevision()
+          }
+          const response: MemoryFileMutationResult = { operationId: command.operationId, identity: command.identity,
+            contentRevision: view.revision, usageVersion: allocation.revision + Number(changed), action: command.enabled ? 'ENABLE' : 'DISABLE' }
+          store.recordCommand(key, 'setEnabled', JSON.stringify({ fingerprint, result: response }), response.usageVersion)
+          return response
+        })
+        changed = applied.usageVersion !== command.version.usageVersion
         if (changed) publish(store.revision())
-        committed?.(applied.result, applied.sources)
-        return applied.result
+        if (changed && command.enabled) notes.flush()
+        committed?.(applied, [])
+        return applied
       }
       if (!fileWorkspaces().includes(command.identity.workspace)) throw domainError('not.found')
       if (command.action === 'setEnabled' && command.restrictionId !== undefined) {

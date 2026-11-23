@@ -136,7 +136,7 @@ test('a parent recovery retires old child contributions without erasing the chil
   await assert.rejects(owner.registerDerived({ sessionId: parent, senderSessionId: child, messageId: 'late-child', sourceIds: [] }), /generation/)
 })
 
-test('consecutive same-session daily updates can recover, recall the new file and send again without retaining old file receipts', async t => {
+test('consecutive same-session daily updates preserve admitted context and recall the new file', async t => {
   const { dir, defer } = scratch(t, 'memory-context-daily-')
   const owner = openMemoryOwner({ root: dir, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
     route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, compute: async job => {
@@ -145,25 +145,55 @@ test('consecutive same-session daily updates can recover, recall the new file an
       return JSON.stringify({ status: 'write', title: 'Notes', markdown: [input.existing?.markdown ?? '', ...input.turns.flatMap(turn => turn.user.map(s => s.text))].filter(Boolean).join('\n') })
     } })
   defer(() => owner.close()); await owner.recover()
-  const session = randomUUID(), humans: { messageId: string, content: string }[] = []
+  const session = randomUUID()
   for (const [index, text] of ['I enjoy peppermint tea.', 'I listen to quiet music.', 'I read novels in the evening.'].entries()) {
-    const human = await original(owner, session, text, index + 1); humans.push(human)
+    const human = await original(owner, session, text, index + 1)
     await owner.completeTurn({ sessionId: session, turn: index + 1, eventSeq: index * 3 + 3, sourceIds: [human.messageId],
       assistant: '', completed: true, at: Date.now(), timezone: 'UTC', contextGeneration: owner.contextGeneration(session) })
     await owner.runtime.wake()
-    if (index > 0) {
-      assert.equal(owner.needsContextRecovery(session), true)
-      assert.throws(() => owner.acquireSend(randomUUID(), { session, contextGeneration: owner.contextGeneration(session) }, 'stale file'), /denied/)
-      const ticket = await owner.prepareContextRecovery({ sessionId: session, baseSurfaceHash: `surface-${index}`, candidates: humans })
-      await owner.commitContextRecovery(bind(owner, ticket), () => true)
-      assert.equal(owner.dispatch.snapshot(session).files, undefined)
-    }
+    assert.equal(owner.needsContextRecovery(session), false)
     const result = JSON.parse(owner.runtime.handle({ op: 'recall', session, query: 'tea music novels' }, owner.sessionContext(session))) as { notes: { text: string }[] }
     assert.equal(result.notes.length, 1)
     const permit = owner.acquireSend(randomUUID(), { session, contextGeneration: owner.contextGeneration(session) }, 'fresh note'); permit.settled()
-    assert.equal(owner.dispatch.snapshot(session).files?.length, 1)
+    assert.ok(owner.dispatch.snapshot(session).files?.length)
   }
-  assert.equal(owner.contextGeneration(session), 2)
+  assert.equal(owner.contextGeneration(session), 0)
+})
+
+test('appending a daily note read by a second session preserves the second session context', async t => {
+  const { dir, defer } = scratch(t, 'memory-cross-session-daily-')
+  const owner = openMemoryOwner({ root: dir, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, compute: async job => {
+      if (job.stage !== 'note') return '{"facts":[]}'
+      const input = JSON.parse(job.input) as { existing?: { markdown: string }, turns: { user: { text: string }[] }[] }
+      const markdown = [input.existing?.markdown, ...input.turns.flatMap(turn => turn.user.map(source => source.text))].filter(Boolean).join('\n')
+      return JSON.stringify({ status: 'write', title: 'Peppermint tea notes', markdown })
+    } })
+  defer(() => owner.close())
+  await owner.recover()
+  const writer = randomUUID(), reader = randomUUID()
+  owner.initializeSession({ sessionId: reader })
+  const ask = async (text: string, turn: number) => {
+    const human = await original(owner, writer, text, turn)
+    await owner.completeTurn({ sessionId: writer, turn, eventSeq: turn * 3, sourceIds: [human.messageId],
+      assistant: '', completed: true, at: Date.now(), timezone: 'UTC' })
+    await owner.runtime.wake()
+  }
+  await ask('I enjoy peppermint tea.', 1)
+  const context = (session: string) => owner.runtime.handle({ op: 'context', session, turn: 1, question: 'peppermint tea' },
+    owner.sessionContext(session))
+  assert.doesNotMatch(context(writer), /I enjoy peppermint tea/u, 'automatic context excludes the writer’s own note')
+  assert.match(context(reader), /I enjoy peppermint tea/u, 'automatic context still picks up another session’s note')
+  const result = JSON.parse(owner.runtime.handle({ op: 'recall', session: reader, query: 'peppermint tea' },
+    owner.sessionContext(reader))) as { notes: { text: string }[] }
+  assert.equal(result.notes.length, 1, 'the second session consumed the first session note')
+  assert.equal(owner.dispatch.snapshot(reader).files?.length, 1)
+  const before = owner.acquireSend(randomUUID(), { session: reader }, 'step one')
+  before.settled()
+  await ask('I drink peppermint tea after lunch.', 2)
+  assert.equal(owner.needsContextRecovery(reader), false, 'a routine note append must preserve the reader context')
+  const after = owner.acquireSend(randomUUID(), { session: reader }, 'step two with tool result')
+  after.settled()
 })
 
 test('actual source withdrawal invalidates a prepared acknowledgement and recovered sessions exclude removed occurrences', async t => {

@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { z } from 'zod'
@@ -75,17 +75,23 @@ export function openNativeOriginalMaintenance(root: string, hostNamespace: strin
   const lock = lockMemoryRoot(root)
   let db: DatabaseSync | undefined
   try {
-    db = new DatabaseSync(path.join(lock.root, 'memory.db'))
-    const version = db.prepare('PRAGMA user_version').get()?.user_version
-    if (version !== MEMORY_CONTRACT) throw new Error('Memory storage version prevents native cleanup')
-    const meta = db.prepare('SELECT value FROM memory_meta WHERE key=?')
-    const secret = meta.get('secret')?.value
-    if (meta.get('owner.host')?.value !== hostNamespace || typeof secret !== 'string') throw new Error('Native cleanup owner binding differs')
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_file_native_erasures'").get()) {
-      db.close()
+    const file = path.join(lock.root, 'memory.db')
+    if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) { lock.close(); return null }
+    const probe = new DatabaseSync(file, { readOnly: true })
+    let secret: string | undefined
+    try {
+      if (probe.prepare('PRAGMA user_version').get()?.user_version === MEMORY_CONTRACT
+        && probe.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_file_native_erasures'").get()) {
+        const meta = probe.prepare('SELECT value FROM memory_meta WHERE key=?')
+        const identity = digest.safeParse(meta.get('secret')?.value)
+        if (identity.success && meta.get('owner.host')?.value === hostNamespace) secret = identity.data
+      }
+    } finally { probe.close() }
+    if (!secret) {
       lock.close()
       return null
     }
+    db = new DatabaseSync(file)
     db.exec(APP_DB_PRAGMAS)
     return assemble(db, secret, lock.close)
   } catch (error) {

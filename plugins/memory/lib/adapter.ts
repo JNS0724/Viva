@@ -14,6 +14,7 @@ import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-dail
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import type { MemoryRequest } from '../../../src/memory/contracts/memory-contract.ts'
+import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
 import { objectOf } from '../../../src/memory/contracts/unknown-value.ts'
 import { memoryOwnerState } from '../../../src/memory/contracts/host.ts'
 import type { MemoryOwnerState } from '../../../src/memory/contracts/host.ts'
@@ -157,7 +158,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     const proof = deliveries.get(message.id)
     if (!proof) return undefined
     try { return await proof } finally { deliveries.delete(message.id) }
-  })
+  }, Boolean(config.host))
   ctx.inject(['commands'], scoped => {
     if (!config.host) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
       const session = agent.session
@@ -259,7 +260,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       await ingestion.synchronize(agent.session)
       signal?.throwIfAborted()
       return owner.modelRequest(input, String(agent.session.id), generation, execution.toolRead,
-        { signal, budgetMs: currentToolBudget()?.remainingMs() })
+        { signal, budgetMs: currentToolBudget()?.remainingMs(), unknownProject: resolveMemoryProject(agent.session.header.cwd).status === 'unknown' })
     })
   }
   // Automatic tool review may omit sessionId. Bind the actual execution, not its text.
@@ -267,7 +268,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   const bindTools = () => {
     unbindTools?.()
     unbindTools = ctx.on('tools/pre-execute', async (exec, next) => {
-      if (!exec.agent) return next()
+      if (!exec.agent || !ready()) return next()
       const agent = exec.agent, session = String(agent.session.id)
       const origin = deliveryBindings.tool(session, String(exec.rootCallId))
       const ownerEpoch = owner.epoch
@@ -301,7 +302,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     return undefined
   })
   ctx.on('tools/execute', async (exec, next) => {
-    if (!exec.agent) return next()
+    if (!exec.agent || !ready()) return next()
     const agent = exec.agent, session = String(agent.session.id)
     const origin = deliveryBindings.tool(session, String(exec.rootCallId)), ownerEpoch = owner.epoch
     if (!origin || !ownerEpoch || !ready()) throw new Error('Tool call has no verified memory origin')
@@ -326,6 +327,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
     })
   }, { prepend: true })
   ctx.on('llm/stream', async function* (options, next) {
+    if (!ready()) { yield* next(); return }
     const current = caller.getStore()
     const agent = options.sessionId ? ctx.agents.get(options.sessionId) : current && 'agent' in current ? current.agent : undefined
     const session = options.sessionId ? ctx.sessions.get(options.sessionId) : agent?.session
@@ -389,7 +391,7 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
   })
   ctx.on('agent/pre-step', async ({ agent, messages, turn, step, signal }, next) => {
     const ownerEpoch = owner.epoch
-    if (!ownerEpoch || !ready()) throw new Error('Memory owner is not ready')
+    if (!ownerEpoch || !ready()) return next()
     return owner.inEpoch(ownerEpoch, () => caller.run({ agent, ownerEpoch }, async () => {
       toolReads?.step(agent.session, turn, step, signal)
       // This hook precedes request construction. Never recover inside llm/stream: its options
@@ -420,7 +422,8 @@ export async function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfi
       // receive(..., true) just flushed and admitted this step. Bound the optional lookup
       // and its evidence receipt together; the model send still checks the live session.
       const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs + 100, signal)
-      const options = () => ({ signal: budget.signal, budgetMs: budget.remainingMs() })
+      const unknownProject = resolveMemoryProject(agent.session.header.cwd).status === 'unknown'
+      const options = () => ({ signal: budget.signal, budgetMs: budget.remainingMs(), unknownProject })
       try {
         return await budget.run(async () => {
           const text = await owner.modelRequest({ op: 'context', session, turn, question }, session, generation, undefined, options())

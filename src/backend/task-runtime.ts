@@ -132,7 +132,7 @@ export interface TaskRuntimeDeps {
   /** The effects queue (effects.ts): a run's report is queued with its end. Without it, no report is queued. */
   effects?: Pick<Effects, 'queue' | 'cancel' | 'cancelStarting'> | null
   /** Capture the completed run's owner-authenticated inputs before creating a report. */
-  captureReportMemory?: (taskId: string) => Promise<MemoryProvenance>
+  captureReportMemory?: (taskId: string) => Promise<MemoryProvenance | null>
   /** Check whether an interrupted task may be resumed directly from the window (task:resume). */
   admitResume?: (taskId: string) => Maybe<boolean>
   now?: () => number
@@ -149,7 +149,7 @@ import type { WindowSnapshot } from '../shared/ipc-results.ts'
 export type TaskPiece = { type: string, taskId: string, runId: string, taskSeq: number, [field: string]: unknown }
 export type TaskPush = { type: 'task_snapshot', taskId: string, snapshot: WindowSnapshot } | TaskPiece
 
-type PendingEnd = { runId: string, event: Record<string, unknown>, memory?: MemoryProvenance, timer?: unknown }
+type PendingEnd = { runId: string, event: Record<string, unknown>, memory?: MemoryProvenance | null, timer?: unknown }
 
 export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, agent, timers = {}, captureReportMemory, admitResume,
   waitsOf = () => ({ permissions: [], questions: [] }), apply = NO_EVENTS, publish = () => {}, onEnd = () => {}, effects = null, now = Date.now, newRunId = randomUUID }: TaskRuntimeDeps) {
@@ -463,7 +463,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const captured = end?.runId === snapshot.runId ? end.memory : undefined
     const memory = captured ? combineMemoryProvenance(entry.requestMemory ?? null, captured) : undefined
     // A title can change independently of the task, including after a derived feed continuation.
-    const titleAllowed = !captureReportMemory || host?.conversation.titleCustom || Boolean(
+    const titleAllowed = !captureReportMemory || captured === null || host?.conversation.titleCustom || Boolean(
       titleRow?.sourceId && memory && autoTitle([titleRow]) === host?.conversation.title && rawMemorySources(memory).includes(titleRow.sourceId),
     )
     const verifiedOutput = resultFromTerminal ? null : fullOutputOf(snapshot.taskId)
@@ -483,7 +483,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
       topic: titleAllowed ? host?.conversation.title || null : null, ...(memory ? { memory } : {}),
       startedAt: typeof entry.startedAt === 'number' ? entry.startedAt : null, by: entry.by === 'agent' || entry.by === 'user' ? entry.by : null }
     // Only a verified run can create a host report when an owner is configured.
-    if (!captureReportMemory || memory && !db.evidenceErased(memory)) {
+    if (!captureReportMemory || captured === null || memory && !db.evidenceErased(memory)) {
       effects?.queue(REPORT, reportId(snapshot.taskId, snapshot.runId), report, now() + GATHER_MS)
     }
     store.list().filter(isEnded).sort((a, b) => b.endedAt - a.endedAt).slice(KEEP_ENDED).forEach((old) => {
@@ -723,7 +723,7 @@ export function createTaskRuntime({ db, store = NO_STORE, current, agentInfo, ag
     const pending: PendingEnd = { runId, event }
     pendingEnds.set(taskId, pending)
     if (!captureReportMemory) return endRun(taskId, pending, 0)
-    const settle = (memory?: MemoryProvenance) => {
+    const settle = (memory?: MemoryProvenance | null) => {
       if (pendingEnds.get(taskId) !== pending || registry.runOf(taskId) !== runId || revoked.has(taskId)) return
       pending.memory = memory
       endRun(taskId, pending, 0)

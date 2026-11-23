@@ -247,7 +247,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   const policy = createMemoryDocumentReadPolicy({ notes, documents, hash: identity.hash, refsCurrent, materialAllowed, reference, readPhysicalFile })
   const fileCurrent = (ref: FileRef, batch?: MemoryDocumentReadBatch) => {
     const latest = notes.read(ref.key, batch?.physical(ref.workspace, ref.path))
-    return latest?.workspace === ref.workspace && latest.path === ref.path && latest.fileRevision === ref.revision
+    return latest?.workspace === ref.workspace && latest.path === ref.path && latest.fileRevision === ref.revision && latest.revision === ref.checkpoint && latest.enabled !== false
       && (batch ?? policy).read(ref.workspace, ref.path)?.policyToken === ref.policyToken && refsCurrent(ref.sources)
       && !ref.sources.some(item => documentSourceRestricted(item, documents.sourceRestrictions(ref.workspace)))
   }

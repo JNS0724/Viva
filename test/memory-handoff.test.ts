@@ -51,7 +51,6 @@ import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/eventually.ts'
 import { openMemoryControlDb } from './fixtures/memory-control-db.ts'
 import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.ts'
-import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
@@ -60,7 +59,6 @@ import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
 const oldFact = `记住：我的周报提交邮箱是 ${oldValue}`
-const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', import.meta.url)
 
 test('a newly selected native session registers its owner metadata once before selection commits', async t => {
   const app = await setup(t, () => null)
@@ -643,7 +641,7 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
   assert.ok(app.model.requests.every(request => !JSON.stringify(request).includes(question)))
 })
 
-for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'withdrawn'] as const) test(`an ordinary steer held in source alias admission respects its original turn (${outcome})`, { timeout: 45_000 }, async t => {
+for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error'] as const) test(`an ordinary steer held in source alias admission respects its original turn (${outcome})`, { timeout: 45_000 }, async t => {
   const before = '保持旧话题运行', after = '保持新话题运行', words = '只能送给旧话题的插话', operation = randomUUID()
   let releaseOld = () => {}, releaseNew = () => {}, releaseAlias = () => {}, aliasHeld = false
   const oldGate = new Promise<void>(resolve => { releaseOld = resolve }), newGate = new Promise<void>(resolve => { releaseNew = resolve })
@@ -711,16 +709,6 @@ for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'with
     try { assert.equal(db.prepare('SELECT count(*) AS n FROM routing_request_sources WHERE source=?').get(operation)?.n, 1) }
     finally { db.close() }
     assert.ok(app.model.requests.slice(count).some(request => questionOf(request.messages) === words))
-  } else if (outcome === 'withdrawn') {
-    const loaded = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
-    const keep = loaded.messages.findIndex(message => message.sourceId === operation)
-    assert.ok(keep >= 0, 'the steered message is already persisted by the backend writer')
-    const edited = await app.call<Promise<{ ok: boolean }>>('timeline:rewind', { words, keep, text: '替换这条尚未送达的原文' })
-    assert.equal(edited.ok, true)
-    const afterEdit = app.model.requests.length
-    await assert.rejects(app.call<Promise<void>>('agent:prompt', words, [], operation), /withdrawn|unavailable/i)
-    await assert.rejects(app.call<Promise<void>>('agent:prompt', words, [], [operation]))
-    assert.equal(app.model.requests.length, afterEdit, 'neither first-delivery nor canonical replay can revive a withdrawn alias')
   }
 })
 
@@ -822,6 +810,54 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
     assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   } finally { db.close() }
+})
+
+test('a real background tool loop keeps its result when the foreground appends to a daily note it read', { timeout: 45_000 }, async t => {
+  const brief = '用记忆核实会议室后询问是否继续'
+  const fact = '青岚项目周会使用银杏会议室'
+  const update = '青岚项目周会的投屏也已测试'
+  const question = '是否继续会后记录？'
+  const observed: Request[] = []
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
+      const input = JSON.parse(questionOf(request.messages)) as { turns: { user: { text: string }[] }[], existing?: { markdown: string } }
+      const markdown = [input.existing?.markdown, ...input.turns.flatMap(row => row.user.map(user => user.text))].filter(Boolean).join('\n')
+      return { text: JSON.stringify({ status: 'write', title: '青岚项目周会', markdown }) }
+    }
+    const latest = questionOf(request.messages)
+    const recalled = modelToolResults(request, 'memory_recall')
+    if (latest !== brief && (latest || !JSON.stringify(recalled).includes(fact))) return null
+    observed.push(request)
+    if (!recalled.length) return { tool: { name: 'memory_recall', input: { query: '青岚项目周会 银杏会议室' } } }
+    const hasQuestion = modelToolResults(request, 'ask_user_question').length
+    if (!hasQuestion) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'continue', question, options: [{ label: '继续' }], multiSelect: false },
+    ] } } }
+    return { text: '已保留会议室工具结果并继续记录。' }
+  }, { dailyNotes: true })
+  for (const text of [fact, '把议程放在开头', '预留讨论时间', '主持人负责计时', '周会记录统一归档']) await app.ask(text)
+  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  app.defer(() => db.close())
+  const note = await eventually(() => db.prepare('SELECT key,revision FROM memory_daily_notes WHERE file_revision IS NOT NULL').get())
+  assert.ok(note)
+  await app.ask(`后台做：${brief}`)
+  const wait = await eventually(() => app.events.find(event => event.type === 'task_question'))
+  assert.ok(wait?.type === 'task_question', JSON.stringify({
+    requests: (app.model.requests.slice(-15) as Request[]).map(request => [questionOf(request.messages).slice(0, 100), modelToolResults(request, 'memory_recall').length]),
+    tasks: app.tasks().map(task => ({ title: task.task.title, status: task.status, messages: task.messages.map(row => row.text) })),
+    errors: app.events.filter(event => event.type === 'error'),
+  }))
+  assert.ok(observed.some(request => JSON.stringify(modelToolResults(request, 'memory_recall')).includes(fact)))
+  const offset = app.model.requests.length
+  for (const text of [update, '安排一位替补主持人', '讨论超过十分钟时先记录', '下周继续复用议程']) await app.ask(text)
+  assert.ok(await eventually(() => Number(db.prepare('SELECT revision FROM memory_daily_notes WHERE key=?').get(note.key)?.revision) > Number(note.revision)),
+    'the foreground appended to the exact daily note the task had read')
+  assert.equal(await app.call('agent:answer', wait.questionId, [{ id: 'continue', selected: ['继续'] }]), true)
+  assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => {
+    const request = raw as Request
+    return modelToolResults(request, 'ask_user_question').length > 0
+      && JSON.stringify(modelToolResults(request, 'memory_recall')).includes(fact)
+  })), 'the next task request still contains the earlier tool result')
 })
 
 for (const failure of ['invalid-json', 'http-error'] as const) {
@@ -1596,126 +1632,6 @@ test('cold Viva startup erases native originals and settled output in root and u
   assert.ok(branch.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
 })
 
-test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 90_000 }, async t => {
-  const app = await setup(t, () => null)
-  const sourceId = randomUUID()
-  const initial = app.call<AgentInfo>('agent:info')
-  const conversationId = initial.conversationId
-  assert.ok(conversationId)
-  await app.call('agent:prompt', oldFact, [], sourceId)
-  const entry = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
-  assert.ok(entry)
-  const memoryFile = join(app.directory, 'memory', 'memory.db')
-  const hasFileCopy = (db: DatabaseSync) => Boolean(db.prepare(
-    'SELECT 1 FROM memory_file_index_nodes WHERE workspace=? AND id=?',
-  ).get(entry.identity.workspace, entry.identity.id))
-  const detail = await app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', entry.identity)
-  assert.ok(detail?.sources.some(source => source.sourceId === sourceId))
-  const profileProbe = '随手核对周报提交邮箱背景资料'
-  const unsavedSource = await app.ask(profileProbe)
-  assert.ok(app.model.requests.some(raw => {
-    const request = raw as Request
-    const content = request.messages.at(-1)?.content
-    const context = Array.isArray(content) ? content.find(part => part.text?.startsWith('<about-user>'))?.text : null
-    return questionOf(request.messages) === profileProbe && context?.includes('File memory evidence') && context.includes(oldValue)
-  }))
-  await app.ask('查一下 周报提交邮箱')
-  const injected = app.events.filter(event => event.type === 'memory_context')
-  assert.ok(injected.some(event => JSON.stringify(event).includes(oldValue) && JSON.stringify(event).includes('周报')), 'native owner contextUsed must preserve selected file evidence for the foreground trace')
-  assert.ok(app.model.requests.some(raw => {
-    const last = JSON.stringify((raw as Request).messages.at(-1))
-    return last.includes('tool_result') && last.includes(oldValue)
-  }))
-
-  const continuation = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('history:resume-topic', conversationId)
-  assert.ok(continuation.ok && continuation.info.sessionId === initial.sessionId)
-  const independent = '重启后应当保留的独立备忘'
-  const survivorId = randomUUID()
-  await app.call('agent:prompt', independent, [], survivorId)
-  const survivorStore = new DatabaseSync(memoryFile, { readOnly: true })
-  try {
-    // The independent original must be durably recorded before recovery.
-    assert.ok(await eventually(() => survivorStore.prepare(
-      "SELECT 1 FROM memory_sources WHERE id=? AND outcome='recorded'",
-    ).get(survivorId)), 'the independent prompt retains its canonical source without a file write')
-  } finally { survivorStore.close() }
-  const generationBeforeRestart = contextGeneration(app.directory, initial.sessionId!)
-  await app.stopBackend()
-  const copies = new DatabaseSync(memoryFile)
-  try {
-    assert.ok(hasFileCopy(copies))
-    assert.ok(copies.prepare('SELECT 1 FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').get(entry.identity.workspace, entry.identity.id))
-    // Seed an authenticated file passage vector even when the optional local model is absent in CI.
-    const index = openMemoryFileIndex({ db: copies })
-    const generation = index.beginVectors({ fingerprint: MEMORY_EMBEDDING_FINGERPRINT, dimensions: MEMORY_EMBEDDING_DIMENSIONS })
-    const chunks = index.missingVectors(generation)
-    assert.ok(chunks.some(chunk => chunk.ref.fileId === entry.identity.id))
-    const vector = new Float32Array(MEMORY_EMBEDDING_DIMENSIONS)
-    vector[0] = 1
-    assert.equal(index.stageVectors(generation, chunks.map(chunk => ({ ref: chunk.ref, vectors: [vector] }))), chunks.length)
-    assert.ok(index.finishVectors(generation, chunks.map(chunk => chunk.ref)))
-  } finally { copies.close() }
-
-  await runToCrash(withdrawalCrashFixture, 'before-withdrawal', app.directory, conversationId)
-
-  const appDb = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-  const memoryDb = new DatabaseSync(memoryFile, { readOnly: true })
-  try {
-    assert.equal(appDb.prepare('SELECT deleted_at IS NOT NULL AS removed FROM conversations WHERE id=?')
-      .get(conversationId)?.removed, 1)
-    assert.ok(appDb.prepare("SELECT generation FROM effects WHERE kind='memory.withdraw' AND key=?").get(conversationId))
-    assert.equal(String(memoryDb.prepare('SELECT text FROM memory_sources WHERE id=?').get(sourceId)?.text).trim(), oldFact)
-    assert.ok(hasFileCopy(memoryDb))
-    assert.ok(memoryDb.prepare('SELECT 1 FROM memory_file_index_vectors WHERE ref LIKE ?').get('%' + entry.identity.id + '%'))
-  } finally {
-    memoryDb.close()
-    appDb.close()
-  }
-
-  const offset = app.model.requests.length
-  assert.ok(await app.startBackend())
-  assert.equal((await app.files()).length, 0)
-  assert.equal(app.call<AgentInfo>('agent:info').sessionId, initial.sessionId)
-  assert.ok(contextGeneration(app.directory, initial.sessionId!) > generationBeforeRestart, 'native history must be durably replaced before the same session can continue')
-  const probe = '用保留的记录继续核对'
-  await app.ask(probe)
-  const continuationId = continuation.info.conversationId
-  assert.ok(continuationId && continuation.info.cwd)
-  await app.call('history:continue-from-records', continuationId, continuation.info.cwd)
-  const resumedProbe = '另起会话继续保留的笔记'
-  await app.ask(resumedProbe)
-  await app.ask('查一下 周报提交邮箱')
-  const sent = app.model.requests.slice(offset).map(raw => JSON.stringify((raw as Request).messages))
-  assert.ok(sent.some(body => body.includes(independent) && body.includes(probe)))
-  assert.ok(sent.some(body => body.includes(independent) && body.includes(resumedProbe)))
-  assert.ok(sent.some(body => body.includes('tool_result')))
-  assert.ok(sent.every(body => !body.includes(oldValue)))
-
-  const recoveredApp = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-  const recoveredMemory = new DatabaseSync(memoryFile, { readOnly: true })
-  try {
-    assert.equal(recoveredApp.prepare("SELECT generation FROM effects WHERE kind='memory.withdraw' AND key=?")
-      .get(conversationId), undefined)
-    const withdrawn = recoveredMemory.prepare('SELECT text,withdrawn FROM memory_sources WHERE id=?').get(sourceId)
-    assert.equal(withdrawn?.text, null)
-    assert.equal(withdrawn.withdrawn, 1)
-    assert.ok(recoveredMemory.prepare('SELECT id FROM memory_excluded_sources WHERE id=?').get(sourceId))
-    assert.deepEqual({ ...recoveredMemory.prepare('SELECT text,withdrawn FROM memory_sources WHERE id=?').get(unsavedSource) },
-      { text: null, withdrawn: 1 }, 'whole history withdrawal includes originals absent from the renderer snapshot')
-    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=1').get(unsavedSource))
-    assert.equal(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(unsavedSource), undefined)
-    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(survivorId))
-    assert.equal(hasFileCopy(recoveredMemory), false)
-    assert.equal(recoveredMemory.prepare('SELECT 1 FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').get(entry.identity.workspace, entry.identity.id), undefined)
-    assert.equal(recoveredMemory.prepare('SELECT 1 FROM memory_file_index_vectors WHERE ref LIKE ?').get('%' + entry.identity.id + '%'), undefined)
-  } finally {
-    recoveredMemory.close()
-    recoveredApp.close()
-  }
-})
-
-// This case spans two process starts, project switches, a fork and topic recovery.
-// Its individual waits retain their existing bounds.
 test('source-backed project files and exact recall remain in their Git workspace while main chat history spans the single timeline', { timeout: 90_000 }, async t => {
   const began = performance.now()
   const timings: { step: string, startedMs: number, elapsedMs?: number }[] = []
@@ -1975,105 +1891,93 @@ test('an explicit save completes in a foreground session that already received f
   assert.ok(foreground().some(request => modelToolResults(request, 'memory_remember').length))
 })
 
-async function rewriteRejectedSource(app: Awaited<ReturnType<typeof setup>>, sourceId: string, original: string) {
+test('rewind and history deletion update the timeline without withdrawing remembered originals', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null)
+  const before = app.call<AgentInfo>('agent:info')
+  const original = await app.ask(oldFact)
+  assert.ok(await eventually(async () => (await app.files()).some(file => file.markdown.includes(oldValue))))
   const loaded = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
-  const keep = loaded.messages.findIndex(message => message.sourceId === sourceId)
-  assert.ok(keep >= 0, 'the source message is already persisted by the backend writer')
-  const text = '已经替换前面的临时说明'
-  const edit = await app.call<Promise<{ ok: boolean, sourceId: string }>>('timeline:rewind', { words: original, keep, text })
-  assert.ok(edit.ok)
-  await app.call('agent:prompt', text, [], edit.sourceId)
-}
-
-test('a rejected original remains a dependency of resumed tasks and due schedules until it is withdrawn', { timeout: 45_000 }, async t => {
-  const marker = 'synthetic-password-ab12'
-  const original = 'password: ' + marker
-  const forward = '把前面那条临时信息交给旧任务'
-  const after = '让旧任务继续整理'
-  const brief = '在任务内部汇总材料 ' + marker
-  const followUp = '继续任务但只列结果'
-  const title = '给临时信息设定时汇总'
-  const schedulePrompt = '整理定时结果 ' + marker
-  let taskId: string | undefined
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    if (question === title) return { tool: { name: 'schedule_create', input: {
-      title, prompt: schedulePrompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
-    } } }
-    if (taskId && [forward, after].includes(question)) return { tool: { name: 'message_background_task', input: {
-      taskId, text: question === forward ? brief : followUp,
-    } } }
-    return null
-  })
-  await app.ask('后台做：完全独立的后台任务')
-  taskId = (await eventually(() => app.tasks().find(task => task.endedAt)))?.task.id
-  assert.ok(taskId)
-  const host = await app.newTopic()
-  const sourceId = randomUUID()
-  await app.call('agent:prompt', original, [], sourceId)
-  await app.ask(forward)
-  assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.messages.some(row => row.text.includes(brief)))))
-  await app.schedule(title)
-  await rewriteRejectedSource(app, sourceId, original)
-
-  const offset = app.model.requests.length
-  const switched = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('timeline:switch-path', host.conversationId)
-  assert.ok(switched.ok)
-  assert.equal(switched.info.sessionId, host.sessionId)
-  assert.ok(contextGeneration(app.directory, host.sessionId!) > 0, 'the withdrawn branch must recover its native surface before reusing the session')
-  await app.ask('回到旧分支后继续')
+  const keep = loaded.messages.findIndex(message => message.sourceId === original)
+  assert.ok(keep >= 0)
+  const text = '已经在回退分支编辑这条消息'
+  const edited = await app.call<Promise<{ ok: boolean, sourceId: string, info: AgentInfo }>>('timeline:rewind', { words: oldFact, keep, text })
+  assert.equal(edited.ok, true)
+  assert.notEqual(edited.sourceId, original)
+  assert.equal(app.call<AgentInfo>('agent:info').conversationId, edited.info.conversationId)
+  await app.call('agent:prompt', text, [], edited.sourceId)
   await app.newTopic()
-  const db = new DatabaseSync(join(app.directory, 'app.db'))
+  await app.call('history:delete', before.conversationId)
+  await app.call('history:delete', edited.info.conversationId)
+  assert.ok((await app.files()).some(file => file.markdown.includes(oldValue)))
+  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    db.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
+    assert.equal(db.prepare('SELECT withdrawn FROM memory_sources WHERE id=?').get(original)?.withdrawn, 0)
   } finally { db.close() }
-  await app.restart()
-  assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
-  await app.ask(after)
-  const freshTask = '一条正常的独立后续任务'
-  await app.ask(`后台做：${freshTask}`)
-  assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === freshTask)))
-
-  const actual = app.model.requests.slice(offset).map(raw => JSON.stringify((raw as Request).messages))
-  assert.ok(!actual.some(body => body.includes(marker)))
-  assert.ok(!app.model.requests.slice(offset).some(raw => questionOf((raw as Request).messages) === followUp))
 })
 
-test('withdrawing a picture-only prompt also invalidates tasks that depended on its session', { timeout: 30_000 }, async t => {
-  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
-  const brief = '按刚才的图片汇总'
-  const instruction = '继续处理源图片'
-  const next = '基于先前图片给出结果'
-  let taskId: string | undefined
+test('Viva chats and runs a saved schedule with an incompatible memory database', { timeout: 45_000 }, async t => {
+  const title = '每天归档测试结果'
+  const scheduled = '运行测试结果归档'
+  const chat = '记忆不可用时仍可以执行对话工具'
   const app = await setup(t, request => {
-    if (taskId && questionOf(request.messages) === instruction && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
-      return { tool: { name: 'message_background_task', input: { taskId, text: next } } }
+    const question = questionOf(request.messages)
+    if (question === title && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'schedule_create', input: { title, prompt: scheduled, kind: 'at', at: new Date(Date.now() + 60_000).toISOString() } } }
     }
-    return null
-  }, { image: true })
-  const info = app.call<AgentInfo>('agent:info')
-  const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
-  const sourceId = randomUUID()
-  await app.call('agent:prompt', '', [image], sourceId)
-  assert.ok(app.model.requests.some(request => JSON.stringify(request).includes(png)))
-  await app.ask(`后台做：${brief}`)
-  taskId = (await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === brief)))?.task.id
-  assert.ok(taskId)
-  await app.newTopic()
-  await app.call('history:delete', info.conversationId)
-
-  const offset = app.model.requests.length
-  await app.ask(instruction)
-  const requests = app.model.requests.slice(offset)
-  assert.ok(requests.some(request => JSON.stringify(request).includes(instruction)))
-  assert.ok(!requests.some(request => questionOf((request as Request).messages) === next))
-  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'))
+    if (question === chat && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'memory_recall', input: { query: chat } } }
+    }
+    return { text: '已完成' }
+  })
+  await app.schedule(title)
+  await app.stopBackend()
+  const history = new DatabaseSync(join(app.directory, 'app.db'))
   try {
-    assert.ok(db.prepare('SELECT id FROM memory_delivered_sources WHERE id=?').get(sourceId))
-    assert.equal(db.prepare('SELECT id FROM memory_sources WHERE id=?').get(sourceId), undefined)
-    assert.ok(db.prepare('SELECT id FROM memory_excluded_sources WHERE id=?').get(sourceId))
-  } finally { db.close() }
+    history.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
+  } finally { history.close() }
+  const file = join(app.directory, 'memory', 'memory.db')
+  const db = new DatabaseSync(file)
+  db.exec('PRAGMA user_version=99')
+  db.close()
+  const before = fs.readFileSync(file)
+  await app.startBackend()
+  const offset = app.model.requests.length
+  await app.ask(chat)
+  const requests = (app.model.requests.slice(offset) as Request[]).map(request => request.messages)
+  assert.ok(requests.some(messages => JSON.stringify(messages).includes(chat)
+    && JSON.stringify(messages.at(-1)).includes('unavailable')), JSON.stringify(requests.map(messages => messages.slice(-2))))
+  assert.ok(await eventually(() => app.feed().find(item => item.title === title)))
+  assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === scheduled))
+  assert.deepEqual(fs.readFileSync(file), before)
+})
+
+test('a new memory database starts after existing DSH events and resumes from a persisted cursor', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null)
+  const original = await app.ask('记忆库创建以前保留在对话里的标记')
+  const session = app.call<AgentInfo>('agent:info').sessionId
+  assert.ok(session)
+  await app.stopBackend()
+  const root = join(app.directory, 'memory')
+  fs.renameSync(root, join(app.directory, 'old-memory'))
+  await app.startBackend()
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, session)
+  const first = await app.ask('新记忆库中的第一轮真人原话')
+  const read = <T>(work: (db: DatabaseSync) => T) => {
+    const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
+    try { return work(db) } finally { db.close() }
+  }
+  const cursor = () => read(db => Number(db.prepare('SELECT next_seq FROM memory_session_cursors WHERE session=?').get(session)?.next_seq))
+  const turnSaved = (seq: number) => read(db => Boolean(db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND seq=?').get(session, seq - 1)))
+  assert.ok(await eventually(() => turnSaved(cursor())))
+  const firstCursor = cursor()
+  assert.ok(firstCursor > 0)
+  await app.stopBackend()
+  await app.startBackend()
+  assert.equal(cursor(), firstCursor)
+  const second = await app.ask('owner 重连之后的第二轮真人原话')
+  assert.ok(await eventually(() => cursor() > firstCursor && turnSaved(cursor())))
+  const ids = read(db => db.prepare('SELECT id FROM memory_sources WHERE id IN (?,?,?)').all(original, first, second).map(row => row.id))
+  assert.deepEqual(new Set(ids), new Set([first, second]))
 })
 
 // The deliberately absent owner consumes the real 30-second readiness deadline.

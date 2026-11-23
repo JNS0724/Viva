@@ -12,7 +12,7 @@ import type { IpcRegistry } from '../shared/ipc-contract.ts'
 import { sideEffectsOf } from './side-effects.ts'
 import type { ReadNativeTrace } from './dsh-log.ts'
 import type { StoredMessage } from './history-schema.ts'
-import type { MemoryHistoryEdit } from './memory-withdrawal.ts'
+import type { Apply } from './journal.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
 import { randomUUID } from 'node:crypto'
 
@@ -47,11 +47,8 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
   current: () => Conversation, isBusy: () => boolean | Promise<boolean>,
   agentInfo: () => { mode?: string | null, model?: string | null },
   selectSession: SelectSession,
-  replaySource?: (id: string, text: string) => boolean | Promise<boolean>,
-  derivedSource?: (id: string) => boolean | Promise<boolean>,
-  canEditSource?: (id: string) => boolean | Promise<boolean>,
-  commitEdit?: (edit: MemoryHistoryEdit) => Promise<Conversation>,
-  rebuild?: (previous: Conversation, kept: readonly StoredMessage[], force?: boolean) => Promise<HistoryCarry | null>,
+  apply?: Apply,
+  rebuild?: (previous: Conversation, kept: readonly StoredMessage[]) => Promise<HistoryCarry | null>,
   publishCarry?: (target: Conversation, carry: HistoryCarry) => Promise<boolean>,
   onContinuation?: (conversation: Conversation, started: StartedAgent) => void | Promise<void>,
   traceDb?: () => Pick<ReturnType<typeof openTraceDb>, 'stepsOf'> | null,
@@ -65,21 +62,15 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
     const stored = db.get(previous.id)
     const original = stored?.messages[keep]
     if (!stored || original?.role !== 'user' || original.text !== words) return { ok: false, problem: REWIND_PROBLEMS.unsaved }
-    if (original.sourceId && await deps.derivedSource?.(original.sourceId)) return { ok: false, problem: t('main.feed.rewind.derived') }
-    const edit = text !== words && original.sourceId && deps.commitEdit
-      ? { oldSource: original.sourceId, newSource: randomUUID(), previous } : null
-    if (edit && await deps.canEditSource?.(edit.oldSource) === false) return { ok: false, problem: t('main.memory.rewind.edit.unavailable') }
     const reusedSource = text === words ? original.sourceId : undefined
-    if (reusedSource && !edit && deps.replaySource && !await deps.replaySource(reusedSource, text)) return { ok: false, problem: t('main.memory.context.stale') }
-    // Always bind the rewound prompt to a verified sourceId so the follow-up agent:prompt deduplicates by exact source_id.
-    const sourceId = edit ? edit.newSource : reusedSource ?? randomUUID()
+    const sourceId = reusedSource ?? randomUUID()
     const isNewSource = !reusedSource
     return selectSession(async ({ forkAgent, switchAgent, select }) => {
       const kept = stored.messages.slice(0, keep)
-      const forked = edit ? { ok: false as const, reason: 'missing' } : await forkAgent({ words, occurrence })
+      const forked = await forkAgent({ words, occurrence })
       if (!forked.ok && forked.reason !== 'missing') return { ok: false, problem: REWIND_PROBLEMS[forked.reason] ?? t("main.rewind-ipc.could.not.return.there", { reason: forked.reason }) }
-      const fallback = !edit && !forked.ok ? await deps.rebuild?.(previous, kept) : null
-      if (!edit && !forked.ok && !fallback) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] }
+      const carry = !forked.ok ? await deps.rebuild?.(previous, kept) : null
+      if (!forked.ok && !carry) return { ok: false, problem: REWIND_PROBLEMS[forked.reason] }
       const started = forked.ok ? forked.info : await switchAgent(null, previous.cwd)
       const { mode, model } = { ...agentInfo(), ...started }
       const draft = db.create({ sessionId: started.sessionId, mode, model, cwd: previous.cwd, parentId: previous.parentId, topicId: db.topicOf(previous.id) })
@@ -87,18 +78,17 @@ export function registerRewindIpc(ipcMain: Pick<IpcRegistry, 'handle'>, deps: {
         const next = db.save(
           // Going back stays in the topic, even from its first segment (which has no parent to take it from).
           draft,
-          [...kept, { role: 'user', text, receipt: null, ...(sourceId ? { sourceId } : {}) }],
+          [...kept, { role: 'user', text, receipt: null, sourceId }],
           { copy: { from: previous.id, count: keep } },
         )
         db.fold(previous.id, { into: next.id, at: keep })
         db.moveRecords({ from: previous.id, to: next.id, upTo: keep })
         return next
       }
-      const next = edit ? await deps.commitEdit!({ ...edit, next: draft, kept, keep, text }) : save()
-      const carried = edit ? await deps.rebuild?.(previous, kept, true) : fallback
+      const next = deps.apply ? deps.apply('history.rewound', { id: previous.id, keep }, save).value : save()
       select(next)
-      if (carried?.turns) {
-        await deps.publishCarry?.(next, carried)
+      if (carry?.turns) {
+        await deps.publishCarry?.(next, carry)
       }
       const offset = Math.max(0, keep - CONVERSATION_WINDOW_MESSAGES)
       const messages = db.sliceMessages(next.id, offset, keep)

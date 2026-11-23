@@ -53,8 +53,8 @@ function purgeDialog(text: string, purge: DialogPurge): string | null {
   return rows.length ? rows.map(row => JSON.stringify(row)).join('\n') + '\n' : null
 }
 interface TurnRow { id: string, note: string, session: string, day: string, workspace: string, sources: string, source_tokens: string, assistant_sources: string, assistant_digest: string | null, assistant_valid: number, question_sources: string, question_valid: number, written: number }
-interface NoteRow { key: string, day: string, workspace: string, path: string, revision: number, processed: number, updatedAt: number, file_revision: string | null }
-type Note = NoteRow & { file_revision: string, title: string, markdown: string, document: string, fileRevision: string }
+interface NoteRow { key: string, day: string, workspace: string, path: string, revision: number, processed: number, updatedAt: number, file_revision: string | null, enabled: number }
+type Note = Omit<NoteRow, 'enabled'> & { file_revision: string, title: string, markdown: string, document: string, fileRevision: string, enabled: boolean }
 type Data = { refs: SourceRef[], indexKeys?: string[] } & (
   | { kind: 'turn', row: TurnRow }
   | { kind: 'note', key: string, day: string, workspace: string, path: string | null, revision: number, expectedRevision: number | null, policyToken: string, generation: number, at: number, rows: string[], contributed: boolean, fileRevision: string | null, previousRefs: SourceRef[], remove?: boolean, reallocatePath?: boolean }
@@ -79,6 +79,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     CREATE TABLE IF NOT EXISTS memory_daily_notes (
       key TEXT PRIMARY KEY, day TEXT NOT NULL, workspace TEXT NOT NULL, path TEXT NOT NULL, file_revision TEXT,
       revision INTEGER NOT NULL, processed INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
       UNIQUE(workspace,path)
     );
     CREATE TABLE IF NOT EXISTS memory_note_sources (note TEXT NOT NULL, source TEXT NOT NULL, token TEXT NOT NULL, spans TEXT, PRIMARY KEY(note,source));
@@ -180,7 +181,9 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       const file = physical === undefined ? journal.files(row.workspace).read(row.path) : physical
       if (!file || file.path !== row.path || file.revision !== row.file_revision) return
       const doc = parseMemoryDocument(file.markdown)
-      return { ...row, file_revision: file.revision, title: String(doc.metadata.name ?? ''), markdown: doc.body, document: file.markdown, fileRevision: file.revision }
+      const session = doc.metadata.session_id
+      return { ...row, file_revision: file.revision, enabled: Boolean(row.enabled), title: String(doc.metadata.name ?? ''), markdown: doc.body,
+        document: file.markdown, fileRevision: file.revision, ...(typeof session === 'string' ? { session } : {}) }
     } catch { return undefined } // One malformed or externally replaced file cannot hide unrelated accepted notes.
 
   }
@@ -427,8 +430,8 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       FROM memory_daily_notes n WHERE n.file_revision IS NOT NULL OR EXISTS (
         SELECT 1 FROM memory_file_use_restrictions r WHERE r.workspace=n.workspace AND r.kind='daily' AND r.target=n.key
       )`).all() as unknown as DailyFileRegistration[],
-    advanceUseVersion: (key: string, revision: number, at: number) => db.prepare('UPDATE memory_daily_notes SET revision=revision+1,updated_at=? WHERE key=? AND revision=?')
-      .run(at, key, revision).changes === 1,
+    setEnabled: (key: string, revision: number, enabled: boolean) => db.prepare(`UPDATE memory_daily_notes SET enabled=?,revision=revision+1
+      WHERE key=? AND revision=? AND enabled<>?`).run(Number(enabled), key, revision, Number(enabled)).changes === 1,
     usePolicyToken, deleteFile,
     registeredAt: (workspace: string, path: string) => db.prepare(
       'SELECT key,file_revision FROM memory_daily_notes WHERE workspace=? AND path=? AND file_revision IS NOT NULL'
@@ -440,7 +443,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     registered: () => db.prepare('SELECT * FROM memory_daily_notes WHERE file_revision IS NOT NULL ORDER BY workspace,key').all().map(row => ({
       key: String(row.key), day: String(row.day), workspace: String(row.workspace), path: String(row.path),
       revision: Number(row.revision), processed: Number(row.processed), updatedAt: Number(row.updated_at),
-      file_revision: String(row.file_revision), sources: references(String(row.key)),
+      file_revision: String(row.file_revision), enabled: Boolean(row.enabled), sources: references(String(row.key)),
       state: db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(String(row.key)) ? 'withdrawing' as const : 'active' as const,
     })),
     needsRecovery: () => journal.needsRecovery(data => data.kind !== 'purge' || data.dialog.mode !== 'file')
@@ -495,7 +498,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
         .all(from, from, through, through) as Array<{ key: string }>).flatMap(row => read(row.key) ?? [])
     },
     changedFiles(from: string, through: string) {
-      return db.prepare('SELECT key, workspace, path FROM memory_daily_notes WHERE file_revision IS NOT NULL AND day BETWEEN ? AND ? AND revision>processed ORDER BY day,key')
+      return db.prepare('SELECT key, workspace, path FROM memory_daily_notes WHERE file_revision IS NOT NULL AND enabled=1 AND day BETWEEN ? AND ? AND revision>processed ORDER BY day,key')
         .all(from, through) as Array<{ key: string, workspace: string, path: string }>
     },
     pendingGroups: () => db.prepare('SELECT note,session,day,COUNT(*) AS count FROM memory_note_turns WHERE written=0 AND note NOT IN (SELECT note FROM memory_deleted_daily_notes) GROUP BY note,session,day')
@@ -528,7 +531,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       return journal.commit(id, input, () => {
         const allocation = rawNote(key), current = read(key)
         if (allocation?.file_revision && !current) throw new Error('memory-file-version')
-        if (current?.fileRevision !== expected?.fileRevision || current?.revision !== expected?.revision) throw new Error('memory-file-version')
+        if (current?.enabled === false || current?.fileRevision !== expected?.fileRevision || current?.revision !== expected?.revision) throw new Error('memory-file-version')
         const edit = changes(first.workspace)
         let path: string | null = null, fileRevision: string | null = null
         const reallocatePath = reply.status === 'write' && Boolean(allocation && (options.rebuild || !current)

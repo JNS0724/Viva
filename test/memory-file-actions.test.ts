@@ -99,19 +99,6 @@ test('permanent file forget requires capability and current explicit confirmatio
   assert.deepEqual(requests, [confirm.request, confirm.request, confirm.request])
 })
 
-test('a stopped range offers restore and deletion requires opening the current whole daily file', async () => {
-  const current = detailOf('today', 'daily'), restriction = { id: 'stopped', version: version('archived') }
-  const file = { ...current, restrictions: [restriction], actions: { ...current.actions, forget: true } }
-  const snapshot = { ...file, stoppedSnapshot: { restrictionId: restriction.id, markdown: 'Stopped text', sources: [] } }
-  const f = harness({ readMemoryFile: async (_identity, id) => id ? snapshot : file })
-  await f.actions.showMemoryFile({ identity: file.identity, restrictionId: restriction.id })
-  f.actions.askManagedMemoryForget(snapshot)
-  assert.equal(f.file().forget, null)
-  await f.actions.showMemoryFile({ identity: file.identity })
-  f.actions.askManagedMemoryForget(file)
-  assert.deepEqual(f.file().forget?.request, { operationId: f.file().forget?.request.operationId, identity: file.identity, version: file.version })
-})
-
 test('new proof requires a new forget confirmation and stale responses cannot target a later selection', async () => {
   const original = detailOf('changing'), current = { ...original, actions: { ...original.actions, forget: true } }
   const other = detailOf('other'), pending = deferred<Awaited<ReturnType<AgentApi['forgetMemoryFile']>>>()
@@ -295,37 +282,27 @@ test('a memory change clears unread saved content and ignores an older detail re
   assert.equal(f.file().detail, current)
 })
 
-test('daily restore uses the selected archived policy version, and stop targets only the live projection', async () => {
+test('daily stop and resume use the current whole-file version', async () => {
   const current = detailOf('today', 'daily')
-  const selected = { id: 'restriction-one', version: version('archived') }
-  const independent = { id: 'restriction-two', version: version('independent') }
-  const snapshot = { restrictionId: selected.id, markdown: 'Stopped evidence', sources: [] }
-  let detail: MemoryFileDetailView = { ...current, restrictions: [selected, independent] }
+  let detail = current
   const requests: Parameters<AgentApi['setMemoryFileEnabled']>[0][] = []
   const f = harness({
     listMemoryFiles: async () => pageOf([detail]),
-    readMemoryFile: async (_, restrictionId) => restrictionId === selected.id ? { ...detail, stoppedSnapshot: snapshot } : detail,
+    readMemoryFile: async () => detail,
     setMemoryFileEnabled: async request => {
       requests.push(request)
-      detail = { ...detail, restrictions: [independent], version: version(`current-${requests.length}`) }
+      detail = { ...detail, enabled: request.enabled, version: version(`current-${requests.length}`) }
       return mutationReceipt(request.operationId, detail, request.enabled ? 'ENABLE' : 'DISABLE')
     },
   })
   await f.actions.showMemoryFile({ identity: current.identity })
-  const live = f.file().detail!
-  assert.equal(await f.actions.setManagedMemoryEnabled(live, true, selected.id), false, 'a range must be explicitly viewed first')
-  assert.equal(await f.actions.setManagedMemoryEnabled(live, true), false, 'daily has no blanket restore')
-  await f.actions.showMemoryFile({ identity: current.identity, restrictionId: selected.id })
-  assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, true, independent.id), false)
-  assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, false), false, 'an archived detail cannot stop the current note')
-  assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, true, selected.id), true)
-  assert.deepEqual(f.file().selection, { identity: current.identity })
-  assert.deepEqual(f.file().detail?.restrictions, [independent])
-  assert.equal(await f.actions.setManagedMemoryEnabled(live, false), false, 'an obsolete click closure is not a current target')
-  assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, false), true)
+  assert.equal(await f.actions.setManagedMemoryEnabled(current, true), false)
+  assert.equal(await f.actions.setManagedMemoryEnabled(current, false), true)
+  assert.equal(await f.actions.setManagedMemoryEnabled(current, false), false)
+  assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, true), true)
   assert.deepEqual(requests.map(({ enabled, version, restrictionId }) => ({ enabled, version, restrictionId })), [
-    { enabled: true, version: selected.version, restrictionId: selected.id },
-    { enabled: false, version: version('current-1'), restrictionId: undefined },
+    { enabled: false, version: current.version, restrictionId: undefined },
+    { enabled: true, version: version('current-1'), restrictionId: undefined },
   ])
 })
 
@@ -498,17 +475,13 @@ test('manual edit keeps a rejected draft and binds retry to the exact latest ver
   assert.notEqual(requests[0]!.operationId, requests[1]!.operationId)
 })
 
-test('manual edit checks capability and exact selection, including stopped snapshots and older details', async () => {
+test('manual edit checks capability and exact selection, including older details', async () => {
   const daily = detailOf('today', 'daily')
   const digest = editable(detailOf('active'), '', 'Body')
-  const f = harness({ readMemoryFile: async (identity, restrictionId) => identity.kind === 'daily' ? daily : restrictionId
-    ? { ...digest, stoppedSnapshot: { restrictionId, markdown: 'Archived body', sources: [] } } : digest })
+  const f = harness({ readMemoryFile: async identity => identity.kind === 'daily' ? daily : digest })
   await f.actions.showMemoryFile({ identity: daily.identity })
   f.actions.startMemoryFileEditor(digest)
   f.actions.startMemoryFileEditor(daily)
-  assert.equal(f.file().editor, null)
-  await f.actions.showMemoryFile({ identity: digest.identity, restrictionId: 'archived' })
-  f.actions.startMemoryFileEditor(f.file().detail!)
   assert.equal(f.file().editor, null)
   await f.actions.showMemoryFile({ identity: digest.identity })
   f.actions.startMemoryFileEditor(digest)

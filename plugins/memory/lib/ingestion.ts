@@ -5,6 +5,7 @@ import type { PluginMemoryOwner, SourceReceipt, DerivedSource } from './owner-po
 import type { MemoryContextRecoveryOwner, MemoryContextRecoveryTicket } from '../../../src/memory/contracts/context-recovery.ts'
 import { memoryMessageText, memoryOriginalContentDigest, memoryRecoveryCandidates, memoryRecoveryMessageHash, memorySessionSurfaceHash, planMemoryContextRecovery } from './context-recovery.ts'
 import type { MemoryDeliveryProof } from './delivery-provenance.ts'
+import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
 
 import { assertMemorySourceSupported } from './source.ts'
 
@@ -18,12 +19,12 @@ type Replay = {
   session: Session, cursor: number, turn: number, step: number, sources: Set<string>, assistant: string[],
   events: Map<number, readonly string[]>, messages: Map<string, string>, queue: Promise<void>,
   generation: number,
-  failed: boolean,
+  failed: boolean, initialized: boolean,
   epoch?: string,
 }
 type Checkpoint = { events: readonly SessionEvent[], persisted: Promise<unknown>, generation?: number | Promise<number | undefined>, epoch?: string }
 type Awaitable<Method> = Method extends (...args: infer Args) => infer Value ? (...args: Args) => Value | Promise<Value> : never
-type IngestionMethods = Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived' | 'noteInheritedNativeCut'>
+type IngestionMethods = Pick<PluginMemoryOwner, 'initializeSession' | 'receiveSource' | 'completeTurn' | 'registerDerived' | 'noteInheritedNativeCut' | 'intakeWatermark' | 'advanceIntake'>
 type RecoveryMethods = Partial<Omit<MemoryContextRecoveryOwner, 'contextGeneration'>> & { contextGeneration?(id: string): number | undefined }
 export type IngestionOwner = { [K in keyof IngestionMethods]: Awaitable<IngestionMethods[K]> }
   & { [K in keyof RecoveryMethods]: Awaitable<RecoveryMethods[K]> }
@@ -38,13 +39,13 @@ export function retrievalQuestion(receipts: readonly SourceReceipt[]) {
 
 /** DSH's feed announces in-memory commits; flush is the explicit durability boundary. */
 export function createSessionIngestion(owner: IngestionOwner, flush: (session: Session) => Promise<unknown>,
-  deliveryProof?: (session: Session, message: UserMessage) => Promise<MemoryDeliveryProof | undefined>) {
+  deliveryProof?: (session: Session, message: UserMessage) => Promise<MemoryDeliveryProof | undefined>, requiresAlias = false) {
   const states = new Map<string, Replay>()
   function state(session: Session) {
     let current = states.get(session.id)
     if (!current || current.session !== session || current.epoch !== owner.epoch) {
       current = { session, cursor: 0, turn: 0, step: 0, sources: new Set(), assistant: [], events: new Map(), messages: new Map(),
-        queue: current?.queue.catch(() => {}) ?? Promise.resolve(), generation: 0, failed: false, epoch: owner.epoch }
+        queue: current?.queue.catch(() => {}) ?? Promise.resolve(), generation: 0, failed: false, initialized: false, epoch: owner.epoch }
       states.set(session.id, current)
     }
     return current
@@ -72,6 +73,7 @@ export function createSessionIngestion(owner: IngestionOwner, flush: (session: S
     }
     const receipt = await owner.receiveSource({ ...identity,
       contextGeneration: current.generation, ...options, timezone: timezone(), inherited: identity.inherited,
+      requiresAlias, unknownProject: resolveMemoryProject(session.header.cwd).status === 'unknown',
       derived: session.header.origin === 'subagent' && !options.inherited && !('rpcId' in message.source && typeof message.source.rpcId === 'string') })
     current.messages.set(message.id, receipt.sourceId)
     if (options.admitted && !receipt.handledIntent) current.sources.add(receipt.sourceId)
@@ -145,9 +147,20 @@ export function createSessionIngestion(owner: IngestionOwner, flush: (session: S
     }
     current.generation = generation
     if (session.header.origin === 'subagent' && !session.header.parentSession) throw new Error('Subagent parent is unavailable')
-    if (current.cursor === 0) await owner.initializeSession({ sessionId: String(session.id), cwd: session.header.cwd,
-      ...(session.header.origin === 'subagent' ? { parentSessionId: session.header.parentSession } : {}) })
     const events = saved.events
+    if (!current.initialized) {
+      const id = String(session.id)
+      await owner.initializeSession({ sessionId: id, cwd: session.header.cwd,
+        ...(session.header.origin === 'subagent' ? { parentSessionId: session.header.parentSession } : {}) })
+      const watermark = await owner.intakeWatermark?.(id)
+      if (watermark) {
+        const { createdAt, nextSeq } = watermark
+        const first = events.findIndex(event => nextSeq === null ? event.time >= createdAt : event.seq >= nextSeq)
+        current.cursor = first === -1 ? events.length : first
+        if (nextSeq === null) await owner.advanceIntake?.(id, events[current.cursor]?.seq ?? ((events.at(-1)?.seq ?? -1) + 1))
+      }
+      current.initialized = true
+    }
     await restoreCheckpoint(session, current, events, view ? view.contextRecovery : await owner.contextRecovery?.(String(session.id)))
     for (let index = current.cursor; index < events.length; index++) {
       const event = events[index]!

@@ -168,6 +168,8 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
     receiveSource: (input: Parameters<OwnerAdapterApi['receiveSource']>[0]) => call('receiveSource', [input]),
     registerDerived: (input: Parameters<OwnerAdapterApi['registerDerived']>[0]) => call('registerDerived', [input]),
     completeTurn: (input: Parameters<OwnerAdapterApi['completeTurn']>[0]) => call('completeTurn', [input]),
+    intakeWatermark: (session: string) => call('intakeWatermark', [session]),
+    advanceIntake: (session: string, nextSeq: number) => call('advanceIntake', [session, nextSeq]),
     dispatch: { snapshot: (...args: Parameters<OwnerAdapterApi['snapshot']>) => call('snapshot', args) },
     prepareContextRecovery: (input: Parameters<OwnerAdapterApi['prepareContextRecovery']>[0]) => call('prepareContextRecovery', [input]),
     bindContextRecovery: (input: BindMemoryContextRecovery) => call('bindContextRecovery', [input]),
@@ -181,9 +183,9 @@ export function createRemoteMemoryOwner(connection: MemoryOwnerConnection, repor
       call('rememberStandaloneFile', [session, input], opts),
     forgetStandaloneFile: (session: string, id: string, operationId: string, opts?: OwnerCallOptions) =>
       call('forgetStandaloneFile', [session, id, operationId], opts),
-    async modelRequest(input: MemoryRequest, session: string, generation: number, lease?: NativeToolReadScope, options?: OwnerCallOptions) {
+    async modelRequest(input: MemoryRequest, session: string, generation: number, lease?: NativeToolReadScope, options?: OwnerCallOptions & { unknownProject?: boolean }) {
       await completion(session)
-      const result = await call('modelRequest', lease ? [input, session, generation, serializableScope(lease)] : [input, session, generation], options)
+      const result = await call('modelRequest', [input, session, generation, lease ? serializableScope(lease) : undefined, options?.unknownProject], options)
       options?.signal?.throwIfAborted()
       if (input.op !== 'remember' && connection.status() === 'unavailable') throw new Error('Memory owner became unavailable during retrieval')
       if (lease && !lease.current()) throw new Error('Native tool execution changed before memory resolved')

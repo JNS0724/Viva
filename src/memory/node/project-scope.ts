@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto'
-import { readFileSync, realpathSync, statSync, type BigIntStats } from 'node:fs'
+import { accessSync, constants, lstatSync, readFileSync, realpathSync, statSync, type BigIntStats } from 'node:fs'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
 
 function projectRoot(cwd: string) {
   for (let directory = cwd; ; directory = path.dirname(directory)) {
-    if (existsSync(path.join(directory, '.git'))) return directory
-    if (path.dirname(directory) === directory) return cwd
+    if (lstatSync(path.join(directory, '.git'), { throwIfNoEntry: false })) return directory
+    if (path.dirname(directory) === directory) return undefined
   }
 }
 
@@ -35,17 +34,28 @@ function gitDirectory(root: string): BigIntStats | null {
   return identity
 }
 
+type Project = { kind: 'project', id: string }
+export type MemoryProjectResolution = { status: 'user' } | { status: 'unknown' } | { status: 'project', project: Project }
+
 /** A canonical worktree and its Git directory fix the scope. Moving or recreating the repository starts a new scope. */
-export function memoryProjectScope(cwd: string | null | undefined): { kind: 'project', id: string } | undefined {
-  if (!cwd || !path.isAbsolute(cwd)) return undefined
+export function resolveMemoryProject(cwd: string | null | undefined): MemoryProjectResolution {
+  if (cwd === null) return { status: 'user' }
+  if (!cwd || !path.isAbsolute(cwd)) return { status: 'unknown' }
   try {
     const start = realpathSync.native(cwd)
-    if (!statSync(start).isDirectory()) return undefined
+    if (!statSync(start).isDirectory()) return { status: 'unknown' }
+    accessSync(start, constants.R_OK)
     const root = projectRoot(start)
+    if (!root) return { status: 'user' }
     const identity = gitDirectory(root)
-    if (!identity) return undefined
+    if (!identity) return { status: 'unknown' }
     const canonical = process.platform === 'win32' ? root.replace(/^[a-z]:/u, drive => drive.toUpperCase()) : root
     const id = createHash('sha256').update(JSON.stringify([canonical, String(identity.dev), String(identity.ino), String(identity.birthtimeNs)])).digest('hex')
-    return { kind: 'project', id }
-  } catch { return undefined }
+    return { status: 'project', project: { kind: 'project', id } }
+  } catch { return { status: 'unknown' } }
+}
+
+export function memoryProjectScope(cwd: string | null | undefined): Project | undefined {
+  const resolved = resolveMemoryProject(cwd)
+  return resolved.status === 'project' ? resolved.project : undefined
 }

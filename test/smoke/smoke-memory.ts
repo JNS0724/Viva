@@ -198,19 +198,23 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
 
   // Rebuilding indexes clears FTS/vectors synchronously and repopulates them asynchronously via INDEX_SEED.
   const question = '周报提交约定'
+  const own = await askUsingMemory(win, hooks, question)
+  expect(own.length > 0 && own.every(request => !readsFileMemory(request, REPORT_MEMORY)),
+    'automatic context excludes the open conversation’s own daily note', own.length)
+  await newTopic(win)
   let sent: object[] = []
   for (let attempt = 0; attempt < 4; attempt++) {
     sent = await askUsingMemory(win, hooks, question)
     if (sent.some(request => readsFileMemory(request, REPORT_MEMORY))) break
     await wait(500)
   }
-  expect(sent.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a request in the source conversation receives the stored note', sent.length)
+  expect(sent.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a different conversation receives the stored note', sent.length)
   await run(win, `document.getElementById('toggle-drawer').click()`)
   await until(win, `[...document.querySelectorAll('.trace-row')].some(row => row.textContent.includes(${JSON.stringify(REPORT_MEMORY)}))`,
     'the trace showing which memory went along', UI_WAIT_MS * 10)
   await capture(win, outDir, 'memory-trace')
 
-  await smokeStep(hooks, 'file memory restriction, restore and source withdrawal', () => fileLifecycleSteps(win, outDir, expect, hooks))
+  await smokeStep(hooks, 'file memory pause, resume and history independence', () => fileLifecycleSteps(win, outDir, expect, hooks))
 
   await questionSteps(win, outDir, expect)
   await configSteps(win, outDir, expect, hooks)
@@ -523,38 +527,29 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   const button = (label: string) => `[...document.querySelectorAll(${JSON.stringify(detail + ' button')})]
     .find(button => button.textContent === ${JSON.stringify(label)})`
   await run(win, `(${button('停止使用这条记忆')}).click()`)
-  await until(win, button('查看停用片段 1'), 'the archived selection')
-  await run(win, `(${button('查看停用片段 1')}).click()`)
-  await until(win, button('恢复使用这段内容'), 'the exact archived range can be resumed')
-  expect(!await run(win, button('删除记忆文件')), 'a stopped range only offers restore')
+  await until(win, button('恢复使用这条记忆'), 'the whole file is stopped')
   await capture(win, outDir, 'memory-stopped')
   await closeProfile(win)
+  const stopped = await until(win, pollFileDetail(note.identity, 'file?.enabled === false && file'),
+    'the file is disabled in storage')
+  expect(stopped.version.usageVersion > note.version.usageVersion
+    && stopped.version.contentRevision === note.version.contentRevision, 'stopping advances only the usage version')
 
-  const stopped = await until(win, pollFileDetail(note.identity, 'file?.restrictions?.length === 1 && file'),
-    'the selected file is held by its own restriction')
-  expect(stopped.restrictions[0].version.usageVersion > note.version.usageVersion, 'stopping advances the usage version')
-
+  await newTopic(win)
   const during = await askUsingMemory(win, hooks, '周报提交约定？')
-  expect(during.length > 0 && during.every(request => !readsFileMemory(request, REPORT_MEMORY)), 'the stopped range is omitted from file retrieval', during.length)
+  expect(during.length > 0 && during.every(request => !readsFileMemory(request, REPORT_MEMORY)), 'the stopped file is omitted from retrieval', during.length)
   await openDailyMemory(win, note.identity)
-  await until(win, button('查看停用片段 1'), 'the same archived selection after reopening About You')
-  await run(win, `(${button('查看停用片段 1')}).click()`)
-  await until(win, button('恢复使用这段内容'), 'the scoped restore control')
-  await run(win, `(${button('恢复使用这段内容')}).click()`)
-  await until(win, `(${button('停止使用这条记忆')}) && !(${button('查看停用片段 1')})
-    && document.querySelector(${JSON.stringify(detail)})?.textContent.includes(${JSON.stringify(REPORT_MEMORY)})`,
-    'the restored note is visible and has no archived range')
-  // The independent storage assertion runs after the page has released its reads.
+  await run(win, `(${button('恢复使用这条记忆')}).click()`)
+  await until(win, `(${button('停止使用这条记忆')}) && document.querySelector(${JSON.stringify(detail)})?.textContent.includes(${JSON.stringify(REPORT_MEMORY)})`,
+    'the same note is enabled again')
   await closeProfile(win)
-  await until(win, pollFileDetail(note.identity, `file?.markdown.includes(${JSON.stringify(REPORT_MEMORY)}) && !file.restrictions?.length`),
-    'the released range is rebuilt from its sources')
   let after: object[] = []
   for (let attempt = 0; attempt < 4; attempt++) {
     after = await askUsingMemory(win, hooks, '周报提交约定。')
     if (after.some(request => readsFileMemory(request, REPORT_MEMORY))) break
     await wait(500)
   }
-  expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'restored evidence is available in the source conversation', after.length)
+  expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a different conversation can retrieve the enabled file', after.length)
 
   // Keep the restored report note for the installed cross-language check after restart.
   await newTopic(win)
@@ -580,9 +575,10 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   await until(win, `window.agent.getInfo().then(info => info.topicId !== ${JSON.stringify(origin.topicId)})`, 'leave the source conversation')
   await run(win, `window.agent.deleteConversation(${JSON.stringify(origin.conversationId)})`)
   await run(win, `window.agent.restoreConversation(${JSON.stringify(origin.conversationId)})`)
-  await until(win, pollFileDetail(withdrawn.identity, `!file || !file.markdown.includes(${JSON.stringify(WITHDRAWN)})`), 'withdrawal has removed the note evidence')
-  const later = await askUsingMemory(win, hooks, '海棠城项目约定')
-  expect(later.length > 0 && later.every(request => !JSON.stringify(request).includes(WITHDRAWN)), 'restored chat cannot revive withdrawn note evidence', later.length)
+  const retained = await until(win, pollFileDetail(withdrawn.identity, `file?.markdown.includes(${JSON.stringify(WITHDRAWN)}) && file`),
+    'history deletion and restore leave the memory file intact')
+  expect(retained.version.contentRevision === withdrawn.version.contentRevision, 'the note revision is unchanged after deleting its source chat')
+
 }
 
 /** @returns failed expectations */

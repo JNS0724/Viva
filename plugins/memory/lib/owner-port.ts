@@ -20,6 +20,8 @@ export type ReceivedSource = {
   inherited: boolean
   project?: string
   derived?: boolean
+  requiresAlias?: boolean
+  unknownProject?: boolean
 }
 export type SourceReceipt = { sourceId: string, text: string, handledIntent?: boolean, retrievalQuery?: string }
 export type CompletedTurn = {
@@ -61,6 +63,8 @@ export interface PluginMemoryOwner {
   noteInheritedNativeCut?(input: Pick<ReceivedSource, 'sessionId' | 'messageId' | 'text' | 'contentDigest' | 'inherited'>): boolean
   receiveSource(input: ReceivedSource): Promise<SourceReceipt>
   completeTurn(input: CompletedTurn): Promise<void>
+  intakeWatermark?(session: string): { createdAt: number, nextSeq: number | null }
+  advanceIntake?(session: string, nextSeq: number): void
   sessionContext(sessionId: string): SessionContext
   registerDerived(input: DerivedSource): Promise<void> | void
   close(): Promise<void>

@@ -21,6 +21,7 @@ export const memoryHash = (text: string) => createHash('sha256').update(text).di
 
 const SCHEMA = `
   CREATE TABLE memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE memory_session_cursors (session TEXT PRIMARY KEY, next_seq INTEGER NOT NULL);
   CREATE TABLE memory_sources (
     id TEXT PRIMARY KEY, operation TEXT NOT NULL, version INTEGER NOT NULL,
     conversation TEXT, session TEXT, scope TEXT NOT NULL, context TEXT, project TEXT, author TEXT NOT NULL,
@@ -62,6 +63,7 @@ export function openMemoryStore(file: string, now = Date.now) {
       db.exec(SCHEMA)
       db.exec(`PRAGMA user_version = ${MEMORY_CONTRACT}`)
       db.prepare('INSERT INTO memory_meta (key,value) VALUES (?,?)').run('secret', randomBytes(32).toString('hex'))
+      db.prepare('INSERT INTO memory_meta (key,value) VALUES (?,?)').run('created_at', String(now()))
     })
   } catch (error) { db.close(); throw error }
   const meta = (key: string) => (db.prepare('SELECT value FROM memory_meta WHERE key = ?').get(key) as { value: string } | undefined)?.value

@@ -43,10 +43,10 @@ export const sameMemoryFileSelection = (a: MemoryFileSelection | null, b: Memory
   Boolean(a && a.restrictionId === b.restrictionId && sameMemoryFile(a.identity, b.identity))
 
 export function canEditMemoryFile(detail: MemoryFileDetailView | null): detail is MemoryFileDetailView & { editor: NonNullable<MemoryFileDetailView['editor']> } {
-  return Boolean(detail?.actions.edit && detail.editor && !detail.stoppedSnapshot)
+  return Boolean(detail?.actions.edit && detail.editor)
 }
 export const canForgetMemoryFile = (detail: MemoryFileDetailView | null): detail is MemoryFileDetailView =>
-  Boolean(detail?.actions.forget && !detail.stoppedSnapshot)
+  Boolean(detail?.actions.forget)
 
 export const memoryFilePageOpen = (memory: State['memory']): boolean => memory.open && memory.view === 'profile'
 

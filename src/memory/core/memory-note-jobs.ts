@@ -116,6 +116,7 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
     if (notes.jobState(job.key, job.generation) === 'conflict') return 'wait'
     if (notes.blocked(job.key)) return 'wait'
     const existing = notes.read(job.key)
+    if (existing?.enabled === false) return 'wait'
     // A registered but unavailable file awaits external verification; it is not a new empty card.
     if (!existing && notes.registered().some(note => note.key === job.key)) return 'wait'
     const rebuilding = Boolean(existing && !allowsReferences(notes.references(job.key)))
@@ -215,9 +216,8 @@ export function createMemoryNoteJobs({ store, effects, now, openNotes, settings,
       if (output.some(text => project(text) !== text)) return false
       return notes.commit(job.key, rows, reply, job.generation, now(), refs, existing, { rebuild: rebuilding })
     }
-    // An ordinary skip only checkpoints turns. A rebuild can remove the previously accepted file.
-    const checkpointOnly = reply.status === 'skip' && !rebuilding && !notes.jobState(job.key, job.generation)
-    if (!(checkpointOnly ? commit() : await mutate(commit))) {
+    // Only a rebuild can remove accepted evidence while legacy withdrawal is still supported.
+    if (!(rebuilding ? await mutate(commit) : commit())) {
       // Rebuilds can replay already checkpointed turns, including on an empty
       // allocation. An ordinary pending-turn job would lose that work.
       if (rebuilding) return 'retry'

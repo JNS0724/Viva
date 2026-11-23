@@ -24,6 +24,7 @@ function adapterSessions(method: keyof OwnerAdapterApi, args: unknown[]): unknow
     case 'finishNativeSpill': return [args[2]]
     case 'nativeToolEvidence': return Array.isArray(args[0]) ? args[0].map(call => objectOf(call)?.session) : []
     case 'sessionView': case 'snapshot': case 'rememberStandaloneFile': case 'forgetStandaloneFile': return [args[0]]
+    case 'intakeWatermark': case 'advanceIntake': return [args[0]]
     case 'modelRequest': return [args[1]]
     case 'acquireSend': return [second?.session]
     case 'admitNativeSpillRead': return [objectOf(second?.call)?.session]

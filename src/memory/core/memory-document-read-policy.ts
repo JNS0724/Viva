@@ -38,6 +38,7 @@ export interface MemoryDocumentView {
   usageVersion: number
   policyToken: string
   day?: string
+  session?: string
   updatedAt: number
   markdown: string
   sources: MemorySourceReference[]
@@ -129,7 +130,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     const restrictions = documents.sourceRestrictions(workspace)
     const applicableRestrictions = restrictions.filter(restriction => refs.some(ref => documentSourceRestricted(ref, [restriction])))
     const inheritedRestrictions = refs.filter(inheritedUseRestricted)
-    const useRestricted = applicableRestrictions.length > 0 || inheritedRestrictions.length > 0
+    const useRestricted = note?.enabled === false || applicableRestrictions.length > 0 || inheritedRestrictions.length > 0
     // These are use-disable restrictions, not source authorization or erasure. Trusted
     // management may inspect accepted content in order to re-enable it; model reads may not.
     if (useRestricted && !includeDisabled) return null
@@ -153,7 +154,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     return {
       view: {
         id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
-        revision, usageVersion, policyToken, ...(note ? { day: note.day } : {}), updatedAt: note?.updatedAt ?? 0,
+        revision, usageVersion, policyToken, ...(note ? { day: note.day, session: note.session } : {}), updatedAt: note?.updatedAt ?? 0,
         markdown, sources, sourceTokens: combined, backing: digest && { ...digest, markdown },
       },
       useRestricted,

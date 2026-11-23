@@ -11,11 +11,13 @@ export interface NoteRow {
     processed: number;
     updatedAt: number;
     file_revision: string;
+    enabled?: boolean;
 }
 type Note = NoteRow & {
     title: string;
     markdown: string;
     document: string;
+    session?: string;
     fileRevision: string;
 };
 export interface DailyAllocation {
@@ -31,7 +33,7 @@ export interface MemoryNotes {
     allocations(): DailyAllocation[];
     fileRegistry(): DailyFileRegistration[];
     deleteFile(workspace: string, key: string, expectedUsageVersion: number): number;
-    advanceUseVersion(key: string, revision: number, at: number): boolean;
+    setEnabled(key: string, revision: number, enabled: boolean): boolean;
     usePolicyToken(workspace: string): string;
     pendingCleanup(): number;
     registeredAt(workspace: string, path: string): { key: string, file_revision: string } | undefined;
