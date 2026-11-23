@@ -8,6 +8,10 @@ import type { ConversationContext } from './conversation-context.ts'
  * `.thread-rest` rather than paginated back into `#thread` (see `timeline-search.ts`).
  */
 export const CONVERSATION_WINDOW_MESSAGES = 200
+export type MemoryAvailability = 'starting' | 'recovering' | 'ready' | 'unavailable'
+export const MEMORY_AVAILABILITIES = Object.freeze(['starting', 'recovering', 'ready', 'unavailable'] as const)
+export const isMemoryAvailability = (value: unknown): value is MemoryAvailability =>
+  typeof value === 'string' && (MEMORY_AVAILABILITIES as readonly string[]).includes(value)
 
 export interface StreamMark { streamGeneration: string, eventCursor: number }
 export interface ConversationSnapshot {
@@ -32,6 +36,7 @@ export interface RendererSnapshot {
   stopUnconfirmed?: boolean
   history: ConversationSnapshot | null
   replay: readonly unknown[]
+  memoryAvailability?: MemoryAvailability
 }
 export function streamMark(value: unknown): StreamMark | null {
   if (!value || typeof value !== 'object') return null

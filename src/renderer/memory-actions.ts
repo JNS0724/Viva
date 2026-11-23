@@ -1,4 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
+import type { MemoryAvailability, StreamMark } from '../shared/renderer-sync.ts'
 import { createMemoryFileActions, createMemoryPageReads } from './memory-file-actions.ts'
 import { memoryFilePageOpen } from './memory-file-state.ts'
 import { createRequestBudget, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
@@ -60,7 +61,14 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
   }
   let memoryRequest = 0, profileGeneration = 0
   let active: { page: string, lifetime: ReturnType<typeof createRequestBudget>, promise: Promise<boolean> } | undefined
+  let availabilityMark: StreamMark | null = null
   const fail = (err: unknown) => dispatch({ type: 'memory_failed', message: errorMessage(err) })
+  const needsLiveMemory = (memory: State['memory']) => memory.open || !memory.loaded || memory.onboarding === 'pending'
+
+  function cancelActiveLoad() {
+    memoryRequest++
+    active?.lifetime.cancel(); active?.lifetime.close(); active = undefined
+  }
 
   function readProfile(): Promise<boolean> {
     const page = `${getState().memory.open}:${getState().memory.view}`
@@ -125,16 +133,15 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       pendingDreamOperation ??= globalThis.crypto.randomUUID()
       await refreshDream(pendingDreamOperation)
     },
-    loadMemory,
+    loadMemory: () => loadMemory(),
     openProfile(view = 'profile') {
       files.cancelReads()
       dispatch({ type: 'memory_open', view })
-      loadMemory()
+      if (getState().memory.availability === 'ready') void loadMemory()
     },
     closeProfile() {
       files.cancelReads()
-      memoryRequest++
-      active?.lifetime.cancel(); active?.lifetime.close(); active = undefined
+      cancelActiveLoad()
       dispatch({ type: 'memory_close' })
     },
     editField: (key: string | null) => dispatch({ type: 'memory_edit', key }),
@@ -190,10 +197,35 @@ export function createMemoryActions({ api, getState, dispatch, errorMessage, sho
       }
     },
 
+    /** Track owner lifecycle transitions separately from committed data changes. */
+    onAvailability(status: MemoryAvailability, mark: StreamMark | null = null) {
+      if (mark) {
+        if (availabilityMark && availabilityMark.streamGeneration === mark.streamGeneration && mark.eventCursor <= availabilityMark.eventCursor) return
+        availabilityMark = mark
+      }
+      const previous = getState().memory.availability
+      dispatch({ type: 'memory_availability', status })
+      if (status !== 'ready') {
+        cancelActiveLoad()
+        files.cancelReads()
+        return
+      }
+      const memory = getState().memory
+      if (needsLiveMemory(memory) && (previous !== 'ready' || !memory.loaded || memory.loadError !== null)) {
+        profileGeneration++
+        if (memory.open) files.invalidateFiles()
+        void loadMemory()
+      }
+    },
+
     /** Keep the profile and file views aligned with committed owner changes. */
     onMemoryChanged(event: { failure?: string }) {
       if (event.failure) showToast(event.failure)
-      void refreshMemoryViews()
+      profileGeneration++
+      dispatch({ type: 'memory_summaries_stale' })
+      files.invalidateFiles()
+      const memory = getState().memory
+      if (memory.availability === 'ready' && needsLiveMemory(memory)) void loadMemory()
     },
   }
 }

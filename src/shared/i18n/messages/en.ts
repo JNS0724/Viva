@@ -138,6 +138,7 @@ export const en = {
   "memory-files.list.partial": "Some memory files could not be checked. Reload to try again.",
   "memory-files.retry": "Reload",
   "memory-files.loading": "Loading memories…",
+  "memory-files.recovering": "Memory is recovering…",
   "memory-files.search": "Search memory titles",
   "memory-files.empty": "Viva’s saved memories will appear here.",
   "memory-files.more": "Show more memories",

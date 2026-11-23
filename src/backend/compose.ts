@@ -92,7 +92,7 @@ import type { HistoryEvidence } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
 import { createRendererStream } from './renderer-stream.ts'
-import { CONVERSATION_WINDOW_MESSAGES, type RendererSnapshot } from '../shared/renderer-sync.ts'
+import { CONVERSATION_WINDOW_MESSAGES, type MemoryAvailability, type RendererSnapshot } from '../shared/renderer-sync.ts'
 import { createTaskSignals, taskEventOf } from './task-signals.ts'
 import { type Apply, journaled } from './journal.ts'
 import { commandIpc } from './commands.ts'
@@ -170,9 +170,16 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
   const embedding = { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime') }
   const memoryRoot = path.join(userData, 'memory')
+  let bridgeUnavailable = false
+  let publishedMemoryAvailability: MemoryAvailability = 'starting'
   const memoryOwner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes }, {
     onReady: () => { scheduleRuns?.wake() },
-    onChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
+    onChanged: state => {
+      const wasReady = publishedMemoryAvailability === 'ready'
+      recoverMemoryHost()
+      publishMemoryAvailability()
+      if (wasReady && state.state === 'ready') emitToRenderer({ type: 'memory_changed' })
+    },
     onNotice: notice => {
       if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
       try { applyChange('memory.changed', { revision: notice.revision }, () => undefined) }
@@ -246,6 +253,20 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   let lastInfo: AgentInfo = { mode: 'connecting', model: '', cwd: '', reason: '' }
   // The stopped session still owns its renderer history. Its native binding is retired.
   let stoppedContext: ConversationContext | null = null
+  function currentMemoryAvailability(): MemoryAvailability {
+    const owner = memoryOwner.channel.state()
+    if (owner?.state === 'ready') return 'ready'
+    if (owner?.state === 'recovering') return 'recovering'
+    if (owner?.state === 'unavailable') return 'unavailable'
+    if (dsh?.isQuitting() || bridgeUnavailable) return 'unavailable'
+    return 'starting'
+  }
+  function publishMemoryAvailability() {
+    const status = currentMemoryAvailability()
+    if (status === publishedMemoryAvailability) return
+    publishedMemoryAvailability = status
+    emitToRenderer({ type: 'memory_availability', status })
+  }
   const sessions = createConversationSession({
     history: () => historyDb,
     agent: () => dsh.current,
@@ -318,7 +339,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const project = currentMemoryProject()
     if (displayedProject !== project?.id) {
       displayedProject = project?.id
-      emitToRenderer({ type: 'memory_changed' })
+      if (currentMemoryAvailability() === 'ready') emitToRenderer({ type: 'memory_changed' })
     }
   }
   const mayUseProjectEvidence = memoryCoordination.allowsEvidence
@@ -384,9 +405,12 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       // Its requests too: the retired generation's turn_end never reaches endRequests.
       const left = sessions.context().sessionId
       if (left) endRequests({ type: 'turn_end', stopReason: 'cancelled' }, left)
+      publishMemoryAvailability()
     },
     onCrash: ({ message }, delay) => {
       turn = { active: false, startedAt: 0, id: '', by: '', stopping: false }
+      bridgeUnavailable = true
+      publishMemoryAvailability()
       emitDiagnosticFailure('process', message, { stage: 'closed' })
       emitToRenderer({ type: 'error', message: delay === null
         ? t("main.main.the.assistant.exited.repeatedly.retrying.has.stopped", { message })
@@ -394,6 +418,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     },
     restart: async (): Promise<unknown> => startBridge(),
     onRestartError: error => {
+      bridgeUnavailable = true
+      publishMemoryAvailability()
       emitDiagnosticFailure('process', error, { stage: 'recovering' })
       emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: error instanceof Error ? error.message : String(error) }) })
     },
@@ -1006,9 +1032,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     if (config.problem) {
       stoppedContext = null
       const info = setupInfo(config)
+      bridgeUnavailable = true
       emitToRenderer({ type: 'ready', info })
+      publishMemoryAvailability()
       return info
     }
+    bridgeUnavailable = false
+    publishMemoryAvailability()
     fs.mkdirSync(config.cwd, { recursive: true })
     const context = sessions.startingIn(config.cwd)
     carryHistory ||= stoppedContext !== null
@@ -1017,6 +1047,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const started = await dsh.start({ config, ...context, carryHistory })
       return started ? lastInfo : null
     } catch (err) {
+      bridgeUnavailable = true
+      publishMemoryAvailability()
       emitDiagnosticFailure('startup', err)
       emitToRenderer({ type: 'error', message: t("main.main.could.not.connect.the.assistant", { message: err instanceof Error ? err.message : String(err) }) })
       return null
@@ -1106,7 +1138,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
         messages: found.messages, offset: found.offset, total: found.total, records: found.records, folds: historyDb.foldsOf(selected.id) } : null
       return { ...rendererStream.snapshot(selected.id, context, stoppedContext !== null, hiddenStreamKeys), context, history, stopUnconfirmed: Boolean(stoppedContext),
         activeTurn: turn.active && !stoppedContext ? { id: turn.id, by: turn.by, startedAt: turn.startedAt, stopping: turn.stopping } : null,
-        info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId } }
+        info: { ...lastInfo, conversationId: selected.id, sessionId: context.sessionId },
+        memoryAvailability: currentMemoryAvailability() }
     })
     // What the conversation on screen waits on the user for, for a window that opens on a dsh at work (a reload): said
     // on the live channel, so it comes in its place among the pushes (renderer waits-state.ts), not in the answer.
@@ -2070,6 +2103,7 @@ ${question}` : question
     /** Quitting has begun (or the session ends): dsh must not be started again. */
     markQuitting() {
       dsh.markQuitting()
+      publishMemoryAvailability()
     },
     /** Quitting stops both supervised processes. A regular dsh restart leaves the owner available. */
     async stop() {

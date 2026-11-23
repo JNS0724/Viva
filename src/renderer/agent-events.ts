@@ -2,6 +2,7 @@ import { createConversationIngress } from './conversation-ingress.ts'
 import { createEventActions } from './agent-event-actions.ts'
 import { decodeAgentEvent, type EventIssue } from './agent-event-decoder.ts'
 import type { AgentEvent } from './agent-event-types.ts'
+import { streamMark, type MemoryAvailability, type StreamMark } from '../shared/renderer-sync.ts'
 
 /** Held pushes arrived before the erasure notice. Keep the non-trace portion of a settlement. */
 function withoutHeldTrace(event: AgentEvent, sessions: ReadonlySet<string>): AgentEvent | undefined {
@@ -19,7 +20,7 @@ function withoutHeldTrace(event: AgentEvent, sessions: ReadonlySet<string>): Age
 }
 
 /** Owns the wire boundary, foreground selection handoff, task-load handoff and push-triggered effects. */
-export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, mcpChanged = () => {}, refreshWorkDir, refreshFiles, memoryChanged, filesChanged, refreshFeed, rejected, overflow, now = Date.now }: {
+export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, mcpChanged = () => {}, refreshWorkDir, refreshFiles, memoryAvailability = () => {}, memoryChanged, filesChanged, refreshFeed, rejected, overflow, now = Date.now }: {
   getState: () => State, dispatch: (action: Action) => void
   holdTask: (event: AgentEvent) => boolean
   afterTurn: (reason?: string) => void, clearAfterTurn: () => void
@@ -27,6 +28,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
   /** How the MCP servers stand changed (viva-mcp). */
   mcpChanged?: (mcp: NonNullable<AgentInfo['mcp']>) => void
   refreshWorkDir: () => void, refreshFiles: () => void, refreshFeed: () => void
+  memoryAvailability?: (status: MemoryAvailability, mark: StreamMark | null) => void
   memoryChanged: (event: Extract<AgentEvent, { type: 'memory_changed' }>) => void
   filesChanged: (event: Extract<AgentEvent, { type: 'files_changed' }>) => void
   rejected?: (issue: EventIssue) => void
@@ -63,8 +65,10 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
   })
   return {
     receive(value: unknown) {
+      const mark = streamMark(value)
       const event = decodeAgentEvent(value, rejected)
       if (!event) return
+      if (event.type === 'memory_availability') return memoryAvailability(event.status, mark)
       if (event.type === 'memory_changed') {
         if (event.erasedOutputs?.length) dispatch({ type: 'generated_outputs_removed', copies: event.erasedOutputs })
         if (event.traceSessions?.length) {

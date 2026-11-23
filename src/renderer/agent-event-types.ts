@@ -1,6 +1,7 @@
 import type { ScheduleProposal } from './proposal-types.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 import type { WindowSnapshot } from '../shared/ipc-results.ts'
+import type { MemoryAvailability } from '../shared/renderer-sync.ts'
 import type { ConversationPayloads, ForegroundWaits } from './conversation-types.ts'
 
 interface Scoped { context: ConversationContext, taskId?: never, runId?: never, taskSeq?: never }
@@ -28,6 +29,7 @@ export type AgentEvent =
   | { type: 'reports_removed', reportIds: readonly string[] }
   | ({ type: 'error', message: string, context?: ConversationContext })
   | ({ type: 'schedule_propose', proposal: ScheduleProposal } & Scoped)
+  | { type: 'memory_availability', status: MemoryAvailability }
   | { type: 'memory_changed', failure?: string, traceSessions?: readonly string[],
       erasedOutputs?: readonly { session: string, key: string }[], erasedFeedIds?: readonly string[] }
   | { type: 'files_changed', path: string }

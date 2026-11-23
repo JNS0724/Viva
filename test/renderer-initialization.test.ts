@@ -413,3 +413,43 @@ test('a checkpointed waiting turn remains cancellable after reload and later buf
   assert.equal(ended, true)
   assert.equal(state.turn, null)
 })
+
+test('memory_availability arrives immediately during initialization and older snapshot availability never regresses it', async t => {
+  let state: State = initialState
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  let getCalls = 0
+  const memoryActions = createMemoryActions({
+    api: { getMemory: async () => { getCalls++; return { profile: {}, onboarding: 'pending', habits: { text: '', samples: 0 } } } } as AgentApi,
+    getState: () => state, dispatch, errorMessage: String, showToast() {}, ask: () => false,
+  })
+  const events = createAgentEvents({
+    getState: () => state, dispatch, holdTask: () => false,
+    afterTurn() {}, clearAfterTurn() {}, ready() {}, refreshWorkDir() {}, refreshFiles() {}, refreshFeed() {},
+    memoryAvailability: (status, mark) => memoryActions.onAvailability(status, mark),
+    memoryChanged: event => memoryActions.onMemoryChanged(event), filesChanged() {},
+  })
+  const required = deferred<RendererSnapshot>()
+  const init = createInitializationActions({
+    snapshot: () => required.promise,
+    install: view => {
+      dispatch({ type: 'initialization_snapshot', snapshot: view })
+      if (view.memoryAvailability) memoryActions.onAvailability(view.memoryAvailability, { streamGeneration: view.streamGeneration, eventCursor: view.cutoverCursor })
+    },
+    deliver: events.receive, pause: events.pause, initialized: events.initialize, failed() { assert.fail('must not fail') }, loading() {},
+  })
+  t.after(init.close)
+
+  const pending = init.initialize()
+  // Live SSE announces ready (cursor 3) while agent:snapshot (cutoverCursor 2, recovering) is still in flight.
+  init.receive({ type: 'memory_availability', status: 'ready', streamGeneration: 'generation', eventCursor: 3 })
+  await tick(); await tick()
+  assert.equal(state.memory.availability, 'ready')
+  assert.equal(getCalls, 1)
+  assert.equal(state.memory.loaded, true)
+
+  required.resolve({ ...snapshot(2), memoryAvailability: 'recovering' })
+  assert.equal(await pending, true)
+  assert.equal(state.memory.availability, 'ready', 'older snapshot availability must not regress live ready state')
+  init.receive(push(4, 'after cutover'))
+  assert.equal(state.messages.at(-1)?.text, 'after cutover')
+})

@@ -188,9 +188,16 @@ test('the fake stream authenticates its final reply through the production owner
     }
   })
   backend.open()
+  const beforeStart = call<import('../src/shared/renderer-sync.ts').RendererSnapshot>('agent:snapshot')
+  assert.equal(beforeStart.memoryAvailability, 'starting', 'snapshot exposes starting before dsh starts')
+  await backend.startBridge()
+  assert.equal(call<import('../src/shared/renderer-sync.ts').RendererSnapshot>('agent:snapshot').memoryAvailability, 'unavailable', 'setup mode reports memory unavailable')
+  assert.ok(events.some(event => event.type === 'memory_availability' && event.status === 'unavailable'))
   await call('models:add', { name: 'Scripted fixture', api: 'anthropic-messages', baseURL: 'http://127.0.0.1:1',
     models: [{ id: 'fake-flash' }], key: 'test-scripted-key' })
   assert.ok(await eventually(() => call<AgentInfo>('agent:info').sessionId))
+  assert.equal(call<import('../src/shared/renderer-sync.ts').RendererSnapshot>('agent:snapshot').memoryAvailability, 'ready', 'live dsh exposes ready memory availability')
+  assert.ok(events.some(event => event.type === 'memory_availability' && event.status === 'ready'))
   const sourceId = randomUUID(), question = '格式演示'
   await call<Promise<void>>('agent:prompt', question, [], sourceId)
   const reply = events.filter(event => event.type === 'update' && kindOf(event) === 'settle')

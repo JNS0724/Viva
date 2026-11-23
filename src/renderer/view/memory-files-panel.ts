@@ -205,16 +205,23 @@ function editorView(files: State['memory']['files'], editor: MemoryFileEditor, h
   return form
 }
 
+const isMemoryPending = (memory: State['memory']) =>
+  memory.availability === 'starting' || memory.availability === 'recovering'
+const effectiveLoadError = (memory: State['memory']) =>
+  memory.loadError ?? (memory.availability === 'unavailable' ? t('memory.read.unavailable') : null)
+
 export function memoryLoadError(memory: State['memory'], handlers: Handlers) {
-  return memory.loadError ? h('div', { class: 'profile-section' },
-    h('p', { class: 'form-error', role: 'alert', text: memory.loadError }),
+  const message = effectiveLoadError(memory)
+  return message ? h('div', { class: 'profile-section' },
+    h('p', { class: 'form-error', role: 'alert', text: message }),
     h('div', { class: 'memory-actions' }, h('button', { class: 'link-btn', type: 'button',
       text: t('memory-files.retry'), onClick: handlers.loadMemory }))) : null
 }
 
 function dreamRow(memory: State['memory'], handlers: Handlers) {
   const { dream, dreamUnavailable, requestingDream } = memory
-  const phase = dreamUnavailable ? 'unavailable' : requestingDream ? 'queued' : dream?.state ?? 'loading'
+  const pending = isMemoryPending(memory)
+  const phase = dreamUnavailable || memory.availability === 'unavailable' ? 'unavailable' : requestingDream ? 'queued' : pending ? 'loading' : dream?.state ?? 'loading'
   const time = (at: number) => new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(at)
   const history = dream ? [
     dream.lastProcessedAt === null ? t('dream.no.history') : t('dream.last.processed', { time: time(dream.lastProcessedAt) }),
@@ -226,21 +233,25 @@ function dreamRow(memory: State['memory'], handlers: Handlers) {
       h('strong', { class: 'memory-text', text: t('dream.title') }),
       h('p', { class: 'memory-meta', role: 'status', text: [t(`dream.state.${phase}`), history].filter(Boolean).join(' · ') })),
     h('button', { class: 'btn btn-outline btn-small', type: 'button', name: 'memory-run-dream',
-      disabled: !dream || dreamUnavailable || ['disabled', 'running', 'queued'].includes(phase),
+      disabled: !dream || dreamUnavailable || memory.availability !== 'ready' || ['disabled', 'running', 'queued'].includes(phase),
       text: t('dream.run'), onClick: handlers.runDream }))
 }
 
 export function memoryFilesSection(memory: State['memory'], handlers: Handlers) {
   const { files } = memory
+  const loadError = effectiveLoadError(memory)
+  const pending = isMemoryPending(memory)
   return h('section', { class: 'profile-section', 'aria-labelledby': 'memory-files-title' },
     h('h3', { class: 'profile-heading', id: 'memory-files-title', text: t('memory-files.title') }),
     !files.editor && !files.selection ? dreamRow(memory, handlers) : null,
     files.editor ? editorView(files, files.editor, handlers)
+      : memory.availability === 'unavailable' ? null
+      : pending ? h('p', { class: 'help', role: 'status', text: t(memory.availability === 'recovering' ? 'memory-files.recovering' : 'memory-files.loading') })
       : files.selection ? detailView(files, handlers) : listView(files, handlers),
     forgetView(files, handlers),
     memory.cleanupPending > 0 ? h('p', { class: 'help', role: 'status',
       text: t('memory-files.storage.cleanup.pending', { count: memory.cleanupPending }) }) : null,
-    !files.editor && memory.loaded && !memory.loadError ? h('div', { class: 'memory-actions' },
+    !files.editor && memory.loaded && !loadError && !pending ? h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', type: 'button', name: 'memory-rebuild-indexes', disabled: memory.rebuildingIndexes,
         text: t(memory.rebuildingIndexes ? 'profile-panel.memory.index.rebuilding' : 'profile-panel.memory.index.rebuild'),
         onClick: handlers.rebuildMemoryIndexes })) : null)

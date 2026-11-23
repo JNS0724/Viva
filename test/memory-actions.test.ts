@@ -376,3 +376,126 @@ test('passive confirmation of a joined Dream lets the next click start a fresh o
   assert.equal(operations.length, 2)
   assert.notEqual(operations[0], operations[1])
 })
+
+test('availability lifecycle gates automatic reads, renders calm pending states, and loads once owner is ready', async t => {
+  const { draw } = profileDom(t)
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+  let state: State = initialState
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  let getCalls = 0, listCalls = 0
+  const data = { profile: { role: { value: 'Engineer', updatedAt: 1 } }, onboarding: 'done', habits: { text: '', samples: 0 } }
+  const api: Pick<AgentApi, 'getMemory' | 'listMemoryFiles'> = {
+    getMemory: async () => { getCalls++; return data },
+    listMemoryFiles: async () => { listCalls++; return { status: 'ok', snapshot: 's', items: [], nextCursor: null } },
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast: () => {}, ask: () => false })
+  const handlers = actions as unknown as Handlers
+
+  // Opening About You while starting/recovering does not fire doomed memory:get calls or red alerts.
+  actions.openProfile('profile')
+  await tick()
+  assert.equal(getCalls, 0)
+  let nodes = draw(state.memory, handlers)
+  assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent === '正在加载记忆…'))
+  assert.ok(!nodes.some(node => node.attrs.role === 'alert'))
+
+  actions.onAvailability('recovering', { streamGeneration: 'g1', eventCursor: 1 })
+  await tick()
+  assert.equal(getCalls, 0)
+  nodes = draw(state.memory, handlers)
+  assert.ok(nodes.some(node => node.attrs.role === 'status' && node.textContent === '记忆正在恢复中…'))
+  assert.ok(!nodes.some(node => node.attrs.role === 'alert'))
+
+  // Transition to ready triggers exactly one load and populates profile + files.
+  actions.onAvailability('ready', { streamGeneration: 'g1', eventCursor: 2 })
+  await tick(); await tick()
+  assert.equal(getCalls, 1)
+  assert.equal(listCalls, 1)
+  assert.equal(state.memory.loaded, true)
+  assert.equal(state.memory.loadError, null)
+
+  // Older snapshot cursor from the same generation cannot regress ready back to recovering.
+  actions.onAvailability('recovering', { streamGeneration: 'g1', eventCursor: 1 })
+  assert.equal(state.memory.availability, 'ready')
+  assert.equal(getCalls, 1)
+
+  // Unavailable shows alert + operable manual retry without firing automatic getMemory.
+  actions.onAvailability('unavailable', { streamGeneration: 'g1', eventCursor: 3 })
+  await tick()
+  assert.equal(getCalls, 1)
+  nodes = draw(state.memory, handlers)
+  assert.ok(nodes.some(node => node.attrs.role === 'alert' && node.textContent.includes('记忆正在恢复或暂不可用')))
+  assert.ok(nodes.some(node => node.attrs['data-dream-state'] === 'unavailable'))
+  const retry = nodes.find(node => node.tag === 'button' && node.textContent === '重新加载')
+  assert.ok(retry?.listeners.click)
+  assert.equal(await retry.listeners.click(), true)
+  assert.equal(getCalls, 2)
+  assert.equal(state.memory.availability, 'ready')
+})
+
+test('invalidation during an in-flight failed read suppresses stale error and runs one follow-up read', async () => {
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+  let state: State = reduce(initialState, { type: 'memory_availability', status: 'ready' })
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  let rejectFirst!: (error: Error) => void
+  let getCalls = 0
+  const api: Pick<AgentApi, 'getMemory' | 'listMemoryFiles'> = {
+    getMemory: () => {
+      getCalls++
+      if (getCalls === 1) return new Promise((_, reject) => { rejectFirst = reject })
+      return Promise.resolve({ profile: {}, onboarding: 'pending', habits: { text: '', samples: 0 } })
+    },
+    listMemoryFiles: async () => ({ status: 'ok', snapshot: 's', items: [], nextCursor: null }),
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: err => err instanceof Error ? err.message : String(err), showToast: () => {}, ask: () => false })
+
+  const first = actions.loadMemory()
+  await tick()
+  assert.equal(getCalls, 1)
+
+  // Multiple change notifications during one in-flight read coalesce into a single follow-up read.
+  actions.onMemoryChanged({})
+  actions.onMemoryChanged({})
+  assert.equal(getCalls, 1)
+
+  rejectFirst(new Error('记忆正在恢复或暂不可用，请稍后重试。'))
+  assert.equal(await first, true, 'in-flight superseded failure chains directly into the follow-up read')
+  assert.equal(getCalls, 2)
+  assert.equal(state.memory.loaded, true)
+  assert.equal(state.memory.loadError, null)
+  assert.equal(state.memory.onboarding, 'pending')
+})
+
+test('closed profile skips redundant background memory:get once onboarding is settled and reloads on open', async () => {
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+  let state: State = initialState
+  const dispatch = (action: Action) => { state = reduce(state, action) }
+  let getCalls = 0
+  const api: Pick<AgentApi, 'getMemory' | 'listMemoryFiles'> = {
+    getMemory: async () => {
+      getCalls++
+      return { profile: {}, onboarding: 'done', habits: { text: '', samples: 0 },
+        fileProfile: { user: [{ identity: { kind: 'digest', id: 'p', workspace: 'w' }, text: 'Summary' }], project: null } }
+    },
+    listMemoryFiles: async () => ({ status: 'ok', snapshot: 's', items: [], nextCursor: null }),
+  }
+  const actions = createMemoryActions({ api: api as AgentApi, getState: () => state, dispatch, errorMessage: String, showToast: () => {}, ask: () => false })
+
+  actions.onAvailability('ready', { streamGeneration: 'g1', eventCursor: 1 })
+  await tick(); await tick()
+  assert.equal(getCalls, 1)
+  assert.equal(state.memory.loaded, true)
+  assert.ok(state.memory.fileProfile)
+
+  // Closed + loaded + onboarding done: memory_changed invalidates cached summaries without background RPC churn.
+  actions.onMemoryChanged({})
+  await tick()
+  assert.equal(getCalls, 1)
+  assert.equal(state.memory.fileProfile, null)
+
+  // Reopening About You triggers a fresh load.
+  actions.openProfile('profile')
+  await tick(); await tick()
+  assert.equal(getCalls, 2)
+  assert.ok(state.memory.fileProfile)
+})

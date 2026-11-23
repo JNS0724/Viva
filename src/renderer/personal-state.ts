@@ -1,5 +1,6 @@
 import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
 import type { MemoryFileProfile } from '../memory/contracts/file-management.ts'
+import type { MemoryAvailability } from '../shared/renderer-sync.ts'
 import type { ActionHandlers } from './action-types.ts'
 import { initialMemoryFiles } from './memory-file-state.ts'
 /**
@@ -10,6 +11,7 @@ export const initialMemory = Object.freeze({
   open: false,
   /** 'profile' shows what the agent knows; 'intro' is the short get-to-know-you form. */
   view: 'profile',
+  availability: 'starting' as MemoryAvailability,
   loaded: false,
   loadError: null as string | null,
   files: initialMemoryFiles,
@@ -69,7 +71,16 @@ const withExtensions = (state: State, changes: Partial<State['extensions']>): St
 export const isProfileEmpty = (memory: { profile: object }) => Object.keys(memory.profile).length === 0
 
 export const PERSONAL_ACTIONS= {
+  memory_availability: (state, { status }) => {
+    const clearsError = status === 'starting' || status === 'recovering'
+    if (state.memory.availability === status && (!clearsError || (state.memory.loadError === null && !state.memory.dreamUnavailable))) return state
+    return withMemory(state, {
+      availability: status,
+      ...(clearsError ? { loadError: null, dreamUnavailable: false } : {}),
+    })
+  },
   memory_loaded: (state, { data }) => withMemory(state, {
+    availability: 'ready',
     loaded: true,
     loadError: null,
     profile: data.profile,

@@ -431,7 +431,7 @@ beforeSelection = conversationActions.clearAfterTurn
 
 function syncDreamVisibility() {
   memoryActions.watchDream(document.visibilityState !== 'hidden' && state.memory.open && state.memory.view === 'profile'
-    && !state.memory.files.editor && !state.memory.files.selection)
+    && state.memory.availability === 'ready' && !state.memory.files.editor && !state.memory.files.selection)
 }
 document.addEventListener('visibilitychange', syncDreamVisibility)
 const memoryActions = createMemoryActions({ api, getState: () => state, dispatch, errorMessage, showToast: historyActions.showToast, ask })
@@ -1027,6 +1027,7 @@ agentEvents = createAgentEvents({
     if (state.memory.open) memoryActions.onMemoryChanged({})
   },
   refreshFiles: filesActions.filesAfterTurn,
+  memoryAvailability: (status, mark) => memoryActions.onAvailability(status, mark),
   memoryChanged: event => {
     if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)
     if (event.erasedOutputs?.length) void historyActions.invalidateSearch()
@@ -1045,7 +1046,13 @@ const initialization = createInitializationActions({
   pause: () => { agentEvents!.pause() },
   loading: () => dispatch({ type: 'initialization_status', status: 'loading' }),
   failed: reason => dispatch({ type: 'initialization_status', status: 'failed', reason }),
-  install: snapshot => { dispatch({ type: 'initialization_snapshot', snapshot }); dom.follower.jumpToLatest() },
+  install: snapshot => {
+    dispatch({ type: 'initialization_snapshot', snapshot })
+    if (snapshot.memoryAvailability) {
+      memoryActions.onAvailability(snapshot.memoryAvailability, { streamGeneration: snapshot.streamGeneration, eventCursor: snapshot.cutoverCursor })
+    }
+    dom.follower.jumpToLatest()
+  },
   initialized: () => agentEvents!.initialize(),
   restoreTurn: turn => dispatch({ type: 'initialization_turn', turn }),
   deliver: value => agentEvents!.receive(value),
@@ -1078,7 +1085,6 @@ async function boot() {
   document.addEventListener('visibilitychange', () => doneNotice?.check())
   api.onFocusComposer?.(() => dom.input.focus())
   api.onEvent(value => initialization.receive(value))
-  void memoryActions.loadMemory()
   void workDirActions.refresh()
   void loadSettings()
   void feedActions.loadFeed()

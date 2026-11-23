@@ -131,6 +131,7 @@ export interface ActionPayloads extends ConversationPayloads {
   models_discovery_pick: { id: string }
   models_discovery_close: {}
   models_adopt: { rows: readonly ModelRow[] }
+  memory_availability: { status: import('../shared/renderer-sync.ts').MemoryAvailability }
   memory_loaded: { data: Pick<State['memory'], 'profile' | 'onboarding' | 'habits'> & { cleanupPending?: number, fileProfile?: State['memory']['fileProfile'] } }
   memory_load_failed: { message: string }
   memory_open: { view?: string }

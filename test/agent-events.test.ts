@@ -185,6 +185,7 @@ const examples = {
   report_delivered: { type: 'report_delivered', context, ...context, reportId: 'r', text: 'result', at: 1 }, prompt_persisted: { type: 'prompt_persisted', context, sourceId: 'op-1' }, reports_removed: { type: 'reports_removed', reportIds: ['r'] }, error: { type: 'error', message: 'fixture' },
   schedule_propose: { type: 'schedule_propose', context, proposal: { proposalId: 'p', title: 'job', prompt: 'do', firstAt: '2026-11-09', rule: { kind: 'at' } } },
   mcp_status: { type: 'mcp_status', mcp: { active: ['mail'], connecting: [{ name: 'docs', reason: 'timed out' }], dropped: [] } },
+  memory_availability: { type: 'memory_availability', status: 'ready' },
   memory_changed: { type: 'memory_changed' }, files_changed: { type: 'files_changed', path: 'notes.md' }, feed_changed: { type: 'feed_changed' }, schedules_changed: { type: 'schedules_changed' },
   task_closed: { type: 'task_closed', taskId: 'task' },
   task_snapshot: { type: 'task_snapshot', snapshot }, task_update: { type: 'task_update', ...position, update: chunk('answer') }, task_permission_closed: { type: 'task_permission_closed', ...position, requestId: 'p' },
@@ -197,6 +198,26 @@ test('every supported wire tag has a valid production decode and exhaustive acti
   for (const [tag, input] of Object.entries(examples)) {
     const event = decodeAgentEvent(input); assert.ok(event, tag)
     const action = map(event, 20)
-    assert.equal(Boolean(action), !['memory_changed', 'files_changed', 'feed_changed', 'schedules_changed'].includes(tag), tag)
+    assert.equal(Boolean(action), !['memory_availability', 'memory_changed', 'files_changed', 'feed_changed', 'schedules_changed'].includes(tag), tag)
   }
+})
+
+test('memory_availability forwards validated status and stream mark immediately without foreground buffering', () => {
+  const seen: Array<{ status: string, mark: unknown }> = []
+  const issues: unknown[] = []
+  let state: State = initialState
+  const events = createAgentEvents({
+    getState: () => state, dispatch: action => { state = reduce(state, action) }, holdTask: () => false,
+    afterTurn() {}, clearAfterTurn() {}, ready() {}, refreshWorkDir() {}, refreshFiles() {}, refreshFeed() {},
+    memoryAvailability: (status, mark) => seen.push({ status, mark }),
+    memoryChanged() {}, filesChanged() {}, rejected: issue => issues.push(issue),
+  })
+  events.receive({ type: 'memory_availability', status: 'recovering', streamGeneration: 'g1', eventCursor: 4 })
+  events.receive({ type: 'memory_availability', status: 'ready', streamGeneration: 'g1', eventCursor: 5 })
+  events.receive({ type: 'memory_availability', status: 'bogus', streamGeneration: 'g1', eventCursor: 6 })
+  assert.deepEqual(seen, [
+    { status: 'recovering', mark: { streamGeneration: 'g1', eventCursor: 4 } },
+    { status: 'ready', mark: { streamGeneration: 'g1', eventCursor: 5 } },
+  ])
+  assert.deepEqual(issues, [{ reason: 'malformed-event', tag: 'memory_availability' }])
 })

@@ -72,7 +72,7 @@ function fileSummarySection(scope: 'user' | 'project', items: readonly MemoryFil
 }
 
 function profileView(memory: MemoryPage, handlers: Handlers): View[] {
-  const fileProfile = !memory.loadError && !memory.files.selection && !memory.files.editor ? memory.fileProfile : null
+  const fileProfile = !memory.loadError && memory.availability === 'ready' && !memory.files.selection && !memory.files.editor ? memory.fileProfile : null
   return [
     h('h2', { class: 'settings-title', id: 'profile-title', text: t("profile-panel.about.you") }),
     h('p', { class: 'help', text: t('memory-files.intro') }),

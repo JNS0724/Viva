@@ -1,6 +1,7 @@
 import type { ScheduleRuleView } from './proposal-types.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 import { contextOf } from '../shared/conversation-context.ts'
+import { isMemoryAvailability } from '../shared/renderer-sync.ts'
 import type { WindowSnapshot, TaskOpening, TaskSummary } from '../shared/ipc-results.ts'
 import type { ConversationUpdate, ForegroundWaits, PermissionRequest, AskedSecret, MemoryInjection } from './conversation-types.ts'
 import type { AgentEvent } from './agent-event-types.ts'
@@ -191,6 +192,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   }
   if (type === 'mcp_status') { const mcp = decodeMcp(item.mcp); return mcp ? { type, mcp } : null }
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
+  if (type === 'memory_availability') return isMemoryAvailability(item.status) ? { type, status: item.status } : null
   if (type === 'memory_changed') {
     const traceSessions = item.traceSessions === undefined ? undefined : texts(item.traceSessions)
     const erasedFeedIds = item.erasedFeedIds === undefined ? undefined : texts(item.erasedFeedIds)
@@ -250,7 +252,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_stopping: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, prompt_persisted: true, reports_removed: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_stopping: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, prompt_persisted: true, reports_removed: true, error: true, schedule_propose: true, memory_availability: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

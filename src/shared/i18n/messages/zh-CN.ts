@@ -138,6 +138,7 @@ export const zhCN = {
   "memory-files.list.partial": "部分记忆文件暂时无法核验，可以重新加载。",
   "memory-files.retry": "重新加载",
   "memory-files.loading": "正在加载记忆…",
+  "memory-files.recovering": "记忆正在恢复中…",
   "memory-files.search": "搜索记忆标题",
   "memory-files.empty": "Viva 保存的记忆会显示在这里。",
   "memory-files.more": "显示更多记忆",
