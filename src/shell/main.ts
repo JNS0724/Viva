@@ -478,6 +478,8 @@ function attachDeskIsland(window: BrowserWindow) {
     closeToTray()
   })
   window.on('show', () => {
+    // A queued show notification can arrive after a newer close-to-tray.
+    if (!window.isVisible()) return
     desk?.setAway(false)
     deskPreview?.close()
   })
