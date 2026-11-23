@@ -26,7 +26,7 @@ export interface FileReadPolicy {
 type Allows = (view: MemoryDocumentView) => boolean
 type FileLookup = {id?:string,workspace?:string,workspaces?: string[],path?:string,allows:Allows}
 type FileReadInput = FileLookup & {startLine?:number,endLine?:number,signal?:AbortSignal}
-type NodeSearchInput = {workspaces?: readonly string[],query:string,limit?:number,allows:Allows,signal?:AbortSignal}
+type NodeSearchInput = {workspaces?: readonly string[],query:string,limit?:number,offset?:number,allows:Allows,signal?:AbortSignal}
 export interface FileReadSet { files: MemoryFileDependency[], sourceIds: string[] }
 export interface FileSearchHit {
   id: string, workspace: string, path: string, revision: string
@@ -572,13 +572,16 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
   }
   function planNodeSearch(input: NodeSearchInput) {
     if (!input.query.trim()) throw new Error('invalid-memory-file-search')
+    const offset = input.offset ?? 0
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid-memory-file-search')
     const limit = checkedLimit(input.limit)
+    const need = offset + limit
     const scope = searchScope(input)
     const query = memoryFileLexicalQuery(input.query)
-    const probe = candidateProbe(Math.min(defaults.searchMaxCandidates, limit * defaults.searchCandidateMultiplier))
+    const probe = candidateProbe(Math.min(defaults.searchMaxCandidates, Math.max(limit * defaults.searchCandidateMultiplier, need * 2)))
     const candidates = index.nodeCandidates(query, scope, probe)
     const chunkLexical = index.lexicalCandidates(query, scope, probe)
-    return { query, limit, scope, probe, candidates, chunkLexical }
+    return { query, limit, offset, need, scope, probe, candidates, chunkLexical }
   }
   function dedupeDigestNodes(files: readonly MemoryFileIdentity[]): MemoryFileNode[] {
     const seen = new Set<string>()
@@ -630,9 +633,10 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     plan?: ReturnType<typeof planNodeSearch>,
     batch?: MemoryDocumentReadBatch,
     vectorNodes: readonly MemoryFileNode[] = [],
+    vectorIncomplete = false,
   ) {
     if (closed || input.signal?.aborted) return {nodes:[],files:[],sourceIds:[],partial:false}
-    const { limit, candidates, chunkLexical } = plan ?? planNodeSearch(input)
+    const { offset, need, candidates, chunkLexical } = plan ?? planNodeSearch(input)
     const checks = verifier(input.allows, undefined, batch)
     const chunkLexNodes = dedupeDigestNodes(chunkLexical.rows.map(hit => hit.file))
     const ranked = rankHybridNodes(candidates.rows, chunkLexNodes, vectorNodes)
@@ -641,20 +645,22 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       const view = checks.verify(item.file)
       if (view?.kind !== 'digest') continue
       verified.push({ file: item.file, view, score: item.score })
-      if (verified.length >= limit) break
+      if (verified.length >= need) break
     }
+    const page = verified.slice(offset, need)
     return {
-      nodes: verified.map(({ file, score }) => ({
+      nodes: page.map(({ file, score }) => ({
         id: file.id, workspace: file.workspace, path: file.path, name: file.name, description: file.description, score,
       })),
-      ...readSet(verified.map(item => item.view)),
-      partial: ranked.length > verified.length || candidates.incomplete || chunkLexical.incomplete || checks.incomplete(),
+      ...readSet(page.map(item => item.view)),
+      partial: ranked.length > verified.length || candidates.incomplete || chunkLexical.incomplete || vectorIncomplete || checks.incomplete(),
     }
   }
   async function nodeSearchAsync(input: NodeSearchInput, batch = policy.readBatch?.(input.signal)) {
     if (closed || input.signal?.aborted) return {nodes:[],files:[],sourceIds:[],partial:false}
     const plan = planNodeSearch(input)
     let vectorNodes: MemoryFileNode[] = []
+    let vectorIncomplete = false
     if (embedder && plan.scope.workspaces.length) {
       const run = scopedController(input.signal)
       try {
@@ -665,30 +671,56 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         else if (!run.controller.signal.aborted) {
           const output = await boundedQuery(input.query, defaults.automaticQueryTimeoutMs, input.signal, false)
           if (output?.[0] && !run.controller.signal.aborted) {
+            const vectorProbe = Math.min(512, Math.max(plan.probe, plan.need * 2))
             const page = await index.vectorCandidates(
-              output[0], target, plan.scope, plan.probe,
+              output[0], target, plan.scope, vectorProbe,
               () => !closed && !input.signal?.aborted,
               performance.now() + defaults.automaticQueryTimeoutMs,
             )
-            if (page) vectorNodes = dedupeDigestNodes(page.rows.map(hit => hit.file))
+            if (page) {
+              vectorNodes = dedupeDigestNodes(page.rows.map(hit => hit.file))
+              vectorIncomplete = page.incomplete
+            }
           }
         }
       } catch { /* Fall back cleanly to lexical node + chunk search. */ }
       finally { run.done() }
     }
-    if (!batch) return nodeSearch(input, plan, undefined, vectorNodes)
     const until = performance.now() + defaults.fileVerificationBudgetMs
-    const allFiles = [...plan.candidates.rows, ...dedupeDigestNodes(plan.chunkLexical.rows.map(hit => hit.file)), ...vectorNodes]
-    await loadFiles(batch, allFiles, defaults.fileVerificationBudgetMs, input.signal)
-    let result = nodeSearch(input, plan, batch, vectorNodes)
     const size = plan.probe
-    for (let offset = size; !closed && !input.signal?.aborted && plan.candidates.incomplete && result.nodes.length < plan.limit && offset < 512 && performance.now() < until; offset += size) {
-      const page = index.nodeCandidates(plan.query, plan.scope, size, offset)
-      await loadFiles(batch, page.rows, until - performance.now(), input.signal)
-      if (closed || input.signal?.aborted) break
-      plan.candidates.rows.push(...page.rows)
-      plan.candidates.incomplete = page.incomplete
-      result = nodeSearch(input, plan, batch, vectorNodes)
+    if (batch) {
+      const allFiles = [...plan.candidates.rows, ...dedupeDigestNodes(plan.chunkLexical.rows.map(hit => hit.file)), ...vectorNodes]
+      await loadFiles(batch, allFiles, defaults.fileVerificationBudgetMs, input.signal)
+    }
+    let result = nodeSearch(input, plan, batch, vectorNodes, vectorIncomplete)
+    let nodeOffset = size
+    let chunkOffset = size
+    while (
+      !closed && !input.signal?.aborted
+      && result.nodes.length < plan.limit
+      && ((plan.candidates.incomplete && nodeOffset < 512) || (plan.chunkLexical.incomplete && chunkOffset < 512))
+      && performance.now() < until
+    ) {
+      const newlyLoaded: MemoryFileNode[] = []
+      if (plan.candidates.incomplete && nodeOffset < 512) {
+        const page = index.nodeCandidates(plan.query, plan.scope, size, nodeOffset)
+        nodeOffset += size
+        plan.candidates.rows.push(...page.rows)
+        plan.candidates.incomplete = page.incomplete
+        newlyLoaded.push(...page.rows)
+      }
+      if (plan.chunkLexical.incomplete && chunkOffset < 512) {
+        const page = index.lexicalCandidates(plan.query, plan.scope, size, chunkOffset)
+        chunkOffset += size
+        plan.chunkLexical.rows.push(...page.rows)
+        plan.chunkLexical.incomplete = page.incomplete
+        newlyLoaded.push(...dedupeDigestNodes(page.rows.map(hit => hit.file)))
+      }
+      if (batch && newlyLoaded.length) {
+        await loadFiles(batch, newlyLoaded, until - performance.now(), input.signal)
+        if (closed || input.signal?.aborted) break
+      }
+      result = nodeSearch(input, plan, batch, vectorNodes, vectorIncomplete)
     }
     return result
   }

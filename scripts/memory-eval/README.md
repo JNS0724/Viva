@@ -33,3 +33,16 @@ DEEPSEEK_API_KEY=... npm run memory:eval -- --suite=lme \
 #   --viva-no-auto-context  Disable automatic context pre-injection so both systems answer via ReAct tools only
 #   --reme-enable-dream     Enable auto_dream during ReMe LME runs (disabled by default to match ReMe's LME preset)
 ```
+
+## External Datasets & Licensing
+
+This repository does **not** redistribute LongMemEval datasets, per-item ground-truth answers, or raw benchmark dialogues; the evaluation runner loads benchmark files from an external path (`--lme-dataset` or a locally checked-out ReMe clone).
+
+- **Original LongMemEval cleaned dataset**: [`xiaowu0162/longmemeval-cleaned`](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) (dataset card lists **MIT License**).
+- **ReMe revised LongMemEval-S dataset**: [`agentscope-ai/ReMe_longmemeval_clean_s_v2`](https://huggingface.co/datasets/agentscope-ai/ReMe_longmemeval_clean_s_v2) (documents data corrections and requests citing the original LongMemEval paper; check upstream dataset terms before redistributing cleaned JSON, ground-truth answers, or raw dialogues).
+- **Third-party judge prompt notices**: The four English LongMemEval judge prompts in [`judge.ts`](./judge.ts) are ported from `agentscope-ai/ReMe` (`54fa338`, Apache-2.0) and upstream `xiaowu0162/LongMemEval` (MIT, Copyright (c) 2024 Di Wu). See [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) and [`../licenses/Apache-2.0.txt`](../licenses/Apache-2.0.txt). Viva's own code remains licensed under the [MIT License](../../LICENSE).
+
+## Benchmark Scope Note
+
+Published LongMemEval numbers from this harness represent **controlled side-by-side experiments run by the Viva team under the recorded configuration** (specific stratified slice ID, `--lme-max-sessions` cap, model, embedding backend, and Viva's own abstention prompt in [`judge.ts`](./judge.ts) for `_abs` questions) — they are **not** official full 500-item LongMemEval leaderboard scores. Always report the exact slice fingerprint, session cap, and harness flags alongside aggregate metrics.
+

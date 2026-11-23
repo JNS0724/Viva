@@ -113,6 +113,17 @@ function applyRefineEdits(beforeBody: string, edits: readonly DreamEdit[]): stri
   return body
 }
 
+function stripAccidentalFrontmatter(text: string): string {
+  if (!/^---\r?\n/u.test(text)) return text
+  try {
+    const parsed = parseMemoryDocument(text)
+    if (typeof parsed.metadata.name === 'string' || typeof parsed.metadata.description === 'string') {
+      return parsed.body
+    }
+  } catch { /* Ordinary Markdown starting with a thematic break `---`. */ }
+  return text
+}
+
 function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
   const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
   const rawDraftBody = operation.action === 'CREATE'
@@ -120,10 +131,11 @@ function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentV
     : operation.body !== undefined
       ? operation.body
       : applyRefineEdits(beforeParsed!.body, operation.edits!)
-  // Strip accidental YAML frontmatter if the model echoes metadata inside body.
-  const draftBody = parseMemoryDocument(rawDraftBody).body
+  // Strip accidental YAML frontmatter only when it parses with digest metadata keys (never break thematic `---` rules).
+  const draftBody = stripAccidentalFrontmatter(rawDraftBody)
   const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
-  const bodyLinks = memoryDocumentLinks(draftBody)
+  // Wrap the body in empty frontmatter so a leading Markdown horizontal rule `---` is parsed as body, not frontmatter.
+  const bodyLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftBody }))
   const presentExact = new Set(bodyLinks)
   const presentPaths = new Set(bodyLinks.map(link => link.split('#')[0]!))
   const missingExisting = existingLinks.filter(link => !presentExact.has(link))
@@ -200,7 +212,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
   digestNodes?: MemoryFileIndex['digestNodes'],
-  searchDigestNodes?: (workspace: string, query: string, limit: number, signal?: AbortSignal) => Promise<Array<{ id: string, path: string, score: number }>>,
+  searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
   readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
@@ -272,17 +284,20 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         : documents.fileRegistry(workspace)
       return entries.filter(row => row.state === 'active')
     }
-    async function candidates(query: string, limit: number, signal?: AbortSignal) {
+    async function candidates(query: string, limit: number, hybridOffset: number, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
       const hybridScores = new Map<string, number>()
-      if (searchDigestNodes) {
+      let hybridPartial = false
+      if (searchDigestNodes && hybridOffset >= 0 && hybridOffset < 512) {
         try {
-          const hits = await searchDigestNodes(workspace, query, limit, signal)
-          for (const hit of hits) hybridScores.set(hit.id, Math.max(hybridScores.get(hit.id) ?? 0, hit.score))
+          const res = await searchDigestNodes(workspace, query, limit, hybridOffset, signal)
+          for (const hit of res.nodes) hybridScores.set(hit.id, Math.max(hybridScores.get(hit.id) ?? 0, hit.score))
+          hybridPartial = res.partial
         } catch { /* Fall back to local lexical candidate scan. */ }
       }
-      const matches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
+      const hybridMatches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
+      const lexicalMatches: Array<{ path: string, revision: string, usageVersion: number, score: number }> = []
       let yieldAt = performance.now() + 4
       for (const row of activeEntries()) {
         if (performance.now() >= yieldAt) {
@@ -311,10 +326,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const lexicalScore = name?.toLowerCase() === query.toLowerCase() ? terms.size + 1 : words
           ? [...new Set(words.filter(word => terms.has(word)))].length : 0
         const hybridScore = hybridScores.get(row.id) ?? 0
-        const score = hybridScore > 0 ? hybridScore * 100 + lexicalScore : lexicalScore
-        if (!words || score > 0) matches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score })
+        if (hybridScore > 0) {
+          hybridMatches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score: hybridScore * 100 + lexicalScore })
+        } else if (!words || lexicalScore > 0) {
+          lexicalMatches.push({ path: row.path, revision: row.revision, usageVersion: row.usageVersion, score: lexicalScore })
+        }
       }
-      return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+      const byScore = (a: { score: number, path: string }, b: { score: number, path: string }) => b.score - a.score || a.path.localeCompare(b.path)
+      return {
+        hybridMatches: hybridMatches.sort(byScore),
+        lexicalMatches: lexicalMatches.sort(byScore),
+        hybridPartial,
+      }
     }
     const catalog = (maxEntries = 30) => {
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
@@ -342,10 +365,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
         signal?.throwIfAborted()
         const limit = Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
-        const matches = search ? await candidates(search.query, limit, signal) : []
-        const fingerprint = search ? identity.hash(JSON.stringify(matches)) : ''
-        const offset = search?.page?.fingerprint === fingerprint ? search.page.offset : 0
-        const pageSlice = matches.slice(offset, offset + limit)
+        const baseFingerprint = search ? identity.hash(JSON.stringify({ query: search.query, entries: activeEntries().map(r => [r.path, r.revision, r.usageVersion]) })) : ''
+        const samePage = search?.page?.fingerprint === baseFingerprint
+        const offset = samePage ? search!.page!.offset : 0
+        const hybridOffset = searchDigestNodes ? (samePage ? (search!.page!.hybridOffset ?? 0) : 0) : -1
+        const { hybridMatches, lexicalMatches, hybridPartial } = search
+          ? await candidates(search.query, limit, hybridOffset, signal)
+          : { hybridMatches: [], lexicalMatches: [], hybridPartial: false }
+        const hybridSlice = hybridMatches.slice(0, limit)
+        const lexicalSlice = lexicalMatches.slice(offset, offset + Math.max(0, limit - hybridSlice.length))
+        const pageSlice = [...hybridSlice, ...lexicalSlice].sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
         const selected = pageSlice.map(match => match.path)
         const scored = searchDigestNodes && pageSlice.some(match => match.score > 0)
           ? new Map(pageSlice.map(match => [match.path, match.score]))
@@ -370,9 +399,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (view === undefined) unread = true
           return view ?? []
         })
-        const nextOffset = unread ? offset : offset + selected.length
-        const partial = unread || nextOffset < matches.length
-        return { read, list: () => list, ...(scored ? { scored } : {}), partial, next: partial ? { fingerprint, offset: nextOffset } : undefined }
+        const nextOffset = unread ? offset : offset + lexicalSlice.length
+        const nextHybridOffset = !searchDigestNodes ? -1
+          : unread ? hybridOffset
+            : hybridPartial && hybridOffset >= 0 && hybridOffset + limit < 512 ? hybridOffset + limit : -1
+        const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0
+        return {
+          read, list: () => list, ...(scored ? { scored } : {}), partial,
+          next: partial ? { fingerprint: baseFingerprint, offset: nextOffset, ...(searchDigestNodes ? { hybridOffset: nextHybridOffset } : {}) } : undefined,
+        }
       },
     }
   }

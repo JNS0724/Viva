@@ -84,7 +84,7 @@ export function searchMemoryNodes<S extends DreamDocumentSnapshot>(snapshots: re
 }
 
 /** Opaque to the model; repeating a partial query continues through the same candidate set. */
-export type DreamSearchPage = { fingerprint: string, offset: number }
+export type DreamSearchPage = { fingerprint: string, offset: number, hybridOffset?: number }
 type DreamFiles<S> = {
   partial?: boolean
   next?: DreamSearchPage

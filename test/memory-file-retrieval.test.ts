@@ -696,3 +696,21 @@ test('nodeSearch and nodeSearchAsync match digest body chunks and semantic vecto
   assert.equal(semantic.nodes.some(node => node.id === 'secret-digest' || node.id === 'daily-only'), false)
   assert.equal(JSON.stringify(semantic.nodes).includes('deep-body-fact-42'), false)
 })
+
+test('nodeSearchAsync paginates chunk lexical candidates past disallowed/daily hits and supports offset paging', async t => {
+  const fillers = Array.from({ length: 40 }, (_, i) =>
+    view(`daily-filler-${String(i).padStart(2, '0')}`, 'deep-paginated-token body', {
+      kind: 'daily', day: '2026-11-16', path: `daily/2026-11-16/f-${String(i).padStart(2, '0')}.md`,
+    }))
+  const targetA = view('opaque-digest-a', 'deep-paginated-token body')
+  const targetB = view('opaque-digest-b', 'deep-paginated-token body')
+  const { retrieval } = setup(t, [...fillers, targetA, targetB])
+
+  const page1 = await retrieval.nodeSearchAsync({ query: 'deep-paginated-token', limit: 1, allows })
+  assert.equal(page1.nodes.length, 1)
+  assert.equal(page1.partial, true)
+  const page2 = await retrieval.nodeSearchAsync({ query: 'deep-paginated-token', limit: 1, offset: 1, allows })
+  assert.equal(page2.nodes.length, 1)
+  assert.notEqual(page2.nodes[0]!.id, page1.nodes[0]!.id)
+  assert.deepEqual([page1.nodes[0]!.id, page2.nodes[0]!.id].sort(), ['opaque-digest-a', 'opaque-digest-b'])
+})

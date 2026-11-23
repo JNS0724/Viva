@@ -707,10 +707,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
     store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics, digestNodes: fileIndex?.digestNodes,
     searchDigestNodes: fileRetrieval
-      ? async (workspace, query, limit, signal) => {
+      ? async (workspace, query, limit, offset, signal) => {
           const batch = filePolicy?.readBatch(signal)
-          const res = await fileRetrieval.nodeSearchAsync({ workspaces: [workspace], query, limit, allows: () => true, signal }, batch)
-          return res.nodes.map(node => ({ id: node.id, path: node.path, score: node.score }))
+          const res = await fileRetrieval.nodeSearchAsync({ workspaces: [workspace], query, limit, offset, allows: () => true, signal }, batch)
+          return { nodes: res.nodes.map(node => ({ id: node.id, path: node.path, score: node.score })), partial: res.partial }
         }
       : undefined,
     readPhysicalFile: resources.readPhysicalFile,

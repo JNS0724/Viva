@@ -1,4 +1,14 @@
-/** Unified LLM-as-a-Judge aligned verbatim with ReMe plugins/lme-judge/src/judge_lme/llm_judge.yaml. */
+/**
+ * Unified LLM-as-a-Judge for LongMemEval and Chinese semantic evaluation.
+ *
+ * Third-party attribution:
+ * - TEMPORAL_PROMPT, KNOWLEDGE_UPDATE_PROMPT, PREFERENCE_PROMPT, and OTHER_PROMPT are ported
+ *   from agentscope-ai/ReMe (commit 54fa338, plugins/lme-judge/src/judge_lme/llm_judge.yaml,
+ *   Apache-2.0) and incorporate prompt wording from xiaowu0162/LongMemEval
+ *   (src/evaluation/evaluate_qa.py, MIT, Copyright (c) 2024 Di Wu).
+ * - ABSTENTION_PROMPT and CHINESE_SEMANTIC_PROMPT are Viva-authored prompts (MIT).
+ * See ./THIRD_PARTY_NOTICES.md and ../licenses/Apache-2.0.txt for full license texts and notices.
+ */
 import type { Context } from '@deepseek-ai/cordis'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { DEEPSEEK_DEFAULT } from '../../src/backend/model-providers.ts'

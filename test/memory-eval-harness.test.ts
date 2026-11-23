@@ -83,6 +83,21 @@ describe('memory-eval harness', () => {
     assert.equal(bundle.documents.length, 120)
     assert.equal(bundle.queries.length, 60)
     assert.ok(bundle.remeDocuments.length > 100 && bundle.remeDocuments.length < 120)
+    const retiredIds = new Set(bundle.documents.flatMap(d => d.supersedes ? [d.supersedes.id] : []))
+    assert.ok(retiredIds.size > 0)
+    assert.equal(bundle.remeDocuments.some(d => retiredIds.has(d.id)), false, 'superseded docs must be excluded from ReMe corpus')
+
+    const wrongSnippet = scoreOfflineQueries(
+      bundle.queries,
+      bundle.queries.map(q => ({
+        id: q.id,
+        elapsedMs: 1.5,
+        hits: q.evidence.map(e => ({ id: e.id, text: 'unrelated snippet without the required quote', score: 1 })),
+      })),
+      { system: 'viva', mode: 'test', dataset: 'evaluation', indexMs: 10, vectorPrepMs: 20 },
+    )
+    assert.equal(wrongSnippet.hit1, 0, 'matching doc id with wrong chunk text must not count as quote evidence hit')
+    assert.equal(wrongSnippet.hit5, 0)
 
     const perfect = scoreOfflineQueries(
       bundle.queries,

@@ -15,13 +15,52 @@ import argparse
 import asyncio
 import json
 import os
-import resource
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    import resource
+except ImportError:  # Windows does not provide POSIX resource module
+    resource = None  # type: ignore[assignment]
+
+
+def _peak_rss_mb() -> float:
+    if resource is not None:
+        rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # macOS ru_maxrss is in bytes; Linux is KiB
+        return rss_bytes / (1024 * 1024) if sys.platform == "darwin" else rss_bytes / 1024.0
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return counters.PeakWorkingSetSize / (1024 * 1024)
+        except Exception:
+            return 0.0
+    return 0.0
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -301,81 +340,106 @@ async def cmd_offline_eval(payload: dict[str, Any]) -> dict[str, Any]:
         await app.close()
 
 
-async def cmd_scale_bench(payload: dict[str, Any]) -> dict[str, Any]:
+async def cmd_scale_bench_point(payload: dict[str, Any]) -> dict[str, Any]:
     from reme import Application
 
-    points = []
-    for doc_count in payload["docCounts"]:
-        work_dir = Path(payload["workDir"]) / f"scale_{doc_count}"
-        if work_dir.exists():
-            shutil.rmtree(work_dir)
-        work_dir.mkdir(parents=True, exist_ok=True)
-        for i in range(doc_count):
-            day = f"2026-{(i % 10) + 1:02d}-{(i % 27) + 1:02d}"
-            if i % 3 == 0:
-                rel = f"daily/{day}/note-{i:05d}.md"
-            else:
-                rel = f"digest/wiki/doc-{i:05d}.md"
-            body = (
-                f"---\nname: Topic {i}\ndescription: Benchmark synthetic memory entry {i} for scale testing\n---\n\n"
-                f"# Entry {i}\n\n"
-                f"Project code SIGMA-{1000 + i} handles service routing on port {8000 + (i % 500)}.\n"
-                f"中文测试条目 {i}：关于季度预算复核、接口限流策略与每周例会安排的备忘记录。\n"
-                f"Owner is engineer_{i % 40} in team_{i % 12}. Approval requires checklist-{i % 25}.\n"
-            )
-            full = work_dir / rel
-            full.parent.mkdir(parents=True, exist_ok=True)
-            full.write_text(body, encoding="utf-8")
-
-        cfg = _configure_app_dict(
-            str(work_dir),
-            plugins=[],
-            embedding_url=payload.get("embeddingUrl"),
-            embedding_dims=int(payload.get("embeddingDims", 384)),
-            llm_model="deepseek-flash",
-            llm_base_url="https://api.deepseek.com/v1",
-            llm_api_key="unused-offline",
-            enable_dream=False,
-            index_sessions=False,
+    doc_count = int(payload["docCount"])
+    work_dir = Path(payload["workDir"]) / f"scale_{doc_count}"
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(doc_count):
+        day = f"2026-{(i % 10) + 1:02d}-{(i % 27) + 1:02d}"
+        if i % 3 == 0:
+            rel = f"daily/{day}/note-{i:05d}.md"
+        else:
+            rel = f"digest/wiki/doc-{i:05d}.md"
+        body = (
+            f"---\nname: Topic {i}\ndescription: Benchmark synthetic memory entry {i} for scale testing\n---\n\n"
+            f"# Entry {i}\n\n"
+            f"Project code SIGMA-{1000 + i} handles service routing on port {8000 + (i % 500)}.\n"
+            f"中文测试条目 {i}：关于季度预算复核、接口限流策略与每周例会安排的备忘记录。\n"
+            f"Owner is engineer_{i % 40} in team_{i % 12}. Approval requires checklist-{i % 25}.\n"
         )
-        app = Application(**cfg)
-        await app.start()
-        try:
-            t0 = time.perf_counter()
-            await app.run_job("index_update")
-            index_ms = (time.perf_counter() - t0) * 1000.0
+        full = work_dir / rel
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(body, encoding="utf-8")
 
-            queries = [
-                f"SIGMA-{1000 + (k * max(1, doc_count // 30)) % doc_count} routing port"
-                if k % 2 == 0
-                else f"中文测试条目 {(k * max(1, doc_count // 30)) % doc_count} 季度预算 接口限流"
-                for k in range(30)
-            ]
-            latencies = []
-            for q in queries:
-                qs = time.perf_counter()
-                await app.run_job("search", query=q, limit=5)
-                latencies.append((time.perf_counter() - qs) * 1000.0)
+    cfg = _configure_app_dict(
+        str(work_dir),
+        plugins=[],
+        embedding_url=payload.get("embeddingUrl"),
+        embedding_dims=int(payload.get("embeddingDims", 384)),
+        llm_model="deepseek-flash",
+        llm_base_url="https://api.deepseek.com/v1",
+        llm_api_key="unused-offline",
+        enable_dream=False,
+        index_sessions=False,
+    )
+    app = Application(**cfg)
+    await app.start()
+    try:
+        t0 = time.perf_counter()
+        await app.run_job("index_update")
+        index_ms = (time.perf_counter() - t0) * 1000.0
 
-            rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            # macOS ru_maxrss is in bytes; Linux is KiB
-            rss_mb = rss_bytes / (1024 * 1024) if sys.platform == "darwin" else rss_bytes / 1024.0
-            is_hybrid = bool(payload.get("embeddingUrl"))
-            points.append({
-                "docCount": doc_count,
-                "chunkCount": doc_count,
-                "indexMs": index_ms,
-                "vectorPrepMs": 0.0,
-                "lexicalP50Ms": 0.0 if is_hybrid else _percentile(latencies, 0.5),
-                "lexicalP95Ms": 0.0 if is_hybrid else _percentile(latencies, 0.95),
-                "lexicalP99Ms": 0.0 if is_hybrid else _percentile(latencies, 0.99),
-                "hybridP50Ms": _percentile(latencies, 0.5) if is_hybrid else None,
-                "hybridP95Ms": _percentile(latencies, 0.95) if is_hybrid else None,
-                "hybridP99Ms": _percentile(latencies, 0.99) if is_hybrid else None,
-                "rssMb": round(rss_mb, 1),
-            })
-        finally:
-            await app.close()
+        queries = [
+            f"SIGMA-{1000 + (k * max(1, doc_count // 30)) % doc_count} routing port"
+            if k % 2 == 0
+            else f"中文测试条目 {(k * max(1, doc_count // 30)) % doc_count} 季度预算 接口限流"
+            for k in range(30)
+        ]
+        latencies = []
+        for q in queries:
+            qs = time.perf_counter()
+            await app.run_job("search", query=q, limit=5)
+            latencies.append((time.perf_counter() - qs) * 1000.0)
+
+        rss_mb = _peak_rss_mb()
+        is_hybrid = bool(payload.get("embeddingUrl"))
+        return {
+            "docCount": doc_count,
+            "chunkCount": doc_count,
+            "indexMs": index_ms,
+            "vectorPrepMs": 0.0,
+            "lexicalP50Ms": 0.0 if is_hybrid else _percentile(latencies, 0.5),
+            "lexicalP95Ms": 0.0 if is_hybrid else _percentile(latencies, 0.95),
+            "lexicalP99Ms": 0.0 if is_hybrid else _percentile(latencies, 0.99),
+            "hybridP50Ms": _percentile(latencies, 0.5) if is_hybrid else None,
+            "hybridP95Ms": _percentile(latencies, 0.95) if is_hybrid else None,
+            "hybridP99Ms": _percentile(latencies, 0.99) if is_hybrid else None,
+            "rssMb": round(rss_mb, 1),
+        }
+    finally:
+        await app.close()
+
+
+async def cmd_scale_bench(payload: dict[str, Any]) -> dict[str, Any]:
+    """Run each docCount in a fresh Python child process so peak RSS never inherits earlier scale points."""
+    points = []
+    work_root = Path(payload["workDir"])
+    work_root.mkdir(parents=True, exist_ok=True)
+    script_path = Path(__file__).resolve()
+    for doc_count in payload["docCounts"]:
+        point_in = work_root / f"point_{doc_count}_in.json"
+        point_out = work_root / f"point_{doc_count}_out.json"
+        point_payload = {
+            "workDir": str(work_root),
+            "docCount": int(doc_count),
+            "embeddingUrl": payload.get("embeddingUrl"),
+            "embeddingDims": int(payload.get("embeddingDims", 384)),
+        }
+        point_in.write_text(json.dumps(point_payload, ensure_ascii=False), encoding="utf-8")
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, str(script_path), "scale-bench-point", "--input", str(point_in), "--output", str(point_out)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if proc.stderr.strip():
+            print(proc.stderr.strip(), file=sys.stderr, flush=True)
+        points.append(json.loads(point_out.read_text(encoding="utf-8")))
     return {"points": points}
 
 
@@ -746,7 +810,7 @@ async def cmd_lme_eval(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["offline-eval", "scale-bench", "chinese-eval", "lme-eval"])
+    parser.add_argument("command", choices=["offline-eval", "scale-bench", "scale-bench-point", "chinese-eval", "lme-eval"])
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -756,6 +820,8 @@ async def main() -> None:
         result = await cmd_offline_eval(payload)
     elif args.command == "scale-bench":
         result = await cmd_scale_bench(payload)
+    elif args.command == "scale-bench-point":
+        result = await cmd_scale_bench_point(payload)
     elif args.command == "chinese-eval":
         result = await cmd_chinese_eval(payload)
     else:

@@ -39,26 +39,45 @@ export async function startLocalEmbeddingServer(modelRoot: string, runtimeRoot: 
   }
   const dimensions = embedder.dimensions
 
-  async function encodeSingle(text: string): Promise<number[]> {
-    const trimmed = text.trim() || ' '
-    if (trimmed.length <= 160) {
-      const direct = await embedder.embedBatch([{ kind: 'passage', text: trimmed }])
-      if (direct?.[0]) return normalize(direct[0])
-    }
-    // Granite-97M maxTokens=128 (symmetric: queryPrefix="", passagePrefix="").
-    // Encode ALL bounded 140-char windows across the full chunk in vectorized batches so ReMe suffers zero middle truncation.
-    const rawSlices = splitText(trimmed, 140)
+  async function encodeSlicesWithRetry(slices: string[]): Promise<Float32Array[]> {
     const vectors: Float32Array[] = []
-    for (let offset = 0; offset < rawSlices.length; offset += MEMORY_EMBEDDING_BATCH) {
-      const chunk = rawSlices.slice(offset, offset + MEMORY_EMBEDDING_BATCH)
-      const batch = await embedder.embedBatch(chunk.map(s => ({ kind: 'passage' as const, text: s })))
-      if (batch) {
-        for (const vec of batch) if (vec) vectors.push(vec)
+    const queue = [...slices]
+    while (queue.length) {
+      const batchSlices = queue.splice(0, MEMORY_EMBEDDING_BATCH)
+      const batch = await embedder.embedBatch(batchSlices.map(s => ({ kind: 'passage' as const, text: s })))
+      if (!batch || batch.length !== batchSlices.length) {
+        throw new Error('Local Granite-97M embedder unavailable or timed out while encoding batch')
+      }
+      for (let i = 0; i < batchSlices.length; i++) {
+        const vec = batch[i]
+        if (vec) {
+          vectors.push(vec)
+          continue
+        }
+        // Token count exceeded maxTokens (128): bisect the overflowing slice instead of silently skipping it.
+        const text = batchSlices[i]!
+        const chars = [...text]
+        if (chars.length <= 24) {
+          throw new Error(`Local Granite-97M embedder failed to encode slice (${chars.length} chars)`)
+        }
+        const mid = Math.floor(chars.length / 2)
+        const left = chars.slice(0, mid).join('').trim()
+        const right = chars.slice(mid).join('').trim()
+        if (right) queue.unshift(right)
+        if (left) queue.unshift(left)
       }
     }
+    return vectors
+  }
+
+  async function encodeSingle(text: string): Promise<number[]> {
+    const trimmed = text.trim() || ' '
+    // Granite-97M maxTokens=128 (symmetric: queryPrefix="", passagePrefix="").
+    // Encode ALL bounded windows across the full chunk, bisecting any slice that exceeds 128 tokens, and fail explicitly on encoder errors.
+    const rawSlices = splitText(trimmed, 140)
+    const vectors = await encodeSlicesWithRetry(rawSlices)
     if (!vectors.length) {
-      const fallback = await embedder.embedBatch([{ kind: 'passage', text: trimmed.slice(0, 80) || ' ' }])
-      return fallback?.[0] ? normalize(fallback[0]) : new Array<number>(dimensions).fill(0)
+      throw new Error('Local Granite-97M embedder produced zero vectors')
     }
     const mean = new Float32Array(dimensions)
     for (const vec of vectors) {

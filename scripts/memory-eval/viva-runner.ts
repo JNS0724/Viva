@@ -79,8 +79,9 @@ function collectWorkspaceStats(rootDir: string): WorkspaceStats {
 export function buildOfflineBundle(dataset: 'evaluation' | 'validation') {
   const documents = dataset === 'validation' ? validationDocuments : evaluationDocuments
   const queries = dataset === 'validation' ? validationQueries : evaluationQueries
-  // Public active docs only for ReMe (ReMe has no scope/disabled/forgotten ACL layer; Viva enforces ACL on all 120 docs).
-  const activePublicDocs = documents.filter(d => d.scope === 'public' && d.state === 'active')
+  // Public active docs only for ReMe, applying the same supersedes retirement rules as dataPolicy().
+  const retiredIds = new Set(documents.flatMap(d => d.supersedes ? [d.supersedes.id] : []))
+  const activePublicDocs = documents.filter(d => d.scope === 'public' && d.state === 'active' && !retiredIds.has(d.id))
   const remeDocuments = activePublicDocs.map(doc => ({
     id: doc.id,
     path: doc.kind === 'daily' ? `daily/${doc.day}/${doc.id}.md` : `digest/wiki/${doc.id}.md`,
@@ -120,15 +121,13 @@ export function scoreOfflineQueries(
     times.push(res.elapsedMs)
     const top5 = res.hits.slice(0, 5)
     const covered = (hits: typeof top5, label: { id: string, quote: string }) =>
-      hits.some(hit => hit.id === label.id && (hit.text.includes(label.quote) || hit.text.length === 0))
-    const idCovered = (hits: typeof top5, label: { id: string, quote: string }) =>
-      hits.some(hit => hit.id === label.id)
-    const hit1 = query.evidence.some(label => covered(top5.slice(0, 1), label) || idCovered(top5.slice(0, 1), label))
-    const hit5 = query.evidence.some(label => covered(top5, label) || idCovered(top5, label))
-    const allEvidenceHit5 = query.evidence.length > 0 && query.evidence.every(label => covered(top5, label) || idCovered(top5, label))
+      hits.some(hit => hit.id === label.id && (hit.text.length === 0 || hit.text.includes(label.quote)))
+    const hit1 = query.evidence.some(label => covered(top5.slice(0, 1), label))
+    const hit5 = query.evidence.some(label => covered(top5, label))
+    const allEvidenceHit5 = query.evidence.length > 0 && query.evidence.every(label => covered(top5, label))
     let mrr5 = 0
     for (let i = 0; i < top5.length; i++) {
-      if (query.evidence.some(label => top5[i]!.id === label.id)) {
+      if (query.evidence.some(label => covered([top5[i]!], label))) {
         mrr5 = 1 / (i + 1)
         break
       }

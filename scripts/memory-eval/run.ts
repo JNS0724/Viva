@@ -51,13 +51,19 @@ function argValue(prefix: string): string | undefined {
   return process.argv.find(a => a.startsWith(prefix))?.slice(prefix.length)
 }
 
-async function runRemeBridge<T>(pythonBin: string, command: string, payload: object, workDir: string): Promise<T> {
+async function runRemeBridge<T>(
+  pythonBin: string,
+  command: string,
+  payload: object,
+  workDir: string,
+  extraEnv?: Record<string, string>,
+): Promise<T> {
   mkdirSync(workDir, { recursive: true })
   const inputPath = path.join(workDir, `${command}-input.json`)
   const outputPath = path.join(workDir, `${command}-output.json`)
   writeFileSync(inputPath, `${JSON.stringify(payload, null, 2)}\n`)
   const { stderr } = await execFileAsync(pythonBin, [BRIDGE, command, '--input', inputPath, '--output', outputPath], {
-    env: process.env,
+    env: { ...process.env, ...(extraEnv ?? {}) },
     maxBuffer: 64 * 1024 * 1024,
     timeout: 90 * 60 * 1000,
   })
@@ -241,6 +247,15 @@ async function main() {
   const lmeMaxSessions = Number(argValue('--lme-max-sessions=') ?? '0')
   const lmeExcludeReport = argValue('--lme-exclude-report=') ?? ''
   const concurrency = Number(argValue('--concurrency=') ?? '3')
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new Error(`Invalid --concurrency value (must be a positive integer): ${argValue('--concurrency=')}`)
+  }
+  if (!Number.isSafeInteger(lmePerType) || lmePerType < 1) {
+    throw new Error(`Invalid --lme-per-type value (must be a positive integer): ${argValue('--lme-per-type=')}`)
+  }
+  if (!Number.isSafeInteger(lmeMaxSessions) || lmeMaxSessions < 0) {
+    throw new Error(`Invalid --lme-max-sessions value (must be a non-negative integer): ${argValue('--lme-max-sessions=')}`)
+  }
   const vivaOnly = process.argv.includes('--viva-only')
   const vivaIncludeAutoContext = !process.argv.includes('--viva-no-auto-context')
   const remeEnableDream = process.argv.includes('--reme-enable-dream')
@@ -273,29 +288,9 @@ async function main() {
   }
 
   let embeddingServer: LocalEmbeddingServer | null = null
-  if (!vivaOnly && hasEmbedding && (suites.includes('offline') || suites.includes('chinese') || suites.includes('lme'))) {
-    process.stderr.write('[eval] starting local Granite-97M OpenAI proxy for ReMe iso-embedding...\n')
-    embeddingServer = await startLocalEmbeddingServer(modelRoot, runtimeRoot)
-    process.stderr.write(`[eval] Granite-97M proxy ready at ${embeddingServer.url} (${embeddingServer.dimensions}d)\n`)
-  }
-
   let llmCtx: Context | null = null
   let unregisterLlm: (() => void) | null = null
-  if (suites.includes('chinese') || suites.includes('lme')) {
-    const key = readLiveMemoryKey()
-    const ctx = new Context()
-    const llm = new LlmRuntime(ctx)
-    const connection = resolveAdapterOptions({})
-    if (connection.baseURL !== PUBLIC_BASE_URL) throw new Error('Expected official DeepSeek endpoint')
-    const anonymous = getOrCreateAnonymousUserId({ env: { DSH_HOME: path.join(outputDir, 'isolated-dsh-home') } })
-    unregisterLlm = llm.registerAdapter([DEEPSEEK_DEFAULT.provider], new DeepSeekAdapter({
-      options: () => connection,
-      resolveAuth: async () => ({ headers: { 'x-api-key': key } }),
-      resolveUserId: () => anonymous,
-      prepareExtensions: async () => ({ fields: {}, accept: async () => {} }),
-    }))
-    llmCtx = ctx
-  }
+  let remeApiEnv: Record<string, string> | undefined
 
   const report: {
     manifest: EvalManifest
@@ -311,6 +306,28 @@ async function main() {
   }
 
   try {
+    if (!vivaOnly && hasEmbedding && (suites.includes('offline') || suites.includes('chinese') || suites.includes('lme'))) {
+      process.stderr.write('[eval] starting local Granite-97M OpenAI proxy for ReMe iso-embedding...\n')
+      embeddingServer = await startLocalEmbeddingServer(modelRoot, runtimeRoot)
+      process.stderr.write(`[eval] Granite-97M proxy ready at ${embeddingServer.url} (${embeddingServer.dimensions}d)\n`)
+    }
+
+    if (suites.includes('chinese') || suites.includes('lme')) {
+      const key = readLiveMemoryKey()
+      remeApiEnv = { DEEPSEEK_API_KEY: key }
+      const ctx = new Context()
+      const llm = new LlmRuntime(ctx)
+      const connection = resolveAdapterOptions({})
+      if (connection.baseURL !== PUBLIC_BASE_URL) throw new Error('Expected official DeepSeek endpoint')
+      const anonymous = getOrCreateAnonymousUserId({ env: { DSH_HOME: path.join(outputDir, 'isolated-dsh-home') } })
+      unregisterLlm = llm.registerAdapter([DEEPSEEK_DEFAULT.provider], new DeepSeekAdapter({
+        options: () => connection,
+        resolveAuth: async () => ({ headers: { 'x-api-key': key } }),
+        resolveUserId: () => anonymous,
+        prepareExtensions: async () => ({ fields: {}, accept: async () => {} }),
+      }))
+      llmCtx = ctx
+    }
     // ── M4: Offline Retrieval Comparison ────────────────────────────────────
     if (suites.includes('offline')) {
       report.offline = []
@@ -453,6 +470,7 @@ async function main() {
             indexSessions: true,
           },
           path.join(outputDir, 'bridge', 'chinese-hybrid'),
+          remeApiEnv,
         )
         for (const raw of remeCnRaw.cases) {
           const fixture = memorySemanticCases.find(c => c.id === raw.caseId)!
@@ -498,10 +516,16 @@ async function main() {
       }
       const allItems = loadLmeDataset(lmeDatasetPath)
       const excludeIds = new Set<string>()
-      if (lmeExcludeReport && existsSync(lmeExcludeReport)) {
+      if (lmeExcludeReport) {
+        if (!existsSync(lmeExcludeReport)) {
+          throw new Error(`--lme-exclude-report file not found: ${lmeExcludeReport}`)
+        }
         const prior = JSON.parse(readFileSync(lmeExcludeReport, 'utf8')) as { lme?: { results?: Array<{ questionId?: string }> } }
         for (const r of prior.lme?.results ?? []) {
-          if (r.questionId) excludeIds.add(r.questionId)
+          if (typeof r.questionId === 'string' && r.questionId.trim()) excludeIds.add(r.questionId)
+        }
+        if (excludeIds.size === 0) {
+          throw new Error(`--lme-exclude-report contains no valid questionId entries: ${lmeExcludeReport}`)
         }
         process.stderr.write(`[eval][lme] excluding ${excludeIds.size} previously-evaluated dev IDs for strict held-out blind test\n`)
       }
@@ -565,6 +589,7 @@ async function main() {
             concurrency,
           },
           path.join(outputDir, 'bridge', 'lme-hybrid'),
+          remeApiEnv,
         )
         for (const raw of remeLmeRaw.items) {
           const task = tasks.find(t => t.questionId === raw.questionId)!
