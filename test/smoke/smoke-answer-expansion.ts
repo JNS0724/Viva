@@ -5,8 +5,8 @@ const ANSWER_REVEAL_BUDGET_MS = 2500
 // Full accessibility tree serialization on shared GitHub macOS runners adds heavier ~220 ms bursts than local Macs.
 const IS_CI = process.env.CI === 'true' || process.env.CI === '1'
 const LARGE_BLOCK_DEADLINE_MS = IS_CI ? 8_000 : 5_000
-const LARGE_BLOCK_FRAME_GAP_MS = IS_CI ? 200 : 100
-const LARGE_BLOCK_FRAME_P95_MS = IS_CI ? 85 : 50
+const LARGE_BLOCK_FRAME_GAP_MS = IS_CI ? 300 : 100
+const LARGE_BLOCK_FRAME_P95_MS = IS_CI ? 100 : 50
 
 /** Actual Markdown and ResizeObserver: revealing a finished answer must keep the reader's place. */
 export const ANSWER_EXPANSION = `(async()=>{

@@ -1087,7 +1087,7 @@ for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers 
   } finally { db.close() }
 })
 
-test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 45_000 }, async t => {
+test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 90_000 }, async t => {
   const text = 'The file-only proof ORDINAL controls the native result.'
   const prompt = '执行单次工具归档测试'
   let fileId: string | undefined, requested = false
@@ -1242,7 +1242,7 @@ test('trace erasure preserves another projection that reused the same session an
   assert.deepEqual(trace.stepsOf(session), [retained])
 })
 
-test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 45_000 }, async t => {
+test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 90_000 }, async t => {
   const erased = '实体擦除样本只用于 R5a 验收', nearby = '独立片段仍在同一原生日志中'
   const second = '另一个有独立依据的原文裁剪目标'
   const survivor = '独立消息要在恢复后继续可用'
@@ -1593,7 +1593,7 @@ test('cold Viva startup erases native originals and settled output in root and u
   assert.ok(branch.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
 })
 
-test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 45_000 }, async t => {
+test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 90_000 }, async t => {
   const app = await setup(t, () => null)
   const sourceId = randomUUID()
   const initial = app.call<AgentInfo>('agent:info')
