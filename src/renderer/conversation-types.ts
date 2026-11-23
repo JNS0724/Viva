@@ -45,7 +45,7 @@ export type ConversationTrace = TraceBase & (
   | { kind: 'secret_answer', title: string, provided: boolean }
   | { kind: 'memory', injection: MemoryInjection }
 )
-export interface AskedQuestion { questionId: string, questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[]>> }
+export interface AskedQuestion { questionId: string, questions: readonly QuestionItem[], picks: Readonly<Record<string, readonly string[]>>, custom?: Readonly<Record<string, string | undefined>> }
 export interface AskedPermission { requestId: string, title: string, kind: string, toolCallId: string | null, rawInput: unknown, options: readonly PermissionOption[] }
 export interface AskedSecret { requestId: string, server: string, names: readonly string[] }
 export interface ConversationState {

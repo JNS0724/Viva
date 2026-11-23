@@ -59,7 +59,7 @@ test('the desktop portrait says the state by ring and sign; resting as the cat a
     [true, false, false, false, false], 'worn only with the portrait alone, and not where the ring says it already')
 })
 
-test('the title-bar badge is display-only when idle, opens waiting background tasks directly, and jumps on foreground requests', async () => {
+test('the title-bar badge is display-only when idle, jumps to inline requests and opens the task text input when needed', async () => {
   const { barActionFor, barSignal } = await import('../src/renderer/view/island-dom.ts')
   const idle = { form: 'idle', tone: 'idle', mood: 'idle', label: '待命', recent: [] }
   const working = { form: 'working', tone: 'working', mood: 'thinking', label: '正在工作', recent: [] }
@@ -74,8 +74,10 @@ test('the title-bar badge is display-only when idle, opens waiting background ta
   assert.equal(barActionFor(working), null)
   assert.deepEqual(barActionFor(withTasks), { kind: 'tasks' })
   assert.deepEqual(barActionFor(asking), { kind: 'jump' })
-  assert.deepEqual(barActionFor(bgApproval), { kind: 'task', taskId: 'task-42' })
-  assert.deepEqual(barActionFor(bgQuestion), { kind: 'task', taskId: 'task-99' })
+  assert.deepEqual(barActionFor(bgApproval), { kind: 'jump', taskId: 'task-42' })
+  assert.deepEqual(barActionFor(bgQuestion), { kind: 'jump', taskId: 'task-99' })
+  const openQuestion = { ...bgQuestion, question: { ...asking.question, needsText: true } }
+  assert.deepEqual(barActionFor(openQuestion), { kind: 'task', taskId: 'task-99', focusQuestion: asking.question.questionId })
   assert.equal(barSignal(idle), 'rest')
   assert.equal(barSignal(working), 'working')
   assert.equal(barSignal(withTasks), 'working')
@@ -170,8 +172,8 @@ test('switching between two waiting background tasks with the same title updates
     island.update({ ...base, taskId: 'task-B' })
     head.click()
     assert.deepEqual(actions, [
-      { kind: 'task', taskId: 'task-A' },
-      { kind: 'task', taskId: 'task-B' },
+      { kind: 'jump', taskId: 'task-A' },
+      { kind: 'jump', taskId: 'task-B' },
     ])
   } finally {
     globalThis.Node = prevNode

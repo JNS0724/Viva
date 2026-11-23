@@ -43,7 +43,7 @@ export function reduce(state: WindowState, incoming: TestAction): WindowState {
   const task = state.tasks.list.find(task => task.id === id)
   const place = { runId: task?.runId ?? 'run-1', seq: (task?.seq ?? 0) + 1 }
   if (action.type === 'permission_request' && id) action = { ...action, type: 'task_permission_request', taskId: id, ...place }
-  if (action.type === 'question_pick' && id) action = { ...action, type: 'task_question_pick', taskId: id }
+  if (action.type === 'question_pick' && task?.question) action = { ...action, type: 'task_question_pick', taskId: task.id, questionId: task.question.questionId }
   if (action.type === 'question_answered' && id) action = { ...action, type: 'task_question_answered', taskId: id }
   const at = 'at' in action ? action.at ?? 0 : 0
 

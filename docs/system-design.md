@@ -344,7 +344,8 @@ The main conversation owns every background task, whatever topic is on screen, a
 ### 11.6 The interface
 
 - **A line in the conversation**, under the turn that started the task: "#name · in the background / waiting for you / done / failed · one sentence". Clicking it opens the 后台 page.
-- **The 后台 page**: the task list and the full course of the selected task. Operations that need approval are allowed or refused here, the task's questions are answered here, and there is a Stop button. There is no input box; follow-ups are said to the main conversation.
+- **Pending requests** appear above the main composer. Foreground requests appear first, followed by background requests in the order they arrived. Each background card names the task. Approvals and questions with choices can be handled there.
+- **The 后台 page** shows the task list, the selected task’s activity and its available actions. Questions with open text fields are answered here in a form scoped to the question.
 - **The count at the island's tail**: "◌ 2 / ✓ 3 / waiting". Clicking it opens the 后台 page.
 
 ### 11.7 dsh's sub-agents: within a turn only
