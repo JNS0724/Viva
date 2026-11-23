@@ -136,7 +136,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
   let previewSurface: DeskPreviewSurface | undefined
   let form: string | null = null
   let timer: ReturnType<typeof setTimeout> | undefined
-  /** Messages sent before the page has loaded would be lost; it gets the latest once it has. */
+  /** The renderer subscribes before DOMContentLoaded and buffers the view while it initializes. */
   let loaded = false
   /** The input is open (the shortcut, or files dropped on the island). */
   let input = false
@@ -304,7 +304,8 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
       emitDiagnostic({ event: 'state.changed', operation: 'island', stage: 'start' })
       win = opened
       shown = opened
-      opened.webContents.on('did-finish-load', () => {
+      // Optional web fonts can stall the load event on an isolated network. The island only needs its DOM.
+      opened.webContents.on('dom-ready', () => {
         if (live() !== opened) return
         loaded = true
         send()
@@ -382,7 +383,7 @@ export function createDeskIsland({ BrowserWindow, screen, preload, page, mainWin
     settleStyles()
   }
 
-  /** A window focused before its page has loaded loses the focus again as it loads; so only once it has. */
+  /** Wait until the renderer has its DOM before giving the input the keyboard. */
   function takeKeyboard() {
     const shown = live()
     if (!shown || !loaded) return
