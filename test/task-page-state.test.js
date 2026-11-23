@@ -39,6 +39,23 @@ test('the page groups the tasks: waiting on the user, then at work, then ended, 
     [['waiting', ['s8']], ['running', ['s7']], ['ended', ['new', 'old']]])
 })
 
+test('interrupted tasks appear in their own group right after waiting and never inside ended or liveTasks', () => {
+  const interrupted = (id, title, endedAt) => ({
+    task: { id, segmentId: `c-${id}`, title, words: title }, status: 'interrupted', endedAt,
+    messages: [{ role: 'user', text: title, receipt: null }],
+  })
+  const state = run([
+    { type: 'tasks_restored', list: [restored('done-1', '已完成的任务', 8), interrupted('int-1', '断开的任务', 6)] },
+    started('run-1', '运行中的任务', 10),
+    started('wait-1', '等待中的任务', 11),
+    { type: 'permission_request', requestId: 'p1', taskId: 'wait-1', toolCall: { toolCallId: 't1', title: '确认' }, options: [], at: 12 },
+  ])
+
+  assert.deepEqual(pageGroups(state).map(({ key, tasks }) => [key, tasks.map((t) => t.id)]),
+    [['waiting', ['wait-1']], ['interrupted', ['int-1']], ['running', ['run-1']], ['ended', ['done-1']]])
+  assert.deepEqual(liveTasks(state).map((t) => t.id), ['run-1', 'wait-1'])
+})
+
 test('opened, the page shows the task asked for, or the first in it; it closes the other pages and they close it', () => {
   const state = run([
     { type: 'tasks_restored', list: [restored('old', '整理 Q3 的发票', 5)] },

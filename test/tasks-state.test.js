@@ -186,3 +186,23 @@ test('a task the agent takes up again goes on in the background with what it had
   assert.deepEqual(askedAgain.messages.map((m) => m.cardsAfter ?? []), [[], ['s1']], 'asked again, the card is where it was, not twice')
 })
 
+test('permission_resolved with taskId and permission snapshot still records the decision after task_permission_closed cleared the prompt', () => {
+  const permission = {
+    requestId: 'p-race', title: '运行命令', rawInput: { command: 'npm test' },
+    options: [{ optionId: 'allow_once', name: '允许本次', kind: 'allow_once' }],
+  }
+  const closed = run([
+    { type: 'permission_request', taskId: 's1', ...permission, at: 30 },
+    { type: 'task_permission_closed', taskId: 's1', requestId: 'p-race', at: 31 },
+  ], started(idle()))
+  assert.equal(liveTasks(closed)[0].permission, null)
+
+  const resolved = reduce(closed, { type: 'permission_resolved', requestId: 'p-race', optionId: 'allow_once', taskId: 's1', permission, at: 32 })
+  const decisions = liveTasks(resolved)[0].view.timeline.filter((entry) => entry.kind === 'decision' && entry.ref === 'p-race')
+  assert.equal(decisions.length, 1)
+  assert.equal(decisions[0].allowed, true)
+  // Idempotent: a second dispatch does not duplicate the decision.
+  const again = reduce(resolved, { type: 'permission_resolved', requestId: 'p-race', optionId: 'allow_once', taskId: 's1', permission, at: 33 })
+  assert.equal(liveTasks(again)[0].view.timeline.filter((entry) => entry.kind === 'decision' && entry.ref === 'p-race').length, 1)
+})
+

@@ -57,6 +57,8 @@ test('the main agent\'s tools: route, context and app queries free; app changes 
   }
   assert.equal(layerOf('schedule_list'), 'app-query')
   assert.equal(layerOf('schedule_create'), 'app-change')
+  assert.equal(layerOf('answer_background_task'), 'app-change')
+  assert.ok(MAIN_SCOPE.includes('answer_background_task'))
   for (const tool of ['bash', 'pwsh', 'write', 'web_fetch', 'subagent', 'ask_user_question', 'mcp__demo__send_email']) {
     assert.equal(layerOf(tool), 'execution', tool)
     assert.equal(MAIN_SCOPE.includes(tool), false, tool)
@@ -64,6 +66,10 @@ test('the main agent\'s tools: route, context and app queries free; app changes 
   assert.equal(admit([], 'read').allowed, true)
   assert.equal(admit([], 'bash').allowed, false)
   assert.match(String(admit([], 'schedule_create').reason), /app_operation/)
+  assert.match(String(admit([], 'answer_background_task').reason), /app_operation/)
+  const answerGrant = admit(['answer_background_task'], 'answer_background_task')
+  assert.deepEqual([answerGrant.allowed, answerGrant.grants], [true, []])
+  assert.equal(admit(answerGrant.grants, 'answer_background_task').allowed, false)
   const once = admit(['schedule_create', 'memory_remember'], 'schedule_create')
   assert.deepEqual([once.allowed, once.grants], [true, ['memory_remember']])
   assert.equal(admit(once.grants, 'schedule_create').allowed, false, 'one grant allows one call')

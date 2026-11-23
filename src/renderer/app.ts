@@ -493,10 +493,12 @@ async function imagesChange(run: () => Promise<unknown>, done: string) {
 }
 
 /** What a toast's button does. */
+const respondingPermissions = new Set<string>()
 const TOAST_ACTIONS: Readonly<Record<string, (toast: NonNullable<State['toast']>) => unknown>> = {
   'open-profile': () => memoryActions.openProfile(),
   'open-settings': () => handlers.openSettings(),
   'open-mcp': () => capabilityActions.openCapabilities('mcp'),
+  'open-tasks': () => handlers.openTasks(),
   'open-ref': (toast) => reviewActions.openRef(toast.action.payload),
   'resume-topic': (toast) => resumeActions.retryResume(toast.action.payload),
 }
@@ -535,9 +537,10 @@ const handlers = {
   ...filesActions,
   /** Going back to something the user said: its bar and the editor in place (view/rewind.js). */
   ...rewindActions,
-  /** Background tasks: stopping or closing one. */
+  /** Background tasks: stopping, closing or resuming one. */
   stopTask: (taskId: string) => taskActions.stopTask(taskId),
   closeTask: (taskId: string) => taskActions.closeTask(taskId),
+  resumeTask: (taskId: string) => taskActions.resumeTask(taskId),
   pickTaskOption: (taskId: string, id: string, label: string) => taskActions.pickTaskOption(taskId, id, label),
   /** The 后台 page's list folded to its strip, or unfolded; kept for the next launch. */
   foldTaskList: (folded: boolean) => {
@@ -632,8 +635,22 @@ const handlers = {
   cancel: conversationActions.cancel,
   respond(requestId: string, optionId: string | null) {
     if (state.initialization.status !== 'ready') return
-    dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
-    api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+    const owner = liveTasks(state).find((task) => task.permission?.requestId === requestId)
+    if (!owner) {
+      dispatch({ type: 'permission_resolved', requestId, optionId, at: Date.now() })
+      api.respondPermission(requestId, optionId).catch((err) => dispatch({ type: 'error', message: errorMessage(err) }))
+      return
+    }
+    if (respondingPermissions.has(requestId)) return
+    const permission = owner.permission
+    const taskId = owner.id
+    respondingPermissions.add(requestId)
+    api.respondPermission(requestId, optionId)
+      .then((accepted) => {
+        if (accepted) dispatch({ type: 'permission_resolved', requestId, optionId, taskId, permission, at: Date.now() })
+      })
+      .catch((err) => historyActions.showToast(errorMessage(err)))
+      .finally(() => { respondingPermissions.delete(requestId) })
   },
   /** ⌘N, or 开新话题 in the label's menu: the assistant starts afresh; what was said stays above, dimmed. */
   newSession: createNewTopicAction({

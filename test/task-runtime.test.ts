@@ -8,7 +8,7 @@ import { openHistoryDb as openProductionHistoryDb } from '../src/backend/history
 import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { registerTaskIpc } from '../src/backend/task-ipc.ts'
 import { MAX_TERMINAL_MESSAGE_CHARS } from '../src/backend/task-registry.ts'
-import { KEEP_ENDED, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
+import { KEEP_ENDED, MAX_LIVE, MAX_RUNNING, createTaskRuntime, type TaskPiece, type TaskPush, type TaskRuntime, type WindowSnapshot } from '../src/backend/task-runtime.ts'
 import { initialState, reduce } from '../src/renderer/state.ts'
 import { liveTasks } from '../src/renderer/tasks-state.ts'
 import { DatabaseSync } from 'node:sqlite'
@@ -39,8 +39,9 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk' as const
  * The IPC over a history db and a task store. relaunch() registers it afresh on the same db and store, as the
  * next launch does: nothing in memory, what was kept on disk. Saves along the way wait in `pending` until run.
  */
-function setup({ resumable, stored = [], steerable = true, waits, startable = () => true, gate = async () => {}, onPrompt = () => {} }: {
+function setup({ resumable, stored = [], steerable = true, waits, admitResume, startable = () => true, gate = async () => {}, onPrompt = () => {} }: {
   resumable?: { ok: boolean, reason?: string }, stored?: StoredTask[], steerable?: boolean, waits?: { permissions: readonly unknown[], questions: readonly unknown[] },
+  admitResume?: (taskId: string) => boolean | Promise<boolean>,
   startable?: () => boolean,
   /** Waited on before dsh answers a task's start: the test lets each through when it likes. */
   gate?: () => Promise<void>,
@@ -112,6 +113,7 @@ function setup({ resumable, stored = [], steerable = true, waits, startable = ()
       },
       newRunId: () => `run-${++runs}`,
       ...(waits ? { waitsOf: () => waits } : {}),
+      ...(admitResume ? { admitResume } : {}),
       current: () => current,
       agentInfo: () => ({ mode: 'live', model: 'V4' }),
       agent: {
@@ -964,4 +966,151 @@ test('mid-run steers and question answers keep earlier output from the same run 
   assert.equal(run2Query.outputTruncated, false)
 
   h.db.close()
+})
+
+test(`waiting tasks free active MAX_RUNNING (${MAX_RUNNING}) slots while MAX_LIVE (${MAX_LIVE}) still bounds total open sessions`, async () => {
+  const h = setup()
+  const ids: string[] = []
+  for (let i = 0; i < MAX_RUNNING; i++) {
+    ids.push((await h.tasks.agent.start(`运行任务 ${i}`)).taskId)
+  }
+  await assert.rejects(h.tasks.agent.start('第 6 个运行任务'), /最多 5 个/)
+
+  // Moving one running task into waiting frees an active slot so new work is not deadlocked.
+  h.emit({ type: 'task_question', taskId: ids[0], questionId: 'q-slot-0', questions: [{ id: 'a', question: '选哪一个？', options: [{ label: 'A' }] }] })
+  const sixth = await h.tasks.agent.start('空出槽位后的任务')
+  ids.push(sixth.taskId)
+
+  // Park tasks into waiting until MAX_LIVE total open sessions exist, then verify MAX_LIVE refuses further starts even when running < MAX_RUNNING.
+  for (let i = 1; i < ids.length; i++) {
+    h.emit({ type: 'permission', taskId: ids[i], requestId: `p-slot-${i}` })
+  }
+  while (ids.length < MAX_LIVE) {
+    const next = await h.tasks.agent.start(`补充任务 ${ids.length}`)
+    ids.push(next.taskId)
+    h.emit({ type: 'permission', taskId: next.taskId, requestId: `p-slot-${ids.length}` })
+  }
+  assert.equal(ids.length, MAX_LIVE)
+  await assert.rejects(h.tasks.agent.start('超过总会话上限'), new RegExp(`最多保留 ${MAX_LIVE} 个`))
+
+  h.db.close()
+})
+
+test(`resuming a waiting task via permission or question re-acquires an active MAX_RUNNING (${MAX_RUNNING}) slot`, async () => {
+  const h = setup()
+  const ids: string[] = []
+  for (let i = 0; i < MAX_RUNNING; i++) {
+    ids.push((await h.tasks.agent.start(`任务 ${i}`)).taskId)
+  }
+  // Park task 0 on a permission and task 1 on a question, then start 2 more tasks so 5 are actively running again.
+  h.emit({ type: 'permission', taskId: ids[0], requestId: 'p-gate-0' })
+  h.emit({ type: 'task_question', taskId: ids[1], questionId: 'q-gate-1', questions: [{ id: 'a', question: '确认？', options: [{ label: '是' }] }] })
+  const extra1 = (await h.tasks.agent.start('补位 1')).taskId
+  const extra2 = (await h.tasks.agent.start('补位 2')).taskId
+  assert.ok(extra1 && extra2)
+
+  // All 5 active slots are now full -> resuming either waiting task is refused.
+  const permDenied = h.tasks.dsh.reserveWaitResume('permission', 'p-gate-0')
+  assert.ok('problem' in permDenied && /最多 5 个/.test(permDenied.problem))
+  const answerDenied = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.ok('problem' in answerDenied && /最多 5 个/.test(answerDenied.problem))
+
+  // Once 1 running task finishes, 1 active slot opens: reserving p-gate-0 consumes it so neither q-gate-1 nor a new start can race past MAX_RUNNING.
+  h.ends(extra2)
+  const permAllowed = h.tasks.dsh.reserveWaitResume('permission', 'p-gate-0')
+  assert.equal('problem' in permAllowed, false)
+  assert.ok('problem' in h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1'), 'second waiting task cannot race past MAX_RUNNING')
+  await assert.rejects(h.tasks.agent.start('并发抢槽'), /最多 5 个/)
+
+  // Closing p-gate-0 flips task 0 to running and hands the reserved wait slot over without double-counting.
+  h.emit({ type: 'task_permission_closed', taskId: ids[0], requestId: 'p-gate-0' })
+  assert.ok('problem' in h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1'), 'still full once task 0 is running')
+
+  // Multi-wait task: resolving its first wait when a second wait remains does not consume an active slot,
+  // while resolving the second wait simultaneously DOES require an active slot.
+  h.emit({ type: 'permission', taskId: ids[1], requestId: 'p-gate-1-second' })
+  const firstOfTwo = h.tasks.dsh.reserveWaitResume('permission', 'p-gate-1-second')
+  assert.equal('problem' in firstOfTwo, false, 'still another wait pending on task 1')
+  const secondOfTwo = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.ok('problem' in secondOfTwo, 'resolving the final remaining wait must still pass MAX_RUNNING')
+  if (!('problem' in firstOfTwo)) firstOfTwo.release()
+
+  // Freeing a slot lets task 1's question resolve after releasing its failed/aborted attempt cleanly.
+  h.ends(extra1)
+  h.emit({ type: 'task_permission_closed', taskId: ids[1], requestId: 'p-gate-1-second' })
+  const answerAllowed = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.equal('problem' in answerAllowed, false)
+  if (!('problem' in answerAllowed)) answerAllowed.release()
+  const retryAllowed = h.tasks.dsh.reserveWaitResume('answer', 'q-gate-1')
+  assert.equal('problem' in retryAllowed, false, 'releasing a failed resolution frees the reserved slot')
+
+  h.db.close()
+})
+
+test('get_background_task exposes pendingQuestion only while waitingFor is answer', async () => {
+  const questionPayload = {
+    questionId: 'q-pending-1',
+    questions: [{ id: 'env', question: '部署到哪个环境？', header: '环境', multiSelect: false, options: [{ label: 'staging' }, { label: 'prod' }] }],
+  }
+  const h = setup({ waits: { permissions: [], questions: [questionPayload] } })
+  const { task } = await h.start('准备部署')
+  assert.equal(h.tasks.agent.query({ op: 'get', taskId: task.id }, { kind: 'main' }).task!.pendingQuestion, undefined)
+
+  h.emit({ type: 'task_question', taskId: task.id, questionId: questionPayload.questionId, questions: questionPayload.questions })
+  const waitingAnswer = h.tasks.agent.query({ op: 'get', taskId: task.id }, { kind: 'main' }).task!
+  assert.equal(waitingAnswer.waitingFor, 'answer')
+  assert.deepEqual(waitingAnswer.pendingQuestion, questionPayload)
+
+  // Permission takes precedence over answer: pendingQuestion is withheld while waitingFor === 'permission'.
+  h.emit({ type: 'permission', taskId: task.id, requestId: 'p-1' })
+  const waitingPerm = h.tasks.agent.query({ op: 'get', taskId: task.id }, { kind: 'main' }).task!
+  assert.equal(waitingPerm.waitingFor, 'permission')
+  assert.equal(waitingPerm.pendingQuestion, undefined)
+
+  h.emit({ type: 'task_permission_closed', taskId: task.id, requestId: 'p-1' })
+  assert.deepEqual(h.tasks.agent.query({ op: 'get', taskId: task.id }, { kind: 'main' }).task!.pendingQuestion, questionPayload)
+
+  h.emit({ type: 'task_question_closed', taskId: task.id, questionId: questionPayload.questionId })
+  assert.equal(h.tasks.agent.query({ op: 'get', taskId: task.id }, { kind: 'main' }).task!.pendingQuestion, undefined)
+
+  h.db.close()
+})
+
+test('task:resume one-click resumes an interrupted task and rejects running, ended, unknown, or unadmitted tasks', async () => {
+  const h = setup()
+  const { task } = await h.start('长耗时分析')
+  h.says(task.id, '已完成一半')
+  h.tasks.dsh.flush()
+
+  const later = h.relaunch()
+  const unknownRes = await later.call<{ ok: boolean, problem?: string }>('task:resume', 'missing-task')
+  assert.equal(unknownRes.ok, false)
+
+  const resumed = await later.call<{ ok: boolean, problem?: string }>('task:resume', task.id)
+  assert.deepEqual(resumed, { ok: true })
+  assert.ok(later.calls.some(([kind, id]) => kind === 'resumeTask' && id === task.id))
+  assert.ok(later.calls.some(([kind, id]) => kind === 'promptTask' && id === task.id))
+  assert.equal(later.snapshots.at(-1)?.status, 'running')
+  assert.ok(later.snapshots.at(-1)?.opening?.words)
+
+  // Already running -> refused.
+  const whileRunning = await later.call<{ ok: boolean, problem?: string }>('task:resume', task.id)
+  assert.equal(whileRunning.ok, false)
+
+  // Already ended -> refused.
+  later.ends(task.id)
+  const afterEnded = await later.call<{ ok: boolean, problem?: string }>('task:resume', task.id)
+  assert.equal(afterEnded.ok, false)
+  h.db.close()
+
+  // Unadmitted memory session -> refused and newly resumed session is closed.
+  const blocked = setup({ admitResume: async () => false })
+  const { task: interrupted } = await blocked.start('带记忆上下文的任务')
+  blocked.tasks.dsh.flush()
+  const laterBlocked = blocked.relaunch()
+  const denied = await laterBlocked.call<{ ok: boolean, problem?: string }>('task:resume', interrupted.id)
+  assert.equal(denied.ok, false)
+  assert.ok(laterBlocked.calls.some(([kind, id]) => kind === 'closeTask' && id === interrupted.id))
+  assert.equal(laterBlocked.calls.some(([kind]) => kind === 'promptTask'), false)
+  blocked.db.close()
 })

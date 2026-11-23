@@ -71,12 +71,15 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }
   win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q1', questions: [city], at: 70 })
   win.actions.pickTaskOption('s1', 'city', '上海')
+  await Promise.resolve()
 
   win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q2', questions: [city, { ...city, id: 'day', question: '哪天？' }], at: 71 })
   win.actions.pickTaskOption('s1', 'day', '北京')
   win.actions.submitTaskAnswer('s1')
+  await Promise.resolve()
   win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q3', questions: [city], at: 72 })
   win.actions.skipTaskQuestion('s1')
+  await Promise.resolve()
 
   assert.deepEqual(answered, [
     ['q1', [{ id: 'city', selected: ['上海'] }]],
@@ -85,6 +88,36 @@ test('a task\'s question is answered there: one choice by picking it, more with 
   ])
   assert.equal(liveTasks(win.state())[0].question, null)
   assert.equal(win.state().question, null, 'the conversation on screen was never asked')
+})
+
+test('a task question stays open and toasts when backend refuses the answer (e.g. active slots full)', async () => {
+  const win = windowWith({ answerQuestion: async () => { throw new Error('同时最多 5 个后台任务在跑') } })
+  withTask(win)
+  const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }] }
+  win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q-full', questions: [city], at: 70 })
+  win.actions.pickTaskOption('s1', 'city', '上海')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(liveTasks(win.state())[0].question?.questionId, 'q-full', 'question prompt stays intact on refusal')
+  assert.match(win.said.toasts.at(-1) ?? '', /最多 5 个/)
+})
+
+test('a task answer is still recorded in messages and timeline even when task_question_closed arrives before IPC resolves', async () => {
+  let resolveAnswer
+  const win = windowWith({ answerQuestion: () => new Promise((resolve) => { resolveAnswer = resolve }) })
+  withTask(win)
+  const city = { id: 'city', question: '哪个城市？', multiSelect: false, options: [{ label: '上海' }, { label: '北京' }] }
+  win.dispatch({ type: 'task_question', taskId: 's1', questionId: 'q-race', questions: [city], at: 70 })
+  win.actions.pickTaskOption('s1', 'city', '上海')
+  // Backend emits task_question_closed BEFORE the IPC promise resolves.
+  win.dispatch({ type: 'task_question_closed', taskId: 's1', questionId: 'q-race', at: 71 })
+  assert.equal(liveTasks(win.state())[0].question, null)
+  resolveAnswer(true)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const task = liveTasks(win.state())[0]
+  assert.equal(taskMessages(task).at(-1).text, '上海')
+  const entries = task.view.timeline.filter((entry) => entry.kind === 'answer' && entry.ref === 'q-race')
+  assert.equal(entries.length, 1, 'replaces premature closed entry instead of duplicating')
+  assert.equal(entries[0].answered, true)
 })
 
 test('the tasks the last launch kept come back at the start, with what they said', async () => {
@@ -97,4 +130,32 @@ test('the tasks the last launch kept come back at the start, with what they said
   await win.actions.loadKept()
   const [task] = win.state().tasks.list
   assert.deepEqual([task.id, task.status, taskMessages(task).map((m) => m.text)], ['s3', 'done', ['查天气', '晴。']])
+})
+
+test('loadKept shows a one-time startup toast for restored interrupted tasks, and resumeTask forwards to api.resumeTask', async () => {
+  const resumed = []
+  let nextResult = { ok: true }
+  const interruptedTask = {
+    task: { id: 'int-1', segmentId: 'c-int', title: '分析日志', words: '分析日志' }, status: 'interrupted', endedAt: 5,
+    messages: [{ role: 'user', text: '分析日志', receipt: null }],
+  }
+  const win = windowWith({
+    finishedTasks: async () => [interruptedTask],
+    resumeTask: async (taskId) => { resumed.push(taskId); return nextResult },
+  })
+  await win.actions.loadKept()
+  assert.equal(win.said.toasts.length, 1)
+  assert.match(win.said.toasts[0], /1 个后台任务/)
+
+  // Re-reading the same interrupted task does not repeat the toast.
+  await win.actions.loadKept()
+  assert.equal(win.said.toasts.length, 1)
+
+  await win.actions.resumeTask('int-1')
+  assert.deepEqual(resumed, ['int-1'])
+  assert.equal(win.said.toasts.length, 1)
+
+  nextResult = { ok: false, problem: '上下文已失效' }
+  await win.actions.resumeTask('int-1')
+  assert.equal(win.said.toasts.at(-1), '上下文已失效')
 })

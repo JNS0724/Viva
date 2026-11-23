@@ -107,11 +107,11 @@ export interface ConversationPayloads {
   agent_turn_started: { at: number, by?: string | null, turnId?: string }
   acp_update: { update: ConversationUpdate, at: number }
   permission_request: PermissionRequest & { at: number }
-  permission_resolved: { requestId: string, optionId: string | null, at: number }
+  permission_resolved: { requestId: string, optionId: string | null, at: number, taskId?: string, permission?: AskedPermission }
   permission_closed: { requestId: string, at?: number }
   question_request: { questionId: string, questions: readonly QuestionItem[], at: number }
   question_pick: { id: string, label: string }
-  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number, inHistory?: boolean }
+  question_answered: { questionId: string, sourceId?: string, sourceIds?: Readonly<Record<string, string>>, answers: readonly QuestionAnswer[], at: number, inHistory?: boolean, questions?: readonly QuestionItem[] }
   question_closed: { questionId: string, at: number }
   secret_request: AskedSecret & { at: number }
   secret_resolved: { requestId: string, provided: boolean, at: number }

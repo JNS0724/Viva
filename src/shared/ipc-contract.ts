@@ -107,6 +107,7 @@ export const IPC_ARGS = Object.freeze({
   'task:finished': read(none),
   'task:close': z.tuple([id]),
   'task:stop': z.tuple([id]),
+  'task:resume': z.tuple([id]),
 
   'workdir:get': read(none),
   'workdir:choose': none,

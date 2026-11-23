@@ -253,3 +253,65 @@ test('a task query never publishes private results after its session expires dur
     assert.ok(responses.every(message => !JSON.stringify(message).includes('total')))
   } finally { channel.close() }
 })
+
+test('parseTaskAction validates answer_background_task payloads and createTasksDesk routes them to act', async () => {
+  const valid = parseTaskAction({
+    op: 'answer_background_task',
+    taskId: ' t-1 ',
+    questionId: ' q-1 ',
+    answers: [
+      { id: 'env', selected: ['staging'], custom: '优先测试环境' },
+      { id: 'note', selected: [] },
+    ],
+  })
+  assert.deepEqual(valid, {
+    op: 'answer_background_task',
+    taskId: 't-1',
+    questionId: 'q-1',
+    answers: [
+      { id: 'env', selected: ['staging'], custom: '优先测试环境' },
+      { id: 'note', selected: [] },
+    ],
+  })
+
+  for (const bad of [
+    { op: 'answer_background_task', taskId: '', questionId: 'q1', answers: [{ id: 'a', selected: [] }] },
+    { op: 'answer_background_task', taskId: 't1', questionId: 'q1', answers: [] },
+    { op: 'answer_background_task', taskId: 't1', questionId: 'q1', answers: [{ id: 'a', selected: [''] }] },
+    { op: 'answer_background_task', taskId: 't1', questionId: 'q1', answers: [{ id: 'a', selected: 'not-array' }] },
+    { op: 'answer_background_task', taskId: 't1', questionId: 'q1', answers: [{ id: 'a', selected: [], custom: 'x'.repeat(2001) }] },
+  ]) {
+    assert.throws(() => parseTaskAction(bad), /回答格式无效/)
+  }
+
+  const port = new EventEmitter()
+  const acted: Array<{ request: unknown, sessionId: string }> = []
+  const desk = createTasksDesk({
+    send: message => port.emit('message', message),
+    authorized: session => session === 'main',
+    read: null,
+    act: async (request, sessionId) => { acted.push({ request, sessionId }); return { ok: true } },
+  })
+  const channel = createTasksChannel({ send: message => desk.receive(message), on: port.on.bind(port), off: port.off.bind(port) })
+  try {
+    const res = JSON.parse(await channel.request({
+      op: 'answer_background_task', taskId: 't1', questionId: 'q1', answers: [{ id: 'a', selected: ['是'] }],
+    }, 'main'))
+    assert.deepEqual(res, { ok: true })
+    assert.equal(acted.length, 1)
+    assert.equal(acted[0]!.sessionId, 'main')
+  } finally { channel.close() }
+})
+
+test('task registry distinguishes active running() count from total live() count', () => {
+  const registry = createTaskRegistry()
+  registry.put({ id: 't1', title: '任务 1' })
+  registry.put({ id: 't2', title: '任务 2' })
+  assert.deepEqual([registry.running(), registry.live()], [2, 2])
+  registry.receive({ type: 'task_question', taskId: 't1', questionId: 'q1' })
+  assert.deepEqual([registry.running(), registry.live()], [1, 2])
+  registry.receive({ type: 'task_question_closed', taskId: 't1', questionId: 'q1' })
+  assert.deepEqual([registry.running(), registry.live()], [2, 2])
+  registry.receive({ type: 'task_end', taskId: 't2', stopReason: 'end_turn' })
+  assert.deepEqual([registry.running(), registry.live()], [1, 1])
+})

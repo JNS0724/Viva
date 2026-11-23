@@ -210,18 +210,21 @@ export const CONVERSATION_ACTIONS = {
     }
   },
 
-  permission_resolved: (view, { requestId, optionId, at }) => {
-    if (view.permission?.requestId !== requestId) return view
-    const option = view.permission.options.find((o: PermissionOption) => o.optionId === optionId)
+  permission_resolved: (view, { requestId, optionId, at, permission: snapshot }) => {
+    const active = view.permission?.requestId === requestId
+    const permission = active ? view.permission! : snapshot
+    if (!permission || permission.requestId !== requestId) return view
+    if (view.timeline.some((entry) => entry.kind === 'decision' && entry.ref === requestId)) return view
+    const option = permission.options.find((o: PermissionOption) => o.optionId === optionId)
     return {
       ...view,
-      phase: 'working',
-      permission: null,
+      phase: active ? 'working' : view.phase,
+      permission: active ? null : view.permission,
       timeline: [...view.timeline, {
         kind: 'decision',
         ref: requestId,
         at,
-        title: view.permission.title,
+        title: permission.title,
         allowed: Boolean(option?.kind?.startsWith('allow')),
         choice: option ? optionName(option) : t("state.canceled"),
       }],

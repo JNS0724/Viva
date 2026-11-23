@@ -51,9 +51,11 @@ export const QUESTION_ACTIONS = {
     return { ...state, question: { ...question, picks } }
   },
 
-  question_answered: (state, { questionId, answers, at, sourceId, sourceIds, inHistory }) => {
-    if (state.question?.questionId !== questionId) return state
-    const { questions } = state.question
+  question_answered: (state, { questionId, answers, at, sourceId, sourceIds, inHistory, questions: snapshot }) => {
+    const active = state.question?.questionId === questionId
+    const questions = active ? state.question!.questions : snapshot
+    if (!questions) return state
+    if (state.timeline.some((entry) => entry.kind === 'answer' && entry.ref === questionId && entry.answered)) return state
     const text = answerText(questions, answers)
     const parts = sourceIds && Object.keys(sourceIds).length ? questions.map(question => ({
       text: answerText([question], answers), asked: question.question, sourceId: Object.hasOwn(sourceIds, question.id) ? sourceIds[question.id] : undefined,
@@ -61,12 +63,15 @@ export const QUESTION_ACTIONS = {
     const base = (state.historyOffset ?? 0) + state.messages.length
     const replies = inHistory ? [] : parts.map((part, index) => ({ id: `m${base + index}`, role: 'user', text: part.text, asked: part.asked,
       ...(part.sourceId ? { sourceId: part.sourceId } : {}), open: false, receipt: null }))
+    const entry = { kind: 'answer' as const, ref: questionId, at, title: text, answered: true }
+    const closedIndex = state.timeline.findIndex((item) => item.kind === 'answer' && item.ref === questionId && !item.answered)
+    const timeline = closedIndex >= 0 ? state.timeline.toSpliced(closedIndex, 1, entry) : [...state.timeline, entry]
     return {
       ...state,
-      phase: 'working',
-      question: null,
+      phase: active ? 'working' : state.phase,
+      question: active ? null : state.question,
       messages: replies.length ? [...state.messages, ...replies] : state.messages,
-      timeline: [...state.timeline, { kind: 'answer', ref: questionId, at, title: text, answered: true }],
+      timeline,
     }
   },
 

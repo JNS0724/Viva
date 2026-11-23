@@ -211,6 +211,7 @@ interface AgentApi extends DraftApi {
   finishedTasks: Invoke<'task:finished'>
   closeTask: Invoke<'task:close'>
   stopTask: Invoke<'task:stop'>
+  resumeTask: Invoke<'task:resume'>
   rewindEffects: Invoke<'timeline:rewind-effects'>
   foldedPath: Invoke<'timeline:folded'>
   switchPath: Invoke<'timeline:switch-path'>
