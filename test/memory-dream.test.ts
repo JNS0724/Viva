@@ -1080,3 +1080,75 @@ test('Dream node_search with limit: 1 visits every hybrid candidate across pages
   assert.deepEqual(seenCalls, [{ limit: 1, offset: 0 }, { limit: 1, offset: 1 }, { limit: 1, offset: 2 }])
   assert.ok(h.documents.read(incoming.note.workspace, 'digest/personal/hit-b.md')!.markdown.includes('New fact belonging to hit-b.'))
 })
+
+test('Dream existingDigests catalog enforces full policy.read checks and excludes unreadable or withdrawn-source digests', async t => {
+  const h = harness(t)
+  const okNote = h.add('User drinks oolong tea.', 'Tea')
+  const okPath = 'digest/personal/drinks.md'
+  h.documents.commit({
+    operationId: randomUUID(), workspace: okNote.note.workspace, path: okPath, action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Drinks', description: 'Beverage preferences' }, body: 'Oolong tea.' }),
+    sources: h.notes.references(okNote.key), reads: [],
+  })
+  const withdrawnNote = h.add('Secret project codename.', 'Secret')
+  const withdrawnPath = 'digest/personal/withdrawn-topic.md'
+  h.documents.commit({
+    operationId: randomUUID(), workspace: okNote.note.workspace, path: withdrawnPath, action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Withdrawn Secret Title', description: 'Should never leak' }, body: 'Secret body.' }),
+    sources: h.notes.references(withdrawnNote.key), reads: [],
+  })
+  // Withdraw source in store without purging document row yet so activeEntries() still sees it, while policy.read rejects it.
+  h.store.withdrawSource(withdrawnNote.source.id)
+
+  const incoming = h.add('User also enjoys jasmine tea.', 'Jasmine')
+  let sawCatalog: Array<{ path: string, name: string }> | undefined
+  h.setModel(async request => {
+    const input = request.input as { existingDigests?: Array<{ path: string, name: string }>, notes: Array<{ path: string, sourceIds: string[] }> }
+    sawCatalog = input.existingDigests
+    assert.equal(JSON.stringify(input).includes('Withdrawn Secret Title'), false)
+    assert.equal(JSON.stringify(input).includes(withdrawnPath), false)
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: okPath } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: okPath,
+        name: 'Drinks',
+        description: 'Beverage preferences',
+        edits: [{ oldText: 'Oolong tea.', newText: 'Oolong tea.\nJasmine tea.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+  await h.run()
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.deepEqual(sawCatalog, [{ path: okPath, name: 'Drinks' }])
+  assert.ok(h.documents.read(incoming.note.workspace, okPath)!.markdown.includes('Jasmine tea.'))
+})
+
+test('Dream node_search stays partial: true if hybrid pagination hits the 512 ceiling while backend still reports partial', async t => {
+  const h = harness(t, {
+    searchDigestNodes: async () => ({ nodes: [], partial: true }),
+  })
+  const seed = h.add('Seed note.', 'Seed')
+  h.documents.commit({
+    operationId: randomUUID(), workspace: seed.note.workspace, path: 'digest/personal/existing.md', action: 'CREATE', expectedRevision: null,
+    markdown: formatMemoryDocument({ metadata: { name: 'Existing', description: 'Unrelated' }, body: 'Body.' }),
+    sources: h.notes.references(seed.key), reads: [],
+  })
+  h.add('Incoming note.', 'Incoming')
+  let lastPartial: boolean | undefined
+  h.setModel(async request => {
+    // 11 pages × limit 50 = 550 > 512 ceiling; final page must STILL report partial: true instead of silently completing.
+    for (let i = 0; i < 11; i++) {
+      const res = await request.tools!.executeTool({ callId: `s${i}`, name: 'node_search', input: { query: 'never-ends', limit: 50 } })
+      assert.equal(res.state, 'completed')
+      const parsed = JSON.parse(res.content!) as { partial?: boolean } | unknown[]
+      lastPartial = Array.isArray(parsed) ? false : Boolean(parsed.partial)
+    }
+    return JSON.stringify({ operations: [] })
+  })
+  await h.run()
+  assert.equal(lastPartial, true)
+})

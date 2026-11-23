@@ -22,7 +22,7 @@ import { memorySemanticCases } from '../memory-semantic-cases.ts'
 import { startLocalEmbeddingServer } from './embedding-server.ts'
 import type { LocalEmbeddingServer } from './embedding-server.ts'
 import { judgeChineseSemanticAnswer, judgeLmeAnswer } from './judge.ts'
-import { loadLmeDataset, LME_QUESTION_TYPES, parseLmeDate, selectStratifiedLmeSlice, sortAndFilterLmeSessions } from './lme-slice.ts'
+import { hasTruncatedAnswerEvidence, loadLmeDataset, LME_QUESTION_TYPES, parseLmeDate, selectStratifiedLmeSlice, sortAndFilterLmeSessions } from './lme-slice.ts'
 import {
   buildOfflineBundle,
   checkPatterns,
@@ -208,24 +208,36 @@ export function renderSummaryMarkdown(report: {
       lines.push('')
       lines.push('> 注意：本次运行显式启用了 `answer-aware` 截断（按答案会话标签保底并均匀补齐干扰会话），属于受控上下文长度实验，不代表无标签全历史检索分数。')
     }
+    const hasTruncated = report.lme.results.some(r => r.evidenceTruncated)
+    if (hasTruncated) {
+      lines.push('')
+      lines.push('> 注意：以下准确率仅统计保留了全部答案会话的**完整证据样本**；被 `recent` 截断丢弃答案会话的题目已从准确率分母中排除并单独列示。')
+    }
     lines.push('')
     const modes = [...new Set(report.lme.results.map(r => r.mode))]
     lines.push('| 题目类别 | ' + modes.map(m => `\`${m}\``).join(' | ') + ' |')
     lines.push('| --- | ' + modes.map(() => '---:').join(' | ') + ' |')
     for (const type of LME_QUESTION_TYPES) {
       const cols = modes.map(m => {
-        const sub = report.lme!.results.filter(r => r.mode === m && r.questionType === type)
+        const sub = report.lme!.results.filter(r => r.mode === m && r.questionType === type && !r.evidenceTruncated)
         const yes = sub.filter(r => r.verdict === 'yes').length
         return sub.length ? `${yes}/${sub.length} (${(yes / sub.length * 100).toFixed(0)}%)` : '-'
       })
       lines.push(`| ${type} | ${cols.join(' | ')} |`)
     }
     const overallCols = modes.map(m => {
-      const sub = report.lme!.results.filter(r => r.mode === m)
+      const sub = report.lme!.results.filter(r => r.mode === m && !r.evidenceTruncated)
       const yes = sub.filter(r => r.verdict === 'yes').length
-      return `**${yes}/${sub.length} (${(yes / Math.max(sub.length, 1) * 100).toFixed(1)}%)**`
+      return sub.length ? `**${yes}/${sub.length} (${(yes / sub.length * 100).toFixed(1)}%)**` : '-'
     })
-    lines.push(`| **OVERALL** | ${overallCols.join(' | ')} |`)
+    lines.push(`| **${hasTruncated ? 'OVERALL (完整证据)' : 'OVERALL'}** | ${overallCols.join(' | ')} |`)
+    if (hasTruncated) {
+      const truncCols = modes.map(m => {
+        const dropped = report.lme!.results.filter(r => r.mode === m && r.evidenceTruncated).length
+        return `${dropped} 题`
+      })
+      lines.push(`| 证据被截断跳过 | ${truncCols.join(' | ')} |`)
+    }
     lines.push('')
     lines.push('### 效率、Token 成本与工作区产出对比（单题均值）')
     lines.push('')
@@ -261,7 +273,7 @@ export function renderSummaryMarkdown(report: {
       const cols = modes.map(m => {
         const hit = report.lme!.results.find(r => r.questionId === qid && r.mode === m)
         if (!hit) return '-'
-        const tag = hit.verdict === 'yes' ? 'PASS' : hit.verdict === 'no' ? 'FAIL' : 'ERR'
+        const tag = hit.evidenceTruncated ? 'TRUNCATED' : hit.verdict === 'yes' ? 'PASS' : hit.verdict === 'no' ? 'FAIL' : 'ERR'
         return `${tag}: ${hit.answer.slice(0, 60).replaceAll('\n', ' ').replaceAll('|', '/')}`
       })
       lines.push(`| \`${qid}\` | ${ref.questionType} | ${ref.isAbstention ? 'Y' : ''} | ${cols.join(' | ')} |`)
@@ -309,12 +321,34 @@ async function main() {
   const hasEmbedding = existsSync(modelRoot) && existsSync(runtimeRoot)
 
   const vivaCommit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
-  const remeCommit = !vivaOnly && remeRepo && existsSync(remeRepo)
-    ? execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: remeRepo, encoding: 'utf8' }).trim()
-    : 'skipped'
-  const remeVersion = !vivaOnly
-    ? execFileSync(remePython, ['-c', 'import reme; print(reme.__version__)'], { encoding: 'utf8' }).trim()
-    : 'skipped'
+  let remeVersion = 'skipped'
+  let remeCommit = 'skipped'
+  if (!vivaOnly) {
+    const info = JSON.parse(execFileSync(
+      remePython,
+      ['-c', 'import json, pathlib, reme; print(json.dumps({"version": getattr(reme, "__version__", "unknown"), "file": str(pathlib.Path(reme.__file__).resolve())}))'],
+      { encoding: 'utf8' },
+    ).trim()) as { version: string, file: string }
+    remeVersion = info.version
+    const importedDir = path.dirname(info.file)
+    let importedGitRoot: string | null = null
+    let importedCommit: string | null = null
+    try {
+      importedGitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: importedDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      importedCommit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: importedDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    } catch { /* Installed outside a git checkout (e.g. wheel/site-packages). */ }
+    remeCommit = importedCommit ?? 'non-git-install'
+    if (remeRepo && existsSync(remeRepo)) {
+      try {
+        const argRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: remeRepo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+        const argCommit = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: remeRepo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+        if (!importedGitRoot || path.resolve(importedGitRoot) !== path.resolve(argRoot)) {
+          process.stderr.write(`[eval][warn] --reme-python imports ${info.file} (${remeCommit}), which differs from --reme-repo ${remeRepo} (${argCommit})\n`)
+          remeCommit = `${remeCommit} (differs from --reme-repo ${argCommit})`
+        }
+      } catch { /* Ignore non-git --reme-repo. */ }
+    }
+  }
 
   const manifest: EvalManifest = {
     runId,
@@ -573,15 +607,20 @@ async function main() {
         process.stderr.write(`[eval][lme] excluding ${excludeIds.size} previously-evaluated dev IDs for strict held-out blind test\n`)
       }
       const { items, sliceSha256 } = selectStratifiedLmeSlice(allItems, lmePerType, excludeIds.size ? excludeIds : undefined)
-      const tasks: PreparedLmeTask[] = items.map(item => ({
-        questionId: item.question_id,
-        questionType: item.question_type,
-        isAbstention: String(item.question_id).endsWith('_abs'),
-        question: item.question,
-        groundTruth: String(item.answer),
-        queryTimeIso: item.question_date ? parseLmeDate(item.question_date).isoStr : '',
-        sessions: sortAndFilterLmeSessions(item, lmeMaxSessions, lmeSessionSampling),
-      }))
+      const tasks: PreparedLmeTask[] = items.map(item => {
+        const sessions = sortAndFilterLmeSessions(item, lmeMaxSessions, lmeSessionSampling)
+        const evidenceTruncated = hasTruncatedAnswerEvidence(item, sessions)
+        return {
+          questionId: item.question_id,
+          questionType: item.question_type,
+          isAbstention: String(item.question_id).endsWith('_abs'),
+          ...(evidenceTruncated ? { evidenceTruncated: true } : {}),
+          question: item.question,
+          groundTruth: String(item.answer),
+          queryTimeIso: item.question_date ? parseLmeDate(item.question_date).isoStr : '',
+          sessions,
+        }
+      })
       report.lme = { sliceSha256, perType: lmePerType, maxSessions: lmeMaxSessions, sessionSampling: lmeSessionSampling, results: [] }
       save()
 
@@ -658,6 +697,7 @@ async function main() {
             judgeReason: judge.reason,
             sessionsIngested: raw.sessionsIngested,
             dreamTriggers: raw.dreamTriggers,
+            ...(task.evidenceTruncated ? { evidenceTruncated: true } : {}),
             workspace: raw.workspace,
             telemetry: raw.telemetry,
             ...(raw.error ? { error: raw.error } : {}),

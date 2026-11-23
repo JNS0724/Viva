@@ -70,6 +70,21 @@ export function sortAndFilterLmeSessions(
   return filtered.filter(entry => picked.has(entry.sessionId))
 }
 
+/** True when truncation dropped at least one pre-question answer_session_id for a non-abstention item. */
+export function hasTruncatedAnswerEvidence(item: LmeItem, sessions: readonly SortedLmeSession[]): boolean {
+  if (String(item.question_id).endsWith('_abs') || !item.answer_session_ids.length) return false
+  const questionMs = item.question_date ? parseLmeDate(item.question_date).timestampMs : Number.POSITIVE_INFINITY
+  const kept = new Set(sessions.map(session => session.sessionId))
+  const answerSet = new Set(item.answer_session_ids)
+  for (let i = 0; i < item.haystack_session_ids.length; i++) {
+    const id = item.haystack_session_ids[i]!
+    if (!answerSet.has(id)) continue
+    const ts = parseLmeDate(item.haystack_dates[i]!).timestampMs
+    if (ts <= questionMs && !kept.has(id)) return true
+  }
+  return false
+}
+
 /** Deterministic stratified slice across all 6 LongMemEval categories (guarantees abstention coverage when perType >= 2). */
 export function selectStratifiedLmeSlice(
   items: readonly LmeItem[],

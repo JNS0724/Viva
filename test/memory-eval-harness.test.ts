@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { describe, it } from 'node:test'
-import { LME_QUESTION_TYPES, parseLmeDate, selectStratifiedLmeSlice, sortAndFilterLmeSessions } from '../scripts/memory-eval/lme-slice.ts'
+import { hasTruncatedAnswerEvidence, LME_QUESTION_TYPES, parseLmeDate, selectStratifiedLmeSlice, sortAndFilterLmeSessions } from '../scripts/memory-eval/lme-slice.ts'
 import { lmeJudgePrompt } from '../scripts/memory-eval/judge.ts'
-import { buildOfflineBundle, checkPatterns, scoreOfflineQueries } from '../scripts/memory-eval/viva-runner.ts'
+import { buildOfflineBundle, checkPatterns, safeWorkSubdir, scoreOfflineQueries } from '../scripts/memory-eval/viva-runner.ts'
 import { renderSummaryMarkdown } from '../scripts/memory-eval/run.ts'
 import type { LmeItem } from '../scripts/memory-eval/types.ts'
 
@@ -42,8 +43,19 @@ describe('memory-eval harness', () => {
         [{ role: 'user', content: 'latest distractor' }],
       ],
     }
-    assert.deepEqual(sortAndFilterLmeSessions(multi, 2).map(s => s.sessionId), ['s2', 's3'])
-    assert.deepEqual(sortAndFilterLmeSessions(multi, 2, 'answer-aware').map(s => s.sessionId), ['s1', 's2'])
+    const recent = sortAndFilterLmeSessions(multi, 2)
+    const aware = sortAndFilterLmeSessions(multi, 2, 'answer-aware')
+    assert.deepEqual(recent.map(s => s.sessionId), ['s2', 's3'])
+    assert.deepEqual(aware.map(s => s.sessionId), ['s1', 's2'])
+    assert.equal(hasTruncatedAnswerEvidence(multi, recent), true)
+    assert.equal(hasTruncatedAnswerEvidence(multi, aware), false)
+    assert.equal(hasTruncatedAnswerEvidence({ ...multi, question_id: 'q1_abs' }, recent), false)
+
+    // Untrusted question_id with path traversal must never escape workDir.
+    const root = path.resolve('/tmp/viva-eval-work')
+    const safe = safeWorkSubdir(root, '../../etc/passwd')
+    assert.equal(safe.startsWith(`${root}${path.sep}`), true)
+    assert.equal(safe.includes('..'), false)
   })
 
   it('produces deterministic stratified slices with abstention coverage across all 6 categories', () => {
@@ -186,6 +198,28 @@ describe('memory-eval harness', () => {
         telemetry: { llmCalls: 1, inputTokens: 100, outputTokens: 20, ingestMs: 10, dreamMs: 10, answerMs: 10, toolCalls: 1, toolNames: {} },
         error: 'phase-2 timeout',
       }],
+      lme: {
+        sliceSha256: 'abc123def456',
+        perType: 1,
+        maxSessions: 2,
+        sessionSampling: 'recent',
+        results: [
+          {
+            system: 'viva', mode: 'viva-hybrid-react-only', questionId: 'q-ok', questionType: 'knowledge-update',
+            isAbstention: false, question: 'q', groundTruth: 'a', answer: 'a', verdict: 'yes', judgeReason: 'yes',
+            sessionsIngested: 2, dreamTriggers: 1,
+            workspace: { dailyFiles: 1, digestFiles: 1, sessionFiles: 0, totalBytes: 100, filePaths: [] },
+            telemetry: { llmCalls: 1, inputTokens: 10, outputTokens: 5, ingestMs: 1, dreamMs: 1, answerMs: 1, toolCalls: 1, toolNames: {} },
+          },
+          {
+            system: 'viva', mode: 'viva-hybrid-react-only', questionId: 'q-drop', questionType: 'knowledge-update',
+            isAbstention: false, evidenceTruncated: true, question: 'q2', groundTruth: 'a2', answer: 'Information not found.', verdict: 'no', judgeReason: 'no',
+            sessionsIngested: 2, dreamTriggers: 1,
+            workspace: { dailyFiles: 1, digestFiles: 1, sessionFiles: 0, totalBytes: 100, filePaths: [] },
+            telemetry: { llmCalls: 1, inputTokens: 10, outputTokens: 5, ingestMs: 1, dreamMs: 1, answerMs: 1, toolCalls: 1, toolNames: {} },
+          },
+        ],
+      },
     })
     assert.match(md, /Viva vs\. ReMe/)
     assert.match(md, /M4 离线检索对照/)
@@ -195,5 +229,8 @@ describe('memory-eval harness', () => {
     assert.match(md, /N\/A \(含于索引\)/)
     assert.match(md, /Viva Auto Context.*false/)
     assert.match(md, /ReMe LME Dream.*true/)
+    assert.match(md, /OVERALL \(完整证据\).*\*\*1\/1 \(100\.0%\)\*\*/)
+    assert.match(md, /证据被截断跳过.*1 题/)
+    assert.match(md, /TRUNCATED: Information not found/)
   })
 })

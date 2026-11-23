@@ -147,6 +147,8 @@ export interface LmeCaseSystemResult {
   judgeReason: string
   sessionsIngested: number
   dreamTriggers: number
+  /** True when maxSessions truncation dropped at least one answer_session_id for a non-abstention question. */
+  evidenceTruncated?: boolean
   workspace: WorkspaceStats
   telemetry: LiveTelemetry
   error?: string

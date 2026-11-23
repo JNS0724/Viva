@@ -339,23 +339,27 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         hybridPartial,
       }
     }
-    const catalog = (maxEntries = 30) => {
-      const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
+    const catalog = async (maxEntries = 30) => {
       const rows = [...activeEntries()].sort((a, b) => a.path.localeCompare(b.path))
+      const scanLimit = Math.min(rows.length, maxEntries * 2)
+      const candidates = rows.slice(0, scanLimit)
+      const batch = candidates.length
+        ? await loadFiles(candidates.map(row => ({ workspace, path: row.path })), undefined, true)
+        : undefined
       const items: Array<{ path: string, name: string }> = []
-      for (const row of rows.slice(0, maxEntries)) {
-        const node = published.get(row.id)
-        let name = ''
-        if (node && node.revision === row.revision && node.usageVersion === row.usageVersion && node.path === row.path) {
-          name = node.name
-        } else {
-          const accepted = documents.acceptedSnapshot(workspace, row.id)
-          if (accepted) name = dreamNodeMetadata(accepted).name
+      let hasMoreAuthorized = false
+      for (const row of candidates) {
+        const view = batch ? batch.read(workspace, row.path) : policy.read(workspace, row.path)
+        if (!view) continue
+        if (items.length >= maxEntries) {
+          hasMoreAuthorized = true
+          break
         }
+        const name = dreamNodeMetadata(view).name
         const trimmed = [...(name || row.path.split('/').at(-1)!.replace(/\.md$/u, ''))].slice(0, 80).join('')
         items.push({ path: row.path, name: trimmed })
       }
-      return { items, truncated: rows.length > maxEntries }
+      return { items, truncated: hasMoreAuthorized || rows.length > scanLimit }
     }
     return {
       countActive: () => activeEntries().length,
@@ -404,16 +408,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         })
         const nextOffset = unread ? offset : offset + lexicalSlice.length
         const moreHybridInPage = hybridMatches.length > hybridSlice.length
+        const hybridHasMore = Boolean(searchDigestNodes && !unread && (hybridPartial || moreHybridInPage) && hybridOffset >= 0)
         const hybridStep = moreHybridInPage ? Math.max(1, hybridSlice.length) : pageLimit
         const nextHybridOffset = !searchDigestNodes ? -1
           : unread ? hybridOffset
-            : (hybridPartial || moreHybridInPage) && hybridOffset >= 0 && hybridOffset + hybridStep < 512
+            : hybridHasMore && hybridOffset + hybridStep < 512
               ? hybridOffset + hybridStep
               : -1
-        const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0
+        const hybridCappedIncomplete = hybridHasMore && nextHybridOffset < 0
+        const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0 || hybridCappedIncomplete
         return {
           read, list: () => list, ...(scored ? { scored } : {}), partial,
-          next: partial ? { fingerprint: baseFingerprint, offset: nextOffset, ...(searchDigestNodes ? { hybridOffset: nextHybridOffset } : {}) } : undefined,
+          next: partial && !hybridCappedIncomplete ? { fingerprint: baseFingerprint, offset: nextOffset, ...(searchDigestNodes ? { hybridOffset: nextHybridOffset } : {}) } : undefined,
         }
       },
     }
@@ -646,7 +652,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         })
         const restrictions = documents.sourceRestrictions(workspace)
         const existingDigestCount = scope.countActive()
-        const existingCatalog = existingDigestCount > 0 ? scope.catalog(30) : { items: [], truncated: false }
+        const existingCatalog = existingDigestCount > 0 ? await scope.catalog(30) : { items: [], truncated: false }
 
         const batchSourceMap = new Map<string, DocumentSourceRef>()
         for (const ref of mergeDocumentSources(fileRefs.flatMap(file => file.sources))) batchSourceMap.set(ref.id, ref)

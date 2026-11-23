@@ -651,13 +651,31 @@ export function checkPatterns(text: string, patterns: { allOf: readonly string[]
   return allOk && anyOk && noneOk
 }
 
+/** Build a safe subdirectory strictly inside workDir even for untrusted IDs containing `..` or path separators. */
+export function safeWorkSubdir(workDir: string, id: string): string {
+  const base = path.resolve(workDir)
+  const prefix = id.replaceAll(/[^A-Za-z0-9_-]+/gu, '_').replace(/^_+|_+$/gu, '').slice(0, 40) || 'item'
+  const digest = createHash('sha256').update(id).digest('hex').slice(0, 12)
+  const target = path.resolve(base, `${prefix}-${digest}`)
+  if (!target.startsWith(`${base}${path.sep}`)) {
+    throw new Error(`Refusing unsafe work directory outside root: ${id}`)
+  }
+  return target
+}
+
 /** Wait for pending memory.note / memory.dream retries (e.g. transient API/JSON retry with 1-4s backoff); throws if jobs remain unfinished. */
-async function drainVivaJobs(owner: ReturnType<typeof openMemoryOwner>, dbPath: string, kinds: readonly string[], maxPasses = 4) {
+async function drainVivaJobs(
+  owner: ReturnType<typeof openMemoryOwner>,
+  dbPath: string,
+  kinds: readonly string[],
+  maxPasses = 4,
+  now: () => number = Date.now,
+) {
   const inspectPending = (): Array<{ kind: string, due_at: number, attempts: number }> => {
     const db = new DatabaseSync(dbPath, { readOnly: true })
     try {
       const rows = db.prepare(`SELECT kind, due_at, attempts FROM effects WHERE kind IN (${kinds.map(() => '?').join(',')})`).all(...kinds) as Array<{ kind: string, due_at: number, attempts: number }>
-      const horizon = Date.now() + 15_000
+      const horizon = now() + 15_000
       return rows.filter(row => row.attempts > 0 || row.due_at <= horizon)
     } finally { db.close() }
   }
@@ -666,7 +684,7 @@ async function drainVivaJobs(owner: ReturnType<typeof openMemoryOwner>, dbPath: 
     const pending = inspectPending()
     if (!pending.length) return
     const nextDue = Math.min(...pending.map(row => row.due_at))
-    const waitMs = Math.max(0, Math.min(15_000, nextDue - Date.now() + 100))
+    const waitMs = Math.max(0, Math.min(15_000, nextDue - now() + 100))
     if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs))
     await owner.runtime.wake()
   }
@@ -712,7 +730,7 @@ export async function runVivaChineseEval(
 ): Promise<ChineseCaseSystemResult[]> {
   const results: ChineseCaseSystemResult[] = []
   for (const fixture of cases) {
-    const dir = path.join(opts.workDir, fixture.id)
+    const dir = safeWorkSubdir(opts.workDir, fixture.id)
     rmSync(dir, { recursive: true, force: true })
     const projectDir = path.join(dir, 'project')
     mkdirSync(projectDir, { recursive: true })
@@ -721,8 +739,12 @@ export async function runVivaChineseEval(
     const telemetry = emptyTelemetry()
     let activePhase: EvalPhase = 'ingest'
     const meteredCtx = createMeteringLlmCtx(ctx, telemetry, () => activePhase)
+    // Use a controlled phase clock so Dream scans each simulated 2026-11 phase day regardless of host wall-clock date.
+    let simOffsetMs = Date.parse('2026-11-10T23:30:00Z') - Date.now()
+    const simNow = () => Date.now() + simOffsetMs
     const owner = openMemoryOwner({
       root: path.join(dir, 'memory'),
+      now: simNow,
       dailyNotes: { noteInterval: 5, timezone: 'UTC', scanDays: 3650, dreamUnits: 5 },
       ...(opts.modelRoot && opts.runtimeRoot ? { embedding: { modelRoot: opts.modelRoot, runtimeRoot: opts.runtimeRoot } } : {}),
       route: () => ({ ...DEEPSEEK_DEFAULT }),
@@ -741,6 +763,7 @@ export async function runVivaChineseEval(
       for (let pIdx = 0; pIdx < fixture.phases.length; pIdx++) {
         const phase = fixture.phases[pIdx]!
         const baseMs = Date.parse(`2026-11-${String(10 + pIdx).padStart(2, '0')}T10:00:00Z`)
+        simOffsetMs = Date.parse(`2026-11-${String(10 + pIdx).padStart(2, '0')}T23:30:00Z`) - Date.now()
         activePhase = 'ingest'
         const tIng = performance.now()
         for (let tIdx = 0; tIdx < phase.turns.length; tIdx++) {
@@ -770,13 +793,13 @@ export async function runVivaChineseEval(
           })
         }
         owner.runtime.flushNoteTurns?.(sessionId)
-        await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.note'])
+        await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.note'], 4, simNow)
         telemetry.ingestMs += performance.now() - tIng
 
         activePhase = 'dream'
         const tDr = performance.now()
         await owner.runtime.runDocumentDream()
-        await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'])
+        await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.dream'], 4, simNow)
         telemetry.dreamMs += performance.now() - tDr
 
         const reader = randomUUID()
@@ -871,6 +894,7 @@ export interface PreparedLmeTask {
   questionId: string
   questionType: string
   isAbstention: boolean
+  evidenceTruncated?: boolean
   question: string
   groundTruth: string
   queryTimeIso: string
@@ -898,7 +922,7 @@ export async function runVivaLmeEval(
       const idx = cursor++
       const task = tasks[idx]!
       process.stderr.write(`[viva-lme] (${idx + 1}/${tasks.length}) starting ${task.questionId} (${task.questionType}, ${task.sessions.length} sessions)\n`)
-      const dir = path.join(opts.workDir, task.questionId)
+      const dir = safeWorkSubdir(opts.workDir, task.questionId)
       rmSync(dir, { recursive: true, force: true })
       mkdirSync(dir, { recursive: true })
       const telemetry = emptyTelemetry()
@@ -914,6 +938,7 @@ export async function runVivaLmeEval(
           return completeMemoryModel(meteredCtx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
         },
       })
+      let sessionsIngested = 0
       let dreamTriggers = 0
       let answer = ''
       let err: string | undefined
@@ -974,6 +999,7 @@ export async function runVivaLmeEval(
           owner.runtime.flushNoteTurns?.(sessionId)
           await drainVivaJobs(owner, path.join(dir, 'memory', 'memory.db'), ['memory.note'], 2)
           telemetry.ingestMs += performance.now() - tIng
+          sessionsIngested++
           prevDate = sess.dateStr
         }
         if (opts.enableDream && prevDate !== null && !dreamedDates.has(prevDate)) {
@@ -1026,8 +1052,9 @@ export async function runVivaLmeEval(
         answer,
         verdict: judge.verdict,
         judgeReason: judge.reason,
-        sessionsIngested: task.sessions.length,
+        sessionsIngested,
         dreamTriggers,
+        ...(task.evidenceTruncated ? { evidenceTruncated: true } : {}),
         workspace,
         telemetry,
         ...(err ? { error: err } : {}),

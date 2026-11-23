@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+def _safe_work_subdir(work_dir: str, item_id: str) -> Path:
+    base = Path(work_dir).resolve()
+    prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", str(item_id)).strip("_")[:40] or "item"
+    digest = hashlib.sha256(str(item_id).encode("utf-8")).hexdigest()[:12]
+    target = (base / f"{prefix}-{digest}").resolve()
+    if not target.is_relative_to(base) or target == base:
+        raise ValueError(f"Refusing unsafe work directory outside root: {item_id}")
+    return target
 
 try:
     import resource
@@ -603,7 +615,7 @@ async def cmd_chinese_eval(payload: dict[str, Any]) -> dict[str, Any]:
     results = []
 
     for case in payload["cases"]:
-        case_dir = Path(payload["workDir"]) / case["id"]
+        case_dir = _safe_work_subdir(payload["workDir"], case["id"])
         if case_dir.exists():
             shutil.rmtree(case_dir)
         case_dir.mkdir(parents=True, exist_ok=True)
@@ -693,7 +705,7 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
     from reme import Application
 
     qid = item["question_id"]
-    item_dir = Path(payload["workDir"]) / qid
+    item_dir = _safe_work_subdir(payload["workDir"], qid)
     if item_dir.exists():
         shutil.rmtree(item_dir)
     item_dir.mkdir(parents=True, exist_ok=True)
@@ -713,6 +725,7 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
     )
     telemetry = _empty_telemetry()
     phase_ref = ["ingest"]
+    sessions_ingested = 0
     dream_triggers = 0
     answer = ""
     err = None
@@ -756,6 +769,7 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
             )
             await app.run_job("index_update")
             telemetry["ingestMs"] += (time.perf_counter() - t_ing) * 1000.0
+            sessions_ingested += 1
             prev_date = date_str
 
         if enable_dream and prev_date is not None and prev_date not in dreamed_dates:
@@ -791,7 +805,7 @@ async def _run_one_lme_item(item: dict[str, Any], payload: dict[str, Any], api_k
     return {
         "questionId": qid,
         "answer": answer,
-        "sessionsIngested": len(sessions),
+        "sessionsIngested": sessions_ingested,
         "dreamTriggers": dream_triggers,
         "workspace": stats,
         "telemetry": telemetry,
