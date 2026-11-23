@@ -129,12 +129,24 @@ export function renderSummaryMarkdown(report: {
     lines.push('## 3. M3 中文语义与忠实度真实模型对照（7 类 / 8 阶段 / 40 回合）')
     lines.push('')
     const modes = [...new Set(report.chinese.map(r => r.mode))]
+    const caseIds = [...new Set(report.chinese.map(r => r.caseId))]
+    const expectedByCase = new Map<string, string[]>()
+    for (const cid of caseIds) {
+      const fixture = memorySemanticCases.find(c => c.id === cid)
+      const observedIds = [...new Set(report.chinese.filter(r => r.caseId === cid).flatMap(r => r.phases.map(p => p.phaseId)))]
+      const phaseIds = fixture
+        ? [...fixture.phases.map(p => p.id), ...observedIds.filter(id => !fixture.phases.some(p => p.id === id))]
+        : observedIds
+      expectedByCase.set(cid, phaseIds)
+    }
+    const totalExpectedPhases = [...expectedByCase.values()].reduce((sum, list) => sum + list.length, 0)
     lines.push('| 系统 / 模式 | 阶段通过率 (Judge) | 必要模式命中 | 禁止违规 | 跨项目/跨范围泄漏 | Daily / Digest | 总耗时(s) | HTTP LLM 调用 | Input Tokens (Cache命中) | Output Tokens |')
     lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
     for (const mode of modes) {
       const items = report.chinese.filter(r => r.mode === mode)
       const phases = items.flatMap(i => i.phases)
       const yes = phases.filter(p => p.judgeVerdict === 'yes').length
+      const denominator = Math.max(totalExpectedPhases, phases.length, 1)
       const patHit = phases.reduce((s, p) => s + p.patternHits, 0)
       const patTot = phases.reduce((s, p) => s + p.patternTotal, 0)
       const forb = phases.reduce((s, p) => s + p.forbiddenHits, 0)
@@ -148,24 +160,27 @@ export function renderSummaryMarkdown(report: {
       const cacheTok = items.reduce((s, i) => s + (i.telemetry.cacheReadTokens ?? 0), 0)
       const outTok = items.reduce((s, i) => s + i.telemetry.outputTokens, 0)
       const cachePct = inTok > 0 ? `${(cacheTok / inTok * 100).toFixed(0)}%` : '-'
-      lines.push(`| \`${mode}\` | ${yes}/${phases.length} (${(yes / Math.max(phases.length, 1) * 100).toFixed(1)}%) | ${patHit}/${patTot} | ${forb} | ${hasIso ? leaks : 'N/A (无原生项目隔离)'} | ${daily} / ${digest} | ${totalS.toFixed(1)} | ${calls} | ${inTok.toLocaleString()} (${cachePct}) | ${outTok.toLocaleString()} |`)
+      lines.push(`| \`${mode}\` | ${yes}/${denominator} (${(yes / denominator * 100).toFixed(1)}%) | ${patHit}/${patTot} | ${forb} | ${hasIso ? leaks : 'N/A (无原生项目隔离)'} | ${daily} / ${digest} | ${totalS.toFixed(1)} | ${calls} | ${inTok.toLocaleString()} (${cachePct}) | ${outTok.toLocaleString()} |`)
     }
     lines.push('')
     lines.push('### 中文语义逐题明细')
     lines.push('')
     lines.push('| Case / Phase | ' + modes.map(m => `\`${m}\``).join(' | ') + ' |')
     lines.push('| --- | ' + modes.map(() => '---').join(' | ') + ' |')
-    const caseIds = [...new Set(report.chinese.map(r => r.caseId))]
     for (const cid of caseIds) {
-      const ref = report.chinese.find(r => r.caseId === cid)!
-      for (const p of ref.phases) {
+      const phaseIds = expectedByCase.get(cid) ?? []
+      for (const phaseId of phaseIds) {
         const cols = modes.map(m => {
-          const hit = report.chinese!.find(r => r.caseId === cid && r.mode === m)?.phases.find(x => x.phaseId === p.phaseId)
-          if (!hit) return 'ERR'
+          const caseRes = report.chinese!.find(r => r.caseId === cid && r.mode === m)
+          const hit = caseRes?.phases.find(x => x.phaseId === phaseId)
+          if (!hit) {
+            const reason = caseRes?.error ? caseRes.error.slice(0, 48).replaceAll('|', '/') : 'missing'
+            return `ERR (${reason})`
+          }
           const mark = hit.judgeVerdict === 'yes' ? 'PASS' : hit.judgeVerdict === 'no' ? 'FAIL' : 'ERR'
           return `${mark} (${hit.judgeReason.slice(0, 48).replaceAll('|', '/')})`
         })
-        lines.push(`| \`${cid}/${p.phaseId}\` | ${cols.join(' | ')} |`)
+        lines.push(`| \`${cid}/${phaseId}\` | ${cols.join(' | ')} |`)
       }
     }
     lines.push('')

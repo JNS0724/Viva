@@ -641,11 +641,15 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     const chunkLexNodes = dedupeDigestNodes(chunkLexical.rows.map(hit => hit.file))
     const ranked = rankHybridNodes(candidates.rows, chunkLexNodes, vectorNodes)
     const verified: Array<{ file: MemoryFileNode, view: MemoryDocumentView, score: number }> = []
+    let hasMoreVerified = false
     for (const item of ranked) {
       const view = checks.verify(item.file)
       if (view?.kind !== 'digest') continue
       verified.push({ file: item.file, view, score: item.score })
-      if (verified.length >= need) break
+      if (verified.length > need) {
+        hasMoreVerified = true
+        break
+      }
     }
     const page = verified.slice(offset, need)
     return {
@@ -653,7 +657,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
         id: file.id, workspace: file.workspace, path: file.path, name: file.name, description: file.description, score,
       })),
       ...readSet(page.map(item => item.view)),
-      partial: ranked.length > verified.length || candidates.incomplete || chunkLexical.incomplete || vectorIncomplete || checks.incomplete(),
+      partial: hasMoreVerified || candidates.incomplete || chunkLexical.incomplete || vectorIncomplete || checks.incomplete(),
     }
   }
   async function nodeSearchAsync(input: NodeSearchInput, batch = policy.readBatch?.(input.signal)) {

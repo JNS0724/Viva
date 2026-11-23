@@ -492,14 +492,17 @@ async function runVivaAgenticAnswer(
   const system = queryTimeIso ? `${VIVA_AGENTIC_ANSWER_SYSTEM}\nCurrent time context: ${queryTimeIso}` : VIVA_AGENTIC_ANSWER_SYSTEM
   const messages: Message[] = [createUserMessage({ content: [{ type: 'text', text: userText }], source: memorySource })]
   const maxRounds = 10
+  const maxToolCalls = 9
+  let usedToolCalls = 0
   for (let round = 0; round < maxRounds; round++) {
+    const canCallTools = usedToolCalls < maxToolCalls && round < maxRounds - 1
     const assembler = new BlockAssembler()
     for await (const chunk of ctx.llm.stream({
       provider: DEEPSEEK_DEFAULT.provider,
       model: DEEPSEEK_DEFAULT.model,
       system,
       messages,
-      tools: VIVA_ANSWER_TOOLS,
+      ...(canCallTools ? { tools: VIVA_ANSWER_TOOLS } : {}),
       maxTokens: 2048,
       signal: AbortSignal.timeout(90_000),
     })) {
@@ -507,7 +510,7 @@ async function runVivaAgenticAnswer(
     }
     const blocks = assembler.blocks()
     const calls = blocks.filter(b => b.type === 'tool-call')
-    if (!calls.length || round === maxRounds - 1) {
+    if (!calls.length || !canCallTools) {
       telemetry.answerMs += performance.now() - t0
       return blocks.flatMap(b => b.type === 'text' ? [b.text] : []).join('').trim()
     }
@@ -517,6 +520,15 @@ async function runVivaAgenticAnswer(
       ...(assembler.replayState === undefined ? {} : { replayState: assembler.replayState }),
     }))
     for (const call of calls) {
+      if (usedToolCalls >= maxToolCalls) {
+        messages.push(createToolResultMessage({
+          callId: call.id,
+          content: [{ type: 'text', text: JSON.stringify({ status: 'budget_exhausted', message: `Tool call budget (${maxToolCalls}) reached. Provide your final answer now.` }) }],
+          isError: true,
+        }))
+        continue
+      }
+      usedToolCalls++
       telemetry.toolCalls++
       telemetry.toolNames[call.name] = (telemetry.toolNames[call.name] ?? 0) + 1
       let args: Record<string, unknown> = {}
@@ -662,21 +674,32 @@ async function drainVivaJobs(owner: ReturnType<typeof openMemoryOwner>, dbPath: 
   }
 }
 
-/** Ensure Viva background vector index is prepared before QA begins so hybrid search runs fairly. */
-async function ensureVivaVectorsReady(owner: ReturnType<typeof openMemoryOwner>, readerSessionId: string) {
+/** Ensure Viva background vector index is prepared before QA begins so hybrid search runs fairly; throws on failure/timeout. */
+async function ensureVivaVectorsReady(owner: ReturnType<typeof openMemoryOwner>, readerSessionId: string, maxWaitMs = 60_000) {
   const origin = owner.sessionContext(readerSessionId)
-  // Trigger initial search which kicks off prepareAfterSearch if needed, then wait briefly until ready.
-  for (let i = 0; i < 20; i++) {
+  const deadline = performance.now() + maxWaitMs
+  let lastReasons: string[] = []
+  while (performance.now() < deadline) {
     const raw = await owner.runtime.handleModelRequest(
       { op: 'recall', session: readerSessionId, query: 'warmup check', limit: 1 },
       origin,
       () => true,
       AbortSignal.timeout(15_000),
     )
-    const parsed = JSON.parse(raw) as { reasons?: string[] }
-    if (!parsed.reasons?.includes('semantic-index-incomplete')) return
+    const parsed = JSON.parse(raw) as { status?: string, reasons?: string[] }
+    const reasons = parsed.reasons ?? []
+    lastReasons = reasons
+    const fatal = reasons.filter(r => r.startsWith('semantic-') && r !== 'semantic-index-incomplete')
+    if (fatal.length) {
+      throw new Error(`Viva vector index preparation failed: ${fatal.join(', ')}`)
+    }
+    if (parsed.status === 'unavailable') {
+      throw new Error(`Viva retrieval unavailable during vector warmup: ${reasons.join(', ') || 'unavailable'}`)
+    }
+    if (!reasons.includes('semantic-index-incomplete')) return
     await new Promise(resolve => setTimeout(resolve, 250))
   }
+  throw new Error(`Viva vector index not ready within ${maxWaitMs}ms (${lastReasons.join(', ') || 'timeout'})`)
 }
 
 export async function runVivaChineseEval(

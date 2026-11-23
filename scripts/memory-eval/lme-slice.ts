@@ -79,14 +79,31 @@ export function selectStratifiedLmeSlice(
     const regular = pool.filter(item => !String(item.question_id).endsWith('_abs'))
     const abstention = pool.filter(item => String(item.question_id).endsWith('_abs'))
     const pick: LmeItem[] = []
+    const pickedIds = new Set<string>()
+    const add = (item: LmeItem) => {
+      if (pickedIds.has(item.question_id)) return
+      pickedIds.add(item.question_id)
+      pick.push(item)
+    }
     // Include 1 abstention item in multi-session / knowledge-update / single-session-user when perType >= 2.
     const wantAbs = perType >= 2 && abstention.length > 0 && ['single-session-user', 'knowledge-update', 'multi-session'].includes(type) ? 1 : 0
     for (let i = 0; i < wantAbs; i++) {
-      pick.push(abstention[Math.floor((i * abstention.length) / wantAbs)]!)
+      add(abstention[Math.floor((i * abstention.length) / wantAbs)]!)
     }
     const wantReg = Math.min(regular.length, perType - pick.length)
     for (let i = 0; i < wantReg; i++) {
-      pick.push(regular[Math.floor((i * regular.length) / wantReg)]!)
+      add(regular[Math.floor((i * regular.length) / wantReg)]!)
+    }
+    // Backfill with remaining abstention items if regular items ran short (e.g., after excludeIds or large perType).
+    if (pick.length < perType) {
+      const remainingAbs = abstention.filter(item => !pickedIds.has(item.question_id))
+      const needMore = Math.min(remainingAbs.length, perType - pick.length)
+      for (let i = 0; i < needMore; i++) {
+        add(remainingAbs[Math.floor((i * remainingAbs.length) / needMore)]!)
+      }
+    }
+    if (pick.length < perType) {
+      throw new Error(`Insufficient LongMemEval items for category "${type}": requested ${perType}, available ${pool.length}`)
     }
     selected.push(...pick)
   }

@@ -713,4 +713,6 @@ test('nodeSearchAsync paginates chunk lexical candidates past disallowed/daily h
   assert.equal(page2.nodes.length, 1)
   assert.notEqual(page2.nodes[0]!.id, page1.nodes[0]!.id)
   assert.deepEqual([page1.nodes[0]!.id, page2.nodes[0]!.id].sort(), ['opaque-digest-a', 'opaque-digest-b'])
+  // Final page after all verified candidates are exhausted must report partial: false even when disallowed candidates were filtered out.
+  assert.equal(page2.partial, false, 'filtered/disallowed candidates must not keep nodeSearch partial: true once exhausted')
 })

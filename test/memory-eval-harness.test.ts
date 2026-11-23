@@ -72,6 +72,28 @@ describe('memory-eval harness', () => {
     assert.equal(heldOut.items.length, 12)
     assert.equal(heldOut.items.some(item => exclude.has(item.question_id)), false)
     assert.notEqual(heldOut.sliceSha256, a.sliceSha256)
+
+    // Backfills with remaining abstention items when regular items run short, and throws when total pool < perType.
+    const sparse: LmeItem[] = []
+    for (const type of LME_QUESTION_TYPES) {
+      sparse.push(
+        {
+          question_id: `${type}-reg-0`, question_type: type, question: 'q', question_date: '2023/06/01 (Thu) 10:00',
+          answer: 'a', answer_session_ids: [], haystack_dates: [], haystack_session_ids: [], haystack_sessions: [],
+        },
+        {
+          question_id: `${type}-abs-1_abs`, question_type: type, question: 'q1', question_date: '2023/06/01 (Thu) 10:00',
+          answer: 'u', answer_session_ids: [], haystack_dates: [], haystack_session_ids: [], haystack_sessions: [],
+        },
+        {
+          question_id: `${type}-abs-2_abs`, question_type: type, question: 'q2', question_date: '2023/06/01 (Thu) 10:00',
+          answer: 'u', answer_session_ids: [], haystack_dates: [], haystack_session_ids: [], haystack_sessions: [],
+        },
+      )
+    }
+    const backfilled = selectStratifiedLmeSlice(sparse, 3)
+    assert.equal(backfilled.items.length, LME_QUESTION_TYPES.length * 3)
+    assert.throws(() => selectStratifiedLmeSlice(sparse, 4), /Insufficient LongMemEval items/)
   })
 
   it('selects matching judge prompts and scores offline retrieval metrics cleanly', () => {
@@ -123,11 +145,34 @@ describe('memory-eval harness', () => {
         remeVersion: '0.4.2.4',
         llmModel: 'deepseek-flash',
         embeddingModel: 'granite-97m',
-        suites: ['offline'],
+        suites: ['offline', 'chinese'],
       },
       offline: [perfect],
+      chinese: [{
+        system: 'viva',
+        mode: 'viva-hybrid-granite',
+        caseId: 'dated-location-correction',
+        category: 'historical-correction',
+        phases: [{
+          phaseId: 'initial-location',
+          recallQuery: 'q',
+          recallSnippetCount: 1,
+          answer: 'ok',
+          judgeVerdict: 'yes',
+          judgeReason: 'matched',
+          patternHits: 1,
+          patternTotal: 1,
+          forbiddenHits: 0,
+        }],
+        workspace: { dailyFiles: 1, digestFiles: 1, sessionFiles: 0, totalBytes: 100, filePaths: [] },
+        telemetry: { llmCalls: 1, inputTokens: 100, outputTokens: 20, ingestMs: 10, dreamMs: 10, answerMs: 10, toolCalls: 1, toolNames: {} },
+        error: 'phase-2 timeout',
+      }],
     })
     assert.match(md, /Viva vs\. ReMe/)
     assert.match(md, /M4 离线检索对照/)
+    // dated-location-correction has 2 expected phases; completing only phase 1 must report 1/2 (50.0%) and surface phase 2 error.
+    assert.match(md, /1\/2 \(50\.0%\)/)
+    assert.match(md, /dated-location-correction\/explicit-relocation.*ERR \(phase-2 timeout\)/)
   })
 })

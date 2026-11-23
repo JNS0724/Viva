@@ -364,16 +364,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       list: () => policy.list(workspace, 'digest'),
       async load(required: string[], search: { query: string, limit?: number, page?: DreamSearchPage } | null, signal?: AbortSignal) {
         signal?.throwIfAborted()
-        const limit = Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
+        // When hybrid search is active, match memory-dream-tools' displayed page size so no ranked candidates are skipped across pages.
+        const pageLimit = searchDigestNodes
+          ? Math.min(defaults.searchMaxCandidates, search?.limit ?? 10)
+          : Math.min(defaults.searchMaxCandidates, (search?.limit ?? defaults.searchLimit) * defaults.searchCandidateMultiplier)
         const baseFingerprint = search ? identity.hash(JSON.stringify({ query: search.query, entries: activeEntries().map(r => [r.path, r.revision, r.usageVersion]) })) : ''
         const samePage = search?.page?.fingerprint === baseFingerprint
         const offset = samePage ? search!.page!.offset : 0
         const hybridOffset = searchDigestNodes ? (samePage ? (search!.page!.hybridOffset ?? 0) : 0) : -1
         const { hybridMatches, lexicalMatches, hybridPartial } = search
-          ? await candidates(search.query, limit, hybridOffset, signal)
+          ? await candidates(search.query, pageLimit, hybridOffset, signal)
           : { hybridMatches: [], lexicalMatches: [], hybridPartial: false }
-        const hybridSlice = hybridMatches.slice(0, limit)
-        const lexicalSlice = lexicalMatches.slice(offset, offset + Math.max(0, limit - hybridSlice.length))
+        const hybridSlice = hybridMatches.slice(0, pageLimit)
+        const lexicalSlice = lexicalMatches.slice(offset, offset + Math.max(0, pageLimit - hybridSlice.length))
         const pageSlice = [...hybridSlice, ...lexicalSlice].sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
         const selected = pageSlice.map(match => match.path)
         const scored = searchDigestNodes && pageSlice.some(match => match.score > 0)
@@ -400,9 +403,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           return view ?? []
         })
         const nextOffset = unread ? offset : offset + lexicalSlice.length
+        const moreHybridInPage = hybridMatches.length > hybridSlice.length
+        const hybridStep = moreHybridInPage ? Math.max(1, hybridSlice.length) : pageLimit
         const nextHybridOffset = !searchDigestNodes ? -1
           : unread ? hybridOffset
-            : hybridPartial && hybridOffset >= 0 && hybridOffset + limit < 512 ? hybridOffset + limit : -1
+            : (hybridPartial || moreHybridInPage) && hybridOffset >= 0 && hybridOffset + hybridStep < 512
+              ? hybridOffset + hybridStep
+              : -1
         const partial = unread || nextOffset < lexicalMatches.length || nextHybridOffset >= 0
         return {
           read, list: () => list, ...(scored ? { scored } : {}), partial,

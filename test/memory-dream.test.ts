@@ -1015,3 +1015,68 @@ test('Dream node_search propagates hybrid partial status and advances offset acr
   assert.ok(seenOffsets.some(offset => offset > 0), `expected hybrid pagination to advance offset, saw ${JSON.stringify(seenOffsets)}`)
   assert.ok(h.documents.read(incoming.note.workspace, 'digest/personal/second-page.md')!.markdown.includes('Follow-up semantic fact.'))
 })
+
+test('Dream node_search with limit: 1 visits every hybrid candidate across pages without skipping undisplayed hits', async t => {
+  const ordered: Array<{ id: string, path: string, score: number }> = []
+  const seenCalls: Array<{ limit: number, offset: number }> = []
+  const h = harness(t, {
+    searchDigestNodes: async (_workspace, _query, limit, offset) => {
+      seenCalls.push({ limit, offset })
+      const slice = ordered.slice(offset, offset + limit)
+      return { nodes: slice, partial: offset + limit < ordered.length }
+    },
+  })
+  const s1 = h.add('First seed.', 'S1')
+  const s2 = h.add('Second seed.', 'S2')
+  const s3 = h.add('Third seed.', 'S3')
+  for (const [idx, [seed, slug, score]] of [
+    [s1, 'hit-a', 0.9],
+    [s2, 'hit-b', 0.8],
+    [s3, 'hit-c', 0.7],
+  ].entries()) {
+    const s = seed as ReturnType<typeof h.add>
+    const rec = h.documents.commit({
+      operationId: randomUUID(), workspace: s.note.workspace, path: `digest/personal/${slug}.md`, action: 'CREATE', expectedRevision: null,
+      markdown: formatMemoryDocument({ metadata: { name: `Topic ${idx + 1}`, description: 'Opaque' }, body: `Body ${idx + 1}.` }),
+      sources: h.notes.references(s.key), reads: [],
+    })
+    ordered.push({ id: rec.documentId, path: `digest/personal/${slug}.md`, score: score as number })
+  }
+
+  const incoming = h.add('New fact belonging to hit-b.', 'Incoming')
+  const visitedPaths: string[] = []
+  h.setModel(async request => {
+    for (let i = 0; i < 3; i++) {
+      const res = await request.tools!.executeTool({ callId: `p${i}`, name: 'node_search', input: { query: 'opaque semantic', limit: 1 } })
+      assert.equal(res.state, 'completed')
+      const parsed = JSON.parse(res.content!) as { partial?: boolean, nodes?: Array<{ path: string }> } | Array<{ path: string }>
+      if (Array.isArray(parsed)) {
+        assert.equal(i, 2, 'final page must complete on the 3rd hit')
+        visitedPaths.push(...parsed.map(n => n.path))
+      } else {
+        assert.equal(parsed.partial, true)
+        visitedPaths.push(...(parsed.nodes ?? []).map(n => n.path))
+      }
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: 'digest/personal/hit-b.md' } })
+    assert.equal(readRes.state, 'completed')
+    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
+    return JSON.stringify({
+      operations: [{
+        action: 'REFINE',
+        path: 'digest/personal/hit-b.md',
+        name: 'Topic 2',
+        description: 'Updated hit-b',
+        edits: [{ oldText: 'Body 2.', newText: 'Body 2.\nNew fact belonging to hit-b.' }],
+        dailyPaths: input.notes.map(note => note.path),
+        sourceIds: input.notes.flatMap(note => note.sourceIds),
+      }],
+    })
+  })
+
+  await h.run()
+  assert.equal(h.status().lastCheckResult, 'processed')
+  assert.deepEqual(visitedPaths, ['digest/personal/hit-a.md', 'digest/personal/hit-b.md', 'digest/personal/hit-c.md'])
+  assert.deepEqual(seenCalls, [{ limit: 1, offset: 0 }, { limit: 1, offset: 1 }, { limit: 1, offset: 2 }])
+  assert.ok(h.documents.read(incoming.note.workspace, 'digest/personal/hit-b.md')!.markdown.includes('New fact belonging to hit-b.'))
+})
