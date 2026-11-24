@@ -11,7 +11,7 @@ import type { Effect, Effects, Outcome } from './ports/effects.ts'
 import type { MemoryNotes } from './ports/notes.ts'
 import type { MemoryDreamStatus } from '../contracts/dream-status.ts'
 import type { MemoryStore, MemorySource } from './ports/store.ts'
-import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments, ReadMemoryPhysicalFile } from './ports/documents.ts'
+import type { DocumentReceipt, DocumentSourceRef, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
 import type { MemoryFileIndex } from './ports/file-index.ts'
 import { memorySearchTokens } from './search-tokens.ts'
 import { DREAM, nextDreamAt } from './memory-notes.ts'
@@ -191,15 +191,31 @@ function stripAccidentalFrontmatter(text: string): string {
   return text
 }
 
+function normalizeDraftBody(
+  action: 'CREATE' | 'REFINE',
+  body: string | undefined,
+  edits: readonly DreamEdit[] | undefined,
+  beforeBody?: string,
+): string {
+  const rawDraftBody = action === 'CREATE'
+    ? (body ?? '').trim()
+    : body !== undefined
+      ? body.trim()
+      : beforeBody !== undefined && edits
+        ? applyRefineEdits(beforeBody, edits)
+        : (edits ?? []).map(edit => edit.newText).join('\n')
+  // Strip accidental YAML frontmatter only when it parses with digest metadata keys (never break thematic `---` rules).
+  return stripAccidentalFrontmatter(rawDraftBody)
+}
+
 function formatDigestMarkdown(operation: DreamOperation, before: MemoryDocumentView | null) {
   const beforeParsed = before ? parseMemoryDocument(before.markdown) : null
-  const rawDraftBody = operation.action === 'CREATE'
-    ? operation.body
-    : operation.body !== undefined
-      ? operation.body
-      : applyRefineEdits(beforeParsed!.body, operation.edits!)
-  // Strip accidental YAML frontmatter only when it parses with digest metadata keys (never break thematic `---` rules).
-  const draftBody = stripAccidentalFrontmatter(rawDraftBody)
+  const draftBody = normalizeDraftBody(
+    operation.action,
+    operation.action === 'CREATE' ? operation.body : operation.body,
+    operation.action === 'REFINE' ? operation.edits : undefined,
+    beforeParsed?.body,
+  )
   const existingLinks = before ? memoryDocumentLinks(before.markdown) : []
   // Wrap the body in empty frontmatter so a leading Markdown horizontal rule `---` is parsed as body, not frontmatter.
   const bodyLinks = memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftBody }))
@@ -325,14 +341,14 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileRevisionAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate?: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
   digestNodes?: MemoryFileIndex['digestNodes'],
   searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
-  readPhysicalFile?: ReadMemoryPhysicalFile, readFileRevisionAtCommit?: (workspace: string, path: string) => string | undefined, allowsText?: (text: string, source: MemorySource) => boolean,
+  readPhysicalFile?: ReadMemoryPhysicalFile, readFileAtCommit?: (workspace: string, path: string) => MemoryPhysicalFile | null, allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(diagnosticPort)
@@ -651,10 +667,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       saveJobState(null, activeDeferred)
     }
 
-    const livePhysicalRevision = (workspace: string, filePath: string): { known: true, revision: string | undefined } | { known: false } => {
-      if (!readFileRevisionAtCommit) return { known: false }
-      try { return { known: true, revision: readFileRevisionAtCommit(workspace, filePath) } }
-      catch { return { known: true, revision: undefined } }
+    const livePhysicalSnapshot = (workspace: string, filePath: string): { known: true, file: MemoryPhysicalFile | null } | { known: false } => {
+      if (!readFileAtCommit) return { known: false }
+      try { return { known: true, file: readFileAtCommit(workspace, filePath) } }
+      catch { return { known: true, file: null } }
     }
 
     const classifyNoteFile = (file: FileRef, batch?: MemoryDocumentReadBatch): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
@@ -671,10 +687,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (obsRev !== file.revision) return 'stale'
         return fileCurrent(file, batch) ? 'current' : 'stale'
       }
-      const live = livePhysicalRevision(file.workspace, file.path)
+      const live = livePhysicalSnapshot(file.workspace, file.path)
       if (live.known) {
-        if (live.revision === undefined) return 'unverifiable'
-        if (live.revision !== file.revision) return 'stale'
+        if (!live.file) return 'unverifiable'
+        if (live.file.revision !== file.revision) return 'stale'
+        const latest = notes.read(file.key, live.file)
+        return Boolean(latest && latest.enabled && latest.workspace === file.workspace && latest.path === file.path
+          && latest.revision === file.checkpoint && latest.fileRevision === file.revision && refsCurrent(file.sources)) ? 'current' : 'stale'
       }
       return fileCurrent(file) ? 'current' : 'stale'
     }
@@ -698,18 +717,21 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (!refsCurrent(ref.sources)) return 'stale'
             if (ref.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
           }
+          let physical: MemoryPhysicalFile | null | undefined
           if (batch) {
             const obsRev = batch.observedRevision(workspace, row.path)
             if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
             if (obsRev !== ref.revision) return 'stale'
+            physical = batch.physical(workspace, row.path)
           } else {
-            const live = livePhysicalRevision(workspace, row.path)
+            const live = livePhysicalSnapshot(workspace, row.path)
             if (live.known) {
-              if (live.revision === undefined) { hasUnverifiable = true; continue }
-              if (live.revision !== ref.revision) return 'stale'
+              if (!live.file) { hasUnverifiable = true; continue }
+              if (live.file.revision !== ref.revision) return 'stale'
+              physical = live.file
             }
           }
-          const doc = documents.read(workspace, row.path, batch ? { physical: batch.physical(workspace, row.path) } : undefined)
+          const doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
           if (!doc || doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
         }
       }
@@ -721,18 +743,21 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         }
         if (!refsCurrent(obsNote.sources)) return 'stale'
         if (obsNote.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
+        let physical: MemoryPhysicalFile | null | undefined
         if (batch) {
           const obsRev = batch.observedRevision(workspace, obsNote.path)
           if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
           if (obsRev !== obsNote.revision) return 'stale'
+          physical = batch.physical(workspace, obsNote.path)
         } else {
-          const live = livePhysicalRevision(workspace, obsNote.path)
+          const live = livePhysicalSnapshot(workspace, obsNote.path)
           if (live.known) {
-            if (live.revision === undefined) { hasUnverifiable = true; continue }
-            if (live.revision !== obsNote.revision) return 'stale'
+            if (!live.file) { hasUnverifiable = true; continue }
+            if (live.file.revision !== obsNote.revision) return 'stale'
+            physical = live.file
           }
         }
-        const latest = notes.read(obsNote.key, batch ? batch.physical(workspace, obsNote.path) : undefined)
+        const latest = notes.read(obsNote.key, physical)
         if (!latest || !latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
           || latest.revision !== obsNote.checkpoint || latest.fileRevision !== obsNote.revision) {
           return 'stale'
@@ -1355,7 +1380,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                         strippedDraftPaths.add(rawPath.toLowerCase())
                         continue
                       }
-                      const rawBody = typeof opRecord.body === 'string' ? opRecord.body.trim() : ''
+                      const action = opRecord.action === 'REFINE' ? 'REFINE' : 'CREATE'
+                      const rawBody = typeof opRecord.body === 'string' ? opRecord.body : undefined
                       const parsedEdits: DreamEdit[] = Array.isArray(opRecord.edits)
                         ? opRecord.edits.flatMap(edit =>
                             edit && typeof edit === 'object'
@@ -1364,21 +1390,20 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                               ? [{ oldText: (edit as { oldText: string }).oldText, newText: (edit as { newText: string }).newText }]
                               : [])
                         : []
-                      const existingBefore = opRecord.action === 'REFINE' && rawPath ? tools.observed(rawPath) : undefined
+                      const existingBefore = action === 'REFINE' && rawPath ? tools.observed(rawPath) : undefined
                       const beforeLinkTargets = existingBefore
                         ? new Set(rawWikilinkTargets(existingBefore.markdown).map(link => link.toLowerCase()))
                         : null
-                      let draftText = rawBody ? stripAccidentalFrontmatter(rawBody) : ''
-                      if (!draftText && parsedEdits.length > 0) {
-                        if (existingBefore) {
-                          try {
-                            draftText = stripAccidentalFrontmatter(applyRefineEdits(parseMemoryDocument(existingBefore.markdown).body, parsedEdits).trim())
-                          } catch {
-                            draftText = parsedEdits.map(edit => edit.newText).join('\n')
-                          }
-                        } else {
-                          draftText = parsedEdits.map(edit => edit.newText).join('\n')
-                        }
+                      let draftText = ''
+                      try {
+                        draftText = normalizeDraftBody(
+                          action,
+                          rawBody,
+                          parsedEdits.length ? parsedEdits : undefined,
+                          existingBefore ? parseMemoryDocument(existingBefore.markdown).body : undefined,
+                        )
+                      } catch {
+                        draftText = parsedEdits.map(edit => edit.newText).join('\n')
                       }
                       const draftLinks = draftText ? rawWikilinkTargets(formatMemoryDocument({ metadata: {}, body: draftText })) : []
                       const introducedLinks = beforeLinkTargets

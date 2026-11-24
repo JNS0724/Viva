@@ -259,6 +259,7 @@ export function createMemoryPrefetchManager({
 
   async function runRequeryOnce(entry: PrefetchEntry, remainingMs: number, signal?: AbortSignal): Promise<{ result: AutomaticRecallResult, epoch?: string, revision?: number }> {
     entry.requeried = true
+    if (entry.cancelled) return { result: { status: 'skipped' } }
     if (!ownerAvailable || remainingMs <= 0 || now() >= entry.deadlineAt || signal?.aborted) {
       return { result: ownerAvailable ? { status: 'timeout' } : { status: 'unavailable' } }
     }
@@ -266,18 +267,30 @@ export function createMemoryPrefetchManager({
     const reqRevision = currentRevision
     if (!reqEpoch || reqRevision === undefined) return { result: { status: 'unavailable' } }
     const controller = new AbortController()
+    entry.controller = controller
     const onAbort = () => controller.abort(signal?.reason)
     signal?.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => controller.abort(new RequestTimeout()), remainingMs)
+    entry.timer = timer
     timer.unref?.()
+    let abortReject: (reason?: unknown) => void = () => {}
+    const onControllerAbort = () => abortReject(controller.signal.reason ?? new RequestTimeout())
+    controller.signal.addEventListener('abort', onControllerAbort, { once: true })
     try {
-      const reply = await callPrefetch({
+      const work = callPrefetch({
         session: entry.sessionId,
         query: entry.queryText,
         cwd: entry.cwd,
         ...(entry.context ? { context: entry.context } : {}),
         ...(entry.project ? { project: entry.project } : {}),
       }, { signal: controller.signal, budgetMs: remainingMs })
+      // Prevent unhandled rejection if abort wins the race before work settles.
+      work.catch(() => {})
+      const reply = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => { abortReject = reject }),
+      ])
+      if (entry.cancelled) return { result: { status: 'skipped' } }
       if (now() >= entry.deadlineAt) return { result: { status: 'timeout' } }
       if (reply.result.status === 'hit') {
         if (reply.epoch !== reqEpoch || reply.revision !== reqRevision || !versionCurrent(reply.epoch, reply.revision)) {
@@ -286,15 +299,24 @@ export function createMemoryPrefetchManager({
       }
       return { result: reply.result, epoch: reply.epoch, revision: reply.revision }
     } catch (error) {
+      if (entry.cancelled) return { result: { status: 'skipped' } }
       if (error instanceof RequestTimeout || controller.signal.aborted) return { result: { status: 'timeout' } }
       return { result: ownerAvailable ? { status: 'timeout' } : { status: 'unavailable' } }
     } finally {
       clearTimeout(timer)
+      if (entry.controller === controller) entry.controller = undefined
+      if (entry.timer === timer) entry.timer = undefined
+      controller.signal.removeEventListener('abort', onControllerAbort)
       signal?.removeEventListener('abort', onAbort)
     }
   }
 
-  async function claimSingleInternal(requestId: string, sessionId: string, signal?: AbortSignal): Promise<{ claim: ClaimPrefetchResult, entry?: PrefetchEntry }> {
+  async function claimSingleInternal(
+    requestId: string,
+    sessionId: string,
+    signal?: AbortSignal,
+    options: { handoffToRefreshable?: boolean, keepClaiming?: boolean } = {},
+  ): Promise<{ claim: ClaimPrefetchResult, entry?: PrefetchEntry }> {
     cleanupExpired()
     const key = prefetchKey(sessionId, requestId)
     const entry = entries.get(key)
@@ -309,21 +331,28 @@ export function createMemoryPrefetchManager({
     entries.delete(key)
     deliveryTerminals.delete(key)
     claiming.set(key, entry)
+    const handoff = (claim: ClaimPrefetchResult) => {
+      if (options.handoffToRefreshable && claim.found && claim.result.status === 'hit'
+        && !entry.cancelled && !entry.requeried && entry.deadlineAt > now()) {
+        refreshable.set(entry.key, entry)
+      }
+      return { claim, entry }
+    }
     try {
       // Step 1: Consume valid completed terminal results FIRST (even if now() > deadlineAt).
       if (entry.settled) {
-        if (entry.cancelled) return { claim: { found: false } }
+        if (entry.cancelled) return { claim: { found: true, result: { status: 'skipped' } } }
         if (entry.result && entry.result.status !== 'hit') {
           return { claim: { found: true, result: entry.result }, entry }
         }
         if (entry.result?.status === 'hit' && !entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-          return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
+          return handoff({ found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried })
         }
         // Stale hit: allow at most one re-query within remaining original budget.
         const remaining = entry.deadlineAt - now()
         if (remaining > 0 && !entry.requeried) {
           const retried = await runRequeryOnce(entry, remaining, signal)
-          if (entry.cancelled) return { claim: { found: false } }
+          if (entry.cancelled) return { claim: { found: true, result: { status: 'skipped' } } }
           return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
         }
         return { claim: { found: true, result: { status: 'timeout' } }, entry }
@@ -336,44 +365,49 @@ export function createMemoryPrefetchManager({
         clearTimeout(entry.timer)
         return { claim: { found: true, result: { status: 'timeout' } }, entry }
       }
-      if (entry.work) {
+      if (entry.work && !entry.cancelled) {
         let wake: () => void = () => {}
         const onAbort = () => wake()
+        const entrySignal = entry.controller?.signal
         signal?.addEventListener('abort', onAbort, { once: true })
+        entrySignal?.addEventListener('abort', onAbort, { once: true })
         const waitTimer = setTimeout(() => {
           entry.controller?.abort(new RequestTimeout())
           wake()
         }, remaining)
         waitTimer.unref?.()
         try {
-          await Promise.race([
-            entry.work,
-            new Promise<void>(resolve => { wake = resolve }),
-          ])
+          if (!signal?.aborted && !entrySignal?.aborted && !entry.cancelled) {
+            await Promise.race([
+              entry.work,
+              new Promise<void>(resolve => { wake = resolve }),
+            ])
+          }
         } finally {
           clearTimeout(waitTimer)
           signal?.removeEventListener('abort', onAbort)
+          entrySignal?.removeEventListener('abort', onAbort)
         }
       }
-      if (entry.cancelled) return { claim: { found: false } }
+      if (entry.cancelled) return { claim: { found: true, result: { status: 'skipped' } } }
 
       if (entry.settled && entry.result) {
         if (entry.result.status !== 'hit') return { claim: { found: true, result: entry.result }, entry }
         // Claim-side double-point invalidation check.
         if (!entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-          return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
+          return handoff({ found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried })
         }
       }
       // Invalidated while pending: allow at most one re-query within remaining original budget.
       const afterWaitRemaining = entry.deadlineAt - now()
       if (entry.stale && afterWaitRemaining > 0 && !entry.requeried && !signal?.aborted) {
         const retried = await runRequeryOnce(entry, afterWaitRemaining, signal)
-        if (entry.cancelled) return { claim: { found: false } }
+        if (entry.cancelled) return { claim: { found: true, result: { status: 'skipped' } } }
         return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
       }
       return { claim: { found: true, result: { status: 'timeout' } }, entry }
     } finally {
-      if (claiming.get(key) === entry) claiming.delete(key)
+      if (!options.keepClaiming && claiming.get(key) === entry) claiming.delete(key)
     }
   }
 
@@ -382,9 +416,10 @@ export function createMemoryPrefetchManager({
     sessionId: string
     signal?: AbortSignal
   }): Promise<ClaimPrefetchResult> {
-    const { claim, entry } = await claimSingleInternal(requestId, sessionId, signal)
-    if (claim.found && claim.result.status === 'hit' && entry && !entry.cancelled && !entry.requeried && entry.deadlineAt > now()) {
-      refreshable.set(entry.key, entry)
+    const { claim, entry } = await claimSingleInternal(requestId, sessionId, signal, { handoffToRefreshable: true })
+    if (entry?.cancelled) {
+      refreshable.delete(entry.key)
+      return { found: true, result: { status: 'skipped' } }
     }
     return claim
   }
@@ -398,7 +433,10 @@ export function createMemoryPrefetchManager({
     const key = prefetchKey(sessionId, requestId)
     const entry = refreshable.get(key)
     refreshable.delete(key)
-    if (!entry || entry.cancelled || entry.requeried || signal?.aborted) {
+    if (!entry || entry.cancelled) {
+      return { found: true, result: { status: 'skipped' } }
+    }
+    if (entry.requeried || signal?.aborted) {
       return { found: true, result: { status: 'timeout' } }
     }
     const remaining = entry.deadlineAt - now()
@@ -406,7 +444,7 @@ export function createMemoryPrefetchManager({
     claiming.set(key, entry)
     try {
       const retried = await runRequeryOnce(entry, remaining, signal)
-      if (entry.cancelled) return { found: false }
+      if (entry.cancelled) return { found: true, result: { status: 'skipped' } }
       return { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }
     } finally {
       if (claiming.get(key) === entry) claiming.delete(key)
@@ -419,26 +457,38 @@ export function createMemoryPrefetchManager({
     sessionId: string
     signal?: AbortSignal
   }): Promise<ClaimPrefetchResult[]> {
-    const claimed = await Promise.all(requestIds.map(requestId => claimSingleInternal(requestId, sessionId, signal)))
-    // Re-check every resolved hit against live (epoch, revision) after sibling claims complete.
-    const rechecked = await Promise.all(claimed.map(async ({ claim, entry }) => {
-      if (!claim.found || claim.result.status !== 'hit') return claim
-      if (versionCurrent(claim.epoch, claim.revision)) return claim
-      if (entry && !entry.requeried && !signal?.aborted) {
-        const remaining = entry.deadlineAt - now()
-        if (remaining > 0) {
-          const retried = await runRequeryOnce(entry, remaining, signal)
-          return { found: true as const, ...retried }
-        }
-      }
-      return { found: true as const, result: { status: 'timeout' as const } }
-    }))
-    // Final synchronous sweep so no sibling re-query can mask an even later invalidation.
-    return rechecked.map(claim => (
-      claim.found && claim.result.status === 'hit' && !versionCurrent(claim.epoch, claim.revision)
-        ? { found: true as const, result: { status: 'timeout' as const } }
-        : claim
+    const claimed = await Promise.all(requestIds.map(requestId =>
+      claimSingleInternal(requestId, sessionId, signal, { keepClaiming: true }),
     ))
+    try {
+      // Re-check every resolved hit against live (epoch, revision) after sibling claims complete.
+      const rechecked = await Promise.all(claimed.map(async ({ claim, entry }) => {
+        if (entry?.cancelled) return { claim: { found: true as const, result: { status: 'skipped' as const } }, entry }
+        if (!claim.found || claim.result.status !== 'hit') return { claim, entry }
+        if (versionCurrent(claim.epoch, claim.revision)) return { claim, entry }
+        if (entry && !entry.requeried && !signal?.aborted) {
+          const remaining = entry.deadlineAt - now()
+          if (remaining > 0) {
+            const retried = await runRequeryOnce(entry, remaining, signal)
+            if (entry.cancelled) return { claim: { found: true as const, result: { status: 'skipped' as const } }, entry }
+            return { claim: { found: true as const, ...retried }, entry }
+          }
+        }
+        return { claim: { found: true as const, result: { status: 'timeout' as const } }, entry }
+      }))
+      // Final synchronous sweep so no sibling re-query or late cancel can mask invalidation or cancellation.
+      return rechecked.map(({ claim, entry }) => {
+        if (entry?.cancelled) return { found: true as const, result: { status: 'skipped' as const } }
+        if (claim.found && claim.result.status === 'hit' && !versionCurrent(claim.epoch, claim.revision)) {
+          return { found: true as const, result: { status: 'timeout' as const } }
+        }
+        return claim
+      })
+    } finally {
+      for (const { entry } of claimed) {
+        if (entry && claiming.get(entry.key) === entry) claiming.delete(entry.key)
+      }
+    }
   }
 
   function cancelPrefetch(sessionId: string, requestId: string) {
@@ -458,7 +508,11 @@ export function createMemoryPrefetchManager({
       claiming.delete(key)
     }
     deliveryTerminals.delete(key)
-    refreshable.delete(key)
+    const refreshEntry = refreshable.get(key)
+    if (refreshEntry) {
+      refreshEntry.cancelled = true
+      refreshable.delete(key)
+    }
   }
 
   function clearSession(sessionId: string) {
@@ -482,8 +536,11 @@ export function createMemoryPrefetchManager({
     for (const key of deliveryTerminals.keys()) {
       if (key.startsWith(prefix)) deliveryTerminals.delete(key)
     }
-    for (const key of refreshable.keys()) {
-      if (key.startsWith(prefix)) refreshable.delete(key)
+    for (const [key, entry] of refreshable) {
+      if (key.startsWith(prefix)) {
+        entry.cancelled = true
+        refreshable.delete(key)
+      }
     }
   }
 
@@ -497,6 +554,9 @@ export function createMemoryPrefetchManager({
       entry.cancelled = true
       entry.controller?.abort()
       clearTimeout(entry.timer)
+    }
+    for (const entry of refreshable.values()) {
+      entry.cancelled = true
     }
     entries.clear()
     claiming.clear()

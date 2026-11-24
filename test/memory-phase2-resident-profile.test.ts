@@ -46,6 +46,11 @@ function dreamHarness(t: TestContext, options: {
     filePath: string,
     signal?: AbortSignal,
   ) => Promise<{ path: string, revision: string, markdown: string } | null>
+  readFileAtCommitOverride?: (
+    defaultRead: (workspace: string, filePath: string) => { path: string, revision: string, markdown: string } | null,
+    workspace: string,
+    filePath: string,
+  ) => { path: string, revision: string, markdown: string } | null
 } = {}) {
   const { dir, defer } = scratch(t, 'phase2-dream-')
   const dbPath = path.join(dir, 'memory.db')
@@ -81,6 +86,7 @@ function dreamHarness(t: TestContext, options: {
       },
     })
     const defaultReadPhysical = createMemoryPhysicalFileReader(() => store.fileRoot)
+    const defaultReadAtCommit = (workspace: string, filePath: string) => readMemoryFileAtCommit(store.fileRoot, workspace, filePath)
     jobs = createMemoryDreamJobs({
       store,
       notes,
@@ -102,7 +108,10 @@ function dreamHarness(t: TestContext, options: {
         options.readPhysicalOverride
           ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
           : defaultReadPhysical(workspace, filePath, signal),
-      readFileRevisionAtCommit: (workspace, filePath) => readMemoryFileAtCommit(store.fileRoot, workspace, filePath)?.revision,
+      readFileAtCommit: (workspace, filePath) =>
+        options.readFileAtCommitOverride
+          ? options.readFileAtCommitOverride(defaultReadAtCommit, workspace, filePath)
+          : defaultReadAtCommit(workspace, filePath),
       calculate: async request => {
         modelLog.push({
           isProfilePass: request.system === DREAM_PROFILE_SYSTEM,
@@ -1766,6 +1775,76 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
   assert.equal(hR6.documents.read(d0R6.workspace, 'digest/wiki/indented-dep.md'), null, '4-leading-spaces CREATE referencing stripped profile draft must be stripped after trim (R6 P2-2)')
   const existingAfter = hR6.documents.read(d0R6.workspace, 'digest/wiki/existing-ref.md')!
   assert.ok(existingAfter.markdown.includes('已更新的独立正文。'), 'unrelated prose REFINE on doc with pre-existing profile link must NOT be discarded (R6 P2-2)')
+
+  // R7 P2-1: REFINE edits[] must use ONE shared normalized body for both filtering and persistence:
+  //   (a) editing an indented code example containing [[digest/personal/profile.MD]] must NOT trim leading spaces & discard it;
+  //   (b) editing a body with a leading blank line before a YAML-shaped block linking [[digest/personal/profile.MD]] MUST strip it.
+  const hR7 = dreamHarness(t, { initialNow: TODAY_MS })
+  const d0R7 = hR7.addDailyNote([{ text: '缩进代码块与前导空行 YAML 测试文档' }], { session: 's-r7-p2-1-0', day: '2026-11-15' })
+  hR7.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0R7.workspace,
+    path: 'digest/wiki/code-example.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Code Example\ndescription: Indented code block at top\n---\n    // sample [[digest/personal/profile.MD]]\n    const v = 1\n',
+    sources: [{ id: d0R7.sources[0]!.id, token: memorySourceToken(d0R7.sources[0]!) }],
+    reads: [],
+  })
+  hR7.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0R7.workspace,
+    path: 'digest/wiki/blank-yaml.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Blank Yaml\ndescription: Leading blank line before yaml-shaped block\n---\n\n---\nname: Fake\n---\nOriginal line.\n',
+    sources: [{ id: d0R7.sources[0]!.id, token: memorySourceToken(d0R7.sources[0]!) }],
+    reads: [],
+  })
+  hR7.notes.markProcessed(d0R7.key, d0R7.note.revision)
+  const d1R7 = hR7.addDailyNote([{ text: '同时编辑缩进代码块和带前导空行 YAML 文档' }], { session: 's-r7-p2-1-1', day: '2026-11-16' })
+  hR7.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+    await request.tools!.executeTool({ callId: 'c1', name: 'read', input: { path: 'digest/wiki/code-example.md' } })
+    await request.tools!.executeTool({ callId: 'c2', name: 'read', input: { path: 'digest/wiki/blank-yaml.md' } })
+    return JSON.stringify({
+      operations: [
+        {
+          action: 'CREATE',
+          path: 'digest/personal/profile.MD',
+          name: 'Bad Profile',
+          description: 'Reserved draft to strip',
+          body: '- bad profile draft',
+          dailyPaths: [d1R7.path],
+          sourceIds: [d1R7.sources[0]!.id],
+        },
+        {
+          action: 'REFINE',
+          path: 'digest/wiki/code-example.md',
+          name: 'Code Example',
+          description: 'Update indented code value',
+          edits: [{ oldText: 'const v = 1', newText: 'const v = 2' }],
+          dailyPaths: [d1R7.path],
+          sourceIds: [d1R7.sources[0]!.id],
+        },
+        {
+          action: 'REFINE',
+          path: 'digest/wiki/blank-yaml.md',
+          name: 'Blank Yaml',
+          description: 'Inject link to stripped profile draft under leading blank line + YAML block',
+          edits: [{ oldText: 'Original line.', newText: 'See [[digest/personal/profile.MD]]' }],
+          dailyPaths: [d1R7.path],
+          sourceIds: [d1R7.sources[0]!.id],
+        },
+      ],
+    })
+  })
+  await hR7.run()
+  const codeAfter = hR7.documents.read(d0R7.workspace, 'digest/wiki/code-example.md')!
+  assert.ok(codeAfter.markdown.includes('    const v = 2'), 'REFINE edits[] on indented code example must preserve leading spaces and NOT be discarded (R7 P2-1)')
+  const blankYamlAfter = hR7.documents.read(d0R7.workspace, 'digest/wiki/blank-yaml.md')!
+  assert.ok(!blankYamlAfter.markdown.includes('digest/personal/profile.MD'), 'REFINE edits[] with leading blank line before YAML-shaped block linking stripped profile draft must be stripped (R7 P2-1)')
+  assert.ok(blankYamlAfter.markdown.includes('Original line.'))
 })
 
 test('out-of-batch observed source becoming ineligible blocks digest commit, and NOOP checkpoint rejects observed note mutating during checkpoint load (R4 P1-2)', async t => {
@@ -1939,4 +2018,46 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   await hD.retryNow()
   assert.equal(modelCallsD, callsAfterDefer, 'restored dependency must complete deferred checkpoint with 0 extra model calls')
   assert.equal(hD.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+
+  // Part E (R7 P1): Final live check must use ONE physical snapshot per file (moving the file right AFTER readFileAtCommit
+  // returns must NOT trigger a second filesystem read in notes.read that misclassifies it as stale!).
+  let d0EPath = ''
+  let d0EAbs = ''
+  let d0EBackup = ''
+  let liveReadsOfD0E = 0
+  let armMoveAfterSnapshot = false
+  const hE = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    readFileAtCommitOverride(defaultRead, workspace, filePath) {
+      const snap = defaultRead(workspace, filePath)
+      if (filePath === d0EPath) {
+        liveReadsOfD0E++
+        if (armMoveAfterSnapshot && snap) {
+          armMoveAfterSnapshot = false
+          fs.renameSync(d0EAbs, d0EBackup)
+        }
+      }
+      return snap
+    },
+  })
+  const d0E = hE.addDailyNote([{ text: '旧日记：成都机房配置' }], { session: 's-r7-e0', day: '2026-11-15' })
+  d0EPath = d0E.path
+  d0EAbs = path.join(hE.store.fileRoot, d0E.workspace, d0E.path)
+  d0EBackup = `${d0EAbs}.moved`
+  hE.notes.markProcessed(d0E.key, d0E.note.revision)
+  hE.addDailyNote([{ text: '目标 E 无新建摘要' }], { session: 's-r7-e1', day: '2026-11-16' })
+  hE.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armMoveAfterSnapshot = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0e', name: 'read', input: { path: d0E.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hE.run()
+  assert.equal(liveReadsOfD0E, 1, 'final live check must open observed file only ONCE via readFileAtCommit (R7 P1)')
+  assert.equal(armMoveAfterSnapshot, false, 'file move right after single snapshot must have fired')
+  assert.equal(hE.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'single physical snapshot must feed notes.read directly without a second disk open that would race and classify as stale (R7 P1)')
+  fs.renameSync(d0EBackup, d0EAbs)
 })
