@@ -546,10 +546,7 @@ export async function runSmoke(win: SmokeAppWindow, { smokeOut: outDir, smokePha
       problems.push(...await checkStreamMarkdown(win))
     }
     else if (smokePhase === 'showcase') problems.push(...await runShowcase(win, outDir, hooks))
-    else if (smokePhase === 'memory') {
-      problems.push(...await checkMemory(win, outDir, hooks))
-      if (includeSchedules && !problems.length) problems.push(...await checkSchedules(win, outDir))
-    }
+    else if (smokePhase === 'memory') problems.push(...await checkMemory(win, outDir, hooks, includeSchedules))
     else if (smokePhase === 'schedules') problems.push(...await checkSchedules(win, outDir))
     else if (smokePhase === 'resume-prepare') problems.push(...await prepareResume(win, outDir))
     else if (smokePhase === 'resume') problems.push(...await checkResume(win, outDir))
