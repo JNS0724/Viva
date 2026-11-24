@@ -51,6 +51,7 @@ function dreamHarness(t: TestContext, options: {
     workspace: string,
     filePath: string,
   ) => { path: string, revision: string, markdown: string } | null
+  omitReadFileAtCommit?: boolean
 } = {}) {
   const { dir, defer } = scratch(t, 'phase2-dream-')
   const dbPath = path.join(dir, 'memory.db')
@@ -108,10 +109,15 @@ function dreamHarness(t: TestContext, options: {
         options.readPhysicalOverride
           ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
           : defaultReadPhysical(workspace, filePath, signal),
-      readFileAtCommit: (workspace, filePath) =>
-        options.readFileAtCommitOverride
-          ? options.readFileAtCommitOverride(defaultReadAtCommit, workspace, filePath)
-          : defaultReadAtCommit(workspace, filePath),
+      ...(options.omitReadFileAtCommit
+        ? { readFileRevisionAtCommit: (workspace: string, filePath: string) => defaultReadAtCommit(workspace, filePath)?.revision }
+        : {
+            readFileAtCommit: (workspace: string, filePath: string) =>
+              options.readFileAtCommitOverride
+                ? options.readFileAtCommitOverride(defaultReadAtCommit, workspace, filePath)
+                : defaultReadAtCommit(workspace, filePath),
+            readFileRevisionAtCommit: (workspace: string, filePath: string) => defaultReadAtCommit(workspace, filePath)?.revision,
+          }),
       calculate: async request => {
         modelLog.push({
           isProfilePass: request.system === DREAM_PROFILE_SYSTEM,
@@ -1831,8 +1837,8 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
           action: 'REFINE',
           path: 'digest/wiki/blank-yaml.md',
           name: 'Blank Yaml',
-          description: 'Inject link to stripped profile draft under leading blank line + YAML block',
-          edits: [{ oldText: 'Original line.', newText: 'See [[digest/personal/profile.MD]]' }],
+          description: 'Inject link to stripped profile draft inside leading blank line + YAML-shaped block',
+          edits: [{ oldText: 'name: Fake', newText: 'name: "[[digest/personal/profile.MD]]"' }],
           dailyPaths: [d1R7.path],
           sourceIds: [d1R7.sources[0]!.id],
         },
@@ -1843,8 +1849,8 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
   const codeAfter = hR7.documents.read(d0R7.workspace, 'digest/wiki/code-example.md')!
   assert.ok(codeAfter.markdown.includes('    const v = 2'), 'REFINE edits[] on indented code example must preserve leading spaces and NOT be discarded (R7 P2-1)')
   const blankYamlAfter = hR7.documents.read(d0R7.workspace, 'digest/wiki/blank-yaml.md')!
-  assert.ok(!blankYamlAfter.markdown.includes('digest/personal/profile.MD'), 'REFINE edits[] with leading blank line before YAML-shaped block linking stripped profile draft must be stripped (R7 P2-1)')
-  assert.ok(blankYamlAfter.markdown.includes('Original line.'))
+  assert.ok(!blankYamlAfter.markdown.includes('digest/personal/profile.MD'), 'REFINE edits[] injecting link inside leading-blank-line YAML block must be stripped (R7 P2-1, R8)')
+  assert.ok(blankYamlAfter.markdown.includes('name: Fake'))
 })
 
 test('out-of-batch observed source becoming ineligible blocks digest commit, and NOOP checkpoint rejects observed note mutating during checkpoint load (R4 P1-2)', async t => {
@@ -2060,4 +2066,47 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(armMoveAfterSnapshot, false, 'file move right after single snapshot must have fired')
   assert.equal(hE.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'single physical snapshot must feed notes.read directly without a second disk open that would race and classify as stale (R7 P1)')
   fs.renameSync(d0EBackup, d0EAbs)
+
+  // Part F (R8 P2-4): A runtime omitting optional readFileAtCommit (revision-only) must retain deferred recovery with 0 extra planner calls.
+  let armMoveF = false
+  let d0FPath = ''
+  let d0FAbs = ''
+  let d0FBackup = ''
+  const hF = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      const res = await defaultRead(workspace, filePath, signal)
+      if (armMoveF && filePath === d0FPath) {
+        armMoveF = false
+        fs.renameSync(d0FAbs, d0FBackup)
+      }
+      return res
+    },
+  })
+  const d0F = hF.addDailyNote([{ text: '旧日记：西安机房配置' }], { session: 's-r8-f0', day: '2026-11-15' })
+  d0FPath = d0F.path
+  d0FAbs = path.join(hF.store.fileRoot, d0F.workspace, d0F.path)
+  d0FBackup = `${d0FAbs}.moved`
+  hF.notes.markProcessed(d0F.key, d0F.note.revision)
+  hF.addDailyNote([{ text: '目标 F 无新建摘要' }], { session: 's-r8-f1', day: '2026-11-16' })
+  let modelCallsF = 0
+  hF.setModel(async request => {
+    modelCallsF++
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armMoveF = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0f', name: 'read', input: { path: d0F.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hF.run()
+  const callsAfterDeferF = modelCallsF
+  await hF.retryNow()
+  assert.equal(modelCallsF, callsAfterDeferF, 'revision-only runtime omitting readFileAtCommit must preserve deferred checkpoint with 0 extra planner calls (R8 P2-4)')
+  fs.renameSync(d0FBackup, d0FAbs)
+  await hF.retryNow()
+  assert.equal(modelCallsF, callsAfterDeferF)
+  assert.equal(hF.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })

@@ -568,6 +568,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   const dream = dailyNotes && notes && documents ? createMemoryDreamJobs({
     store, notes: notes.storage, documents, effects, identity: resources.identity, now, transaction: store.tx, diagnostics, digestNodes: fileIndex?.digestNodes,
     readFileAtCommit: resources.readFileAtCommit,
+    readFileRevisionAtCommit: resources.readFileRevisionAtCommit,
     searchDigestNodes: fileRetrieval
       ? async (workspace, query, limit, offset, signal) => {
           const batch = filePolicy?.readBatch(signal)

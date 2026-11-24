@@ -42,6 +42,16 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
       if (!owner) return Promise.reject(new MemoryOwnerUnavailable())
       return owner.callHost('prefetchRecall', input, options)
     },
+    onCancelled({ sessionId, requestId }) {
+      if (adapter?.attached) {
+        adapter.peer.notify({
+          type: 'memory_owner_prefetch_cancelled',
+          protocol: MEMORY_HOST_PROTOCOL,
+          sessionId,
+          ...(requestId ? { requestId } : {}),
+        })
+      }
+    },
   })
 
   function adapterCall<T>(method: string, input: object, signal: AbortSignal, budgetMs: number): Promise<T> {

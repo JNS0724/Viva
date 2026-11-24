@@ -95,3 +95,12 @@ export const memoryOwnerContextUsed = z.strictObject({ type: z.literal('memory_o
   epoch: key, revision: integer, session: key, conversation: key.nullable(), turn: integer, at: integer,
   pushed: z.array(z.strictObject({ text, names: z.array(text) })) })
 export type MemoryOwnerContextUsed = z.infer<typeof memoryOwnerContextUsed>
+
+/** Transient prefetch cancellation event pushed from host to attached adapter so settled siblings are dropped before adoption. */
+export const memoryOwnerPrefetchCancelled = z.strictObject({
+  type: z.literal('memory_owner_prefetch_cancelled'),
+  protocol: z.literal(MEMORY_HOST_PROTOCOL),
+  sessionId: key,
+  requestId: key.optional(),
+})
+export type MemoryOwnerPrefetchCancelled = z.infer<typeof memoryOwnerPrefetchCancelled>

@@ -9,7 +9,7 @@ import type { AutomaticRecallResult, MemoryRequest } from '../../../src/memory/c
 import { isDailyMemoryStage } from '../../../src/memory/contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../../../src/memory/contracts/memory-daily-defaults.ts'
 import { MemoryComputeError } from '../../../src/memory/contracts/compute.ts'
-import { memoryOwnerChange, memoryOwnerProfile, memoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
+import { memoryOwnerChange, memoryOwnerPrefetchCancelled, memoryOwnerProfile, memoryOwnerState, type MemoryProfileSnapshot } from '../../../src/memory/contracts/host.ts'
 import { dateLine, formatAutomaticRecallMessage, formatMemoryRulesSection, formatProfileContext } from '../../../src/memory/core/memory-context.ts'
 import { looksSecret } from '../../../src/memory/core/memory-sensitive.ts'
 import { resolveMemoryProject } from '../../../src/memory/node/project-scope.ts'
@@ -83,6 +83,37 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   let cachedProfile: MemoryProfileSnapshot | undefined
   let currentRevision: number | undefined
   const pendingContextConfirmations = new Map<string, { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }>()
+  const CANCELLED_REQUEST_TTL_MS = 60_000
+  const MAX_CANCELLED_REQUESTS = 4096
+  const cancelledRequests = new Map<string, number>()
+  const sessionCancelSeq = new Map<string, number>()
+  const cancelKey = (sessionId: string, requestId: string) => `${sessionId}\0${requestId}`
+  function recordCancelledRequest(sessionId: string, requestId: string) {
+    const key = cancelKey(sessionId, requestId)
+    const now = Date.now()
+    if (cancelledRequests.has(key)) cancelledRequests.delete(key)
+    else if (cancelledRequests.size >= MAX_CANCELLED_REQUESTS) {
+      const oldest = cancelledRequests.keys().next()
+      if (!oldest.done) cancelledRequests.delete(oldest.value)
+    }
+    cancelledRequests.set(key, now + CANCELLED_REQUEST_TTL_MS)
+  }
+  function ingestCancelledRequests(sessionId: string, ids?: readonly string[]) {
+    if (!ids?.length) return
+    for (const id of ids) recordCancelledRequest(sessionId, id)
+  }
+  function isRequestCancelled(sessionId: string, requestId: string | undefined, startSeq: number): boolean {
+    if ((sessionCancelSeq.get(sessionId) ?? 0) !== startSeq) return true
+    if (!requestId) return false
+    const key = cancelKey(sessionId, requestId)
+    const expiresAt = cancelledRequests.get(key)
+    if (expiresAt === undefined) return false
+    if (expiresAt <= Date.now()) {
+      cancelledRequests.delete(key)
+      return false
+    }
+    return true
+  }
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined
 
@@ -123,6 +154,12 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const profileMsg = memoryOwnerProfile.safeParse(raw)
     if (profileMsg.success) {
       acceptProfile({ epoch: profileMsg.data.epoch, revision: profileMsg.data.revision, text: profileMsg.data.text })
+      return
+    }
+    const cancelMsg = memoryOwnerPrefetchCancelled.safeParse(raw)
+    if (cancelMsg.success) {
+      if (cancelMsg.data.requestId) recordCancelledRequest(cancelMsg.data.sessionId, cancelMsg.data.requestId)
+      else sessionCancelSeq.set(cancelMsg.data.sessionId, (sessionCancelSeq.get(cancelMsg.data.sessionId) ?? 0) + 1)
       return
     }
     const changeMsg = memoryOwnerChange.safeParse(raw)
@@ -226,6 +263,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     signal: AbortSignal,
   ): Promise<Array<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }>> {
     const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
+    const startSessionCancelSeq = sessionCancelSeq.get(sessionId) ?? 0
     const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
     type ResolvedItem = {
       msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult,
@@ -236,6 +274,9 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     // missing claim starts live fallback immediately without waiting for slow sibling prefetches.
     const initial = await Promise.all(items.map(async (item): Promise<ResolvedItem> => {
       const { msg, requestId } = item
+      if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+        return { msg, requestId, result: { status: 'skipped' } }
+      }
       if (requestId && (connection.claimPrefetch || connection.claimPrefetchBatch)) {
         const left = remaining()
         if (left <= 0) return { msg, requestId, result: { status: 'timeout' } }
@@ -243,6 +284,10 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
           const claim = connection.claimPrefetch
             ? await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: left })
             : (await connection.claimPrefetchBatch!({ requestIds: [requestId], sessionId }, { signal, budgetMs: left }))[0]
+          ingestCancelledRequests(sessionId, claim?.cancelledRequestIds)
+          if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+            return { msg, requestId, result: { status: 'skipped' } }
+          }
           if (claim?.found) {
             return {
               msg, requestId, result: claim.result,
@@ -251,12 +296,18 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
             }
           }
         } catch (error) {
+          if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+            return { msg, requestId, result: { status: 'skipped' } }
+          }
           const fallbackStatus: AutomaticRecallResult = signal.aborted
             ? { status: 'timeout' }
             : !available() ? { status: 'unavailable' } : { status: 'timeout' }
           if (!signal.aborted && available()) report(error)
           return { msg, requestId, result: fallbackStatus }
         }
+      }
+      if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+        return { msg, requestId, result: { status: 'skipped' } }
       }
       return resolveFallbackRecall(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal)
     }))
@@ -266,6 +317,9 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const checkEpoch = owner.epoch
     const checkRevision = currentRevision
     const refreshed = await Promise.all(initial.map(async (item): Promise<ResolvedItem> => {
+      if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+        return { ...item, result: { status: 'skipped' } }
+      }
       if (item.result.status !== 'hit') return item
       if (!available()) return { ...item, result: { status: 'unavailable' } }
       const epochStale = item.epoch !== undefined && checkEpoch !== undefined && item.epoch !== checkEpoch
@@ -278,6 +332,10 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
           if (item.fromHostClaim && item.requestId && connection.refreshPrefetch) {
             try {
               const retryClaim = await connection.refreshPrefetch({ requestId: item.requestId, sessionId }, { signal, budgetMs: left })
+              ingestCancelledRequests(sessionId, retryClaim?.cancelledRequestIds)
+              if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+                return { ...item, result: { status: 'skipped' }, retried: true }
+              }
               if (retryClaim?.found) {
                 return {
                   msg: item.msg, requestId: item.requestId, result: retryClaim.result,
@@ -286,12 +344,18 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
                 }
               }
             } catch (error) {
+              if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+                return { ...item, result: { status: 'skipped' }, retried: true }
+              }
               const fallbackStatus: AutomaticRecallResult = signal.aborted
                 ? { status: 'timeout' }
                 : !available() ? { status: 'unavailable' } : { status: 'timeout' }
               if (!signal.aborted && available()) report(error)
               return { ...item, result: fallbackStatus, retried: true }
             }
+          }
+          if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+            return { ...item, result: { status: 'skipped' }, retried: true }
           }
           const retryResult = await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, refreshDeadline, signal)
           return { ...retryResult, deadlineAt: refreshDeadline, retried: true }
@@ -300,10 +364,13 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       return { ...item, result: { status: 'timeout' } }
     }))
 
-    // Final synchronous adoption-time version guard across all messages in the step, preserving original [A, B, ...] order.
+    // Final synchronous adoption-time version + cancellation guard across all messages in the step, preserving [A, B, ...] order.
     const liveEpoch = owner.epoch
     const liveRevision = currentRevision
     return refreshed.map(({ msg, requestId, result, epoch, revision }) => {
+      if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+        return { msg, requestId, result: { status: 'skipped' as const } }
+      }
       if (result.status === 'hit') {
         if (!available()) return { msg, requestId, result: { status: 'unavailable' as const } }
         if (epoch !== undefined && liveEpoch !== undefined && epoch !== liveEpoch) {

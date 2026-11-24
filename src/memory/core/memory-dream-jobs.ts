@@ -341,14 +341,17 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileAtCommit, readFileRevisionAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate?: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
   digestNodes?: MemoryFileIndex['digestNodes'],
   searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
-  readPhysicalFile?: ReadMemoryPhysicalFile, readFileAtCommit?: (workspace: string, path: string) => MemoryPhysicalFile | null, allowsText?: (text: string, source: MemorySource) => boolean,
+  readPhysicalFile?: ReadMemoryPhysicalFile,
+  readFileAtCommit?: (workspace: string, path: string) => MemoryPhysicalFile | null,
+  readFileRevisionAtCommit?: (workspace: string, path: string) => string | undefined,
+  allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(diagnosticPort)
@@ -667,10 +670,19 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       saveJobState(null, activeDeferred)
     }
 
-    const livePhysicalSnapshot = (workspace: string, filePath: string): { known: true, file: MemoryPhysicalFile | null } | { known: false } => {
-      if (!readFileAtCommit) return { known: false }
-      try { return { known: true, file: readFileAtCommit(workspace, filePath) } }
-      catch { return { known: true, file: null } }
+    const livePhysicalState = (workspace: string, filePath: string):
+      | { kind: 'snapshot', file: MemoryPhysicalFile | null }
+      | { kind: 'revision', revision: string | undefined }
+      | { kind: 'unknown' } => {
+      if (readFileAtCommit) {
+        try { return { kind: 'snapshot', file: readFileAtCommit(workspace, filePath) } }
+        catch { return { kind: 'snapshot', file: null } }
+      }
+      if (readFileRevisionAtCommit) {
+        try { return { kind: 'revision', revision: readFileRevisionAtCommit(workspace, filePath) } }
+        catch { return { kind: 'revision', revision: undefined } }
+      }
+      return { kind: 'unknown' }
     }
 
     const classifyNoteFile = (file: FileRef, batch?: MemoryDocumentReadBatch): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
@@ -687,13 +699,17 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (obsRev !== file.revision) return 'stale'
         return fileCurrent(file, batch) ? 'current' : 'stale'
       }
-      const live = livePhysicalSnapshot(file.workspace, file.path)
-      if (live.known) {
+      const live = livePhysicalState(file.workspace, file.path)
+      if (live.kind === 'snapshot') {
         if (!live.file) return 'unverifiable'
         if (live.file.revision !== file.revision) return 'stale'
         const latest = notes.read(file.key, live.file)
         return Boolean(latest && latest.enabled && latest.workspace === file.workspace && latest.path === file.path
           && latest.revision === file.checkpoint && latest.fileRevision === file.revision && refsCurrent(file.sources)) ? 'current' : 'stale'
+      }
+      if (live.kind === 'revision') {
+        if (live.revision === undefined) return 'unverifiable'
+        if (live.revision !== file.revision) return 'stale'
       }
       return fileCurrent(file) ? 'current' : 'stale'
     }
@@ -724,11 +740,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (obsRev !== ref.revision) return 'stale'
             physical = batch.physical(workspace, row.path)
           } else {
-            const live = livePhysicalSnapshot(workspace, row.path)
-            if (live.known) {
+            const live = livePhysicalState(workspace, row.path)
+            if (live.kind === 'snapshot') {
               if (!live.file) { hasUnverifiable = true; continue }
               if (live.file.revision !== ref.revision) return 'stale'
               physical = live.file
+            } else if (live.kind === 'revision') {
+              if (live.revision === undefined) { hasUnverifiable = true; continue }
+              if (live.revision !== ref.revision) return 'stale'
             }
           }
           const doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
@@ -750,11 +769,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (obsRev !== obsNote.revision) return 'stale'
           physical = batch.physical(workspace, obsNote.path)
         } else {
-          const live = livePhysicalSnapshot(workspace, obsNote.path)
-          if (live.known) {
+          const live = livePhysicalState(workspace, obsNote.path)
+          if (live.kind === 'snapshot') {
             if (!live.file) { hasUnverifiable = true; continue }
             if (live.file.revision !== obsNote.revision) return 'stale'
             physical = live.file
+          } else if (live.kind === 'revision') {
+            if (live.revision === undefined) { hasUnverifiable = true; continue }
+            if (live.revision !== obsNote.revision) return 'stale'
           }
         }
         const latest = notes.read(obsNote.key, physical)

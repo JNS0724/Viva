@@ -4,8 +4,8 @@ import type { AutomaticRecallResult } from '../../../src/memory/contracts/memory
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from '../../../src/memory/node/owner-adapter.ts'
 
 export type PrefetchClaimResponse =
-  | { found: false }
-  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean }
+  | { found: false, cancelledRequestIds?: readonly string[] }
+  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean, cancelledRequestIds?: readonly string[] }
 
 export type MemoryOwnerConnection = OwnerAdapterCaller & {
   start(): Promise<void>
