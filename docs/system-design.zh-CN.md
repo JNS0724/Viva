@@ -4,8 +4,6 @@
 
 **记忆可用性。** 记忆在受监管的旁路进程运行。记忆不可用时，主对话、后台任务、结果汇报和定时安排仍可继续。删除聊天和回退编辑只修改本地时间线。见 [记忆 owner 隔离](memory-owner-isolation.zh-CN.md)。
 
-> 进程拆分以 PR #132（`82a5bf3`，2026-11-10）为基线；记忆相关职责、存储与插件边界已对照 2026-11-17 的本地提交 `3085bad` 更新。这是本地实现快照，本轮 PR CI 尚未运行，不代表已经合入或完成全部交付验收。拆分的设计稿和实施记录保留在 git 历史里；之后按模块做的整治记在[架构整治](architecture-health.zh-CN.md)里。
-
 ## 1. 概述
 
 Viva 是一个桌面 AI 助手：Electron 应用，对话由内嵌的 dsh（DeepSeek Harness）通过 ACP 驱动。2026-11 的重构把它拆成两个进程，让后端可以单独演进，将来迁到云上。
@@ -260,7 +258,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 - `test/backend-wire.test.ts`、`test/backend-keeper.test.ts`：调用顺序、令牌、回答等推送、后端重启和放弃。
 - 冒烟测试的记忆组会杀掉后端进程，检查新后端起来、对话还在、下一个问题能正常回答；打包后的应用也跑这一组。
 
-完整测试集合由 `npm test` 发现；CI 在 macOS 和 Windows 上运行单元测试和完整冒烟。只改一块时，`npm run test:feature -- <分组>` 只跑这一块的测试（`conversation`、`runtime`、`tasks`、`architecture`，`--list` 列出文件），合入前仍以完整测试为准。2026-11-06 的职责审查，以及之后从 `compose.ts`、`app.ts` 拆出的模块，记在[架构整治](architecture-health.zh-CN.md)里。
+用 `npm test` 运行完整测试集，或用 `npm run test:feature -- <分组>` 运行相关测试。PR、每日构建和发布各自运行的检查见[开发指南](development.zh-CN.md#测试)。
 
 ## 10. 已知限制与演进方向
 

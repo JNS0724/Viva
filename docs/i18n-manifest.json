@@ -11,26 +11,20 @@
     {
       "en": "docs/development.md",
       "zh": "docs/development.zh-CN.md",
-      "enHash": "24fc2ab4822b3c4084f5f0f771f91655b605b496d66b3087021e0e1b30a0342e",
-      "zhHash": "b939c0d63b0284355589b7e3322f090fdd04e1661c1e86eac213ab3b69156020"
+      "enHash": "efd48d84bb243f0e003b62734726a58dc4a93d2ceca3dcf935390d1dbc403007",
+      "zhHash": "4de6a41bb08f4f2eb00b35b1927f2c5aa63e4c29659820bab45184b347fae9df"
     },
     {
       "en": "docs/features.md",
       "zh": "docs/features.zh-CN.md",
-      "enHash": "3556a0f6e8031d81d0e727e45f423f7ef74efd217b1420301a266b3042e4b89c",
-      "zhHash": "76fa5215629d68f61800ab5f163497942f13c1966652865b959b143eb666a980"
+      "enHash": "d0a7e24ac9175f6ee01ac187eb9e6c19effb9d606651d4cd2f6c93693dbc4b18",
+      "zhHash": "9e0ddbb0ce5ad5e7dd8df286a39fe7c0f02332ce66ee0bb617742a2e7d7114c1"
     },
     {
       "en": "docs/live-check.md",
       "zh": "docs/live-check.zh-CN.md",
       "enHash": "e55c6d40fa5261567f3426bf72371239df84f1c1b0d7370c1c36bd3522fd48c5",
       "zhHash": "03303e1ad21979c77d1293274e27600b98acbdacdb12dc8757a3204b215a45e7"
-    },
-    {
-      "en": "docs/ci-full-acceptance.md",
-      "zh": "docs/ci-full-acceptance.zh-CN.md",
-      "enHash": "b7bf1f358a1f36e4240d14b186209a66ee1c4922de3e2ed44b42b947e674030f",
-      "zhHash": "11e2dc8b7194b716be6555a97098953ae2cadf5b05174d81c241cfef2d46f8e1"
     },
     {
       "en": "docs/releases/v0.4.0-beta.1.md",
@@ -77,20 +71,14 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "fc96c2915b82dc861735546102b38685bdcfe1b66d45458be19eabeed6a806f4",
-      "zhHash": "6bdba95f827a52858b06b659b42ee73a1c45bcd64526412c234808f9f63e972c"
-    },
-    {
-      "en": "docs/architecture-health.md",
-      "zh": "docs/architecture-health.zh-CN.md",
-      "enHash": "6fd68cf2215c553d2b8bcb39d4fa4c126346def14417ada892ff313caeec92e5",
-      "zhHash": "a7cd843eb80c16a2e3dcb158402dfc9660e83477835d1294a252a251fe3969e2"
+      "enHash": "611c9f2d3d69614043cfc56a7c8a4237d698680247cd716d93e28ea192a986d4",
+      "zhHash": "08afb3e5c30ffaeba7d8086eed7af347eb864d2ef286d19cc5f75798410d7165"
     },
     {
       "en": "docs/agent-routing-design.md",
       "zh": "docs/agent-routing-design.zh-CN.md",
-      "enHash": "86271f6f0303fe15945175b7572f43f13ecc3944ac3d59ca597200a87b7c963a",
-      "zhHash": "9360b50c92ca76f4f955a5b96aef6b19fef798cbac019462c0819b559691de36"
+      "enHash": "7376462f8e64fc955eb959e9b9040925029db2febcefdbfcc6caae727d46cecf",
+      "zhHash": "267ecd08147e5cb44aceffb570e5f5cb44fe38501b6bf9b5085e672ecb41ed92"
     },
     {
       "en": "docs/agent-routing-feasibility.md",
@@ -99,22 +87,10 @@
       "zhHash": "98700dc2147e522f687ed82ec8c733ddf6c9731a4e06f59fcdea2b85a4579c7d"
     },
     {
-      "en": "docs/memory-design.md",
-      "zh": "docs/memory-design.zh-CN.md",
-      "enHash": "aacfa4711deabe0ece53f77d30bd70305f4518386935df92034754ad24c68483",
-      "zhHash": "b605673f39e0ae5ffcc1bc7a6f1e199c3fdda8642fd3c3bfbb1c2b5556d4eaf1"
-    },
-    {
       "en": "docs/memory-owner-isolation.md",
       "zh": "docs/memory-owner-isolation.zh-CN.md",
       "enHash": "d03e8b2c5aec11e1f163e47fdd05353e7eedd821f09376371b6c6316e9c07a53",
       "zhHash": "a3718c4651f1150f636ed13ea15c9bc3e74ef490412fa427af716e49690bd28a"
-    },
-    {
-      "en": "docs/memory-reme-plan.md",
-      "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "0e3396b133d5fbeb1b3731a6472fe28d64478e984e45fe10eff2f38d38433ed1",
-      "zhHash": "3fd7eff8116ed6bb8335d2fde10431f6d3f2baf57a7c976ae97de906961d9dda"
     },
     {
       "en": "docs/logging-design.md",

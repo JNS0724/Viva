@@ -145,11 +145,9 @@ Conversation menus offer Rename, Pin, Export Markdown, and Delete. Deletion offe
 <a id="记忆"></a>
 ## Memory
 
-The backend owns `memory.db`. The memory plugin connects Viva's private DSH profile to model computation and memory tools. If the profile or plugin cannot load, chat remains available and the capability status reports the issue. [System design](system-design.md#6-dsh-and-plugins)
+Viva collects daily notes from conversations. Dream consolidates those notes into longer-term digests. Chat and background tasks can continue while memory is unavailable.
 
-Viva accepts clear requests to remember and extracts longer-term facts in the background. Memory records carry original evidence, scope, time, and conditions. A separate review checks whether a proposed correction, replacement, or ending is supported. Confirmed changes update the records and retain an undoable history. When the current answer or action requires resolving a disagreement, Viva can ask once per turn. The selected option applies to that turn. A lasting correction written by the user goes through the same review as a chat message. Passwords, keys, verification codes, and identity numbers are excluded from memory intake.
-
-The current request can receive the user-entered profile, today's date, and up to three relevant memories. The assistant can also call `memory_recall` with keywords and an optional date. Activity shows which memories were included. About You shows sources and changes, and provides editing, forgetting, and deletion controls. [Memory design](memory-design.md)
+In About You, you can read, disable, or delete a memory file. Disabled files remain available to read, and both retrieval and Dream skip them. Deleting a conversation or rewinding a message changes the chat history. To remove a memory, delete its file in About You. [Memory storage and retrieval](memory-owner-isolation.md)
 
 <a id="消息里的-markdown"></a>
 ## Markdown in messages
