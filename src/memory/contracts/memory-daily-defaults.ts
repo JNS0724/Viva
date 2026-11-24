@@ -19,6 +19,7 @@ export const DAILY_MEMORY_DEFAULTS = Object.freeze({
   fileVerificationBudgetMs: 2_500,
   automaticQueryTimeoutMs: 350,
   automaticContextBudgetMs: 200,
+  automaticSearchBudgetMs: 150, // Leave time for the profile packet and the IPC return trip.
   automaticResultReserveMs: 50,
   automaticMinCosine: 0.83,
   backgroundTimeoutMs: 3_600_000,

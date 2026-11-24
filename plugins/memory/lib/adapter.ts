@@ -66,7 +66,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
   const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session))
-  const context = new WeakMap<object, { epoch: string | undefined, text: string }>()
+  const context = new WeakMap<object, { epoch: string | undefined, turn: number, text: string }>()
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined
   function publishRoute() {
@@ -119,12 +119,16 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   })
   ctx.on('agent/pre-step', async ({ agent, turn, signal, modelSelection }, next) => {
     const decision = await next()
-    context.delete(agent)
-    if (decision.kind === 'reject' || signal.aborted || !available()) return decision
+    if (context.get(agent)?.turn !== turn) context.delete(agent)
+    if (decision.kind === 'reject' || signal.aborted || !available()) {
+      context.delete(agent)
+      return decision
+    }
     route = { provider: modelSelection.provider, model: modelSelection.model }
     publishRoute()
     const messages = humanMessages(decision.messages)
     if (!messages.length) return decision
+    context.delete(agent)
     void intake.receive(agent.session, decision.messages, turn).catch(report)
     const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs, signal)
     try {
@@ -132,7 +136,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       const request: MemoryRequest = { op: 'context', session: String(agent.session.id), turn, question: '' }
       const text = await budget.run(() => owner.call('sidecarRequest', [request, agent.session.header.cwd, messages],
         { signal: budget.signal, budgetMs: budget.remainingMs() }))
-      if (text && !signal.aborted && available() && owner.epoch === epoch) context.set(agent, { epoch, text })
+      if (text && !signal.aborted && available() && owner.epoch === epoch) context.set(agent, { epoch, turn, text })
     } catch (error) {
       if (!budget.signal.aborted && available()) report(error)
     } finally { budget.close() }

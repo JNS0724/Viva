@@ -387,6 +387,32 @@ test('model lookups omit changed, missing and unreadable files while unrelated v
   assert.equal(f.documents.registered(workspace).find(row => row.id === missing.documentId)?.path, missing.path)
 })
 
+test('a stalled automatic file read returns the profile within the outer context budget', async t => {
+  const f = fixture(t), id = randomUUID()
+  f.memory.setProfile({ role: 'profile-on-timeout' })
+  f.memory.accept('Archive invoices', origin, id)
+  const { workspace, reference } = f.ref(id)
+  f.documents.commit({ operationId: 'timeout', workspace, path: 'digest/wiki/invoices.md', action: 'CREATE',
+    expectedRevision: null, markdown: 'Archive invoices evidence', sources: [reference], reads: [] })
+  await f.memory.wake()
+  let entered!: () => void
+  const reading = new Promise<void>(resolve => { entered = resolve })
+  f.wrapPhysicalRead(() => async (_workspace, _path, signal) => {
+    entered()
+    return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true }))
+  })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const outer = new AbortController()
+  const timer = setTimeout(() => outer.abort(), DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
+  try {
+    const response = f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 1, question: 'Archive invoices' }, origin, () => !outer.signal.aborted, outer.signal)
+    await reading
+    t.mock.timers.tick(DAILY_MEMORY_DEFAULTS.automaticSearchBudgetMs)
+    assert.match(await response, /profile-on-timeout/)
+    assert.equal(outer.signal.aborted, false)
+  } finally { clearTimeout(timer); t.mock.timers.reset() }
+})
+
 test('opening a verified file brings its first publication forward from backoff', async t => {
   const f = fixture(t), source = randomUUID(), path = 'digest/wiki/silver.md'
   f.memory.accept('Silver ledger.', origin, source)

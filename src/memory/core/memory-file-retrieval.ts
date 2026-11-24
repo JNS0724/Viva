@@ -361,7 +361,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
     batch?: MemoryDocumentReadBatch, reportStale = true) {
     const { scope, limit, candidates, lexical, startedAt } = plan
     const timedOut = () => Boolean(request.signal?.aborted
-      || request.automatic && performance.now() - startedAt >= defaults.automaticContextBudgetMs)
+      || request.automatic && performance.now() - startedAt >= defaults.automaticSearchBudgetMs)
     const checks = verifier(request.allows, timedOut, batch, reportStale)
     const authorizedHits = (rows: readonly MemoryFileHit[]) => {
       const hits: MemoryFileHit[] = []
@@ -460,7 +460,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
       observation.progress({ stage: 'lexical', metrics: { count: plan.lexical.length } })
       const { scope, candidates, reasons } = plan
       const verificationBudget = (automatic: number, manual: number) => request.automatic
-        ? Math.min(automatic, defaults.automaticContextBudgetMs - 15 - (performance.now() - startedAt)) : manual
+        ? Math.min(automatic, defaults.automaticSearchBudgetMs - 15 - (performance.now() - startedAt)) : manual
       const loadingLexical = batch && loadFiles(batch, qualifyCandidates(request, plan.lexical, []).lexical.map(hit => hit.file),
         verificationBudget(85, defaults.fileVerificationBudgetMs), request.signal)
       let vector: MemoryFileHit[] = []
@@ -478,7 +478,7 @@ export function createMemoryFileRetrieval({ index, policy, workspaces, hash, emb
             reasons.push('semantic-index-incomplete')
           } else if (!run.controller.signal.aborted && index.vectorState().active) {
             const queryBudget = request.automatic
-              ? defaults.automaticContextBudgetMs - defaults.automaticResultReserveMs - (performance.now() - startedAt)
+              ? defaults.automaticSearchBudgetMs - defaults.automaticResultReserveMs - (performance.now() - startedAt)
               : defaults.automaticQueryTimeoutMs
             const output = queryBudget > 0 ? await boundedQuery(request.query, queryBudget, request.signal, request.automatic) : null
             if (output?.[0] && !run.controller.signal.aborted) {

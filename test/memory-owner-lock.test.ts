@@ -3,7 +3,11 @@ import { test, type TestContext } from 'node:test'
 import { ChildProcess, fork } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter, once } from 'node:events'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
+import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
+import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
+import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -77,6 +81,64 @@ test('RPC keeps cancelled execution slots until terminal completion and still ad
     assert.equal(await left.call('read', {}), true)
   } finally { left.close(); right.close() }
 })
+
+test('an incompatible database stops automatic forks and reports its startup failure', async t => {
+  const { dir: root, defer } = scratch(t, 'memory-owner-incompatible-')
+  const db = new DatabaseSync(join(root, 'memory.db'))
+  db.exec('PRAGMA user_version=999')
+  db.close()
+  const events: DiagnosticEvent[] = []
+  t.after(installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event) })))
+  const supervisor = createMemoryOwnerSupervisor({ root })
+  defer(() => supervisor.close())
+  const failure = { code: 'unknown_version' }
+  await assert.rejects(supervisor.start(), failure)
+  assert.equal(supervisor.status(), 'unavailable')
+  await assert.rejects(supervisor.start(), failure)
+  assert.equal(supervisor.pid(), undefined)
+  assert.equal(events.filter(event => event.event === 'process.start').length, 1)
+  assert.ok(events.some(event => event.event === 'health' && event.reason === 'unknown_version'))
+  assert.ok(!events.some(event => event.event === 'retry.scheduled'))
+})
+
+test('a regular file occupying the memory root stops automatic startup retries', async t => {
+  const { dir, defer } = scratch(t, 'memory-root-file-')
+  const root = join(dir, 'memory')
+  writeFileSync(root, 'keep')
+  const supervisor = createMemoryOwnerSupervisor({ root })
+  defer(() => supervisor.close())
+  await assert.rejects(supervisor.start(), { code: 'ENOTDIR' })
+  assert.equal(supervisor.status(), 'unavailable')
+})
+
+test('a read-only root reports the OS permission error instead of retrying SQLite CANTOPEN', {
+  skip: process.platform === 'win32' || process.getuid?.() === 0,
+}, async t => {
+  const { dir: root, defer } = scratch(t, 'memory-owner-readonly-')
+  const supervisor = createMemoryOwnerSupervisor({ root })
+  defer(() => supervisor.close())
+  chmodSync(root, 0o555)
+  try {
+    await assert.rejects(supervisor.start(), { code: 'EACCES' })
+    assert.equal(supervisor.status(), 'unavailable')
+  } finally { chmodSync(root, 0o755) }
+})
+
+for (const name of ['owner.lock.sqlite', 'memory.db', 'memory-files']) {
+  test(`wrong entry type for ${name} stops the worker without scheduling another fork`, async t => {
+    const { dir: root, defer } = scratch(t, 'memory-owner-path-type-')
+    const entry = join(root, name)
+    if (name === 'memory-files') writeFileSync(entry, '')
+    else mkdirSync(entry)
+    const events: DiagnosticEvent[] = []
+    t.after(installDiagnosticPort(recordingDiagnosticPort(event => { events.push(event) })))
+    const supervisor = createMemoryOwnerSupervisor({ root })
+    defer(() => supervisor.close())
+    await assert.rejects(supervisor.start(), { code: 'invalid_record' })
+    assert.equal(supervisor.status(), 'unavailable')
+    assert.ok(!events.some(event => event.event === 'retry.scheduled'))
+  })
+}
 
 test('an explicit terminal observer waits for real execution to finish after cancellation', async () => {
   const release = deferred<boolean>()

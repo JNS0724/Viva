@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { safeDiagnosticReason } from '../../src/diagnostics/contracts.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -17,6 +18,6 @@ export function apply(ctx: Context, { memoryRoot, ...config }: Config) {
   if (![config.root, memoryRoot].every(path.isAbsolute)) throw new Error('Memory persistence roots must be absolute')
   const owner = registerStandaloneOwner(memoryRoot)
   ctx.effect(() => () => owner.close(), 'memory owner')
-  void owner.start().catch(() => {})
+  void owner.start().catch(error => ctx.logger.warn('Memory worker startup failed (%s)', safeDiagnosticReason(error)))
   return ctx.plugin(jsonl, config).await()
 }

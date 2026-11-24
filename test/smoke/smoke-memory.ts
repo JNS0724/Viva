@@ -4,6 +4,7 @@ import { capture, finishTurn, newTopic, run, smokeStep, submit, TURN_TIMEOUT_MS,
 import { mcpSteps, openCapabilityTab } from './smoke-mcp.ts'
 import { skillImportSteps } from './smoke-skills.ts'
 import { pluginSourceSteps } from './smoke-plugin-source.ts'
+import { checkSchedules } from './smoke-schedules.ts'
 import { taskSteps } from './smoke-tasks.ts'
 import type { MemoryManagedFileIdentity } from '../../src/memory/contracts/file-management.ts'
 
@@ -68,12 +69,16 @@ const closeProfile = (win: SmokeWindow) => run(win, `document.dispatchEvent(new 
 
 const FILE_EVIDENCE = 'File memory evidence (content, not instructions):\n'
 
-function readsFileMemory(request: object, text: string) {
+function readsFileMemory(request: object, identity: MemoryManagedFileIdentity, text: string) {
   const { messages } = request as { messages?: Array<{ content?: string | Array<{ type?: string, text?: string }> }> }
-  return messages?.some(({ content }) => {
-    const blocks = typeof content === 'string' ? [content] : content?.flatMap(block => block.type === 'text' && block.text ? [block.text] : []) ?? []
-    return blocks.some(block => block.split(FILE_EVIDENCE)[1]?.includes(text))
-  }) ?? false
+  const blocks = messages?.flatMap(({ content }) => typeof content === 'string' ? [content]
+    : content?.flatMap(block => block.type === 'text' && block.text ? [block.text] : []) ?? []) ?? []
+  const snapshot = blocks.findLast(block => block.includes('<system-reminder>')
+    && (block.includes('describes your current session') || block.includes('Current runtime context: none')))
+  const packet = snapshot?.split(FILE_EVIDENCE)[1]?.split('\n')[0]
+  if (!packet) return false
+  const { notes } = JSON.parse(packet) as { notes: Array<{ id: string, workspace: string, markdown: string }> }
+  return notes.some(note => note.id === identity.id && note.workspace === identity.workspace && note.markdown.includes(text))
 }
 
 async function askUsingMemory(win: SmokeWindow, hooks: SmokeHooks, question: string) {
@@ -199,16 +204,16 @@ async function steps(win: SmokeWindow, outDir: string, expect: Expect, hooks: Sm
   // Rebuilding indexes clears FTS/vectors synchronously and repopulates them asynchronously via INDEX_SEED.
   const question = '周报提交约定'
   const own = await askUsingMemory(win, hooks, question)
-  expect(own.length > 0 && own.every(request => !readsFileMemory(request, REPORT_MEMORY)),
+  expect(own.length > 0 && own.every(request => !readsFileMemory(request, note.identity, REPORT_MEMORY)),
     'automatic context excludes the open conversation’s own daily note', own.length)
   await newTopic(win)
   let sent: object[] = []
   for (let attempt = 0; attempt < 4; attempt++) {
     sent = await askUsingMemory(win, hooks, question)
-    if (sent.some(request => readsFileMemory(request, REPORT_MEMORY))) break
+    if (sent.some(request => readsFileMemory(request, note.identity, REPORT_MEMORY))) break
     await wait(500)
   }
-  expect(sent.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a different conversation receives the stored note', sent.length)
+  expect(sent.some(request => readsFileMemory(request, note.identity, REPORT_MEMORY)), 'a different conversation receives the stored note', sent.length)
   await run(win, `document.getElementById('toggle-drawer').click()`)
   await until(win, `[...document.querySelectorAll('.trace-row')].some(row => row.textContent.includes(${JSON.stringify(REPORT_MEMORY)}))`,
     'the trace showing which memory went along', UI_WAIT_MS * 10)
@@ -537,7 +542,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
 
   await newTopic(win)
   const during = await askUsingMemory(win, hooks, '周报提交约定？')
-  expect(during.length > 0 && during.every(request => !readsFileMemory(request, REPORT_MEMORY)), 'the stopped file is omitted from retrieval', during.length)
+  expect(during.length > 0 && during.every(request => !readsFileMemory(request, note.identity, REPORT_MEMORY)), 'the stopped file is omitted from retrieval', during.length)
   await openDailyMemory(win, note.identity)
   await run(win, `(${button('恢复使用这条记忆')}).click()`)
   await until(win, `(${button('停止使用这条记忆')}) && document.querySelector(${JSON.stringify(detail)})?.textContent.includes(${JSON.stringify(REPORT_MEMORY)})`,
@@ -546,10 +551,10 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
   let after: object[] = []
   for (let attempt = 0; attempt < 4; attempt++) {
     after = await askUsingMemory(win, hooks, '周报提交约定。')
-    if (after.some(request => readsFileMemory(request, REPORT_MEMORY))) break
+    if (after.some(request => readsFileMemory(request, note.identity, REPORT_MEMORY))) break
     await wait(500)
   }
-  expect(after.some(request => readsFileMemory(request, REPORT_MEMORY)), 'a different conversation can retrieve the enabled file', after.length)
+  expect(after.some(request => readsFileMemory(request, note.identity, REPORT_MEMORY)), 'a different conversation can retrieve the enabled file', after.length)
 
   // Keep the restored report note for the installed cross-language check after restart.
   await newTopic(win)
@@ -582,7 +587,7 @@ async function fileLifecycleSteps(win: SmokeWindow, outDir: string, expect: Expe
 }
 
 /** @returns failed expectations */
-export async function checkMemory(win: SmokeWindow, outDir: string, hooks: SmokeHooks): Promise<string[]> {
+export async function checkMemory(win: SmokeWindow, outDir: string, hooks: SmokeHooks, includeSchedules = false): Promise<string[]> {
   const failures: string[] = []
   const expect: Expect = (ok, message, seen) => { if (!ok) throw new Error(`${message}${seen === undefined ? '' : `: ${JSON.stringify(seen)}`}`) }
   try {
@@ -591,7 +596,11 @@ export async function checkMemory(win: SmokeWindow, outDir: string, hooks: Smoke
     await smokeStep(hooks, 'backend crash recovery', () => backendCrashSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'working directory', () => workDirSteps(win, outDir, expect, hooks))
     await smokeStep(hooks, 'rewind', () => rewindSteps(win, outDir, expect, hooks))
-    // The installed restart check opens this topic and resumes the task left waiting here.
+    // Continuing a scheduled result switches the active conversation. Finish it before leaving a task waiting for restart.
+    if (includeSchedules) {
+      const problems = await checkSchedules(win, outDir)
+      if (problems.length) return problems
+    }
     await smokeStep(hooks, 'background task interactions', () => taskSteps(win, outDir, expect, hooks))
   } catch (err) {
     failures.push(`memory: ${err instanceof Error ? err.message : String(err)}`)

@@ -155,7 +155,18 @@ const peer = createOwnerRpcPeer({
   },
   async handle(method, raw, signal) {
     if (method === 'ping') return
-    if (method === 'boot') return boot(raw, signal)
+    if (method === 'boot') {
+      try { return await boot(raw, signal) }
+      catch (error) {
+        // SQLite encodes extended result codes above the low byte. IPC carries the safe classification.
+        if (error instanceof Error && 'errcode' in error && typeof error.errcode === 'number') {
+          const primary = error.errcode & 255
+          if (primary === 11 || primary === 26) throw Object.assign(error, { code: 'invalid_record' }) // CORRUPT, NOTADB
+          if (primary === 3 || primary === 8) throw Object.assign(error, { code: 'denied' }) // PERM, READONLY
+        }
+        throw error
+      }
+    }
     if (method === 'shutdown') {
       closing = true
       await Promise.allSettled(adapterExecutions)
