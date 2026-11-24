@@ -22,7 +22,7 @@ import {
 } from '../src/memory/core/resident-profile.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { createEffects } from '../src/memory/node/effects.ts'
-import { createMemoryPhysicalFileReader, memoryFileRevision } from '../src/memory/node/memory-file-store.ts'
+import { createMemoryPhysicalFileReader, memoryFileRevision, readMemoryFileAtCommit } from '../src/memory/node/memory-file-store.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { memoryHash, openMemoryStore } from '../src/memory/node/memory-store.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
@@ -102,6 +102,7 @@ function dreamHarness(t: TestContext, options: {
         options.readPhysicalOverride
           ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
           : defaultReadPhysical(workspace, filePath, signal),
+      readFileRevisionAtCommit: (workspace, filePath) => readMemoryFileAtCommit(store.fileRoot, workspace, filePath)?.revision,
       calculate: async request => {
         modelLog.push({
           isProfilePass: request.system === DREAM_PROFILE_SYSTEM,
@@ -1707,6 +1708,64 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
   const baseAfter = hRefine.documents.read(d0R.workspace, 'digest/wiki/base-link.md')!
   assert.ok(!baseAfter.markdown.includes('digest/personal/profile.MD'), 'REFINE replacing BASE inside [[BASE]] with stripped profile draft must be stripped (R5 P2-1)')
   assert.ok(baseAfter.markdown.includes('[[BASE]]'))
+
+  // R6 P2-2: (a) Unrelated prose REFINE on a doc ALREADY containing [[digest/personal/profile.md]] must NOT be discarded;
+  //          (b) CREATE with 4 leading spaces before [[digest/personal/profile.MD]] must be trimmed and stripped!
+  const hR6 = dreamHarness(t, { initialNow: TODAY_MS })
+  const d0R6 = hR6.addDailyNote([{ text: '已有个人画像链接的说明文档' }], { session: 's-r6-p2-2-0', day: '2026-11-15' })
+  hR6.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0R6.workspace,
+    path: 'digest/wiki/existing-ref.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Existing Ref\ndescription: Already links profile\n---\n\n已引用 [[digest/personal/profile.md]]，原正文。',
+    sources: [{ id: d0R6.sources[0]!.id, token: memorySourceToken(d0R6.sources[0]!) }],
+    reads: [],
+  })
+  hR6.notes.markProcessed(d0R6.key, d0R6.note.revision)
+  const d1R6 = hR6.addDailyNote([{ text: '补充一段独立文字并测试缩进链接' }], { session: 's-r6-p2-2-1', day: '2026-11-16' })
+  hR6.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+    await request.tools!.executeTool({ callId: 'c1', name: 'node_search', input: { query: 'Existing Ref' } })
+    const readRes = await request.tools!.executeTool({ callId: 'c2', name: 'read', input: { path: 'digest/wiki/existing-ref.md' } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({
+      operations: [
+        {
+          action: 'CREATE',
+          path: 'digest/personal/profile.MD',
+          name: 'Bad Profile',
+          description: 'Reserved draft to strip',
+          body: '- bad profile draft',
+          dailyPaths: [d1R6.path],
+          sourceIds: [d1R6.sources[0]!.id],
+        },
+        {
+          action: 'CREATE',
+          path: 'digest/wiki/indented-dep.md',
+          name: 'Indented Dep',
+          description: '4 leading spaces before link trimmed by schema',
+          body: '    [[digest/personal/profile.MD]]\n后续说明',
+          dailyPaths: [d1R6.path],
+          sourceIds: [d1R6.sources[0]!.id],
+        },
+        {
+          action: 'REFINE',
+          path: 'digest/wiki/existing-ref.md',
+          name: 'Existing Ref',
+          description: 'Unrelated prose edit preserving pre-existing link',
+          edits: [{ oldText: '原正文。', newText: '已更新的独立正文。' }],
+          dailyPaths: [d1R6.path],
+          sourceIds: [d1R6.sources[0]!.id],
+        },
+      ],
+    })
+  })
+  await hR6.run()
+  assert.equal(hR6.documents.read(d0R6.workspace, 'digest/wiki/indented-dep.md'), null, '4-leading-spaces CREATE referencing stripped profile draft must be stripped after trim (R6 P2-2)')
+  const existingAfter = hR6.documents.read(d0R6.workspace, 'digest/wiki/existing-ref.md')!
+  assert.ok(existingAfter.markdown.includes('已更新的独立正文。'), 'unrelated prose REFINE on doc with pre-existing profile link must NOT be discarded (R6 P2-2)')
 })
 
 test('out-of-batch observed source becoming ineligible blocks digest commit, and NOOP checkpoint rejects observed note mutating during checkpoint load (R4 P1-2)', async t => {
@@ -1741,30 +1800,20 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(hA.documents.read(d0A.workspace, 'digest/wiki/beijing-ops.md'), null, 'digest must NOT commit when out-of-batch observed source became ineligible')
   assert.equal(hA.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'd1A checkpoint must NOT advance when observed source became ineligible')
 
-  // Part B (R5 P1-2a): Hold target d1B's final checkpoint read open while observed d0B finishes reading,
-  // edit d0B on disk BEFORE d1B's read releases -> live-disk revalidation inside checkpoint transaction must reject stale checkpoint!
+  // Part B (R5 P1-2a): After observed d0B's async loadFiles read returns and BEFORE the checkpoint transaction runs,
+  // edit d0B on disk -> synchronous live-disk revalidation inside checkpoint transaction must reject stale checkpoint!
   let armInterleave = false
   let d0BAbsPath = ''
-  let d1BPath = ''
   let d0BPath = ''
-  let d0BReadDone!: () => void
-  const d0BReadDonePromise = new Promise<void>(resolve => { d0BReadDone = resolve })
   const hB = dreamHarness(t, {
     initialNow: TODAY_MS,
     async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      const res = await defaultRead(workspace, filePath, signal)
       if (armInterleave && filePath === d0BPath) {
-        const res = await defaultRead(workspace, filePath, signal)
-        d0BReadDone()
-        return res
-      }
-      if (armInterleave && filePath === d1BPath) {
-        const res = await defaultRead(workspace, filePath, signal)
-        await d0BReadDonePromise
         armInterleave = false
         fs.writeFileSync(d0BAbsPath, `${fs.readFileSync(d0BAbsPath, 'utf8')}\n<!-- interleaved edit after d0B read finished -->`)
-        return res
       }
-      return defaultRead(workspace, filePath, signal)
+      return res
     },
   })
   const d0B = hB.addDailyNote([{ text: '旧日记：广州机房配置' }], { session: 's-r4-b0', day: '2026-11-15' })
@@ -1772,7 +1821,6 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   d0BAbsPath = path.join(hB.store.fileRoot, d0B.workspace, d0B.path)
   hB.notes.markProcessed(d0B.key, d0B.note.revision)
   const d1B = hB.addDailyNote([{ text: '今天一切正常，无需新建摘要' }], { session: 's-r4-b1', day: '2026-11-16' })
-  d1BPath = d1B.path
   hB.setModel(async request => {
     if (request.system === DREAM_PROFILE_SYSTEM) {
       armInterleave = true
@@ -1784,6 +1832,7 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     return JSON.stringify({ operations: [] })
   })
   await hB.run()
+  assert.equal(armInterleave, false, 'interleaved edit must have triggered after d0B async read')
   assert.equal(hB.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'NOOP must NOT advance d1B checkpoint when observed d0B was edited on disk after its loadFiles read finished (R5 P1-2)')
 
   // Part C (R5 P1-2b): Deferred target A retried while its observed source is temporarily ineligible must stay in
@@ -1832,9 +1881,62 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.ok(hC.notes.changedFiles('2026-11-15', '2026-11-16').some(f => f.key === dAC.key), 'deferred target A must still be unprocessed while waiting')
   // Verify A's deferred checkpoint was NOT dropped: once d0C becomes eligible again, retry advances A with 0 new consolidate calls!
   ineligibleC.clear()
+  // R6 P2-1: Make A's OWN source ineligible before retry -> A must STILL not advance while independent work proceeds!
+  ineligibleC.add(dAC.sources[0]!.id)
+  await hC.retryNow()
+  assert.ok(hC.notes.changedFiles('2026-11-15', '2026-11-16').some(f => f.key === dAC.key), 'deferred NOOP A must NOT advance while its own source is ineligible (R6 P2-1)')
+  ineligibleC.clear()
   let extraModelCalls = 0
   hC.setModel(async () => { extraModelCalls++; return JSON.stringify({ operations: [] }) })
   await hC.retryNow()
-  assert.equal(hC.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'deferred target A must advance once its observed source becomes eligible again')
+  assert.equal(hC.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'deferred target A must advance once its observed source and own source are eligible again')
   assert.equal(extraModelCalls, 0, 'preserved deferred checkpoint A must finish without re-running consolidate model')
+
+  // Part D (R6 P1): Moving an observed note AFTER async loadFiles read finishes and BEFORE final live check must
+  // classify as unverifiable (keeping deferred checkpoint intact) rather than stale/replanning!
+  let armMove = false
+  let d0DAbs = ''
+  let d0DBackup = ''
+  let d0DPath = ''
+  const hD = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      const res = await defaultRead(workspace, filePath, signal)
+      if (armMove && filePath === d0DPath) {
+        armMove = false
+        fs.renameSync(d0DAbs, d0DBackup)
+      }
+      return res
+    },
+  })
+  const d0D = hD.addDailyNote([{ text: '旧日记：杭州机房配置' }], { session: 's-r6-d0', day: '2026-11-15' })
+  d0DPath = d0D.path
+  d0DAbs = path.join(hD.store.fileRoot, d0D.workspace, d0D.path)
+  d0DBackup = `${d0DAbs}.moved`
+  hD.notes.markProcessed(d0D.key, d0D.note.revision)
+  hD.addDailyNote([{ text: '目标 D 无新建摘要' }], { session: 's-r6-d1', day: '2026-11-16' })
+  let modelCallsD = 0
+  hD.setModel(async request => {
+    modelCallsD++
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armMove = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0d', name: 'read', input: { path: d0D.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hD.run()
+  assert.equal(armMove, false, 'file move must have triggered after d0D async read')
+  const callsAfterDefer = modelCallsD
+  assert.equal(hD.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'moved dependency during final live check must defer instead of marking processed')
+  // Retry while still moved: must NOT replan or mark processed!
+  await hD.retryNow()
+  assert.equal(modelCallsD, callsAfterDefer, 'missing dependency must stay in deferredCheckpoints without replanning (R6 P1)')
+  assert.equal(hD.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
+  // Restore moved file -> deferred checkpoint completes with ZERO extra model calls!
+  fs.renameSync(d0DBackup, d0DAbs)
+  await hD.retryNow()
+  assert.equal(modelCallsD, callsAfterDefer, 'restored dependency must complete deferred checkpoint with 0 extra model calls')
+  assert.equal(hD.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })

@@ -325,14 +325,14 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate = async write => write(), readPhysicalFile, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate = async write => write(), readPhysicalFile, readFileRevisionAtCommit, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
   calculate: DreamCalculate, transaction: (write: () => void) => void, mutate?: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
   digestNodes?: MemoryFileIndex['digestNodes'],
   searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
-  readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
+  readPhysicalFile?: ReadMemoryPhysicalFile, readFileRevisionAtCommit?: (workspace: string, path: string) => string | undefined, allowsText?: (text: string, source: MemorySource) => boolean,
   diagnostics?: DiagnosticPort,
 }) {
   const diagnostics = guardDiagnosticPort(diagnosticPort)
@@ -651,6 +651,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       saveJobState(null, activeDeferred)
     }
 
+    const livePhysicalRevision = (workspace: string, filePath: string): { known: true, revision: string | undefined } | { known: false } => {
+      if (!readFileRevisionAtCommit) return { known: false }
+      try { return { known: true, revision: readFileRevisionAtCommit(workspace, filePath) } }
+      catch { return { known: true, revision: undefined } }
+    }
+
     const classifyNoteFile = (file: FileRef, batch?: MemoryDocumentReadBatch): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
       const reg = notes.noteRegistration(file.key)
       if (!reg || reg.deleted || !reg.enabled || reg.workspace !== file.workspace || reg.path !== file.path
@@ -664,6 +670,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (obsRev === undefined || obsRev === null) return 'unverifiable'
         if (obsRev !== file.revision) return 'stale'
         return fileCurrent(file, batch) ? 'current' : 'stale'
+      }
+      const live = livePhysicalRevision(file.workspace, file.path)
+      if (live.known) {
+        if (live.revision === undefined) return 'unverifiable'
+        if (live.revision !== file.revision) return 'stale'
       }
       return fileCurrent(file) ? 'current' : 'stale'
     }
@@ -691,6 +702,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             const obsRev = batch.observedRevision(workspace, row.path)
             if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
             if (obsRev !== ref.revision) return 'stale'
+          } else {
+            const live = livePhysicalRevision(workspace, row.path)
+            if (live.known) {
+              if (live.revision === undefined) { hasUnverifiable = true; continue }
+              if (live.revision !== ref.revision) return 'stale'
+            }
           }
           const doc = documents.read(workspace, row.path, batch ? { physical: batch.physical(workspace, row.path) } : undefined)
           if (!doc || doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
@@ -708,6 +725,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const obsRev = batch.observedRevision(workspace, obsNote.path)
           if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
           if (obsRev !== obsNote.revision) return 'stale'
+        } else {
+          const live = livePhysicalRevision(workspace, obsNote.path)
+          if (live.known) {
+            if (live.revision === undefined) { hasUnverifiable = true; continue }
+            if (live.revision !== obsNote.revision) return 'stale'
+          }
         }
         const latest = notes.read(obsNote.key, batch ? batch.physical(workspace, obsNote.path) : undefined)
         if (!latest || !latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
@@ -770,6 +793,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               }
               // Synchronous live-disk revalidation inside the checkpoint transaction closes interleaving edits during loadFiles.
               const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes)
+              if (liveObsState === 'unverifiable') {
+                unresolved.push(target)
+                continue
+              }
               if (liveObsState === 'stale') {
                 progress(job, 'source_changed', 'consolidate')
                 if (!options.isDeferredRetry) scanRetry = true
@@ -781,7 +808,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 continue
               }
             }
-            if (classifyNoteFile(target.file) !== 'current') {
+            if (target.operationIds.length === 0
+              && target.file.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) {
+              if (options.isDeferredRetry) unresolved.push(target)
+              else waitingForAdmission = true
+              continue
+            }
+            const liveFileState = classifyNoteFile(target.file)
+            if (liveFileState === 'unverifiable') {
+              unresolved.push(target)
+              continue
+            }
+            if (liveFileState !== 'current') {
               progress(job, 'source_changed', 'consolidate')
               if (!options.isDeferredRetry) scanRetry = true
               continue
@@ -1317,7 +1355,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                         strippedDraftPaths.add(rawPath.toLowerCase())
                         continue
                       }
-                      const rawBody = typeof opRecord.body === 'string' ? opRecord.body : ''
+                      const rawBody = typeof opRecord.body === 'string' ? opRecord.body.trim() : ''
                       const parsedEdits: DreamEdit[] = Array.isArray(opRecord.edits)
                         ? opRecord.edits.flatMap(edit =>
                             edit && typeof edit === 'object'
@@ -1326,12 +1364,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                               ? [{ oldText: (edit as { oldText: string }).oldText, newText: (edit as { newText: string }).newText }]
                               : [])
                         : []
+                      const existingBefore = opRecord.action === 'REFINE' && rawPath ? tools.observed(rawPath) : undefined
+                      const beforeLinkTargets = existingBefore
+                        ? new Set(rawWikilinkTargets(existingBefore.markdown).map(link => link.toLowerCase()))
+                        : null
                       let draftText = rawBody ? stripAccidentalFrontmatter(rawBody) : ''
                       if (!draftText && parsedEdits.length > 0) {
-                        const existingBefore = rawPath ? tools.observed(rawPath) : undefined
                         if (existingBefore) {
                           try {
-                            draftText = stripAccidentalFrontmatter(applyRefineEdits(parseMemoryDocument(existingBefore.markdown).body, parsedEdits))
+                            draftText = stripAccidentalFrontmatter(applyRefineEdits(parseMemoryDocument(existingBefore.markdown).body, parsedEdits).trim())
                           } catch {
                             draftText = parsedEdits.map(edit => edit.newText).join('\n')
                           }
@@ -1340,7 +1381,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                         }
                       }
                       const draftLinks = draftText ? rawWikilinkTargets(formatMemoryDocument({ metadata: {}, body: draftText })) : []
-                      if (draftLinks.some(link => strippedDraftPaths.has(link.toLowerCase()))) {
+                      const introducedLinks = beforeLinkTargets
+                        ? draftLinks.filter(link => !beforeLinkTargets.has(link.toLowerCase()))
+                        : draftLinks
+                      if (introducedLinks.some(link => strippedDraftPaths.has(link.toLowerCase()))) {
                         if (rawPath) strippedDraftPaths.add(rawPath.toLowerCase())
                         continue
                       }

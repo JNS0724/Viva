@@ -1028,3 +1028,39 @@ test('real DSH agent-loop emits 0 memory_context receipts on prepareRequest fail
   assert.equal(prepareCalls, 3)
   assert.equal(contextUsedReports.length, 1, 'real committed turn must emit exactly 1 memory_context receipt')
 })
+
+test('cancelPrefetch, clearSession, and close during an in-flight claim prevent hit restoration and refreshPrefetch re-query (R6 P2-3)', async t => {
+  for (const mode of ['cancel', 'clearSession', 'close'] as const) {
+    let calls = 0
+    const held = deferred<PrefetchReply>()
+    const prefetch = createMemoryPrefetchManager({
+      defaultBudgetMs: 180,
+      callPrefetch() {
+        calls++
+        return held.promise
+      },
+    })
+    t.after(() => prefetch.close())
+    prefetch.onState(ownerState('e-cancel', 1))
+
+    const reqId = randomUUID()
+    prefetch.startPrefetch({ requestId: reqId, sessionId: 'sess-inflight', queryText: 'held query' })
+    const claimPromise = prefetch.claimPrefetch({ requestId: reqId, sessionId: 'sess-inflight' })
+    await Promise.resolve()
+
+    if (mode === 'cancel') prefetch.cancelPrefetch('sess-inflight', reqId)
+    else if (mode === 'clearSession') prefetch.clearSession('sess-inflight')
+    else prefetch.close()
+
+    held.resolve({
+      epoch: 'e-cancel', revision: 1,
+      result: { status: 'hit', text: 'SHOULD_NOT_RESTORE', partial: false, hits: [{ text: 'SHOULD_NOT_RESTORE', names: ['x'] }] },
+    })
+    const claimed = await claimPromise
+    assert.deepEqual(claimed, { found: false }, `${mode}: cancelled in-flight claim must return { found: false }`)
+
+    const refreshed = await prefetch.refreshPrefetch({ requestId: reqId, sessionId: 'sess-inflight' })
+    assert.deepEqual(refreshed, { found: true, result: { status: 'timeout' } }, `${mode}: refreshPrefetch must NOT run after cancellation`)
+    assert.equal(calls, 1, `${mode}: cancelled in-flight claim must NOT trigger a second worker lookup on refreshPrefetch`)
+  }
+})

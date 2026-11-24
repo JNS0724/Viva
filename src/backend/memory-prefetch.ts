@@ -33,6 +33,7 @@ type PrefetchEntry = {
   stale: boolean
   settled: boolean
   requeried: boolean
+  cancelled?: boolean
   result?: AutomaticRecallResult
   controller?: AbortController
   timer?: ReturnType<typeof setTimeout>
@@ -72,6 +73,7 @@ export function createMemoryPrefetchManager({
   let ownerAvailable = false
   let latestProfile: MemoryProfileSnapshot | undefined
   const entries = new Map<string, PrefetchEntry>()
+  const claiming = new Map<string, PrefetchEntry>()
   const deliveryTerminals = new Map<string, DeliveryTerminal>()
   const refreshable = new Map<string, PrefetchEntry>()
 
@@ -306,65 +308,73 @@ export function createMemoryPrefetchManager({
     }
     entries.delete(key)
     deliveryTerminals.delete(key)
+    claiming.set(key, entry)
+    try {
+      // Step 1: Consume valid completed terminal results FIRST (even if now() > deadlineAt).
+      if (entry.settled) {
+        if (entry.cancelled) return { claim: { found: false } }
+        if (entry.result && entry.result.status !== 'hit') {
+          return { claim: { found: true, result: entry.result }, entry }
+        }
+        if (entry.result?.status === 'hit' && !entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
+          return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
+        }
+        // Stale hit: allow at most one re-query within remaining original budget.
+        const remaining = entry.deadlineAt - now()
+        if (remaining > 0 && !entry.requeried) {
+          const retried = await runRequeryOnce(entry, remaining, signal)
+          if (entry.cancelled) return { claim: { found: false } }
+          return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
+        }
+        return { claim: { found: true, result: { status: 'timeout' } }, entry }
+      }
 
-    // Step 1: Consume valid completed terminal results FIRST (even if now() > deadlineAt).
-    if (entry.settled) {
-      if (entry.result && entry.result.status !== 'hit') {
-        return { claim: { found: true, result: entry.result }, entry }
-      }
-      if (entry.result?.status === 'hit' && !entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
-      }
-      // Stale hit: allow at most one re-query within remaining original budget.
+      // Step 2: Still pending — check remaining original deadline.
       const remaining = entry.deadlineAt - now()
-      if (remaining > 0 && !entry.requeried) {
-        const retried = await runRequeryOnce(entry, remaining, signal)
+      if (remaining <= 0) {
+        entry.controller?.abort(new RequestTimeout())
+        clearTimeout(entry.timer)
+        return { claim: { found: true, result: { status: 'timeout' } }, entry }
+      }
+      if (entry.work) {
+        let wake: () => void = () => {}
+        const onAbort = () => wake()
+        signal?.addEventListener('abort', onAbort, { once: true })
+        const waitTimer = setTimeout(() => {
+          entry.controller?.abort(new RequestTimeout())
+          wake()
+        }, remaining)
+        waitTimer.unref?.()
+        try {
+          await Promise.race([
+            entry.work,
+            new Promise<void>(resolve => { wake = resolve }),
+          ])
+        } finally {
+          clearTimeout(waitTimer)
+          signal?.removeEventListener('abort', onAbort)
+        }
+      }
+      if (entry.cancelled) return { claim: { found: false } }
+
+      if (entry.settled && entry.result) {
+        if (entry.result.status !== 'hit') return { claim: { found: true, result: entry.result }, entry }
+        // Claim-side double-point invalidation check.
+        if (!entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
+          return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
+        }
+      }
+      // Invalidated while pending: allow at most one re-query within remaining original budget.
+      const afterWaitRemaining = entry.deadlineAt - now()
+      if (entry.stale && afterWaitRemaining > 0 && !entry.requeried && !signal?.aborted) {
+        const retried = await runRequeryOnce(entry, afterWaitRemaining, signal)
+        if (entry.cancelled) return { claim: { found: false } }
         return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
       }
       return { claim: { found: true, result: { status: 'timeout' } }, entry }
+    } finally {
+      if (claiming.get(key) === entry) claiming.delete(key)
     }
-
-    // Step 2: Still pending — check remaining original deadline.
-    const remaining = entry.deadlineAt - now()
-    if (remaining <= 0) {
-      entry.controller?.abort(new RequestTimeout())
-      clearTimeout(entry.timer)
-      return { claim: { found: true, result: { status: 'timeout' } }, entry }
-    }
-    if (entry.work) {
-      let wake: () => void = () => {}
-      const onAbort = () => wake()
-      signal?.addEventListener('abort', onAbort, { once: true })
-      const waitTimer = setTimeout(() => {
-        entry.controller?.abort(new RequestTimeout())
-        wake()
-      }, remaining)
-      waitTimer.unref?.()
-      try {
-        await Promise.race([
-          entry.work,
-          new Promise<void>(resolve => { wake = resolve }),
-        ])
-      } finally {
-        clearTimeout(waitTimer)
-        signal?.removeEventListener('abort', onAbort)
-      }
-    }
-
-    if (entry.settled && entry.result) {
-      if (entry.result.status !== 'hit') return { claim: { found: true, result: entry.result }, entry }
-      // Claim-side double-point invalidation check.
-      if (!entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
-      }
-    }
-    // Invalidated while pending: allow at most one re-query within remaining original budget.
-    const afterWaitRemaining = entry.deadlineAt - now()
-    if (entry.stale && afterWaitRemaining > 0 && !entry.requeried && !signal?.aborted) {
-      const retried = await runRequeryOnce(entry, afterWaitRemaining, signal)
-      return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
-    }
-    return { claim: { found: true, result: { status: 'timeout' } }, entry }
   }
 
   async function claimPrefetch({ requestId, sessionId, signal }: {
@@ -373,7 +383,7 @@ export function createMemoryPrefetchManager({
     signal?: AbortSignal
   }): Promise<ClaimPrefetchResult> {
     const { claim, entry } = await claimSingleInternal(requestId, sessionId, signal)
-    if (claim.found && claim.result.status === 'hit' && entry && !entry.requeried && entry.deadlineAt > now()) {
+    if (claim.found && claim.result.status === 'hit' && entry && !entry.cancelled && !entry.requeried && entry.deadlineAt > now()) {
       refreshable.set(entry.key, entry)
     }
     return claim
@@ -388,13 +398,19 @@ export function createMemoryPrefetchManager({
     const key = prefetchKey(sessionId, requestId)
     const entry = refreshable.get(key)
     refreshable.delete(key)
-    if (!entry || entry.requeried || signal?.aborted) {
+    if (!entry || entry.cancelled || entry.requeried || signal?.aborted) {
       return { found: true, result: { status: 'timeout' } }
     }
     const remaining = entry.deadlineAt - now()
     if (remaining <= 0) return { found: true, result: { status: 'timeout' } }
-    const retried = await runRequeryOnce(entry, remaining, signal)
-    return { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }
+    claiming.set(key, entry)
+    try {
+      const retried = await runRequeryOnce(entry, remaining, signal)
+      if (entry.cancelled) return { found: false }
+      return { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }
+    } finally {
+      if (claiming.get(key) === entry) claiming.delete(key)
+    }
   }
 
   /** Claim multiple messages in the same step in parallel and verify every hit against live version before adoption. */
@@ -429,9 +445,17 @@ export function createMemoryPrefetchManager({
     const key = prefetchKey(sessionId, requestId)
     const entry = entries.get(key)
     if (entry) {
+      entry.cancelled = true
       entry.controller?.abort()
       clearTimeout(entry.timer)
       entries.delete(key)
+    }
+    const activeClaim = claiming.get(key)
+    if (activeClaim) {
+      activeClaim.cancelled = true
+      activeClaim.controller?.abort()
+      clearTimeout(activeClaim.timer)
+      claiming.delete(key)
     }
     deliveryTerminals.delete(key)
     refreshable.delete(key)
@@ -441,9 +465,18 @@ export function createMemoryPrefetchManager({
     const prefix = `${sessionId}\0`
     for (const [key, entry] of entries) {
       if (key.startsWith(prefix)) {
+        entry.cancelled = true
         entry.controller?.abort()
         clearTimeout(entry.timer)
         entries.delete(key)
+      }
+    }
+    for (const [key, entry] of claiming) {
+      if (key.startsWith(prefix)) {
+        entry.cancelled = true
+        entry.controller?.abort()
+        clearTimeout(entry.timer)
+        claiming.delete(key)
       }
     }
     for (const key of deliveryTerminals.keys()) {
@@ -456,10 +489,17 @@ export function createMemoryPrefetchManager({
 
   function close() {
     for (const entry of entries.values()) {
+      entry.cancelled = true
+      entry.controller?.abort()
+      clearTimeout(entry.timer)
+    }
+    for (const entry of claiming.values()) {
+      entry.cancelled = true
       entry.controller?.abort()
       clearTimeout(entry.timer)
     }
     entries.clear()
+    claiming.clear()
     deliveryTerminals.clear()
     refreshable.clear()
   }
