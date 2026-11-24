@@ -53,7 +53,7 @@ export interface ParsedProfileSections {
 }
 
 export function parseProfileSections(body: string): ParsedProfileSections {
-  const normalized = body.replace(/\r\n/gu, '\n')
+  const normalized = body.replace(/\r\n?/gu, '\n')
   const blocks = inspectMarkdownBlocks(normalized)
   const confirmedLines: string[] = []
   const autoLines: string[] = []
@@ -63,31 +63,44 @@ export function parseProfileSections(body: string): ParsedProfileSections {
   let autoCount = 0
   let duplicateReservedHeading = false
   let nestedConfirmed = false
+  let sliceStart = 0
 
-  const pushRaw = (raw: string) => {
+  const flushSlice = (sliceEnd: number) => {
+    if (sliceEnd <= sliceStart) return
+    const raw = normalized.slice(sliceStart, sliceEnd)
     const target = section === 'confirmed' ? confirmedLines : section === 'sources' ? sourcesLines : autoLines
-    const blockLines = raw.replace(/\n$/u, '').split('\n')
-    for (const line of blockLines) target.push(line)
+    const lines = trimBlankEdges(raw.split('\n'))
+    if (!lines.length) return
+    if (target.length > 0 && !(section === 'sources' && target.length === 1 && target[0] === '## Sources')) {
+      target.push('')
+    }
+    for (const line of lines) target.push(line)
   }
 
   for (const block of blocks) {
     if (block.type === 'heading' && block.headingText !== undefined) {
       const kind = classifyReservedTitle(block.headingText)
       if (kind === 'confirmed') {
+        flushSlice(block.startOffset)
         confirmedCount++
         if (confirmedCount > 1) duplicateReservedHeading = true
         section = 'confirmed'
+        sliceStart = block.endOffset
         continue
       }
       if (kind === 'auto') {
+        flushSlice(block.startOffset)
         autoCount++
         if (autoCount > 1) duplicateReservedHeading = true
         section = 'auto'
+        sliceStart = block.endOffset
         continue
       }
       if (kind === 'sources') {
+        flushSlice(block.startOffset)
         section = 'sources'
-        sourcesLines.push('## Sources')
+        if (!sourcesLines.length) sourcesLines.push('## Sources')
+        sliceStart = block.endOffset
         continue
       }
     }
@@ -101,14 +114,8 @@ export function parseProfileSections(body: string): ParsedProfileSections {
         }
       }
     }
-    if (block.type === 'space') {
-      const blanks = Math.max(0, block.raw.split('\n').length - 1)
-      const target = section === 'confirmed' ? confirmedLines : section === 'sources' ? sourcesLines : autoLines
-      for (let i = 0; i < blanks; i++) target.push('')
-      continue
-    }
-    pushRaw(block.raw)
   }
+  flushSlice(normalized.length)
 
   return {
     confirmedLines: trimBlankEdges(confirmedLines),

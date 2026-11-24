@@ -11,8 +11,8 @@ import { memoryScopeKey } from '../core/scope.ts'
 export { memoryScopeKey } from '../core/scope.ts'
 export type { MemorySource, MemoryFileDependency } from '../contracts/records.ts'
 
-type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'requestId' | 'questionId' | 'questionAt'> & {
-  seq?: number, scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null, question_at: number | null
+type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'requestId' | 'questionId' | 'questionAt' | 'questionProfileGen'> & {
+  seq?: number, scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null, question_at: number | null, question_profile_gen: number | null
 }
 export const memoryHash = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -22,7 +22,7 @@ const SCHEMA = `
   CREATE TABLE memory_sources (
     id TEXT PRIMARY KEY, operation TEXT NOT NULL, version INTEGER NOT NULL,
     conversation TEXT, session TEXT, scope TEXT NOT NULL, context TEXT, project TEXT, author TEXT NOT NULL,
-    text TEXT, hash TEXT, length INTEGER NOT NULL, question TEXT, question_at INTEGER, request_id TEXT, question_id TEXT, at INTEGER NOT NULL, timezone TEXT NOT NULL,
+    text TEXT, hash TEXT, length INTEGER NOT NULL, question TEXT, question_at INTEGER, question_profile_gen INTEGER, request_id TEXT, question_id TEXT, at INTEGER NOT NULL, timezone TEXT NOT NULL,
     outcome TEXT NOT NULL, UNIQUE(operation, version)
   );
   CREATE INDEX memory_sources_conversation ON memory_sources(conversation);
@@ -65,15 +65,15 @@ export function openMemoryStore(file: string, now = Date.now) {
   const readSource = (id: string): MemorySource | null => {
     const row = sourceById.get(id) as SourceRow | undefined
     if (!row) return null
-    return { ...row, ...(typeof row.seq === 'number' ? { seq: row.seq } : {}), questionAt: row.question_at ?? null, requestId: row.request_id, questionId: row.question_id,
+    return { ...row, ...(typeof row.seq === 'number' ? { seq: row.seq } : {}), questionAt: row.question_at ?? null, questionProfileGen: row.question_profile_gen ?? null, requestId: row.request_id, questionId: row.question_id,
       scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null,
       project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null }
   }
   const insertSource = (source: MemorySource) => db.prepare(`INSERT INTO memory_sources
-    (id, operation, version, conversation, session, scope, context, project, author, text, hash, length, question, question_at, request_id, question_id, at, timezone, outcome)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
+    (id, operation, version, conversation, session, scope, context, project, author, text, hash, length, question, question_at, question_profile_gen, request_id, question_id, at, timezone, outcome)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(source.id, source.operation, source.version, source.conversation, source.session,
     memoryScopeKey(source.scope), source.context ? memoryScopeKey(source.context) : null, source.project ? memoryScopeKey(source.project) : null, source.author, source.text, source.hash, source.length,
-    source.question, source.questionAt ?? null, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
+    source.question, source.questionAt ?? null, source.questionProfileGen ?? null, source.requestId, source.questionId, source.at, source.timezone, source.outcome)
   function insertManualFileSource(source: MemorySource, parents: readonly DocumentSourceRef[]) {
     tx(() => {
       insertSource(source)

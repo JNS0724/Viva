@@ -60,15 +60,17 @@ const notify = (event: object) => {
 const publishProfile = (force = false) => {
   if (!owner || !booted || closing || owner.status() !== 'ready') return
   const snapshot = owner.profileSnapshot()
-  const key = JSON.stringify([snapshot.epoch, snapshot.revision, snapshot.text])
+  const profileDeletionGen = owner.runtime.profileDeletionGeneration()
+  const key = JSON.stringify([snapshot.epoch, snapshot.revision, snapshot.text, profileDeletionGen])
   if (!force && key === lastProfileKey) return
   lastProfileKey = key
-  notify({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...snapshot })
+  notify({ type: 'memory_owner_profile', protocol: MEMORY_HOST_PROTOCOL, ...snapshot, profileDeletionGen })
 }
 const publishState = () => {
   if (!owner || !booted || closing) return
   const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, state: owner.status(),
-    revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch() }
+    revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(),
+    profileDeletionGen: owner.runtime.profileDeletionGeneration() }
   const encoded = JSON.stringify(state)
   if (encoded !== lastState) { lastState = encoded; notify(state) }
 }

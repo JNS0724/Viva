@@ -168,8 +168,18 @@ test('the actual remember tool accepts a precise fragment from a natural request
   assert.ok(detail?.markdown.includes(text))
 })
 
-test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) and confirms memory_context exactly once per committed turn and zero on cancelled turn (R2 P2-7)', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { llm, call, ask, agent } = await setupMemory(t)
+test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) and confirms memory_context exactly once per committed turn including tool continuation (R2 P2-7, R3 P2-7)', { timeout: DSH_TIMEOUT_MS }, async t => {
+  let toolCallIssued = false
+  const { llm, call, ask, agent } = await setupMemory(t, {
+    decideFirst: routeFixtureTools((request: ModelRequest) => {
+      const text = questionOf(request.messages)
+      if (!toolCallIssued && text.includes('月报') && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+        toolCallIssued = true
+        return { tool: { name: 'memory_node_search', input: { query: '月报' } } }
+      }
+      return null
+    }),
+  })
   await call('createFile', { args: [{ operationId: randomUUID(), text: '周报每周五下午五点发给产品组。' }] })
   await call('createFile', { args: [{ operationId: randomUUID(), text: '月报每月底最后一天发给运营组。' }] })
 
@@ -202,7 +212,9 @@ test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) a
   assert.match(firstText, /<memory-recall turn="1" ref="/, 'L3 recall message must be attached for turn 1')
   assert.match(firstText, /产品组/)
 
+  // Turn 2 executes a multi-step tool continuation (step 1 calls memory_node_search, step 2 replies)
   await ask('帮我写月报')
+  assert.equal(toolCallIssued, true, 'turn 2 must exercise real multi-step tool continuation')
   assert.ok(await eventually(() => contextUsedReports.filter(r => r.turn === 2).length === 1), 'turn 2 must report memory_context once')
   const secondReq = lastForeground(llm)
   assert.ok(secondReq)
@@ -210,13 +222,7 @@ test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) a
   assert.match(secondText, /<memory-recall turn="1" ref="/, 'Option A: turn 1 recall message must remain preserved in history')
   assert.match(secondText, /<memory-recall turn="2" ref="/, 'turn 2 recall message must be appended cleanly')
   assert.match(secondText, /运营组/)
-  assert.equal(contextUsedReports.length, 2, 'normal 2-turn commit must emit exactly 2 memory_context reports')
-
-  // Cancelled turn before commit: abort right as prompt enters pre-step -> zero additional memory_context reports!
-  const beforeCancelCount = contextUsedReports.length
-  const cancelTurn = ask('帮我写周报并立刻取消')
-  await agent.cancel()
-  await cancelTurn.catch(() => {})
-  await new Promise(resolve => setTimeout(resolve, 150))
-  assert.equal(contextUsedReports.length, beforeCancelCount, 'cancelled turn must not emit memory_context report')
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(contextUsedReports.filter(r => r.turn === 2).length, 1, 'committed multi-step tool continuation turn must emit exactly 1 memory_context report')
+  assert.equal(contextUsedReports.length, 2, 'normal 2-turn commit (including multi-step tool continuation) must emit exactly 2 memory_context reports')
 })

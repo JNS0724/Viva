@@ -58,7 +58,7 @@ export const MAX_DEEP_RECALL_CHARS = 12000
 const USER = { kind: 'user' } as const
 type FileProfileScope = { kind: 'user' } | { kind: 'project', id: string }
 type Origin = { conversation: string | null, session: string | null, scope?: MemoryScope, context?: MemoryScope, project?: Extract<FileProfileScope, { kind: 'project' }>, foregroundTurn?: string, turn?: string }
-type AnswerSource = { question: string, requestId: string, questionId: string, custom?: true, questionAt?: number }
+type AnswerSource = { question: string, requestId: string, questionId: string, custom?: true, questionAt?: number, questionProfileGen?: number }
 type Receipt = { sourceId: string, outcome: string }
 type MemoryInterval = { from: number | null, to: number | null }
 type Route = { provider: string, model: string }
@@ -119,6 +119,7 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
       length: denied ? 0 : text.length,
       question: answer && !denied ? answer.question.slice(0, 1000) : null,
       questionAt: answer && !denied ? (answer.questionAt ?? null) : null,
+      questionProfileGen: answer && !denied ? (answer.questionProfileGen ?? null) : null,
       requestId: answer?.requestId ?? null, questionId: answer?.questionId ?? null,
       at: captured?.at ?? now(), timezone: captured?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
       outcome: denied ? 'rejected' : 'received',
@@ -914,6 +915,9 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         const prev = prevRaw === undefined ? null : Number(prevRaw)
         const nextWatermark = prev !== null && Number.isFinite(prev) ? Math.max(prev, now()) : now()
         store.setMeta('profile_deleted_at', String(nextWatermark))
+        const prevGen = Number(store.meta('profile_deletion_generation') ?? 0)
+        const nextGen = Number.isFinite(prevGen) && prevGen >= 0 ? prevGen + 1 : 1
+        store.setMeta('profile_deletion_generation', String(nextGen))
         if (store.maxSourceSeq) {
           const prevSeqRaw = store.meta('profile_deleted_source_seq')
           const prevSeq = prevSeqRaw === undefined ? null : Number(prevSeqRaw)
@@ -1084,6 +1088,10 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
     cleanupPending: () => (notes?.storage.pendingCleanup() ?? 0) + (documents?.pendingCleanup() ?? 0) + (fileIndex?.pendingCleanup() ?? 0),
     revision: store.revision,
     epoch: store.epoch,
+    profileDeletionGeneration: () => {
+      const value = Number(store.meta('profile_deletion_generation') ?? 0)
+      return Number.isFinite(value) && value >= 0 ? value : 0
+    },
     finishTurn,
     wake: () => effects.wake(),
     close() { closed = true; clearTimeout(staleProjectionTimer); staleProjections.clear(); fileRetrieval?.close(); embedder?.close(); effects.close(); store.close() }

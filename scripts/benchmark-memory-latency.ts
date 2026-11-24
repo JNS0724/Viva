@@ -14,6 +14,7 @@ import { ensureDshProfile, vivaLayerFile } from '../src/backend/dsh-profile.ts'
 import { dshEnv, dshRuntime } from '../src/backend/dsh-runtime.ts'
 import { removeTree } from '../src/backend/remove-tree.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
+import { MEMORY_OWNER_RPC, ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { CODE_ROOT } from '../src/shared/node/app-roots.ts'
@@ -42,8 +43,7 @@ function argument(name: string, fallback: number) {
 const samples = argument('samples', 24), cold = argument('cold', 12), large = argument('catalog', 96)
 const target = { title: 'Quartz lighthouse maintenance', text: 'Quartz lighthouse maintenance beacon checklist requires an amber panel.' }
 const query = 'quartz lighthouse maintenance beacon checklist'
-const control = 'synthetic benchmark password: fixture-local-only'
-assert.ok(looksSecret(control) && !looksSecret(query))
+assert.ok(!looksSecret(query))
 function toolPayload(value: unknown): Record<string, unknown> {
   if (Array.isArray(value)) return toolPayload(value.map(part => objectOf(part)?.text ?? '').join(''))
   if (typeof value === 'string') return toolPayload(JSON.parse(value))
@@ -143,7 +143,37 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     try { await instance.bridge.dispose() } finally { await instance.owner.close() }
   }
   async function launch() {
-    const owner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes: background }, {})
+    let bypassAutomaticRecall = false
+    const rawOwner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes: background }, {})
+    // Benchmark-only toggle: runs the exact same known-hit query in both arms while switching automatic recall independently.
+    const owner: ReturnType<typeof createDesktopMemoryOwner> = {
+      ...rawOwner,
+      startPrefetch(input) {
+        if (bypassAutomaticRecall) return
+        rawOwner.startPrefetch(input)
+      },
+      bindDsh(send, exited, foregroundSignal, onReady) {
+        const bound = rawOwner.bindDsh(send, exited, foregroundSignal, onReady)
+        return {
+          ...bound,
+          receive(raw) {
+            if (bypassAutomaticRecall) {
+              const frame = ownerRpcFrame(raw)
+              if (frame?.kind === 'request' && frame.method === 'claimPrefetch') {
+                send({ type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { found: true, result: { status: 'skipped' } } })
+                return true
+              }
+              if (frame?.kind === 'request' && frame.method === 'claimPrefetchBatch') {
+                const reqs = Array.isArray(objectOf(frame.input)?.requestIds) ? (objectOf(frame.input)!.requestIds as unknown[]) : []
+                send({ type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: reqs.map(() => ({ found: true, result: { status: 'skipped' } })) })
+                return true
+              }
+            }
+            return bound.receive(raw)
+          },
+        }
+      },
+    }
     const errors: string[] = []
     const bridge = createAcpBridge({
       routing: testRequests(), dshBin: path.join(CODE_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), nodeBin: runtime.nodeBin,
@@ -185,13 +215,15 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
       await bridge.prompt(text, [], { sourceId, sourceText: text })
     }
     async function measure({ fault = false, skipAutomatic = false, measureTools = true } = {}) {
-      const trial: Trial = { prompt: skipAutomatic ? control : query, started: performance.now(), automaticHit: false,
+      const trial: Trial = { prompt: query, started: performance.now(), automaticHit: false,
         fault, measureTools, results: [], seen: new Map(), acpStarts: new Map(), acpTools: [] }
       const offset = errors.length
       current = trial
-      try { await ask(trial.prompt) } finally { current = undefined }
+      bypassAutomaticRecall = skipAutomatic
+      try { await ask(trial.prompt) } finally { bypassAutomaticRecall = false; current = undefined }
       if (trial.error) throw trial.error
       assert.ok(trial.first !== undefined, JSON.stringify(errors.slice(offset)))
+      assert.equal(trial.automaticHit, !skipAutomatic, `expected automaticHit=${!skipAutomatic} for identical query`)
       assert.equal(trial.results.length, measureTools ? toolSequence.length : 0, JSON.stringify(errors.slice(offset)))
       if (measureTools) assert.deepEqual(trial.acpTools.map(tool => tool.name), toolSequence, 'ACP call/result boundaries')
       assert.equal(errors.length, offset, JSON.stringify(errors.slice(offset)))

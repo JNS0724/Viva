@@ -18,6 +18,7 @@ interface Operation {
   stream?: Awaited<ReturnType<Streams['begin']>>
   observation: ReturnType<typeof beginDiagnosticOperation>
   firstResponse: boolean
+  onPreDispatchCancelled?: () => void
 }
 // Observe only normalized output that is forwarded to the conversation, including a recovered final reply.
 function hasAssistantContent(update: unknown): boolean {
@@ -47,7 +48,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
   let closed = false
   const current = (id: string | null, operation: Operation) => running.get(id) === operation && !operation.released
 
-  async function run({ sessionId, prompt, context = null, userTurn = false, prepare, held, onStart, onEnd, onError }: {
+  async function run({ sessionId, prompt, context = null, userTurn = false, prepare, held, onStart, onEnd, onError, onCancelled }: {
     sessionId: string | null, prompt: Prompt, context?: ConversationContext | null
     userTurn?: boolean
     prepare?: () => Promise<void>
@@ -55,10 +56,19 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     onStart?: () => void
     onEnd: (response: PromptResponse, finalReply?: boolean) => void
     onError: (error: unknown) => void
+    onCancelled?: () => void
   }) {
-    if (closed) return
+    if (closed) { onCancelled?.(); return }
+    let settled = false
+    let cancelledNotified = false
+    const notifyPreDispatchCancelled = () => {
+      if (settled || cancelledNotified) return
+      cancelledNotified = true
+      onCancelled?.()
+    }
     const id = randomUUID()
     const operation: Operation = { id, released: false, prompting: false, context: context ? { ...context } : null, foreground: userTurn, firstResponse: false,
+      onPreDispatchCancelled: notifyPreDispatchCancelled,
       observation: beginDiagnosticOperation(diagnosticPort, 'conversation.send', { stage: 'queued',
         identities: { operationId: id, sessionId, conversationId: context?.conversationId } }) }
     running.set(sessionId, operation)
@@ -67,12 +77,13 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       if (!sessionId) throw new Error('no session is open')
       if (prepare) await prepare()
       operation.observation.progress({ stage: 'injected' })
-      if (!current(sessionId, operation)) return
+      if (!current(sessionId, operation)) { notifyPreDispatchCancelled(); return }
       operation.stream = await streams.begin(sessionId)
-      if (!current(sessionId, operation)) { streams.finish(operation.stream); return }
-      if (!current(sessionId, operation) || closed) return
+      if (!current(sessionId, operation)) { streams.finish(operation.stream); notifyPreDispatchCancelled(); return }
+      if (!current(sessionId, operation) || closed) { notifyPreDispatchCancelled(); return }
       if (held && !held()) {
         streams.finish(operation.stream)
+        settled = true
         onEnd({ stopReason: 'cancelled' })
         return
       }
@@ -85,19 +96,24 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
       outcome = response.stopReason === 'cancelled' ? 'cancelled' : 'completed'
       if (!current(sessionId, operation)) return
       const finalReply = await streams.complete(operation.stream)
-      if (current(sessionId, operation)) onEnd(response, finalReply)
+      if (current(sessionId, operation)) { settled = true; onEnd(response, finalReply) }
     } catch (error) {
       operation.observation.fail(error)
-      if (!current(sessionId, operation)) return
+      if (!current(sessionId, operation)) {
+        if (!operation.prompting) notifyPreDispatchCancelled()
+        return
+      }
       if (operation.stream) {
         try { await streams.complete(operation.stream) }
         catch { /* Recovery cannot prevent the original prompt failure from settling. */ }
       }
       if (current(sessionId, operation)) {
+        settled = true
         if (operation.cancelling) onEnd({ stopReason: 'cancelled' })
         else onError(error)
       }
     } finally {
+      if (!settled && !operation.prompting) notifyPreDispatchCancelled()
       const late = operation.prompting && operation.released
       operation.observation.end(late ? 'late_completed' : outcome, { stage: 'settled', ...(late ? { reason: 'late' as const } : {}) })
       if (running.get(sessionId) === operation) running.delete(sessionId)
@@ -110,6 +126,7 @@ export function createAcpOperations({ connection, streams, cancelPermissions, st
     operation.released = true
     operation.observation.progress({ stage: 'paused', reason: 'aborted' })
     if (operation.stream) streams.finish(operation.stream)
+    operation.onPreDispatchCancelled?.()
     onCancelled()
     return true
   }

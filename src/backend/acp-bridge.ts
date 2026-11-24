@@ -163,6 +163,7 @@ export function createAcpBridge({
   const contextFor = (id: string | null) => id ? conversationContext?.(id) ?? null : null
   const requestContext = conversationContext ? (id: string) => operations.turn(id) ? operations.context(id) : null : undefined
   const questions = createQuestionDesk({ send: toPlugins, emit, sessionId: () => sessionId, taskOf, conversationContext: requestContext, onAnswer: onQuestionAnswer,
+    profileDeletionGen: () => memoryOwner?.profileDeletionGen(),
     allowGeneralQuestion: async (session, cards, waiting, phase) => {
       if (taskSessions.isUnattended(session)) return false
       if (!allowGeneralQuestion) return true
@@ -529,6 +530,9 @@ export function createAcpBridge({
     await operations.run({
       sessionId: asked, prompt: blocks, context, userTurn, held, onStart,
       prepare: asked ? () => routingDesk.bind(asked) : undefined,
+      onCancelled: () => {
+        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
+      },
       onEnd: (response, finalReply) => {
         if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
         if (asked === sessionId) toolWatchdog.clear()

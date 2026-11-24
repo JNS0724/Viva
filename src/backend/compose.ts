@@ -529,7 +529,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           if (entry.turn !== undefined && !memoryOffline()) void memoryOwner.channel.callIntake('acceptQuestionAnswer', { operationId, text,
             session: entry.sessionId, turn: entry.turn, conversation, cards: entry.question.questions,
             requestId: entry.question.id, questionId: answer.id,
-            context: answerContext, questionAt: entry.askedAt }).catch(error => emitDiagnosticFailure('memory.intake', error))
+            context: answerContext, questionAt: entry.askedAt,
+            ...(entry.questionProfileGen !== undefined ? { questionProfileGen: entry.questionProfileGen } : {}) }).catch(error => emitDiagnosticFailure('memory.intake', error))
         }
         if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
         return { sourceIds: answerSources }

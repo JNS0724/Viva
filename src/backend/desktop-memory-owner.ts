@@ -32,6 +32,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
   let adapter: AdapterLink | undefined
   let adapterRelease = Promise.resolve()
   let closing = false
+  let currentProfileDeletionGen: number | undefined
   const channel = createRemoteMemoryChannel({ ...events, callOwner(method, input, options) {
     if (!owner) throw new MemoryOwnerUnavailable()
     return owner.callHost(method, input, options)
@@ -154,13 +155,19 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
       if (closing) return
       let forward = true
       const state = memoryOwnerState.safeParse(event)
-      if (state.success) prefetch.onState(state.data)
+      if (state.success) {
+        if (state.data.profileDeletionGen !== undefined) currentProfileDeletionGen = state.data.profileDeletionGen
+        prefetch.onState(state.data)
+      }
       else {
         const change = memoryOwnerChange.safeParse(event)
         if (change.success) prefetch.onChange(change.data)
         else {
           const profile = memoryOwnerProfile.safeParse(event)
-          if (profile.success) forward = prefetch.onProfile(profile.data)
+          if (profile.success) {
+            if (profile.data.profileDeletionGen !== undefined) currentProfileDeletionGen = profile.data.profileDeletionGen
+            forward = prefetch.onProfile(profile.data)
+          }
         }
       }
       try { channel.receive(event) }
@@ -194,6 +201,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     cancelPrefetch: (sessionId: string, requestId: string) => prefetch.cancelPrefetch(sessionId, requestId),
     clearSessionPrefetches: (sessionId: string) => prefetch.clearSession(sessionId),
     profile: () => prefetch.profile(),
+    profileDeletionGen: () => currentProfileDeletionGen,
     pid: () => owner?.pid() ?? null,
     async prepare() {
       if (closing) throw new MemoryOwnerUnavailable()

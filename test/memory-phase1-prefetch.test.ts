@@ -8,6 +8,11 @@ import { continueText, extractFeedContinuationSupplement } from '../src/shared/f
 import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
 import { openPluginOwner } from '../plugins/memory/lib/standalone-owner.ts'
+import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
+import { Context } from '@deepseek-ai/cordis'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { withRequestSource } from '../src/shared/request-routing/header.ts'
+import { MEMORY_OWNER_RPC, ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import type { AutomaticRecallResult } from '../src/memory/contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
 import { MEMORY_HOST_PROTOCOL } from '../src/memory/contracts/host.ts'
@@ -562,4 +567,198 @@ test('TTL eviction retains empty and stale-hit delivery terminals and cancelPref
   prefetch.clearSession('s-ttl')
   assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqCloseMe, sessionId: 's-ttl' }), { found: false })
   assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqOtherSession, sessionId: 's-keep' }), { found: true, result: { status: 'skipped' } })
+})
+
+test('valid on-time hit survives >60s TTL cleanup when owner epoch and revision are unchanged (R3 P2-2)', async t => {
+  let clock = 50_000
+  const reply = deferred<PrefetchReply>()
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 80,
+    cacheTtlMs: 60_000,
+    callPrefetch: () => reply.promise,
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e-valid', 9))
+
+  const reqValid = randomUUID()
+  prefetch.startPrefetch({ requestId: reqValid, sessionId: 's-late-hit', queryText: 'valid query' })
+  reply.resolve({
+    epoch: 'e-valid', revision: 9,
+    result: { status: 'hit', text: 'VALID_LATE_EVIDENCE', partial: false, hits: [{ text: 'VALID_LATE_EVIDENCE', names: ['note'] }] },
+  })
+  await Promise.resolve()
+
+  // Advance clock past 60s TTL (61s) with epoch and revision unchanged, then run cleanupExpired
+  clock += 61_000
+  prefetch.cleanupExpired()
+
+  const claim = await prefetch.claimPrefetch({ requestId: reqValid, sessionId: 's-late-hit' })
+  assert.equal(claim.found, true)
+  assert.equal(claim.result.status, 'hit', 'valid hit with unchanged epoch and revision must survive >60s TTL until delivered')
+  if (claim.result.status === 'hit') assert.equal(claim.result.text, 'VALID_LATE_EVIDENCE')
+})
+
+test('multi-steer starts live fallback immediately for missing-ID sibling while slow sibling claim is pending, and pre-commit cancel/prepareRequest failure emit zero receipts (R3 P2-4, P2-7)', async t => {
+  const { dir } = scratch(t, 'memory-r3-adapter-concurrency-')
+  const root = path.join(dir, 'memory')
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+
+  const slowClaimA = deferred<{ found: boolean, result?: AutomaticRecallResult, epoch?: string, revision?: number }>()
+  const fallbackEvents: string[] = []
+  const contextUsedReports: unknown[] = []
+  let slowAStarted = false
+  let fallbackBStartedBeforeASettled = false
+
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', {
+          type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+          result: { state: ownerState('e-conc', 1) },
+        })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      const input = frame.input as { requestId: string, sessionId: string }
+      if (input.requestId === reqA) {
+        slowAStarted = true
+        void slowClaimA.promise.then(res => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+        })
+      } else {
+        // Message B HAS an ID, but host has no prefetch entry -> immediate { found: false }
+        queueMicrotask(() => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { found: false } })
+        })
+      }
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method, args } = frame.input as { method: string, args: unknown[] }
+      if (method === 'automaticRecall') {
+        fallbackEvents.push('automaticRecall')
+        if (slowAStarted && !aSettled) fallbackBStartedBeforeASettled = true
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: { status: 'hit', text: 'EVIDENCE_B', partial: false, hits: [{ text: 'EVIDENCE_B', names: ['b'] }] },
+          })
+        })
+        return true
+      }
+      if (method === 'reportContextUsed') {
+        contextUsedReports.push(args[0])
+        queueMicrotask(() => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: undefined })
+        })
+        return true
+      }
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { nextSeq: 0, createdAt: 0 } })
+      })
+    }
+    return true
+  }
+
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  let aSettled = false
+
+  const ctx = new Context()
+  const preStepHandlers: Array<(payload: any, next: () => Promise<any>) => Promise<any>> = []
+  const sessionEventHandlers: Array<(session: any, event: any) => void> = []
+  const fakeCtx = Object.assign(ctx, {
+    agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => true, get: () => undefined },
+    tools: { register: () => () => {} },
+    llm: { stream: async function* () {} },
+    on(event: string, listener: (...args: any[]) => any) {
+      if (event === 'agent/pre-step') preStepHandlers.push(listener)
+      if (event === 'session/event') sessionEventHandlers.push(listener)
+      return () => {}
+    },
+    inject() { return () => {} },
+    effect() { return () => {} },
+  })
+
+  const owner = applyMemoryAdapter(fakeCtx as unknown as Context, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(owner.ready(), true)
+
+  const msgA = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 A', reqA, '问题 A').text }], source: { kind: 'user' } })
+  const msgB = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 B', reqB, '问题 B').text }], source: { kind: 'user' } })
+  const fakeSession = { id: 'sess-conc', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const preStep = preStepHandlers[0]!
+
+  const decisionPromise = preStep({
+    agent: { session: fakeSession },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgA, msgB] }))
+
+  // Wait briefly for B's immediate { found: false } -> automaticRecall BEFORE resolving slow A!
+  await new Promise(resolve => setTimeout(resolve, 25))
+  assert.equal(fallbackBStartedBeforeASettled, true, 'message B with missing host claim must start fallback BEFORE slow sibling A settles')
+
+  aSettled = true
+  slowClaimA.resolve({
+    found: true, epoch: 'e-conc', revision: 1,
+    result: { status: 'hit', text: 'EVIDENCE_A', partial: false, hits: [{ text: 'EVIDENCE_A', names: ['a'] }] },
+  })
+  const decision = await decisionPromise
+  const appendedRecall = decision.messages.slice(2)
+  assert.equal(appendedRecall.length, 2)
+  assert.match(appendedRecall[0].content[0].text, new RegExp(`ref="${reqA}"`))
+  assert.match(appendedRecall[0].content[0].text, /EVIDENCE_A/)
+  assert.match(appendedRecall[1].content[0].text, new RegExp(`ref="${reqB}"`))
+  assert.match(appendedRecall[1].content[0].text, /EVIDENCE_B/)
+
+  // Post-pre-step, pre-commit boundary: ZERO reportContextUsed before user/message is committed!
+  assert.equal(contextUsedReports.length, 0, 'pre-step alone must NOT emit reportContextUsed before user/message commit')
+  // Simulate post-pre-step cancellation / prepareRequest failure -> turn/end fires without user/message commit!
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'turn/end', seq: 1, time: Date.now(), data: { turn: 1, reason: { kind: 'aborted' } } })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 0, 'post-pre-step cancellation before commit must emit 0 reportContextUsed')
+  // Even a late stray event for the cleared recall message must not fire after turn/end cleanup
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'user/message', seq: 2, time: Date.now(), data: appendedRecall[0] })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 0, 'cleared pending confirmation must not fire after turn/end')
+
+  // Simulate prepareRequest failure on turn 2: pre-step succeeds, turn/end(error) fires without commit -> 0 reports
+  const decision2 = await preStep({
+    agent: { session: fakeSession },
+    turn: 2,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgB] }))
+  assert.equal(decision2.messages.length, 2)
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'turn/end', seq: 3, time: Date.now(), data: { turn: 2, reason: { kind: 'error' } } })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 0, 'prepareRequest failure before commit must emit 0 reportContextUsed')
+
+  // Committed turn 3: emitting user/message confirms reportContextUsed exactly once (and continuation step has no human message -> still 1!)
+  const decision3 = await preStep({
+    agent: { session: fakeSession },
+    turn: 3,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgB] }))
+  for (const fn of sessionEventHandlers) fn(fakeSession, { type: 'user/message', seq: 4, time: Date.now(), data: decision3.messages[1] })
+  // Continuation step with empty human messages
+  await preStep({
+    agent: { session: fakeSession },
+    turn: 3,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [] }))
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(contextUsedReports.length, 1, 'committed turn with continuation step must emit reportContextUsed exactly once')
 })

@@ -227,80 +227,37 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   ): Promise<Array<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }>> {
     const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
     const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
-    const prefetchedIndices: number[] = []
-    const prefetchedIds: string[] = []
-    const immediateFallbackIndices: number[] = []
-    for (let i = 0; i < items.length; i++) {
-      const id = items[i]!.requestId
-      if (id && (connection.claimPrefetchBatch || connection.claimPrefetch)) {
-        prefetchedIndices.push(i)
-        prefetchedIds.push(id)
-      } else {
-        immediateFallbackIndices.push(i)
-      }
-    }
-
     type ResolvedItem = { msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult, epoch?: string, revision?: number }
-    const resolvedByIndex = new Map<number, ResolvedItem>()
 
-    // Launch host prefetch claims and known non-prefetched live fallbacks CONCURRENTLY under the same step deadline.
-    const claimWork = (async () => {
-      if (prefetchedIds.length === 0) return
-      const left = remaining()
-      if (left <= 0) {
-        for (const index of prefetchedIndices) {
-          const item = items[index]!
-          resolvedByIndex.set(index, { ...item, result: { status: 'timeout' } })
-        }
-        return
-      }
-      const unprefetched: number[] = []
-      try {
-        const claims = connection.claimPrefetchBatch
-          ? await connection.claimPrefetchBatch({ requestIds: prefetchedIds, sessionId }, { signal, budgetMs: left })
-          : await Promise.all(prefetchedIds.map(requestId =>
-              connection.claimPrefetch!({ requestId, sessionId }, { signal, budgetMs: left })))
-        for (let i = 0; i < prefetchedIndices.length; i++) {
-          const index = prefetchedIndices[i]!
-          const item = items[index]!
-          const claim = claims[i]
+    // Resolve every message concurrently: each message with a correlation ID claims independently so a
+    // missing claim starts live fallback immediately without waiting for slow sibling prefetches.
+    const resolved = await Promise.all(items.map(async (item): Promise<ResolvedItem> => {
+      const { msg, requestId } = item
+      if (requestId && (connection.claimPrefetch || connection.claimPrefetchBatch)) {
+        const left = remaining()
+        if (left <= 0) return { msg, requestId, result: { status: 'timeout' } }
+        try {
+          const claim = connection.claimPrefetch
+            ? await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: left })
+            : (await connection.claimPrefetchBatch!({ requestIds: [requestId], sessionId }, { signal, budgetMs: left }))[0]
           if (claim?.found) {
-            resolvedByIndex.set(index, { ...item, result: claim.result, epoch: claim.epoch, revision: claim.revision })
-          } else {
-            unprefetched.push(index)
+            return { msg, requestId, result: claim.result, epoch: claim.epoch, revision: claim.revision }
           }
+        } catch (error) {
+          const fallbackStatus: AutomaticRecallResult = signal.aborted
+            ? { status: 'timeout' }
+            : !available() ? { status: 'unavailable' } : { status: 'timeout' }
+          if (!signal.aborted && available()) report(error)
+          return { msg, requestId, result: fallbackStatus }
         }
-      } catch (error) {
-        const fallbackStatus: AutomaticRecallResult = signal.aborted
-          ? { status: 'timeout' }
-          : !available() ? { status: 'unavailable' } : { status: 'timeout' }
-        if (!signal.aborted && available()) report(error)
-        for (const index of prefetchedIndices) {
-          resolvedByIndex.set(index, { ...items[index]!, result: fallbackStatus })
-        }
-        return
       }
-      if (unprefetched.length > 0) {
-        await Promise.all(unprefetched.map(async index => {
-          const item = items[index]!
-          resolvedByIndex.set(index, await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, stepDeadlineAt, signal))
-        }))
-      }
-    })()
-
-    const fallbackWork = Promise.all(immediateFallbackIndices.map(async index => {
-      const item = items[index]!
-      resolvedByIndex.set(index, await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, stepDeadlineAt, signal))
+      return resolveFallbackRecall(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal)
     }))
-
-    await Promise.all([claimWork, fallbackWork])
 
     // Final adoption-time version guard across all messages in the step, preserving original [A, B, ...] order.
     const liveEpoch = owner.epoch
     const liveRevision = currentRevision
-    return items.map((item, index) => {
-      const resolved = resolvedByIndex.get(index) ?? { ...item, result: { status: 'timeout' as const } }
-      const { msg, requestId, result, epoch, revision } = resolved
+    return resolved.map(({ msg, requestId, result, epoch, revision }) => {
       if (result.status === 'hit') {
         if (!available()) return { msg, requestId, result: { status: 'unavailable' as const } }
         if (epoch !== undefined && liveEpoch !== undefined && epoch !== liveEpoch) {

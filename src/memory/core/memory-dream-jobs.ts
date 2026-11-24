@@ -75,11 +75,14 @@ type PersistedOperation = {
   files: Array<{ path: string, revision: string }>
   questionSourceIds?: string[]
 }
+type ObservedNoteRef = { key: string, path: string, revision: string, checkpoint: number }
 type PersistedBatch = {
   workspace: string
   fileRefs: FileRef[]
   operations: PersistedOperation[]
   checkpointPaths: string[]
+  observedReads?: Array<{ id: string, revision: string, usageVersion: number }>
+  observedNotes?: ObservedNoteRef[]
   oversized?: boolean
 }
 type DeferredCheckpoint = {
@@ -98,6 +101,7 @@ const MANUAL_JOB = 'dream.manualJob'
 const MANUAL_FOLLOWUP = 'dream.manualFollowup'
 const PROFILE_DELETED_AT = 'profile_deleted_at'
 const PROFILE_DELETED_SOURCE_SEQ = 'profile_deleted_source_seq'
+const PROFILE_DELETION_GEN = 'profile_deletion_generation'
 
 const rawWikilinkTargets = rawMarkdownWikilinkTargets
 const requestKey = (id: string) => `dream.request:${id}`
@@ -131,6 +135,8 @@ function pendingBatchOf(payload: unknown): PersistedBatch | null {
     return null
   }
   if (batch.oversized !== undefined && typeof batch.oversized !== 'boolean') return null
+  if (batch.observedReads !== undefined && !Array.isArray(batch.observedReads)) return null
+  if (batch.observedNotes !== undefined && !Array.isArray(batch.observedNotes)) return null
   return batch as PersistedBatch
 }
 
@@ -352,6 +358,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const parsed = Number(raw)
     return Number.isFinite(parsed) ? parsed : null
   }
+  const profileDeletionGen = (): number => {
+    const raw = store.meta(PROFILE_DELETION_GEN)
+    if (!raw) return 0
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0
+  }
   const sourceAllowedAfterProfileDeletion = (
     item: MemorySource,
     watermark: number | null,
@@ -361,13 +373,28 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     if (deletedSeq !== null && typeof item.seq === 'number' && item.seq <= deletedSeq) return false
     return true
   }
+  const questionAllowedAfterProfileDeletion = (
+    item: MemorySource,
+    watermark: number | null,
+    delGen: number,
+  ): boolean => {
+    if (!item.question) return true
+    if (watermark === null && delGen === 0) return true
+    if (typeof item.questionProfileGen === 'number') {
+      if (item.questionProfileGen < delGen) return false
+      return true
+    }
+    // No recorded deletion generation at ask time: fall back strictly to questionAt > watermark (fail closed).
+    return watermark !== null && typeof item.questionAt === 'number' && item.questionAt > watermark
+  }
   const profileSourcesAllowedByWatermark = (
     sources: readonly DocumentSourceRef[],
     questionSourceIds: readonly string[] = [],
   ): boolean => {
     const watermark = profileDeletedAt()
     const deletedSeq = profileDeletedSourceSeq()
-    if (watermark === null && deletedSeq === null) return true
+    const delGen = profileDeletionGen()
+    if (watermark === null && deletedSeq === null && delGen === 0) return true
     if (!sources.every(ref => {
       const item = source(ref.id)
       return Boolean(item && sourceAllowedAfterProfileDeletion(item, watermark, deletedSeq))
@@ -375,7 +402,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     return questionSourceIds.every(id => {
       const item = source(id)
       return Boolean(item && sourceAllowedAfterProfileDeletion(item, watermark, deletedSeq)
-        && (watermark === null || (typeof item.questionAt === 'number' && item.questionAt > watermark)))
+        && questionAllowedAfterProfileDeletion(item, watermark, delGen))
     })
   }
   const schedule = (payload: JobPayload | null = null) => effects.queue(DREAM, DAILY, payload, nextDreamAt(now(), timezone, dreamTime))
@@ -680,6 +707,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         verifyOp(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): Promise<'ready' | 'wait' | 'stale' | 'retry' | 'cancelled'>
         assertMutateCurrent(op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>): void
         onCommittedPath?(path: string): void
+        batchObservedReads?: readonly { id: string, revision: string, usageVersion: number }[]
       },
     ): Promise<'done' | 'wait' | 'stale' | 'retry' | 'cancelled'> {
       const committedReads = new Map<string, { id: string, revision: string, usageVersion: number }>()
@@ -703,13 +731,18 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (committedTarget) reads.set(committedTarget.id, committedTarget)
         }
         const opReads = [...reads.values()]
-        const verifiedState = await options.verifyOp(op, opReads)
+        const verifyReadsMap = new Map(opReads.map(ref => [ref.id, ref]))
+        for (const obs of options.batchObservedReads ?? []) {
+          if (!verifyReadsMap.has(obs.id)) verifyReadsMap.set(obs.id, committedReads.get(obs.id) ?? obs)
+        }
+        const verifyReads = [...verifyReadsMap.values()]
+        const verifiedState = await options.verifyOp(op, verifyReads)
         if (verifiedState !== 'ready') return verifiedState
         try {
           const receipt = await mutate(() => {
             const existing = documents.receipt(workspace, op.operationId)
             if (existing) return existing
-            options.assertMutateCurrent(op, opReads)
+            options.assertMutateCurrent(op, verifyReads)
             return documents.commit({
               operationId: op.operationId, workspace, path: op.path,
               expectedRevision: op.expectedRevision,
@@ -775,6 +808,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (!refsCurrent(file.sources)) return 'stale'
           if (file.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
         }
+        for (const obsNote of batch.observedNotes ?? []) {
+          const reg = notes.noteRegistration(obsNote.key)
+          if (!reg || reg.deleted || !reg.enabled || reg.workspace !== workspace || reg.path !== obsNote.path
+            || reg.revision !== obsNote.checkpoint || reg.fileRevision !== obsNote.revision) {
+            return 'stale'
+          }
+        }
         if (!opSourcesValid(op, false)) return 'stale'
         if (op.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
         const registry = documents.fileRegistry(workspace)
@@ -799,6 +839,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         (observed?: MemoryDocumentReadBatch) => {
           if (!effects.holds(job)
             || !batch.fileRefs.every(ref => fileCurrent(ref, observed))
+            || !(batch.observedNotes ?? []).every(obsNote => {
+              const latest = notes.read(obsNote.key, observed?.physical(workspace, obsNote.path))
+              return Boolean(latest && latest.enabled && latest.workspace === workspace && latest.path === obsNote.path
+                && latest.revision === obsNote.checkpoint && latest.fileRevision === obsNote.revision)
+            })
             || !opSourcesValid(op, true)) return false
           if (!opReads.every(ref => {
             const target = documents.indexFile(workspace, ref.id)
@@ -827,6 +872,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const regById = new Map(registry.map(row => [row.id, row]))
           const opLocations: Location[] = [
             ...batch.fileRefs,
+            ...(batch.observedNotes ?? []).map(obsNote => ({ workspace, path: obsNote.path })),
             { workspace, path: op.path },
             ...opReads.flatMap(ref => {
               const target = regById.get(ref.id)
@@ -851,6 +897,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 return 'stale'
               }
               if (fileState === 'unverifiable') hasUnverifiable = true
+            }
+            for (const obsNote of batch.observedNotes ?? []) {
+              const obsRev = observed.observedRevision(workspace, obsNote.path)
+              if (obsRev === undefined || obsRev === null) {
+                hasUnverifiable = true
+              } else if (obsRev !== obsNote.revision) {
+                clearPendingBatch()
+                progress(job, 'source_changed', 'consolidate')
+                return 'stale'
+              }
             }
             for (const ref of opReads) {
               const target = regById.get(ref.id)
@@ -899,6 +955,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (!makeOpCurrent(op, opReads)()) throw new DreamDiskUnverifiableError()
         },
         onCommittedPath: extra?.onCommittedPath,
+        batchObservedReads: batch.observedReads,
       }
     }
 
@@ -1076,7 +1133,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const changedPaths = new Set(noteByPath.keys())
         const allowedSourceIds = new Set(batchSourceMap.keys())
         const remainingAtStart = dreamUnits - operationsUsed
-        let prepared: { operations: PreparedOperation[], hasMore: boolean } | undefined
+        let prepared: {
+          operations: PreparedOperation[]
+          hasMore: boolean
+          observedReads: Array<{ id: string, revision: string, usageVersion: number }>
+          observedNotes: ObservedNoteRef[]
+        } | undefined
         let retryHint: string | undefined
         let batchOversized = false
 
@@ -1239,8 +1301,28 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
                 })
               }
-              prepared = { operations: validated, hasMore: effectiveHasMore }
+              const batchObservedReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
+              const batchObservedNotesMap = new Map<string, ObservedNoteRef>()
+              for (const doc of tools.reads()) {
+                if (doc.backing) {
+                  batchObservedReadsMap.set(doc.backing.id, { id: doc.backing.id, revision: doc.backing.revision, usageVersion: doc.backing.usageVersion })
+                } else if (dailyPath.safeParse(doc.path).success) {
+                  const regAt = notes.registeredAt(workspace, doc.path)
+                  const reg = regAt && notes.noteRegistration(regAt.key)
+                  if (!reg || reg.deleted || !reg.enabled || reg.fileRevision !== doc.revision) {
+                    throw new MemoryDreamStaleError()
+                  }
+                  batchObservedNotesMap.set(reg.key, { key: reg.key, path: doc.path, revision: doc.revision, checkpoint: reg.revision })
+                }
+              }
+              prepared = {
+                operations: validated,
+                hasMore: effectiveHasMore,
+                observedReads: [...batchObservedReadsMap.values()],
+                observedNotes: [...batchObservedNotesMap.values()],
+              }
             } catch (error) {
+              if (error instanceof MemoryDreamStaleError) throw error
               const reason = error instanceof Error ? error.message : 'invalid-output'
               if (reason === 'dream-search-incomplete') { scanRetry = true; return }
               retryHint = retryHintFor(reason)
@@ -1256,7 +1338,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               // Single oversized note: record size-limit diagnostic, but do NOT bypass the dedicated profile pass.
               oversizedAny = true
               batchOversized = true
-              prepared = { operations: [], hasMore: false }
+              prepared = { operations: [], hasMore: false, observedReads: [], observedNotes: [] }
               break
             }
             if (error instanceof RequestTimeout) { scanRetry = true; return }
@@ -1291,6 +1373,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (!existingProfileRow || existingProfileRow.state === 'active') {
             const watermark = profileDeletedAt()
             const deletedSeq = profileDeletedSourceSeq()
+            const delGen = profileDeletionGen()
             const profileSourceMap = new Map<string, DocumentSourceRef>()
             for (const ref of mergeDocumentSources(checkpointRefs.flatMap(file => file.sources))) {
               const original = source(ref.id)
@@ -1328,8 +1411,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 if (!original?.text) { progress(job, 'source_changed', 'consolidate'); scanRetry = true; return }
                 const context = notes.sourceQuestionContext(ref.id)
                 const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
-                const questionAfterWatermark = watermark === null
-                  || (typeof original.questionAt === 'number' && original.questionAt > watermark)
+                const questionAfterWatermark = questionAllowedAfterProfileDeletion(original, watermark, delGen)
                 const questionAllowed = Boolean(original.question) && wholeSource && context.current
                   && questionAfterWatermark
                   && (!context.refs.length || refsCurrent(context.refs))
@@ -1527,6 +1609,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         if (persistedOps.length > 0) {
           const nextPending: PersistedBatch = {
             workspace, fileRefs, operations: persistedOps, checkpointPaths,
+            ...(prepared.observedReads.length ? { observedReads: prepared.observedReads } : {}),
+            ...(prepared.observedNotes.length ? { observedNotes: prepared.observedNotes } : {}),
             ...(batchOversized ? { oversized: true } : {}),
           }
           if (!saveJobState(nextPending, activeDeferred)) return
@@ -1548,6 +1632,60 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (commitOutcome === 'retry') stopPass = true
             scanRetry = true
             return
+          }
+        } else if (prepared.observedReads.length > 0 || prepared.observedNotes.length > 0) {
+          // Even when consolidate emitted zero ops, revalidate read digests and daily notes before advancing checkpoints.
+          const registry = documents.fileRegistry(workspace)
+          const regById = new Map(registry.map(row => [row.id, row]))
+          const obsLocations: Location[] = [
+            ...prepared.observedNotes.map(obs => ({ workspace, path: obs.path })),
+            ...prepared.observedReads.flatMap(ref => {
+              const target = regById.get(ref.id)
+              return target ? [{ workspace, path: target.path }] : []
+            }),
+          ]
+          let obsBatch: MemoryDocumentReadBatch | undefined
+          try {
+            obsBatch = await loadFiles(obsLocations, undefined, true)
+          } catch (error) {
+            if (!(error instanceof RequestTimeout)) throw error
+            stopPass = true
+            scanRetry = true
+            return
+          }
+          if (!effects.holds(job)) return
+          for (const ref of prepared.observedReads) {
+            const target = regById.get(ref.id)
+            if (!target || target.state !== 'active' || target.revision !== ref.revision || target.usageVersion !== ref.usageVersion) {
+              progress(job, 'source_changed', 'consolidate')
+              scanRetry = true
+              return
+            }
+            if (obsBatch) {
+              const obsRev = obsBatch.observedRevision(workspace, target.path)
+              if (obsRev === undefined || obsRev === null || obsRev !== ref.revision) {
+                progress(job, 'source_changed', 'consolidate')
+                scanRetry = true
+                return
+              }
+            }
+          }
+          for (const obsNote of prepared.observedNotes) {
+            const reg = notes.noteRegistration(obsNote.key)
+            if (!reg || reg.deleted || !reg.enabled || reg.workspace !== workspace || reg.path !== obsNote.path
+              || reg.revision !== obsNote.checkpoint || reg.fileRevision !== obsNote.revision) {
+              progress(job, 'source_changed', 'consolidate')
+              scanRetry = true
+              return
+            }
+            if (obsBatch) {
+              const obsRev = obsBatch.observedRevision(workspace, obsNote.path)
+              if (obsRev === undefined || obsRev === null || obsRev !== obsNote.revision) {
+                progress(job, 'source_changed', 'consolidate')
+                scanRetry = true
+                return
+              }
+            }
           }
         }
 

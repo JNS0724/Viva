@@ -1403,8 +1403,11 @@ test('ordinary Dream plan reading X without linking it is invalidated if X mutat
       return JSON.stringify({ action: 'NOOP' })
     }
     // Ordinary consolidate searches, reads X, and proposes Y WITHOUT linking [[doc-x.md]]
-    await request.tools!.executeTool({ callId: 'c1', name: 'node_search', input: { query: 'Doc X' } })
-    await request.tools!.executeTool({ callId: 'c2', name: 'read', input: { id: xReceipt.documentId } })
+    const searchRes = await request.tools!.executeTool({ callId: 'c1', name: 'node_search', input: { query: 'Doc X' } })
+    assert.equal(searchRes.state, 'completed')
+    const readRes = await request.tools!.executeTool({ callId: 'c2', name: 'read', input: { path: 'digest/wiki/doc-x.md' } })
+    assert.equal(readRes.state, 'completed')
+    assert.match(readRes.content, /旧版配置 X 正文/)
     return JSON.stringify({
       operations: [{
         action: 'CREATE',
@@ -1421,4 +1424,180 @@ test('ordinary Dream plan reading X without linking it is invalidated if X mutat
 
   assert.equal(h.documents.read(d0.workspace, 'digest/wiki/doc-y.md'), null, 'Y must NOT commit when read dependency X mutated during profile pass')
   assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'daily note checkpoint must NOT advance when Y was invalidated')
+})
+
+test('ordinary Dream plan reading an already-processed daily note is invalidated if that daily note mutates during profile pass (R3 P1-2)', async t => {
+  const h = dreamHarness(t, { initialNow: TODAY_MS })
+  const d0 = h.addDailyNote([{ text: '历史背景日记：服务器位于上海机房' }], { session: 's-r3-p1-2-0', day: '2026-11-15' })
+  h.notes.markProcessed(d0.key, d0.note.revision)
+
+  const d1 = h.addDailyNote([{ text: '结合历史背景生成运维总结，我偏好精简输出' }], { session: 's-r3-p1-2-1', day: '2026-11-16' })
+  h.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      // Mutate already-processed daily note d0 in place on disk while profile pass is running!
+      const absD0 = path.join(h.store.fileRoot, d0.workspace, d0.path)
+      fs.writeFileSync(absD0, `${fs.readFileSync(absD0, 'utf8')}\n<!-- daily mutated during profile pass -->`)
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-daily', name: 'read', input: { path: d0.path } })
+    assert.equal(readRes.state, 'completed')
+    assert.match(readRes.content, /上海机房/)
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/wiki/ops-summary.md',
+        name: 'Ops Summary',
+        description: 'Derived from d0 daily note without link',
+        body: '运维部署位于上海机房',
+        dailyPaths: [d1.path],
+        sourceIds: [d1.sources[0]!.id],
+      }],
+    })
+  })
+  await h.run()
+
+  assert.equal(h.documents.read(d0.workspace, 'digest/wiki/ops-summary.md'), null, 'digest must NOT commit when read daily note d0 mutated during profile pass')
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'd1 checkpoint must NOT advance when d0 mutated')
+})
+
+test('pre-deletion question with clock rollback is blocked by profile_deletion_generation even when answered after delete with no context deps (R3 P1-1)', async t => {
+  let clock = TODAY_MS + 10_000
+  const { dir, defer } = scratch(t, 'memory-r3-p1-1-question-gen-')
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => clock)
+  defer(() => store.close())
+  const owner = openMemoryOwner({ root: dir, dailyNotes: true, now: () => clock, compute: () => null, route: () => null })
+  defer(() => owner.close())
+  await owner.recover()
+  const session = 'sess-r3-qgen'
+
+  // Seed & delete profile #1 after rolling clock BACKWARDS relative to question's askedAt!
+  const src1 = randomUUID()
+  await owner.receiveSource({ sessionId: session, messageId: src1, text: '初始画像来源', at: TODAY_MS, timezone: 'UTC', turn: 1, cwd: null })
+  const srcRow1 = store.readSource(src1)!
+  const ws = memorySourceWorkspace(srcRow1)
+  const documents = openMemoryDocuments({
+    db: store.db,
+    root: store.fileRoot,
+    now: () => clock,
+    source(id) {
+      const current = store.readSource(id)
+      return current?.text ? { text: current.text, workspace: memorySourceWorkspace(current), token: memorySourceToken(current) } : undefined
+    },
+  })
+  const first = documents.commit({
+    operationId: randomUUID(), workspace: ws, path: RESIDENT_PROFILE_PATH,
+    expectedRevision: null, action: 'CREATE',
+    markdown: '---\nname: Personal Profile\ndescription: Resident\n---\n\n## 自动整理\n- 初始画像来源',
+    sources: [{ id: srcRow1.id, token: memorySourceToken(srcRow1) }], reads: [],
+  })
+  // Question was issued BEFORE deletion at gen=0 with askedAt = TODAY_MS + 10_000
+  const preDeleteGen = owner.runtime.profileDeletionGeneration()
+  assert.equal(preDeleteGen, 0)
+  const preDeleteAskedAt = clock // TODAY_MS + 10_000
+
+  // Clock rolls BACKWARDS to TODAY_MS + 5_000 right before profile deletion!
+  clock = TODAY_MS + 5_000
+  const client = createVivaMemoryClient((m, input) => owner.handleHost(m, input) as Promise<never>)
+  const firstDetail = (await client.readFile({ kind: 'digest', workspace: ws, id: first.documentId }))!
+  await client.forgetFile({ operationId: randomUUID(), identity: firstDetail.identity, version: firstDetail.version })
+  assert.equal(owner.runtime.profileDeletionGeneration(), 1)
+  assert.equal(Number(store.meta('profile_deleted_at')), TODAY_MS + 5_000)
+
+  // User answers the pre-deletion question AFTER deletion (so answer gets a newer seq > deletedSeq and at > watermark, with NO context deps!)
+  clock = TODAY_MS + 6_000
+  const answerId = randomUUID()
+  owner.runtime.accept(
+    '我习惯用简洁要点回复',
+    { conversation: session, session, scope: { kind: 'user' }, context: { kind: 'user' } },
+    answerId,
+    { question: '机密旧问题：关于已删除画像的敏感偏好', requestId: 'req-q1', questionId: 'q1', custom: true, questionAt: preDeleteAskedAt, questionProfileGen: preDeleteGen },
+    { deferAutomatic: true, at: clock, timezone: 'UTC' },
+  )
+  const answerRow = store.readSource(answerId)!
+  assert.equal(answerRow.questionProfileGen, 0)
+
+  const notes = openMemoryNotes(store, () => true)
+  const noteKey = notes.add(session, '2026-11-16', [answerRow], '好的', answerId)!
+  const rows = notes.pending(noteKey, 10)
+  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Answer Note', markdown: '我习惯用简洁要点回复' }, 1, clock, notes.snapshot([answerId]), undefined), true)
+  const effects = createEffects({ db: store.db, now: () => clock })
+  defer(() => effects.close())
+
+  let sawQuestion: string | null = 'UNSET'
+  let sawUnavailable = false
+  const jobs = createMemoryDreamJobs({
+    store, notes, documents, effects, now: () => clock, transaction: store.tx,
+    identity: { newId: randomUUID, hash: memoryHash },
+    readable: () => true, eligible: () => true,
+    source: id => store.readSource(id) ?? undefined,
+    reference: id => { const s = store.readSource(id); return s ? { namespace: 'canonical', sourceId: s.id, revision: s.version } : null },
+    allowsText: () => true, committed: () => {},
+    async calculate(request) {
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        const payload = request.input as { canonicalSources: Array<{ sourceId: string, question: string | null, questionUnavailable: boolean }> }
+        const entry = payload.canonicalSources.find(item => item.sourceId === answerId)!
+        sawQuestion = entry.question
+        sawUnavailable = entry.questionUnavailable
+        return JSON.stringify({ action: 'NOOP' })
+      }
+      return JSON.stringify({ operations: [] })
+    },
+  })
+  jobs.run()
+  await effects.wake()
+  assert.equal(sawQuestion, null, 'pre-deletion question must NOT reach profile planner even after clock rollback')
+  assert.equal(sawUnavailable, true)
+})
+
+test('repeated Dream REFINE preserves multi-paragraph confirmed section and link defs verbatim near 800-char limit (R3 P1-3)', () => {
+  const confirmedParagraphs = `${'A'.repeat(780)}\n\nEND`
+  const initial = `## 用户确认\n${confirmedParagraphs}\n\n## 自动整理\n- 旧整理`
+  let current = initial
+  for (let i = 0; i < 6; i++) {
+    current = assembleDreamProfileBody({ existingBody: current, autoSummaryBody: `- 第 ${i + 1} 轮整理`, action: 'REFINE' })
+    const parsed = parseProfileSections(current)
+    assert.equal(parsed.confirmedLines.join('\n'), confirmedParagraphs, `confirmed section must stay verbatim after REFINE #${i + 1}`)
+    const projected = projectProfileL2(current)
+    assert.ok(projected.includes('END'), `L2 projection must not drift or truncate END on REFINE #${i + 1}`)
+  }
+
+  const withRefLink = '## 用户确认\n[Example][my-link]\n\n[my-link]: https://example.org\n\n## 自动整理\n- old'
+  const refined = assembleDreamProfileBody({ existingBody: withRefLink, autoSummaryBody: '- new', action: 'REFINE' })
+  assert.equal(parseProfileSections(refined).confirmedLines.join('\n'), '[Example][my-link]\n\n[my-link]: https://example.org')
+})
+
+test('mixed Dream plan does not discard independent digest with inline-code profile example inside a Markdown table (R3 P2-1)', async t => {
+  const h = dreamHarness(t, { initialNow: TODAY_MS })
+  const d1 = h.addDailyNote([{ text: '表格示例说明与个人习惯' }], { session: 's-r3-p2-1' })
+  h.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) return JSON.stringify({ action: 'NOOP' })
+    await request.tools!.executeTool({ callId: 'c1', name: 'node_search', input: { query: '表格' } })
+    return JSON.stringify({
+      operations: [
+        {
+          action: 'CREATE',
+          path: 'digest/personal/profile.MD',
+          name: 'Bad Uppercase Profile',
+          description: 'Reserved variant to be stripped',
+          body: '- bad profile draft',
+          dailyPaths: [d1.path],
+          sourceIds: [d1.sources[0]!.id],
+        },
+        {
+          action: 'CREATE',
+          path: 'digest/wiki/table-guide.md',
+          name: 'Table Guide',
+          description: 'Independent digest mentioning profile path inside inline code in a table',
+          body: '| Example |\n| --- |\n| `[[digest/personal/profile.MD]]` |',
+          dailyPaths: [d1.path],
+          sourceIds: [d1.sources[0]!.id],
+        },
+      ],
+    })
+  })
+  await h.run()
+
+  assert.equal(h.documents.read(d1.workspace, RESIDENT_PROFILE_PATH), null)
+  const guide = h.documents.read(d1.workspace, 'digest/wiki/table-guide.md')
+  assert.ok(guide, 'independent digest with inline-code wikilink inside Markdown table must NOT be stripped')
 })

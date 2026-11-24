@@ -78,10 +78,16 @@ export function createMemoryPrefetchManager({
     for (const [key, entry] of entries) {
       if (entry.settled && entry.expiresAt <= at) {
         const status = entry.result?.status
+        if (status === 'hit' && !entry.stale && ownerAvailable
+          && entry.ownerEpoch !== undefined && entry.ownerEpoch === currentEpoch
+          && entry.revision !== undefined && entry.revision === currentRevision) {
+          // Retain valid versioned hits until claimed, cancelled, or invalidated by revision/epoch change.
+          continue
+        }
         if (status === 'skipped' || status === 'timeout' || status === 'empty' || status === 'unavailable') {
           deliveryTerminals.set(key, { status, deadlineAt: entry.deadlineAt })
         } else {
-          // Evicted hit (stale or past TTL/deadline): preserve as timeout terminal so late claim never re-searches.
+          // Invalidated or unavailable hit past TTL: preserve as timeout terminal so late claim never re-searches.
           deliveryTerminals.set(key, { status: 'timeout', deadlineAt: entry.deadlineAt })
         }
         entries.delete(key)

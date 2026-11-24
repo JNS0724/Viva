@@ -322,46 +322,57 @@ function collectNestedHeadingTexts(tokens: readonly Token[] | undefined, out: st
 export interface MarkdownBlockSummary {
   type: string
   raw: string
+  startOffset: number
+  endOffset: number
   headingText?: string
   nestedHeadingTexts?: string[]
 }
 
-/** Lex Markdown body into top-level block summaries with visible heading text (including nested quote/list headings). */
+/** Lex normalized LF Markdown body into top-level block summaries with exact offsets and visible heading text. */
 export function inspectMarkdownBlocks(body: string): MarkdownBlockSummary[] {
-  const tokens = Lexer.lex(body)
-  return tokens.map(token => {
+  const tokens = lexMemoryMarkdownBody(body)
+  const out: MarkdownBlockSummary[] = []
+  let position = 0
+  for (const token of tokens) {
+    const startOffset = position
+    const endOffset = position + token.raw.length
+    position = endOffset
     if (token.type === 'heading') {
-      return { type: token.type, raw: token.raw, headingText: headingVisibleText(token as Tokens.Heading) }
-    }
-    if (token.type === 'blockquote' || token.type === 'list') {
+      out.push({ type: token.type, raw: token.raw, startOffset, endOffset, headingText: headingVisibleText(token as Tokens.Heading) })
+    } else if (token.type === 'blockquote' || token.type === 'list') {
       const nested: string[] = []
       collectNestedHeadingTexts([token], nested)
-      return { type: token.type, raw: token.raw, ...(nested.length ? { nestedHeadingTexts: nested } : {}) }
+      out.push({ type: token.type, raw: token.raw, startOffset, endOffset, ...(nested.length ? { nestedHeadingTexts: nested } : {}) })
+    } else {
+      out.push({ type: token.type, raw: token.raw, startOffset, endOffset })
     }
-    return { type: token.type, raw: token.raw }
-  })
+  }
+  return out
 }
 
-/** Extract raw wikilink targets from Markdown AST outside code blocks/spans (preserving case for pre-validation stripping). */
+/** Extract raw wikilink targets using the exact same Markdown wikilink AST traversal as parseMemoryMarkdown (case-preserved). */
 export function rawMarkdownWikilinkTargets(markdown: string): string[] {
-  const targets: string[] = []
-  const pattern = /\[\[([^\[\]\r\n#\|]+)(?:[#\|][^\[\]\r\n]*)?\]\]/gu
-  const scan = (tokens: readonly Token[] | undefined) => {
-    if (!tokens?.length) return
-    for (const token of tokens) {
-      if (token.type === 'code' || token.type === 'codespan') continue
-      if (token.type === 'list') {
-        for (const item of (token as Tokens.List).items) scan(item.tokens)
-      } else if ('tokens' in token && Array.isArray(token.tokens) && token.tokens.length > 0) {
-        scan(token.tokens)
-      } else if ('raw' in token && typeof token.raw === 'string') {
-        for (const match of token.raw.matchAll(pattern)) {
-          const target = match[1]?.trim()
-          if (target) targets.push(target)
+  try {
+    return [...new Set(parseMemoryMarkdown(markdown).links.map(link => link.path))]
+  } catch {
+    const targets: string[] = []
+    const collectTokens = (sequence: readonly Token[] | undefined): void => {
+      if (!sequence?.length) return
+      for (const token of sequence) {
+        if (token.type === 'memory_wikilink') {
+          const link = memoryWikiLink(token.raw.slice(2, -2))
+          if (link.path) targets.push(link.path)
+        } else if (token.type === 'list') {
+          collectTokens((token as Tokens.List).items)
+        } else if (token.type === 'table') {
+          const table = token as Tokens.Table
+          for (const cell of [table.header, ...table.rows].flat()) collectTokens(cell.tokens)
+        } else if ('tokens' in token && token.tokens && token.type !== 'code' && token.type !== 'codespan' && token.type !== 'html') {
+          collectTokens(token.tokens)
         }
       }
     }
+    collectTokens(lexMemoryMarkdownBody(markdown.replace(/\r\n?/gu, '\n')))
+    return [...new Set(targets)]
   }
-  scan(Lexer.lex(markdown))
-  return targets
 }

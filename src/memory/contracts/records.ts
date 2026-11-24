@@ -27,6 +27,7 @@ export interface MemorySource {
   length: number
   question: string | null
   questionAt?: number | null
+  questionProfileGen?: number | null
   requestId: string | null
   questionId: string | null
   at: number

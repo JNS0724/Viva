@@ -539,7 +539,8 @@ function assembleOwner(options: Options, lock: ReturnType<typeof lockMemoryRoot>
           assertIntakeCurrent()
           runtime.accept(input.text, { ...context, context: input.context }, sourceId,
             { question: question.question, requestId: input.requestId, questionId: input.questionId, custom: true,
-              ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}) },
+              ...(input.questionAt !== undefined ? { questionAt: input.questionAt } : {}),
+              ...(input.questionProfileGen !== undefined ? { questionProfileGen: input.questionProfileGen } : {}) },
             { deferAutomatic: true, at: (options.now ?? Date.now)(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
           if (!runtime.sourceCurrent(sourceId)) throw new Error('Answer cannot be retained')
           db.prepare('INSERT INTO owner_answer_sources VALUES (?,?,?)').run(session, String(turn), sourceId)

@@ -38,7 +38,7 @@ export interface HostMemoryApi {
   cleanupPending: Args<[], number>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
   prefetchRecall: { input: { session: string, query: string, cwd?: string | null, context?: MemoryScope, project?: MemoryProject }, output: { epoch: string, revision: number, result: AutomaticRecallResult } }
-  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject, questionAt?: number }, output: { sourceId: string } }
+  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject, questionAt?: number, questionProfileGen?: number }, output: { sourceId: string } }
   sourceAlias: { input: MemorySourceAlias, output: { sourceId: string } }
   getOperation: { input: { operationId: string }, output: MemoryOperationOutcome | null }
 }
@@ -68,7 +68,7 @@ export const hostMemoryInputSchemas = {
   prefetchRecall: z.strictObject({ session: key, query: text, cwd: z.string().nullish(), context: scope.optional(), project: project.optional() }),
   acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, turn: z.number().int().positive(),
     cards: z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })),
-    requestId: key, questionId: key, context: scope, project: project.optional(), questionAt: integer.optional() }),
+    requestId: key, questionId: key, context: scope, project: project.optional(), questionAt: integer.optional(), questionProfileGen: integer.optional() }),
   sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text, wireSpans, cwd: z.string().nullish(), context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional() }),
   getOperation: z.strictObject({ operationId: z.uuid() }),
 } satisfies Record<HostMemoryMethod, z.ZodType>
@@ -78,12 +78,12 @@ export function parseHostMemoryCommand(method: unknown, input: unknown): HostMem
   return { method: name, input: hostMemoryInputSchemas[name].parse(input) } as HostMemoryCommand
 }
 export const memoryOwnerState = z.strictObject({ type: z.literal('memory_owner_state'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
-  epoch: key, state: z.enum(['ready', 'recovering', 'unavailable']), revision: integer, coreEpoch: integer, effectsRevision: integer.optional() })
+  epoch: key, state: z.enum(['ready', 'recovering', 'unavailable']), revision: integer, coreEpoch: integer, effectsRevision: integer.optional(), profileDeletionGen: integer.optional() })
 export type MemoryOwnerState = z.infer<typeof memoryOwnerState>
 
 /** Schema-agnostic L2 resident profile snapshot pushed by memory worker on ready and change. */
 export const memoryOwnerProfile = z.strictObject({ type: z.literal('memory_owner_profile'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
-  epoch: key, revision: integer, text })
+  epoch: key, revision: integer, text, profileDeletionGen: integer.optional() })
 export type MemoryOwnerProfile = z.infer<typeof memoryOwnerProfile>
 
 /** Transient committed-change receipt; never stored in the metadata snapshot. */
