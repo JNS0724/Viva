@@ -137,12 +137,13 @@ export const lastWords = (messages: readonly Message[]) => currentWords(messages
  * messages with text. dsh may add messages of its own after the user's words (a fresh session's runtime context).
  */
 const askedWords = (messages: readonly Message[]) => {
-  const hasText = (message: Message) => message.role === 'user' && textParts(message).length > 0
+  const userWords = (texts: readonly string[]) => currentTurnTextParts(texts).filter(text => !text.startsWith(CONTEXT_OPEN))
+  const hasText = (message: Message) => message.role === 'user' && userWords(textParts(message)).length > 0
   let end = messages.length - 1
   while (end >= 0 && !hasText(messages[end])) end -= 1
   let start = end
   while (start > 0 && messages[start - 1].role === 'user') start -= 1
-  return currentWords(messages.slice(start, end + 1).flatMap(textParts).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
+  return currentWords(userWords(messages.slice(start, end + 1).flatMap(textParts))[0] ?? '')
 }
 
 function lastToolUse(messages: readonly Message[]) {

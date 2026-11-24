@@ -57,6 +57,19 @@ test('fixture reminder filtering preserves ordinary text, quoted markers and inc
   assert.deepEqual(currentTurnTextParts(['<system-reminder>\nRuntime notice.\n</system-reminder>']), [])
 })
 
+test('the fake model continues a requested clarification past a refreshed context after the tool result', () => {
+  const reply = decide({
+    tools: [{ name: 'ask_user_question' }],
+    messages: [
+      human('接入演示服务，再问我城市'),
+      { role: 'assistant', content: [{ type: 'tool_use', name: 'viva_mcp_add', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', content: 'denied' }] },
+      human('<system-reminder>\nThe following information replaces the earlier memory context.\n</system-reminder>'),
+    ],
+  })
+  assert.deepEqual(reply.tool, { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } })
+})
+
 test('the common fake emits exact text-only file remember and arbitrary recall inputs', () => {
   for (const text of ['我加入读书会，同时仍在支付组。', 'The new marker is moonstone-47.', '今週は木曜日に資料を送ります。']) {
     const answer = decide({ messages: [human(`记住：${text}`)] })
