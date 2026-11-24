@@ -121,6 +121,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
       peer.close()
       if (adapter === link) {
         adapter = undefined
+        prefetch.close()
         notifyWaiters()
         if (!closing) await owner?.adapterExited()
       }
@@ -190,6 +191,8 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     channel, bindDsh,
     prefetch,
     startPrefetch: (input: PrefetchStartInput) => prefetch.startPrefetch(input),
+    cancelPrefetch: (sessionId: string, requestId: string) => prefetch.cancelPrefetch(sessionId, requestId),
+    clearSessionPrefetches: (sessionId: string) => prefetch.clearSession(sessionId),
     profile: () => prefetch.profile(),
     pid: () => owner?.pid() ?? null,
     async prepare() {

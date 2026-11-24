@@ -9,6 +9,7 @@ export interface MemoryStore {
   epoch(): number
   nextRevision(invalidate?: boolean): number
   readSource(id: string): MemorySource | null
+  maxSourceSeq?(): number
   insertSource(source: MemorySource): void
   /** Body-free ties from a manually edited draft to the exact proof it reused. */
   insertManualFileSource(source: MemorySource, parents: readonly DocumentSourceRef[]): void

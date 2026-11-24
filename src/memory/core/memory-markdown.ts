@@ -260,3 +260,108 @@ export function parseMemoryMarkdown(markdown: string, { maxBytes = DAILY_MEMORY_
   flush()
   return { metadata: document.metadata, chunks, links }
 }
+
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|([a-zA-Z]+));/gu, (full, hex?: string, dec?: string, named?: string) => {
+    if (hex) {
+      const cp = Number.parseInt(hex, 16)
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full
+    }
+    if (dec) {
+      const cp = Number.parseInt(dec, 10)
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : full
+    }
+    switch (named?.toLowerCase()) {
+      case 'amp': return '&'
+      case 'lt': return '<'
+      case 'gt': return '>'
+      case 'quot': return '"'
+      case 'apos': return '\''
+      case 'nbsp': return ' '
+      default: return full
+    }
+  })
+}
+
+/** Extract visible rendered text from marked inline tokens (matches renderer/view/markdown.ts). */
+function extractInlineVisibleText(tokens: readonly Token[] | undefined): string {
+  if (!tokens?.length) return ''
+  let out = ''
+  for (const tok of tokens) {
+    if (tok.type === 'html') {
+      out += decodeHtmlEntities(tok.raw.replace(/<[^>]*>/gu, ''))
+    } else if (tok.type === 'br') {
+      out += ' '
+    } else if ('tokens' in tok && Array.isArray(tok.tokens) && tok.tokens.length > 0) {
+      out += extractInlineVisibleText(tok.tokens)
+    } else if ('text' in tok && typeof tok.text === 'string') {
+      out += decodeHtmlEntities(tok.text)
+    }
+  }
+  return out
+}
+
+function headingVisibleText(token: Tokens.Heading): string {
+  return extractInlineVisibleText(token.tokens) || decodeHtmlEntities(token.text)
+}
+
+function collectNestedHeadingTexts(tokens: readonly Token[] | undefined, out: string[]): void {
+  if (!tokens?.length) return
+  for (const tok of tokens) {
+    if (tok.type === 'code' || tok.type === 'codespan') continue
+    if (tok.type === 'heading') {
+      out.push(headingVisibleText(tok as Tokens.Heading))
+    } else if (tok.type === 'list') {
+      for (const item of (tok as Tokens.List).items) collectNestedHeadingTexts(item.tokens, out)
+    } else if ('tokens' in tok && Array.isArray(tok.tokens)) {
+      collectNestedHeadingTexts(tok.tokens, out)
+    }
+  }
+}
+
+export interface MarkdownBlockSummary {
+  type: string
+  raw: string
+  headingText?: string
+  nestedHeadingTexts?: string[]
+}
+
+/** Lex Markdown body into top-level block summaries with visible heading text (including nested quote/list headings). */
+export function inspectMarkdownBlocks(body: string): MarkdownBlockSummary[] {
+  const tokens = Lexer.lex(body)
+  return tokens.map(token => {
+    if (token.type === 'heading') {
+      return { type: token.type, raw: token.raw, headingText: headingVisibleText(token as Tokens.Heading) }
+    }
+    if (token.type === 'blockquote' || token.type === 'list') {
+      const nested: string[] = []
+      collectNestedHeadingTexts([token], nested)
+      return { type: token.type, raw: token.raw, ...(nested.length ? { nestedHeadingTexts: nested } : {}) }
+    }
+    return { type: token.type, raw: token.raw }
+  })
+}
+
+/** Extract raw wikilink targets from Markdown AST outside code blocks/spans (preserving case for pre-validation stripping). */
+export function rawMarkdownWikilinkTargets(markdown: string): string[] {
+  const targets: string[] = []
+  const pattern = /\[\[([^\[\]\r\n#\|]+)(?:[#\|][^\[\]\r\n]*)?\]\]/gu
+  const scan = (tokens: readonly Token[] | undefined) => {
+    if (!tokens?.length) return
+    for (const token of tokens) {
+      if (token.type === 'code' || token.type === 'codespan') continue
+      if (token.type === 'list') {
+        for (const item of (token as Tokens.List).items) scan(item.tokens)
+      } else if ('tokens' in token && Array.isArray(token.tokens) && token.tokens.length > 0) {
+        scan(token.tokens)
+      } else if ('raw' in token && typeof token.raw === 'string') {
+        for (const match of token.raw.matchAll(pattern)) {
+          const target = match[1]?.trim()
+          if (target) targets.push(target)
+        }
+      }
+    }
+  }
+  scan(Lexer.lex(markdown))
+  return targets
+}

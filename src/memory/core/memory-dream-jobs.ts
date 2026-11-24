@@ -18,6 +18,7 @@ import { DREAM, nextDreamAt } from './memory-notes.ts'
 import type { DailyMemorySettings } from './memory-notes.ts'
 import { todayAt } from './memory-calendar.ts'
 import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
+import { rawMarkdownWikilinkTargets } from './memory-markdown.ts'
 import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-document-read-policy.ts'
@@ -96,6 +97,9 @@ const DAILY = 'daily'
 const MANUAL_JOB = 'dream.manualJob'
 const MANUAL_FOLLOWUP = 'dream.manualFollowup'
 const PROFILE_DELETED_AT = 'profile_deleted_at'
+const PROFILE_DELETED_SOURCE_SEQ = 'profile_deleted_source_seq'
+
+const rawWikilinkTargets = rawMarkdownWikilinkTargets
 const requestKey = (id: string) => `dream.request:${id}`
 const receiptKey = (id: string) => `dream.receipt:${id}`
 const DAY_MS = 86_400_000
@@ -342,19 +346,36 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const parsed = Number(raw)
     return Number.isFinite(parsed) ? parsed : null
   }
+  const profileDeletedSourceSeq = (): number | null => {
+    const raw = store.meta(PROFILE_DELETED_SOURCE_SEQ)
+    if (!raw) return null
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  const sourceAllowedAfterProfileDeletion = (
+    item: MemorySource,
+    watermark: number | null,
+    deletedSeq: number | null,
+  ): boolean => {
+    if (watermark !== null && item.at <= watermark) return false
+    if (deletedSeq !== null && typeof item.seq === 'number' && item.seq <= deletedSeq) return false
+    return true
+  }
   const profileSourcesAllowedByWatermark = (
     sources: readonly DocumentSourceRef[],
     questionSourceIds: readonly string[] = [],
   ): boolean => {
     const watermark = profileDeletedAt()
-    if (watermark === null) return true
+    const deletedSeq = profileDeletedSourceSeq()
+    if (watermark === null && deletedSeq === null) return true
     if (!sources.every(ref => {
       const item = source(ref.id)
-      return Boolean(item && item.at > watermark)
+      return Boolean(item && sourceAllowedAfterProfileDeletion(item, watermark, deletedSeq))
     })) return false
     return questionSourceIds.every(id => {
       const item = source(id)
-      return Boolean(item && typeof item.questionAt === 'number' && item.questionAt > watermark)
+      return Boolean(item && sourceAllowedAfterProfileDeletion(item, watermark, deletedSeq)
+        && (watermark === null || (typeof item.questionAt === 'number' && item.questionAt > watermark)))
     })
   }
   const schedule = (payload: JobPayload | null = null) => effects.queue(DREAM, DAILY, payload, nextDreamAt(now(), timezone, dreamTime))
@@ -1123,8 +1144,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                             .join('\n')
                         : ''
                       const draftText = rawBody || rawEdits
-                      const draftLinks = draftText ? memoryDocumentLinks(formatMemoryDocument({ metadata: {}, body: draftText })) : []
-                      if (draftLinks.some(link => strippedDraftPaths.has(link.split('#')[0]!.toLowerCase()))) {
+                      const draftLinks = draftText ? rawWikilinkTargets(draftText) : []
+                      if (draftLinks.some(link => strippedDraftPaths.has(link.toLowerCase()))) {
                         if (rawPath) strippedDraftPaths.add(rawPath.toLowerCase())
                         continue
                       }
@@ -1196,6 +1217,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   throw new Error('dream-material-rejected')
                 }
                 const opReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
+                // Bind all documents read during this consolidate attempt so any modification during the profile pass
+                // or crash recovery invalidates plans that depended on those observed contents.
+                for (const doc of tools.reads()) {
+                  if (doc.backing) {
+                    opReadsMap.set(doc.backing.id, { id: doc.backing.id, revision: doc.backing.revision, usageVersion: doc.backing.usageVersion })
+                  }
+                }
                 for (const doc of boundDigests) {
                   if (doc.backing) {
                     opReadsMap.set(doc.backing.id, { id: doc.backing.id, revision: doc.backing.revision, usageVersion: doc.backing.usageVersion })
@@ -1262,12 +1290,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const existingProfileRow = documents.fileRegistry(userWorkspace).find(row => isReservedProfilePath(row.path))
           if (!existingProfileRow || existingProfileRow.state === 'active') {
             const watermark = profileDeletedAt()
+            const deletedSeq = profileDeletedSourceSeq()
             const profileSourceMap = new Map<string, DocumentSourceRef>()
             for (const ref of mergeDocumentSources(checkpointRefs.flatMap(file => file.sources))) {
               const original = source(ref.id)
               if (!original?.text) continue
               if (!isPureUserSource(original)) continue
-              if (watermark !== null && original.at <= watermark) continue
+              if (!sourceAllowedAfterProfileDeletion(original, watermark, deletedSeq)) continue
               profileSourceMap.set(ref.id, ref)
             }
             if (profileSourceMap.size > 0) {
@@ -1308,7 +1337,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   && context.refs.every(dep => {
                     const item = source(dep.id)
                     return Boolean(item?.text && allowsText(item.text, item) && isPureUserSource(item)
-                      && (watermark === null || item.at > watermark))
+                      && sourceAllowedAfterProfileDeletion(item, watermark, deletedSeq))
                   })
                 if (questionAllowed) profileQuestionContexts.set(ref.id, context.refs)
                 profileCanonicalSources.push({
@@ -1327,7 +1356,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               ])
               const profileCurrent = (observed?: MemoryDocumentReadBatch) => {
                 if (!effects.holds(job)) return false
-                if (profileDeletedAt() !== watermark) return false
+                if (profileDeletedAt() !== watermark || profileDeletedSourceSeq() !== deletedSeq) return false
                 if (!checkpointRefs.every(ref => fileCurrent(ref, observed))) return false
                 if (!refsCurrent(profileReadRefs)) return false
                 if (!profileReadRefs.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })) return false

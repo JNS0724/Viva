@@ -1147,7 +1147,7 @@ test('partial-commit recovery clears pendingBatch when one file is missing and a
   }
 })
 
-test('reserved profile heading guard matches CommonMark ATX closing hashes, indentation, and Setext H2 headings consistently (P1-6)', () => {
+test('reserved profile heading guard matches CommonMark ATX closing hashes, indentation, inline formatting, and Setext H2 headings consistently (P1-6, R2 P1-3)', () => {
   for (const forged of [
     '## 用户确认 ##\n- 伪造项',
     '  ##   用户确认   ###  \n- 伪造项',
@@ -1155,16 +1155,25 @@ test('reserved profile heading guard matches CommonMark ATX closing hashes, inde
     '用户确认\n---\n- 伪造项',
     '  User Confirmed  \n------\n- forged',
     '### 用户确认\n- 伪造项',
+    '## **用户确认**\n- 粗体伪造项',
+    '## _User Confirmed_ ##\n- italic forged',
+    '## <span>用户确认</span>\n- html forged',
+    '> ## **用户确认**\n> - 引用块伪造项',
   ]) {
     assert.throws(
       () => assembleDreamProfileBody({ existingBody: null, autoSummaryBody: forged, action: 'CREATE' }),
       /dream-profile-reserved-heading/,
-      `must reject forged heading: ${JSON.stringify(forged)}`,
+      `CREATE must reject forged heading: ${JSON.stringify(forged)}`,
+    )
+    assert.throws(
+      () => assembleDreamProfileBody({ existingBody: '## 自动整理\n- 旧偏好', autoSummaryBody: forged, action: 'REFINE' }),
+      /dream-profile-reserved-heading/,
+      `REFINE must reject forged heading: ${JSON.stringify(forged)}`,
     )
     assert.equal(parseProfileSections(forged).hasConfirmedHeading, true)
   }
   // Heading inside fenced code block is NOT a section heading.
-  const fenced = '## 自动整理\n```md\n## 用户确认\n```\n- 正常偏好'
+  const fenced = '## 自动整理\n```md\n## **用户确认**\n```\n- 正常偏好'
   const parsedFenced = parseProfileSections(fenced)
   assert.equal(parsedFenced.hasConfirmedHeading, false)
   assert.equal(parsedFenced.duplicateReservedHeading, false)
@@ -1252,6 +1261,15 @@ test('Dream pre-validation strips uppercase .MD / Digest/ reserved profile varia
           },
           {
             action: 'CREATE',
+            path: 'digest/wiki/dep-on-upper-profile.md',
+            name: 'Dependent On Uppercase Profile',
+            description: 'Must be stripped because it links to profile.MD',
+            body: '引用了 [[digest/personal/profile.MD]] 的依赖草案',
+            dailyPaths: [d1.path],
+            sourceIds: [d1.sources[0]!.id],
+          },
+          {
+            action: 'CREATE',
             path: 'digest/wiki/milestone-p2-5.md',
             name: 'Milestone',
             description: 'Valid ordinary digest',
@@ -1267,6 +1285,7 @@ test('Dream pre-validation strips uppercase .MD / Digest/ reserved profile varia
   })
   await h.run()
   assert.equal(generalCalls, 1)
+  assert.equal(h.documents.read(d1.workspace, 'digest/wiki/dep-on-upper-profile.md'), null, 'dependent op linking to uppercase profile.MD must be stripped')
   assert.ok(h.documents.read(d1.workspace, 'digest/wiki/milestone-p2-5.md'))
   assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'hasMore=true must keep note checkpoint open for next pass')
 
@@ -1329,4 +1348,77 @@ test('profile_deleted_at watermark stays monotonic across system clock rollback 
   await client.forgetFile({ operationId: randomUUID(), identity: secondDetail.identity, version: secondDetail.version })
   const watermark2 = Number(store.meta('profile_deleted_at'))
   assert.equal(watermark2, watermark1, 'profile_deleted_at must never move backwards on clock rollback')
+
+  // Now run REAL Dream on a pending daily note referencing src2 (+12_000): profile_deleted_source_seq must block resurrection!
+  const notes = openMemoryNotes(store, () => true)
+  const noteKey = notes.add(session, '2026-11-16', [srcRow2], '好的', src2)!
+  const rows = notes.pending(noteKey, 10)
+  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Rollback Note', markdown: '重建偏好' }, 1, TODAY_MS + 12_000, notes.snapshot([src2]), undefined), true)
+  const effects = createEffects({ db: store.db, now: () => clock })
+  defer(() => effects.close())
+  let profilePlannerSaw: unknown = null
+  const jobs = createMemoryDreamJobs({
+    store, notes, documents, effects, now: () => clock, transaction: store.tx,
+    identity: { newId: randomUUID, hash: memoryHash },
+    readable: () => true, eligible: () => true,
+    source: id => store.readSource(id) ?? undefined,
+    reference: id => { const s = store.readSource(id); return s ? { namespace: 'canonical', sourceId: s.id, revision: s.version } : null },
+    allowsText: () => true, committed: () => {},
+    async calculate(request) {
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        profilePlannerSaw = request.input
+        return JSON.stringify({ action: 'CREATE', body: '- 不应复活', sourceIds: [src2] })
+      }
+      return JSON.stringify({ operations: [] })
+    },
+  })
+  jobs.run()
+  await effects.wake()
+  assert.equal(profilePlannerSaw, null, 'profile planner must NOT receive pre-second-deletion source even after clock rollback')
+  assert.equal(documents.read(ws, RESIDENT_PROFILE_PATH), null, 'profile must NOT be resurrected from source predating second delete')
+})
+
+test('ordinary Dream plan reading X without linking it is invalidated if X mutates in place during profile pass (R2 P1-2)', async t => {
+  const h = dreamHarness(t, { initialNow: TODAY_MS })
+  const d0 = h.addDailyNote([{ text: '项目背景：旧版配置 X' }], { session: 's-r2-p1-2-0' })
+  // Seed existing digest X
+  const xReceipt = h.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0.workspace,
+    path: 'digest/wiki/doc-x.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Doc X\ndescription: Background\n---\n\n旧版配置 X 正文',
+    sources: [{ id: d0.sources[0]!.id, token: memorySourceToken(d0.sources[0]!) }],
+    reads: [],
+  })
+  h.notes.markProcessed(d0.key, d0.note.revision)
+
+  const d1 = h.addDailyNote([{ text: '根据配置生成新的决策 Y，我偏好深色主题' }], { session: 's-r2-p1-2-1' })
+  h.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      // Mutate X in place on disk while profile pass is running!
+      const absX = path.join(h.store.fileRoot, d0.workspace, 'digest/wiki/doc-x.md')
+      fs.writeFileSync(absX, `${fs.readFileSync(absX, 'utf8')}\n<!-- mutated during profile pass -->`)
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    // Ordinary consolidate searches, reads X, and proposes Y WITHOUT linking [[doc-x.md]]
+    await request.tools!.executeTool({ callId: 'c1', name: 'node_search', input: { query: 'Doc X' } })
+    await request.tools!.executeTool({ callId: 'c2', name: 'read', input: { id: xReceipt.documentId } })
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/wiki/doc-y.md',
+        name: 'Doc Y',
+        description: 'Derived from X without link',
+        body: '基于旧版配置 X 的结论 Y',
+        dailyPaths: [d1.path],
+        sourceIds: [d1.sources[0]!.id],
+      }],
+    })
+  })
+  await h.run()
+
+  assert.equal(h.documents.read(d0.workspace, 'digest/wiki/doc-y.md'), null, 'Y must NOT commit when read dependency X mutated during profile pass')
+  assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'daily note checkpoint must NOT advance when Y was invalidated')
 })

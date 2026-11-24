@@ -39,7 +39,7 @@ type PrefetchEntry = {
   work?: Promise<void>
 }
 
-type DeliveryTerminal = { status: 'skipped' | 'timeout', deadlineAt: number }
+type DeliveryTerminal = { status: 'skipped' | 'timeout' | 'empty' | 'unavailable', deadlineAt: number }
 
 const DEFAULT_CACHE_TTL_MS = 60_000
 
@@ -50,8 +50,8 @@ const prefetchKey = (sessionId: string, requestId: string) => `${sessionId}\0${r
  * - Caches monotonic `{ epoch, revision, text }` snapshots (accepting `text: ''` as a valid update);
  * - Starts L3 prefetch at the exact validated dispatch point keyed by `(requestId, sessionId)`;
  * - Enforces double-point `{ ownerEpoch, revision }` invalidation (both on reply write and on claim);
- * - Preserves `skipped` and `timeout` delivery terminals across cache TTL eviction until consumed or cancelled,
- *   without retaining skipped/sensitive query text.
+ * - Preserves lightweight delivery terminals (`skipped` / `timeout` / `empty` / `unavailable`) across
+ *   cache TTL eviction until consumed or cancelled, without retaining skipped/sensitive query text.
  */
 export function createMemoryPrefetchManager({
   callPrefetch,
@@ -77,8 +77,12 @@ export function createMemoryPrefetchManager({
   function cleanupExpired(at = now()) {
     for (const [key, entry] of entries) {
       if (entry.settled && entry.expiresAt <= at) {
-        if (entry.result?.status === 'timeout' || entry.result?.status === 'skipped') {
-          deliveryTerminals.set(key, { status: entry.result.status, deadlineAt: entry.deadlineAt })
+        const status = entry.result?.status
+        if (status === 'skipped' || status === 'timeout' || status === 'empty' || status === 'unavailable') {
+          deliveryTerminals.set(key, { status, deadlineAt: entry.deadlineAt })
+        } else {
+          // Evicted hit (stale or past TTL/deadline): preserve as timeout terminal so late claim never re-searches.
+          deliveryTerminals.set(key, { status: 'timeout', deadlineAt: entry.deadlineAt })
         }
         entries.delete(key)
       }
@@ -390,6 +394,17 @@ export function createMemoryPrefetchManager({
     ))
   }
 
+  function cancelPrefetch(sessionId: string, requestId: string) {
+    const key = prefetchKey(sessionId, requestId)
+    const entry = entries.get(key)
+    if (entry) {
+      entry.controller?.abort()
+      clearTimeout(entry.timer)
+      entries.delete(key)
+    }
+    deliveryTerminals.delete(key)
+  }
+
   function clearSession(sessionId: string) {
     const prefix = `${sessionId}\0`
     for (const [key, entry] of entries) {
@@ -417,7 +432,7 @@ export function createMemoryPrefetchManager({
     onState, onChange, onProfile, onUnavailable,
     acceptProfile,
     profile: (): MemoryProfileSnapshot | undefined => latestProfile,
-    startPrefetch, claimPrefetch, claimPrefetchBatch, clearSession, cleanupExpired, close,
+    startPrefetch, claimPrefetch, claimPrefetchBatch, cancelPrefetch, clearSession, cleanupExpired, close,
   }
 }
 export type MemoryPrefetchManager = ReturnType<typeof createMemoryPrefetchManager>

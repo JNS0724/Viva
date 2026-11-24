@@ -1505,10 +1505,14 @@ test('consecutive identical task prompts claim distinct requestId prefetches wit
   assert.equal(taskRequests.length, 2, 'expected two distinct first-step task requests for the two identical deliveries')
   const refs = taskRequests.map((request, idx) => {
     const raw = JSON.stringify(request.messages)
-    assert.ok(raw.includes(uniqueMarker), 'each task delivery must receive L3 hit with unique memory marker')
     const matches = [...raw.matchAll(/<memory-recall turn=\\"(\d+)\\" ref=\\"([A-Za-z0-9-]+)\\">/g)]
     assert.equal(matches.length, idx + 1, `request ${idx + 1} should retain prior turns and append its own L3 recall`)
-    return matches.at(-1)![2]!
+    const currentRef = matches.at(-1)![2]!
+    const currentRecallMsg = request.messages.find(msg => JSON.stringify(msg.content).includes(`ref=\\"${currentRef}\\"`) || JSON.stringify(msg.content).includes(`ref="${currentRef}"`))
+    assert.ok(currentRecallMsg, `expected dedicated L3 message for ref ${currentRef}`)
+    const currentRecallText = JSON.stringify(currentRecallMsg.content)
+    assert.ok(currentRecallText.includes(uniqueMarker), `delivery ${idx + 1} L3 message itself (ref=${currentRef}) must contain unique memory marker`)
+    return currentRef
   })
   assert.notEqual(refs[0], refs[1], 'consecutive identical task deliveries must claim distinct requestIds')
   assert.equal(prefetchCount, 2, 'exactly two host prefetches must be executed for two identical task deliveries')

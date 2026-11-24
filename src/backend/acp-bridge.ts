@@ -379,12 +379,18 @@ export function createAcpBridge({
       const wrapped = withTaskRequestSource(text, randomUUID())
       recordSource?.({ session: id, text, wireText: wrapped.text, wireSpans: wrapped.spans, task: true })
       memoryOwner?.startPrefetch({ requestId: wrapped.requestId, sessionId: id, queryText: text, cwd: sessionCwd, context: { kind: 'task', id } })
-      return steering.steer(wrapped.text, id)
+      const steered = await steering.steer(wrapped.text, id)
+      if (!steered.ok && steered.reason !== NO_PLUGIN) memoryOwner?.cancelPrefetch(id, wrapped.requestId)
+      return steered
     },
     emit, describeError: error => describeError(error, stderrTail),
     goneMessage: () => t('main.acp-bridge.task.session.gone'), stoppedMessage,
   })
-  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask, steerTask } = taskSessions
+  const { resumeTask, startTask, startUnattendedTask, promptTask, cancelTask, closeTask: closeTaskSession, steerTask } = taskSessions
+  const closeTask = (taskId: string) => {
+    memoryOwner?.clearSessionPrefetches(taskId)
+    return closeTaskSession(taskId)
+  }
 
   async function openSession(beforeOpen?: () => Promise<unknown>) {
     const measure = sessionTiming(onTiming)
@@ -524,12 +530,14 @@ export function createAcpBridge({
       sessionId: asked, prompt: blocks, context, userTurn, held, onStart,
       prepare: asked ? () => routingDesk.bind(asked) : undefined,
       onEnd: (response, finalReply) => {
+        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
         if (asked === sessionId) toolWatchdog.clear()
         if (isTask(asked)) emit({ type: 'task_end', taskId: asked, stopReason: response.stopReason })
         else if (asked === sessionId) emit({ type: 'turn_end', stopReason: response.stopReason,
           ...(response.stopReason === 'end_turn' && finalReply !== undefined ? { finalReply } : {}), ...scoped(context) })
       },
       onError: error => {
+        if (asked && routed) memoryOwner?.cancelPrefetch(asked, routed.requestId)
         if (asked === sessionId) toolWatchdog.clear()
         const message = describeError(error, stderrTail)
         if (isTask(asked)) { if (!disposed) emit({ type: 'task_end', taskId: asked, stopReason: 'error', message }) }
@@ -582,6 +590,7 @@ export function createAcpBridge({
         catch (err) { console.error('[acp-bridge] cancel failed; still closing session:', describeError(err)) }
       }
       await measure('session.close', () => live().closeSession({ sessionId: id }))
+      memoryOwner?.clearSessionPrefetches(id)
     })()
     closing.set(id, cleanup)
     void cleanup.then(() => {
@@ -704,7 +713,10 @@ export function createAcpBridge({
     onDispatch?.()
     const result = await steering.steer(wrapped, asked, { fast: true })
     // A lost transport receipt leaves the request routable if the native inbox took it.
-    if (!result.ok && result.reason !== NO_PLUGIN) undelivered()
+    if (!result.ok && result.reason !== NO_PLUGIN) {
+      undelivered()
+      memoryOwner?.cancelPrefetch(asked, request.requestId)
+    }
     return result
   }
   /** A background task's result into the running turn of `session`, at most once (task-reports.ts). */

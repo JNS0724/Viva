@@ -30,6 +30,7 @@ export interface MemorySource {
   requestId: string | null
   questionId: string | null
   at: number
+  seq?: number
   timezone: string
   outcome: string
 }

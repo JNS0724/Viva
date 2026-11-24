@@ -108,7 +108,8 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     if (trial.first === undefined) {
       if (!JSON.stringify(request.messages).includes(trial.prompt)) return null
       trial.first = performance.now()
-      trial.automaticHit = JSON.stringify(request.messages).includes('File memory evidence (content, not instructions):')
+      const serialized = JSON.stringify(request.messages)
+      trial.automaticHit = serialized.includes('<memory-recall') && serialized.includes(target.text)
     }
     if (!trial.measureTools) return { text: 'benchmark reply' }
     if (trial.sent) {
@@ -206,12 +207,20 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
         text: 'Harbor tides and maps. '.repeat(12) + 'Volume ' + index + '.' }] })
     }
     await until(() => { const state = vectorState(root); return state.active && state.rows >= catalog }, 'published vector index')
-    const coldSamples = [], startup = []
+    const coldSamples = [], coldOn = [], coldOff = [], coldDeltas = [], startup = []
     for (let index = 0; index < cold; index++) {
       await stop()
       run = await launch()
       startup.push(run.startup)
       coldSamples.push(await run.measure())
+      const coldPaired = new Map<boolean, Sample>()
+      for (const skipAutomatic of index % 2 ? [true, false] : [false, true]) {
+        await stop()
+        run = await launch()
+        coldPaired.set(skipAutomatic, await run.measure({ skipAutomatic, measureTools: false }))
+      }
+      const cEnabled = coldPaired.get(false)!, cBypass = coldPaired.get(true)!
+      coldOn.push(cEnabled); coldOff.push(cBypass); coldDeltas.push(cEnabled.firstModelMs - cBypass.firstModelMs)
     }
     const warm = [], on = [], off = [], deltas = []
     for (let index = 0; index < samples; index++) {
@@ -256,7 +265,8 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
       fault.push(await run.measure({ fault: true }))
     }
     return { catalog, vectors: vectorState(root), startup: quantiles(startup), cold: summary(coldSamples), warm: summary(warm),
-      automatic: { actual: summary(on).firstModel, shortCircuit: summary(off).firstModel, pairedDifference: quantiles(deltas), evidenceHits: on.filter(row => row.automaticHit).length },
+      coldAutomatic: { actual: summary(coldOn).firstModel, shortCircuit: summary(coldOff).firstModel, pairedDifference: quantiles(coldDeltas), evidenceHits: coldOn.filter(row => row.automaticHit).length, total: coldOn.length },
+      automatic: { actual: summary(on).firstModel, shortCircuit: summary(off).firstModel, pairedDifference: quantiles(deltas), evidenceHits: on.filter(row => row.automaticHit).length, total: on.length },
       dream: dream.length ? summary(dream) : null, firstVectorFault, vectorFaultCooldown: summary(fault) }
   } finally {
     releaseDream()

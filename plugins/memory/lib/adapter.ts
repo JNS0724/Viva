@@ -229,51 +229,78 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
     const prefetchedIndices: number[] = []
     const prefetchedIds: string[] = []
+    const immediateFallbackIndices: number[] = []
     for (let i = 0; i < items.length; i++) {
       const id = items[i]!.requestId
       if (id && (connection.claimPrefetchBatch || connection.claimPrefetch)) {
         prefetchedIndices.push(i)
         prefetchedIds.push(id)
+      } else {
+        immediateFallbackIndices.push(i)
       }
     }
 
-    const claimedByIndex = new Map<number, { result: AutomaticRecallResult, epoch?: string, revision?: number }>()
-    if (prefetchedIds.length > 0) {
+    type ResolvedItem = { msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult, epoch?: string, revision?: number }
+    const resolvedByIndex = new Map<number, ResolvedItem>()
+
+    // Launch host prefetch claims and known non-prefetched live fallbacks CONCURRENTLY under the same step deadline.
+    const claimWork = (async () => {
+      if (prefetchedIds.length === 0) return
       const left = remaining()
       if (left <= 0) {
-        for (const index of prefetchedIndices) claimedByIndex.set(index, { result: { status: 'timeout' } })
-      } else {
-        try {
-          const claims = connection.claimPrefetchBatch
-            ? await connection.claimPrefetchBatch({ requestIds: prefetchedIds, sessionId }, { signal, budgetMs: left })
-            : await Promise.all(prefetchedIds.map(requestId =>
-                connection.claimPrefetch!({ requestId, sessionId }, { signal, budgetMs: left })))
-          for (let i = 0; i < prefetchedIndices.length; i++) {
-            const claim = claims[i]
-            if (claim?.found) {
-              claimedByIndex.set(prefetchedIndices[i]!, { result: claim.result, epoch: claim.epoch, revision: claim.revision })
-            }
-          }
-        } catch (error) {
-          const fallbackStatus: AutomaticRecallResult = signal.aborted
-            ? { status: 'timeout' }
-            : !available() ? { status: 'unavailable' } : { status: 'timeout' }
-          if (!signal.aborted && available()) report(error)
-          for (const index of prefetchedIndices) claimedByIndex.set(index, { result: fallbackStatus })
+        for (const index of prefetchedIndices) {
+          const item = items[index]!
+          resolvedByIndex.set(index, { ...item, result: { status: 'timeout' } })
         }
+        return
       }
-    }
+      const unprefetched: number[] = []
+      try {
+        const claims = connection.claimPrefetchBatch
+          ? await connection.claimPrefetchBatch({ requestIds: prefetchedIds, sessionId }, { signal, budgetMs: left })
+          : await Promise.all(prefetchedIds.map(requestId =>
+              connection.claimPrefetch!({ requestId, sessionId }, { signal, budgetMs: left })))
+        for (let i = 0; i < prefetchedIndices.length; i++) {
+          const index = prefetchedIndices[i]!
+          const item = items[index]!
+          const claim = claims[i]
+          if (claim?.found) {
+            resolvedByIndex.set(index, { ...item, result: claim.result, epoch: claim.epoch, revision: claim.revision })
+          } else {
+            unprefetched.push(index)
+          }
+        }
+      } catch (error) {
+        const fallbackStatus: AutomaticRecallResult = signal.aborted
+          ? { status: 'timeout' }
+          : !available() ? { status: 'unavailable' } : { status: 'timeout' }
+        if (!signal.aborted && available()) report(error)
+        for (const index of prefetchedIndices) {
+          resolvedByIndex.set(index, { ...items[index]!, result: fallbackStatus })
+        }
+        return
+      }
+      if (unprefetched.length > 0) {
+        await Promise.all(unprefetched.map(async index => {
+          const item = items[index]!
+          resolvedByIndex.set(index, await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, stepDeadlineAt, signal))
+        }))
+      }
+    })()
 
-    const resolved = await Promise.all(items.map(async ({ msg, requestId }, index) => {
-      const claimed = claimedByIndex.get(index)
-      if (claimed) return { msg, requestId, ...claimed }
-      return resolveFallbackRecall(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal)
+    const fallbackWork = Promise.all(immediateFallbackIndices.map(async index => {
+      const item = items[index]!
+      resolvedByIndex.set(index, await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, stepDeadlineAt, signal))
     }))
 
-    // Final adoption-time version guard across all messages in the step.
+    await Promise.all([claimWork, fallbackWork])
+
+    // Final adoption-time version guard across all messages in the step, preserving original [A, B, ...] order.
     const liveEpoch = owner.epoch
     const liveRevision = currentRevision
-    return resolved.map(({ msg, requestId, result, epoch, revision }) => {
+    return items.map((item, index) => {
+      const resolved = resolvedByIndex.get(index) ?? { ...item, result: { status: 'timeout' as const } }
+      const { msg, requestId, result, epoch, revision } = resolved
       if (result.status === 'hit') {
         if (!available()) return { msg, requestId, result: { status: 'unavailable' as const } }
         if (epoch !== undefined && liveEpoch !== undefined && epoch !== liveEpoch) {

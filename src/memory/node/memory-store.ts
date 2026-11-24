@@ -12,7 +12,7 @@ export { memoryScopeKey } from '../core/scope.ts'
 export type { MemorySource, MemoryFileDependency } from '../contracts/records.ts'
 
 type SourceRow = Omit<MemorySource, 'scope' | 'context' | 'project' | 'requestId' | 'questionId' | 'questionAt'> & {
-  scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null, question_at: number | null
+  seq?: number, scope: string, context: string | null, project: string | null, request_id: string | null, question_id: string | null, question_at: number | null
 }
 export const memoryHash = (text: string) => createHash('sha256').update(text).digest('hex')
 
@@ -59,11 +59,13 @@ export function openMemoryStore(file: string, now = Date.now) {
     if (invalidate) setMeta('epoch', String(next))
     return next
   }
-  const sourceById = db.prepare('SELECT * FROM memory_sources WHERE id=?')
+  const sourceById = db.prepare('SELECT rowid AS seq, * FROM memory_sources WHERE id=?')
+  const maxSourceSeqStmt = db.prepare('SELECT COALESCE(MAX(rowid), 0) AS seq FROM memory_sources')
+  const maxSourceSeq = () => Number((maxSourceSeqStmt.get() as { seq: number }).seq)
   const readSource = (id: string): MemorySource | null => {
     const row = sourceById.get(id) as SourceRow | undefined
     if (!row) return null
-    return { ...row, questionAt: row.question_at ?? null, requestId: row.request_id, questionId: row.question_id,
+    return { ...row, ...(typeof row.seq === 'number' ? { seq: row.seq } : {}), questionAt: row.question_at ?? null, requestId: row.request_id, questionId: row.question_id,
       scope: memoryScope.parse(JSON.parse(row.scope)), context: row.context ? memoryScope.parse(JSON.parse(row.context)) : null,
       project: row.project ? memoryScope.parse(JSON.parse(row.project)) : null }
   }
@@ -89,7 +91,7 @@ export function openMemoryStore(file: string, now = Date.now) {
   return { get fileRoot() {
     return file === ':memory:' ? temporaryFileRoot ??= fs.mkdtempSync(path.join(tmpdir(), 'viva-memory-files-')) : path.join(path.dirname(file), 'memory-files')
   }, db, tx, revision, epoch, nextRevision,
-    readSource, insertSource, insertManualFileSource, manualFileParents,
+    readSource, maxSourceSeq, insertSource, insertManualFileSource, manualFileParents,
     outcome, meta, setMeta, command, recordCommand,
     close() { try { db.close() } finally { if (temporaryFileRoot) fs.rmSync(temporaryFileRoot, { recursive: true, force: true }) } }
   }

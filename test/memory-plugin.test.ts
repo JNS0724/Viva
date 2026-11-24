@@ -168,16 +168,33 @@ test('the actual remember tool accepts a precise fragment from a natural request
   assert.ok(detail?.markdown.includes(text))
 })
 
-test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) and confirms memory_context on commit', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { llm, call, ask } = await setupMemory(t)
+test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) and confirms memory_context exactly once per committed turn and zero on cancelled turn (R2 P2-7)', { timeout: DSH_TIMEOUT_MS }, async t => {
+  const { llm, call, ask, agent } = await setupMemory(t)
   await call('createFile', { args: [{ operationId: randomUUID(), text: '周报每周五下午五点发给产品组。' }] })
   await call('createFile', { args: [{ operationId: randomUUID(), text: '月报每月底最后一天发给运营组。' }] })
+
+  const pid = agent.pid(), emit = ChildProcess.prototype.emit
+  const contextUsedReports: Array<{ turn: number, pushed: Array<{ text: string, names: string[] }> }> = []
+  t.mock.method(ChildProcess.prototype, 'emit', function (this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
+    if (frame?.kind === 'request' && frame.method === 'adapter') {
+      const payload = objectOf(frame.input)
+      if (payload?.method === 'reportContextUsed' && Array.isArray(payload.args)) {
+        const arg = objectOf(payload.args[0])
+        if (arg && typeof arg.turn === 'number' && Array.isArray(arg.pushed)) {
+          contextUsedReports.push({ turn: arg.turn, pushed: arg.pushed as Array<{ text: string, names: string[] }> })
+        }
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
 
   const textsOf = (request: ModelRequest) => request.messages.flatMap(msg =>
     typeof msg.content === 'string' ? [msg.content] : msg.content.map(part => part.text ?? ''),
   ).join('\n')
 
   await ask('帮我写周报')
+  assert.ok(await eventually(() => contextUsedReports.filter(r => r.turn === 1).length === 1), 'turn 1 must report memory_context once')
   const firstReq = lastForeground(llm)
   assert.ok(firstReq)
   assert.match(JSON.stringify(firstReq.system ?? ''), /memory_read/, 'L1 static rules must reside in system prompt')
@@ -186,10 +203,20 @@ test('Phase 1 L1/L2/L3 split preserves prior turn recall in history (Option A) a
   assert.match(firstText, /产品组/)
 
   await ask('帮我写月报')
+  assert.ok(await eventually(() => contextUsedReports.filter(r => r.turn === 2).length === 1), 'turn 2 must report memory_context once')
   const secondReq = lastForeground(llm)
   assert.ok(secondReq)
   const secondText = textsOf(secondReq)
   assert.match(secondText, /<memory-recall turn="1" ref="/, 'Option A: turn 1 recall message must remain preserved in history')
   assert.match(secondText, /<memory-recall turn="2" ref="/, 'turn 2 recall message must be appended cleanly')
   assert.match(secondText, /运营组/)
+  assert.equal(contextUsedReports.length, 2, 'normal 2-turn commit must emit exactly 2 memory_context reports')
+
+  // Cancelled turn before commit: abort right as prompt enters pre-step -> zero additional memory_context reports!
+  const beforeCancelCount = contextUsedReports.length
+  const cancelTurn = ask('帮我写周报并立刻取消')
+  await agent.cancel()
+  await cancelTurn.catch(() => {})
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(contextUsedReports.length, beforeCancelCount, 'cancelled turn must not emit memory_context report')
 })

@@ -502,3 +502,64 @@ test('late old-epoch attach response does not overwrite newer epoch L2 profile s
   })
   assert.deepEqual(lateSubscriberProfiles, [{ epoch: 'epoch-2', text: '## 自动整理\n- 新纪元画像' }])
 })
+
+test('TTL eviction retains empty and stale-hit delivery terminals and cancelPrefetch/clearSession release them (R2 P2-2, P2-3)', async t => {
+  let clock = 20_000
+  const pending = new Map<string, ReturnType<typeof deferred<PrefetchReply>>>()
+  let calls = 0
+  const prefetch = createMemoryPrefetchManager({
+    now: () => clock,
+    defaultBudgetMs: 80,
+    cacheTtlMs: 50,
+    callPrefetch(input) {
+      calls++
+      const d = deferred<PrefetchReply>()
+      pending.set(`${input.query}:${calls}`, d)
+      return d.promise
+    },
+  })
+  t.after(() => prefetch.close())
+  prefetch.onState(ownerState('e1', 5))
+
+  // 1. Settled empty survives TTL without falling back to found:false
+  const reqEmpty = randomUUID()
+  prefetch.startPrefetch({ requestId: reqEmpty, sessionId: 's-ttl', queryText: 'no-match' })
+  pending.get('no-match:1')!.resolve({ epoch: 'e1', revision: 5, result: { status: 'empty' } })
+  await Promise.resolve()
+
+  // 2. Settled hit invalidated by R+1 survives TTL as timeout without falling back to found:false
+  const reqStaleHit = randomUUID()
+  prefetch.startPrefetch({ requestId: reqStaleHit, sessionId: 's-ttl', queryText: 'will-stale' })
+  pending.get('will-stale:2')!.resolve({
+    epoch: 'e1', revision: 5,
+    result: { status: 'hit', text: 'STALE', partial: false, hits: [{ text: 'STALE', names: ['s'] }] },
+  })
+  await Promise.resolve()
+  prefetch.onChange({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e1', revision: 6 })
+
+  // 3. Undelivered skipped delivery can be cancelled cleanly; closed session releases its terminals
+  const reqCancelled = randomUUID()
+  const reqOtherSession = randomUUID()
+  prefetch.startPrefetch({ requestId: reqCancelled, sessionId: 's-ttl', queryText: '' })
+  prefetch.startPrefetch({ requestId: reqOtherSession, sessionId: 's-keep', queryText: '' })
+
+  clock += 200
+  prefetch.cleanupExpired()
+
+  prefetch.cancelPrefetch('s-ttl', reqCancelled)
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqCancelled, sessionId: 's-ttl' }), { found: false })
+
+  const emptyClaim = await prefetch.claimPrefetch({ requestId: reqEmpty, sessionId: 's-ttl' })
+  assert.deepEqual(emptyClaim, { found: true, result: { status: 'empty' } })
+
+  const staleClaim = await prefetch.claimPrefetch({ requestId: reqStaleHit, sessionId: 's-ttl' })
+  assert.deepEqual(staleClaim, { found: true, result: { status: 'timeout' } })
+  assert.equal(calls, 2, 'no second retrieval may run after TTL eviction of empty or stale hit')
+
+  // clearSession cleans target session only
+  const reqCloseMe = randomUUID()
+  prefetch.startPrefetch({ requestId: reqCloseMe, sessionId: 's-ttl', queryText: '' })
+  prefetch.clearSession('s-ttl')
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqCloseMe, sessionId: 's-ttl' }), { found: false })
+  assert.deepEqual(await prefetch.claimPrefetch({ requestId: reqOtherSession, sessionId: 's-keep' }), { found: true, result: { status: 'skipped' } })
+})

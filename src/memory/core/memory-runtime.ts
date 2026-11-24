@@ -14,6 +14,7 @@ import type {
   MemoryManagedFileIdentity
 } from '../contracts/file-management.ts'
 import { memoryFileMutation } from '../contracts/file-management.ts'
+import { digestPath } from '../contracts/memory-file-contract.ts'
 import type { AutomaticRecallResult, MemoryCompute, MemoryRequest, MemoryScope, MemorySpan } from '../contracts/memory-contract.ts'
 import { operationId } from '../contracts/memory-contract.ts'
 import type { MemorySourceReference } from '../contracts/service.ts'
@@ -175,16 +176,19 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
   }
   function trustedEditLocators(workspace: string, beforeMarkdown?: string): string[] {
     if (!beforeMarkdown) return []
-    const known = new Set<string>()
-    for (const note of notes?.storage.allocations() ?? []) if (note.workspace === workspace) known.add(note.path)
-    for (const reg of notes?.storage.registered() ?? []) if (reg.workspace === workspace) known.add(reg.path)
-    for (const doc of documents?.fileRegistry(workspace) ?? []) known.add(doc.path)
+    const links = memoryDocumentLinks(beforeMarkdown)
+    if (!links.length) return []
     const trusted: string[] = []
-    for (const link of memoryDocumentLinks(beforeMarkdown)) {
+    for (const link of links) {
       const targetPath = link.split('#')[0]!
-      if (known.has(targetPath)
-        || /^daily\/\d{4}-\d{2}-\d{2}\/note-[a-f0-9]{64}\.md$/u.test(targetPath)
-        || /^digest\/(?:personal|procedure|wiki)\/manual-[a-f0-9]{64}\.md$/u.test(targetPath)) {
+      if (targetPath.startsWith('daily/')) {
+        if (/^daily\/\d{4}-\d{2}-\d{2}\/note-[a-f0-9]{64}\.md$/u.test(targetPath)
+          || Boolean(notes?.storage.registeredAt(workspace, targetPath))) {
+          trusted.push(targetPath)
+        }
+      } else if (digestPath.safeParse(targetPath).success
+        && (/^digest\/(?:personal|procedure|wiki)\/manual-[a-f0-9]{64}\.md$/u.test(targetPath)
+          || Boolean(documents?.read(workspace, targetPath, { includeDisabled: true })))) {
         trusted.push(targetPath)
       }
     }
@@ -910,6 +914,13 @@ export function createMemoryRuntime({ store, resources, presentation = {}, compu
         const prev = prevRaw === undefined ? null : Number(prevRaw)
         const nextWatermark = prev !== null && Number.isFinite(prev) ? Math.max(prev, now()) : now()
         store.setMeta('profile_deleted_at', String(nextWatermark))
+        if (store.maxSourceSeq) {
+          const prevSeqRaw = store.meta('profile_deleted_source_seq')
+          const prevSeq = prevSeqRaw === undefined ? null : Number(prevSeqRaw)
+          const currentSeq = store.maxSourceSeq()
+          const nextSeq = prevSeq !== null && Number.isFinite(prevSeq) ? Math.max(prevSeq, currentSeq) : currentSeq
+          store.setMeta('profile_deleted_source_seq', String(nextSeq))
+        }
       }
       store.nextRevision()
       // Deleting the last daily file also removes its workspace from catalog discovery.
