@@ -52,6 +52,11 @@ function dreamHarness(t: TestContext, options: {
     filePath: string,
   ) => { path: string, revision: string, markdown: string } | null
   omitReadFileAtCommit?: boolean
+  readFileRevisionAtCommitOverride?: (
+    defaultRead: (workspace: string, filePath: string) => string | undefined,
+    workspace: string,
+    filePath: string,
+  ) => string | undefined
 } = {}) {
   const { dir, defer } = scratch(t, 'phase2-dream-')
   const dbPath = path.join(dir, 'memory.db')
@@ -110,7 +115,12 @@ function dreamHarness(t: TestContext, options: {
           ? options.readPhysicalOverride(defaultReadPhysical, workspace, filePath, signal)
           : defaultReadPhysical(workspace, filePath, signal),
       ...(options.omitReadFileAtCommit
-        ? { readFileRevisionAtCommit: (workspace: string, filePath: string) => defaultReadAtCommit(workspace, filePath)?.revision }
+        ? {
+            readFileRevisionAtCommit: (workspace: string, filePath: string) =>
+              options.readFileRevisionAtCommitOverride
+                ? options.readFileRevisionAtCommitOverride((w, p) => defaultReadAtCommit(w, p)?.revision, workspace, filePath)
+                : defaultReadAtCommit(workspace, filePath)?.revision,
+          }
         : {
             readFileAtCommit: (workspace: string, filePath: string) =>
               options.readFileAtCommitOverride
@@ -2109,4 +2119,42 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   await hF.retryNow()
   assert.equal(modelCallsF, callsAfterDeferF)
   assert.equal(hF.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+
+  // Part G (R9 P2-4): On a revision-only runtime, moving an observed note right AFTER readFileRevisionAtCommit confirms
+  // the live hash matches must NOT reopen disk in notes.read (reuses checkpointBatch snapshot, 0 stale/replan).
+  let d0GPath = ''
+  let d0GAbs = ''
+  let d0GBackup = ''
+  let armMoveAfterRev = false
+  const hG = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+      const rev = defaultRead(workspace, filePath)
+      if (armMoveAfterRev && filePath === d0GPath && rev) {
+        armMoveAfterRev = false
+        fs.renameSync(d0GAbs, d0GBackup)
+      }
+      return rev
+    },
+  })
+  const d0G = hG.addDailyNote([{ text: '旧日记：南京机房配置' }], { session: 's-r9-g0', day: '2026-11-15' })
+  d0GPath = d0G.path
+  d0GAbs = path.join(hG.store.fileRoot, d0G.workspace, d0G.path)
+  d0GBackup = `${d0GAbs}.moved`
+  hG.notes.markProcessed(d0G.key, d0G.note.revision)
+  hG.addDailyNote([{ text: '目标 G 无新建摘要' }], { session: 's-r9-g1', day: '2026-11-16' })
+  hG.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armMoveAfterRev = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0g', name: 'read', input: { path: d0G.path } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  await hG.run()
+  assert.equal(armMoveAfterRev, false, 'move right after revision check must have fired')
+  assert.equal(hG.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'revision-only live check must reuse checkpointBatch snapshot without reopening disk in notes.read (R9 P2-4)')
+  fs.renameSync(d0GBackup, d0GAbs)
 })

@@ -685,7 +685,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       return { kind: 'unknown' }
     }
 
-    const classifyNoteFile = (file: FileRef, batch?: MemoryDocumentReadBatch): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
+    const classifyNoteFile = (
+      file: FileRef,
+      batch?: MemoryDocumentReadBatch,
+      fallbackBatch?: MemoryDocumentReadBatch,
+    ): 'current' | 'already_processed' | 'unverifiable' | 'stale' => {
       const reg = notes.noteRegistration(file.key)
       if (!reg || reg.deleted || !reg.enabled || reg.workspace !== file.workspace || reg.path !== file.path
         || reg.revision !== file.checkpoint || reg.fileRevision !== file.revision) {
@@ -710,6 +714,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       if (live.kind === 'revision') {
         if (live.revision === undefined) return 'unverifiable'
         if (live.revision !== file.revision) return 'stale'
+        const cached = fallbackBatch?.physical(file.workspace, file.path)
+        if (cached && cached.revision === live.revision) {
+          const latest = notes.read(file.key, cached)
+          return Boolean(latest && latest.enabled && latest.workspace === file.workspace && latest.path === file.path
+            && latest.revision === file.checkpoint && latest.fileRevision === file.revision && refsCurrent(file.sources)) ? 'current' : 'stale'
+        }
       }
       return fileCurrent(file) ? 'current' : 'stale'
     }
@@ -719,6 +729,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       observedReads: readonly ObservedReadRef[] | undefined,
       observedNotes: readonly ObservedNoteRef[] | undefined,
       batch?: MemoryDocumentReadBatch,
+      fallbackBatch?: MemoryDocumentReadBatch,
     ): 'current' | 'wait' | 'unverifiable' | 'stale' => {
       let hasUnverifiable = false
       let hasWait = false
@@ -748,6 +759,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             } else if (live.kind === 'revision') {
               if (live.revision === undefined) { hasUnverifiable = true; continue }
               if (live.revision !== ref.revision) return 'stale'
+              const cached = fallbackBatch?.physical(workspace, row.path)
+              if (cached && cached.revision === live.revision) physical = cached
             }
           }
           const doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
@@ -777,6 +790,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           } else if (live.kind === 'revision') {
             if (live.revision === undefined) { hasUnverifiable = true; continue }
             if (live.revision !== obsNote.revision) return 'stale'
+            const cached = fallbackBatch?.physical(workspace, obsNote.path)
+            if (cached && cached.revision === live.revision) physical = cached
           }
         }
         const latest = notes.read(obsNote.key, physical)
@@ -839,7 +854,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 continue
               }
               // Synchronous live-disk revalidation inside the checkpoint transaction closes interleaving edits during loadFiles.
-              const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes)
+              const liveObsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes, undefined, checkpointBatch)
               if (liveObsState === 'unverifiable') {
                 unresolved.push(target)
                 continue
@@ -861,7 +876,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               else waitingForAdmission = true
               continue
             }
-            const liveFileState = classifyNoteFile(target.file)
+            const liveFileState = classifyNoteFile(target.file, undefined, checkpointBatch)
             if (liveFileState === 'unverifiable') {
               unresolved.push(target)
               continue

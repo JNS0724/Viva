@@ -44,12 +44,14 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     },
     onCancelled({ sessionId, requestId }) {
       if (adapter?.attached) {
-        adapter.peer.notify({
-          type: 'memory_owner_prefetch_cancelled',
-          protocol: MEMORY_HOST_PROTOCOL,
-          sessionId,
-          ...(requestId ? { requestId } : {}),
-        })
+        try {
+          adapter.peer.notify({
+            type: 'memory_owner_prefetch_cancelled',
+            protocol: MEMORY_HOST_PROTOCOL,
+            sessionId,
+            ...(requestId ? { requestId } : {}),
+          })
+        } catch { /* dsh is exiting */ }
       }
     },
   })

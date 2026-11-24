@@ -89,8 +89,9 @@ export function createMemoryPrefetchManager({
   const deliveryTerminals = new Map<string, DeliveryTerminal>()
   const refreshable = new Map<string, PrefetchEntry>()
   const deliveredHits = new Map<string, { entry?: PrefetchEntry, expiresAt: number }>()
-  const cancelledUnclaimed = new Map<string, number>()
-  const cancelledAfterClaim = new Map<string, number>()
+  // Bounded idempotent cancellation sets (no 60s expiry; freed by clearSession, close, startPrefetch, or LRU cap).
+  const cancelledUnclaimed = new Map<string, true>()
+  const cancelledAfterClaim = new Map<string, true>()
 
   function cleanupExpired(at = now()) {
     for (const [key, entry] of refreshable) {
@@ -98,12 +99,6 @@ export function createMemoryPrefetchManager({
     }
     for (const [key, record] of deliveredHits) {
       if (record.expiresAt <= at) deliveredHits.delete(key)
-    }
-    for (const [key, expiresAt] of cancelledUnclaimed) {
-      if (expiresAt <= at) cancelledUnclaimed.delete(key)
-    }
-    for (const [key, expiresAt] of cancelledAfterClaim) {
-      if (expiresAt <= at) cancelledAfterClaim.delete(key)
     }
     for (const [key, entry] of entries) {
       if (entry.settled && entry.expiresAt <= at) {
@@ -125,22 +120,14 @@ export function createMemoryPrefetchManager({
     }
   }
 
-  function isCancelledKey(key: string, at = now()): boolean {
-    const u = cancelledUnclaimed.get(key)
-    if (u !== undefined && u > at) return true
-    const a = cancelledAfterClaim.get(key)
-    if (a !== undefined && a > at) return true
-    return false
+  function isCancelledKey(key: string): boolean {
+    return cancelledUnclaimed.has(key) || cancelledAfterClaim.has(key)
   }
 
-  function cancelledIdsForSession(sessionId: string, excludeRequestId?: string, at = now()): string[] {
+  function cancelledIdsForSession(sessionId: string, excludeRequestId?: string): string[] {
     const prefix = `${sessionId}\0`
     const ids: string[] = []
-    for (const [key, expiresAt] of cancelledAfterClaim) {
-      if (expiresAt <= at) {
-        cancelledAfterClaim.delete(key)
-        continue
-      }
+    for (const key of cancelledAfterClaim.keys()) {
       if (!key.startsWith(prefix)) continue
       const reqId = key.slice(prefix.length)
       if (reqId && reqId !== excludeRequestId) ids.push(reqId)
@@ -376,15 +363,7 @@ export function createMemoryPrefetchManager({
     const key = prefetchKey(sessionId, requestId)
     const entry = entries.get(key)
     if (!entry) {
-      const cancelledUntil = cancelledUnclaimed.get(key)
-      if (cancelledUntil !== undefined) {
-        cancelledUnclaimed.delete(key)
-        if (cancelledUntil > now()) {
-          return { claim: { found: true, result: { status: 'skipped' } } }
-        }
-      }
-      const afterClaimUntil = cancelledAfterClaim.get(key)
-      if (afterClaimUntil !== undefined && afterClaimUntil > now()) {
+      if (cancelledUnclaimed.has(key) || cancelledAfterClaim.has(key)) {
         return { claim: { found: true, result: { status: 'skipped' } } }
       }
       const terminal = deliveryTerminals.get(key)
@@ -573,7 +552,6 @@ export function createMemoryPrefetchManager({
 
   function cancelPrefetch(sessionId: string, requestId: string) {
     const key = prefetchKey(sessionId, requestId)
-    const expiresAt = now() + cacheTtlMs
     const delivered = deliveredHits.get(key)
     if (delivered?.entry) delivered.entry.cancelled = true
     const wasDelivered = deliveredHits.delete(key) || refreshable.has(key)
@@ -597,13 +575,11 @@ export function createMemoryPrefetchManager({
       refreshEntry.cancelled = true
       refreshable.delete(key)
     }
-    if (wasDelivered) {
-      boundedSet(cancelledAfterClaim, key, expiresAt)
-    } else if (!activeClaim) {
-      // Retain a bounded cancellation record so a delayed claim consumes terminal `skipped` without adapter fallback.
-      boundedSet(cancelledUnclaimed, key, expiresAt)
+    if (wasDelivered || activeClaim) {
+      boundedSet(cancelledAfterClaim, key, true)
     } else {
-      boundedSet(cancelledAfterClaim, key, expiresAt)
+      // Retain a bounded idempotent cancellation record so delayed or replayed claims return terminal `skipped`.
+      boundedSet(cancelledUnclaimed, key, true)
     }
     onCancelled?.({ sessionId, requestId })
   }

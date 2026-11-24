@@ -83,36 +83,33 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   let cachedProfile: MemoryProfileSnapshot | undefined
   let currentRevision: number | undefined
   const pendingContextConfirmations = new Map<string, { session: string, turn: number, pushed: Array<{ text: string, names: string[] }> }>()
-  const CANCELLED_REQUEST_TTL_MS = 60_000
   const MAX_CANCELLED_REQUESTS = 4096
-  const cancelledRequests = new Map<string, number>()
-  const sessionCancelSeq = new Map<string, number>()
+  const cancelledRequests = new Map<string, true>()
+  const activeStepsBySession = new Map<string, Set<{ cancelled: boolean }>>()
   const cancelKey = (sessionId: string, requestId: string) => `${sessionId}\0${requestId}`
   function recordCancelledRequest(sessionId: string, requestId: string) {
     const key = cancelKey(sessionId, requestId)
-    const now = Date.now()
     if (cancelledRequests.has(key)) cancelledRequests.delete(key)
     else if (cancelledRequests.size >= MAX_CANCELLED_REQUESTS) {
       const oldest = cancelledRequests.keys().next()
       if (!oldest.done) cancelledRequests.delete(oldest.value)
     }
-    cancelledRequests.set(key, now + CANCELLED_REQUEST_TTL_MS)
+    cancelledRequests.set(key, true)
+  }
+  function clearCancelledForSession(sessionId: string) {
+    const prefix = `${sessionId}\0`
+    for (const key of cancelledRequests.keys()) {
+      if (key.startsWith(prefix)) cancelledRequests.delete(key)
+    }
   }
   function ingestCancelledRequests(sessionId: string, ids?: readonly string[]) {
     if (!ids?.length) return
     for (const id of ids) recordCancelledRequest(sessionId, id)
   }
-  function isRequestCancelled(sessionId: string, requestId: string | undefined, startSeq: number): boolean {
-    if ((sessionCancelSeq.get(sessionId) ?? 0) !== startSeq) return true
+  function isRequestCancelled(sessionId: string, requestId: string | undefined, stepToken: { cancelled: boolean }): boolean {
+    if (stepToken.cancelled) return true
     if (!requestId) return false
-    const key = cancelKey(sessionId, requestId)
-    const expiresAt = cancelledRequests.get(key)
-    if (expiresAt === undefined) return false
-    if (expiresAt <= Date.now()) {
-      cancelledRequests.delete(key)
-      return false
-    }
-    return true
+    return cancelledRequests.has(cancelKey(sessionId, requestId))
   }
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined
@@ -158,8 +155,15 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     }
     const cancelMsg = memoryOwnerPrefetchCancelled.safeParse(raw)
     if (cancelMsg.success) {
-      if (cancelMsg.data.requestId) recordCancelledRequest(cancelMsg.data.sessionId, cancelMsg.data.requestId)
-      else sessionCancelSeq.set(cancelMsg.data.sessionId, (sessionCancelSeq.get(cancelMsg.data.sessionId) ?? 0) + 1)
+      if (cancelMsg.data.requestId) {
+        recordCancelledRequest(cancelMsg.data.sessionId, cancelMsg.data.requestId)
+      } else {
+        const active = activeStepsBySession.get(cancelMsg.data.sessionId)
+        if (active) {
+          for (const token of active) token.cancelled = true
+        }
+        clearCancelledForSession(cancelMsg.data.sessionId)
+      }
       return
     }
     const changeMsg = memoryOwnerChange.safeParse(raw)
@@ -189,7 +193,9 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
 
   ctx.on('session/created', observe)
   ctx.on('session/disposed', session => {
-    clearPendingForSession(String(session.id))
+    const id = String(session.id)
+    clearPendingForSession(id)
+    clearCancelledForSession(id)
     intake.release(session)
   })
   ctx.on('session/event', (session, event) => {
@@ -261,9 +267,9 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     messages: ReadonlyArray<{ id: string, text: string }>,
     stepDeadlineAt: number,
     signal: AbortSignal,
+    stepToken: { cancelled: boolean },
   ): Promise<Array<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }>> {
     const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
-    const startSessionCancelSeq = sessionCancelSeq.get(sessionId) ?? 0
     const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
     type ResolvedItem = {
       msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult,
@@ -274,7 +280,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     // missing claim starts live fallback immediately without waiting for slow sibling prefetches.
     const initial = await Promise.all(items.map(async (item): Promise<ResolvedItem> => {
       const { msg, requestId } = item
-      if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+      if (isRequestCancelled(sessionId, requestId, stepToken)) {
         return { msg, requestId, result: { status: 'skipped' } }
       }
       if (requestId && (connection.claimPrefetch || connection.claimPrefetchBatch)) {
@@ -285,7 +291,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
             ? await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: left })
             : (await connection.claimPrefetchBatch!({ requestIds: [requestId], sessionId }, { signal, budgetMs: left }))[0]
           ingestCancelledRequests(sessionId, claim?.cancelledRequestIds)
-          if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+          if (isRequestCancelled(sessionId, requestId, stepToken)) {
             return { msg, requestId, result: { status: 'skipped' } }
           }
           if (claim?.found) {
@@ -296,7 +302,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
             }
           }
         } catch (error) {
-          if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+          if (isRequestCancelled(sessionId, requestId, stepToken)) {
             return { msg, requestId, result: { status: 'skipped' } }
           }
           const fallbackStatus: AutomaticRecallResult = signal.aborted
@@ -306,7 +312,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
           return { msg, requestId, result: fallbackStatus }
         }
       }
-      if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+      if (isRequestCancelled(sessionId, requestId, stepToken)) {
         return { msg, requestId, result: { status: 'skipped' } }
       }
       return resolveFallbackRecall(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal)
@@ -317,7 +323,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const checkEpoch = owner.epoch
     const checkRevision = currentRevision
     const refreshed = await Promise.all(initial.map(async (item): Promise<ResolvedItem> => {
-      if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+      if (isRequestCancelled(sessionId, item.requestId, stepToken)) {
         return { ...item, result: { status: 'skipped' } }
       }
       if (item.result.status !== 'hit') return item
@@ -333,7 +339,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
             try {
               const retryClaim = await connection.refreshPrefetch({ requestId: item.requestId, sessionId }, { signal, budgetMs: left })
               ingestCancelledRequests(sessionId, retryClaim?.cancelledRequestIds)
-              if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+              if (isRequestCancelled(sessionId, item.requestId, stepToken)) {
                 return { ...item, result: { status: 'skipped' }, retried: true }
               }
               if (retryClaim?.found) {
@@ -344,7 +350,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
                 }
               }
             } catch (error) {
-              if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+              if (isRequestCancelled(sessionId, item.requestId, stepToken)) {
                 return { ...item, result: { status: 'skipped' }, retried: true }
               }
               const fallbackStatus: AutomaticRecallResult = signal.aborted
@@ -354,7 +360,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
               return { ...item, result: fallbackStatus, retried: true }
             }
           }
-          if (isRequestCancelled(sessionId, item.requestId, startSessionCancelSeq)) {
+          if (isRequestCancelled(sessionId, item.requestId, stepToken)) {
             return { ...item, result: { status: 'skipped' }, retried: true }
           }
           const retryResult = await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, refreshDeadline, signal)
@@ -368,7 +374,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     const liveEpoch = owner.epoch
     const liveRevision = currentRevision
     return refreshed.map(({ msg, requestId, result, epoch, revision }) => {
-      if (isRequestCancelled(sessionId, requestId, startSessionCancelSeq)) {
+      if (isRequestCancelled(sessionId, requestId, stepToken)) {
         return { msg, requestId, result: { status: 'skipped' as const } }
       }
       if (result.status === 'hit') {
@@ -385,35 +391,47 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   }
 
   ctx.on('agent/pre-step', async ({ agent, turn, signal, modelSelection }, next) => {
-    const decision = await next()
-    if (decision.kind === 'reject' || signal.aborted) return decision
-    route = { provider: modelSelection.provider, model: modelSelection.model }
-    publishRoute()
-    const messages = humanMessages(decision.messages)
-    // Ordinary tool continuation steps keep the adopted snapshot frozen (no re-query, no deletion).
-    if (!messages.length) return decision
-    if (available()) void intake.receive(agent.session, decision.messages, turn).catch(report)
-
     const sessionId = String(agent.session.id)
-    const stepDeadlineAt = Date.now() + DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs
-    const resolved = await resolveRecallForMessages(sessionId, agent.session.header.cwd, turn, messages, stepDeadlineAt, signal)
-    if (signal.aborted) return decision
-
-    // Append L3 recall messages in original message order [A, B, ...] without modifying prior turns' nodes.
-    const appended = [...decision.messages]
-    for (const { msg, requestId, result } of resolved) {
-      const recallText = formatAutomaticRecallMessage({ turn, ref: requestId ?? msg.id, result })
-      if (!recallText) continue
-      const recallMessage = createUserMessage({
-        content: [{ type: 'text', text: recallText }],
-        source: { kind: 'viva-memory', form: 'recall' },
-      })
-      appended.push(recallMessage)
-      if (result.status === 'hit' && result.hits.length > 0) {
-        pendingContextConfirmations.set(String(recallMessage.id), { session: sessionId, turn, pushed: result.hits })
-      }
+    const stepToken = { cancelled: false }
+    let activeSteps = activeStepsBySession.get(sessionId)
+    if (!activeSteps) {
+      activeSteps = new Set()
+      activeStepsBySession.set(sessionId, activeSteps)
     }
-    return appended.length === decision.messages.length ? decision : { ...decision, messages: appended }
+    activeSteps.add(stepToken)
+    try {
+      const decision = await next()
+      if (decision.kind === 'reject' || signal.aborted || stepToken.cancelled) return decision
+      route = { provider: modelSelection.provider, model: modelSelection.model }
+      publishRoute()
+      const messages = humanMessages(decision.messages)
+      // Ordinary tool continuation steps keep the adopted snapshot frozen (no re-query, no deletion).
+      if (!messages.length) return decision
+      if (available()) void intake.receive(agent.session, decision.messages, turn).catch(report)
+
+      const stepDeadlineAt = Date.now() + DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs
+      const resolved = await resolveRecallForMessages(sessionId, agent.session.header.cwd, turn, messages, stepDeadlineAt, signal, stepToken)
+      if (signal.aborted || stepToken.cancelled) return decision
+
+      // Append L3 recall messages in original message order [A, B, ...] without modifying prior turns' nodes.
+      const appended = [...decision.messages]
+      for (const { msg, requestId, result } of resolved) {
+        const recallText = formatAutomaticRecallMessage({ turn, ref: requestId ?? msg.id, result })
+        if (!recallText) continue
+        const recallMessage = createUserMessage({
+          content: [{ type: 'text', text: recallText }],
+          source: { kind: 'viva-memory', form: 'recall' },
+        })
+        appended.push(recallMessage)
+        if (result.status === 'hit' && result.hits.length > 0) {
+          pendingContextConfirmations.set(String(recallMessage.id), { session: sessionId, turn, pushed: result.hits })
+        }
+      }
+      return appended.length === decision.messages.length ? decision : { ...decision, messages: appended }
+    } finally {
+      activeSteps.delete(stepToken)
+      if (activeSteps.size === 0) activeStepsBySession.delete(sessionId)
+    }
   })
 
   registerMemoryTools(ctx, async (request, agent, signal) => {
@@ -447,6 +465,8 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
     if (config.host) port.off('message', receiveDiagnostic)
     lifetime.abort()
     unsubscribe()
+    cancelledRequests.clear()
+    activeStepsBySession.clear()
     try {
       await owner.close()
       await intake.drain()

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { EventEmitter } from 'node:events'
 import { createMemoryPrefetchManager } from '../src/backend/memory-prefetch.ts'
+import { createDesktopMemoryOwner } from '../src/backend/desktop-memory-owner.ts'
 import { continueText, extractFeedContinuationSupplement } from '../src/shared/feed-continuation.ts'
 import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskRequestSource } from '../src/shared/request-routing/task-header.ts'
@@ -1425,4 +1426,74 @@ test('cancel before claim, settled-sibling cancel before adoption, late valid-hi
       `expired uncancelled refresh must consistently return timeout (cleanupFirst=${runCleanupFirst}) (R8 P2-3)`,
     )
   }
+
+  // Part E (R9 P2-1): Cancelled request stays idempotent across replayed claims AND past 60s retention window.
+  let cIdem = 50_000
+  const prefetchIdem = createMemoryPrefetchManager({
+    now: () => cIdem,
+    defaultBudgetMs: 100,
+    cacheTtlMs: 60_000,
+    async callPrefetch() {
+      return { epoch: 'e-idem', revision: 1, result: { status: 'hit', text: 'SHOULD_SKIP', partial: false, hits: [{ text: 'SHOULD_SKIP', names: ['i'] }] } }
+    },
+  })
+  t.after(() => prefetchIdem.close())
+  prefetchIdem.onState(ownerState('e-idem', 1))
+  const reqIdem = randomUUID()
+  prefetchIdem.startPrefetch({ requestId: reqIdem, sessionId: 'sess-idem', queryText: 'cancelled long ago' })
+  prefetchIdem.cancelPrefetch('sess-idem', reqIdem)
+  cIdem += 60_001
+  prefetchIdem.cleanupExpired()
+  assert.deepEqual(
+    await prefetchIdem.claimPrefetch({ requestId: reqIdem, sessionId: 'sess-idem' }),
+    { found: true, result: { status: 'skipped' } },
+    'delayed claim after 60_001ms must still return skipped (R9 P2-1)',
+  )
+  assert.deepEqual(
+    await prefetchIdem.claimPrefetch({ requestId: reqIdem, sessionId: 'sess-idem' }),
+    { found: true, result: { status: 'skipped' } },
+    'replayed claim for cancelled ID must remain idempotent skipped (R9 P2-1)',
+  )
+
+  // Part F (R9 P2-2): Clearing a session while pre-step is awaiting next() must cancel the step with 0 fallback RPCs.
+  const holdNext = deferred<{ kind: 'enter', messages: any[] }>()
+  const reqClear = randomUUID()
+  const msgClear = createUserMessage({ content: [{ type: 'text', text: withTaskRequestSource('clear during next', reqClear).text }], source: { kind: 'user' } })
+  const fakeSessClear = { id: 'sess-r9-clear', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const preStepClearPromise = preStepHandlers[0]!({
+    agent: { session: fakeSessClear },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, () => holdNext.promise)
+  // Clear session BEFORE next() resolves!
+  hostPrefetch.clearSession('sess-r9-clear')
+  holdNext.resolve({ kind: 'enter', messages: [msgClear] })
+  const clearDecision = await preStepClearPromise
+  assert.equal(fallbackCalls, 0, 'session clear during await next() must issue 0 automaticRecall fallback RPCs (R9 P2-2)')
+  assert.equal(clearDecision.messages.length, 1, 'cleared pre-step must not inject recall')
+
+  // Part G (R9 P2-3): Disconnected DSH IPC before exit must NOT cause cancelPrefetch or clearSessionPrefetches to throw.
+  const ownerR9 = createDesktopMemoryOwner({ root: path.join(dir, 'owner-r9'), dailyNotes: true }, {})
+  const dshExit = deferred<void>()
+  let sendDisconnected = false
+  const linkR9 = ownerR9.bindDsh(frame => {
+    if (sendDisconnected) throw new Error('IPC channel closed')
+    const parsed = ownerRpcFrame(frame)
+    if (parsed?.kind === 'result') return
+  }, dshExit.promise, () => undefined)
+  // Attach the mock adapter cleanly, then flip sendDisconnected = true before process exit!
+  linkR9.receive({
+    type: MEMORY_OWNER_RPC,
+    kind: 'request',
+    id: 'attach-r9',
+    method: 'attach',
+    input: { protocol: MEMORY_HOST_PROTOCOL, root: path.join(dir, 'owner-r9'), hostNamespace: 'viva' },
+  })
+  await new Promise(resolve => setTimeout(resolve, 15))
+  sendDisconnected = true
+  assert.doesNotThrow(() => ownerR9.cancelPrefetch('sess-dc', randomUUID()), 'cancelPrefetch must not throw on disconnected DSH IPC (R9 P2-3)')
+  assert.doesNotThrow(() => ownerR9.clearSessionPrefetches('sess-dc'), 'clearSessionPrefetches must not throw on disconnected DSH IPC (R9 P2-3)')
+  dshExit.resolve()
+  await ownerR9.close()
 })
