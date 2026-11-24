@@ -13,7 +13,7 @@ const titleOf = (item: MemoryFileSummary) => item.title || t(item.identity.kind 
 
 function fileMeta(item: MemoryFileSummary) {
   const kind = t(item.identity.kind === 'daily' ? 'memory-files.daily' : 'memory-files.digest')
-  const status = item.hasProjection === false || item.identity.kind === 'digest' && !item.enabled ? t('memory-files.stopped') : ''
+  const status = item.enabled ? '' : t('memory-files.stopped')
   return h('p', { class: 'memory-meta memory-file-meta', text: [kind, item.day, status].filter(Boolean).join(' · ') })
 }
 
@@ -47,48 +47,30 @@ function bodyOf(markdown: string) {
 }
 
 function detailsOf(detail: MemoryFileDetailView, busy: boolean, handlers: Handlers) {
-  const snapshot = detail.stoppedSnapshot
-  const markdown = snapshot ? snapshot.markdown : detail.markdown
-  const id = snapshot?.restrictionId
-  const action = id ? 'restore-restriction'
-    : detail.identity.kind === 'daily' ? detail.actions.stop ? 'stop' : null
-      : detail.hasProjection === false ? null : detail.enabled ? 'stop' : 'restore'
-  const enable = action === 'restore' || action === 'restore-restriction'
-  const restrictions = detail.restrictions ?? []
-  const body = markdown ? bodyOf(markdown).trim() : ''
+  const enable = !detail.enabled
+  const body = bodyOf(detail.markdown).trim()
   return h('article', { class: 'profile-section', 'aria-labelledby': 'memory-file-title' },
     h('div', { class: 'memory-copy' },
       h('h4', { class: 'profile-heading memory-text', id: 'memory-file-title', text: titleOf(detail) }), fileMeta(detail)),
-    snapshot ? h('p', { class: 'help', text: t('memory-files.stopped.snapshot') }) : null,
-    body ? renderMarkdown(body, { openLink: handlers.openLink }) : h('p', { class: 'help',
-      text: t(snapshot ? 'memory-files.stopped.body.unavailable' : 'memory-files.empty.body') }),
-    sourcesOf(snapshot?.sources ?? detail.sources, handlers),
+    body ? renderMarkdown(body, { openLink: handlers.openLink }) : h('p', { class: 'help', text: t('memory-files.empty.body') }),
+    sourcesOf(detail.sources, handlers),
     h('div', { class: 'memory-actions' },
       canEditMemoryFile(detail) ? h('button', { class: 'link-btn', name: 'memory-file-edit', type: 'button', disabled: busy,
         text: t('memory-files.editor.edit'), onClick: () => handlers.startMemoryFileEditor(detail) }) : null,
-      action && detail.actions.setEnabled ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
-        text: t(id ? 'memory-files.restore.range' : enable ? 'memory-files.restore' : 'profile-panel.forget.memory'),
-        onClick: () => handlers.setManagedMemoryEnabled(detail, enable, id) }) : null,
-      !id && detail.actions.undo ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
+      detail.actions.setEnabled ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
+        text: t(enable ? 'memory-files.restore' : 'profile-panel.forget.memory'),
+        onClick: () => handlers.setManagedMemoryEnabled(detail, enable) }) : null,
+      detail.actions.undo ? h('button', { class: 'link-btn', type: 'button', disabled: busy,
         text: t('profile-panel.memory.changes.undo'), onClick: () => handlers.undoManagedMemory(detail) }) : null,
       canForgetMemoryFile(detail) ? h('button', { class: 'link-btn', name: 'memory-file-forget', 'data-tone': 'danger', type: 'button', disabled: busy,
-        text: t('memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null),
-    snapshot ? h('p', { class: 'help', text: t('memory-files.restore.range.help') }) :
-      restrictions.length ? h('div', { class: 'profile-section' },
-        h('h5', { class: 'profile-heading', text: t('memory-files.stopped.ranges') }),
-        h('div', { class: 'memory-actions' }, restrictions.map((restriction, index) => h('button', {
-          class: 'link-btn', type: 'button', text: t('memory-files.open.range', { number: index + 1 }), disabled: busy,
-          onClick: () => handlers.showMemoryFile({ identity: detail.identity, restrictionId: restriction.id }),
-        })))) : null)
+        text: t('memory-files.forget'), onClick: () => handlers.askManagedMemoryForget(detail) }) : null))
 }
 
 function detailView(files: State['memory']['files'], handlers: Handlers) {
-  const selection = files.selection!
   return h('div', { class: 'profile-section', 'data-memory-files-view': 'detail' },
     h('div', { class: 'memory-actions' },
       h('button', { class: 'link-btn', name: 'memory-file-back', type: 'button',
-        text: t(selection.restrictionId ? 'memory-files.current' : 'memory-files.back'),
-        onClick: () => handlers.showMemoryFile(selection.restrictionId ? { identity: selection.identity } : null) })),
+        text: t('memory-files.back'), onClick: () => handlers.showMemoryFile(null) })),
     files.writeError ? h('p', { class: 'form-error', role: 'alert', text: files.writeError }) : null,
     files.detail ? detailsOf(files.detail, files.writing, handlers)
       : files.detailError ? h('div', { class: 'profile-section' },

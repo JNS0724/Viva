@@ -44,8 +44,8 @@ function fakeDsh(agent: object) {
   return child
 }
 
-function bridgeWith({ failClose = false, slow = null as Promise<void> | null, allowSession }: {
-  failClose?: boolean, slow?: Promise<void> | null, allowSession?: Parameters<typeof createAcpBridge>[0]['allowSession'],
+function bridgeWith({ failClose = false, slow = null as Promise<void> | null }: {
+  failClose?: boolean, slow?: Promise<void> | null,
 } = {}) {
   const log: string[][] = []
   const agent = {
@@ -70,7 +70,7 @@ function bridgeWith({ failClose = false, slow = null as Promise<void> | null, al
     async authenticate() { return {} },
     async prompt(params: { sessionId: string }) { log.push(['prompt', params.sessionId]); return { stopReason: 'end_turn' } },
   }
-  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', spawnFn: (() => fakeDsh(agent)) as never, emit: () => {}, allowSession })
+  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fake/dsh', profile: 'acp', cwd: '/work', spawnFn: (() => fakeDsh(agent)) as never, emit: () => {} })
   return { log, bridge }
 }
 
@@ -147,24 +147,4 @@ test('the session left failing to close does not undo going over: the agent is o
   const went = await bridge.switchSession(OLDER, '/work', { exactly: true })
   assert.deepEqual([went.sessionId, went.resumed], [OLDER, true])
   bridge.dispose()
-})
-
-test('cancelling a report during bridge admission prevents either report transport', async () => {
-  let allow!: (accepted: boolean) => void, enter!: () => void
-  const gate = new Promise<boolean>(resolve => { allow = resolve })
-  const entered = new Promise<void>(resolve => { enter = resolve })
-  let waiting = false, held = true
-  const { bridge, log } = bridgeWith({ allowSession: () => { if (!waiting) return true; enter(); return gate } })
-  await bridge.start()
-  try {
-    waiting = true
-    const steer = bridge.deliverReport(CURRENT, 'cancelled-report', 'report-token', 'Forgotten body', () => held)
-    await entered
-    const prompt = assert.rejects(bridge.prompt('Forgotten body', [], { request: false, held: () => held }))
-    held = false
-    allow(true)
-    assert.equal(await steer, 'unavailable')
-    await prompt
-    assert.equal(log.some(([method]) => method === 'prompt'), false)
-  } finally { bridge.dispose() }
 })

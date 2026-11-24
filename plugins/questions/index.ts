@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-user-questions'
 import { createQuestionChannel } from './lib/channel.ts'
 
 export const name = 'viva-questions'
+export const inject = ['agents']
 export const Config = z.object({})
 
 const log = (message: string) => process.stderr.write(`[${name}] ${message}\n`)
@@ -26,5 +27,8 @@ export function apply(ctx: Context, _config: object, port: NodeJS.Process = proc
   // The channel must not keep dsh running once its input closes.
   port.channel?.unref?.()
   ctx.effect(() => () => channel.close(), 'questions channel')
-  ctx.on('user-questions/request', (request) => channel.ask(request))
+  ctx.on('user-questions/request', request => {
+    const boundary = request.agent && ctx.agents.turnBoundaryOf(request.agent.session)
+    return channel.ask(request, boundary?.openTurnStartSeq != null ? boundary.lastTurn : undefined)
+  })
 }

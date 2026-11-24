@@ -16,7 +16,7 @@ test('unverified daily edits never enter later note requests or become accepted,
   function open() {
     const store=openMemoryStore(path,now),resources=openMemoryRuntimeResources({store,now})
     const runtime=createMemoryRuntime({ ...offlineMemorySafety,store,resources,now,dailyNotes:{noteInterval:1,timezone:'UTC'},
-      route:()=>({provider:'fake',model:'fake'}),quiesce:async()=>{},changed:()=>{},compute(job){
+      route:()=>({provider:'fake',model:'fake'}),changed:()=>{},compute(job){
         if(job.stage!=='note')return null
         calls.push(job)
         const data=JSON.parse(job.input) as {existing?:{markdown:string},turns:Array<{user:Array<{text:string}>}>}

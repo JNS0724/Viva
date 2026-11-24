@@ -101,19 +101,6 @@ test('an Updates send settles its pending message when the kept conversation reo
   }
 })
 
-test('a retired feed identity clears pending text and a late successful admission cannot restore it', async () => {
-  const receipt = deferred<void>(), admitted: boolean[] = []
-  const h = harness({ prompt: () => receipt.promise })
-  h.actions.ask('derived old result', { feedItemId: 'feed-1', images: [{ id: 'independent-image' }], admitted: ok => admitted.push(ok) })
-  h.dispatch({ type: 'feed_erased', ids: ['feed-1'] })
-  assert.equal(h.state().messages[0]?.text, '')
-  assert.deepEqual(h.state().messages[0]?.images, [{ id: 'independent-image' }])
-  receipt.resolve(undefined)
-  await settle()
-  assert.deepEqual(admitted, [false])
-  assert.deepEqual(h.state().messages, [])
-  assert.equal(h.actions.ask('late island draft', { feedItemId: 'feed-1' }), false)
-})
 
 test('directory, rewind and settings transitions refuse new questions and interjections without adding unsent words', () => {
   for (const type of ['workdir_switching', 'rewind_busy', 'settings_busy'] as const) {

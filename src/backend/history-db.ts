@@ -1,5 +1,5 @@
 import { t } from '../shared/i18n/translate.ts'
-import { randomUUID, createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -8,10 +8,6 @@ import { reviewQueries } from './history-review.ts'
 import { APP_DB_PRAGMAS, transaction as inTransaction } from './app-db.ts'
 import { assertId, autoTitle, normalizeMessage, normalizeMessages, normalizeTitle, type Receipt, type StoredMessage } from './history-schema.ts'
 import { CONVERSATION_WINDOW_MESSAGES } from '../shared/renderer-sync.ts'
-import { createHistoryGeneratedCopies } from './history-generated-copies.ts'
-import { createHistoryMemoryRanges } from './history-memory-ranges.ts'
-import type { MemoryHostErasureRange } from '../memory/contracts/service.ts'
-import { memoryProvenanceSchema, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { retainedMessagePositions, retainedMessageBoundary } from '../shared/message-order.ts'
 
 const PAGE_SIZE = 50
@@ -74,6 +70,7 @@ const SCHEMA = `
     images TEXT,
     source_id TEXT,
     source_key TEXT,
+    foreground_only INTEGER NOT NULL DEFAULT 0,
     UNIQUE (conversation_id, seq)
   );
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5 (
@@ -89,11 +86,9 @@ const SCHEMA = `
     INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO messages_fts (rowid, text) VALUES (new.id, new.text);
   END;
-  CREATE TABLE IF NOT EXISTS memory_erased_sources (id TEXT PRIMARY KEY);
   -- Host-owned admission receipts. Renderer saves cannot change delivery authority.
   CREATE TABLE IF NOT EXISTS prompt_deliveries (source TEXT PRIMARY KEY,state TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS memory_erased_sessions (id TEXT PRIMARY KEY);
-  CREATE TABLE IF NOT EXISTS memory_erased_task_briefs (session TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(session,digest));
+  CREATE TABLE IF NOT EXISTS native_session_projects (session TEXT PRIMARY KEY, scope TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS id_counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
   -- A background task's result the model read, as the record its conversation shows (system-design §11.5).
   -- Only the backend writes these, with the report done (report-records.ts); the window's saves never touch them.
@@ -105,7 +100,6 @@ const SCHEMA = `
     at INTEGER NOT NULL,
     text TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS memory_report_proofs (report_id TEXT PRIMARY KEY, memory TEXT NOT NULL);
   CREATE INDEX IF NOT EXISTS report_records_conversation ON report_records (conversation_id, after_seq);
   -- A conversation not stored yet (a blank topic) may already have a record, so no foreign key: they go with it.
   CREATE TRIGGER IF NOT EXISTS report_records_gone AFTER DELETE ON conversations BEGIN
@@ -135,7 +129,7 @@ type Statement = { get: (...params: any[]) => any, all: (...params: any[]) => an
 /** An incremental O(1) mutation applied by the backend foreground history writer. */
 export type HistoryMessageMutation =
   | { kind: 'append_user', message: StoredMessage }
-  | { kind: 'upsert_assistant', message: StoredMessage, beforeKey?: string }
+  | { kind: 'upsert_assistant', message: StoredMessage, beforeKey?: string, foregroundOnly?: boolean }
   | { kind: 'remove_stream', key: string }
   | { kind: 'append_note', message: StoredMessage }
   | { kind: 'attach_receipt', receipt: Receipt, key?: string }
@@ -233,13 +227,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   inTransaction(db, () => {
     const names = new Set(db.prepare('PRAGMA table_info(messages)').all().map(row => row.name))
     if (!names.has('source_key')) db.exec('ALTER TABLE messages ADD COLUMN source_key TEXT')
+    if (!names.has('foreground_only')) db.exec('ALTER TABLE messages ADD COLUMN foreground_only INTEGER NOT NULL DEFAULT 0')
     if (!names.has('source_id')) db.exec('ALTER TABLE messages ADD COLUMN source_id TEXT')
   })
   db.exec(COUNT_MESSAGE_IDS)
   db.exec('CREATE INDEX IF NOT EXISTS messages_source ON messages(source_id) WHERE source_id IS NOT NULL')
   db.exec('CREATE INDEX IF NOT EXISTS messages_key ON messages(conversation_id, source_key) WHERE source_key IS NOT NULL')
-  const memoryRanges = createHistoryMemoryRanges(db)
-  const generated = createHistoryGeneratedCopies(db, memoryRanges.affectsProof)
   const reviewing = reviewQueries(db, now)
   const reading = readerQueries(db, reviewing.reviewTopic)
 
@@ -253,7 +246,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       ON CONFLICT (id) DO UPDATE SET title = :title, updated_at = :updatedAt,
         session_id = :sessionId, mode = :mode, model = :model, cwd = :cwd`),
     topicOf: db.prepare('SELECT topic_id FROM conversations WHERE id = ?'),
-    storedMessage: db.prepare('SELECT role, text, images, source_key, source_id, session_id FROM messages WHERE conversation_id = ? AND seq = ?'),
+    storedMessage: db.prepare('SELECT role, text, images, source_key, source_id, session_id, foreground_only FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropMessage: db.prepare('DELETE FROM messages WHERE conversation_id = ? AND seq = ?'),
     dropStar: db.prepare('DELETE FROM stars WHERE conversation_id = ? AND seq = ?'),
     messageById: db.prepare(`SELECT m.id, m.conversation_id, m.seq, c.deleted_at FROM messages m
@@ -282,9 +275,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     updateReceipt: db.prepare('UPDATE messages SET receipt = ? WHERE conversation_id = ? AND seq = ?'),
     updateMessageSession: db.prepare('UPDATE messages SET session_id = ? WHERE conversation_id = ? AND source_id = ?'),
     updateTitle: db.prepare('UPDATE conversations SET title = ? WHERE id = ? AND title_custom = 0'),
-    erasedSource: db.prepare('SELECT 1 FROM memory_erased_sources WHERE id=?'),
-    erasedSession: db.prepare('SELECT 1 FROM memory_erased_sessions WHERE id=?'),
-    erasedTaskBrief: db.prepare('SELECT 1 FROM memory_erased_task_briefs WHERE session=? AND digest=?'),
     promptReserve: db.prepare(`INSERT INTO prompt_deliveries VALUES (?,'pending')
       ON CONFLICT(source) DO UPDATE SET state='pending' WHERE state='not-sent'`),
     promptSettle: db.prepare(`UPDATE prompt_deliveries SET state=? WHERE source=? AND state!='sent'`),
@@ -292,6 +282,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     promptPendingOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='pending'"),
     promptNotSentOne: db.prepare("SELECT 1 FROM prompt_deliveries WHERE source=? AND state='not-sent'"),
     promptState: db.prepare('SELECT state FROM prompt_deliveries WHERE source=?'),
+    promptText: db.prepare("SELECT text FROM messages WHERE source_id=? AND role='user' LIMIT 1"),
     shiftMessagesUp: db.prepare('UPDATE messages SET seq = -seq WHERE conversation_id = ? AND seq < 0'),
     shiftStarsUp: db.prepare('UPDATE stars SET seq = -seq WHERE conversation_id = ? AND seq < 0'),
     shiftMessagesDown: db.prepare('UPDATE messages SET seq = -seq - 2 WHERE conversation_id = ? AND seq < 0'),
@@ -304,8 +295,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     addRecord: db.prepare(`INSERT OR IGNORE INTO report_records (report_id, conversation_id, after_seq, at, text)
       VALUES (?, ?, COALESCE((SELECT MIN(seq) FROM messages WHERE conversation_id = ? AND source_id = ?),
         MIN(COALESCE(?, (SELECT COUNT(*) FROM messages WHERE conversation_id = ?)), (SELECT COUNT(*) FROM messages WHERE conversation_id = ?))), ?, ?)`),
-    reportProof: db.prepare('SELECT memory FROM memory_report_proofs WHERE report_id=?'),
-    putReportProof: db.prepare('INSERT INTO memory_report_proofs VALUES (?,?)'),
     hasRecord: db.prepare('SELECT 1 AS held FROM report_records WHERE report_id = ?'),
     moveRecords: db.prepare('UPDATE report_records SET conversation_id = ? WHERE conversation_id = ? AND after_seq <= ?'),
     bySession: db.prepare('SELECT * FROM conversations WHERE session_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
@@ -323,8 +312,9 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     update: db.prepare(`UPDATE messages SET role = ?, text = ?, receipt = ?, images = ?,
       source_key = COALESCE(?, source_key), source_id = COALESCE(?, source_id) WHERE conversation_id = ? AND seq = ?`),
     nextMessageId: db.prepare(`UPDATE id_counters SET value = value + 1 WHERE name = 'messages' RETURNING value`),
-    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, source_key, source_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    insert: db.prepare(`INSERT INTO messages (id, conversation_id, seq, role, text, receipt, images, session_id, created_at, source_key, source_id, foreground_only)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+    limitToForeground: db.prepare('UPDATE messages SET foreground_only=1 WHERE conversation_id=? AND seq=?'),
     latest: db.prepare('SELECT id FROM conversations WHERE deleted_at IS NULL AND folded_into IS NULL ORDER BY updated_at DESC, rowid DESC LIMIT 1'),
     fold: db.prepare('UPDATE conversations SET folded_into = ?, folded_at = ?, fold_kind = ? WHERE id = ? AND deleted_at IS NULL'),
     foldsOf: db.prepare(`SELECT c.id, c.folded_at, c.fold_kind, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS total
@@ -343,65 +333,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   }
 
   const transaction = <T>(work: () => T): T => inTransaction(db, work)
-
-  function redactMessages(id: string, messages: ReturnType<typeof normalizeMessages>, sessionId: string | null | undefined,
-    copy?: { from: string, count: number }) {
-    const hasRanges = memoryRanges.any()
-    const known = sql.messages.all(id)
-    const inherited = copy ? sql.messages.all(copy.from).slice(0, copy.count) : []
-    const keys = new Map([...inherited, ...known].filter(row => row.source_key).map(row => [row.source_key, row]))
-    const replicaSources = hasRanges ? memoryRanges.replicaSources(id) : []
-    if (hasRanges && copy) replicaSources.push(...memoryRanges.replicaSources(copy.from))
-    const heldSources = new Set(replicaSources)
-    return messages.map((message, index) => {
-      const keyed = message.key ? keys.get(message.key) : undefined
-      const replicaSession = keyed?.session_id ?? sessionId
-      message = generated.forSave(message, replicaSession)
-      const replicas = [keyed, known[index], inherited[index]]
-      let sourceId = message.sourceId
-      if (!sourceId && message.role === 'user') {
-        const identified = replicas.find(row => typeof row?.source_id === 'string' && memoryRanges.recognizes(row.source_id, message.text))
-        sourceId = identified?.source_id
-        if (!sourceId) for (const source of heldSources) {
-          if (!memoryRanges.recognizes(source, message.text)) continue
-          if (sourceId) throw new Error('Ambiguous memory history replica')
-          sourceId = source
-        }
-      }
-      const erased = sourceId && sql.erasedSource.get(sourceId)
-        || message.role !== 'user' && sessionId && sql.erasedSession.get(sessionId)
-        || sessionId && sql.erasedTaskBrief.get(sessionId, createHash('sha256').update(message.text).digest('hex'))
-      if (erased) return { ...message, text: '', images: undefined, receipt: null }
-      const fallback = replicas.find(row => row?.source_id === sourceId)?.text
-      const text = sourceId ? memoryRanges.forSave(sourceId, message.text, fallback) : undefined
-      return text === undefined ? message : { ...message, text, receipt: null, sourceId }
-    })
-  }
-
-  /** Single-message redaction for O(1) incremental writes; enforces the same erasure invariants as redactMessages. */
-  function redactSingle(id: string, input: StoredMessage, sessionId: string | null | undefined, existingRow?: Row): StoredMessage {
-    const replicaSession = existingRow?.session_id ?? sessionId
-    let message = generated.forSave(input, replicaSession)
-    let sourceId = message.sourceId
-    if (!sourceId && message.role === 'user' && memoryRanges.any()) {
-      if (typeof existingRow?.source_id === 'string' && memoryRanges.recognizes(existingRow.source_id, message.text)) {
-        sourceId = existingRow.source_id
-      } else {
-        for (const source of memoryRanges.replicaSources(id)) {
-          if (!memoryRanges.recognizes(source, message.text)) continue
-          if (sourceId) throw new Error('Ambiguous memory history replica')
-          sourceId = source
-        }
-      }
-    }
-    const erased = sourceId && sql.erasedSource.get(sourceId)
-      || message.role !== 'user' && sessionId && sql.erasedSession.get(sessionId)
-      || sessionId && sql.erasedTaskBrief.get(sessionId, createHash('sha256').update(message.text).digest('hex'))
-    if (erased) return { ...message, text: '', images: undefined, receipt: null }
-    const fallback = existingRow?.source_id === sourceId ? existingRow?.text : undefined
-    const text = sourceId ? memoryRanges.forSave(sourceId, message.text, fallback) : undefined
-    return text === undefined ? message : { ...message, text, receipt: null, sourceId }
-  }
 
   /**
    * Skip the unchanged prefix, including when committed output repairs an earlier message. An insertion preserves
@@ -459,7 +390,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
       const origin = copied?.role === role && copied.text === text && copied.images === pictures
         && (!sourceId || !copied.source_id || sourceId === copied.source_id) ? copied : null
       sql.insert.run(sql.nextMessageId.get().value, id, seq, role, text, json, pictures,
-        origin ? origin.session_id : sessionId ?? null, at, key ?? origin?.source_key ?? null, sourceId ?? origin?.source_id ?? null)
+        origin ? origin.session_id : sessionId ?? null, at, key ?? origin?.source_key ?? null, sourceId ?? origin?.source_id ?? null, origin?.foreground_only ?? 0)
     }
   }
 
@@ -517,23 +448,12 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
    * A task's record, kept once (a report is recorded once, whatever conversation): after the messages stored there
    * now. False when it is kept already.
    */
-  function addRecord({ conversationId, reportId, at, text, beforeSource, after, memory }: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number, memory?: MemoryProvenance }): boolean {
+  function addRecord({ conversationId, reportId, at, text, beforeSource, after }: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number }): boolean {
     const id = assertId(conversationId)
     const anchored = typeof after === 'number' && Number.isFinite(after) ? Math.max(0, Math.trunc(after)) : null
     return transaction(() => {
-      if (memory && !recordReportProof(reportId, memory)) return false
       return Number(sql.addRecord.run(reportId, id, id, beforeSource ?? null, anchored, id, id, Math.max(0, Math.trunc(at)), text).changes) > 0
     })
-  }
-
-  /** Also covers a report shown to the renderer whose delivery was canceled before it became a history record. */
-  function recordReportProof(reportId: string, evidence: MemoryProvenance): boolean {
-    const checked = memoryProvenanceSchema.parse(evidence)
-    if (memoryRanges.affects(checked)) return false
-    const proof = JSON.stringify(checked), previous = sql.reportProof.get(reportId)
-    if (previous && previous.memory !== proof) throw new Error('Memory report proof conflicts')
-    if (!previous) sql.putReportProof.run(reportId, proof)
-    return true
   }
 
   const withRecords = (id: string): { records?: ReportRecord[] } => {
@@ -592,7 +512,7 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     if (incoming.length === 0 && !keepEmpty) return conversation
     const at = now()
     return transaction(() => {
-      const messages = redactMessages(id, incoming, sourceSession, copy)
+      const messages = incoming
       const existing = sql.anyConversation.get(id)
       sql.upsert.run({
         id,
@@ -608,7 +528,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         topicId: existing ? null : topicFor(id, conversation),
       })
       syncMessages(id, messages, sourceSession, at, copy)
-      if (memoryRanges.any()) memoryRanges.bindSaved(id)
       return toConversation(sql.conversation.get(id) ?? { ...existing, ...conversation })
     })
   }
@@ -648,11 +567,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         existing = { title: nextTitle, title_custom: existing?.title_custom ?? 0 }
       }
       const nextSeq = () => Number(sql.messageCount.get(id)?.count ?? 0)
-      const insertAt = (seq: number, message: StoredMessage) => {
+      const insertAt = (seq: number, message: StoredMessage, foregroundOnly = false) => {
         const json = message.receipt ? JSON.stringify(message.receipt) : null
         const pictures = message.images?.length ? JSON.stringify(message.images) : null
         sql.insert.run(sql.nextMessageId.get().value, id, seq, message.role, message.text, json, pictures,
-          sourceSession ?? null, at, message.key ?? null, message.sourceId ?? null)
+          sourceSession ?? null, at, message.key ?? null, message.sourceId ?? null, Number(foregroundOnly))
       }
       const deleteAt = (seq: number) => {
         sql.dropStar.run(id, seq)
@@ -669,11 +588,10 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
           const normalized = normalizeMessage({ ...op.message, role: 'user' })
           const prior = normalized.sourceId ? sql.messageBySource.get(id, normalized.sourceId) : undefined
           if (prior) { ensureRow(); continue }
-          const redacted = redactSingle(id, normalized, sourceSession)
-          ensureRow(redacted)
-          insertAt(nextSeq(), redacted)
-          if (!existing.title_custom && !existing.title && redacted.text) {
-            const title = autoTitle([redacted])
+          ensureRow(normalized)
+          insertAt(nextSeq(), normalized)
+          if (!existing.title_custom && !existing.title && normalized.text) {
+            const title = autoTitle([normalized])
             sql.updateTitle.run(title, id)
             existing = { ...existing, title }
           }
@@ -682,11 +600,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         if (op.kind === 'upsert_assistant') {
           const normalized = normalizeMessage({ ...op.message, role: 'assistant' })
           const prior = normalized.key ? sql.messageByKey.get(id, normalized.key) : undefined
-          const redacted = redactSingle(id, normalized, sourceSession, prior)
           ensureRow()
-          const json = redacted.receipt ? JSON.stringify(redacted.receipt) : null
+          const json = normalized.receipt ? JSON.stringify(normalized.receipt) : null
           if (prior) {
-            sql.update.run('assistant', redacted.text, json, null, redacted.key ?? null, null, id, prior.seq)
+            sql.update.run('assistant', normalized.text, json, null, normalized.key ?? null, null, id, prior.seq)
+            if (op.foregroundOnly) sql.limitToForeground.run(id, prior.seq)
             continue
           }
           if (op.beforeKey) {
@@ -698,11 +616,11 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
               sql.shiftStarsUp.run(id)
               sql.shiftRecordsUp.run(id, anchor.seq)
               sql.shiftSidesUp.run(id, anchor.seq)
-              insertAt(anchor.seq, redacted)
+              insertAt(anchor.seq, normalized, op.foregroundOnly)
               continue
             }
           }
-          insertAt(nextSeq(), redacted)
+          insertAt(nextSeq(), normalized, op.foregroundOnly)
           continue
         }
         if (op.kind === 'remove_stream') {
@@ -715,16 +633,15 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
         }
         if (op.kind === 'append_note') {
           const normalized = normalizeMessage({ ...op.message, role: 'note' })
-          const redacted = redactSingle(id, normalized, sourceSession)
           ensureRow()
-          insertAt(nextSeq(), redacted)
+          insertAt(nextSeq(), normalized)
           continue
         }
         if (op.kind === 'attach_receipt') {
           const receipt = normalizeMessage({ role: 'note', text: '', receipt: op.receipt }).receipt
           const target = op.key ? sql.messageByKey.get(id, op.key) : sql.lastMessage.get(id)
           if (!target || target.role !== 'assistant' || !receipt) continue
-          if (target.text === '' || sourceSession && sql.erasedSession.get(sourceSession)) continue
+          if (target.text === '') continue
           ensureRow()
           sql.updateReceipt.run(JSON.stringify(receipt), id, target.seq)
           continue
@@ -737,7 +654,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
           }
         }
       }
-      if (memoryRanges.any()) memoryRanges.bindSaved(id)
       const row = sql.conversation.get(id)
       return row ? toConversation(row) : conversation
     })
@@ -904,48 +820,6 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
     JOIN conversations c ON c.id = m.conversation_id WHERE m.role = 'user' AND c.deleted_at IS NULL
     ORDER BY m.id DESC LIMIT ?`).all(Math.min(Math.max(1, Math.trunc(limit) || 1), QUESTION_TIMES_LIMIT)).map((row) => Number(row.created_at))
 
-  /** Clean verified user text and its local projections together. */
-  function eraseFileRanges(ranges: readonly MemoryHostErasureRange[]) {
-    return transaction(() => {
-      const { changed, conversations } = memoryRanges.erase(ranges)
-      const copies = generated.erase(ranges)
-      if (!changed && !copies.conversations.size) return copies.erased
-      for (const id of new Set([...conversations, ...copies.conversations])) {
-        const rows = sql.messages.all(id)
-        db.prepare('UPDATE conversations SET title=? WHERE id=? AND title_custom=0').run(autoTitle(rows), id)
-      }
-      // Secure-delete removes retired FTS postings as content changes. Rebuild once to retire
-      // older tombstones produced before the option was enabled.
-      if (db.prepare("SELECT v FROM messages_fts_config WHERE k='secure-delete'").get()?.v !== 1) {
-        db.exec(`INSERT INTO messages_fts(messages_fts,rank) VALUES('secure-delete',1);
-          INSERT INTO messages_fts(messages_fts) VALUES('rebuild');`)
-      }
-      return copies.erased
-    })
-  }
-
-  /** Core-requested cleanup is an internal write, never a new source-withdrawal request. */
-  function eraseMemoryCopies(sources: readonly string[], sessions: readonly string[] = [], briefs: readonly { session: string, text: string }[] = []) {
-    for (const brief of briefs) {
-      db.prepare('INSERT OR IGNORE INTO memory_erased_task_briefs VALUES (?,?)').run(brief.session, createHash('sha256').update(brief.text).digest('hex'))
-      db.prepare("UPDATE messages SET text='',images=NULL,receipt=NULL WHERE session_id=? AND text=?").run(brief.session, brief.text)
-    }
-    for (const source of sources) {
-      db.prepare('INSERT OR IGNORE INTO memory_erased_sources VALUES (?)').run(source)
-      db.prepare("UPDATE messages SET text='',images=NULL,receipt=NULL WHERE source_id=?").run(source)
-    }
-    for (const session of sessions) {
-      db.prepare('INSERT OR IGNORE INTO memory_erased_sessions VALUES (?)').run(session)
-      db.prepare("UPDATE messages SET text='',images=NULL,receipt=NULL WHERE session_id=? AND role!='user'").run(session)
-      db.prepare("UPDATE report_records SET text='' WHERE conversation_id IN (SELECT id FROM conversations WHERE session_id=?)").run(session)
-    }
-    // Automatic titles are projections of user text, and must not retain an erased first message.
-    for (const row of db.prepare('SELECT id FROM conversations WHERE title_custom=0').all()) {
-      const first = db.prepare("SELECT role,text FROM messages WHERE conversation_id=? AND role='user' AND text!='' ORDER BY seq LIMIT 1").get(row.id)
-      db.prepare('UPDATE conversations SET title=? WHERE id=?').run(autoTitle(first ? [{ role: String(first.role), text: String(first.text) }] : []), row.id)
-    }
-  }
-
   function reservePromptDelivery(sources: readonly string[]) {
     return transaction(() => sources.reduce((count, source) => count + Number(sql.promptReserve.run(source).changes), 0))
   }
@@ -957,12 +831,22 @@ export function openHistoryDb({ file, db: given, now = Date.now, newId = randomU
   const promptUndelivered = (sources: readonly string[]) => sources.filter(source => Boolean(sql.promptNotSentOne.get(source)))
   const promptDelivery = (source: string): 'pending' | 'not-sent' | 'sent' | undefined =>
     (sql.promptState.get(source) as { state: 'pending' | 'not-sent' | 'sent' } | undefined)?.state
+  function matchesPromptText(sources: readonly string[], text: string) {
+    if (!sources.length || new Set(sources).size !== sources.length) return false
+    const originals = sources.map(source => sql.promptText.get(source)?.text)
+    return originals.every(original => typeof original === 'string') && originals.join('\n\n') === text
+  }
 
   return {
-    reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery,
-    addRecord, hasRecord, moveRecords, recordsOf, recordReportProof, bySession, detachNativeSession, rebindMessageSession, eraseMemoryCopies, eraseFileRanges,
-    bindGeneratedCopy: generated.bind, retainedReply: generated.retainedReply, retainMessage: generated.forSave, fileErasureRevision: memoryRanges.revision,
-    evidenceErased: memoryRanges.affects, projectOriginal: memoryRanges.forSave,
+    reservePromptDelivery, settlePromptDelivery, promptDeliverable, promptPending, promptUndelivered, promptDelivery, matchesPromptText,
+    addRecord, hasRecord, moveRecords, recordsOf, bySession, detachNativeSession, rebindMessageSession,
+    nativeProject(session: string) {
+      const scope = db.prepare('SELECT scope FROM native_session_projects WHERE session=?').get(session)?.scope
+      return typeof scope === 'string' ? scope : undefined
+    },
+    recordNativeProject(session: string, scope: string) {
+      if (scope !== 'unknown') db.prepare('INSERT OR IGNORE INTO native_session_projects VALUES (?,?)').run(session, scope)
+    },
     create, save, commit, get, getTail, sliceMessages, streamKeysBefore, workspaceOf: (id: string) => {
       const row = conversationOf(id)
       return row ? { cwd: row.cwd, sessionId: row.session_id } : null

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import {
-  MEMORY_SERVICE_PROTOCOL, MEMORY_HOST_METHODS, MEMORY_RECOVERY_METHODS,
+  MEMORY_SERVICE_PROTOCOL, MEMORY_RECOVERY_METHODS,
   memoryCommandSchemas, memoryRequestEnvelope, memoryResultSchemas, memoryServiceStatus, memoryServiceError,
 } from '../contracts/service.ts'
 import type {
@@ -34,16 +34,14 @@ function operationMatches(method: MemoryMethod, input: unknown, result: unknown)
   if (!input || typeof input !== 'object' || !('operationId' in input)) return true
   if (method === 'getOperation' && result === null) return true
   if (!result || typeof result !== 'object') return false
-  const outcome = method === 'prepareSourceChange' && 'operation' in result ? result.operation : result
-  return Boolean(outcome && typeof outcome === 'object' && 'operationId' in outcome && outcome.operationId === input.operationId)
+  return 'operationId' in result && result.operationId === input.operationId
 }
 
 /** In-process P1 endpoint. The same DTOs can later travel over authenticated P2 IPC/Remote adapters. */
 export function createMemoryService(options: MemoryServiceOptions): MemoryTransport {
   const binding: MemoryClientBinding = Object.freeze({ ...options.binding, capabilities: Object.freeze([...options.binding.capabilities]) })
   const supported = new Set(options.supported)
-  const allowed = new Set(binding.capabilities.filter(method => supported.has(method)
-    && (!MEMORY_HOST_METHODS.has(method) || binding.kind === 'host')))
+  const allowed = new Set(binding.capabilities.filter(method => supported.has(method)))
   const status = (): MemoryServiceStatus => ({
     protocol: MEMORY_SERVICE_PROTOCOL, instanceEpoch: options.epoch(), state: options.state(), capabilities: [...allowed],
   })

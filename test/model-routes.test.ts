@@ -24,7 +24,7 @@ test('without a DeepSeek key the added provider is the only model, sessions star
     models: (fake: object) => ({ providers: piAiProviders([gateway(fake as { url: string })]), deepseek: false, defaultModel: { provider: 'custom-gateway', model: 'gw-model' } }),
     env: { DEEPSEEK_API_KEY: '', ...providerEnv([gateway({ url: '' })]) },
   })
-  const agent = bridge({ memoryRequired: true })
+  const agent = bridge()
 
   const info: AgentInfo = await agent.start()
   assert.deepEqual(info.models.map(({ group, name }) => [group, name]), [['公司网关', 'gw-model']], 'DeepSeek is not offered without a key')
@@ -84,7 +84,7 @@ test('the OpenAI Responses transport retries through the independent owner bound
     models: () => ({ providers: piAiProviders([provider]), deepseek: false, defaultModel: { provider: provider.id, model: 'oa-model' } }),
     env: { DEEPSEEK_API_KEY: '', ...providerEnv([provider]) },
   })
-  const agent = bridge({ memoryRequired: true })
+  const agent = bridge()
   await agent.start()
   await agent.prompt('Request using recalled memory')
   assert.equal(agent.memory.ready(), true)

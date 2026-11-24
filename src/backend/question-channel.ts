@@ -74,7 +74,7 @@ export function checkAnswers(questions: readonly Question[], answers: unknown): 
 /** A question waiting: from which session, and the background task it belongs to (null for the main conversation's). */
 interface Pending {
   question: QuestionSet, sessionId: string, taskId: string | null, context: ConversationContext | null,
-  check?: () => boolean,
+  turn?: number, check?: () => boolean,
 }
 export type QuestionAdmission = boolean | (() => boolean)
 
@@ -82,15 +82,11 @@ export type QuestionAdmission = boolean | (() => boolean)
  * send: to the plugin; emit: to the window; sessionId: the conversation on screen; taskOf: the background
  * task a session is, if any (its questions go to the window as task_question).
  */
-export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, allowGeneralQuestion, admitMemoryDecline, onMemoryDeclineBlocked }: {
+export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null, conversationContext, onAnswer, allowGeneralQuestion }: {
   send: (message: object) => void, emit: (event: { type: string, [field: string]: unknown }) => void, sessionId: () => string | null, taskOf?: (sessionId: string) => string | null,
   conversationContext?: (sessionId: string) => ConversationContext | null,
   onAnswer?: (entry: Pending, answers: Answer[], operation?: string) => string | { sourceIds: Readonly<Record<string, string>> } | void | Promise<string | { sourceIds: Readonly<Record<string, string>> } | void>,
   allowGeneralQuestion?: (sessionId: string, questions: readonly Question[], stillWaiting: () => boolean, phase?: 'show' | 'check') => QuestionAdmission | Promise<QuestionAdmission>,
-  /** Called before declining a waiting task's invalidated question: false means active slots are full, so do not resume the task. */
-  admitMemoryDecline?: (taskId: string, questionId: string) => boolean,
-  /** Safe fallback when a memory-invalidated task question cannot resume due to full active slots (cancels the task turn). */
-  onMemoryDeclineBlocked?: (taskId: string, questionId: string) => void,
 }) {
   const pending = new Map<string, Pending>()
   const checking = new Map<string, Pending>()
@@ -121,7 +117,8 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     if (message.sessionId !== sessionId() && !taskId) return send({ type: 'decline', id: question.id })
     const context = taskId ? null : conversationContext?.(message.sessionId) ?? null
     if (!taskId && conversationContext && !context) return send({ type: 'decline', id: question.id })
-    const entry: Pending = { question, sessionId: message.sessionId, taskId, context }
+    const turn = typeof message.turn === 'number' && Number.isSafeInteger(message.turn) && message.turn > 0 ? message.turn : undefined
+    const entry: Pending = { question, sessionId: message.sessionId, taskId, context, turn }
     checking.set(question.id, entry)
     const waiting = () => checking.get(question.id) === entry || pending.get(question.id) === entry
     const admission = allowGeneralQuestion?.(entry.sessionId, question.questions, waiting, 'show') ?? true
@@ -130,7 +127,7 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
       if (typeof result === 'function') entry.check = result
       const allowed = result !== false && entry.check?.() !== false
       checking.delete(question.id)
-      if (!allowed) return send({ type: 'decline', id: question.id, reason: 'memory-clarification' })
+      if (!allowed) return send({ type: 'decline', id: question.id })
       pending.set(question.id, entry)
       shown(entry)
     }
@@ -170,21 +167,16 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     } finally { answering.delete(questionId) }
   }
 
-  function decline(keep: (entry: Pending) => boolean, memoryReview = false): void {
-    if (!memoryReview) for (const [questionId, entry] of checking) {
+  function decline(keep: (entry: Pending) => boolean): void {
+    for (const [questionId, entry] of checking) {
       if (keep(entry)) continue
       checking.delete(questionId)
       send({ type: 'decline', id: questionId })
     }
     for (const [questionId, entry] of [...pending]) {
       if (keep(entry)) continue
-      if (memoryReview && entry.taskId && admitMemoryDecline && !admitMemoryDecline(entry.taskId, questionId)) {
-        pending.delete(questionId)
-        onMemoryDeclineBlocked?.(entry.taskId, questionId)
-        continue
-      }
       pending.delete(questionId)
-      send({ type: 'decline', id: questionId, ...(memoryReview ? { reason: 'memory-clarification' } : {}) })
+      send({ type: 'decline', id: questionId })
       closed(questionId, entry.taskId, entry.context)
     }
   }
@@ -197,12 +189,6 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
     } catch { return false }
   }
 
-  const refreshMemoryQuestions = async () => {
-    for (const entry of [...pending.values()]) {
-      if (!await validQuestion(entry) && pending.get(entry.question.id) === entry) decline(held => held !== entry, true)
-    }
-  }
-
   /** The conversation on screen is left (or dsh is going away): what it still asked goes unanswered; tasks' stay. */
   const declineAll = () => decline((entry) => entry.taskId !== null)
   /** A background task is closed: what it still asked goes unanswered. */
@@ -210,10 +196,9 @@ export function createQuestionDesk({ send, emit, sessionId, taskOf = () => null,
 
   /** What a background task still asks (null: the conversation on screen), for a window that opens meanwhile (a reload). */
   function pendingOf(taskId: string | null) {
-    void refreshMemoryQuestions()
     return [...pending.values()].filter(entry => entry.taskId === taskId)
       .map(entry => ({ questionId: entry.question.id, questions: entry.question.questions }))
   }
 
-  return { receive, answer, declineAll, declineTask, pendingOf, refreshMemoryQuestions }
+  return { receive, answer, declineAll, declineTask, pendingOf }
 }

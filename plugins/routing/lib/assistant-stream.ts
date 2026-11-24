@@ -5,18 +5,16 @@
  * still opens and settles but carries no text, and a flush returns only what was shown. A notice (`announce`) is a line
  * the plugin shows itself, as the turn's answer: what a handover did, when the turn ends with it.
  */
-import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { NATIVE_OUTPUT_RECEIPTS } from '../../../src/shared/node/native-output-receipts.ts'
 
 type Block = { type: string, text?: unknown }
 type StoredEvent = { seq: number, type: string, data: { turn: number, step: number, message: { content: Block[] } } }
 type Active = { operation: string, key: string, attemptId: string, turn: number, step: number, open: boolean, event?: StoredEvent }
 type Notice = { key: string, text: string, after: number, requestId?: string }
-type Binding = { operation: string, from: number, keys: Map<number, string>, shown: Set<number>, notices: Notice[], proofs: boolean }
-type Message = { type?: string, version?: number, operation?: string, sessionId?: string, proofs?: boolean }
+type Binding = { operation: string, from: number, keys: Map<number, string>, shown: Set<number>, notices: Notice[] }
+type Message = { type?: string, version?: number, operation?: string, sessionId?: string }
 /** Whether the attempt of this session at this step may show its text, decided once when it starts. */
 export type Gate = (sessionId: string, step: number) => boolean
 
@@ -37,21 +35,18 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
   let generation = 0
   const wasShown = (binding: Binding, seq: number) => binding.shown.has(seq)
 
-  async function flushed(operation: string | undefined) {
+  function flushed(operation: string | undefined) {
     const bound = [...bindings].find(([, binding]) => binding.operation === operation)
     const binding = bound?.[1]
     const agent = bound && ctx.agents?.get(SessionId(bound[0]))
     if (!agent || !binding) return { messages: [], finalReply: false }
-    if (binding.proofs) await ctx.parallel(NATIVE_OUTPUT_RECEIPTS, bound[0])
-    if (bindings.get(bound[0]) !== binding) throw new Error('Assistant output binding changed')
     const answers = agent.session.snapshotEvents().filter(event => event.seq >= binding.from && event.type === 'assistant/message')
     const messages = [
       ...answers.map(event => ({
         key: binding.keys.get(event.seq) ?? `${operation}:committed:${event.seq}`,
         blocks: wasShown(binding, event.seq) ? shownBlocks((event.data as StoredEvent['data']).message.content) : [],
-        ...(binding.proofs ? { native: { seq: event.seq, digest: createHash('sha256').update(JSON.stringify(event)).digest('hex') } } : {}),
       })),
-      ...binding.notices.map(notice => ({ key: notice.key, blocks: [{ type: 'text', text: notice.text }], ...(binding.proofs && notice.requestId ? { requestId: notice.requestId } : {}) })),
+      ...binding.notices.map(notice => ({ key: notice.key, blocks: [{ type: 'text', text: notice.text }] })),
     ]
     const last = answers.at(-1)
     const notice = binding.notices.at(-1)
@@ -67,12 +62,12 @@ export function installAssistantStream(ctx: Context, port: NodeJS.Process, gate:
     if (message?.type === 'assistant_stream_flush' && message.version === 1) {
       const reply = { type: 'assistant_stream_flushed', version: 1, operation: message.operation }
       // A flush without a confirmed receipt fails closed in the backend.
-      void flushed(message.operation).then(result => send({ ...reply, ...result }), () => send(reply))
+      send({ ...reply, ...flushed(message.operation) })
       return
     }
     if (message?.type !== 'assistant_stream_bind' || message.version !== 1 || typeof message.sessionId !== 'string' || typeof message.operation !== 'string') return
     const agent = ctx.agents?.get(SessionId(message.sessionId))
-    bindings.set(message.sessionId, { operation: message.operation, from: agent?.session.seq ?? 0, keys: new Map(), shown: new Set(), notices: [], proofs: message.proofs === true })
+    bindings.set(message.sessionId, { operation: message.operation, from: agent?.session.seq ?? 0, keys: new Map(), shown: new Set(), notices: [] })
     send({ type: 'assistant_stream_bound', version: 1, operation: message.operation })
   }
   port.on('message', receive)

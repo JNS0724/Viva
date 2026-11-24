@@ -5,7 +5,6 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
-import { DatabaseSync } from 'node:sqlite'
 import { createBackend } from '../src/backend/compose.ts'
 import type { HostCapabilities } from '../src/backend/host.ts'
 import type { AgentInfo } from '../src/shared/agent-info.ts'
@@ -148,7 +147,7 @@ test('a later process resumes an earlier session; switching to null opens a fres
 })
 
 
-test('the fake stream authenticates its final reply through the production owner and history gate', { timeout: 30_000 }, async t => {
+test('the fake stream publishes its committed reply through the production history path', { timeout: 30_000 }, async t => {
   const { dir, defer } = scratch(t, 'viva-fake-output-proof-')
   const workspace = path.join(dir, 'workspace')
   mkdirSync(workspace)
@@ -198,22 +197,15 @@ test('the fake stream authenticates its final reply through the production owner
       const blocks = updateOf(event).blocks
       return Array.isArray(blocks) && blocks.some(block => objectOf(block)?.type === 'text' && String(objectOf(block)?.text).includes('本周进展'))
     })
-  assert.ok(reply, 'the production recordOutputs gate accepts the actual owner-archived scripted reply')
+  assert.ok(reply, 'the production stream publishes the durable scripted reply')
   // This driver does not commit routing decisions; its existing unrouted notice is
-  // independent of the owner-authenticated assistant stream checked here.
+  // independent of the assistant stream checked here.
   const blocks = updateOf(reply).blocks
   assert.ok(Array.isArray(blocks))
-  const text = blocks.filter(block => objectOf(block)?.type === 'text').map(block => objectOf(block)?.text).join('')
   const key = updateOf(reply).key
   assert.equal(typeof key, 'string')
   const history = JSON.stringify(call('history:load'))
-  assert.ok(history.includes('本周进展'), 'the authenticated reply is persisted directly by the backend writer')
+  assert.ok(history.includes('本周进展'), 'the settled reply is persisted directly by the backend writer')
   assert.ok(history.includes(question), 'the user prompt is persisted directly by the backend writer')
-  const db = new DatabaseSync(path.join(dir, 'memory', 'memory.db'), { readOnly: true })
-  try {
-    const rows = db.prepare("SELECT a.identity,a.result,r.evidence FROM owner_native_output_attempts a JOIN owner_native_output_reads r ON r.attempt=a.id").all()
-    assert.ok(rows.length)
-    assert.ok(rows.some(row => JSON.parse(String(row.evidence)).sources.includes(sourceId)), 'the output proof includes the actual admitted human source')
-    assert.ok(rows.every(row => !JSON.stringify(row).includes(text)), 'native output receipts retain identities and ranges without reply bodies')
-  } finally { db.close() }
+
 })

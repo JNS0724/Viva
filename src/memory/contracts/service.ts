@@ -21,11 +21,6 @@ const memoryRecord = z.strictObject({
 })
 export type MemoryRecord = z.infer<typeof memoryRecord>
 const query = z.strictObject({ scope: memoryAccessScope, query: z.string().max(8_000).optional(), cursor: key.optional(), limit: z.number().int().min(1).max(200).optional() })
-const sourceChange = z.strictObject({
-  ...operation, target: memorySourceReference, expectedRevision: revision,
-  kind: z.enum(['remove-occurrence', 'revise-occurrence', 'forget-canonical']),
-})
-
 /** Unknown properties are rejected, including self-asserted owner/client identities. */
 export const memoryCommandSchemas = {
   status: z.strictObject({}),
@@ -49,13 +44,6 @@ export const memoryCommandSchemas = {
   reindex: z.strictObject({ ...operation, scope: memoryAccessScope }),
   getOperation: z.strictObject({ operationId: z.uuid() }),
   answerClarification: z.strictObject({ ...operation, questionId: key, expectedRevision: revision, answer: text }),
-  bindContext: z.strictObject({ threadId: key, projectId: key.optional(), sessionId: key }),
-  linkSources: z.strictObject({ ...operation, source: memorySourceReference, occurrence: memorySourceReference }),
-  attachDependencies: z.strictObject({ sessionId: key, sources: sourceReferences }),
-  prepareSourceChange: sourceChange,
-  commitSourceChange: z.strictObject({ ...operation, ticket: key }),
-  pendingHostEffects: z.strictObject({ cursor: key.optional() }),
-  ackHostEffect: z.strictObject({ effectId: key, causeOperationId: z.uuid(), revision }),
 } as const
 export type MemoryMethod = keyof typeof memoryCommandSchemas
 export type MemoryInput<M extends MemoryMethod> = z.infer<(typeof memoryCommandSchemas)[M]>
@@ -69,40 +57,19 @@ export const memoryServiceStatus = z.strictObject({
 export type MemoryServiceStatus = z.infer<typeof memoryServiceStatus>
 export const memoryOperationOutcome = z.strictObject({
   operationId: z.uuid(),
-  state: z.enum(['accepted', 'running', 'completed', 'failed', 'intent', 'preparing', 'prepared', 'host-committed', 'cleanup-pending']),
+  state: z.enum(['accepted', 'running', 'completed', 'failed']),
   revision: revision.optional(), changeId: key.optional(), targetId: key.optional(),
-  sendFence: z.enum(['pending', 'complete']).optional(), cleanup: z.enum(['pending', 'complete']).optional(),
+  cleanup: z.enum(['pending', 'complete']).optional(),
 })
 export type MemoryOperationOutcome = z.infer<typeof memoryOperationOutcome>
 const page = z.strictObject({ items: z.array(memoryRecord), cursor: key.optional(), partial: z.boolean(), reason: z.string().max(200).optional() })
 const profile = z.strictObject({ revision, fields: z.record(key, z.string().max(8_000)), sources: sourceReferences })
-const hostEffect = {
-  effectId: key, causeOperationId: z.uuid(), revision, hostNamespace: key,
-  sources: sourceReferences, sessions: z.array(key).optional(),
-}
-export const memoryHostErasureRange = z.strictObject({
-  sourceId: key, revision, length: z.int().positive(), hash: z.string().regex(/^[0-9a-f]{64}$/),
-  afterHash: z.string().regex(/^[0-9a-f]{64}$/),
-  spans: z.array(z.strictObject({ start: z.int().nonnegative(), end: z.int().positive() })).min(1),
-}).refine(cut => cut.spans.every(span => span.start < span.end && span.end <= cut.length))
-export type MemoryHostErasureRange = z.infer<typeof memoryHostErasureRange>
-export const memoryHostEffect = z.discriminatedUnion('kind', [
-  z.strictObject({ ...hostEffect, kind: z.enum(['erase-copies', 'invalidate-context']) }),
-  z.strictObject({ ...hostEffect, kind: z.literal('erase-file-copies'), ranges: z.array(memoryHostErasureRange).min(1), traceSessions: z.array(key).optional() }),
-])
-export type MemoryHostEffect = z.infer<typeof memoryHostEffect>
-const ack = z.strictObject({ accepted: z.literal(true) })
 export const memoryResultSchemas = {
   status: memoryServiceStatus, list: page, search: page, read: memoryRecord.nullable(), getProfile: profile,
   remember: memoryOperationOutcome, revise: memoryOperationOutcome, setEnabled: memoryOperationOutcome,
   forget: memoryOperationOutcome, undo: memoryOperationOutcome, setProfile: memoryOperationOutcome,
   runDream: memoryOperationOutcome, rescan: memoryOperationOutcome, reindex: memoryOperationOutcome,
   getOperation: memoryOperationOutcome.nullable(), answerClarification: memoryOperationOutcome,
-  bindContext: ack, linkSources: memoryOperationOutcome, attachDependencies: ack,
-  prepareSourceChange: z.strictObject({ operation: memoryOperationOutcome, ticket: key.optional() }),
-  commitSourceChange: memoryOperationOutcome,
-  pendingHostEffects: z.strictObject({ effects: z.array(memoryHostEffect), cursor: key.optional() }),
-  ackHostEffect: ack,
 } as const
 export type MemoryOutput<M extends MemoryMethod> = z.infer<(typeof memoryResultSchemas)[M]>
 export type MemoryResult = MemoryOutput<MemoryMethod>
@@ -124,34 +91,9 @@ export type MemoryClientBinding = Readonly<{
   clientId: string, namespace: string, kind: 'user-interface' | 'model' | 'host',
   capabilities: readonly MemoryMethod[],
 }>
-export const MEMORY_HOST_METHODS: ReadonlySet<MemoryMethod> = new Set([
-  'bindContext', 'linkSources', 'attachDependencies', 'prepareSourceChange', 'commitSourceChange', 'pendingHostEffects', 'ackHostEffect',
-])
 export const MEMORY_RECOVERY_METHODS: ReadonlySet<MemoryMethod> = new Set([
-  'status', 'getOperation', 'prepareSourceChange', 'commitSourceChange', 'pendingHostEffects', 'ackHostEffect',
+  'status', 'getOperation',
 ])
-
-/** Normalized ingress separates reliable receipt from completed-turn processing. */
-const eventFields = { eventId: key, cursor: key, threadId: key, sessionId: key.optional(), projectId: key.optional(),
-  scope: memoryAccessScope, at: z.number().finite() }
-export const memoryConversationEvent = z.discriminatedUnion('kind', [
-  z.strictObject({ ...eventFields, kind: z.literal('received'), source: memorySourceReference,
-    role: z.enum(['user', 'assistant']), origin: z.enum(['original', 'derived']), admission: z.enum(['received', 'admitted']), text, dependencies: sourceReferences }),
-  z.strictObject({ ...eventFields, kind: z.literal('revised'), source: memorySourceReference, previousRevision: revision,
-    role: z.enum(['user', 'assistant']), origin: z.enum(['original', 'derived']), text, dependencies: sourceReferences }),
-  z.strictObject({ ...eventFields, kind: z.literal('completed'), sources: sourceReferences }),
-  z.strictObject({ ...eventFields, kind: z.literal('withdrawn'), source: memorySourceReference, extent: z.enum(['occurrence', 'canonical']) }),
-])
-export type MemoryConversationEvent = z.infer<typeof memoryConversationEvent>
-export interface MemoryConversationFeed {
-  /** Authenticated host binding is supplied by composition, not deserialized from an event or model output. */
-  readonly binding: { hostId: string, namespace: string }
-  replay(after: string | null): AsyncIterable<MemoryConversationEvent>
-  persistThrough(cursor: string): Promise<void>
-}
-export interface MemoryHostEffects {
-  apply(effect: MemoryHostEffect): Promise<void>
-}
 
 /** Core model port: adapters retain provider reasoning/stream state, isolated by job ID. */
 export type MemoryModelJob = Readonly<{

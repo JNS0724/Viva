@@ -10,13 +10,6 @@ export type ReadMemoryPhysicalFile = (workspace: string, path: string, signal?: 
 
 /** Opaque canonical source versions, issued by the Node adapter, never by a model. */
 export interface DocumentSourceRef { id: string, token: string, spans?: Array<{ start: number, end: number }> }
-export interface DocumentSourceCut extends DocumentSourceRef {
-  spans: NonNullable<DocumentSourceRef['spans']>
-  /** Canonical UTF-16 length and version before the erasure. */
-  length: number
-  version: number
-  hash: string
-}
 export interface DocumentReadRef { id: string, revision: string, usageVersion: number }
 export interface DocumentFileRegistration extends DocumentReadRef {
   workspace: string
@@ -77,20 +70,16 @@ export interface MemoryDocuments {
   registered(workspace: string): Array<DocumentFileRegistration & { sources: DocumentSourceRef[] }>
   /** Registry metadata for management, including forgotten entries only while a restriction remains. */
   fileRegistry(workspace: string): DocumentFileRegistration[]
-  sourceRestrictions(workspace: string): DocumentSourceRef[]
   recoverDeletedFiles(): void
   deletedFileCleanupPending(workspace: string, id: string): boolean
   checkpointCleanup(): void
   needsRecovery(): boolean
   recover(): void
-  /** Recover one authorized management intent after host withdrawal recovery. */
+  /** Recover one versioned management intent. */
   recoverManagement(operationId: string): 'cancelled' | undefined
   receipt(workspace: string, operationId: string): DocumentReceipt | null
   hasPendingCleanup(sourceId: string): boolean
   pendingCleanup(): number
-  projectErasedLocators(workspace: string, markdown: string): string
-  locatorRetired(workspace: string, path: string): boolean
-  preserveAuthoredLocatorSources(cuts: readonly DocumentSourceCut[], sources: readonly MemorySource[]): void
   read(workspace: string, path: string, options?: { includeDisabled?: boolean, physical?: MemoryPhysicalFile | null }): DocumentSnapshot | null
   list(workspace: string, options?: { includeDisabled?: boolean }): DocumentSnapshot[]
   commit(input: DocumentCommit): DocumentReceipt
@@ -99,6 +88,4 @@ export interface MemoryDocuments {
   undo(input: { operationId: string, workspace: string, documentId: string, revision: string, usageVersion: number, expectedChangeId?: string, expectedPolicyToken?: string }): DocumentReceipt
   setEnabled(input: { operationId: string, workspace: string, documentId: string, expectedRevision: string, expectedUsageVersion: number, enabled: boolean, expectedPolicyToken?: string }): DocumentReceipt
   /** Caller excludes the canonical source before invoking physical cleanup. */
-  withdraw(sourceId: string): string[]
-  eraseSource(cut: DocumentSourceCut): string[]
 }

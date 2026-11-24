@@ -4,22 +4,18 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseDiagnosticContext, safeDiagnosticEvent, safeDiagnosticReason } from '../../diagnostics/contracts.ts'
 import { diagnosticContext, emitDiagnostic } from '../../diagnostics/node/context.ts'
-import { createRequestBudget } from '../../shared/request-budget.ts'
 import { memoryOwnerState, type HostMemoryApi, type HostMemoryMethod,
-  type MemoryOwnerChange, type MemoryOwnerContextUsed, type MemoryOwnerProjection, type MemoryOwnerState } from '../contracts/host.ts'
-import { type MemoryOwnerSendRevoked, OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
+  type MemoryOwnerChange, type MemoryOwnerContextUsed, type MemoryOwnerState } from '../contracts/host.ts'
+import { OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
 import type { MemoryComputeTools } from '../contracts/compute.ts'
 import type { MemoryCompute } from '../contracts/memory-contract.ts'
 import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 
-export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerChange | MemoryOwnerContextUsed | MemoryOwnerProjection | MemoryOwnerSendRevoked
+export type MemoryOwnerEvent = MemoryOwnerState | MemoryOwnerChange | MemoryOwnerContextUsed
 export type MemoryOwnerCallbacks = {
   compute?(input: { job: MemoryCompute, tools?: MemoryComputeTools['tools'] }, signal: AbortSignal): Promise<string>
-  quiesce?(input: { session?: string }, signal: AbortSignal): Promise<void>
-  checkRecovery?(input: { checkId: string }, signal: AbortSignal): Promise<boolean>
-  drainSends?(input: { epoch: string }): Promise<void>
 }
 type Options = {
   root: string
@@ -95,16 +91,6 @@ export function createMemoryOwnerSupervisor(options: Options) {
     restartTimer.unref()
   }
 
-  async function drainOldSends(milliseconds = DRAIN_BUDGET_MS) {
-    const epoch = previousEpoch
-    if (!epoch) return
-    const budget = createRequestBudget(milliseconds)
-    try {
-      await budget.run(() => callbacks?.drainSends?.({ epoch }))
-      if (previousEpoch === epoch) previousEpoch = undefined
-    } finally { budget.close() }
-  }
-
   function unavailable(instance: Instance) {
     if (!instance.epoch) return
     previousEpoch = instance.epoch
@@ -121,7 +107,6 @@ export function createMemoryOwnerSupervisor(options: Options) {
     if (current) return current.ready
     const operation = (async () => {
       try {
-        await drainOldSends()
         if (closing) throw new Error('Memory owner supervisor is closed')
         const instance = spawn()
         await instance.ready
@@ -155,14 +140,9 @@ export function createMemoryOwnerSupervisor(options: Options) {
         if (retiring || current !== instance) throw new Error('Memory owner generation retired')
         const input = objectOf(raw)
         switch (method) {
-          case 'quiesce':
-            return callbacks?.quiesce?.(typeof input?.session === 'string' ? { session: input.session } : {}, signal)
           case 'compute':
             if (!callbacks?.compute || !input || !objectOf(input.job)) throw new Error('Memory computation is unavailable')
             return callbacks.compute(input as Parameters<NonNullable<MemoryOwnerCallbacks['compute']>>[0], signal)
-          case 'checkRecovery':
-            if (typeof input?.checkId !== 'string' || !callbacks?.checkRecovery) return false
-            return callbacks.checkRecovery({ checkId: input.checkId }, signal)
           default: throw new Error('Unsupported memory owner callback')
         }
       },
@@ -173,8 +153,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
           if (!state.success || instance.epoch && instance.epoch !== state.data.epoch) return
           instance.epoch = state.data.epoch
           publish(state.data)
-        } else if ((raw.type === 'memory_owner_context_used' || raw.type === 'memory_owner_projection'
-          || raw.type === 'memory_owner_change' || raw.type === 'memory_owner_send_revoked')
+        } else if ((raw.type === 'memory_owner_context_used' || raw.type === 'memory_owner_change')
           && 'epoch' in raw && instance.epoch && instance.epoch === raw.epoch) publish(raw as MemoryOwnerEvent)
       },
     })
@@ -261,7 +240,7 @@ export function createMemoryOwnerSupervisor(options: Options) {
   }
 
   function callHost<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], optionsForCall?: OwnerCallOptions) {
-    return callCurrent<HostMemoryApi[M]['output']>('host', { method, input, diagnostics: diagnosticContext() }, optionsForCall)
+    return callCurrent<HostMemoryApi[M]['output']>('host', { method, input, diagnostics: diagnosticContext(), deadlineAt: optionsForCall?.deadlineAt }, optionsForCall)
   }
 
   async function shutdown() {
@@ -271,7 +250,6 @@ export function createMemoryOwnerSupervisor(options: Options) {
     if (!instance) return
     unavailable(instance)
     try {
-      await drainOldSends(STOP_GRACE_MS)
       await instance.peer.call('shutdown', null, { budgetMs: STOP_GRACE_MS })
     } catch { /* SQLite releases its lock on process exit even if graceful shutdown is blocked. */ }
     await instance.retire()
@@ -288,7 +266,6 @@ export function createMemoryOwnerSupervisor(options: Options) {
       await instance.ready
       if (current === instance && !closing && !instance.retiring()) await instance.peer.call('adapterExited', {}, { budgetMs: DRAIN_BUDGET_MS })
     },
-    nativeMaintenancePending: () => callCurrent<boolean>('nativeMaintenancePending', {}, { budgetMs: Math.min(options.timeoutMs ?? STARTUP_BUDGET_MS, OWNER_RPC_MAX_BUDGET_MS) }),
     subscribe(listener: (event: MemoryOwnerEvent) => void) {
       listeners.add(listener)
       if (snapshot) listener(snapshot)

@@ -33,5 +33,3 @@ export function ownerRpcFrame(value: unknown): OwnerRpcFrame | null {
     default: return null
   }
 }
-
-export type MemoryOwnerSendRevoked = { type: 'memory_owner_send_revoked', epoch: string, id: string }

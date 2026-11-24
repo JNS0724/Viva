@@ -121,17 +121,6 @@ test('export can be cancelled, and the trace is unavailable without dsh logs', a
   assert.deepEqual([trace.available, trace.trace.timeline], [false, []])
 })
 
-test('export reads history again after the save dialog yields', async t => {
-  const { call, db, dir } = setup(t, { exportPath: 'forgotten.md' })
-  const sourceId = '69152b68-ec79-440e-838b-b40225a916cb'
-  const notes = db.save(db.create({}), [{ ...question('Erased while the save dialog was open'), sourceId }, question('Retained question')])
-  const pending = call('history:export', notes.id)
-  db.eraseMemoryCopies([sourceId])
-  assert.deepEqual(await pending, { saved: true, file: path.join(dir, 'forgotten.md') })
-  const exported = fs.readFileSync(path.join(dir, 'forgotten.md'), 'utf8')
-  assert.doesNotMatch(exported, /Erased while/)
-  assert.match(exported, /Retained question/)
-})
 
 
 test('model detail IPC reads only a session belonging to the named conversation', async t => {

@@ -12,4 +12,4 @@ export function createMemoryRuntime(options: Omit<NodeMemoryRuntimeOptions, keyo
   })
 }
 export { MAX_RECALL_CHARS, MAX_DEEP_RECALL_CHARS } from '../../src/memory/core/memory-runtime.ts'
-export type { MemoryWithdrawal, MemoryRuntime } from '../../src/memory/core/memory-runtime.ts'
+export type { MemoryRuntime } from '../../src/memory/core/memory-runtime.ts'

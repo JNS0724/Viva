@@ -25,15 +25,13 @@ test('recovering owner permits only durable recovery methods and fails pending w
   const client = createRemoteMemoryChannel({ send() {} })
   client.receive(state('recover', 'recovering'))
   await assert.rejects(client.call('createFile', { args: [{ operationId: '810754af-d984-4716-a31d-82bb7673109b', text: 'text' }] }), /unavailable/)
-  const pending = client.call('pendingHostEffects', {})
+  const pending = client.call('getOperation', { operationId: '810754af-d984-4716-a31d-82bb7673109b' })
   const rejected = assert.rejects(pending, /disconnected/)
   client.processExited(); await rejected
 })
 test('JSON tuple transport restores only optional undefined slots and rejects arbitrary runtime calls', () => {
-  assert.deepEqual(parseHostMemoryCommand('transfer', { args: ['session', null, null, true] }), { method: 'transfer', input: { args: ['session', undefined, undefined, true] } })
-  assert.equal(parseHostMemoryCommand('authorizeGeneralQuestion', { args: ['session', 'turn', [], null, { kind: 'user' }, null, 'show'] }).input !== null, true)
+  assert.equal(parseHostMemoryCommand('profilePage', { args: [null] }).input !== null, true)
   assert.throws(() => parseHostMemoryCommand('close', { args: [] }), /Unknown/)
-  assert.throws(() => parseHostMemoryCommand('recordSession', { args: [null] }))
 })
 
 test('owner domain errors retain conflict identity and localized wording across IPC', async () => {
@@ -70,24 +68,4 @@ test('revision-only notices remain transient, epoch-bound and separate from owne
   client.close()
   client.receive(change)
   assert.equal(revisions.length, 1)
-})
-
-test('context usage and projection notifications remain explicit and reject stale owner generations', () => {
-  const contexts: Array<{ session: string, conversation: string | null, turn: number, pushed: Array<{ text: string, names: string[] }> }> = []
-  let projections = 0
-  const client = createRemoteMemoryChannel({ send() {}, onContextUsed: notice => contexts.push(notice), onProjection: () => { projections++ } })
-  client.receive({ ...state('current'), revision: 3 })
-  const context = { type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: 'current', revision: 3,
-    session: 'native-session', conversation: 'host-conversation', turn: 2, at: 1234,
-    pushed: [{ text: '周报每周五提交', names: ['周报'] }] }
-  client.receive({ ...context, epoch: 'old' })
-  client.receive(context)
-  client.receive({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: 'old', revision: 3 })
-  client.receive({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL, epoch: 'current', revision: 3 })
-  assert.equal(contexts.length, 1)
-  assert.equal(contexts[0]?.conversation, 'host-conversation')
-  assert.deepEqual(contexts[0]?.pushed, [{ text: '周报每周五提交', names: ['周报'] }])
-  assert.equal(projections, 1, 'same-revision projection changes are not lost to state deduplication')
-  assert.equal('pushed' in client.state()!, false)
-  client.close()
 })

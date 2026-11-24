@@ -7,7 +7,7 @@ import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { scratch } from './fixtures/scratch.js'
 
 function open(root: string) {
-  return openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  return openMemoryOwner({ root, compute: () => null, route: () => null })
 }
 
 test('Viva file client preserves durable create and edit receipts after owner restart', async t => {

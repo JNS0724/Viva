@@ -5,11 +5,11 @@ import type { MemoryNotes } from './ports/notes.ts'
 import type { MemorySource } from './ports/store.ts'
 import { inspectMemoryDocumentText } from './memory-dream-material.ts'
 import type { DocumentSnapshot, DocumentSourceRef, MemoryDocuments, MemoryPhysicalFile, ReadMemoryPhysicalFile } from './ports/documents.ts'
-import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource } from './memory-document-restrictions.ts'
+import { documentSourceProofCurrent } from './memory-source-proof.ts'
 import { traceLineHistory, type MemoryLineChange, type MemoryLineRevision } from './memory-line-history.ts'
 
 type ReadNotes = Pick<MemoryNotes, 'read' | 'registered' | 'registeredAt' | 'references' | 'snapshot' | 'sources'>
-type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered' | 'sourceRestrictions'> & Partial<Pick<MemoryDocuments, 'projectErasedLocators' | 'revisionHistory'>>
+type ReadDocuments = Pick<MemoryDocuments, 'read' | 'registered'> & Partial<Pick<MemoryDocuments, 'revisionHistory'>>
 type FileLocation = { workspace: string, path: string }
 type PhysicalSnapshot = (workspace: string, path: string) => MemoryPhysicalFile | null
 const locationKey = (workspace: string, path: string) => JSON.stringify([workspace, path])
@@ -38,6 +38,7 @@ export interface MemoryDocumentView {
   usageVersion: number
   policyToken: string
   day?: string
+  session?: string
   updatedAt: number
   markdown: string
   sources: MemorySourceReference[]
@@ -83,7 +84,7 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
     const latest = notes.snapshot(refs.map(ref => ref.id))
     return refs.every(ref => {
       const original = source(ref.id), token = latest.find(item => item.id === ref.id)?.token
-      return Boolean(original?.text && token && documentSourceProofCurrent(ref, original.text, token, erasedDocumentSource(original)))
+      return Boolean(original?.text && token && documentSourceProofCurrent(ref, original.text, token))
     })
   }
   const materialAllowed = (text: string, refs: readonly DocumentSourceRef[]) => {
@@ -104,7 +105,7 @@ export function createMemoryDocumentEvidence({ notes, documents, hash, source, r
   return { refsCurrent, materialAllowed }
 }
 
-export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCurrent, materialAllowed, reference, inheritedUseRestricted = () => false, readPhysicalFile }: {
+export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCurrent, materialAllowed, reference, readPhysicalFile }: {
   notes: ReadNotes
   documents: ReadDocuments
   hash(text: string): string
@@ -112,13 +113,12 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
   refsCurrent(refs: readonly DocumentSourceRef[]): boolean
   materialAllowed(text: string, refs: readonly DocumentSourceRef[]): boolean
   reference(id: string): MemorySourceReference | null
-  inheritedUseRestricted?(ref: DocumentSourceRef): boolean
   readPhysicalFile?: ReadMemoryPhysicalFile
 }) {
   function read(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentView | null {
-    try { return readAccepted(workspace, path, false, undefined, snapshot)?.view ?? null } catch { return null }
+    try { return readAccepted(workspace, path, false, undefined, snapshot) ?? null } catch { return null }
   }
-  function readAccepted(workspace: string, path: string, includeDisabled = false, acceptedDigest?: DocumentSnapshot, snapshot?: PhysicalSnapshot): { view: MemoryDocumentView, useRestricted: boolean } | null {
+  function readAccepted(workspace: string, path: string, includeDisabled = false, acceptedDigest?: DocumentSnapshot, snapshot?: PhysicalSnapshot): MemoryDocumentManagementView | null {
     const registered = path.startsWith('daily/') ? notes.registeredAt(workspace, path) : undefined
     const physical = snapshot?.(workspace, path)
     const note = registered ? notes.read(registered.key, physical) : undefined
@@ -126,15 +126,9 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     const digest = path.startsWith('digest/') ? acceptedDigest ?? documents.read(workspace, path, { includeDisabled, physical }) : null
     if (!note && !digest) return null
     const refs = note ? notes.references(note.key) : digest!.sources
-    const restrictions = documents.sourceRestrictions(workspace)
-    const applicableRestrictions = restrictions.filter(restriction => refs.some(ref => documentSourceRestricted(ref, [restriction])))
-    const inheritedRestrictions = refs.filter(inheritedUseRestricted)
-    const useRestricted = applicableRestrictions.length > 0 || inheritedRestrictions.length > 0
-    // These are use-disable restrictions, not source authorization or erasure. Trusted
-    // management may inspect accepted content in order to re-enable it; model reads may not.
-    if (useRestricted && !includeDisabled) return null
-    const rawMarkdown = note ? note.document : digest!.markdown
-    const markdown = documents.projectErasedLocators?.(workspace, rawMarkdown) ?? rawMarkdown
+    const enabled = note?.enabled ?? digest!.enabled
+    if (!enabled && !includeDisabled) return null
+    const markdown = note ? note.document : digest!.markdown
     if (!refsCurrent(refs) || !materialAllowed(markdown, refs)) return null
     const combined = mergeDocumentSources(refs)
     const sources: MemorySourceReference[] = []
@@ -145,18 +139,11 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
     }
     const revision = note ? note.fileRevision : digest!.revision
     const usageVersion = note ? note.revision : digest!.usageVersion
-    const policyToken = hash(JSON.stringify({
-      revision, usageVersion, sources: combined,
-      ...(markdown === rawMarkdown ? {} : { locatorProjection: hash(markdown) }),
-      ...(useRestricted ? { useRestrictions: applicableRestrictions, inheritedRestrictions } : {}),
-    }))
+    const policyToken = hash(JSON.stringify([revision, usageVersion, combined]))
     return {
-      view: {
-        id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
-        revision, usageVersion, policyToken, ...(note ? { day: note.day } : {}), updatedAt: note?.updatedAt ?? 0,
-        markdown, sources, sourceTokens: combined, backing: digest && { ...digest, markdown },
-      },
-      useRestricted,
+      id: note ? `daily:${hash(note.key)}` : digest!.id, workspace, kind: note ? 'daily' : 'digest', path,
+      revision, usageVersion, policyToken, enabled, ...(note ? { day: note.day, session: note.session } : {}), updatedAt: note?.updatedAt ?? 0,
+      markdown, sources, sourceTokens: combined, backing: digest,
     }
   }
   function readBatch(signal?: AbortSignal, maxFiles = MAX_READ_BATCH_FILES): MemoryDocumentReadBatch | undefined {
@@ -230,10 +217,7 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
   }
   function managementRead(workspace: string, path: string, snapshot?: PhysicalSnapshot): MemoryDocumentManagementView | null {
     try {
-      const accepted = readAccepted(workspace, path, true, undefined, snapshot)
-      if (!accepted) return null
-      const enabled = !accepted.useRestricted && (accepted.view.backing?.enabled ?? true)
-      return { ...accepted.view, enabled }
+      return readAccepted(workspace, path, true, undefined, snapshot)
     } catch { return null }
   }
   function managementList(workspace: string): MemoryDocumentManagementView[] {
@@ -245,14 +229,12 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
       // replacement is hidden from ordinary reads until the receipt has been committed.
       const accepted = readAccepted(before.workspace, before.path, true, before)
       const existing = staged ? after.sources.filter(ref => ref.id !== staged.id) : after.sources
-      const markdown = documents.projectErasedLocators?.(after.workspace, after.markdown) ?? after.markdown
-      return accepted?.view.policyToken === policyToken && refsCurrent(existing) && materialAllowed(markdown, existing)
+      return accepted?.policyToken === policyToken && refsCurrent(existing) && materialAllowed(after.markdown, existing)
     } catch { return false }
   }
   function lineHistory(workspace: string, view: MemoryDocumentView, startLine: number, endLine: number): MemoryLineChange | null {
     if (view.kind !== 'digest' || !documents.revisionHistory) return null
     try {
-      const restrictions = documents.sourceRestrictions(workspace)
       const liveTokens = new Map(view.sourceTokens.map(ref => [ref.id, ref]))
       const entries = documents.revisionHistory(workspace, view.id, 20)
       const verified: MemoryLineRevision[] = []
@@ -264,11 +246,11 @@ export function createMemoryDocumentReadPolicy({ notes, documents, hash, refsCur
           const live = liveTokens.get(ref.id)
           if (!live || live.token !== ref.token) return false
           if (live.spans && (!ref.spans || !ref.spans.every(span => live.spans!.some(parent => parent.start <= span.start && span.end <= parent.end)))) return false
-          return !documentSourceRestricted(ref, restrictions) && !inheritedUseRestricted(ref)
+          return true
         })
         if (!covered || !refsCurrent(beforeRefs)) break
-        const beforeMarkdown = documents.projectErasedLocators?.(workspace, entry.before.markdown) ?? entry.before.markdown
-        const afterMarkdown = documents.projectErasedLocators?.(workspace, entry.after.markdown) ?? entry.after.markdown
+        const beforeMarkdown = entry.before.markdown
+        const afterMarkdown = entry.after.markdown
         if (verified.length === 0 && afterMarkdown !== view.markdown) break
         if (!materialAllowed(beforeMarkdown, beforeRefs)) break
         verified.push({ at: entry.at, before: beforeMarkdown, after: afterMarkdown })

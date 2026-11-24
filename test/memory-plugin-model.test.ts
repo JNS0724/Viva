@@ -4,7 +4,6 @@ import { Context } from '@deepseek-ai/cordis'
 import { LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { completeMemoryModel } from '../plugins/memory/lib/model.ts'
-import { assertMemoryProviderSupported } from '../plugins/memory/lib/providers.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
 import type { MemoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
@@ -61,21 +60,6 @@ for (const finish of ['stop', 'max-tokens', 'missing', 'timeout', 'context-windo
   } finally { dispose() }
 })
 
-
-test('an unknown custom transport is rejected before invoking its adapter or network', async () => {
-  const ctx = new Context()
-  const llm = new LlmRuntime(ctx)
-  let entered = false
-  class UnknownAdapter extends LlmAdapter {
-    async *stream(): AsyncIterable<StreamChunk> { entered = true; yield { type: 'finish', reason: { kind: 'stop' } } }
-  }
-  const dispose = llm.registerAdapter(['custom-unknown'], new UnknownAdapter())
-  ctx.on('llm/stream', async function* (options, next) { assertMemoryProviderSupported(llm, options.provider); yield* next() })
-  try {
-    await assert.rejects(completeMemoryModel(ctx, { ...job, provider: 'custom-unknown' }, new AbortController().signal), /request barrier/)
-    assert.equal(entered, false)
-  } finally { dispose() }
-})
 
 
 test('cancelling a partial computation never returns its delivered prefix', async () => {

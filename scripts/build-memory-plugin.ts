@@ -32,7 +32,7 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   const memory = path.join(compiledRoot, 'src/memory')
   const diagnostics = path.join(compiledRoot, 'src/diagnostics')
   const shared = path.join(compiledRoot, 'src/shared')
-  const sharedFiles = ['request-budget.js', 'node/tool-call-budget.js', 'node/native-output-receipts.js'].map(file => path.join(shared, file))
+  const sharedFiles = ['request-budget.js', 'node/tool-call-budget.js'].map(file => path.join(shared, file))
   if (!existsSync(path.join(plugin, 'index.js')) || !existsSync(path.join(memory, 'node/index.js'))) throw new Error('Compile memory and its plugin before assembly')
   const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as Manifest
   const declared = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})])
@@ -89,17 +89,19 @@ export function assembleMemoryPlugin({ compiledRoot, destination, manifestFile =
   writeFileSync(path.join(destination, 'README.md'), [
     '# Viva memory for DSH', '',
     'Install this package into a DSH 0.2.2-rc.2 server. A supervised owner process stores memory in ordinary Node. The dsh plugin handles native sessions and model calls.',
-    'Keep the memory, native sessions and projection storage in private absolute directories. Every process that uses these sessions must use the same persistence entry. The entry takes the session root lease, finishes pending cold erasure, and starts the owner before publishing DSH persistence.',
-    'The host must disable session-log-deepseek (config.enabled: false). Unsupported model transports fail closed.',
+    'Keep memory and native sessions in private absolute directories. The persistence entry starts the memory owner alongside DSH session persistence.',
+    'The example disables session-log-deepseek uploads. Memory adds optional context and stores completed human turns independently of model transport.',
     '', 'Example DSH profile patch (substitute the existing absolute session and storage roots for your private profile):', '',
     '```yaml', '- id: session-log-deepseek', '  config:', '    enabled: false',
     '- id: session-persistence-jsonl', '  disabled: true', '- insert:',
     '    - id: viva-memory-session-persistence', '      name: viva-memory/persistence', '      config:',
-    '        root: /absolute/private/dsh/sessions', '        storageRoot: /absolute/private/dsh/storages', '        memoryRoot: /absolute/private/memory',
+    '        root: /absolute/private/dsh/sessions', '        memoryRoot: /absolute/private/memory',
     '    - id: portable-memory', '      name: viva-memory', '      inject: [sessionPersistence]', '      config:',
     '        dataRoot: /absolute/private/memory', '        dailyNotes: true', '```', '',
     'Use `/memory-remember <text>` to save an entry and `/memory-forget <id>` to forget an entry by its saved or recalled ID.',
-    'DSH Web 0.2.2-rc.2 shows command receipts once a conversation has a normal turn. The receipt reports when copy cleanup is still pending.',
+    'DSH Web 0.2.2-rc.2 shows command receipts once a conversation has a normal turn. The receipt reports when removal of the selected file and its index is still pending.',
+    '',
+    'The plugin opens a v12 memory database. If the existing database is incompatible, memory is unavailable and the existing files stay in place.',
     '',
     'Local embedding assets are optional external resources supplied by modelRoot/runtimeRoot configuration; this package never downloads models on startup.',
     'Dedicated Web management pages are a separate later phase.', '',

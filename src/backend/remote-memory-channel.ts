@@ -1,9 +1,10 @@
 import type { OwnerCallOptions } from '../memory/node/owner-adapter.ts'
+import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
 import { memoryDomainErrorCode, memoryHostFailure } from '../memory/contracts/domain-error.ts'
 import { t } from '../shared/i18n/translate.ts'
 import { randomUUID } from 'node:crypto'
-import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, memoryOwnerProjection, parseHostMemoryCommand } from '../memory/contracts/host.ts'
-import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemoryOwnerState, MemoryOwnerChange, MemoryOwnerContextUsed, MemoryOwnerProjection } from '../memory/contracts/host.ts'
+import { MEMORY_HOST_PROTOCOL, MEMORY_PAGE_READ_METHODS, memoryOwnerState, memoryOwnerChange, memoryOwnerContextUsed, parseHostMemoryCommand } from '../memory/contracts/host.ts'
+import type { HostMemoryApi, HostMemoryCaller, HostMemoryMethod, MemoryOwnerState, MemoryOwnerChange, MemoryOwnerContextUsed } from '../memory/contracts/host.ts'
 import { createRequestBudget, MEMORY_PAGE_READ_LIMIT, MEMORY_READ_BUDGET_MS, RequestTimeout } from '../shared/request-budget.ts'
 import { objectOf } from '../shared/unknown-value.ts'
 import { diagnosticContext, emitDiagnostic, withOperation } from '../diagnostics/node/context.ts'
@@ -29,7 +30,6 @@ export interface MemoryChannelEvents {
   onChanged?: (state: MemoryOwnerState) => void
   onNotice?: (notice: MemoryOwnerChange) => void
   onContextUsed?: (notice: MemoryOwnerContextUsed) => void
-  onProjection?: (notice: MemoryOwnerProjection) => void
 }
 
 function channelError(failure: Record<string, unknown>) {
@@ -40,7 +40,7 @@ function channelError(failure: Record<string, unknown>) {
 }
 
 /** The desktop supervisor owns its RPC transport. Only the native dsh channel sends legacy host frames. */
-export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged, onNotice, onContextUsed, onProjection, timeoutMs = 30_000 }:
+export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged, onNotice, onContextUsed, timeoutMs = 30_000 }:
   MemoryChannelEvents & { timeoutMs?: number } & ({ send(message: object): void, callOwner?: never } | { callOwner: OwnerTransport, send?: never })) {
   let connectionLifetime = new AbortController()
   let current: MemoryOwnerState | undefined
@@ -73,16 +73,17 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
     for (const batch of batches.values()) { batch.lifetime.cancel(new MemoryOwnerUnavailable(message)); batch.lifetime.close() }
     if (releaseExecutions) { batches.clear(); executions.clear() }
   }
-  async function execute<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], batch?: ReadBatch): Promise<HostMemoryApi[M]['output']> {
-    const budgetMs = batch?.lifetime.remainingMs()
+  async function execute<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input'], batch?: ReadBatch, intake?: ReturnType<typeof createRequestBudget>): Promise<HostMemoryApi[M]['output']> {
+    const budgetMs = batch?.lifetime.remainingMs() ?? intake?.remainingMs()
     if (batch && (!MEMORY_PAGE_READ_METHODS.has(method) || batch.epoch !== current?.epoch || !batches.has(batch.id))) throw new MemoryOwnerUnavailable()
-    const recovery = ['getOperation', 'prepareSourceChange', 'commitSourceChange', 'sourceAlias', 'pendingHostEffects', 'ackHostEffect'].includes(method)
+    const recovery = method === 'getOperation'
     if (closed || !current || current.state !== 'ready' && !(recovery && current.state === 'recovering')) {
       emitDiagnostic({ event: 'operation.progress', operation: 'memory.owner', stage: READ_STAGE[method], reason: closed ? 'closed' : 'not_ready', identities: { methodId: method, ownerEpoch: current?.epoch ?? null } })
       throw new MemoryOwnerUnavailable()
     }
     if (callOwner) {
-      const signal = batch ? AbortSignal.any([batch.lifetime.signal, connectionLifetime.signal]) : connectionLifetime.signal
+      const request = batch?.lifetime ?? intake
+      const signal = request ? AbortSignal.any([request.signal, connectionLifetime.signal]) : connectionLifetime.signal
       if (batch) batch.executions++
       const fields: DiagnosticFields = { stage: READ_STAGE[method], identities: { methodId: method, ownerEpoch: current.epoch, readBatchId: batch?.id } }
       const started = performance.now()
@@ -90,7 +91,8 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
         emitDiagnostic({ ...fields, event: 'wait.begin', operation: 'memory.owner' })
         // readBatch owns the caller deadline. This promise observes actual completion
         // so a timed-out caller cannot free one of the two physical execution slots.
-        const value = await callOwner(method, input, { signal, budgetMs: budgetMs ?? timeoutMs, waitForCompletion: Boolean(batch) })
+        const value = await callOwner(method, input, { signal, budgetMs: budgetMs ?? timeoutMs, waitForCompletion: Boolean(batch),
+          ...(intake && budgetMs !== undefined ? { deadlineAt: Date.now() + budgetMs } : {}) })
         signal.throwIfAborted()
         emitDiagnostic({ ...fields, event: 'wait.end', operation: 'memory.owner', metrics: { ok: true, durationMs: performance.now() - started } })
         return value
@@ -138,6 +140,15 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
   // A caller operation already owns this wait; do not create a second proxy span inside each read step.
   const call = <M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) => diagnosticContext() ? execute(method, input)
     : withOperation('memory.owner', () => execute(method, input), { identities: { methodId: method, ownerEpoch: current?.epoch ?? '' } })
+  async function callIntake<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) {
+    const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs)
+    // Send the intake frame before dispatching the agent request on its separate channel.
+    try {
+      const pending = execute(method, input, undefined, budget)
+      return await budget.run(() => pending)
+    }
+    finally { budget.close() }
+  }
   async function readBatch<T>(work: (read: HostMemoryCaller) => Promise<T>, options: { budgetMs?: number, signal?: AbortSignal } = {}): Promise<T> {
     if (closed || current?.state !== 'ready') throw new MemoryOwnerUnavailable()
     if (batches.size >= MEMORY_PAGE_READ_LIMIT) {
@@ -159,11 +170,6 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
     if (msg.type === 'memory_owner_context_used') {
       const notice = memoryOwnerContextUsed.safeParse(raw)
       if (!closed && notice.success && current?.epoch === notice.data.epoch && notice.data.revision >= current.revision) onContextUsed?.(notice.data)
-      return true
-    }
-    if (msg.type === 'memory_owner_projection') {
-      const notice = memoryOwnerProjection.safeParse(raw)
-      if (!closed && notice.success && current?.epoch === notice.data.epoch && notice.data.revision >= current.revision) onProjection?.(notice.data)
       return true
     }
     if (msg.type === 'memory_owner_change') {
@@ -217,6 +223,7 @@ export function createRemoteMemoryChannel({ send, callOwner, onReady, onChanged,
   return { call, readBatch, receive, waitReady, ready: () => current?.state === 'ready' && !closed, state: () => current,
     readState: () => ({ batches: batches.size, executions: [...batches.values()].reduce((sum, batch) => sum + batch.executions, 0) }),
     processExited: () => invalidate('Memory owner disconnected'),
+    callIntake,
     close: () => { closed = true; invalidate('Memory owner connection closed') },
   }
 }

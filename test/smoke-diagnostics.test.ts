@@ -15,7 +15,7 @@ for (const initialized of [false, true]) test(`smoke diagnostics ${initialized ?
   t.after(() => { disposeOwnedProfile(profile); fs.rmSync(base, { recursive: true, force: true }) })
   const root = path.join(profile.userData, 'memory'), operation = randomUUID()
   if (initialized) {
-    const owner = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null, quiesce: async () => {} })
+    const owner = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null })
     try {
       await owner.recover()
       const created = await owner.handleHost('createFile', { args: [{ operationId: operation, title: 'Private synthetic title',

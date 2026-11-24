@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { openIndependentHistory as openHistoryDb } from './fixtures/independent-history.ts'
 import { openHistoryDb as openReceiptHistory } from '../src/backend/history-db.ts'
-import { verifiedHistoryCarry } from '../src/backend/history-carry.ts'
+import { carriedRecords } from '../src/backend/history-carry.ts'
 import { scratch } from './fixtures/scratch.js'
 import { randomUUID } from 'node:crypto'
 
@@ -35,9 +35,10 @@ test('trusted unsent and unknown delivery receipts survive saves, forks and cold
   db.save(fork, rows)
   const read = db.read(`s:${fork.id}`, { whole: true })!
   assert.deepEqual(read.messages.map(row => row.delivery), ['pending', 'not-sent', undefined])
-  const carry = await verifiedHistoryCarry(read.messages, async row => db.promptDeliverable(row.sourceId), 0, () => 0)
-  assert.deepEqual(carry.evidence.map(row => row.sourceId), [sent])
-  assert.ok(!carry.text.includes(rows[0]!.text) && !carry.text.includes(rows[1]!.text))
+  const carry = carriedRecords(read.messages.filter(row => db.promptDeliverable(row.sourceId)))
+  assert.equal(carry.turns, 1)
+  assert.match(carry.text, /independent words 2/)
+  assert.doesNotMatch(carry.text, /independent words [01]/)
   db.reservePromptDelivery([sent]); db.settlePromptDelivery([sent], false)
   assert.equal(db.promptDeliverable(sent), true, 'a later rejected retry cannot undo a real native-start receipt')
 })

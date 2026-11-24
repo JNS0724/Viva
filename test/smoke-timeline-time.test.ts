@@ -27,7 +27,7 @@ test('calendar fixtures retain their local date and clock across month and year 
 
 
 for (const kind of ['timeline', 'performance'] as const) {
-  test(`${kind} smoke seeds retain independently published assistant identities under file-memory save validation`, async t => {
+  test(`${kind} smoke seeds retain assistant identities with their native session references`, async t => {
     const { scratch } = await import('./fixtures/scratch.js')
     const { join } = await import('node:path')
     const { DatabaseSync } = await import('node:sqlite')
@@ -37,15 +37,13 @@ for (const kind of ['timeline', 'performance'] as const) {
     else seedPerf(dir)
     const db = new DatabaseSync(join(dir, 'app.db'), { readOnly: true })
     defer(() => db.close())
-    const rows = db.prepare(`SELECT m.text,m.source_key,m.session_id,g.proof FROM messages m
-      LEFT JOIN memory_generated_history g ON g.key=m.source_key AND g.session=m.session_id
+    const rows = db.prepare(`SELECT m.text,m.source_key,m.session_id FROM messages m
       WHERE m.role='assistant'`).all()
     assert.ok(rows.length > 10)
     for (const row of rows) {
       assert.ok(typeof row.text === 'string' && row.text.length > 0)
       assert.ok(typeof row.source_key === 'string' && row.source_key.length > 0)
       assert.match(String(row.session_id), /^seeded-session-/u, 'synthetic history retains its source identity while the original native session stays unavailable')
-      assert.deepEqual(JSON.parse(String(row.proof)), [{ sources: [], fileRanges: [] }])
     }
     if (kind === 'timeline') assert.ok(Number(db.prepare('SELECT count(*) AS n FROM stars').get()?.n) > 0)
     else assert.ok(rows.some(row => Buffer.byteLength(String(row.text), 'utf8') >= 200_000))

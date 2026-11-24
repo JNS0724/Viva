@@ -797,7 +797,7 @@ export async function runVivaChineseEval(
       dailyNotes: { noteInterval: 5, timezone: 'UTC', scanDays: 3650, dreamUnits: 5 },
       ...(opts.modelRoot && opts.runtimeRoot ? { embedding: { modelRoot: opts.modelRoot, runtimeRoot: opts.runtimeRoot } } : {}),
       route: () => ({ ...DEEPSEEK_DEFAULT }),
-      quiesce: async () => {},
+
       async compute(job, signal, tools) {
         return completeMemoryModel(meteredCtx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
       },
@@ -807,7 +807,7 @@ export async function runVivaChineseEval(
     try {
       await owner.recover()
       const sessionId = randomUUID()
-      owner.initializeSession({ sessionId, cwd: projectDir })
+      owner.bindIntakeSession(sessionId, projectDir)
       let turn = 0
       for (let pIdx = 0; pIdx < fixture.phases.length; pIdx++) {
         const phase = fixture.phases[pIdx]!
@@ -826,9 +826,7 @@ export async function runVivaChineseEval(
             at,
             timezone: 'UTC',
             turn,
-            step: 1,
-            admitted: true,
-            inherited: false,
+            cwd: projectDir,
           })
           await owner.completeTurn({
             sessionId,
@@ -852,7 +850,7 @@ export async function runVivaChineseEval(
         telemetry.dreamMs += performance.now() - tDr
 
         const reader = randomUUID()
-        owner.initializeSession({ sessionId: reader, cwd: projectDir })
+        owner.bindIntakeSession(reader, projectDir)
         if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader, path.join(dir, 'memory', 'memory.db'))
         const recallRaw = await owner.runtime.handleModelRequest(
           { op: 'recall', session: reader, query: phase.recallQuery, limit: 5 },
@@ -878,7 +876,7 @@ export async function runVivaChineseEval(
           const foreignDir = path.join(dir, 'foreign-project')
           gitFixture(foreignDir)
           const foreign = randomUUID()
-          owner.initializeSession({ sessionId: foreign, cwd: foreignDir })
+          owner.bindIntakeSession(foreign, foreignDir)
           const fRes = JSON.parse(await owner.runtime.handleModelRequest(
             { op: 'recall', session: foreign, query: phase.recallQuery, limit: 5 },
             owner.sessionContext(foreign),
@@ -887,7 +885,7 @@ export async function runVivaChineseEval(
           )) as { notes?: unknown[] }
           isolationLeaks += fRes.notes?.length ?? 0
           const userOnly = randomUUID()
-          owner.initializeSession({ sessionId: userOnly })
+          owner.bindIntakeSession(userOnly, null)
           const uRes = JSON.parse(await owner.runtime.handleModelRequest(
             { op: 'recall', session: userOnly, query: phase.recallQuery, limit: 5 },
             owner.sessionContext(userOnly),
@@ -987,7 +985,7 @@ export async function runVivaLmeEval(
         dailyNotes: { noteInterval: 5, timezone: 'UTC', scanDays: 3650, dreamUnits: 5 },
         ...(opts.modelRoot && opts.runtimeRoot ? { embedding: { modelRoot: opts.modelRoot, runtimeRoot: opts.runtimeRoot } } : {}),
         route: () => ({ ...DEEPSEEK_DEFAULT }),
-        quiesce: async () => {},
+
         async compute(job, signal, tools) {
           return completeMemoryModel(meteredCtx, job, AbortSignal.any([AbortSignal.timeout(180_000), ...(signal ? [signal] : [])]), tools)
         },
@@ -1018,7 +1016,7 @@ export async function runVivaLmeEval(
           }
           simOffsetMs = (sess.timestampMs + Math.max(1, sess.messages.length) * 1000) - Date.now()
           const sessionId = sess.sessionId || randomUUID()
-          owner.initializeSession({ sessionId })
+          owner.bindIntakeSession(sessionId, null)
           activePhase = 'ingest'
           const tIng = performance.now()
           let turn = 0
@@ -1037,9 +1035,7 @@ export async function runVivaLmeEval(
               at,
               timezone: 'UTC',
               turn,
-              step: 1,
-              admitted: true,
-              inherited: false,
+              cwd: null,
             })
             await owner.completeTurn({
               sessionId,
@@ -1074,7 +1070,7 @@ export async function runVivaLmeEval(
           if (Number.isFinite(parsedQueryMs)) simOffsetMs = parsedQueryMs - Date.now()
         }
         const reader = randomUUID()
-        owner.initializeSession({ sessionId: reader })
+        owner.bindIntakeSession(reader, null)
         if (opts.modelRoot) await ensureVivaVectorsReady(owner, reader, path.join(dir, 'memory', 'memory.db'))
         activePhase = 'answer'
         answer = await runVivaAgenticAnswer(

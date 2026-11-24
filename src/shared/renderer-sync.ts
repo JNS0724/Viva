@@ -40,11 +40,3 @@ export function streamMark(value: unknown): StreamMark | null {
     && typeof item.eventCursor === 'number' && Number.isSafeInteger(item.eventCursor) && item.eventCursor >= 0
     ? { streamGeneration: item.streamGeneration, eventCursor: item.eventCursor } : null
 }
-
-/** These committed invalidations can make an earlier conversation snapshot unsafe to install or replay. */
-export function invalidatesConversationSnapshot(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false
-  const event = value as Record<string, unknown>
-  return event.type === 'reports_removed' || event.type === 'memory_changed'
-    && (event.traceSessions !== undefined || event.erasedOutputs !== undefined || event.erasedFeedIds !== undefined)
-}

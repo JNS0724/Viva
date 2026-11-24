@@ -12,7 +12,7 @@ function fixture() {
   const workspace = 'opaque:workspace/value', refs = [{ id: 'source', token: 'private-source-token' }]
   const doc: DocumentSnapshot = { id: 'opaque:digest/value', workspace, path: 'digest/wiki/original.md', revision: 'r1', usageVersion: 1,
     markdown: '---\nname: Original\n---\nAccepted private body.', sources: refs, enabled: true }
-  const note = { key: 'internal-session-key', workspace, path: 'daily/2026-11-17/card.md', day: '2026-11-17', revision: 1,
+  const note = { enabled: true, key: 'internal-session-key', workspace, path: 'daily/2026-11-17/card.md', day: '2026-11-17', revision: 1,
     file_revision: 'daily-r1', fileRevision: 'daily-r1', updatedAt: 1, processed: 0, title: 'Daily',
     markdown: 'Daily body.', document: '---\nname: Daily\n---\nDaily body.' }
   const docs = [doc], unavailable = new Set<string>(), forgotten = new Set<string>()
@@ -26,14 +26,13 @@ function fixture() {
       registered: () => docs.map(item => ({ ...item, state: forgotten.has(item.id) ? 'forgotten' : item.enabled ? 'active' : 'disabled' })),
       read: (_workspace, path, options) => docs.find(item => item.path === path && !forgotten.has(item.id)
         && !unavailable.has(item.id) && (item.enabled || options?.includeDisabled)) ?? null,
-      sourceRestrictions: () => [],
     }, refsCurrent: () => sourceAllowed, materialAllowed: () => sourceAllowed,
     reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
   })
-  const service = createMemoryFileManagement({ policy, documents: { registered: () => [], undoCandidate: () => candidate,
+  const service = createMemoryFileManagement({ policy, documents: { undoCandidate: () => candidate,
     fileRegistry: () => docs.map(({ id, workspace, path, revision, usageVersion, enabled }) =>
       ({ id, workspace, path, revision, usageVersion, state: forgotten.has(id) ? 'forgotten' : enabled ? 'active' : 'disabled' })),
-  }, workspaces: () => [workspace], hash })
+  }, daily: { allocations: () => [note] }, workspaces: () => [workspace], hash })
   const identity = { kind: 'digest' as const, workspace, id: doc.id }
   return { service, policy, doc, docs, refs, note, identity, unavailable, forgotten,
     denySource() { sourceAllowed = false }, setUndo(value: DocumentUndoCandidate | null) { candidate = value } }
@@ -89,9 +88,9 @@ test('write validation binds policy-only changes as well as content, usage and e
 
 test('daily management advertises no unsupported writes or undo', () => {
   const f = fixture(), item = f.service.list({ kind: 'daily' }, allow).items[0]!
-  assert.deepEqual(item.actions, { setEnabled: false, edit: false, forget: false, undo: null })
-  assert.throws(() => f.service.validate({ action: 'setEnabled', operationId: randomUUID(), identity: item.identity,
-    version: item.version, enabled: false }, allow), { code: 'invalid.text' })
+  assert.deepEqual(item.actions, { setEnabled: true, edit: false, forget: true, undo: null })
+  assert.equal(f.service.validate({ action: 'setEnabled', operationId: randomUUID(), identity: item.identity,
+    version: item.version, enabled: false }, allow).view.id, item.identity.id)
 })
 
 test('list pages are deterministic, redact bodies and tokens, and reject a changed snapshot or filter', () => {

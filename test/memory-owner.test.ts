@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import promises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 import { removeAbandonedMemoryTemps } from '../src/memory/node/memory-file-store.ts'
-import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
-import { createNativeOutputJournal } from '../src/memory/node/native-output-journal.ts'
 import { scratch } from './fixtures/scratch.js'
 import { eventually } from './fixtures/eventually.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
@@ -17,13 +15,12 @@ import type { MemoryFileMutationResult } from '../src/memory/contracts/file-mana
 
 function fixture(t: import('node:test').TestContext, hostNamespace?: string, options: Pick<Parameters<typeof openMemoryOwner>[0], 'dailyNotes' | 'diagnostics'> = {}) {
   const { dir: root, defer } = scratch(t, 'memory-owner-')
-  const owner = openMemoryOwner({ root, hostNamespace, ...options, compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root, hostNamespace, ...options, compute: () => null, route: () => null })
   defer(() => owner.close())
   return { owner, root, defer }
 }
 const source = (overrides: Partial<Parameters<ReturnType<typeof openMemoryOwner>['receiveSource']>[0]> = {}) => ({
-  sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, step: 1,
-  admitted: true, inherited: false, ...overrides,
+  sessionId: randomUUID(), messageId: randomUUID(), text: '我在深圳工作', at: Date.now(), timezone: 'Asia/Shanghai', turn: 1, cwd: null, ...overrides,
 })
 
 test('owner recovery and close do not wait for a stalled abandoned-temp directory read', { timeout: 15_000 }, async t => {
@@ -55,7 +52,7 @@ test('owner recovery and close do not wait for a stalled abandoned-temp director
     return release.promise.then(() => Reflect.apply(readdir, promises, args)).finally(returned.resolve)
   })
   syncBuiltinESMExports()
-  const options = { root, compute: () => null, route: () => null, quiesce: async () => {} }
+  const options = { root, compute: () => null, route: () => null }
   try {
     const owner = openMemoryOwner(options)
     defer(() => owner.close())
@@ -100,63 +97,8 @@ test('abandoned-temp cleanup only touches strict names in managed directories', 
   for (const file of preserved) assert.equal(existsSync(file), true, file)
 })
 
-test('host preferences, a derived index rebuild and its WAL cleanup preserve a foreground send', async t => {
-  const { owner, root, defer } = fixture(t)
-  await owner.recover()
-  await owner.runtime.wake()
-  const session = randomUUID()
-  owner.initializeSession({ sessionId: session })
-  const db = new DatabaseSync(join(root, 'memory.db'))
-  defer(() => db.close())
-  const permit = owner.acquireSend(randomUUID(), { session }, 'foreground')
-  permit.signal.addEventListener('abort', permit.settled, { once: true })
-  try {
-    assert.equal(await owner.handleHost('setOnboarding', { args: ['skipped'] }), 'skipped')
-    assert.ok(await owner.handleHost('rebuildIndexes', { args: [] }))
-    await owner.runtime.wake()
-    assert.equal(db.prepare("SELECT 1 FROM memory_file_index_meta WHERE key='erase-pending'").get(), undefined)
-    assert.equal(permit.current(), true)
-  } finally { permit.settled() }
-})
 
-test('completed and unchanged profile writes keep a foreground permit and preserve the current profile', async t => {
-  const { owner } = fixture(t)
-  await owner.recover()
-  const first = randomUUID(), equal = randomUUID()
-  const set = (role: string, id: string = randomUUID()) => owner.handleHost('setProfile', { args: [{ role }, id] })
-  await set('editor', first)
-  const current = await set('designer')
-  const session = randomUUID()
-  owner.initializeSession({ sessionId: session })
-  const permit = owner.acquireSend(randomUUID(), { session }, 'designer')
-  permit.signal.addEventListener('abort', permit.settled, { once: true })
-  try {
-    const revision = owner.runtime.revision()
-    assert.deepEqual(await set('editor', first), current)
-    assert.deepEqual(await set('designer', equal), current)
-    assert.equal((await owner.handleHost('getOperation', { operationId: equal }) as { state: string }).state, 'completed')
-    await assert.rejects(set('another value', first), { code: 'operation.conflict' })
-    assert.equal(owner.runtime.revision(), revision)
-    assert.ok(permit.current())
-  } finally { permit.settled() }
-})
 
-test('an unchanged profile request behind a pending replacement runs after the replacement', async t => {
-  const { owner } = fixture(t)
-  await owner.recover()
-  const set = (role: string) => owner.handleHost('setProfile', { args: [{ role }, randomUUID()] })
-  await set('editor')
-  const session = randomUUID()
-  owner.initializeSession({ sessionId: session })
-  const permit = owner.acquireSend(randomUUID(), { session }, 'editor')
-  const aborted = new Promise<void>(resolve => permit.signal.addEventListener('abort', () => resolve(), { once: true }))
-  const replacement = set('designer')
-  await aborted
-  const restore = set('editor')
-  permit.settled()
-  await Promise.all([replacement, restore])
-  assert.equal(owner.runtime.profile().role?.value, 'editor')
-})
 
 test('owner diagnostics preserve durable write, replay, undo and local deletion receipts without copying memory text', async t => {
   const events: DiagnosticEvent[] = []
@@ -198,69 +140,14 @@ test('a throwing owner observer cannot change source intake, write receipts or t
   await assert.rejects(owner.handleHost('editFile', { args: [{ operationId: randomUUID(), identity: first.identity,
     version: { ...detail.version, contentRevision: 'stale' }, text: '改成周一。' }] }), { code: 'revision.conflict' })
 })
-test('native output evidence retains exact file ranges across sends without persisting file names', () => {
-  const db = new DatabaseSync(':memory:')
-  try {
-    const outputs = createNativeOutputAttempts(db)
-    const attempt = { id: randomUUID(), session: 'session', generation: 0, turn: 1, step: 2, floor: 12 }
-    const first = source().messageId, second = source().messageId
-    const fileProof = (sourceId: string, start: number, end: number) => ({
-      sources: [sourceId], fileSources: [sourceId], epoch: 0, turnOnly: false,
-      files: [{ workspace: '0'.repeat(64), id: 'file', path: 'digest/wiki/sensitive-file-name.md', revision: 'rev',
-        usageVersion: 0, policyToken: 'policy', sourceRanges: [{ sourceId, spans: [{ start, end }] }] }],
-    })
-    outputs.record(attempt, fileProof(first, 2, 8))
-    outputs.record(attempt, fileProof(second, 9, 20))
-    outputs.record(attempt, fileProof(first, 2, 8))
-    const readsets = db.prepare('SELECT evidence FROM owner_native_output_reads').all()
-    assert.equal(readsets.length, 2)
-    assert.doesNotMatch(JSON.stringify(readsets), /sensitive-file-name|policy/)
-    assert.deepEqual(outputs.affected([{ sourceId: first, spans: [{ start: 8, end: 9 }] }]), [])
-    const overlapping = [{ sourceId: second, spans: [{ start: 12, end: 13 }] }]
-    assert.deepEqual(outputs.affected(overlapping), [{ ...attempt, result: { state: 'open' } }])
-    const terminal = { seq: 14, kind: 'attempt', digest: 'a'.repeat(64) } as const
-    // A settlement may arrive after an erasure was planned from the open receipt.
-    outputs.finish(attempt, terminal)
-    outputs.finish(attempt, terminal)
-    assert.deepEqual(outputs.affected(overlapping), [{ ...attempt, result: { state: 'settled', terminal } }])
-    assert.throws(() => outputs.finish(attempt, { ...terminal, seq: 15 }), /settlement conflicts/)
-    const abandonedBeforeSend = { ...attempt, id: randomUUID() }
-    outputs.finish(abandonedBeforeSend)
-    assert.throws(() => outputs.record(abandonedBeforeSend, fileProof(second, 9, 20)), /attempt identity conflicts/)
-    assert.equal(outputs.affected(overlapping).length, 1)
-  } finally { db.close() }
-})
-test('settled native output publication leaves an immutable receipt when another target arrives', () => {
-  const db = new DatabaseSync(':memory:')
-  try {
-    const invalidated: string[] = []
-    const journal = createNativeOutputJournal(db, session => invalidated.push(session))
-    const operation = journal.forOperation(randomUUID())
-    const session = randomUUID(), digest = (char: string) => char.repeat(64)
-    const first = { attempt: randomUUID(), seq: 32, before: digest('1'), after: digest('2'), trace: digest('3') }
-    const next = { attempt: randomUUID(), seq: 28, before: digest('4'), after: digest('5') }
-    const original = { before: digest('a'), after: digest('b'), events: digest('1') }
-    const followup = { before: digest('b'), after: digest('c'), events: digest('2') }
-    operation.prepare(session, { intent: original, replacements: [first] })
-    assert.throws(() => operation.prepare(session, { intent: followup, replacements: [first, next] }), /UNIQUE/u)
-    operation.finish(session, original)
-    operation.prepare(session, { intent: followup, replacements: [next] })
-    assert.deepEqual(operation.pendingSessions(), [session])
-    assert.deepEqual(operation.read(session).map(item => item.replacements), [[next], [first]])
-    assert.deepEqual(operation.provenProjection(first), first)
-    assert.equal(operation.provenProjection(next), undefined)
-    operation.finish(session, followup)
-    operation.complete([first.attempt, next.attempt])
-    assert.equal(journal.erased(next.attempt), true)
-    assert.deepEqual(invalidated, [session, session])
-  } finally { db.close() }
-})
+
+
 
 test('owner refuses a second process-local connection and can reopen after close', async t => {
   const { owner, root, defer } = fixture(t)
-  assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)
+  assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null }), /active owner/)
   await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  const next = openMemoryOwner({ root, compute: () => null, route: () => null })
   defer(() => next.close())
   await next.recover(); await next.close()
 })
@@ -286,54 +173,9 @@ test('completion promotes source once and keeps original capture time', async t 
   assert.equal(row?.outcome, 'note-pending'); assert.equal(row?.at, input.at)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_turns').get()?.n, 1)
 })
-test('source alias matches only exact trusted wire text and does not strip user markers', async t => {
-  const { owner } = fixture(t); await owner.recover()
-  const input = source({ text: '[user-message]literal[/user-message]' })
-  assert.equal((await owner.receiveSource(input)).text, input.text)
-  const next = source({ text: '[host]真实原文[/host]' }), id = randomUUID()
-  await owner.handleHost('sourceAlias', { operationId: id, sourceId: id, session: next.sessionId, conversation: 'host-thread', text: '真实原文', wireText: next.text })
-  assert.equal((await owner.receiveSource(next)).text, '真实原文')
-  await assert.rejects(owner.receiveSource({ ...next, text: 'changed' }), /identity conflicts/)
-})
-test('native source proof keeps trusted wire locations after its delivery payload is consumed', async t => {
-  const { owner, root, defer } = fixture(t); await owner.recover()
-  const input = source({ contentDigest: 'f'.repeat(64) }), sourceId = randomUUID()
-  const wireText = `${input.text}\n\n${input.text}`
-  await owner.handleHost('sourceAlias', { operationId: sourceId, sourceId, text: input.text, session: input.sessionId, conversation: 'host-thread' })
-  await assert.rejects(owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId] }), /unique verbatim/)
-  const spans = [{ start: input.text.length + 2, end: wireText.length }]
-  const delivery = await owner.handleHost('bindWireAlias', { args: [input.sessionId, input.text, wireText, sourceId, spans] }) as { wireText: string }
-  assert.equal((await owner.receiveSource({ ...input, text: delivery.wireText })).sourceId, sourceId)
-  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true }); defer(() => db.close())
-  const proof = db.prepare('SELECT source_hash,spans FROM owner_message_wires WHERE message=?').get(input.messageId)
-  assert.ok(proof?.source_hash)
-  assert.deepEqual(JSON.parse(String(proof.spans)), spans)
-  assert.equal(db.prepare('SELECT count(*) AS n FROM owner_aliases WHERE payload IS NOT NULL').get()?.n, 0)
-  const generated = await owner.handleHost('bindWireAlias', { args: [input.sessionId, 'id=', 'id='] }) as { wireText: string }
-  const message = source({ ...input, messageId: randomUUID(), text: generated.wireText })
-  assert.equal((await owner.receiveSource(message)).retrievalQuery, 'id=')
-  assert.equal((await owner.receiveSource(message)).retrievalQuery, 'id=')
-  assert.equal(db.prepare('SELECT source_hash FROM owner_message_wires WHERE message=?').get(message.messageId)?.source_hash, null)
-})
 
-test('prepared source change survives restart, denies send until host commit, and preserves live fork occurrence', async t => {
-  const { owner, root, defer } = fixture(t); await owner.recover()
-  const input = source(), receipt = await owner.receiveSource(input)
-  const fork = source({ ...input, sessionId: randomUUID(), inherited: true })
-  await owner.receiveSource(fork)
-  const operationId = randomUUID()
-  const prepared = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [] }) as { ticket: string }
-  assert.throws(() => owner.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'))
-  await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); defer(() => next.close())
-  await next.recover(); assert.equal(next.ready(), false)
-  await next.handleHost('commitSourceChange', { operationId, ticket: prepared.ticket })
-  assert.equal(next.ready(), true)
-  assert.equal(next.runtime.sourceCurrent(receipt.sourceId), true)
-  assert.equal(next.needsContextRecovery(input.sessionId), true)
-  assert.equal(next.needsContextRecovery(fork.sessionId), false)
-  const permit = next.acquireSend(randomUUID(), { session: fork.sessionId }, 'payload'); permit.settled()
-})
+
+
 test('failed revision validation is terminal and cannot poison owner recovery', async t => {
   const { owner, root } = fixture(t); await owner.recover()
   const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
@@ -343,166 +185,51 @@ test('failed revision validation is terminal and cannot poison owner recovery', 
     version: { ...detail.version, contentRevision: 'stale' }, text: '改成周一。' }] }))
   assert.equal((await owner.handleHost('getOperation', { operationId }) as { state: string }).state, 'failed')
   await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  const next = openMemoryOwner({ root, compute: () => null, route: () => null })
   try { await next.recover(); assert.equal(next.ready(), true) } finally { await next.close() }
 })
-test('whole-file deletion preserves the current chat and its authorized read across restart without host erasure', async t => {
-  const { owner, root, defer } = fixture(t, 'viva'); await owner.recover()
-  const text = '每周五提交周报。', reader = randomUUID()
-  owner.initializeSession({ sessionId: reader })
-  const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
-  const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
-  assert.match(owner.runtime.handle({ op: 'file_read', session: reader, id: detail.identity.id }, owner.sessionContext(reader)), /周报/)
-  const prior = await owner.handleHost('provenance', { args: [reader] }) as import('../src/memory/contracts/records.ts').MemoryProvenance
-  assert.ok(prior.files?.length)
-  const permit = owner.acquireSend(randomUUID(), { session: reader }, 'continue chat')
-  const command = { args: [{ operationId, identity: created.identity, version: detail.version }] }
-  try {
-    const receipt = await owner.handleHost('forgetFile', command)
-    assert.deepEqual(await owner.handleHost('forgetFile', command), receipt)
-    assert.equal(permit.current(), true)
-    assert.equal(permit.signal.aborted, false)
-    assert.equal(owner.runtime.readFile(created.identity), null)
-    assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
-  } finally { permit.settled() }
-  await owner.close()
-  const reopened = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null, quiesce: async () => {} })
-  defer(() => reopened.close()); await reopened.recover()
-  assert.deepEqual(await reopened.handleHost('authorizedProvenance', { session: reader, prior }), prior)
-  assert.equal(reopened.runtime.readFile(created.identity), null)
-  assert.doesNotMatch(reopened.runtime.handle({ op: 'file_read', session: reader, id: detail.identity.id }, reopened.sessionContext(reader)), /周报/)
-  const altered = { ...prior, files: prior.files!.map(file => ({ ...file, policyToken: 'different' })) }
-  assert.equal(await reopened.handleHost('authorizedProvenance', { session: reader, prior: altered }), null)
-  const withdrawal = randomUUID()
-  const { ticket } = await reopened.handleHost('prepareSourceChange', {
-    operationId: withdrawal, conversation: reader, ids: [detail.sources[0]!.sourceId], onlySources: true,
-  }) as { ticket: string }
-  await reopened.handleHost('commitSourceChange', { operationId: withdrawal, ticket })
-  assert.equal(await reopened.handleHost('authorizedProvenance', { session: reader, prior }), null)
-})
-test('project binding reaches the physical fence before any host source alias exists', async t => {
-  const { owner } = fixture(t); await owner.recover()
-  const session = randomUUID(), project = { kind: 'project' as const, id: 'project-a' }
-  assert.equal(await owner.handleHost('bindProject', { args: [session, project] }), true)
-  assert.deepEqual(owner.sessionContext(session).project, project)
-  const id = randomUUID()
-  await owner.handleHost('sourceAlias', { operationId: id, sourceId: id, session, conversation: 'actual-host-thread', text: '项目使用 TypeScript', project })
-  await owner.receiveSource(source({ sessionId: session, text: '项目使用 TypeScript' }))
-  const permit = owner.acquireSend(randomUUID(), { session }, 'payload'); permit.settled()
-})
-test('cold derived replay keeps its original read set instead of absorbing future session sources', async t => {
-  const { owner } = fixture(t); await owner.recover()
-  const first = source(); const a = await owner.receiveSource(first)
-  const derived = { sessionId: first.sessionId, messageId: randomUUID(), sourceIds: [a.sourceId] }
-  await owner.registerDerived(derived)
-  const b = await owner.receiveSource(source({ sessionId: first.sessionId }))
-  await owner.registerDerived({ ...derived, sourceIds: [a.sourceId, b.sourceId] })
-  const fork = randomUUID()
-  await owner.registerDerived({ ...derived, sessionId: fork, inherited: true, sourceIds: [] })
-  assert.deepEqual(owner.dispatch.snapshot(fork).sources, [a.sourceId])
-})
+
+
+
 test('custom question answer uses the owner native turn and joins only completed-turn processing', async t => {
   const { owner, root } = fixture(t); await owner.recover()
-  const original = source({ turn: 3 }); await owner.receiveSource(original)
+  const original = source({ turn: 2 })
+  await owner.receiveSource(original)
   const card = { id: 'drink', question: '你喜欢什么饮品？', header: '', multiSelect: false, options: [{ label: '茶' }] }
   const context = { kind: 'conversation' as const, id: original.sessionId }
-  const args = [original.sessionId, randomUUID(), [card], original.sessionId, context, undefined, 'show']
-  assert.equal(await owner.handleHost('authorizeGeneralQuestion', { args }), true)
-  args[6] = 'check'; assert.equal(await owner.handleHost('authorizeGeneralQuestion', { args }), true)
+  // The verified question from turn 3 can be answered before the sidecar
+  // receives turn 3 or finishes replaying turn 2.
   const operationId = randomUUID()
-  const answer = { operationId, session: original.sessionId, conversation: original.sessionId, text: '我喜欢茉莉花茶', question: card.question,
+  const answer = { operationId, session: original.sessionId, conversation: original.sessionId, text: '我喜欢茉莉花茶', turn: 3, cards: [card],
     requestId: 'request', questionId: card.id, context }
   assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
   assert.deepEqual(await owner.handleHost('acceptQuestionAnswer', answer), { sourceId: operationId })
+  await owner.completeTurn({ sessionId: original.sessionId, turn: 2, eventSeq: 5, sourceIds: [original.messageId], assistant: '', completed: true,
+    at: Date.now(), timezone: 'Asia/Shanghai' })
   await owner.completeTurn({ sessionId: original.sessionId, turn: 3, eventSeq: 10, sourceIds: [], assistant: '收到', completed: true, at: Date.now(), timezone: 'Asia/Shanghai' })
   const db = new DatabaseSync(join(root, 'memory.db'))
   try { assert.equal(db.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(operationId)?.outcome, 'note-pending') } finally { db.close() }
 })
-test('withdrawal tombstones an alias not yet delivered, including after process restart', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
-  const input = source(), id = randomUUID()
-  const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: 'host-thread', text: input.text }
-  await owner.handleHost('sourceAlias', alias)
-  const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: 'host-thread', ids: [] }) as { ticket: string }
-  await owner.handleHost('commitSourceChange', { operationId, ticket })
-  await assert.rejects(owner.receiveSource(input), /withdrawn/)
-  await assert.rejects(owner.handleHost('sourceAlias', alias), /withdrawn/)
-  await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
-  try {
-    await next.recover()
-    await assert.rejects(next.receiveSource(input), /withdrawn/)
-    const db = new DatabaseSync(join(root, 'memory.db'))
-    try { assert.equal(db.prepare('SELECT payload FROM owner_aliases WHERE id=?').get(id)?.payload, null) } finally { db.close() }
-  } finally { await next.close() }
-})
-test('memory rejection does not erase original-delivery admission and remains withdrawable', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
-  const input = source({ text: 'password: dummy-test-secret' })
-  const received = await owner.receiveSource(input)
-  const db = new DatabaseSync(join(root, 'memory.db'))
-  try {
-    const record = db.prepare('SELECT text,hash,outcome FROM memory_sources WHERE id=?').get(received.sourceId)
-    assert.equal(record?.text, null); assert.equal(record?.hash, null); assert.equal(record?.outcome, 'rejected')
-  } finally { db.close() }
-  const permit = owner.acquireSend(randomUUID(), { session: input.sessionId }, 'body'); permit.settled()
-  await owner.completeTurn({ sessionId: input.sessionId, turn: 1, eventSeq: 4, sourceIds: [received.sourceId], assistant: '', completed: true, at: input.at, timezone: input.timezone })
-  const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: input.sessionId, ids: [received.sourceId] }) as { ticket: string }
-  await owner.handleHost('commitSourceChange', { operationId, ticket })
-  assert.throws(() => owner.acquireSend(randomUUID(), { session: input.sessionId }, 'body'))
-})
+
+
 test('an independent owner completes file deletion without a native or host cleanup participant', async t => {
   const { owner } = fixture(t); await owner.recover()
   const created = await owner.handleHost('createFile', { args: [{ operationId: randomUUID(), text: '每周五提交周报。' }] }) as import('../src/memory/contracts/file-management.ts').MemoryFileMutationResult
   const detail = owner.runtime.readFile(created.identity)!, operationId = randomUUID()
   await owner.handleHost('forgetFile', { args: [{ operationId, identity: created.identity, version: detail.version }] })
-  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
   await owner.runtime.wake()
-  const result = await owner.handleHost('getOperation', { operationId }) as { sendFence: string, cleanup: string }
-  assert.equal(result.sendFence, 'complete')
+  const result = await owner.handleHost('getOperation', { operationId }) as { cleanup: string }
   assert.equal(result.cleanup, 'complete')
 })
 test('a replacement owner cannot drop a persisted host binding to bypass cleanup', async t => {
   const { owner, root, defer } = fixture(t, 'viva'); await owner.recover(); await owner.close()
-  assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /host binding/)
-  const next = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null, quiesce: async () => {} })
+  assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null }), /host binding/)
+  const next = openMemoryOwner({ root, hostNamespace: 'viva', compute: () => null, route: () => null })
   defer(() => next.close())
   await next.recover(); await next.close()
 })
-test('unique delivery identity separates revoked and new identical user text in the same session', async t => {
-  const { owner } = fixture(t); await owner.recover()
-  const session = randomUUID(), text = '我在深圳工作'
-  const first = randomUUID(), second = randomUUID()
-  await owner.handleHost('sourceAlias', { operationId: first, sourceId: first, session, conversation: 'old', text })
-  const oldWire = await owner.handleHost('bindWireAlias', { args: [session, text, text, first] }) as { wireText: string }
-  const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: 'old', ids: [first] }) as { ticket: string }
-  await owner.handleHost('commitSourceChange', { operationId, ticket })
-  await owner.handleHost('sourceAlias', { operationId: second, sourceId: second, session, conversation: 'new', text })
-  const newWire = await owner.handleHost('bindWireAlias', { args: [session, text, text, second] }) as { wireText: string }
-  assert.notEqual(newWire.wireText, oldWire.wireText)
-  await assert.rejects(owner.receiveSource(source({ sessionId: session, text: oldWire.wireText })), /withdrawn/)
-  const receipt = await owner.receiveSource(source({ sessionId: session, text: newWire.wireText }))
-  assert.equal(receipt.sourceId, second); assert.equal(receipt.text, text)
-})
-test('derived task requests retrieve with canonical query without becoming original evidence', async t => {
-  const { owner, root } = fixture(t); await owner.recover()
-  const session = randomUUID(), text = '请结合现有项目流程检查这份报告'
-  const { wireText } = await owner.handleHost('bindWireAlias', { args: [session, text, `[task]\n${text}`] }) as { wireText: string }
-  const input = source({ sessionId: session, text: wireText, admitted: false })
-  const received = await owner.receiveSource(input)
-  const admitted = await owner.receiveSource({ ...input, admitted: true })
-  assert.equal(received.retrievalQuery, text)
-  assert.equal(admitted.retrievalQuery, text)
-  assert.equal(admitted.handledIntent, true)
-  const db = new DatabaseSync(join(root, 'memory.db'))
-  try {
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources').get()?.n, 0)
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_occurrences').get()?.n, 0)
-  } finally { db.close() }
-})
+
+
 
 
 test('credential-bearing originals and undelivered aliases never persist plaintext in owner receipts', async t => {
@@ -512,22 +239,20 @@ test('credential-bearing originals and undelivered aliases never persist plainte
   const rejected = await owner.receiveSource(input)
   assert.equal(rejected.text, '')
   const id = randomUUID(), text = `原始凭据 ${secret}`
-  const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: input.sessionId, text }
+  const alias = { operationId: id, sourceId: id, session: input.sessionId, conversation: input.sessionId, text, wireText: `[host]${text}[/host]`, cwd: null }
   await owner.handleHost('sourceAlias', alias)
-  const wire = await owner.handleHost('bindWireAlias', { args: [input.sessionId, text, `[host]${text}[/host]`, id] }) as { wireText: string }
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM owner_aliases').all()).includes(secret))
     assert.ok(!JSON.stringify(db.prepare('SELECT * FROM owner_operations').all()).includes(secret))
   } finally { db.close() }
   await owner.close()
-  const restored = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  const restored = openMemoryOwner({ root, compute: () => null, route: () => null })
   try {
     await restored.recover()
-    const delivered = await restored.receiveSource(source({ sessionId: input.sessionId, text: wire.wireText }))
+    const delivered = await restored.receiveSource(source({ sessionId: input.sessionId, text: alias.wireText }))
     assert.equal(delivered.sourceId, id)
     assert.equal(delivered.text, '')
-    const permit = restored.acquireSend(randomUUID(), { session: input.sessionId }, 'body'); permit.settled()
   } finally { await restored.close() }
 })
 
@@ -535,7 +260,7 @@ test('an alias whose original is absent from wire is rejected before persisting 
   const { owner, root } = fixture(t); await owner.recover()
   const id = randomUUID()
   await assert.rejects(owner.handleHost('sourceAlias', { operationId: id, sourceId: id, session: id, conversation: id,
-    text: 'canonical original', wireText: 'different wire', origin: 'derived' }), /verbatim wire span/)
+    text: 'canonical original', wireText: 'different wire', cwd: null, origin: 'derived' }), /verbatim wire span/)
   const db = new DatabaseSync(join(root, 'memory.db'))
   try {
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM owner_aliases').get()?.n, 0)
@@ -549,7 +274,7 @@ test('completed daily capture resumes after restart without duplicate notes or c
   let online = false
   const stages: string[] = []
   const open = () => openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
-    route: () => online ? { provider: 'fake', model: 'fake' } : null, quiesce: async () => {},
+    route: () => online ? { provider: 'fake', model: 'fake' } : null,
     compute: job => {
       stages.push(job.stage)
       if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: '周报邮箱', markdown: '周报发送到指定邮箱。' }))
@@ -559,9 +284,9 @@ test('completed daily capture resumes after restart without duplicate notes or c
   let owner = open()
   defer(() => owner.close())
   await owner.recover()
-  const input = source({ text: '我唯一的周报提交邮箱是 amber@example.com', admitted: false })
+  const input = source({ text: '我唯一的周报提交邮箱是 amber@example.com' })
   const received = await owner.receiveSource(input)
-  await owner.receiveSource({ ...input, admitted: true })
+  await owner.receiveSource(input)
   await owner.runtime.wake()
   assert.equal(stages.length, 0, 'a live unfinished turn is not processed')
   const complete = { sessionId: input.sessionId, turn: 1, eventSeq: 3, sourceIds: [received.sourceId], assistant: '收到', completed: true, at: input.at, timezone: 'UTC' }
@@ -590,6 +315,30 @@ test('completed daily capture resumes after restart without duplicate notes or c
   assert.equal(stages.filter(stage => stage === 'note').length, 1)
 })
 
+test('a Git identity change within a turn never mixes note scope or stalls the durable cursor', async t => {
+  const { owner, root } = fixture(t)
+  await owner.recover()
+  const cwd = join(root, 'project'), git = join(cwd, '.git')
+  mkdirSync(join(git, 'objects'), { recursive: true })
+  writeFileSync(join(git, 'HEAD'), 'ref: refs/heads/main\n')
+  const original = source({ cwd, text: 'A verified project planning note.' })
+  const received = await owner.receiveSource(original)
+  rmSync(git, { recursive: true })
+  const reply = await owner.receiveSource(source({ cwd, sessionId: original.sessionId, text: 'An unverified interjection.' }))
+  assert.equal(reply.text, '')
+  await owner.completeTurn({ sessionId: original.sessionId, turn: 1, eventSeq: 4, sourceIds: [received.sourceId],
+    assistant: 'A response to the unverified interjection.', completed: true, at: original.at, timezone: original.timezone })
+  assert.equal(owner.intakeWatermark(original.sessionId).nextSeq, 5)
+  const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
+  try {
+    const sources = db.prepare('SELECT session, project, text FROM memory_sources').all()
+    assert.equal(sources.length, 1)
+    assert.equal(sources[0]?.text, original.text)
+    assert.ok(sources[0]?.project)
+    assert.equal(db.prepare('SELECT assistant_digest FROM memory_note_turns WHERE session=?').get(original.sessionId)?.assistant_digest, null)
+  } finally { db.close() }
+})
+
 test('completed ordinary input stays canonical when daily capture is disabled', async t => {
   const { owner, root, defer } = fixture(t, undefined, { dailyNotes: false })
   await owner.recover()
@@ -602,155 +351,4 @@ test('completed ordinary input stays canonical when daily capture is disabled', 
   assert.equal(owner.runtime.sourceCurrent(receipt.sourceId), true)
   assert.equal(owner.runtime.listFiles({ kind: 'daily' }).items.length, 0)
   assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
-})
-
-test('native generated child instructions retain parent evidence without becoming original facts across restart', async t => {
-  const { owner, root, defer } = fixture(t); await owner.recover()
-  const parent = source(), original = await owner.receiveSource(parent)
-  const child = source({ derived: true, text: '记住：模型编造的私人邮箱是 fabricated@example.com' })
-  owner.initializeSession({ sessionId: child.sessionId, parentSessionId: parent.sessionId })
-  assert.throws(() => owner.initializeSession({ sessionId: parent.sessionId, parentSessionId: child.sessionId }), /Session parent cycle/)
-  const receipt = await owner.receiveSource(child)
-  assert.equal(receipt.handledIntent, true); assert.equal(receipt.retrievalQuery, child.text)
-  assert.ok(owner.dispatch.snapshot(child.sessionId).sources.includes(original.sourceId))
-  await owner.completeTurn({ sessionId: child.sessionId, turn: 1, eventSeq: 3, sourceIds: [], assistant: '', completed: true, at: child.at, timezone: child.timezone })
-  const db = new DatabaseSync(join(root, 'memory.db')); defer(() => db.close())
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memory_sources WHERE session=?').get(child.sessionId)?.n, 0)
-  assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 0)
-  await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); defer(() => next.close())
-  await next.recover()
-  next.initializeSession({ sessionId: child.sessionId, parentSessionId: parent.sessionId })
-  assert.equal((await next.receiveSource({ ...child, live: false })).sourceId, receipt.sourceId)
-  const operationId = randomUUID()
-  const { ticket } = await next.handleHost('prepareSourceChange', { operationId, conversation: parent.sessionId, ids: [original.sourceId] }) as { ticket: string }
-  await next.handleHost('commitSourceChange', { operationId, ticket })
-  assert.throws(() => next.acquireSend(randomUUID(), { session: child.sessionId }, 'resumed child'))
-  await assert.rejects(next.receiveSource({ ...child, live: false }), /Derived dependencies unavailable/)
-})
-
-test('a cold parent admission reconciles child-only reads without a completed settlement receipt', async t => {
-  const { owner, root, defer } = fixture(t); await owner.recover()
-  const parent = source(); await owner.receiveSource(parent)
-  const child = randomUUID(); owner.initializeSession({ sessionId: child, parentSessionId: parent.sessionId })
-  const input = source({ sessionId: child, text: '我用蓝色笔记本' })
-  const original = await owner.receiveSource(input)
-  assert.ok(!owner.dispatch.snapshot(parent.sessionId).sources.includes(original.sourceId))
-  await owner.close()
-  const next = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }); defer(() => next.close())
-  await next.recover()
-  const permit = next.acquireSend(randomUUID(), { session: parent.sessionId }, 'persisted tool result'); permit.settled()
-  assert.ok(next.dispatch.snapshot(parent.sessionId).sources.includes(original.sourceId))
-  const operationId = randomUUID()
-  const { ticket } = await next.handleHost('prepareSourceChange', { operationId, conversation: child, ids: [original.sourceId] }) as { ticket: string }
-  await next.handleHost('commitSourceChange', { operationId, ticket })
-  assert.throws(() => next.acquireSend(randomUUID(), { session: parent.sessionId }, 'retry stale tool result'), /Child memory context/)
-
-})
-
-test('agent relay receipts preserve the sender readset and reject missing native provenance', async t => {
-  const { owner } = fixture(t); await owner.recover()
-  const target = source(), sender = source(); await owner.receiveSource(target)
-  const senderReceipt = await owner.receiveSource(sender)
-  const messageId = randomUUID()
-  await owner.registerDerived({ sessionId: target.sessionId, messageId, sourceIds: [], senderSessionId: sender.sessionId })
-  assert.ok(owner.dispatch.snapshot(target.sessionId).sources.includes(senderReceipt.sourceId))
-  assert.throws(() => owner.initializeSession({ sessionId: randomUUID(), parentSessionId: randomUUID() }), /Parent memory context/)
-  await assert.rejects(owner.registerDerived({ sessionId: target.sessionId, messageId: randomUUID(), sourceIds: [], senderSessionId: randomUUID() }), /Sender memory context/)
-  const operationId = randomUUID()
-  const { ticket } = await owner.handleHost('prepareSourceChange', { operationId, conversation: sender.sessionId, ids: [senderReceipt.sourceId] }) as { ticket: string }
-  await owner.handleHost('commitSourceChange', { operationId, ticket })
-  assert.throws(() => owner.acquireSend(randomUUID(), { session: target.sessionId }, 'relayed text'))
-  await assert.rejects(owner.registerDerived({ sessionId: target.sessionId, messageId, sourceIds: [], senderSessionId: sender.sessionId }), /Derived dependencies unavailable/)
-})
-
-test('cross-project transfer, inherit and history use commit evidence and session flag atomically and survive restart', async t => {
-  const { owner, root, defer } = fixture(t); await owner.recover()
-  const projectA = { kind: 'project' as const, id: 'project-a' }
-  const projectB = { kind: 'project' as const, id: 'project-b' }
-  const origin = source({ project: projectA.id, text: '甲项目的跨目录事实' })
-  const received = await owner.receiveSource(origin)
-  const evidence = owner.dispatch.snapshot(origin.sessionId)
-  const historyRow = { segmentId: 'seg-a', role: 'user', text: origin.text, sourceId: received.sourceId, sessionId: origin.sessionId }
-
-  const makeTarget = async () => {
-    const id = randomUUID()
-    assert.equal(await owner.handleHost('bindProject', { args: [id, projectB] }), true)
-    await owner.handleHost('recordSession', { args: [id] })
-    return id
-  }
-  const transferTarget = await makeTarget()
-  const inheritTarget = await makeTarget()
-  const historyTarget = await makeTarget()
-
-  // Simulate an interrupted write between marking cross-project and persisting evidence: the transaction rolls back both.
-  const db = new DatabaseSync(join(root, 'memory.db'))
-  try {
-    db.exec(`CREATE TRIGGER fail_cross_evidence BEFORE INSERT ON memory_session_sources
-      WHEN NEW.session IN ('${transferTarget}', '${inheritTarget}', '${historyTarget}')
-      BEGIN SELECT RAISE(ABORT, 'simulated mid-write failure'); END;`)
-    await assert.rejects(owner.handleHost('transfer', { args: [transferTarget, evidence, projectB, true, true] }), /simulated mid-write failure/)
-    await assert.rejects(owner.handleHost('inherit', { args: [origin.sessionId, inheritTarget, projectA, projectB, true, true] }), /simulated mid-write failure/)
-    await assert.rejects(owner.handleHost('useHistory', { args: [historyTarget, historyRow, true] }), /simulated mid-write failure/)
-    for (const id of [transferTarget, inheritTarget, historyTarget]) {
-      assert.deepEqual(owner.dispatch.snapshot(id).sources, [])
-      assert.equal(owner.coordination.sessionCrossProject(id), false)
-      assert.equal(await owner.handleHost('allowsSession', { args: [id, projectB] }), true)
-    }
-    db.exec('DROP TRIGGER fail_cross_evidence')
-  } finally { db.close() }
-
-  // Retry after recovery: all three commit both evidence and flag together and remain valid across owner restart.
-  assert.equal(await owner.handleHost('transfer', { args: [transferTarget, evidence, projectB, true, true] }), true)
-  assert.equal(await owner.handleHost('inherit', { args: [origin.sessionId, inheritTarget, projectA, projectB, true, true] }), true)
-  await owner.handleHost('useHistory', { args: [historyTarget, historyRow, true] })
-  // A same-project foreground fork inherits the flag atomically, while a cross-project fork, task fork, or native subagent child stays rejected.
-  const sameProjectFork = await makeTarget()
-  const crossProjectFork = randomUUID()
-  assert.equal(await owner.handleHost('bindProject', { args: [crossProjectFork, projectA] }), true)
-  await owner.handleHost('recordSession', { args: [crossProjectFork] })
-  assert.equal(await owner.handleHost('inheritFork', { args: [transferTarget, crossProjectFork, projectB, projectA, true] }), false)
-  assert.equal(owner.coordination.sessionCrossProject(crossProjectFork), false)
-  assert.equal(await owner.handleHost('inheritFork', { args: [transferTarget, sameProjectFork, projectB, projectB, true] }), true)
-  assert.equal(owner.coordination.sessionCrossProject(sameProjectFork), true)
-  assert.deepEqual(owner.dispatch.snapshot(sameProjectFork).sources, [received.sourceId])
-
-  const nativeParent = await makeTarget()
-  const nativeParentInput = source({ sessionId: nativeParent, project: projectB.id, text: '乙项目主会话输入' })
-  await owner.receiveSource(nativeParentInput)
-  assert.equal(await owner.handleHost('transfer', { args: [nativeParent, evidence, projectB, true, true] }), true)
-  const nativeChild = randomUUID()
-  assert.throws(() => owner.initializeSession({ sessionId: nativeChild, parentSessionId: nativeParent }), /Parent memory context is unavailable/)
-  assert.equal(owner.coordination.sessionCrossProject(nativeChild), false)
-  assert.deepEqual(owner.dispatch.snapshot(nativeChild).sources, [])
-
-  const taskSession = randomUUID()
-  await owner.handleHost('sourceAlias', { operationId: randomUUID(), sourceId: randomUUID(), session: taskSession,
-    conversation: taskSession, text: '乙项目后台任务指令', origin: 'derived', context: { kind: 'task', id: taskSession }, project: projectB })
-  assert.equal(await owner.handleHost('transfer', { args: [taskSession, evidence, projectB, true, true] }), true)
-  const taskFork = await makeTarget()
-  assert.equal(await owner.handleHost('inheritFork', { args: [taskSession, taskFork, projectB, projectB, true] }), false)
-  assert.equal(owner.coordination.sessionCrossProject(taskFork), false)
-  assert.deepEqual(owner.dispatch.snapshot(taskFork).sources, [])
-  await owner.close()
-
-  const reopened = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
-  defer(() => reopened.close())
-  await reopened.recover()
-  for (const id of [transferTarget, inheritTarget, historyTarget, sameProjectFork]) {
-    assert.deepEqual(reopened.dispatch.snapshot(id).sources, [received.sourceId])
-    assert.equal(reopened.coordination.sessionCrossProject(id), true)
-    assert.equal(await reopened.handleHost('allowsSession', { args: [id, projectB] }), true)
-    const permit = reopened.acquireSend(randomUUID(), { session: id }, 'after restart')
-    permit.settled()
-  }
-
-  // Withdrawing the cross-project source still invalidates every recovered target session.
-  const op = randomUUID()
-  const { ticket } = await reopened.handleHost('prepareSourceChange', { operationId: op, conversation: origin.sessionId, ids: [received.sourceId] }) as { ticket: string }
-  await reopened.handleHost('commitSourceChange', { operationId: op, ticket })
-  for (const id of [transferTarget, inheritTarget, historyTarget, sameProjectFork]) {
-    assert.equal(await reopened.handleHost('allowsSession', { args: [id, projectB] }), false)
-    assert.throws(() => reopened.acquireSend(randomUUID(), { session: id }, 'after withdrawal'))
-  }
 })

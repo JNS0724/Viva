@@ -55,13 +55,13 @@ test('real dsh started by the app\'s entry hands the registry token to pnpm, and
   const profileDir = ensureDshProfile({ dshHome, profile: 'viva-source-test', plugins, persona: PERSONA, pnpmCommand: pnpm, registry: REGISTRY })
 
   bridge = createAcpBridge({ routing: testRequests(),
-    memoryOwner, memoryRequired: true,
+    memoryOwner,
     dshBin: path.join(root, 'src', 'backend', 'dsh-entry.ts'), nodeBin: runtime.nodeBin, cwd: dir, profile: 'viva-source-test', overlay: vivaLayerFile(dshHome),
     env: dshEnv({ base: { ...process.env, FAKE_PNPM_LOG: log }, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'test-fake-key', DEEPSEEK_BASE_URL: llm.url } }),
     launch: launchMessage({ pnpmCommand: pnpm, registry: REGISTRY, registryToken: TOKEN, scopes: ['@company'] }),
     emit: () => {},
   })
-  await memoryOwner.prepare(async () => {})
+  await memoryOwner.prepare()
   await bridge.start()
   const inspected = await bridge.plugins('inspect', { spec: '@company/search' })
   assert.ok(inspected.ok, inspected.ok ? '' : inspected.problem)

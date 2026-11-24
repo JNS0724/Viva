@@ -1042,12 +1042,7 @@ agentEvents = createAgentEvents({
     if (state.memory.open) memoryActions.onMemoryChanged({})
   },
   refreshFiles: filesActions.filesAfterTurn,
-  memoryChanged: event => {
-    if (event.traceSessions) void historyActions.invalidateTrace(event.traceSessions)
-    if (event.erasedOutputs?.length) void historyActions.invalidateSearch()
-    if (event.erasedFeedIds?.length) void feedActions.erased(event.erasedFeedIds)
-    memoryActions.onMemoryChanged(event)
-  },
+  memoryChanged: memoryActions.onMemoryChanged,
   filesChanged: filesActions.onFilesChanged,
   refreshFeed: feedActions.loadFeed,
   rejected: issue => console.warn('[agent:event]', issue.reason, issue.tag),

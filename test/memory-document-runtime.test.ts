@@ -39,9 +39,8 @@ function fixture(t: TestContext, beforeStart?: (resources: ReturnType<typeof ope
     return { ...documents, recover() { if (failCleanup) throw new Error('test-cleanup-unavailable'); documents.recover() } }
   }
   const calls: MemoryCompute[] = []
-  const fileReads: import('../src/memory/contracts/records.ts').MemoryFileDependency[] = []
-  const memory = createMemoryRuntime({ store, resources, ...offlineMemorySafety, now, fileDependencies: (_session, refs) => fileReads.push(...refs), timezone: () => 'UTC', dailyNotes: { noteInterval: 1, timezone: 'UTC' },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+  const memory = createMemoryRuntime({ store, resources, ...offlineMemorySafety, now, timezone: () => 'UTC', dailyNotes: { noteInterval: 1, timezone: 'UTC' },
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     compute(job) {
       calls.push(job)
       if (job.stage !== 'note') return null
@@ -54,45 +53,11 @@ function fixture(t: TestContext, beforeStart?: (resources: ReturnType<typeof ope
     const source = store.readSource(id)!
     return { workspace: memorySourceWorkspace(source), reference: { id, token: memorySourceToken(source) } }
   }
-  return { advance: (ms: number) => { clock += ms }, file: join(dir, 'memory.db'), store, memory, documents, calls, ref, fileReads, setCleanupFailure: (value: boolean) => { failCleanup = value },
+  return { advance: (ms: number) => { clock += ms }, file: join(dir, 'memory.db'), store, memory, documents, calls, ref, setCleanupFailure: (value: boolean) => { failCleanup = value },
     beforePublish: (work: typeof beforePublish) => { beforePublish = work },
     wrapPhysicalRead: (wrap: (read: ReadMemoryPhysicalFile) => ReadMemoryPhysicalFile) => { readPhysical = wrap(physicalReader) } }
 }
 
-test('runtime rebuilds mixed daily notes from permitted fragments and keeps unrelated new input usable', async t => {
-  const f = fixture(t), sourceId = randomUUID(), text = '我住深圳。我喜欢茶。'
-  f.memory.accept(text, origin, sourceId)
-  f.memory.recordNoteTurn!(origin.session, [sourceId], '明白')
-  await f.memory.wake()
-  const { workspace, reference } = f.ref(sourceId)
-  const home = f.documents.commit({ operationId: 'home', workspace, path: 'digest/personal/home.md', expectedRevision: null, action: 'CREATE', markdown: '深圳', sources: [{ ...reference, spans: [{ start: 0, end: 5 }] }], reads: [] })
-  const tea = f.documents.commit({ operationId: 'tea', workspace, path: 'digest/personal/tea.md', expectedRevision: null, action: 'CREATE', markdown: '喜欢茶', sources: [{ ...reference, spans: [{ start: 5, end: text.length }] }], reads: [] })
-  await f.memory.wake()
-  const before = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '深圳' }, origin)) as { notes?: unknown[] }
-  assert.equal(before.notes?.length, 2, 'both the daily and digest evidence are searchable')
-  const revision = f.memory.revision()
-  await f.memory.setDocumentEnabled({ operationId: 'stop-home', workspace, documentId: home.documentId, expectedRevision: home.revision!, expectedUsageVersion: home.usageVersion, enabled: false })
-  assert(f.memory.revision() > revision)
-  assert.equal(f.memory.readDocument!(workspace, home.path), null)
-  assert.equal(f.memory.readDocument!(workspace, tea.path)?.markdown, '喜欢茶')
-  const after = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '深圳' }, origin)) as { notes?: unknown[] }
-  assert.equal(after.notes?.length ?? 0, 0)
-  const noteCalls = f.calls.filter(call => call.stage === 'note').length
-  const next = randomUUID()
-  f.memory.accept('今天还有一个安排', origin, next)
-  f.memory.recordNoteTurn!(origin.session, [next], '继续')
-  await f.memory.wake()
-  const laterCalls = f.calls.filter(call => call.stage === 'note').slice(1)
-  assert(f.calls.filter(call => call.stage === 'note').length > noteCalls, 'unrelated new input must still produce a note')
-  assert(laterCalls.every(call => !call.input.includes('深圳')), 'stopped fragments and the old mixed summary must not enter a model request')
-  assert(laterCalls.some(call => call.input.includes('喜欢茶')))
-  assert(laterCalls.some(call => call.input.includes('今天还有一个安排')))
-  const safe = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '安排' }, origin)) as { notes?: Array<{markdown:string}> }
-  assert(safe.notes?.some(note => note.markdown.includes('今天还有一个安排')))
-  const teaRecall = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '喜欢茶' }, origin)) as { notes?: Array<{markdown:string}> }
-  assert(teaRecall.notes?.some(note => note.markdown.includes('喜欢茶')))
-  assert(teaRecall.notes?.every(note => !note.markdown.includes('深圳')))
-})
 
 test('runtime undo advances the request revision, preserves disabled status and refuses stale usage versions', async t => {
   const f = fixture(t), id = randomUUID()
@@ -118,7 +83,8 @@ test('runtime deletion reports stopped until document replicas are physically cl
   const { workspace, reference } = f.ref(sourceId)
   const document = f.documents.commit({ operationId: 'digest', workspace, path: 'digest/wiki/project.md', expectedRevision: null, action: 'CREATE', markdown: '项目代号青岚', sources: [reference], reads: [] })
   f.setCleanupFailure(true)
-  f.memory.withdraw({ ids: [sourceId], conversation: origin.conversation, onlySources: true })
+  const file = f.memory.listFiles({ kind: 'digest' }).items[0]!
+  await f.memory.forgetFile({ operationId: randomUUID(), identity: file.identity, version: file.version }, () => {})
   assert(f.memory.cleanupPending() > 0)
   assert.equal(f.memory.readDocument!(workspace, document.path), null)
   assert(existsSync(join(f.store.fileRoot, workspace, document.path)))
@@ -128,22 +94,6 @@ test('runtime deletion reports stopped until document replicas are physically cl
   assert.equal(existsSync(join(f.store.fileRoot, workspace, document.path)), false)
 })
 
-test('an answer without assistant text cannot reintroduce stopped context through its question', async t => {
-  const f = fixture(t), id = randomUUID()
-  f.memory.accept('我住深圳', origin, id)
-  f.memory.recordNoteTurn!(origin.session, [id], '')
-  await f.memory.wake()
-  const { workspace, reference } = f.ref(id)
-  const first = f.documents.commit({ operationId: 'home', workspace, path: 'digest/personal/home.md', expectedRevision: null, action: 'CREATE', markdown: '深圳', sources: [reference], reads: [] })
-  await f.memory.setDocumentEnabled({ operationId: 'disable', workspace, documentId: first.documentId, expectedRevision: first.revision!, expectedUsageVersion: first.usageVersion, enabled: false })
-  await f.memory.wake()
-  const before = f.calls.length
-  const answerId = randomUUID()
-  f.memory.accept('是', origin, answerId, { requestId: 'question-request', questionId: 'question', question: '你还住深圳吗？', custom: true })
-  f.memory.recordNoteTurn!(origin.session, [answerId], '')
-  await f.memory.wake()
-  assert(f.calls.slice(before).every(call => !call.input.includes('深圳')), 'question context is derived even when there is no assistant message')
-})
 
 
 test('a cleared deletion leaves no digest plaintext in the database WAL', async t => {
@@ -151,62 +101,19 @@ test('a cleared deletion leaves no digest plaintext in the database WAL', async 
   const sourceId = randomUUID()
   f.memory.accept(marker, origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
-  f.documents.commit({ operationId: 'digest', workspace, path: 'digest/wiki/project.md', expectedRevision: null, action: 'CREATE', markdown: marker, sources: [reference], reads: [] })
-  f.memory.withdraw({ ids: [sourceId], conversation: origin.conversation, onlySources: true })
+  f.documents.commit({ operationId: 'digest', workspace, path: 'digest/wiki/project.md', expectedRevision: null, action: 'CREATE', markdown: marker + ' digest output', sources: [reference], reads: [] })
+  const file = f.memory.listFiles({ kind: 'digest' }).items[0]!
+  await f.memory.forgetFile({ operationId: randomUUID(), identity: file.identity, version: file.version }, () => {})
   await f.memory.wake()
   for (const file of [f.file, `${f.file}-wal`]) {
-    if (existsSync(file)) assert.equal(readFileSync(file).includes(marker), false, file)
+    if (existsSync(file)) assert.equal(readFileSync(file).includes(marker + ' digest output'), false, file)
   }
 })
 
-test('a forgotten question context never promotes its old short answer and does not block later independent notes', async t => {
-  const f = fixture(t), original = randomUUID()
-  f.memory.accept('我住深圳', origin, original)
-  f.memory.recordNoteTurn!(origin.session, [original], '')
-  await f.memory.wake()
-  const answer = randomUUID()
-  f.memory.accept('是', origin, answer, { requestId: 'question-request', questionId: 'question', question: '你还住深圳吗？', custom: true })
-  f.memory.recordNoteTurn!(origin.session, [answer], '')
-  await f.memory.wake()
-  f.memory.withdraw({ ids: [original], conversation: origin.conversation, onlySources: true })
-  await f.memory.wake()
-  const before = f.calls.length
-  const fresh = randomUUID()
-  f.memory.accept('我喜欢收集植物标本', origin, fresh)
-  f.memory.recordNoteTurn!(origin.session, [fresh], '')
-  await f.memory.wake()
-  const inputs = f.calls.slice(before).filter(call => call.stage === 'note').map(call => JSON.parse(call.input) as { turns: Array<{ user: Array<{sourceId:string,text:string}> }> })
-  assert(inputs.some(input => input.turns.some(turn => turn.user.some(source => source.sourceId === fresh))))
-  assert(inputs.every(input => input.turns.every(turn => turn.user.every(source => source.sourceId !== answer))))
-  const recalled = JSON.parse(f.memory.handle({ op: 'recall', session: origin.session, query: '植物标本' }, origin)) as { notes?: Array<{markdown:string}> }
-  assert(recalled.notes?.some(note => note.markdown.includes('植物标本')))
-  assert(recalled.notes?.every(note => !note.markdown.includes('深圳')))
-})
-
-test('a question erased before delayed first intake never turns its short answer into standalone evidence', async t => {
-  const f = fixture(t), answerId = randomUUID()
-  f.memory.accept('是', origin, answerId, { requestId: 'late-question', questionId: 'late-card', question: '你仍住在紫藤城吗？', custom: true })
-  // Simulate the canonical question already being cleared before this delayed note capture.
-  f.store.db.prepare('UPDATE memory_sources SET question=NULL WHERE id=?').run(answerId)
-  f.memory.recordNoteTurn!(origin.session, [answerId], '')
-  await f.memory.wake()
-  assert.equal(f.calls.filter(call => call.stage === 'note').length, 0)
-  const turn = f.store.db.prepare('SELECT question_valid,written FROM memory_note_turns WHERE id=?').get(answerId)
-  assert.equal(turn?.question_valid, 0)
-  assert.equal(turn?.written, 2)
-  const next = randomUUID()
-  f.memory.accept('我喜欢轻松的园艺活动', origin, next)
-  f.memory.recordNoteTurn!(origin.session, [next], '')
-  await f.memory.wake()
-  const call = f.calls.find(call => call.stage === 'note')
-  assert.ok(call)
-  assert.match(call.input, /园艺/)
-  assert.equal(call.input.includes('紫藤城'), false)
-  assert.equal((JSON.parse(call.input) as { turns: Array<{ user: Array<{ sourceId: string }> }> }).turns.flatMap(turn => turn.user).some(user => user.sourceId === answerId), false)
-})
 
 
-test('file mode shares digest recall, original line reads, node search, injection and dependency invalidation', async t => {
+
+test('file mode shares digest recall, original line reads, node search, injection and file-level disable', async t => {
   const f = fixture(t), sourceId = randomUUID()
   f.memory.accept('青岚发布需要先完成账单核对。', origin, sourceId)
   const { workspace, reference } = f.ref(sourceId)
@@ -230,18 +137,8 @@ test('file mode shares digest recall, original line reads, node search, injectio
   }
   const context = await f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 1, question: '账单核对' }, origin, () => true)
   assert(context.includes('账单核对'))
-  assert(f.fileReads.length > 0)
-  const reads = [...f.fileReads]
-  assert(f.memory.fileDependenciesCurrent(reads))
-  const acceptsFiles = await f.memory.loadFileEvidenceCheck(reads)
-  assert(acceptsFiles(reads, Date.now(), []))
-  f.wrapPhysicalRead(() => () => Promise.reject(new RequestTimeout()))
-  await assert.rejects(f.memory.loadFileEvidenceCheck(reads), RequestTimeout)
-  f.wrapPhysicalRead(read => read)
   await f.memory.setDocumentEnabled({ operationId: 'disable-release', workspace, documentId: receipt.documentId,
     expectedRevision: receipt.revision!, expectedUsageVersion: receipt.usageVersion, enabled: false })
-  assert.equal(f.memory.fileDependenciesCurrent(reads), false)
-  assert.equal(acceptsFiles(reads, Date.now(), []), false)
   assert.equal(JSON.parse(f.memory.handle({ op: 'file_read', session: origin.session, id: receipt.documentId }, origin)).status, 'unavailable')
   const after = await f.memory.handleModelRequest({ op: 'context', session: origin.session, turn: 2, question: '账单核对' }, origin, () => true)
   assert(!after.includes('青岚发布需要先完成账单核对'))
@@ -436,7 +333,6 @@ test('model file reads recheck the accepted usage version after asynchronous ver
       expectedRevision: document.revision!, expectedUsageVersion: document.usageVersion, enabled: false })
   } finally { release() }
   assert.equal(JSON.parse(await pending).status, 'unavailable')
-  assert.equal(f.fileReads.length, 0)
 })
 
 test('idle wakes leave unregistered Markdown and external edits untouched without scanning', async t => {
@@ -487,8 +383,6 @@ test('model lookups omit changed, missing and unreadable files while unrelated v
   for (const row of [changed, missing, timeout]) {
     assert.equal(JSON.parse(await request({ op: 'file_read', session: origin.session, id: row.documentId })).status, 'unavailable')
   }
-  assert.ok(f.fileReads.some(file => file.id === healthy.documentId))
-  assert.ok(f.fileReads.every(file => file.id === healthy.documentId))
   assert.equal(f.calls.length, 0)
   assert.equal(f.documents.registered(workspace).find(row => row.id === missing.documentId)?.path, missing.path)
 })

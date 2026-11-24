@@ -23,7 +23,7 @@ test('a recovered task selects its real brief after provider-converted system me
   const runtime = '<system-reminder>\nCurrent working directory: synthetic-workspace.\n</system-reminder>'
   const skills = '<system-reminder>\n<available_skills>synthetic catalog</available_skills>\n</system-reminder>'
   const brief = '核对任意任务的原文，不依赖任务名称。'
-  const delivered = `${brief}\n\n<memory-delivery id="${randomUUID()}" />`
+  const delivered = brief
   const blocks = [history, persona, delivered, runtime, skills, '<about-user>profile']
   const layouts = [blocks.map(human), [{ role: 'user', content: blocks.map(text => ({ type: 'text', text })) }],
     [human(`${history}${persona}\n${delivered}`), human(runtime), human(skills)]]
@@ -55,6 +55,19 @@ test('fixture reminder filtering preserves ordinary text, quoted markers and inc
     assert.deepEqual(currentTurnTextParts([text]), [text])
   }
   assert.deepEqual(currentTurnTextParts(['<system-reminder>\nRuntime notice.\n</system-reminder>']), [])
+})
+
+test('the fake model continues a requested clarification past a refreshed context after the tool result', () => {
+  const reply = decide({
+    tools: [{ name: 'ask_user_question' }],
+    messages: [
+      human('接入演示服务，再问我城市'),
+      { role: 'assistant', content: [{ type: 'tool_use', name: 'viva_mcp_add', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', content: 'denied' }] },
+      human('<system-reminder>\nThe following information replaces the earlier memory context.\n</system-reminder>'),
+    ],
+  })
+  assert.deepEqual(reply.tool, { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } })
 })
 
 test('the common fake emits exact text-only file remember and arbitrary recall inputs', () => {

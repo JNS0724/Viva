@@ -1,4 +1,4 @@
-import type { MemoryManagedFileVersion, MemoryFileListResult } from '../memory/contracts/file-management.ts'
+import type { MemoryFileListResult } from '../memory/contracts/file-management.ts'
 import type { MemoryFileDetailView } from '../shared/ipc-results.ts'
 import { MAX_MESSAGE_CHARS } from '../shared/text-limits.ts'
 import { t } from '../shared/i18n/translate.ts'
@@ -103,10 +103,9 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     dispatch({ type: 'memory_file_loading' })
     const current = () => active() && request === detailRequest && sameMemoryFileSelection(state().selection, selection)
     try {
-      const detail = await readPage(current, options => api.readMemoryFile(selection.identity, selection.restrictionId, options))
+      const detail = await readPage(current, options => api.readMemoryFile(selection.identity, options))
       if (!current()) return
-      if (!detail || !sameMemoryFile(detail.identity, selection.identity)
-        || detail.stoppedSnapshot?.restrictionId !== selection.restrictionId) throw new Error(t('main.memory.not.found'))
+      if (!detail || !sameMemoryFile(detail.identity, selection.identity)) throw new Error(t('main.memory.not.found'))
       dispatch({ type: 'memory_file_read', selection, detail })
     } catch (error) {
       if (current()) dispatch({ type: 'memory_file_read_failed', selection, message: error instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(error) })
@@ -131,15 +130,12 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     return refresh
   }
 
-  async function write(target: MemoryFileDetailView, command: (operationId: string) => Promise<unknown>, message: string, restoredRestriction?: string) {
+  async function write(target: MemoryFileDetailView, command: (operationId: string) => Promise<unknown>, message: string) {
     if (!active() || state().writing || state().detail !== target) return false
     const { selection } = state()
     dispatch({ type: 'memory_file_write_busy', busy: true })
     try {
       await command(globalThis.crypto.randomUUID())
-      if (active() && restoredRestriction && selection && sameMemoryFileSelection(state().selection, selection)) {
-        dispatch({ type: 'memory_file_select', selection: { identity: selection.identity } })
-      }
       showToast(message)
       return true
     } catch (error) {
@@ -211,7 +207,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       || !['confirm', 'unconfirmed', 'pending'].includes(forget.phase)) return false
     const { request } = forget
     if (forget.phase === 'confirm') {
-      if (!canForgetMemoryFile(detail) || !selection || selection.restrictionId || !sameMemoryFile(detail.identity, request.identity)
+      if (!canForgetMemoryFile(detail) || !selection || !sameMemoryFile(detail.identity, request.identity)
         || detail.version.contentRevision !== request.version.contentRevision || detail.version.usageVersion !== request.version.usageVersion
         || detail.version.policyToken !== request.version.policyToken) return false
     }
@@ -232,7 +228,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       }
       const { receipt, cleanup } = result
       if (receipt.operationId !== request.operationId || receipt.action !== 'FORGET'
-        || !sameMemoryFile(receipt.identity, request.identity) || receipt.restrictionId !== undefined) {
+        || !sameMemoryFile(receipt.identity, request.identity)) {
         throw new Error('Unexpected memory file deletion receipt')
       }
       if (current()) dispatch({ type: 'memory_file_forgotten', id, cleanup })
@@ -255,7 +251,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     askManagedMemoryForget(target: MemoryFileDetailView) {
       const { detail, selection, writing, editor, forget } = state()
       if (!active() || writing || editor || forget?.phase === 'unconfirmed' || detail !== target || !selection
-        || !canForgetMemoryFile(target) || selection.restrictionId) return
+        || !canForgetMemoryFile(target)) return
       dispatch({ type: 'memory_file_forget', forget: { id: ++forgetId, phase: 'confirm', title: target.title,
         request: { operationId: globalThis.crypto.randomUUID(), identity: target.identity, version: target.version } } })
     },
@@ -312,22 +308,14 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       const { selection } = state()
       if (active() && selection) return read(selection)
     },
-    setManagedMemoryEnabled(target: MemoryFileDetailView, enabled: boolean, restrictionId?: string) {
-      if (!target.actions.setEnabled || target.stoppedSnapshot && !restrictionId) return false
-      let version: MemoryManagedFileVersion = target.version
-      if (restrictionId) {
-        const restriction = target.restrictions?.find(item => item.id === restrictionId)
-        if (!enabled || !restriction || target.stoppedSnapshot?.restrictionId !== restrictionId) return false
-        version = restriction.version
-      } else if (target.identity.kind === 'daily' ? enabled || !target.actions.stop : target.hasProjection === false || target.enabled === enabled) {
-        return false
-      }
-      return write(target, operationId => api.setMemoryFileEnabled({ operationId, identity: target.identity, version, enabled,
-        ...(restrictionId ? { restrictionId } : {}) }), t(enabled ? 'memory-files.restored' : 'memory-actions.memory.stopped'), restrictionId)
+    setManagedMemoryEnabled(target: MemoryFileDetailView, enabled: boolean) {
+      if (!target.actions.setEnabled || target.enabled === enabled) return false
+      return write(target, operationId => api.setMemoryFileEnabled({ operationId, identity: target.identity, version: target.version, enabled }),
+        t(enabled ? 'memory-files.restored' : 'memory-actions.memory.stopped'))
     },
     undoManagedMemory(target: MemoryFileDetailView) {
       const changeId = target.actions.undo?.changeId
-      if (!changeId || target.stoppedSnapshot) return false
+      if (!changeId) return false
       return write(target, operationId => api.undoMemoryFile({ operationId, identity: target.identity, version: target.version, changeId }),
         t('memory-actions.memory.change.undone'))
     },

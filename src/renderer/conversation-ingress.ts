@@ -63,16 +63,5 @@ export function createConversationIngress<Event extends ContextEvent>({ current,
     receive, stateChanged, initialize() { initialized = true; failed = false; stateChanged() },
     pause() { initialized = false; failed = false; clear() },
     settled: () => initialized && !pending() && !held.length && !draining,
-    reviseHeld(project: (event: Event) => Event | undefined) {
-      held = held.flatMap(item => {
-        const event = project(JSON.parse(item.json) as Event)
-        if (event === undefined) return []
-        const json = JSON.stringify(event)
-        return [{ ...item, json, bytes: Math.max(json.length * 2, new TextEncoder().encode(json).byteLength) + 128 }]
-      })
-      heldBytes = held.reduce((sum, item) => sum + item.bytes, 0)
-      if (heldBytes > maxBytes) fail('capacity')
-      else age()
-    },
   }
 }

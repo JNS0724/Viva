@@ -56,27 +56,3 @@ test('answer with recordMemory: false validates and delivers the answer without 
   assert.deepEqual(sent.at(-1), { type: 'answer', id: 'q-agent', answers: [{ id: 'c', selected: ['上海'], custom: '代理转述' }] })
   assert.deepEqual(desk.pendingOf('task-1'), [])
 })
-
-test('refreshMemoryQuestions routes blocked task memory declines to onMemoryDeclineBlocked instead of resuming past active slots', async () => {
-  const sent: object[] = []
-  const events: object[] = []
-  const blocked: Array<[string, string]> = []
-  let valid = true
-  const desk = createQuestionDesk({
-    send: message => { sent.push(message) },
-    emit: event => { events.push(event) },
-    sessionId: () => 'main',
-    taskOf: session => session === 'task-s' ? 'task-1' : null,
-    allowGeneralQuestion: () => () => valid,
-    admitMemoryDecline: () => false,
-    onMemoryDeclineBlocked: (taskId, questionId) => { blocked.push([taskId, questionId]) },
-  })
-  await desk.receive(asked('q-mem', 'task-s'))
-  assert.equal(desk.pendingOf('task-1').length, 1)
-  valid = false
-  await desk.refreshMemoryQuestions()
-  assert.deepEqual(desk.pendingOf('task-1'), [], 'unauthorized question is immediately revoked from pending')
-  assert.deepEqual(blocked, [['task-1', 'q-mem']], 'blocked fallback cancels the task instead of resuming it')
-  assert.equal(sent.length, 0, 'does not immediately send decline to resume the task past MAX_RUNNING')
-  assert.equal(events.some(event => (event as { type?: string }).type === 'task_question_closed'), false, 'does not emit task_question_closed that would flip registry to running')
-})

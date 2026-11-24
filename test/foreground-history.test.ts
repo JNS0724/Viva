@@ -71,7 +71,6 @@ test('foreground history persists prompts, steers, authenticated streams, receip
   clock += 1500
   writer.receive({ type: 'update', context, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Read' } })
   writer.receive({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-1', kind: 'delta', index: 0, blockType: 'reasoning', text: '思考中' } })
-  history.bindGeneratedCopy('s-1', 'k-1', 'assistant', '这是图片分析结果', [{ sources: [promptId], fileRanges: [] }])
   writer.receive({
     type: 'update', context,
     update: { sessionUpdate: 'viva_stream', key: 'k-1', kind: 'settle', blocks: [{ type: 'reasoning', text: '思考中' }, { type: 'text', text: '这是图片分析结果' }] },
@@ -87,15 +86,8 @@ test('foreground history persists prompts, steers, authenticated streams, receip
   assert.deepEqual(afterTurn1[1]!.receipt, { ms: 2000, tools: 1, thoughts: 1, stopReason: 'end_turn' })
   assert.deepEqual(stream.snapshot(current.id, context).replay, [], 'turn_end advances backend checkpoint')
 
-  // 3. Unauthenticated assistant key is still blanked by the production proof gate
-  history.commit(current, [{ kind: 'upsert_assistant', message: { role: 'assistant', text: '未认证回复', receipt: null, key: 'forged-key' } }], { sourceSession: 's-1' })
-  assert.equal(history.get(current.id)!.messages.at(-1)?.text, '')
-  history.commit(current, [{ kind: 'remove_stream', key: 'forged-key' }], { sourceSession: 's-1' })
-  assert.equal(history.get(current.id)!.messages.length, 2)
-
   // 4. Silent background task report removes SILENT_REPLY without leaving a note
   writer.receive({ type: 'turn_started', by: 'task', context })
-  history.bindGeneratedCopy('s-1', 'k-silent', 'assistant', SILENT_REPLY, [{ sources: [], fileRanges: [] }])
   writer.receive({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-silent', kind: 'settle', blocks: [{ type: 'text', text: SILENT_REPLY }] } })
   writer.receive({ type: 'turn_end', stopReason: 'end_turn', finalReply: true, context })
   assert.equal(history.get(current.id)!.messages.length, 2)
@@ -113,7 +105,6 @@ test('foreground history persists prompts, steers, authenticated streams, receip
   assert.equal(history.get(current.id)!.messages.at(-1)?.sourceId, qSource)
 
   // 6. Cancelled turn appends a stop note even when an assistant stream settled earlier in the turn
-  history.bindGeneratedCopy('s-1', 'k-partial', 'assistant', '说了一半', [{ sources: [], fileRanges: [] }])
   writer.receive({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-partial', kind: 'settle', blocks: [{ type: 'text', text: '说了一半' }] } })
   writer.receive({ type: 'turn_end', stopReason: 'cancelled', context })
   const afterCancel = history.get(current.id)!.messages
@@ -125,7 +116,6 @@ test('foreground history persists prompts, steers, authenticated streams, receip
   // 7. Delegated turn without finalReply does not degrade to no_response
   delegated = true
   writer.receive({ type: 'turn_started', by: 'user', context })
-  history.bindGeneratedCopy('s-1', 'k-del', 'assistant', '已交给后台处理', [{ sources: [], fileRanges: [] }])
   writer.receive({ type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-del', kind: 'settle', blocks: [{ type: 'text', text: '已交给后台处理' }] } })
   writer.receive({ type: 'turn_end', stopReason: 'end_turn', finalReply: false, context })
   assert.equal(history.get(current.id)!.messages.at(-1)?.receipt?.stopReason, 'end_turn')
@@ -135,13 +125,11 @@ test('incremental commit handles beforeKey insertion shifting stars and report r
   const { history } = openMemoryHistory(t)
   let conv = history.create({ sessionId: 's-long', mode: 'live', model: 'V4', cwd: '/w' })
   conv = history.commit(conv, [{ kind: 'append_user', message: { role: 'user', text: '第一句', receipt: null } }])
-  history.bindGeneratedCopy('s-long', 'k-second', 'assistant', '后到的第二段', [{ sources: [], fileRanges: [] }])
   conv = history.commit(conv, [{ kind: 'upsert_assistant', message: { role: 'assistant', text: '后到的第二段', receipt: null, key: 'k-second' } }])
   history.setStar(conv.id, 1, true)
   history.addRecord({ conversationId: conv.id, reportId: 'r-1', at: 100, text: '后台汇报' }) // after_seq = 2
 
   // Insert an earlier committed stream before k-second
-  history.bindGeneratedCopy('s-long', 'k-first', 'assistant', '补回的第一段', [{ sources: [], fileRanges: [] }])
   conv = history.commit(conv, [{ kind: 'upsert_assistant', message: { role: 'assistant', text: '补回的第一段', receipt: null, key: 'k-first' }, beforeKey: 'k-second' }])
   assert.deepEqual(history.get(conv.id)!.messages.map(m => m.text), ['第一句', '补回的第一段', '后到的第二段'])
   assert.deepEqual(history.starsIn([conv.id]), [{ segmentId: conv.id, seq: 2 }], 'star moved with k-second')
@@ -260,7 +248,6 @@ test('foreground history keeps replay checkpoint intact on write failures and re
   writer.userPrompt({ text: '第一问', advanceCheckpoint: true })
   const beforeTurnCheckpoints = checkpoints
   failWrites = true
-  history.bindGeneratedCopy('s-err', 'k-reply', 'assistant', '完整回复', [{ sources: [], fileRanges: [] }])
   const startEvent = { type: 'turn_started', by: 'user', context }
   const streamEvent = { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-reply', kind: 'settle', blocks: [{ type: 'text', text: '完整回复' }] } }
   const endEvent = { type: 'turn_end', stopReason: 'end_turn', finalReply: true, context }
@@ -279,7 +266,6 @@ test('foreground history keeps replay checkpoint intact on write failures and re
 
   // 2. Very long keyed viva_stream reply (> 2_000_000 chars) persists cleanly and survives rewind copy via db.save()
   const longText = 'y'.repeat(2_050_000)
-  history.bindGeneratedCopy('s-err', 'k-long', 'assistant', longText, [{ sources: [], fileRanges: [] }])
   for (const event of [
     { type: 'turn_started', by: 'user', context },
     { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-long', kind: 'settle', blocks: [{ type: 'text', text: longText }] } },
@@ -311,7 +297,6 @@ test('foreground history keeps replay checkpoint intact on write failures and re
 
   // Subsequent user prompt and assistant reply still persist to SQLite, while checkpoint stays pinned behind the gap!
   writer.userPrompt({ text: '后续正常提问', advanceCheckpoint: true })
-  history.bindGeneratedCopy('s-err', 'k-next', 'assistant', '后续正常回复', [{ sources: [], fileRanges: [] }])
   for (const event of [
     { type: 'turn_started', by: 'user', context },
     { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-next', kind: 'settle', blocks: [{ type: 'text', text: '后续正常回复' }] } },
@@ -413,7 +398,6 @@ test('pending writes survive conversation switches and reset until committed for
   const ctxA = { conversationId: convA.id, sessionId: 's-a' }
   writer.userPrompt({ text: 'A 的问题', advanceCheckpoint: true })
   failWrites = true
-  history.bindGeneratedCopy('s-a', 'k-a', 'assistant', 'A 的回复', [{ sources: [], fileRanges: [] }])
   for (const event of [
     { type: 'turn_started', by: 'user', context: ctxA },
     { type: 'update', context: ctxA, update: { sessionUpdate: 'viva_stream', key: 'k-a', kind: 'settle', blocks: [{ type: 'text', text: 'A 的回复' }] } },
@@ -612,7 +596,6 @@ test('mid-turn reload with >200 settled viva_stream messages skips out-of-window
   for (let i = 0; i < total; i += 1) {
     const key = `k-${i}`
     const text = `第 ${i} 条`
-    history.bindGeneratedCopy('s-wide', key, 'assistant', text, [{ sources: [], fileRanges: [] }])
     const blocks = i === 0
       ? [{ type: 'reasoning', text: '首条推理' }, { type: 'text', text }]
       : [{ type: 'text', text }]
@@ -688,7 +671,6 @@ test('userPrompt queued mid-turn after assistant output updates lastTurnMessage 
 
   // Background report turn outputs assistant text, then user submits a queued image prompt before report turn ends
   writer.receive({ type: 'turn_started', by: 'task', context })
-  history.bindGeneratedCopy('s-report', 'k-rep', 'assistant', '后台报告正文', [{ sources: [], fileRanges: [] }])
   writer.receive({
     type: 'update', context,
     update: { sessionUpdate: 'viva_stream', key: 'k-rep', kind: 'settle', blocks: [{ type: 'text', text: '后台报告正文' }] },
@@ -748,7 +730,6 @@ test('long unfinished turn reclaims persisted viva_stream events so mid-turn rel
       stream.send(delta)
       writer.receive(delta)
     }
-    history.bindGeneratedCopy('s-long', key, 'assistant', fullText, [{ sources: [], fileRanges: [] }])
     const blocks = (i === 0 || i === 250)
       ? [{ type: 'reasoning', text: `推理-${i}` }, { type: 'text', text: fullText }]
       : [{ type: 'text', text: fullText }]
@@ -941,7 +922,6 @@ test('transient write failure on final turn_end retries automatically with backo
   t.after(() => writer.close())
 
   // Simulate a complete turn whose final turn_end commit fails transiently, followed by zero user activity.
-  history.bindGeneratedCopy('s-backoff', 'k-backoff', 'assistant', '延迟重试落盘回复', [{ sources: [], fileRanges: [] }])
   const events = [
     { type: 'turn_started', by: 'user', context },
     { type: 'update', context, update: { sessionUpdate: 'viva_stream', key: 'k-backoff', kind: 'settle', blocks: [{ type: 'text', text: '延迟重试落盘回复' }] } },
@@ -1101,7 +1081,6 @@ test('single long viva_stream overflowing before settle clears its loss once per
 
   // Settling k-1 clears k-1's loss, but k-2's unsettled loss MUST keep snapshot failing
   const k1Text = '最终长回复-1'
-  history.bindGeneratedCopy('s-single-big', 'k-1', 'assistant', k1Text, [{ sources: [], fileRanges: [] }])
   const settle1 = {
     type: 'update', context,
     update: { sessionUpdate: 'viva_stream', key: 'k-1', kind: 'settle', blocks: [{ type: 'reasoning', text: '完整推理-1' }, { type: 'text', text: k1Text }] },
@@ -1112,7 +1091,6 @@ test('single long viva_stream overflowing before settle clears its loss once per
 
   // Once k-2 settles and persists, both stream losses are cleared and turn_started is still intact
   const k2Text = '最终长回复-2'
-  history.bindGeneratedCopy('s-single-big', 'k-2', 'assistant', k2Text, [{ sources: [], fileRanges: [] }])
   const settle2 = {
     type: 'update', context,
     update: { sessionUpdate: 'viva_stream', key: 'k-2', kind: 'settle', blocks: [{ type: 'text', text: k2Text }] },
@@ -1127,7 +1105,6 @@ test('single long viva_stream overflowing before settle clears its loss once per
   // 2. A single >2 MiB settle itself triggers eviction inside stream.send() before writer.receive();
   //    once writer.receive() commits it, its stream loss clears and turn_started stays intact.
   const hugeText = '超长回复'.repeat(300_000) // ~1.2M chars -> ~2.4 MiB UTF-16 > 2 MiB replay byte limit
-  history.bindGeneratedCopy('s-single-big', 'k-huge', 'assistant', hugeText, [{ sources: [], fileRanges: [] }])
   const hugeSettle = {
     type: 'update', context,
     update: { sessionUpdate: 'viva_stream', key: 'k-huge', kind: 'settle', blocks: [{ type: 'text', text: hugeText }] },

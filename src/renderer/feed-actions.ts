@@ -48,11 +48,6 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
 
   return {
     loadFeed,
-    erased(ids: readonly string[]) {
-      query++
-      dispatch({ type: 'feed_erased', ids })
-      return loadFeed()
-    },
     /** Looked at and taken on: into the input, and no longer new. */
     async continueItem(id: string) {
       const item = itemOf(id)
@@ -61,7 +56,7 @@ export function createFeedActions({ api, getState, dispatch, errorMessage, fillC
         const origin = getState().conversationId
         const text = await api.continueFeed(id)
         if (getState().conversationId !== origin || getState().newTopicPending || !getState().feed.open
-          || getState().feed.erasedIds.includes(id) || !itemOf(id)) return
+          || !itemOf(id)) return
         fillComposer(text, id)
         if (item.seenAt === null) await api.markFeedSeen(id)
       })

@@ -170,7 +170,7 @@ contextBridge.exposeInMainWorld('agent', /** @satisfies {AgentApi} */ ({
   getDreamStatus: (operationId) => ipcRenderer.invoke('memory:dream-status', operationId),
   runDream: (operation) => ipcRenderer.invoke('memory:run-dream', operation),
   listMemoryFiles: (request, options) => ipcRenderer.invoke('memory:list-files', request, ...options ? [options] : []),
-  readMemoryFile: (identity, restrictionId, options) => ipcRenderer.invoke('memory:read-file', identity, restrictionId, ...options ? [options] : []),
+  readMemoryFile: (identity, options) => ipcRenderer.invoke('memory:read-file', identity, ...options ? [options] : []),
   setMemoryFileEnabled: (request) => ipcRenderer.invoke('memory:set-file-enabled', request),
   undoMemoryFile: (request) => ipcRenderer.invoke('memory:undo-file', request),
   createMemoryFile: (request) => ipcRenderer.invoke('memory:create-file', request),

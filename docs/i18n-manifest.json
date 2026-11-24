@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "reviewedOn": "2026-11-18",
+  "reviewedOn": "2026-11-24",
   "pairs": [
     {
       "en": "README.md",
@@ -77,8 +77,8 @@
     {
       "en": "docs/system-design.md",
       "zh": "docs/system-design.zh-CN.md",
-      "enHash": "03a59194a8d482fb2d076e81d24fd2e1c0aeff5ce35c94a73e953ddcc0aa0d24",
-      "zhHash": "0a0d43a6444dccae84f4afe29165225d0d1936e68f96a37d324298581a84409c"
+      "enHash": "fc96c2915b82dc861735546102b38685bdcfe1b66d45458be19eabeed6a806f4",
+      "zhHash": "6bdba95f827a52858b06b659b42ee73a1c45bcd64526412c234808f9f63e972c"
     },
     {
       "en": "docs/architecture-health.md",
@@ -107,20 +107,20 @@
     {
       "en": "docs/memory-owner-isolation.md",
       "zh": "docs/memory-owner-isolation.zh-CN.md",
-      "enHash": "b110aaa4433b7cc8ff5972b87ccee932bf0ba4603dc54cc17124bb14bb02daea",
-      "zhHash": "53c70f820ca9b8431176b1acea689213d792b84d0f19dc65033bb168aa76cbd8"
+      "enHash": "d03e8b2c5aec11e1f163e47fdd05353e7eedd821f09376371b6c6316e9c07a53",
+      "zhHash": "a3718c4651f1150f636ed13ea15c9bc3e74ef490412fa427af716e49690bd28a"
     },
     {
       "en": "docs/memory-reme-plan.md",
       "zh": "docs/memory-reme-plan.zh-CN.md",
-      "enHash": "b12bc7dbedc82ad4a540149208eff0ca6759b9e3302b609ab50553c34fbf0d43",
-      "zhHash": "b9b0a5f14f4f78e0577046349400bf4a7d908b6ea01b1d05b566ec2b425886cc"
+      "enHash": "0e3396b133d5fbeb1b3731a6472fe28d64478e984e45fe10eff2f38d38433ed1",
+      "zhHash": "3fd7eff8116ed6bb8335d2fde10431f6d3f2baf57a7c976ae97de906961d9dda"
     },
     {
       "en": "docs/logging-design.md",
       "zh": "docs/logging-design.zh-CN.md",
-      "enHash": "ab4783e48c5f9ff859e74976550f4582dbb3752d15807711d1047a9458793bdf",
-      "zhHash": "bcf694c56c0e04b3aa7d32e83eb3c8792a048daec75646323e249d9ca96aba76"
+      "enHash": "595befb1447c010c922c26616858b0923aa6463a701a288dcda4264756a2fc1a",
+      "zhHash": "005be20dcbd9e442c28346df9c85cd0b8f9fcddf194d3256b693f1a7555d40e9"
     }
   ],
   "bilingual": [

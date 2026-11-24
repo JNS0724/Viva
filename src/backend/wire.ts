@@ -21,7 +21,7 @@ export const SEQ_HEADER = 'x-viva-seq'
 export function readBudgetPosition(channel: string) {
   if (channel === 'memory:get' || channel === 'agent:snapshot') return 0
   if (channel === 'memory:list-files') return 1
-  if (channel === 'memory:read-file') return 2
+  if (channel === 'memory:read-file') return 1
   return undefined
 }
 /** Shared optional-diagnostic budget; the original receiver body limit is unchanged. */

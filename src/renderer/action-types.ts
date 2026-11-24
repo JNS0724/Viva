@@ -11,7 +11,7 @@ type SavedMessage = Pick<ThreadMessage, 'role' | 'text' | 'receipt' | 'images' |
 type ReadConversation = { id: string, messages: readonly SavedMessage[], offset?: number, total?: number, records?: readonly unknown[], updatedAt?: number, parentId?: string | null, createdAt?: number | null }
 type Settings = Partial<State['settings']>
 type Review = State['review']
-export type MemoryFileSelection = { identity: MemoryManagedFileIdentity, restrictionId?: string }
+export type MemoryFileSelection = { identity: MemoryManagedFileIdentity }
 export type MemoryFileDraft = { title: string, text: string }
 export type MemoryFileForget = {
   id: number
@@ -91,8 +91,6 @@ export interface ActionPayloads extends ConversationPayloads {
   history_query: { query: string }
   history_results: { query: string, results: State['history']['results'] }
   history_results_invalidated: {}
-  reports_removed: { reportIds: readonly string[] }
-  generated_outputs_removed: { copies: readonly { session: string, key: string }[] }
   toast_show: { toast: NonNullable<State['toast']> }
   toast_hide: { key: number }
   feed_open: { kind?: FeedPick['kind'], id?: string }
@@ -105,7 +103,6 @@ export interface ActionPayloads extends ConversationPayloads {
   feed_loaded: { items?: readonly FeedItemView[], schedules?: readonly ScheduleView[], sources?: readonly import('./feed-types.ts').FeedSourceView[], select?: FeedPick | null, resetDraft?: boolean }
   feed_busy: {}
   feed_failed: { message: string | null }
-  feed_erased: { ids: readonly string[] }
   files_listed: { path: string, entries: State['files']['folders'][string] }
   files_toggled: { path: string }
   files_selected: { path: string }

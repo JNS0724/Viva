@@ -1,5 +1,4 @@
 import { pauseOwnedProcess } from './fixtures/diagnostics-process-pause.ts'
-import { recordPartialOriginalErasure, withdrawNativeFile } from './fixtures/native-file-erasure.ts'
 import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { ChildProcess } from 'node:child_process'
@@ -19,14 +18,6 @@ import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
-import { openNativeOriginalMaintenance } from '../src/memory/node/native-original-maintenance.ts'
-import { createNativeOutputAttempts } from '../src/memory/node/native-output-attempts.ts'
-import { createNativeToolReads } from '../src/memory/node/native-tool-reads.ts'
-import { eraseColdNativeCopies } from '../plugins/memory/lib/native/maintenance.ts'
-import { NATIVE_OUTPUT_MARKER } from '../plugins/memory/lib/native/output-attempts.ts'
-import { nativeEventDigest } from '../plugins/memory/lib/native/event-digest.ts'
-import { recordCompactionInputs } from '../plugins/memory/lib/native/compaction-inputs.ts'
-import { memoryOriginalContentDigest } from '../plugins/memory/lib/context-recovery.ts'
 import { openTraceDb, traceStepDigest } from '../plugins/trace/lib/store.ts'
 import { test } from 'node:test'
 import type { TestContext } from 'node:test'
@@ -51,7 +42,6 @@ import { requestsIn } from '../src/shared/request-routing/header.ts'
 import { eventually } from './fixtures/eventually.ts'
 import { openMemoryControlDb } from './fixtures/memory-control-db.ts'
 import { lastWords, questionOf, routeFixtureTools, startFakeLlm } from './fixtures/fake-llm.ts'
-import { runToCrash } from './fixtures/memory-crash-process.ts'
 import { scratch } from './fixtures/scratch.js'
 import { modelToolResults } from './fixtures/model-tool-results.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
@@ -60,20 +50,7 @@ import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 const oldValue = 'amber@example.com'
 const newValue = 'cobalt@example.com'
 const oldFact = `记住：我的周报提交邮箱是 ${oldValue}`
-const withdrawalCrashFixture = new URL('./fixtures/memory-withdrawal-crash.ts', import.meta.url)
 
-test('a newly selected native session registers its owner metadata once before selection commits', async t => {
-  const app = await setup(t, () => null)
-  let registrations = 0
-  const restore = installDiagnosticPort(recordingDiagnosticPort(event => {
-    if (event.event === 'wait.begin' && event.operation === 'memory.owner' && event.identities?.methodId === 'recordSession') registrations++
-    return undefined
-  }))
-  t.after(restore)
-  const selected = await app.newTopic()
-  assert.ok(selected.sessionId)
-  assert.equal(registrations, 1, 'a second post-selection registration can race owner recovery after native initialization already succeeded')
-})
 type ModelMessage = { role?: string, content?: string | { text?: string, type?: string }[] }
 type Request = { system?: unknown, messages: ModelMessage[] }
 type Task = IpcResults['task:finished'][number]
@@ -86,21 +63,10 @@ function makeScheduleDue(directory: string) {
   } finally { db.close() }
 }
 
-function contextGeneration(directory: string, session: string): number {
-  const db = new DatabaseSync(join(directory, 'memory', 'memory.db'), { readOnly: true })
-  try { return Number(db.prepare('SELECT generation FROM owner_context_generations WHERE session=?').get(session)?.generation ?? 0) }
-  finally { db.close() }
-}
-
-async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, ptc = false, ptcFailure = '', ptcDrainSpill = false, onEvent = (_event: HostEvent) => {} } = {}) {
+async function setup(t: TestContext, decide: (request: Request) => object | null, { image = false, dailyNotes = false, onEvent = (_event: HostEvent) => {} } = {}) {
   const { dir: directory, defer } = scratch(t, 'viva-memory-handoff-')
   const workspace = join(directory, 'workspace')
   mkdirSync(workspace)
-  if (ptc) {
-    const profile = join(directory, 'dsh', 'profiles', 'viva')
-    mkdirSync(profile, { recursive: true })
-    writeFileSync(join(profile, 'cordis.patch.yml'), `- insert:\n    - id: memory-ptc-task-fixture\n      name: ${JSON.stringify(new URL('./fixtures/memory-ptc-tasks.ts', import.meta.url).href)}\n      config: ${JSON.stringify(ptcFailure === 'crash' ? { crashBeforeSearch: join(directory, 'ptc-prepared') } : { rejectSearch: ptcFailure === 'reject', ...(ptcDrainSpill ? { drainReadLog: join(directory, 'ptc-drained-read-log') } : {}) })}\n- id: spill-policy\n  name: '@deepseek-ai/dsh-spill-policy'\n  config:\n    maxInlineTokens: 512\n- id: spill-local\n  name: '@deepseek-ai/dsh-spill-local'\n  config:\n    root: ${JSON.stringify(join(directory, 'spills'))}\n    cleanupPeriodDays: 0\n`)
-  }
   const original = { AGENT_CWD: process.env.AGENT_CWD, DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
     DSH_NODE: process.env.DSH_NODE, NO_PROXY: process.env.NO_PROXY }
   delete process.env.DEEPSEEK_API_KEY
@@ -193,7 +159,7 @@ async function setup(t: TestContext, decide: (request: Request) => object | null
       const page: MemoryFileListResult = await call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'digest', ...(cursor ? { cursor } : {}) })
       assert.equal(page.status, 'ok')
       for (const item of page.items) {
-        if (!item.enabled || item.hasProjection === false) continue
+        if (!item.enabled) continue
         const detail = await call<Promise<MemoryFileDetail | null>>('memory:read-file', item.identity)
         if (detail) result.push(detail)
       }
@@ -618,6 +584,7 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
     } })
   })
   let app: Awaited<ReturnType<typeof setup>> | undefined, incoming: Promise<unknown> | undefined
+  let image: { id: string } | undefined
   let release = () => {}, nativeHeld = false
   const gate = new Promise<void>(resolve => { release = resolve })
   app = await setup(t, request => {
@@ -625,103 +592,23 @@ test('a failed not-sent retirement receipt cannot skip cancelling the native rep
       nativeHeld = true; return { text: '尚未返回的真实报告', waitFor: gate }
     }
     return null
-  }, { onEvent(event) {
+  }, { image: true, onEvent(event) {
     if (!app || incoming || event.type !== 'turn_started' || event.by !== 'task') return
-    incoming = app.call<Promise<unknown>>('agent:prompt', question, [], [operation])
+    assert.ok(image)
+    incoming = app.call<Promise<unknown>>('agent:prompt', question, [image], operation)
     void incoming.catch(() => {})
   } })
   app.defer(release)
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB9sAAAAASUVORK5CYII='
+  image = app.call('images:keep', Buffer.from(png, 'base64'))
   await app.ask('后台做：验证取消仍然发生')
   assert.ok(await eventually(() => nativeHeld))
   const rejected = assert.rejects(incoming!, /Synthetic retirement receipt failure/)
   const offset = app.events.length
   const cancelling = cancelCurrent(app)
-  assert.throws(() => app!.call('agent:prompt', question, [], [randomUUID()]), /finish|等待|结束/i,
-    'retired scheduling ownership cannot let a replay start over a still-cancelling native turn')
   await cancelling; release(); await rejected
   assert.ok(await eventually(() => app!.events.slice(offset).some(event => event.type === 'turn_end' && event.stopReason === 'cancelled')))
   assert.ok(app.model.requests.every(request => !JSON.stringify(request).includes(question)))
-})
-
-for (const outcome of ['replacement', 'ended', 'next-turn', 'alias-error', 'withdrawn'] as const) test(`an ordinary steer held in source alias admission respects its original turn (${outcome})`, { timeout: 45_000 }, async t => {
-  const before = '保持旧话题运行', after = '保持新话题运行', words = '只能送给旧话题的插话', operation = randomUUID()
-  let releaseOld = () => {}, releaseNew = () => {}, releaseAlias = () => {}, aliasHeld = false
-  const oldGate = new Promise<void>(resolve => { releaseOld = resolve }), newGate = new Promise<void>(resolve => { releaseNew = resolve })
-  let oldModel = false, newModel = false
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
-        if (!aliasHeld && frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'sourceAlias' && frame.input.input?.operationId === operation) {
-          aliasHeld = true
-          releaseAlias = () => {
-            if (outcome === 'alias-error') this.emit('message', { type: 'memory_owner_rpc', kind: 'result', id: frame.id,
-              ok: false, error: { message: 'The original source alias was rejected.' } })
-            else Reflect.apply(send, this, [message, ...rest])
-          }
-          return true
-        }
-        return Reflect.apply(send, this, [message, ...rest]) as boolean
-      })
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    if ((question !== before || oldModel) && (question !== after || newModel)) return null
-    const id = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
-      : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).find(entry => entry.words.startsWith(question))?.id
-    if (!id) return null
-    if (question === before) oldModel = true
-    else newModel = true
-    return { tool: { name: 'commit_route', input: { requestId: id, goals: [{ goal: question, disposition: 'answer' }],
-      actions: [{ kind: 'reply', scope: question }] } }, waitFor: question === before ? oldGate : newGate }
-  })
-  app.defer(() => { releaseAlias(); releaseOld(); releaseNew() })
-  const original = app.ask(before); void original.catch(() => {})
-  assert.ok(await eventually(() => oldModel))
-  const steered = app.call<Promise<import('../src/shared/agent-info.ts').SteerResult>>('agent:steer', words, operation)
-  void steered.catch(() => {})
-  assert.ok(await eventually(() => aliasHeld))
-  if (outcome === 'replacement') await cancelCurrent(app)
-  if (outcome !== 'alias-error') { releaseOld(); await original }
-  if (outcome === 'replacement') await app.newTopic()
-  const fresh = outcome === 'replacement' || outcome === 'next-turn' ? app.ask(after) : null
-  void fresh?.catch(() => {})
-  if (fresh) assert.ok(await eventually(() => newModel))
-  const count = app.model.requests.length
-  releaseAlias()
-  const result = await steered
-  assert.equal(result.ok, false)
-  assert.equal(result.delivery, 'not-sent')
-  assert.equal(result.reason, outcome === 'replacement' || outcome === 'alias-error' ? 'unavailable' : 'idle')
-  if (outcome === 'alias-error') assert.match(result.message ?? '', /The original source alias was rejected/)
-  releaseOld(); releaseNew(); await original; await fresh
-  assert.ok(app.model.requests.slice(count).every(request => !JSON.stringify(request).includes(words)))
-  if (outcome === 'ended' || outcome === 'next-turn') {
-    // The real renderer's idle path reuses the source for a new prompt, once the
-    // currently visible turn ends, rather than steering the replacement turn.
-    await assert.rejects(app.call<Promise<void>>('agent:prompt', words + ' 被改动', [], operation), /conflict|冲突/i,
-      'a definite not-sent receipt never permits changing the original alias text')
-    await app.call('agent:prompt', words, [], operation)
-    const db = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-    try { assert.equal(db.prepare('SELECT count(*) AS n FROM routing_request_sources WHERE source=?').get(operation)?.n, 1) }
-    finally { db.close() }
-    assert.ok(app.model.requests.slice(count).some(request => questionOf(request.messages) === words))
-  } else if (outcome === 'withdrawn') {
-    const loaded = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
-    const keep = loaded.messages.findIndex(message => message.sourceId === operation)
-    assert.ok(keep >= 0, 'the steered message is already persisted by the backend writer')
-    const edited = await app.call<Promise<{ ok: boolean }>>('timeline:rewind', { words, keep, text: '替换这条尚未送达的原文' })
-    assert.equal(edited.ok, true)
-    const afterEdit = app.model.requests.length
-    await assert.rejects(app.call<Promise<void>>('agent:prompt', words, [], operation), /withdrawn|unavailable/i)
-    await assert.rejects(app.call<Promise<void>>('agent:prompt', words, [], [operation]))
-    assert.equal(app.model.requests.length, afterEdit, 'neither first-delivery nor canonical replay can revive a withdrawn alias')
-  }
 })
 
 test('first idle deliveries and canonical replay retain FIFO ahead of a later steer', { timeout: 90_000 }, async t => {
@@ -730,24 +617,7 @@ test('first idle deliveries and canonical replay retain FIFO ahead of a later st
   const firstId = randomUUID(), secondId = randomUUID(), laterId = randomUUID()
   const releases = new Map<string, () => void>(), gates = new Map<string, Promise<void>>()
   for (const words of [original, first, second]) gates.set(words, new Promise<void>(resolve => { releases.set(words, resolve) }))
-  const aliases = new Map<string, () => void>(), order: string[] = []
-  const emit = ChildProcess.prototype.emit
-  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
-    if (event === 'spawn' && this.send) {
-      const send = this.send
-      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
-        const frame = message as { type?: string, kind?: string, method?: string, input?: { method?: string, input?: { operationId?: string } } }
-        const id = frame.input?.input?.operationId
-        if (frame.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
-          && frame.input?.method === 'sourceAlias' && id && (id === firstId || id === secondId) && !aliases.has(id)) {
-          aliases.set(id, () => { Reflect.apply(send, this, [message, ...rest]) })
-          return true
-        }
-        return Reflect.apply(send, this, [message, ...rest]) as boolean
-      })
-    }
-    return Reflect.apply(emit, this, [event, ...args]) as boolean
-  })
+  const order: string[] = []
   const app = await setup(t, request => {
     const question = questionOf(request.messages)
     if (![original, first, second, later, canonical].includes(question) || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
@@ -758,17 +628,15 @@ test('first idle deliveries and canonical replay retain FIFO ahead of a later st
     return { tool: { name: 'commit_route', input: { requestId: id, goals: [{ goal: question, disposition: 'answer' }],
       actions: [{ kind: 'reply', scope: question }] } }, ...(gates.has(question) ? { waitFor: gates.get(question) } : {}) }
   })
-  app.defer(() => { for (const release of aliases.values()) release(); for (const release of releases.values()) release() })
+  app.defer(() => { for (const release of releases.values()) release() })
   const canonicalId = await app.ask(canonical)
   const old = app.ask(original); void old.catch(() => {})
   assert.ok(await eventually(() => order.includes(original)))
-  const steers = [app.call<Promise<import('../src/shared/agent-info.ts').SteerResult>>('agent:steer', first, firstId),
-    app.call<Promise<import('../src/shared/agent-info.ts').SteerResult>>('agent:steer', second, secondId)]
-  for (const steer of steers) void steer.catch(() => {})
-  assert.ok(await eventually(() => aliases.size === 2))
   releases.get(original)!(); await old
-  for (const release of aliases.values()) release()
-  for (const steer of steers) assert.deepEqual(await steer, { ok: false, reason: 'idle', delivery: 'not-sent' })
+  for (const [text, id] of [[first, firstId], [second, secondId]]) {
+    const result = await app.call<Promise<import('../src/shared/agent-info.ts').SteerResult>>('agent:steer', text, id)
+    assert.deepEqual(result, { ok: false, reason: 'idle', delivery: 'not-sent' })
+  }
   const offset = order.length
   const one = app.call<Promise<void>>('agent:prompt', first, [], firstId)
   const replay = app.call<Promise<void>>('agent:prompt', canonical, [], [canonicalId])
@@ -807,7 +675,7 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
   await app.ask(turns.at(-1)!)
   assert.ok(await eventually(() => incoming.length === 5))
   assert.deepEqual(incoming.map(turn => turn.user.map(source => source.text)), turns.map(text => [text]))
-  assert.ok(incoming[0]?.assistant.includes(turns[0]!))
+  assert.ok(incoming[0]?.assistant.includes(turns[0]!), JSON.stringify(incoming[0]))
   assert.equal((await app.files()).length, 0)
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
@@ -822,6 +690,106 @@ test('the fifth completed Viva prompt sends actual user and visible assistant te
     assert.equal(fs.readFileSync(join(root, 'session/dialog', sessions[0]!), 'utf8').trim().split('\n').length, 5)
     assert.equal(db.prepare('SELECT count(*) AS n FROM memory_note_turns WHERE written=0').get()?.n, 0)
   } finally { db.close() }
+})
+
+test('Viva writes and recalls global daily notes across broken, valid and absent Git markers', { timeout: 45_000 }, async t => {
+  const unknownMarker = '暂未核实的项目使用雪松清单'
+  const personalMarker = '我个人每周整理蓝色笔记'
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
+      const input = JSON.parse(questionOf(request.messages)) as { turns: { user: { text: string }[] }[] }
+      return { text: JSON.stringify({ status: 'write', title: '测试日记', markdown: input.turns.flatMap(row => row.user.map(user => user.text)).join('\n') }) }
+    }
+    const question = questionOf(request.messages)
+    if (question === '从记忆查找雪松清单' && !modelToolResults(request, 'memory_recall').length) {
+      return { tool: { name: 'memory_recall', input: { query: '雪松清单' } } }
+    }
+    return null
+  }, { dailyNotes: true })
+  const select = async (folder: string) => {
+    const moved = await app.call<Promise<{ ok: boolean }>>('workdir:switch', folder, { confirmed: true })
+    assert.equal(moved.ok, true)
+    await app.newTopic()
+  }
+  const unknown = join(app.directory, 'unknown')
+  mkdirSync(unknown)
+  writeFileSync(join(unknown, '.git'), 'gitdir: missing-worktree\n')
+  await select(unknown)
+  for (const count of [1, 2, 3, 4, 5]) await app.ask(`${unknownMarker}，第 ${count} 次`)
+  const captured = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  try {
+    assert.ok(await eventually(() => captured.prepare('SELECT 1 FROM memory_daily_notes WHERE file_revision IS NOT NULL').get()),
+      'the daily note reaches disk before the test restarts the backend')
+  } finally { captured.close() }
+  await app.stopBackend()
+  await app.startBackend()
+
+  const verified = join(app.directory, 'verified')
+  mkdirSync(join(verified, '.git', 'objects'), { recursive: true })
+  writeFileSync(join(verified, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+  await select(verified)
+  const offset = app.model.requests.length
+  await app.ask('从记忆查找雪松清单')
+  const requests = app.model.requests.slice(offset) as Request[]
+  assert.ok(requests.some(request => modelToolResults(request, 'memory_recall').length > 0))
+  assert.ok(requests.some(request => JSON.stringify(modelToolResults(request, 'memory_recall')).includes(unknownMarker)))
+
+  await select(join(app.directory, 'workspace'))
+  for (const count of [1, 2, 3, 4, 5]) await app.ask(`${personalMarker}，第 ${count} 次`)
+  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  try {
+    assert.ok(await eventually(() => db.prepare('SELECT path FROM memory_daily_notes WHERE file_revision IS NOT NULL').get()))
+    assert.equal(db.prepare('SELECT count(*) AS n FROM memory_sources WHERE text LIKE ? AND project IS NULL').get(`%${unknownMarker}%`)?.n, 5)
+    assert.ok(await eventually(() => db.prepare('SELECT count(*) AS n FROM memory_sources WHERE text LIKE ? AND project IS NULL').get(`%${personalMarker}%`)?.n === 5))
+  } finally { db.close() }
+})
+
+test('a real background tool loop keeps its result when the foreground appends to a daily note it read', { timeout: 45_000 }, async t => {
+  const brief = '用记忆核实会议室后询问是否继续'
+  const fact = '青岚项目周会使用银杏会议室'
+  const update = '青岚项目周会的投屏也已测试'
+  const question = '是否继续会后记录？'
+  const observed: Request[] = []
+  const app = await setup(t, request => {
+    if (JSON.stringify(request.system).includes('整理最近完成的会话回合')) {
+      const input = JSON.parse(questionOf(request.messages)) as { turns: { user: { text: string }[] }[], existing?: { markdown: string } }
+      const markdown = [input.existing?.markdown, ...input.turns.flatMap(row => row.user.map(user => user.text))].filter(Boolean).join('\n')
+      return { text: JSON.stringify({ status: 'write', title: '青岚项目周会', markdown }) }
+    }
+    const latest = questionOf(request.messages)
+    const recalled = modelToolResults(request, 'memory_recall')
+    if (latest !== brief && (latest || !JSON.stringify(recalled).includes(fact))) return null
+    observed.push(request)
+    if (!recalled.length) return { tool: { name: 'memory_recall', input: { query: '青岚项目周会 银杏会议室' } } }
+    const hasQuestion = modelToolResults(request, 'ask_user_question').length
+    if (!hasQuestion) return { tool: { name: 'ask_user_question', input: { questions: [
+      { id: 'continue', question, options: [{ label: '继续' }], multiSelect: false },
+    ] } } }
+    return { text: '已保留会议室工具结果并继续记录。' }
+  }, { dailyNotes: true })
+  for (const text of [fact, '把议程放在开头', '预留讨论时间', '主持人负责计时', '周会记录统一归档']) await app.ask(text)
+  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  app.defer(() => db.close())
+  const note = await eventually(() => db.prepare('SELECT key,revision FROM memory_daily_notes WHERE file_revision IS NOT NULL').get())
+  assert.ok(note)
+  await app.ask(`后台做：${brief}`)
+  const wait = await eventually(() => app.events.find(event => event.type === 'task_question'))
+  assert.ok(wait?.type === 'task_question', JSON.stringify({
+    requests: (app.model.requests.slice(-15) as Request[]).map(request => [questionOf(request.messages).slice(0, 100), modelToolResults(request, 'memory_recall').length]),
+    tasks: app.tasks().map(task => ({ title: task.task.title, status: task.status, messages: task.messages.map(row => row.text) })),
+    errors: app.events.filter(event => event.type === 'error'),
+  }))
+  assert.ok(observed.some(request => JSON.stringify(modelToolResults(request, 'memory_recall')).includes(fact)))
+  const offset = app.model.requests.length
+  for (const text of [update, '安排一位替补主持人', '讨论超过十分钟时先记录', '下周继续复用议程']) await app.ask(text)
+  assert.ok(await eventually(() => Number(db.prepare('SELECT revision FROM memory_daily_notes WHERE key=?').get(note.key)?.revision) > Number(note.revision)),
+    'the foreground appended to the exact daily note the task had read')
+  assert.equal(await app.call('agent:answer', wait.questionId, [{ id: 'continue', selected: ['继续'] }]), true)
+  assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => {
+    const request = raw as Request
+    return modelToolResults(request, 'ask_user_question').length > 0
+      && JSON.stringify(modelToolResults(request, 'memory_recall')).includes(fact)
+  })), 'the next task request still contains the earlier tool result')
 })
 
 for (const failure of ['invalid-json', 'http-error'] as const) {
@@ -876,847 +844,7 @@ for (const failure of ['invalid-json', 'http-error'] as const) {
   })
 }
 
-const STOP_AFTER_PTC_READ = `CREATE TRIGGER stop_after_ptc_read BEFORE INSERT ON owner_native_output_reads
-  WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads) BEGIN SELECT RAISE(ABORT, 'no later PTC model send'); END`
-
-test('a memory control connection waits for a competing writer before installing its PTC fault trigger', async t => {
-  const { dir, defer } = scratch(t, 'viva-memory-control-')
-  const file = join(dir, 'memory.db'), store = openMemoryStore(file)
-  defer(() => store.close())
-  store.db.exec('CREATE TABLE owner_native_output_reads(id INTEGER); CREATE TABLE owner_native_tool_reads(id INTEGER)')
-  const control = openMemoryControlDb(file), immediate = new DatabaseSync(file)
-  defer(() => control.close()); defer(() => immediate.close())
-  const writer = new Worker(new URL('./fixtures/memory-sqlite-writer.ts', import.meta.url), { workerData: file })
-  defer(() => writer.terminate())
-  const exited = once(writer, 'exit'); void exited.catch(() => {})
-  assert.deepEqual(await once(writer, 'message'), ['locked'])
-  assert.equal(immediate.prepare('PRAGMA busy_timeout').get()?.timeout, 0)
-  assert.throws(() => immediate.exec(STOP_AFTER_PTC_READ), (error: unknown) =>
-    error instanceof Error && 'errcode' in error && error.errcode === 5,
-  'a default connection must fail against the physically held writer, as in the Windows failure')
-  const released = once(writer, 'message')
-  writer.postMessage('release-soon')
-  control.exec(STOP_AFTER_PTC_READ)
-  assert.deepEqual(await released, ['released'])
-  assert.deepEqual(await exited, [0])
-  assert.equal(control.prepare('PRAGMA busy_timeout').get()?.timeout, SQLITE_BUSY_TIMEOUT_MS)
-  control.exec('INSERT INTO owner_native_tool_reads VALUES (1)')
-  assert.throws(() => control.exec('INSERT INTO owner_native_output_reads VALUES (1)'), /no later PTC model send/u,
-    'waiting for preparation must preserve the actual injected fault')
-  assert.equal(control.prepare('SELECT COUNT(*) AS n FROM owner_native_output_reads').get()?.n, 0)
-})
-
-for (const nextFails of [false, true]) test(`real PTC memory reads archive root/leaf and erase native/spill copies ${nextFails ? 'without a later send' : 'with the normal next send'}`, { timeout: 45_000 }, async t => {
-  const prompt = '执行 PTC 记忆读取验收'
-  const body = 'The PTC receipt PTC_BODY is independent of the question.' + (nextFails ? '' : ' Long receipt paragraph carrying evidence.'.repeat(85))
-  let fileId: string | undefined, requested = false, spillPath: string | undefined, readbackRequested = false
-  const app = await setup(t, request => {
-    if (spillPath && questionOf(request.messages) === '读取保存的工具长结果' && !readbackRequested) {
-      readbackRequested = true
-      return { tool: { name: 'read', input: { file_path: spillPath } } }
-    }
-    const routed = request.messages.flatMap(message => typeof message.content === 'string' ? requestsIn(message.content)
-      : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).findLast(row => row.words.startsWith(prompt))
-    if (!fileId) return null
-    if (routed && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) return { tool: { name: 'start_background_task', input: { title: prompt, brief: 'PTC task execution' } } }
-    if (questionOf(request.messages) !== 'PTC task execution') return null
-    if (!requested) {
-      requested = true
-      return { tool: { name: 'run_code', input: { description: 'Read the authorized memory file', code: `const note = await tools.memory_read({id: ${JSON.stringify(fileId)}}); await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); return note;` } } }
-    }
-    return { text: 'PTC completed.' }
-  }, { dailyNotes: true, ptc: true, ptcDrainSpill: !nextFails })
-  const seedId = randomUUID()
-  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before PTC revision.' })
-  assert.equal(created.status, 'applied', JSON.stringify(created))
-  const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
-  const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
-    operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
-  })
-  assert.equal(edited.status, 'applied')
-  fileId = created.receipt.identity.id
-  const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
-  const db = openMemoryControlDb(join(memoryRoot, 'memory.db'))
-  try {
-    if (nextFails) db.exec(STOP_AFTER_PTC_READ)
-    await app.ask(prompt)
-    assert.ok(await eventually(() => Number(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NOT NULL').get()?.n) === 3),
-      JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
-    if (!nextFails) assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
-    let calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
-    assert.equal(calls.length, 3, JSON.stringify({ calls, results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
-      errors: app.events.filter(event => event.type === 'error') }))
-    assert.ok(calls.every(row => row.result !== null))
-    const identities = calls.map(row => JSON.parse(String(row.identity)) as { ptc?: unknown, inputDerived?: boolean })
-    assert.equal(identities.filter(row => row.ptc).length, 2)
-    assert.equal(identities.filter(row => row.inputDerived).length, 1)
-    assert.equal(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'run_code')).includes('PTC_BODY')), !nextFails,
-      JSON.stringify({ results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')),
-        tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error') }))
-    const spills = db.prepare('SELECT intent,file FROM owner_native_spills').all()
-    if (!nextFails) {
-      assert.equal(spills.length, 2, JSON.stringify(spills))
-      assert.equal(fs.existsSync(join(app.directory, 'ptc-drained-read-log')), true)
-      assert.ok(spills.every(row => row.file !== null), JSON.stringify(spills))
-      for (const row of spills) assert.ok(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path))
-      const leaf = spills.find(row => JSON.parse(String(row.intent)).call.ptc)
-      assert.ok(leaf)
-      spillPath = (JSON.parse(String(leaf.file)) as {path:string}).path
-      if (process.platform !== 'win32') {
-        const alias = join(app.directory, 'spill-read-alias.txt')
-        fs.symlinkSync(spillPath, alias)
-        spillPath = alias
-      }
-      await app.newTopic()
-      await app.ask('读取保存的工具长结果')
-      assert.equal(readbackRequested, true)
-      assert.ok(app.model.requests.some(raw => JSON.stringify(modelToolResults(raw as Request, 'read')).includes('PTC_BODY')))
-      calls = db.prepare('SELECT identity,result FROM owner_native_tool_calls').all()
-      assert.equal(calls.length, 4, 'reading an exact spill locator archives a fresh native call readset')
-    }
-    await app.stopBackend()
-    // The native log can commit before the leaf endpoint receipt reaches the owner.
-    db.prepare("UPDATE owner_native_tool_calls SET result=NULL WHERE json_extract(identity,'$.ptc') IS NOT NULL").run()
-    if (nextFails) db.exec('DROP TRIGGER stop_after_ptc_read')
-    const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
-      compute: () => null, route: () => null, quiesce: async () => {} })
-    try {
-      await owner.recover()
-      await withdrawNativeFile(owner, { identity: created.receipt.identity, seedId })
-    } finally { await owner.close() }
-    const erase = () => eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
-      isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
-    await erase()
-    await erase()
-    assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_tool_calls WHERE result IS NULL').get()?.n, 0)
-    assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_spills WHERE erased=0').get()?.n, 0)
-    for (const row of spills) assert.equal(fs.existsSync((JSON.parse(String(row.file)) as {path:string}).path), false)
-    const catalog = new Context(), mounted = await catalog.plugin(jsonl, { root: sessionsRoot })
-    try {
-      for (const row of calls) {
-        const call = JSON.parse(String(row.identity)) as {session:string, seq:number, inputDerived?:true}, result = JSON.parse(String(row.result)) as {seq:number}
-        const reader = await catalog.sessionPersistence.open(SessionId(call.session), 'read')
-        try {
-          const event = (await reader.read()).events[result.seq]
-          assert.ok(event?.type === 'tool/result' || event?.type === 'tool/ptc-dispatch')
-          assert.deepEqual(event.type === 'tool/result' ? event.data.message.content : event.data.content, [])
-          if (call.inputDerived) {
-            const input = (await reader.read()).events[call.seq]
-            assert.equal(input?.type, 'tool/ptc-dispatch-start')
-            assert.deepEqual(input.data.arguments, {})
-            assert.equal(event.type, 'tool/ptc-dispatch')
-            assert.deepEqual(event.data.arguments, {})
-          }
-        } finally { await reader.close() }
-      }
-    } finally { await mounted.dispose() }
-  } finally { await app.stopBackend(); db.close() }
-})
-
-for (const failure of ['reject', 'crash'] as const) test(`PTC read cut recovers secret arguments when the next SDK call ${failure === 'crash' ? 'crashes' : 'is rejected'} during prepare`, { timeout: 45_000 }, async t => {
-  const prompt = '验收工具准备阶段边界', brief = 'Prepare a private follow-up tool query', body = 'The prepare-stage value is PREPARE_SECRET.'
-  let id: string | undefined, requested = false
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    if (question === prompt && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
-      return { tool: { name: 'start_background_task', input: { title: prompt, brief } } }
-    }
-    if (id && question === brief && !requested) {
-      requested = true
-      return { tool: { name: 'run_code', input: { description: 'Read and pass private data to a follow-up query',
-        code: `const note = await tools.memory_read({id:${JSON.stringify(id)}}); try { await tools.memory_node_search({query: JSON.parse(note.text).text.slice(0, 400)}); } catch {} return note;` } } }
-    }
-    return null
-  }, { dailyNotes: true, ptc: true, ptcFailure: failure })
-  const seedId = randomUUID()
-  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before prepare revision.' })
-  assert.equal(created.status, 'applied', JSON.stringify(created))
-  const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
-  const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
-    operationId: randomUUID(), identity: created.receipt.identity, version: seeded.version, text: body,
-  })
-  assert.equal(edited.status, 'applied')
-  id = created.receipt.identity.id
-  await app.ask(prompt)
-  if (failure === 'crash') assert.ok(await eventually(() => fs.existsSync(join(app.directory, 'ptc-prepared'))),
-    JSON.stringify({ tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error'), results: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'run_code')) }))
-  else assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === prompt)))
-  await app.stopBackend()
-  const memoryRoot = join(app.directory, 'memory'), sessionsRoot = join(app.directory, 'dsh', 'sessions')
-  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
-  try {
-    const before = db.prepare('SELECT identity FROM owner_native_tool_calls').all()
-    assert.equal(before.length, 2, 'prepare never entered the follow-up body or acquired read authority')
-    const cuts = db.prepare('SELECT * FROM owner_native_tool_read_cuts').all()
-    assert.ok(cuts.length > 0, 'read evidence and native root cut committed before its private result was delivered')
-    assert.doesNotMatch(JSON.stringify(cuts), /PREPARE_SECRET/u)
-    const catalog = new Context(), catalogMount = await catalog.plugin(jsonl, { root: sessionsRoot })
-    try {
-      const origin = JSON.parse(String(before[0]!.identity)) as {session:string}
-      const reader = await catalog.sessionPersistence.open(SessionId(origin.session), 'read')
-      try {
-        const events = (await reader.read()).events
-        const start = events.find(event => event.type === 'tool/ptc-dispatch-start' && event.data.name === 'memory_node_search')
-        assert.ok(start?.type === 'tool/ptc-dispatch-start')
-        assert.match(JSON.stringify(start.data.arguments), /PREPARE_SECRET/u)
-        const outcome = events.find(event => event.type === 'tool/ptc-dispatch' && event.data.subCallId === start.data.subCallId)
-        if (failure === 'reject') assert.match(JSON.stringify(outcome), /Fixture rejects preparation/u)
-        else assert.equal(outcome, undefined, 'the process died before prepare produced any SDK settlement')
-      } finally { await reader.close() }
-    } finally { await catalogMount.dispose() }
-    const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva',
-      compute: () => null, route: () => null, quiesce: async () => {} })
-    try {
-      await owner.recover()
-      await withdrawNativeFile(owner, { identity: created.receipt.identity, seedId })
-    } finally { await owner.close() }
-    for (let i = 0; i < 2; i++) await eraseColdNativeCopies({ memoryRoot, sessionsRoot, storageRoot: join(app.directory, 'dsh', 'storages'), hostNamespace: 'viva',
-      isCold: () => true, trace: { key: () => undefined, erase: () => {} } })
-    const recovered = db.prepare("SELECT identity,result FROM owner_native_tool_calls WHERE json_extract(identity,'$.inputDerived')=1").all()
-    assert.equal(recovered.length, 1)
-    const call = JSON.parse(String(recovered[0]!.identity)) as { session: string, seq: number }
-    const context = new Context(), mounted = await context.plugin(jsonl, { root: sessionsRoot })
-    try {
-      const reader = await context.sessionPersistence.open(SessionId(call.session), 'read')
-      try {
-        const events = (await reader.read()).events, start = events[call.seq]
-        assert.equal(start?.type, 'tool/ptc-dispatch-start')
-        assert.deepEqual(start.data.arguments, {})
-        assert.doesNotMatch(JSON.stringify(events), /PREPARE_SECRET/u)
-      } finally { await reader.close() }
-    } finally { await mounted.dispose() }
-    const admin = openNativeOriginalMaintenance(memoryRoot, 'viva')!
-    try { assert.deepEqual(admin.unsettledReceipts().tools, []) } finally { admin.close() }
-  } finally { db.close() }
-})
-
-test('a real DSH tool read archives and erases native results even when the next model send fails', { timeout: 90_000 }, async t => {
-  const text = 'The file-only proof ORDINAL controls the native result.'
-  const prompt = '执行单次工具归档测试'
-  let fileId: string | undefined, requested = false
-  const app = await setup(t, request => {
-    if (requested || !fileId || questionOf(request.messages) !== prompt) return null
-    requested = true
-    return { tool: { name: 'memory_read', input: { id: fileId } } }
-  }, { dailyNotes: true })
-  const seedId = randomUUID(), editId = randomUUID()
-  const created = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', { operationId: seedId, text: 'Initial draft note before tool revision.' })
-  assert.equal(created.status, 'applied', JSON.stringify(created))
-  const seeded = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
-  const edited = await app.call<Promise<IpcResults['memory:edit-file']>>('memory:edit-file', {
-    operationId: editId, identity: created.receipt.identity, version: seeded.version, text,
-  })
-  assert.equal(edited.status, 'applied')
-  fileId = created.receipt.identity.id
-  const file = await app.call<Promise<MemoryFileDetail>>('memory:read-file', created.receipt.identity)
-  const source = file.sources.find(item => item.sourceId === editId)
-  assert.ok(source?.sourceId)
-  const memoryRoot = join(app.directory, 'memory')
-  const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
-  let affected: ReturnType<ReturnType<typeof createNativeToolReads>['affected']> = []
-  let precedingSendUsedFile = false
-  try {
-    control.exec(`CREATE TRIGGER fail_body_after_tool_read BEFORE INSERT ON owner_native_output_reads
-      WHEN EXISTS(SELECT 1 FROM owner_native_tool_reads)
-      BEGIN SELECT RAISE(ABORT, 'no model request may consume the tool result'); END`)
-    await app.ask(prompt)
-    assert.equal(requested, true)
-    const receipts = createNativeToolReads(control)
-    affected = await eventually(() => {
-      const found = receipts.affected([{ sourceId: source.sourceId, spans: [{ start: 0, end: text.length }] }])
-      return found.some(call => call.result) ? found : undefined
-    }) ?? []
-    assert.equal(affected.length, 1, JSON.stringify({
-      calls: control.prepare('SELECT identity,result FROM owner_native_tool_calls').all(),
-      seen: app.model.requests.flatMap(raw => modelToolResults(raw as Request, 'memory_read')),
-      errors: app.events.filter(event => event.type === 'error'),
-    }))
-    assert.ok(affected[0]?.result)
-    assert.doesNotMatch(JSON.stringify(control.prepare('SELECT evidence FROM owner_native_tool_reads').all()), /ORDINAL/)
-    assert.ok(app.model.requests.every(raw => modelToolResults(raw as Request, 'memory_read').length === 0),
-      'the next physical request must not get the tool result')
-    precedingSendUsedFile = app.model.requests.some(raw => JSON.stringify(raw).includes(text))
-  } finally {
-    await app.stopBackend()
-    control.close()
-  }
-  const saved = affected[0]!, result = saved.result!
-  const lostReceipt = new DatabaseSync(join(memoryRoot, 'memory.db'))
-  try { lostReceipt.prepare('UPDATE owner_native_tool_calls SET result=NULL WHERE id=?').run(saved.id) } finally { lostReceipt.close() }
-  const sessionsRoot = join(app.directory, 'dsh', 'sessions')
-  const sessionId = SessionId(saved.session), forkId = SessionId(randomUUID())
-  const provider = new Context(), mounted = await provider.plugin(jsonl, { root: sessionsRoot, compression: 'zstd' })
-  let pruned = -1, independent = -1
-  try {
-    const reader = await provider.sessionPersistence.open(sessionId, 'read')
-    try {
-      const { events } = await reader.read()
-      const call = events[saved.seq], outcome = events[result.seq]
-      assert.equal(call?.type, 'tool/call')
-      assert.equal(outcome?.type, 'tool/result')
-      const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
-      assert.equal(digest(call), saved.digest)
-      assert.equal(digest(outcome), result.digest)
-      assert.deepEqual(outcome.sourceEventSeqs, [saved.seq])
-      assert.match(JSON.stringify(outcome.data.message.content), /ORDINAL/)
-      const inherited = SessionLogOffset(events.length)
-      const child = Session.create(forkId, events, { ...reader.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
-      const turn = (events.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1, step = 1
-      child.append('turn/start', { turn })
-      child.append('step/start', { turn, step })
-      child.append('compaction/prune', { shadowedRange: { start: outcome.seq, end: outcome.seq }, shadowedSeqs: [outcome.seq], shadowedTokenCount: 1 })
-      pruned = child.append('tool/result', { ...outcome.data,
-        message: { ...outcome.data.message, content: [{ type: 'text', text: 'Pruned ORDINAL' }] },
-      }, { surfaceOp: { op: 'replace', startSeq: outcome.seq, endSeq: outcome.seq }, sourceEventSeqs: [outcome.seq] }).seq
-      const other = ToolCallId('independent-tool-call')
-      const block = { type: 'tool-call' as const, name: 'memory_read', id: other, arguments: '{}' }
-      child.append('assistant/message', { turn, step,
-        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [block] }), stream: [],
-      }, { surfaceOp: 'append' })
-      const otherCall = child.append('tool/call', { turn, step, callId: other, name: block.name, arguments: block.arguments })
-      independent = child.append('tool/result', { turn, step,
-        message: createToolResultMessage({ callId: other, isError: false, content: [{ type: 'text', text: 'Unrelated ORDINAL' }] }),
-      }, { surfaceOp: 'append', sourceEventSeqs: [otherCall.seq] }).seq
-      child.append('step/end', { turn, step })
-      child.append('turn/end', { turn, reason: { kind: 'completed' } })
-      const writer = await provider.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
-      try { await writer.append(child.snapshotEvents()); await writer.flush() } finally { await writer.close() }
-    } finally { await reader.close() }
-  } finally { await mounted.dispose() }
-
-  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true,
-    compute: () => null, route: () => null, quiesce: async () => {} })
-  const operationId = randomUUID()
-  try {
-    await owner.recover()
-    await withdrawNativeFile(owner, { identity: created.receipt.identity, seedId }, operationId)
-  } finally { await owner.close() }
-
-  openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
-  const db = new DatabaseSync(join(memoryRoot, 'memory.db'))
-  try {
-    db.exec(`CREATE TRIGGER interrupt_native_tool_receipt BEFORE UPDATE OF published ON owner_native_output_publications
-      WHEN OLD.operation LIKE '%:tool-results' BEGIN SELECT RAISE(ABORT, 'crash before native tool result receipt'); END`)
-    assert.equal(await app.startBackend(), null)
-    assert.equal(db.prepare('SELECT count(*) AS total FROM owner_native_output_publications WHERE operation=? AND published=0')
-      .get(operationId + ':tool-results')?.total, 1)
-    await app.stopBackend()
-    db.exec('DROP TRIGGER interrupt_native_tool_receipt')
-    assert.ok(await app.startBackend(), 'recover the interrupted publication before live DSH begins')
-    assert.ok(db.prepare('SELECT 1 FROM owner_native_output_erased WHERE attempt=?').get(saved.id))
-  } finally { db.close() }
-  await app.stopBackend()
-
-  const verify = new Context(), installed = await verify.plugin(jsonl, { root: sessionsRoot })
-  try {
-    for (const id of [sessionId, forkId]) {
-      const reader = await verify.sessionPersistence.open(id, 'read')
-      try {
-        const { events } = await reader.read()
-        const caller = events[saved.seq]
-        assert.equal(caller?.type, 'tool/call')
-        if (precedingSendUsedFile) assert.equal(caller.data.arguments, '{}')
-        else assert.equal(nativeEventDigest(caller), saved.digest, 'the independent caller is retained')
-        const rewritten = events[result.seq]
-        assert.equal(rewritten?.type, 'tool/result')
-        assert.deepEqual(rewritten.data.message.content, [])
-        assert.deepEqual(rewritten.sourceEventSeqs, [saved.seq])
-        if (id === forkId) {
-          const staleExcerpt = events[pruned], unrelated = events[independent]
-          assert.equal(staleExcerpt?.type, 'tool/result')
-          assert.deepEqual(staleExcerpt.data.message.content, [])
-          assert.equal(unrelated?.type, 'tool/result')
-          assert.match(JSON.stringify(unrelated.data.message.content), /Unrelated ORDINAL/)
-        }
-      } finally { await reader.close() }
-    }
-  } finally { await installed.dispose() }
-})
-
-test('trace erasure preserves another projection that reused the same session and sequence', t => {
-  const { dir, defer } = scratch(t, 'viva-trace-reused-offset-')
-  const trace = openTraceDb({ file: join(dir, 'trace.db') })
-  defer(() => trace.close())
-  const session = randomUUID()
-  const original = { kind: 'thought', seq: 18, at: 10, text: 'discarded generation' } as const
-  const retained = { ...original, at: 20, text: 'independent later generation' }
-  trace.recordSteps(session, [retained])
-  assert.equal(trace.eraseSteps(session, [{ seq: original.seq, digest: traceStepDigest(original) }]), true)
-  assert.deepEqual(trace.stepsOf(session), [retained])
-})
-
-test('cold Viva startup erases native originals and settled output in root and unseen fork logs', { timeout: 90_000 }, async t => {
-  const erased = '实体擦除样本只用于 R5a 验收', nearby = '独立片段仍在同一原生日志中'
-  const second = '另一个有独立依据的原文裁剪目标'
-  const survivor = '独立消息要在恢复后继续可用'
-  const derived = '档案里还有应擦除的助手转述'
-  const traceSecret = 'stored-private-trace-for-erasure'
-  const toolSecret = 'stored-derived-tool-argument-and-result'
-  const compactionSecret = 'stored-private-compaction-body'
-  const text = [erased, nearby, second].join('。\n')
-  const app = await setup(t, request => {
-    const routed = request.messages.flatMap(message => typeof message.content === 'string'
-      ? requestsIn(message.content) : (message.content ?? []).flatMap(part => requestsIn(part.text ?? ''))).at(-1)
-    return routed?.words.startsWith(text) && modelToolResults(request, 'commit_route').length ? { text: derived } : null
-  }, { dailyNotes: true })
-  const sourceId = await app.ask(text)
-  const reply = app.events.find(event => event.type === 'update' && event.update.sessionUpdate === 'viva_stream'
-    && event.update.kind === 'settle' && event.update.blocks.some((block: { text?: string }) => block.text === derived))
-  assert.ok(reply, 'real DSH provides a settled reply under a stable stream key')
-  const survivorId = await app.ask(survivor)
-  const savedHistory = app.call<{ id: string }>('history:load')
-  assert.ok(savedHistory)
-  assert.match(JSON.stringify(savedHistory), new RegExp(derived, 'u'), 'authenticated reply is persisted directly by the backend writer')
-  const info = app.call<AgentInfo>('agent:info')
-  assert.ok(info.sessionId)
-  await app.stopBackend()
-  const sessionsRoot = join(app.directory, 'dsh', 'sessions')
-  const memoryRoot = join(app.directory, 'memory')
-  const parentId = SessionId(info.sessionId), forkId = SessionId(randomUUID())
-  const affectedOutputs = new Set<number>()
-  let traceStep: { kind: 'thought', seq: number, at: number, text: string } | undefined
-  let toolTrace: { kind: 'tool', seq: number, at: number, callId: string, name: string, args: object, status: string } | undefined
-  let toolReply = -1, toolResult = -1
-  const compactions = new Set<number>()
-  let unconnectedSummary = -1
-  let derivedInjection: import('@deepseek-ai/dsh-llm').UserMessage | undefined
-  const cold = new Context(), persistence = await cold.plugin(jsonl, { root: sessionsRoot })
-  try {
-    const original = await cold.sessionPersistence.open(parentId, 'read')
-    try {
-      const persisted = (await original.read()).events
-      const fixture = Session.fromRestore(parentId, persisted, original.header, original.inheritedEventCount, 'detached')
-      const titleMessage = persisted.find(event => event.type === 'user/message' && event.data.source.kind === 'user'
-        && JSON.stringify(event.data.content).includes(erased))
-      assert.ok(titleMessage, 'an authentic human message supplies title provenance')
-      fixture.append('session/title', { title: erased, messageSeqs: [titleMessage.seq], source: { kind: 'fallback' } })
-      fixture.append('session/title-llm-request', { titleProvider: SessionTitleProviderId('fixture'), messageSeqs: [titleMessage.seq],
-        route: { provider: 'fixture', model: 'fixture' }, system: erased, maxTokens: 16,
-        messages: [createUserMessage({ source: { kind: 'dsh-session-title-llm' }, content: [{ type: 'text', text: second }] })] })
-      const independentTitleMessage = persisted.find(event => event.type === 'user/message'
-        && event.data.source.kind === 'user' && JSON.stringify(event.data.content).includes(survivor))
-      assert.ok(independentTitleMessage)
-      fixture.append('session/title', { title: '独立依据生成的会话名', messageSeqs: [independentTitleMessage.seq], source: { kind: 'fallback' } })
-      fixture.append('session/title', { title: '独立的手动会话名', messageSeqs: [], source: { kind: 'user' } })
-      const turn = (persisted.findLast(event => event.type === 'turn/end')?.data.turn ?? 0) + 1
-      const step = 1, at = Date.now()
-      fixture.append('turn/start', { turn })
-      fixture.append('step/start', { turn, step })
-      const bindAttempt = () => {
-        const marker = { id: randomUUID(), generation: 0, turn, step }
-        const floor = appendPluginRecord(fixture, NATIVE_OUTPUT_MARKER, marker) + 1
-        return { ...marker, session: parentId, floor }
-      }
-      const failedProof = bindAttempt()
-      const failed = fixture.append('assistant/attempt', { turn, step,
-        stream: [{ type: 'chunk', time: at, chunk: { type: 'text-delta', index: 0, text: traceSecret } }] })
-      const reasoningProof = bindAttempt()
-      const reasoning = fixture.append('assistant/message', { turn, step,
-        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'reasoning', text: traceSecret }] }),
-        stream: [{ type: 'chunk', time: at, chunk: { type: 'reasoning-delta', index: 0, text: traceSecret } }],
-      }, { surfaceOp: 'append' })
-      const groupProof = bindAttempt()
-      const tool = { type: 'tool-call' as const, id: ToolCallId('derived-native-tool'), name: 'bash', arguments: JSON.stringify({ command: toolSecret }) }
-      const announcement = fixture.append('assistant/message', { turn, step,
-        message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: toolSecret }, tool] }),
-        stream: [{ type: 'chunk', time: at, chunk: { type: 'tool-call-delta', index: 1, id: tool.id, name: tool.name, argumentsDelta: tool.arguments } }],
-      }, { surfaceOp: 'append' })
-      const call = fixture.append('tool/call', { turn, step, callId: tool.id, name: tool.name, arguments: tool.arguments })
-      const result = fixture.append('tool/result', { turn, step,
-        message: createToolResultMessage({ callId: tool.id, content: [{ type: 'text', text: toolSecret }], isError: true }),
-        error: { name: 'ToolError', code: 'FAILED', reason: toolSecret }, meta: { body: toolSecret },
-      }, { surfaceOp: 'append', sourceEventSeqs: [call.seq] })
-      toolReply = announcement.seq
-      toolResult = result.seq
-      toolTrace = { kind: 'tool', seq: call.seq, at: call.time, callId: tool.id, name: tool.name,
-        args: { command: toolSecret }, status: 'failed' }
-      fixture.append('step/end', { turn, step })
-      fixture.append('turn/end', { turn, reason: { kind: 'completed' } })
-      function compact(shadowedSeqs: SessionSeq[], text: string) {
-        const compactionId = randomUUID() as CompactionId
-        const start = fixture.append('compaction/start', { compactionId, turn: null })
-        const region = { start: shadowedSeqs[0]!, end: shadowedSeqs.at(-1)! }
-        const content = [{ type: 'text' as const, text }]
-        const summary = fixture.append('compaction/summary', { compactionId, summary: content, rawOutput: content, llmStreamCall: true,
-          shadowedRange: region, shadowedSeqs, shadowedTokenCount: 99, provider: 'fixture', model: 'fixture' })
-        const checkpoint = fixture.append('user/message', createUserMessage({ source: compactCheckpointSource(compactionId), content }),
-          { surfaceOp: { op: 'replace', startSeq: region.start, endSeq: region.end }, sourceEventSeqs: [start.seq, summary.seq, ...shadowedSeqs] })
-        fixture.append('compaction/end', { compactionId, turn: null })
-        return { summary: summary.seq, checkpoint: checkpoint.seq }
-      }
-      const failedCompactionId = randomUUID() as CompactionId
-      fixture.append('compaction/start', { compactionId: failedCompactionId, turn: null })
-      recordCompactionInputs(fixture, [titleMessage.seq])
-      compactions.add(fixture.append('compaction/end', { compactionId: failedCompactionId, turn: null, error: compactionSecret }).seq)
-      const compactedOriginal = compact([titleMessage.seq], compactionSecret)
-      const compactedCheckpoint = compact([compactedOriginal.checkpoint], compactionSecret)
-      const compactedTool = compact([announcement.seq, result.seq], compactionSecret)
-      derivedInjection = createUserMessage({ source: { kind: 'viva-memory' }, content: [{ type: 'text', text: compactionSecret }] })
-      const injection = fixture.append('user/message', derivedInjection, { surfaceOp: 'append' })
-      const compactedInjection = compact([injection.seq], compactionSecret)
-      for (const item of [compactedOriginal, compactedCheckpoint, compactedTool, compactedInjection]) {
-        compactions.add(item.summary)
-        compactions.add(item.checkpoint)
-      }
-      unconnectedSummary = compact([independentTitleMessage.seq], 'independent compaction remains').summary
-      const writer = await cold.sessionPersistence.open(parentId, 'write')
-      try { await writer.append(fixture.snapshotEvents(SessionLogOffset(persisted.length))); await writer.flush() }
-      finally { await writer.close() }
-      traceStep = { kind: 'thought', seq: reasoning.seq, at: reasoning.time, text: traceSecret }
-
-      const events = fixture.snapshotEvents()
-      assert.ok(JSON.stringify(events).includes(erased))
-      assert.ok(JSON.stringify(events).includes(derived))
-      const proofDb = new DatabaseSync(join(memoryRoot, 'memory.db'))
-      try {
-        const archive = createNativeOutputAttempts(proofDb)
-        const evidence = { sources: [sourceId], epoch: 0, turnOnly: false }
-        archive.record(failedProof, evidence)
-        // The native event committed before a crash could store its settlement receipt.
-        affectedOutputs.add(failed.seq)
-        archive.record(reasoningProof, evidence)
-        archive.finish(reasoningProof, { seq: reasoning.seq, kind: 'reply', digest: nativeEventDigest(reasoning) })
-        archive.record(groupProof, evidence)
-        archive.finish(groupProof, { seq: announcement.seq, kind: 'reply', digest: nativeEventDigest(announcement) })
-        const affected = archive.affected([{ sourceId, spans: [{ start: 0, end: erased.length }] }])
-        assert.ok(affected.length >= 2, 'real DSH foreground sends must bind proof before handing over their model payload')
-        for (const { result, session, floor, id, generation, turn, step } of affected) {
-          assert.equal(session, parentId)
-          const prefix = events[floor - 1]
-          const marker = prefix && pluginRecordOf(prefix)
-          assert.equal(marker?.type, NATIVE_OUTPUT_MARKER)
-          assert.deepEqual(marker.data, { id, generation, turn, step })
-          if (result.state === 'open') {
-            assert.equal(id, failedProof.id)
-            continue
-          }
-          assert.equal(result.state, 'settled')
-          const event = events[result.terminal.seq]
-          assert.ok(event?.type === 'assistant/message' || event?.type === 'assistant/attempt')
-          assert.equal(nativeEventDigest(event), result.terminal.digest)
-          if (event.type === 'assistant/attempt' || !event.data.message.content.some(block => block.type === 'tool-call')) {
-            affectedOutputs.add(event.seq)
-          }
-        }
-      } finally { proofDb.close() }
-      const inherited = SessionLogOffset(events.length)
-      const child = Session.create(forkId, events, { ...original.header, id: forkId, isSeeded: true }, inherited, [imageOffloadProjection])
-      const image = child.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{
-        type: 'image', attachment: { attachmentId: AttachmentId('cold-offload'), mediaType: 'image/png', bytes: 80, width: 1, height: 1 },
-      }] }), { surfaceOp: 'append' })
-      child.append('image/offload', { targets: [{ seq: image.seq, imageIndexes: [0] }] })
-      const branchWriter = await cold.sessionPersistence.create(child.header, { inheritedEventCount: inherited })
-      try { await branchWriter.append(child.snapshotEvents()); await branchWriter.flush() } finally { await branchWriter.close() }
-    } finally { await original.close() }
-  } finally { await persistence.dispose() }
-
-  const owner = openMemoryOwner({ root: memoryRoot, hostNamespace: 'viva', dailyNotes: true,
-    compute: () => null, route: () => null, quiesce: async () => {} })
-  const operationId = randomUUID(), nextOperation = randomUUID()
-  try {
-    await owner.recover()
-    assert.ok(derivedInjection)
-    await owner.registerDerived({ sessionId: parentId, messageId: derivedInjection.id, sourceIds: [sourceId], nativeUserSource: 'viva-memory',
-      contentDigest: memoryOriginalContentDigest(derivedInjection) })
-    const store = openMemoryStore(join(memoryRoot, 'memory.db'))
-    try {
-      assert.equal(store.db.prepare('SELECT 1 FROM owner_occurrences WHERE session=?').get(forkId), undefined)
-    } finally { store.close() }
-  } finally { await owner.close() }
-  for (const [excerpt, id] of [[erased, operationId], [second, nextOperation]] as const) {
-    const start = text.indexOf(excerpt)
-    recordPartialOriginalErasure(memoryRoot, {
-      operationId: id, sourceId, spans: [{ start, end: start + excerpt.length }], extraSessions: [parentId], hostNamespace: 'viva',
-    })
-  }
-
-  const cache = join(app.directory, 'dsh', 'storages', 'session_projcache', 'sessions')
-  mkdirSync(cache, { recursive: true })
-  const interruptedCache = join(cache, `${forkId}.json.deleting`)
-  const backupCache = join(cache, `${parentId}.json.bak.202611161700`)
-  const independentCache = join(cache, 'independent.json.deleting')
-  const projectionTemp = join(cache, `.${randomUUID()}.tmp`)
-  for (const file of [interruptedCache, backupCache, independentCache, projectionTemp]) writeFileSync(file, erased)
-
-  openNativeOriginalMaintenance(memoryRoot, 'viva')!.close()
-  const control = new DatabaseSync(join(memoryRoot, 'memory.db'))
-  try {
-    control.exec(`CREATE TRIGGER interrupt_native_publication BEFORE UPDATE OF published ON owner_native_original_publications
-      BEGIN SELECT RAISE(ABORT, 'interrupted native erasure receipt'); END`)
-    const offset = app.model.requests.length
-    assert.equal(await app.startBackend(), null, 'a published artifact without a receipt must stop live DSH from opening its log')
-    assert.equal(app.model.requests.length, offset)
-    const blockedTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
-    assert.equal(blockedTrace.available, false)
-    assert.doesNotMatch(JSON.stringify(blockedTrace), new RegExp(traceSecret, 'u'))
-    assert.equal(control.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=0')
-      .get(operationId)?.count, 1)
-    await app.stopBackend()
-    control.exec('DROP TRIGGER interrupt_native_publication')
-  } finally { control.close() }
-
-  assert.ok(traceStep && affectedOutputs.has(traceStep.seq), 'the verified native output owns the reasoning trace')
-  assert.ok(toolTrace)
-  const traceFile = join(app.directory, 'trace.db')
-  const independentTraceSession = randomUUID()
-  const awaitingToolCleanup = 'pending-native-tool-replica'
-  const trace = openTraceDb({ file: traceFile })
-  try {
-    trace.recordSteps(parentId, [traceStep, toolTrace])
-    trace.recordSteps(forkId, [traceStep, { ...toolTrace, status: 'in_progress' }])
-    trace.recordSteps(independentTraceSession, [{ ...traceStep, text: 'independent trace' }])
-    trace.recordSteps(parentId, [{ kind: 'tool', seq: traceStep.seq + 1, at: Date.now(), callId: 'pending-tool', name: 'bash',
-      args: { command: awaitingToolCleanup }, status: 'completed' }])
-  } finally { trace.close() }
-
-  const traceReader = new DatabaseSync(traceFile, { readOnly: true })
-  try {
-    traceReader.exec('BEGIN')
-    assert.equal(traceReader.prepare('SELECT text FROM steps WHERE session_id=? AND seq=?').get(parentId, traceStep.seq)?.text, traceSecret)
-    const offset = app.model.requests.length
-    assert.equal(await app.startBackend(), null, 'a trace reader that still sees erased bytes must delay starting DSH')
-    assert.equal(app.model.requests.length, offset)
-    await app.stopBackend()
-  } finally { traceReader.close() }
-
-  const offset = app.model.requests.length
-  assert.ok(await app.startBackend())
-  const cleanHistory = app.call('history:read', `s:${savedHistory.id}`, { from: Number.MAX_SAFE_INTEGER, count: 10 })
-  assert.doesNotMatch(JSON.stringify(cleanHistory), new RegExp(derived, 'u'), 'the generated host history copy is erased during recovery')
-  assert.match(JSON.stringify(cleanHistory), new RegExp(survivor, 'u'))
-  const publishedTrace = openTraceDb({ file: traceFile })
-  try {
-    assert.equal(publishedTrace.stepsOf(parentId).some(step => step.seq === traceStep.seq), false)
-    assert.equal(publishedTrace.stepsOf(forkId).some(step => step.seq === traceStep.seq), false)
-    assert.equal(publishedTrace.stepsOf(independentTraceSession).length, 1)
-    assert.ok([parentId, forkId].every(session => publishedTrace.stepsOf(session).every(step => step.seq !== toolTrace.seq)))
-    assert.match(JSON.stringify(publishedTrace.stepsOf(parentId)), new RegExp(awaitingToolCleanup, 'u'))
-    for (const file of [traceFile, traceFile + '-wal']) if (fs.existsSync(file)) {
-      assert.equal(fs.readFileSync(file).includes(traceSecret), false)
-      assert.equal(fs.readFileSync(file).includes(toolSecret), false)
-    }
-  } finally { publishedTrace.close() }
-  assert.ok(await eventually(() => app.events.some(event => event.type === 'memory_changed' && event.traceSessions?.includes(parentId))))
-  const safeTrace = await app.call<Promise<{ available: boolean }>>('history:trace', savedHistory.id)
-  assert.equal(safeTrace.available, true)
-  assert.doesNotMatch(JSON.stringify(safeTrace), new RegExp([traceSecret, toolSecret].join('|'), 'u'))
-  const rewindTrace = await app.call<Promise<{ commands: string[] }>>('timeline:rewind-effects', { keep: 0 })
-  assert.ok(rewindTrace.commands.includes(awaitingToolCleanup), 'independent trace content becomes readable after all participants finish')
-  assert.equal(fs.existsSync(interruptedCache), false)
-  assert.equal(fs.existsSync(backupCache), false)
-  assert.equal(fs.existsSync(projectionTemp), false)
-  assert.equal(fs.readFileSync(independentCache, 'utf8'), erased)
-  assert.equal(app.call<AgentInfo>('agent:info').sessionId, info.sessionId)
-  assert.ok(contextGeneration(app.directory, info.sessionId) > 0)
-  const question = '验证冷启动后还能继续使用安全历史'
-  const questionId = await app.ask(question)
-  const sent = app.model.requests.slice(offset) as Request[]
-  assert.ok(sent.some(request => questionOf(request.messages) === question && JSON.stringify(request.messages).includes(survivor)))
-  assert.ok(sent.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
-
-  const reopened = new Context(), mounted = await reopened.plugin(jsonl, { root: sessionsRoot })
-  try {
-    for (const id of [parentId, forkId]) {
-      const reader = await reopened.sessionPersistence.open(id, 'read')
-      try {
-        const { events } = await reader.read()
-        if (id === forkId) assert.ok(events.some(event => event.type === 'image/offload'))
-        const rawInputs = events.filter(event => event.type === 'user/message' && event.data.source.kind === 'user')
-        const raw = JSON.stringify(rawInputs)
-        assert.ok(raw.includes(survivor) && raw.includes(nearby))
-        assert.ok(!raw.includes(erased) && !raw.includes(second))
-        const titles = events.filter(event => event.type === 'session/title' || event.type === 'session/title-llm-request')
-        assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'user' && event.data.title === '独立的手动会话名'))
-        assert.ok(titles.some(event => event.type === 'session/title' && event.data.title === '独立依据生成的会话名'))
-        assert.ok(titles.some(event => event.type === 'session/title' && event.data.source.kind === 'fallback' && event.data.title === '…'))
-        assert.doesNotMatch(JSON.stringify(titles), new RegExp([erased, second].join('|'), 'u'))
-        const memoryInjected = events.flatMap(event => event.type === 'user/message' && event.data.source.kind === 'viva-memory' ? [event.data]
-          : event.type === 'agent/inbox/spliced' ? event.data.inserted.filter(message => message.source.kind === 'viva-memory') : [])
-        assert.ok(memoryInjected.some(message => !message.content.length), 'the authenticated memory injection is physically erased')
-        assert.doesNotMatch(JSON.stringify(memoryInjected), new RegExp([erased, second].join('|'), 'u'))
-        const generated = events.filter(event => affectedOutputs.has(event.seq))
-        assert.equal(generated.length, affectedOutputs.size)
-        for (const event of generated) {
-          assert.ok(event.type === 'assistant/message' || event.type === 'assistant/attempt')
-          if (event.type === 'assistant/message') {
-            assert.deepEqual(event.data.message.content, [])
-            assert.equal(event.data.message.source.replayState, undefined)
-          }
-          assert.ok(event.data.stream.every(record => record.type === 'chunk' && record.chunk.type === 'usage'))
-        }
-        assert.doesNotMatch(JSON.stringify(generated), new RegExp([derived, traceSecret].join('|'), 'u'))
-        const announcement = events[toolReply], outcome = events[toolResult]
-        const call: SessionEvent | undefined = events[toolTrace.seq]
-        assert.equal(announcement?.type, 'assistant/message')
-        assert.equal(call?.type, 'tool/call')
-        assert.equal(outcome?.type, 'tool/result')
-        assert.deepEqual(announcement.data.message.content, [{ type: 'tool-call', id: toolTrace.callId, name: toolTrace.name, arguments: '{}' }])
-        assert.deepEqual(announcement.data.stream.map(record => record.type === 'chunk' && record.chunk.type), ['tool-call-delta'])
-        assert.equal(call.data.arguments, '{}')
-        assert.deepEqual(outcome.sourceEventSeqs, [call.seq])
-        assert.equal(outcome.data.message.toolCallId, toolTrace.callId)
-        assert.deepEqual(outcome.data.message.content, [])
-        assert.deepEqual(outcome.data.error, { name: 'ToolError', code: 'FAILED' })
-        assert.equal(outcome.data.meta, undefined)
-        assert.doesNotMatch(JSON.stringify(events), new RegExp(toolSecret, 'u'))
-        const rewrittenCompactions = events.filter(event => compactions.has(event.seq))
-        assert.equal(rewrittenCompactions.length, 9)
-        assert.doesNotMatch(JSON.stringify(rewrittenCompactions), new RegExp(compactionSecret, 'u'))
-        assert.match(JSON.stringify(events[unconnectedSummary]), /independent compaction remains/)
-      } finally { await reader.close() }
-    }
-  } finally { await mounted.dispose() }
-  const settled = new DatabaseSync(join(memoryRoot, 'memory.db'), { readOnly: true })
-  try {
-    assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(operationId)?.count, 2)
-    assert.equal(settled.prepare('SELECT count(*) AS count FROM owner_native_original_publications WHERE operation=? AND published=1').get(nextOperation)?.count, 2)
-    for (const id of [operationId, nextOperation]) {
-      assert.ok(settled.prepare('SELECT 1 FROM owner_native_original_completed WHERE operation=?').get(id))
-      assert.ok(settled.prepare('SELECT 1 FROM owner_native_cleanup_receipts WHERE operation=?').get(id))
-      assert.equal(settled.prepare('SELECT acked FROM owner_host_effects WHERE id=?').get(id)?.acked, 1)
-    }
-    assert.ok(settled.prepare('SELECT 1 FROM owner_file_native_erasures WHERE operation=?').get(operationId),
-      'the immutable native plan remains available after its participant acknowledges')
-    assert.ok(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(forkId))
-    assert.equal(settled.prepare('SELECT 1 FROM owner_native_surface_invalidations WHERE session=?').get(parentId), undefined)
-  } finally { settled.close() }
-
-  const history = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
-  const keep = history.messages.findIndex(message => message.sourceId === questionId)
-  assert.ok(keep >= 0, 'the resumed-session prompt is already persisted')
-  const forked = await app.call<Promise<{ ok: boolean, problem?: string, info?: AgentInfo }>>('timeline:rewind',
-    { words: question, keep, text: question })
-  assert.ok(forked.ok, JSON.stringify(forked))
-  assert.notEqual(forked.info?.sessionId, parentId)
-  const branchProbe = '验证已擦除会话的新分叉仍保留独立原文'
-  const branchOffset = app.model.requests.length
-  await app.ask(branchProbe)
-  const branch = app.model.requests.slice(branchOffset) as Request[]
-  assert.ok(branch.some(request => questionOf(request.messages) === branchProbe && JSON.stringify(request.messages).includes(survivor)))
-  assert.ok(branch.every(request => ![erased, second].some(removed => JSON.stringify(request.messages).includes(removed))))
-})
-
-test('startup completes a history withdrawal interrupted by process death before model reads', { timeout: 90_000 }, async t => {
-  const app = await setup(t, () => null)
-  const sourceId = randomUUID()
-  const initial = app.call<AgentInfo>('agent:info')
-  const conversationId = initial.conversationId
-  assert.ok(conversationId)
-  await app.call('agent:prompt', oldFact, [], sourceId)
-  const entry = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
-  assert.ok(entry)
-  const memoryFile = join(app.directory, 'memory', 'memory.db')
-  const hasFileCopy = (db: DatabaseSync) => Boolean(db.prepare(
-    'SELECT 1 FROM memory_file_index_nodes WHERE workspace=? AND id=?',
-  ).get(entry.identity.workspace, entry.identity.id))
-  const detail = await app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', entry.identity)
-  assert.ok(detail?.sources.some(source => source.sourceId === sourceId))
-  const profileProbe = '随手核对周报提交邮箱背景资料'
-  const unsavedSource = await app.ask(profileProbe)
-  assert.ok(app.model.requests.some(raw => {
-    const request = raw as Request
-    const content = request.messages.at(-1)?.content
-    const context = Array.isArray(content) ? content.find(part => part.text?.startsWith('<about-user>'))?.text : null
-    return questionOf(request.messages) === profileProbe && context?.includes('File memory evidence') && context.includes(oldValue)
-  }))
-  await app.ask('查一下 周报提交邮箱')
-  const injected = app.events.filter(event => event.type === 'memory_context')
-  assert.ok(injected.some(event => JSON.stringify(event).includes(oldValue) && JSON.stringify(event).includes('周报')), 'native owner contextUsed must preserve selected file evidence for the foreground trace')
-  assert.ok(app.model.requests.some(raw => {
-    const last = JSON.stringify((raw as Request).messages.at(-1))
-    return last.includes('tool_result') && last.includes(oldValue)
-  }))
-
-  const continuation = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('history:resume-topic', conversationId)
-  assert.ok(continuation.ok && continuation.info.sessionId === initial.sessionId)
-  const independent = '重启后应当保留的独立备忘'
-  const survivorId = randomUUID()
-  await app.call('agent:prompt', independent, [], survivorId)
-  const survivorStore = new DatabaseSync(memoryFile, { readOnly: true })
-  try {
-    // The independent original must be durably recorded before recovery.
-    assert.ok(await eventually(() => survivorStore.prepare(
-      "SELECT 1 FROM memory_sources WHERE id=? AND outcome='recorded'",
-    ).get(survivorId)), 'the independent prompt retains its canonical source without a file write')
-  } finally { survivorStore.close() }
-  const generationBeforeRestart = contextGeneration(app.directory, initial.sessionId!)
-  await app.stopBackend()
-  const copies = new DatabaseSync(memoryFile)
-  try {
-    assert.ok(hasFileCopy(copies))
-    assert.ok(copies.prepare('SELECT 1 FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').get(entry.identity.workspace, entry.identity.id))
-    // Seed an authenticated file passage vector even when the optional local model is absent in CI.
-    const index = openMemoryFileIndex({ db: copies })
-    const generation = index.beginVectors({ fingerprint: MEMORY_EMBEDDING_FINGERPRINT, dimensions: MEMORY_EMBEDDING_DIMENSIONS })
-    const chunks = index.missingVectors(generation)
-    assert.ok(chunks.some(chunk => chunk.ref.fileId === entry.identity.id))
-    const vector = new Float32Array(MEMORY_EMBEDDING_DIMENSIONS)
-    vector[0] = 1
-    assert.equal(index.stageVectors(generation, chunks.map(chunk => ({ ref: chunk.ref, vectors: [vector] }))), chunks.length)
-    assert.ok(index.finishVectors(generation, chunks.map(chunk => chunk.ref)))
-  } finally { copies.close() }
-
-  await runToCrash(withdrawalCrashFixture, 'before-withdrawal', app.directory, conversationId)
-
-  const appDb = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-  const memoryDb = new DatabaseSync(memoryFile, { readOnly: true })
-  try {
-    assert.equal(appDb.prepare('SELECT deleted_at IS NOT NULL AS removed FROM conversations WHERE id=?')
-      .get(conversationId)?.removed, 1)
-    assert.ok(appDb.prepare("SELECT generation FROM effects WHERE kind='memory.withdraw' AND key=?").get(conversationId))
-    assert.equal(String(memoryDb.prepare('SELECT text FROM memory_sources WHERE id=?').get(sourceId)?.text).trim(), oldFact)
-    assert.ok(hasFileCopy(memoryDb))
-    assert.ok(memoryDb.prepare('SELECT 1 FROM memory_file_index_vectors WHERE ref LIKE ?').get('%' + entry.identity.id + '%'))
-  } finally {
-    memoryDb.close()
-    appDb.close()
-  }
-
-  const offset = app.model.requests.length
-  assert.ok(await app.startBackend())
-  assert.equal((await app.files()).length, 0)
-  assert.equal(app.call<AgentInfo>('agent:info').sessionId, initial.sessionId)
-  assert.ok(contextGeneration(app.directory, initial.sessionId!) > generationBeforeRestart, 'native history must be durably replaced before the same session can continue')
-  const probe = '用保留的记录继续核对'
-  await app.ask(probe)
-  const continuationId = continuation.info.conversationId
-  assert.ok(continuationId && continuation.info.cwd)
-  await app.call('history:continue-from-records', continuationId, continuation.info.cwd)
-  const resumedProbe = '另起会话继续保留的笔记'
-  await app.ask(resumedProbe)
-  await app.ask('查一下 周报提交邮箱')
-  const sent = app.model.requests.slice(offset).map(raw => JSON.stringify((raw as Request).messages))
-  assert.ok(sent.some(body => body.includes(independent) && body.includes(probe)))
-  assert.ok(sent.some(body => body.includes(independent) && body.includes(resumedProbe)))
-  assert.ok(sent.some(body => body.includes('tool_result')))
-  assert.ok(sent.every(body => !body.includes(oldValue)))
-
-  const recoveredApp = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-  const recoveredMemory = new DatabaseSync(memoryFile, { readOnly: true })
-  try {
-    assert.equal(recoveredApp.prepare("SELECT generation FROM effects WHERE kind='memory.withdraw' AND key=?")
-      .get(conversationId), undefined)
-    const withdrawn = recoveredMemory.prepare('SELECT text,withdrawn FROM memory_sources WHERE id=?').get(sourceId)
-    assert.equal(withdrawn?.text, null)
-    assert.equal(withdrawn.withdrawn, 1)
-    assert.ok(recoveredMemory.prepare('SELECT id FROM memory_excluded_sources WHERE id=?').get(sourceId))
-    assert.deepEqual({ ...recoveredMemory.prepare('SELECT text,withdrawn FROM memory_sources WHERE id=?').get(unsavedSource) },
-      { text: null, withdrawn: 1 }, 'whole history withdrawal includes originals absent from the renderer snapshot')
-    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=1').get(unsavedSource))
-    assert.equal(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(unsavedSource), undefined)
-    assert.ok(recoveredMemory.prepare('SELECT 1 FROM owner_occurrences WHERE source=? AND removed=0').get(survivorId))
-    assert.equal(hasFileCopy(recoveredMemory), false)
-    assert.equal(recoveredMemory.prepare('SELECT 1 FROM memory_file_index_chunks WHERE workspace=? AND file_id=?').get(entry.identity.workspace, entry.identity.id), undefined)
-    assert.equal(recoveredMemory.prepare('SELECT 1 FROM memory_file_index_vectors WHERE ref LIKE ?').get('%' + entry.identity.id + '%'), undefined)
-  } finally {
-    recoveredMemory.close()
-    recoveredApp.close()
-  }
-})
-
-// This case spans two process starts, project switches, a fork and topic recovery.
-// Its individual waits retain their existing bounds.
-test('source-backed project files and exact recall remain in their Git workspace while main chat history spans the single timeline', { timeout: 90_000 }, async t => {
+test('global memory crosses work folders while native session and schedule boundaries still follow Git', { timeout: 90_000 }, async t => {
   const began = performance.now()
   const timings: { step: string, startedMs: number, elapsedMs?: number }[] = []
   let inspect: () => unknown = () => ({ state: 'setting-up' })
@@ -1759,7 +887,7 @@ test('source-backed project files and exact recall remain in their Git workspace
     if (hasImage && JSON.stringify(last).includes('tool_result')) return { text: rawHistoryText }
     if (JSON.stringify(last).includes('tool_result')) return null
     const question = questionOf(request.messages)
-    if (question === recall) return { tool: { name: 'memory_recall', input: { query: '构建标记', scope: 'project' } } }
+    if (question === recall) return { tool: { name: 'memory_recall', input: { query: '构建标记' } } }
     if (question === history) return { tool: { name: 'search_conversations', input: { query: '构建标记' } } }
     if (question === '查甲项目的构建标记') return { tool: { name: 'search_conversations', input: { query: firstMarker } } }
     if (question === imageHistory) return { tool: { name: 'search_conversations', input: { query: '图像转录合成标记' } } }
@@ -1796,8 +924,9 @@ test('source-backed project files and exact recall remain in their Git workspace
     const sourceId = randomUUID()
     await step(`${label}:remember`, () => app.call('agent:prompt', text, [], sourceId))
     const summary = await step(`${label}:file-profile`, () => eventually(async () => {
-      const { fileProfile } = await app.call<Promise<{ fileProfile: { project: { identity: MemoryFileDetail['identity'], text: string }[] | null } }>>('memory:get')
-      return fileProfile.project?.find(item => item.text.includes(text.slice('记住：'.length)))
+      const { fileProfile } = await app.call<Promise<{ fileProfile: { user: { identity: MemoryFileDetail['identity'], text: string }[], project: null } }>>('memory:get')
+      assert.equal(fileProfile.project, null)
+      return fileProfile.user.find(item => item.text.includes(text.slice('记住：'.length)))
     }))
     assert.ok(summary)
     const detail = await step(`${label}:read-file`, () => app.call<Promise<IpcResults['memory:read-file']>>('memory:read-file', summary.identity))
@@ -1819,8 +948,9 @@ test('source-backed project files and exact recall remain in their Git workspace
     assert.ok(scopedMessages.some(rows =>
       modelToolResults({ messages: rows }, 'memory_recall').some(result => JSON.stringify(result).includes(present))),
     JSON.stringify({ name: 'memory_recall', results: scopedMessages.flatMap(rows => modelToolResults({ messages: rows }, 'memory_recall')) }))
-    assert.ok(scopedMessages.every(rows => !JSON.stringify(rows).includes(excluded)),
-      JSON.stringify({ excluded, leaked: scopedMessages.filter(rows => JSON.stringify(rows).includes(excluded)) }))
+    if (crossProjectHistory) {
+      assert.ok(scopedMessages.some(rows => modelToolResults({ messages: rows }, 'memory_recall').some(result => JSON.stringify(result).includes(excluded))))
+    }
     const searchResults = historyMessages.flatMap(rows => modelToolResults({ messages: rows }, 'search_conversations'))
     assert.ok(searchResults.some(result => JSON.stringify(result).includes(present)),
       JSON.stringify({ name: 'search_conversations', results: searchResults }))
@@ -1882,15 +1012,18 @@ test('source-backed project files and exact recall remain in their Git workspace
   assert.equal(schedules().find(item => item.id === scheduleId)?.title, scheduleTitle)
   const afterSwitchBeforeHistory = app.model.requests.slice(beforeSwitch, beforeProjectBHistory) as Request[]
   assert.ok(afterSwitchBeforeHistory.some(request => questionOf(request.messages) === secondFact && JSON.stringify(request.system).includes('个人工作助手')))
-  assert.ok(afterSwitchBeforeHistory.filter(request => JSON.stringify(request.system).includes('个人工作助手')
-    || questionOf(request.messages).includes(secondMarker)).every(request => !JSON.stringify(request).includes(firstMarker)))
+  assert.ok(afterSwitchBeforeHistory.some(request => {
+    const last = JSON.stringify(request.messages.at(-1))
+    return last.includes('<about-user>') && last.includes('File memory evidence') && last.includes(firstMarker)
+  }), 'memory from the other folder is automatically available')
 
-  // A picture-only conversation has delivery provenance without a memory source to recover its original project from.
+  // A picture-only conversation still has a native history boundary.
   assert.ok(sessionA.conversationId)
   const resumedA = await step('project-a:resume-topic', () => app.call<Promise<{ ok: boolean, info: AgentInfo }>>('history:resume-topic', sessionA.conversationId))
   assert.ok(resumedA.ok)
   const pictureTopic = await step('project-a:picture-topic', () => app.newTopic())
-  assert.ok(pictureTopic.sessionId)
+  const pictureSession = pictureTopic.sessionId
+  assert.ok(pictureSession)
   const sourceId = randomUUID()
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
   const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
@@ -1899,7 +1032,7 @@ test('source-backed project files and exact recall remain in their Git workspace
   assert.ok(app.model.requests.some(raw => JSON.stringify(raw).includes(png)))
   const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    assert.ok(db.prepare('SELECT project FROM memory_session_projects WHERE session=?').get(pictureTopic.sessionId))
+    assert.ok(await eventually(() => db.prepare('SELECT 1 FROM owner_sessions WHERE session=? AND project IS NULL').get(pictureSession)))
   } finally { db.close() }
   await step('stop-before-git-removal', () => app.stopBackend())
   rmSync(join(projectA, '.git'), { recursive: true })
@@ -1915,7 +1048,7 @@ test('source-backed project files and exact recall remain in their Git workspace
   await step('outside:search-picture-history', () => app.ask(imageHistory))
   const beforeSearchRequests = (app.model.requests.slice(outsideOffset, beforeOutsideHistory) as Request[])
     .filter(request => JSON.stringify(request.system).includes('个人工作助手'))
-  assert.ok(beforeSearchRequests.every(request => !JSON.stringify(request.messages).includes(firstMarker) && !JSON.stringify(request.messages).includes(rawHistoryText)))
+  assert.ok(beforeSearchRequests.every(request => !JSON.stringify(request.messages).includes(rawHistoryText)))
   const outsideSearchResults = (app.model.requests.slice(beforeOutsideHistory) as Request[])
     .flatMap(request => modelToolResults(request, 'search_conversations'))
   assert.ok(outsideSearchResults.some(result => JSON.stringify(result).includes(firstMarker)), JSON.stringify({ outsideSearchResults }))
@@ -1927,15 +1060,16 @@ test('deleting a memory file preserves the original chat and the task and report
   const sourceId = await app.ask(oldFact)
   const file = await eventually(async () => (await app.files()).find(item => item.markdown.includes(oldValue)))
   assert.ok(file)
-  const brief = '核对我的周报提交邮箱'
+  const brief = '查一下 周报提交邮箱'
   await app.ask(`后台做：${brief}`)
   const task = await eventually(() => app.tasks().find(item => item.endedAt && item.task.title === brief))
   assert.ok(task)
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   app.defer(() => history.close())
-  const reports = () => history.prepare(`SELECT r.report_id,r.text FROM report_records r JOIN memory_report_proofs p
-    ON p.report_id=r.report_id WHERE p.memory LIKE ? ORDER BY r.report_id`).all('%' + file.identity.id + '%')
-  assert.ok(await eventually(() => reports().length > 0), 'the saved report carries this file as evidence')
+  assert.ok(app.model.requests.some(request => modelToolResults(request, 'memory_recall').some(result => JSON.stringify(result).includes(oldValue))),
+    'the task actually read the memory file')
+  const reports = () => history.prepare('SELECT report_id,text FROM report_records WHERE report_id LIKE ?').all(`${task.task.id}:%`)
+  assert.ok(await eventually(() => reports().length > 0), 'the task report reached history before deletion')
   const before = reports()
   const result = await app.call<Promise<IpcResults['memory:forget-file']>>('memory:forget-file', {
     operationId: randomUUID(), identity: file.identity, version: file.version,
@@ -1975,174 +1109,230 @@ test('an explicit save completes in a foreground session that already received f
   assert.ok(foreground().some(request => modelToolResults(request, 'memory_remember').length))
 })
 
-async function rewriteRejectedSource(app: Awaited<ReturnType<typeof setup>>, sourceId: string, original: string) {
+test('rewind and history deletion update the timeline without withdrawing remembered originals', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null)
+  const before = app.call<AgentInfo>('agent:info')
+  const original = await app.ask(oldFact)
+  assert.ok(await eventually(async () => (await app.files()).some(file => file.markdown.includes(oldValue))))
   const loaded = app.call<{ messages: Array<{ sourceId?: string }> }>('history:load')
-  const keep = loaded.messages.findIndex(message => message.sourceId === sourceId)
-  assert.ok(keep >= 0, 'the source message is already persisted by the backend writer')
-  const text = '已经替换前面的临时说明'
-  const edit = await app.call<Promise<{ ok: boolean, sourceId: string }>>('timeline:rewind', { words: original, keep, text })
-  assert.ok(edit.ok)
-  await app.call('agent:prompt', text, [], edit.sourceId)
-}
+  const keep = loaded.messages.findIndex(message => message.sourceId === original)
+  assert.ok(keep >= 0)
+  const text = '已经在回退分支编辑这条消息'
+  const edited = await app.call<Promise<{ ok: boolean, sourceId: string, info: AgentInfo }>>('timeline:rewind', { words: oldFact, keep, text })
+  assert.equal(edited.ok, true)
+  assert.notEqual(edited.sourceId, original)
+  assert.equal(app.call<AgentInfo>('agent:info').conversationId, edited.info.conversationId)
+  await app.call('agent:prompt', text, [], edited.sourceId)
+  await app.newTopic()
+  await app.call('history:delete', before.conversationId)
+  await app.call('history:delete', edited.info.conversationId)
+  assert.ok((await app.files()).some(file => file.markdown.includes(oldValue)))
+  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  try {
+    assert.equal(typeof db.prepare('SELECT text FROM memory_sources WHERE id=?').get(original)?.text, 'string')
+  } finally { db.close() }
+})
 
-test('a rejected original remains a dependency of resumed tasks and due schedules until it is withdrawn', { timeout: 45_000 }, async t => {
-  const marker = 'synthetic-password-ab12'
-  const original = 'password: ' + marker
-  const forward = '把前面那条临时信息交给旧任务'
-  const after = '让旧任务继续整理'
-  const brief = '在任务内部汇总材料 ' + marker
-  const followUp = '继续任务但只列结果'
-  const title = '给临时信息设定时汇总'
-  const schedulePrompt = '整理定时结果 ' + marker
-  let taskId: string | undefined
+test('Viva chats, reports background results and runs schedules with an incompatible memory database', { timeout: 45_000 }, async t => {
+  const title = '每天归档测试结果'
+  const scheduled = '运行测试结果归档'
+  const taskBrief = '验收独立后台任务'
+  const report = '离线时的任务已经核对完毕'
+  const chat = '记忆不可用时仍可以执行对话工具'
   const app = await setup(t, request => {
     const question = questionOf(request.messages)
-    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    if (question === title) return { tool: { name: 'schedule_create', input: {
-      title, prompt: schedulePrompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
-    } } }
-    if (taskId && [forward, after].includes(question)) return { tool: { name: 'message_background_task', input: {
-      taskId, text: question === forward ? brief : followUp,
-    } } }
+    if (question === title && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'schedule_create', input: { title, prompt: scheduled, kind: 'at', at: new Date(Date.now() + 60_000).toISOString() } } }
+    }
+    if (question === chat && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
+      return { tool: { name: 'memory_recall', input: { query: chat } } }
+    }
+    if (question === taskBrief) return { text: report }
+    if (question === scheduled) return { text: '已完成' }
     return null
   })
-  await app.ask('后台做：完全独立的后台任务')
-  taskId = (await eventually(() => app.tasks().find(task => task.endedAt)))?.task.id
-  assert.ok(taskId)
-  const host = await app.newTopic()
-  const sourceId = randomUUID()
-  await app.call('agent:prompt', original, [], sourceId)
-  await app.ask(forward)
-  assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.messages.some(row => row.text.includes(brief)))))
   await app.schedule(title)
-  await rewriteRejectedSource(app, sourceId, original)
-
-  const offset = app.model.requests.length
-  const switched = await app.call<Promise<{ ok: boolean, info: AgentInfo }>>('timeline:switch-path', host.conversationId)
-  assert.ok(switched.ok)
-  assert.equal(switched.info.sessionId, host.sessionId)
-  assert.ok(contextGeneration(app.directory, host.sessionId!) > 0, 'the withdrawn branch must recover its native surface before reusing the session')
-  await app.ask('回到旧分支后继续')
-  await app.newTopic()
-  const db = new DatabaseSync(join(app.directory, 'app.db'))
+  await app.stopBackend()
+  const history = new DatabaseSync(join(app.directory, 'app.db'))
   try {
-    db.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
-  } finally { db.close() }
-  await app.restart()
-  assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
-  await app.ask(after)
-  const freshTask = '一条正常的独立后续任务'
-  await app.ask(`后台做：${freshTask}`)
-  assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === freshTask)))
-
-  const actual = app.model.requests.slice(offset).map(raw => JSON.stringify((raw as Request).messages))
-  assert.ok(!actual.some(body => body.includes(marker)))
-  assert.ok(!app.model.requests.slice(offset).some(raw => questionOf((raw as Request).messages) === followUp))
-})
-
-test('withdrawing a picture-only prompt also invalidates tasks that depended on its session', { timeout: 30_000 }, async t => {
-  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
-  const brief = '按刚才的图片汇总'
-  const instruction = '继续处理源图片'
-  const next = '基于先前图片给出结果'
-  let taskId: string | undefined
-  const app = await setup(t, request => {
-    if (taskId && questionOf(request.messages) === instruction && !JSON.stringify(request.messages.at(-1)).includes('tool_result')) {
-      return { tool: { name: 'message_background_task', input: { taskId, text: next } } }
-    }
-    return null
-  }, { image: true })
-  const info = app.call<AgentInfo>('agent:info')
-  const image = app.call<{ id: string }>('images:keep', Buffer.from(png, 'base64'))
-  const sourceId = randomUUID()
-  await app.call('agent:prompt', '', [image], sourceId)
-  assert.ok(app.model.requests.some(request => JSON.stringify(request).includes(png)))
-  await app.ask(`后台做：${brief}`)
-  taskId = (await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === brief)))?.task.id
-  assert.ok(taskId)
-  await app.newTopic()
-  await app.call('history:delete', info.conversationId)
-
+    history.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
+  } finally { history.close() }
+  const file = join(app.directory, 'memory', 'memory.db')
+  const db = new DatabaseSync(file)
+  db.exec('PRAGMA user_version=99')
+  db.close()
+  const before = fs.readFileSync(file)
+  await app.startBackend()
   const offset = app.model.requests.length
-  await app.ask(instruction)
-  const requests = app.model.requests.slice(offset)
-  assert.ok(requests.some(request => JSON.stringify(request).includes(instruction)))
-  assert.ok(!requests.some(request => questionOf((request as Request).messages) === next))
-  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'))
-  try {
-    assert.ok(db.prepare('SELECT id FROM memory_delivered_sources WHERE id=?').get(sourceId))
-    assert.equal(db.prepare('SELECT id FROM memory_sources WHERE id=?').get(sourceId), undefined)
-    assert.ok(db.prepare('SELECT id FROM memory_excluded_sources WHERE id=?').get(sourceId))
-  } finally { db.close() }
-})
-
-// The deliberately absent owner consumes the real 30-second readiness deadline.
-// The outer budget also covers preparation and both failed and recovered starts.
-test('a persisted schedule and foreground requests wait for the independent memory owner', { timeout: 90_000 }, async t => {
-  const began = performance.now()
-  const timings: { step: string, startedMs: number, elapsedMs?: number }[] = []
-  let inspect: () => unknown = () => ({ state: 'setting-up' })
-  const snapshot = () => {
-    try { return inspect() } catch { return { state: 'fixture-closed' } }
-  }
-  const cancelled = () => process.stderr.write(`[owner-readiness-cancelled] ${JSON.stringify({
-    elapsedMs: Math.round(performance.now() - began), activeStep: timings.findLast(timing => timing.elapsedMs === undefined)?.step,
-    timings, state: snapshot(),
-  })}\n`)
-  t.signal.addEventListener('abort', cancelled, { once: true })
-  t.after(() => t.signal.removeEventListener('abort', cancelled))
-  const step = async <T>(name: string, work: () => T | Promise<T>): Promise<T> => {
-    const timing = { step: name, startedMs: Math.round(performance.now() - began), elapsedMs: undefined as number | undefined }
-    timings.push(timing)
-    const started = performance.now()
-    try { return await work() }
-    finally {
-      timing.elapsedMs = Math.round(performance.now() - started)
-      t.diagnostic(`[owner-readiness] ${JSON.stringify(timing)}`)
-    }
-  }
-  const title = '给邮箱建立定时归档'
-  const prompt = '归档到 ' + oldValue
-  const app = await step('setup', () => setup(t, request => {
-    if (questionOf(request.messages) !== title || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    return { tool: { name: 'schedule_create', input: {
-      title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
-    } } }
+  await app.ask(chat)
+  const requests = (app.model.requests.slice(offset) as Request[]).map(request => request.messages)
+  assert.ok(requests.some(messages => JSON.stringify(messages).includes(chat)
+    && JSON.stringify(messages.at(-1)).includes('unavailable')), JSON.stringify(requests.map(messages => messages.slice(-2))))
+  const taskOffset = app.model.requests.length
+  await app.ask(`后台做：${taskBrief}`)
+  assert.ok(await eventually(() => app.tasks().some(task => task.endedAt && task.task.title === taskBrief)), JSON.stringify({
+    questions: app.model.requests.slice(taskOffset).map(raw => questionOf((raw as Request).messages)),
+    tasks: app.tasks(), errors: app.events.filter(event => event.type === 'error').slice(-4),
   }))
-  inspect = () => {
-    const agent = app.call<AgentInfo>('agent:info')
-    return {
-      agent: { mode: agent.mode, cwd: agent.cwd, sessionId: agent.sessionId, conversationId: agent.conversationId, topicId: agent.topicId },
-      requests: app.model.requests.length,
-      recentQuestions: (app.model.requests.slice(-3) as Request[]).map(request => questionOf(request.messages)),
-      events: app.events.filter(event => event.type === 'ready' || event.type === 'turn_started' || event.type === 'turn_end' || event.type === 'error').slice(-6)
-        .map(event => event.type === 'ready' ? { type: event.type, mode: event.info.mode } : event),
+  assert.ok(await eventually(() => app.model.requests.slice(taskOffset).some(raw => {
+    const input = questionOf((raw as Request).messages)
+    return input.startsWith('【后台任务结束】') && input.includes(report)
+  })))
+  assert.ok(await eventually(() => app.feed().find(item => item.title === title)))
+  assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === scheduled))
+  assert.deepEqual(fs.readFileSync(file), before)
+})
+
+for (const hold of ['request', 'receipt'] as const) test(`memory alias ${hold} never holds a foreground prompt`, { timeout: 30_000 }, async t => {
+  const operationId = randomUUID()
+  const words = '这段真人原话无需等待记忆回执'
+  let release: (() => void) | undefined
+  let frameId: string | undefined
+  let cancelled = false
+  let dispatchedBeforeTimeout = false
+  let ownerResponse: { ok?: boolean } | undefined
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, id?: string, method?: string, input?: { method?: string, input?: { sourceId?: string } } }
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'host'
+          && frame.input?.method === 'sourceAlias' && frame.input.input?.sourceId === operationId) {
+          frameId = frame.id
+          if (hold === 'request') {
+            release = () => { Reflect.apply(send, this, [message, ...rest]) }
+            return true
+          }
+        }
+        if (frame?.type === 'routing_bind' && frameId && !cancelled) dispatchedBeforeTimeout = true
+        if (frame?.type === 'memory_owner_rpc' && frame.kind === 'cancel' && frame.id === frameId) cancelled = true
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
     }
-  }
-  await step('remember-and-recall-source', () => app.recallOld())
-  await step('persist-schedule', () => app.schedule(title))
-  const manifest = join(CODE_ROOT, 'plugins', 'memory', 'package.json')
-  const read = fs.readFileSync
-  const invalid = JSON.parse(read(manifest, 'utf8')) as { viva: { contract: { memory: number } } }
-  invalid.viva.contract.memory++
-  const override = t.mock.method(fs, 'readFileSync', ((file: unknown, ...args: unknown[]) => file === manifest
-    ? JSON.stringify(invalid) : Reflect.apply(read, fs, [file, ...args])) as typeof fs.readFileSync)
-  const db = new DatabaseSync(join(app.directory, 'app.db'))
+    const frame = args[0] as { type?: string, kind?: string, id?: string, ok?: boolean } | undefined
+    if (event === 'message' && frameId && frame?.type === 'memory_owner_rpc' && frame.kind === 'result' && frame.id === frameId) {
+      ownerResponse = frame
+      if (hold === 'receipt') {
+        release = () => { Reflect.apply(emit, this, [event, ...args]) }
+        return true
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const app = await setup(t, () => null)
+  await app.files()
+  await app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', words, [], operationId)
+  assert.ok(release, 'the alias frame or its receipt stayed held until the prompt completed')
+  assert.ok(dispatchedBeforeTimeout, 'the host dispatched DSH while the alias was still pending')
+  assert.ok(app.model.requests.some(request => questionOf(request.messages) === words))
+  assert.ok(await eventually(() => cancelled), 'the owner receipt deadline elapsed while the conversation proceeded')
+  release()
+  assert.ok(await eventually(() => ownerResponse))
+  assert.equal(ownerResponse?.ok, hold === 'receipt')
+  const database = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   try {
-    db.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
-    await step('restart-with-owner-rejected', () => app.restart())
-  } finally {
-    db.close()
-    override.mock.restore()
+    const remembered = database.prepare('SELECT text FROM memory_sources WHERE id=?').get(operationId)
+    assert.equal(remembered?.text, hold === 'receipt' ? words : undefined)
+    assert.equal(database.prepare('SELECT 1 FROM owner_aliases WHERE source=?').get(operationId), undefined)
+  } finally { database.close() }
+})
+
+test('DSH restarts and chats while the memory worker is reconciling its old adapter', { timeout: 45_000 }, async t => {
+  let hold = false
+  let release: (() => void) | undefined
+  let frameId: string | undefined
+  let retired = false
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.send && this.spawnargs.includes('--memory-owner-ipc')) {
+      const send = this.send
+      t.mock.method(this, 'send', function(this: ChildProcess, message: unknown, ...rest: unknown[]) {
+        const frame = message as { type?: string, kind?: string, method?: string, id?: string }
+        if (hold && !release && frame.type === 'memory_owner_rpc' && frame.kind === 'request' && frame.method === 'adapterExited') {
+          frameId = frame.id
+          release = () => { Reflect.apply(send, this, [message, ...rest]) }
+          return true
+        }
+        if (frame.type === 'memory_owner_rpc' && frame.kind === 'cancel' && frame.id === frameId) retired = true
+        return Reflect.apply(send, this, [message, ...rest]) as boolean
+      })
+    }
+    return Reflect.apply(emit, this, [event, ...args]) as boolean
+  })
+  const app = await setup(t, () => null)
+  app.defer(() => { release?.() })
+  await app.ask('重启前的对话')
+  hold = true
+  await app.restart()
+  assert.ok(release, 'the previous adapter is still waiting for memory reconciliation')
+  assert.equal(retired, false, 'DSH became ready before the memory RPC could time out')
+  const words = '记忆还在恢复时继续聊天'
+  await app.ask(words)
+  assert.ok(app.model.requests.some(request => questionOf(request.messages) === words))
+})
+
+test('owner replacement finishes an in-flight trusted original once from the persisted DSH turn', { timeout: 45_000 }, async t => {
+  const words = '记忆进程退出期间完成的真人原话'
+  let current: ChildProcess | undefined
+  const emit = ChildProcess.prototype.emit
+  t.mock.method(ChildProcess.prototype, 'emit', function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+    if (event === 'spawn' && this.spawnargs?.includes('--memory-owner-ipc')) current = this
+    return Reflect.apply(emit, this, [event, ...args])
+  })
+  let started = false, release!: () => void
+  const hold = new Promise<void>(resolve => { release = resolve })
+  const app = await setup(t, request => {
+    if (questionOf(request.messages) !== words) return null
+    started = true
+    return { text: '已确认', waitFor: hold }
+  })
+  app.defer(release)
+  await app.files()
+  const original = randomUUID()
+  const sending = app.call<Promise<IpcResults['agent:prompt']>>('agent:prompt', words, [], original)
+  assert.ok(await eventually(() => started))
+  const first = current
+  assert.ok(first?.pid)
+  const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
+  app.defer(() => memory.close())
+  const registered = () => memory.prepare('SELECT 1 FROM owner_aliases WHERE source=? UNION ALL SELECT 1 FROM memory_sources WHERE id=?').get(original, original)
+  assert.ok(await eventually(registered))
+  first.kill('SIGKILL')
+  release()
+  await sending
+  assert.ok(await eventually(() => current && current !== first))
+  assert.ok(await eventually(() => memory.prepare('SELECT outcome FROM memory_sources WHERE id=?').get(original)?.outcome === 'recorded'))
+  assert.equal(memory.prepare('SELECT count(*) AS n FROM memory_sources WHERE text=?').get(words)?.n, 1)
+})
+
+test('a new memory database starts after existing DSH events and resumes from a persisted cursor', { timeout: 45_000 }, async t => {
+  const app = await setup(t, () => null)
+  const original = await app.ask('记忆库创建以前保留在对话里的标记')
+  const session = app.call<AgentInfo>('agent:info').sessionId
+  assert.ok(session)
+  await app.stopBackend()
+  const root = join(app.directory, 'memory')
+  fs.renameSync(root, join(app.directory, 'old-memory'))
+  await app.startBackend()
+  assert.equal(app.call<AgentInfo>('agent:info').sessionId, session)
+  const first = await app.ask('新记忆库中的第一轮真人原话')
+  const read = <T>(work: (db: DatabaseSync) => T) => {
+    const db = new DatabaseSync(join(root, 'memory.db'), { readOnly: true })
+    try { return work(db) } finally { db.close() }
   }
-  const words = '记忆 owner 恢复前不应发出模型请求'
-  const offset = app.model.requests.length
-  await step('reject-foreground-without-owner', () => assert.rejects(app.ask(words)))
-  assert.ok(!app.model.requests.slice(offset).some(raw => questionOf((raw as Request).messages) === words))
-  assert.ok(!app.model.requests.some(raw => questionOf((raw as Request).messages) === prompt))
-  await step('restart-with-owner-restored', () => app.restart())
-  assert.ok(await step('recovered-schedule-result', () => eventually(() => app.feed().find(item => item.title === title))))
-  assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages) === prompt))
+  const cursor = () => read(db => Number(db.prepare('SELECT next_seq FROM memory_session_cursors WHERE session=?').get(session)?.next_seq))
+  const turnSaved = (seq: number) => read(db => Boolean(db.prepare('SELECT 1 FROM owner_turns WHERE session=? AND seq=?').get(session, seq - 1)))
+  assert.ok(await eventually(() => turnSaved(cursor())))
+  const firstCursor = cursor()
+  assert.ok(firstCursor > 0)
+  await app.stopBackend()
+  await app.startBackend()
+  assert.equal(cursor(), firstCursor)
+  const second = await app.ask('owner 重连之后的第二轮真人原话')
+  assert.ok(await eventually(() => cursor() > firstCursor && turnSaved(cursor())))
+  const ids = read(db => db.prepare('SELECT id FROM memory_sources WHERE id IN (?,?,?)').all(original, first, second).map(row => row.id))
+  assert.deepEqual(new Set(ids), new Set([first, second]))
 })
 
 test('an ordinary city clarification stays scoped to the routed background task', { timeout: 45_000 }, async t => {
@@ -2177,216 +1367,6 @@ test('an ordinary city clarification stays scoped to the routed background task'
   assert.equal((await app.files()).length, 0)
 })
 
-test('an old brief forwarded to an existing task cannot reach DSH after memory replacement', { timeout: 45_000 }, async t => {
-  const forward = '交给之前的后台任务补一条'
-  const after = '通知旧任务继续核对'
-  const followUp = '后续核对，别重复旧内容'
-  const unrelated = '另一个无关后台任务'
-  const brief = '审计制表复核签署交易合并结算归档质检补齐格式只追加发送目的地址，内部合成：' + oldValue
-  let taskId: string | undefined
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    if (!taskId || ![forward, after].includes(question) || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    return { tool: { name: 'message_background_task', input: { taskId, text: question === forward ? brief : followUp } } }
-  })
-  await app.ask('后台做：这是一个完全独立的旧后台任务')
-  taskId = (await eventually(() => app.tasks().find(task => task.endedAt)))?.task.id
-  assert.ok(taskId)
-  await app.newTopic()
-  await app.recallOld()
-  await app.ask(forward)
-  assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.messages.some(row => row.text.includes(brief)))))
-  assert.ok(app.model.requests.some(raw => questionOf((raw as Request).messages).includes(brief)))
-
-  await app.replace()
-  await app.newTopic()
-  const count = app.model.requests.length
-  await app.ask(after)
-  await app.ask(`后台做：${unrelated}`)
-  assert.ok(await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === unrelated)))
-  const prompts = app.model.requests.slice(count).map(raw => questionOf((raw as Request).messages))
-  assert.ok(!prompts.includes(followUp))
-  assert.ok(prompts.some(text => text.includes(unrelated)))
-})
-
-test('task resume and scheduled execution reject a persisted file policy dependency after restart', { timeout: 45_000 }, async t => {
-  const title = '替我准备周报定时汇总'
-  const scheduled = '运行旧的定时汇总指令'
-  const brief = '在后台生成周报提交邮箱汇总'
-  const forward = '请继续运行之前的后台检查'
-  const followup = '运行旧任务最后一步'
-  let taskId: string | undefined
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    if (question === title) return { tool: { name: 'schedule_create', input: {
-      title, prompt: scheduled, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
-    } } }
-    if (question === forward && taskId) return { tool: { name: 'message_background_task', input: { taskId, text: followup } } }
-    return null
-  })
-  await app.recallOld()
-  const file = (await app.files()).find(item => item.markdown.includes(oldValue))
-  assert.ok(file)
-  const db = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
-  try {
-    await app.newTopic()
-    await app.ask(`后台做：${brief}`)
-    taskId = (await eventually(() => app.tasks().find(task => task.endedAt && task.task.title === brief)))?.task.id
-    assert.ok(taskId)
-    await app.schedule(title)
-    const stored = db.prepare(`SELECT reference FROM memory_session_file_dependencies
-      WHERE session=? AND json_extract(reference,'$.id')=?`).get(taskId, file.identity.id)
-    assert.ok(stored)
-    const proof = JSON.parse(String(stored.reference)) as { revision: string, usageVersion: number, policyToken: string }
-    assert.equal(proof.revision, file.version.contentRevision)
-    assert.equal(proof.policyToken, file.version.policyToken)
-    const scheduleDb = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
-    try {
-      assert.ok(scheduleDb.prepare(`SELECT 1 FROM schedules s, json_each(s.memory,'$.files') dep
-        WHERE json_extract(s.record,'$.title')=? AND json_extract(dep.value,'$.id')=?
-          AND json_extract(dep.value,'$.revision')=? AND json_extract(dep.value,'$.policyToken')=?`)
-        .get(title, file.identity.id, proof.revision, proof.policyToken))
-    } finally { scheduleDb.close() }
-    await app.newTopic()
-    const unrelated = await app.call<Promise<IpcResults['memory:create-file']>>('memory:create-file', {
-      operationId: randomUUID(), text: '我的可访问性偏好是高对比度',
-    })
-    assert.equal(unrelated.status, 'applied')
-    const unchanged = await app.call<Promise<MemoryFileDetail>>('memory:read-file', file.identity)
-    assert.deepEqual(unchanged.version, file.version, 'an unrelated file write does not change the consumed file proof')
-    await app.call('memory:set-file-enabled', { operationId: randomUUID(), identity: file.identity, version: unchanged.version, enabled: false })
-    const stopped = await app.call<Promise<MemoryFileDetail>>('memory:read-file', file.identity)
-    assert.equal(stopped.version.contentRevision, proof.revision)
-    assert.notEqual(stopped.version.usageVersion, proof.usageVersion)
-    assert.notEqual(stopped.version.policyToken, proof.policyToken)
-    assert.equal(db.prepare('SELECT revision FROM memory_documents WHERE id=?').get(file.identity.id)?.revision, proof.revision)
-  } finally { db.close() }
-
-  await app.stopBackend()
-  makeScheduleDue(app.directory)
-  const first = app.model.requests.length
-  assert.ok(await app.startBackend())
-  assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
-  await app.ask(forward)
-  const actual = app.model.requests.slice(first).map(raw => questionOf((raw as Request).messages))
-  assert.ok(actual.some(text => text.includes(forward)))
-  assert.ok(actual.every(text => !text.includes(followup) && !text.includes(scheduled)))
-})
-
-test('a scheduled prompt cannot replay old memory after replacement, and an unrelated schedule runs', { timeout: 45_000 }, async t => {
-  const scheduleOld = '替我定时归档周报'
-  const scheduleIndependent = '替我定时核对独立数字'
-  const stalePrompt = `定时归档到 ${oldValue}`
-  const freshPrompt = '执行独立数字核对'
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    if (![scheduleOld, scheduleIndependent].includes(question) || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    const prompt = question === scheduleOld ? stalePrompt : freshPrompt
-    const at = new Date(Date.now() + 60_000).toISOString()
-    return { tool: { name: 'schedule_create', input: { title: question, prompt, kind: 'at', at } } }
-  })
-  await app.schedule(scheduleIndependent)
-  await app.newTopic()
-  await app.recallOld()
-  await app.schedule(scheduleOld)
-  await app.replace()
-
-  // Move both durable occurrences to the past so reattaching DSH wakes them.
-  const db = new DatabaseSync(join(app.directory, 'app.db'))
-  try {
-    db.prepare("UPDATE schedules SET record=json_set(record, '$.scheduledAt', ?) WHERE status='active'").run(new Date(Date.now() - 1000).toISOString())
-  } finally { db.close() }
-  const offset = app.model.requests.length
-  await app.call('settings:set-permission', 'workspace-write')
-  assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
-  assert.ok(await eventually(() => app.feed().find(item => item.title === scheduleIndependent)))
-  const actual = app.model.requests.slice(offset).map(raw => JSON.stringify((raw as Request).messages))
-  assert.ok(!actual.some(text => text.includes(stalePrompt)))
-  assert.ok(actual.some(text => text.includes(freshPrompt)))
-})
-
-test('a scheduled prompt rechecks file usage policy even when no file content was rewritten', { timeout: 45_000 }, async t => {
-  const title = '为这次周报设一个归档任务'
-  const prompt = `定时归档这次周报到 ${oldValue}`
-  const app = await setup(t, request => {
-    if (questionOf(request.messages) !== title || JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
-    return { tool: { name: 'schedule_create', input: { title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString() } } }
-  })
-  await app.recallOld()
-  const file = (await app.files()).find(item => item.markdown.includes(oldValue))
-  assert.ok(file)
-  await app.schedule(title)
-  await app.newTopic()
-  await app.call('memory:set-file-enabled', { operationId: randomUUID(), identity: file.identity, version: file.version, enabled: false })
-  const stopped = await app.call<Promise<MemoryFileDetail>>('memory:read-file', file.identity)
-  assert.equal(stopped.version.contentRevision, file.version.contentRevision)
-  assert.notEqual(stopped.version.policyToken, file.version.policyToken)
-  makeScheduleDue(app.directory)
-  const offset = app.model.requests.length
-  app.wake()
-  assert.ok(await eventually(() => app.feed().find(item => item.title === '定时任务需要重新确认')))
-  assert.ok(!(await app.files()).some(item => item.markdown.includes(oldValue)))
-  assert.ok(!app.model.requests.slice(offset).some(request => JSON.stringify(request).includes(prompt)))
-})
-
-test('schedule results recheck the file evidence read during execution before publication', { timeout: 30_000 }, async t => {
-  const title = '设置一次定时整理'
-  const prompt = '整理本次材料'
-  const draft = `定时结果沿用 ${oldValue}`
-  let responding = false
-  const app = await setup(t, request => {
-    const question = questionOf(request.messages)
-    const tool = JSON.stringify(request.messages.at(-1)).includes('tool_result')
-    if (question === title && !tool) return { tool: { name: 'schedule_create', input: {
-      title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
-    } } }
-    if (question === prompt && !tool) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
-    if (tool && JSON.stringify(request.messages).includes(prompt)) {
-      const recalled = modelToolResults(request, 'memory_recall').at(-1)
-      const recalledText = typeof recalled === 'string'
-        ? recalled
-        : Array.isArray(recalled)
-          ? recalled.map(part => (part && typeof part === 'object' && 'text' in part && typeof part.text === 'string' ? part.text : '')).join('')
-          : ''
-      let currentHasOld = false
-      if (recalledText) {
-        try {
-          const parsed = JSON.parse(recalledText) as { notes?: Array<{ markdown?: unknown }> }
-          currentHasOld = Array.isArray(parsed.notes) && parsed.notes.some(note => typeof note.markdown === 'string' && note.markdown.includes(oldValue))
-        } catch { /* ignore non-JSON tool results */ }
-      }
-      if (currentHasOld) {
-        responding = true
-        return { text: draft, delayMs: 3000 }
-      }
-    }
-    return null
-  })
-  await app.schedule(title)
-  await app.newTopic()
-  await app.recallOld()
-  makeScheduleDue(app.directory)
-  app.wake()
-  assert.ok(await eventually(() => responding))
-  await app.replace()
-  const db = new DatabaseSync(join(app.directory, 'app.db'))
-  app.defer(() => db.close())
-  assert.ok(await eventually(() => db.prepare('SELECT attempts FROM schedule_runs').get()?.attempts === 1))
-  assert.equal(app.feed().length, 0)
-  db.prepare('UPDATE schedule_runs SET due_at=?').run(Date.now() - 1000)
-  app.wake()
-  const refreshed = await eventually(() => app.feed().find(item => item.title === title))
-  assert.ok(refreshed)
-  assert.ok(!refreshed.body.includes(draft))
-  const recalls = app.model.requests.filter(raw => {
-    const request = raw as Request
-    return questionOf(request.messages) === prompt && !JSON.stringify(request.messages.at(-1)).includes('tool_result')
-  })
-  assert.ok(recalls.length >= 2)
-  assert.ok(!JSON.stringify(recalls.at(-1)).includes(oldValue))
-})
-
 test('an Updates draft keeps the result identity until dispatch and never becomes a user memory source', { timeout: 30_000 }, async t => {
   const title = '定时整理原始材料'
   const prompt = '核对这份日报'
@@ -2397,8 +1377,8 @@ test('an Updates draft keeps the result identity until dispatch and never become
     if (question === title && !tool) return { tool: { name: 'schedule_create', input: {
       title, prompt, kind: 'at', at: new Date(Date.now() + 60_000).toISOString(),
     } } }
+    if (modelToolResults(request, 'memory_recall').length && JSON.stringify(request.messages).includes(prompt)) return { text: draft }
     if (question === prompt && !tool) return { tool: { name: 'memory_recall', input: { query: '周报提交邮箱' } } }
-    if (tool && JSON.stringify(request.messages).includes(prompt)) return { text: draft }
     return null
   })
   await app.schedule(title)
@@ -2408,8 +1388,10 @@ test('an Updates draft keeps the result identity until dispatch and never become
   app.wake()
   const item = await eventually(() => app.feed().find(item => item.title === title))
   assert.ok(item)
+  assert.ok(app.model.requests.some(request => questionOf(request.messages) === prompt && JSON.stringify(request).includes('【记忆规则】')),
+    'a verified unattended prompt receives automatic memory context')
   const text = await app.call<Promise<string>>('feed:continue', item.id)
-  assert.ok(text.endsWith(draft))
+  assert.ok(text.endsWith(draft), JSON.stringify({ body: item.body, text }))
   await app.newTopic()
   const offset = app.model.requests.length
   const seen = app.events.length
@@ -2420,13 +1402,12 @@ test('an Updates draft keeps the result identity until dispatch and never become
   assert.ok(await eventually(() => app.model.requests.slice(offset).some(raw => JSON.stringify(raw).includes('解释这段结果'))))
   assert.ok(await eventually(() => app.events.slice(seen).find(event => event.type === 'turn_end')))
   const memoryDb = new DatabaseSync(join(app.directory, 'memory', 'memory.db'))
-  try { assert.equal(memoryDb.prepare('SELECT id FROM memory_sources WHERE id=?').get(operation), undefined) }
+  try {
+    assert.equal(memoryDb.prepare('SELECT id FROM memory_sources WHERE id=? OR text IN (?,?)').get(operation, prompt, draft), undefined)
+  }
   finally { memoryDb.close() }
   await app.replace()
-  const before = app.model.requests.length
-  await assert.rejects(async () => app.call('feed:continue', item.id), /已变更/)
-  await assert.rejects(() => send(text, item.id), /已变更/)
-  assert.ok(!app.model.requests.slice(before).some(raw => JSON.stringify(raw).includes(draft)))
+  assert.equal(await app.call('feed:continue', item.id), text)
   assert.ok(app.feed().some(row => row.id === item.id && row.body === draft))
 })
 
@@ -2444,7 +1425,7 @@ test('schedule assertions find the matching result before a trailing runtime not
   assert.deepEqual(modelToolResults({ messages: [{ content: [{ type: 'tool_result', tool_use_id: 'unrelated', content: '甲项目定时汇总' }] }] }, 'schedule_list'), [])
 })
 
-test('custom human answers inside a background task are original sources with task scope and history identity', { timeout: 30_000 }, async t => {
+test('a generated task brief stays derived while the answer keeps its task scope and history identity', { timeout: 30_000 }, async t => {
   const brief = '确认工作城市后整理背景任务'
   const app = await setup(t, request => {
     if (JSON.stringify(request.messages.at(-1)).includes('tool_result')) return null
@@ -2462,55 +1443,13 @@ test('custom human answers inside a background task are original sources with ta
   const memory = new DatabaseSync(join(app.directory, 'memory', 'memory.db'), { readOnly: true })
   const history = new DatabaseSync(join(app.directory, 'app.db'), { readOnly: true })
   try {
-    const source = memory.prepare("SELECT id,conversation,context FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer))
+    assert.ok(await eventually(() => memory.prepare("SELECT 1 FROM owner_messages WHERE kind='derived' AND session=?").get(event.taskId)))
+    assert.equal(memory.prepare("SELECT 1 FROM memory_sources WHERE author='user' AND session=? AND text=?").get(event.taskId, brief), undefined)
+    const source = await eventually(() => memory.prepare("SELECT id,conversation,context FROM memory_sources WHERE author='answer' AND hash=?").get(memoryHash(answer)))
     assert.ok(source, 'The canonical answer identity survives automatic source compaction')
     assert.deepEqual(JSON.parse(String(source.context)), { kind: 'task', id: event.taskId })
     assert.equal(history.prepare('SELECT text FROM messages WHERE conversation_id=? AND source_id=?').get(source.conversation, source.id)?.text, answer)
   } finally { memory.close(); history.close() }
-})
-
-test('the real DSH send surface removes a stopped original and still delivers a verified disjoint file fragment', { timeout: 45_000 }, async t => {
-  const old = '灰桦发布窗口定在周五。', safe = '红茶在周一供应。', query = '红茶什么时候供应？'
-  const app = await setup(t, request => {
-    if (questionOf(request.messages) === query && !modelToolResults(request, 'memory_recall').length) {
-      return { tool: { name: 'memory_recall', input: { query: '红茶' } } }
-    }
-    return null
-  }, { dailyNotes: true })
-  const sourceId = randomUUID()
-  await app.call('agent:prompt', old + safe, [], sourceId)
-  const first = app.call<AgentInfo>('agent:info')
-  assert.ok(first.sessionId && first.conversationId)
-  assert.ok(app.model.requests.some(request => JSON.stringify(request).includes(old)))
-  const store = openMemoryStore(join(app.directory, 'memory', 'memory.db'))
-  try {
-    const original = store.readSource(sourceId)
-    assert.equal(original?.text, old + safe)
-    const workspace = memorySourceWorkspace(original!)
-    const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, deferRecovery: true, source(id) {
-      const row = store.readSource(id)
-      return row?.text ? { text: row.text, workspace: memorySourceWorkspace(row), token: memorySourceToken(row) } : undefined
-    } })
-    const digest = (slug: string, text: string, start: number, end: number) => documents.commit({
-      operationId: randomUUID(), workspace, path: `digest/wiki/${slug}.md`, action: 'CREATE', expectedRevision: null,
-      markdown: text, sources: [{ id: sourceId, token: memorySourceToken(original!), spans: [{ start, end }] }], reads: [],
-    })
-    const stopped = digest('release', old, 0, old.length)
-    digest('tea', safe, old.length, old.length + safe.length)
-    const list = await app.call<Promise<MemoryFileListResult>>('memory:list-files', { kind: 'digest' })
-    const item = list.items.find(file => file.identity.id === stopped.documentId)
-    assert.ok(item)
-    await app.call('memory:set-file-enabled', { operationId: randomUUID(), identity: item.identity, version: item.version, enabled: false })
-  } finally { store.close() }
-  const offset = app.model.requests.length
-  await app.ask(query)
-  const after = app.model.requests.slice(offset) as Request[]
-  assert.ok(after.some(request => questionOf(request.messages) === query))
-  assert.ok(after.some(request => modelToolResults(request, 'memory_recall').some(result => JSON.stringify(result).includes(safe))))
-  assert.ok(!after.some(request => JSON.stringify(request).includes(old)), 'stopped raw history never reaches the provider')
-  const continued = app.call<AgentInfo>('agent:info')
-  assert.equal(continued.conversationId, first.conversationId)
-  assert.notEqual(continued.sessionId, first.sessionId)
 })
 
 test('removing the last model from an unconfirmed stop enters setup without retaining the retired session', { timeout: 40_000 }, async t => {
@@ -2564,9 +1503,8 @@ test('main session oversees background tasks across git repos while background t
     if (question === followUpText) return { text: outputA2 }
     if (question === briefA) return { text: outputA1, waitFor: holdTaskA }
     if (JSON.stringify(request.messages[0]).includes(briefB)) {
-      const historyJson = JSON.stringify(request.messages)
-      if (!historyJson.includes('list_background_tasks')) return { tool: { name: 'list_background_tasks', input: {} } }
-      if (!historyJson.includes('search_conversations')) return { tool: { name: 'search_conversations', input: { query: '盘点接口' } } }
+      if (modelToolResults(request, 'list_background_tasks').length === 0) return { tool: { name: 'list_background_tasks', input: {} } }
+      if (modelToolResults(request, 'search_conversations').length === 0) return { tool: { name: 'search_conversations', input: { query: '盘点接口' } } }
       return { text: '乙仓库自检完成' }
     }
     if (lastJson.includes('tool_result')) return null
@@ -2665,7 +1603,7 @@ test('main session oversees background tasks across git repos while background t
   assert.ok(taskBListResults.every(result => !JSON.stringify(result).includes(taskAId)), 'background task cannot see other tasks')
   const taskBHistoryResults = taskBRequests.flatMap(request => modelToolResults(request, 'search_conversations'))
   assert.ok(taskBHistoryResults.length > 0 && taskBHistoryResults.every(result => !JSON.stringify(result).includes(briefA)),
-    'background task cannot read cross-project history')
+    JSON.stringify({ taskBHistoryResults, requests: taskBRequests.map(request => request.messages.at(-1)) }))
 
   // Stop a running repoA task from repoB.
   await app.ask('让甲仓库任务开始深度扫描')

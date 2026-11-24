@@ -20,7 +20,7 @@ interface ConversationAgent {
 type History = Pick<ReturnType<typeof openHistoryDb>, 'get' | 'create' | 'latest' | 'topicOf'>
 
 /** Owns the selected segment, directory, carried records and session transitions, never the dsh process. */
-export function createConversationSession({ history, agent, info, setInfo, isBusy, folderExists, selectedModel, changed, carryRevision = () => 0 }: {
+export function createConversationSession({ history, agent, info, setInfo, isBusy, folderExists, selectedModel, changed }: {
   history: () => History
   agent: () => ConversationAgent | null
   info: () => ConversationInfo
@@ -29,11 +29,10 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
   folderExists: (dir: string) => boolean
   selectedModel: () => string | null
   changed: () => void
-  carryRevision?: () => number
 }) {
   let selected: Conversation | null = null
   let directory: string | null = null, defaultDirectory: string | null = null
-  let carry: { conversationId: string, text: string, revision: number } | null = null
+  let carry: { conversationId: string, text: string } | null = null
   let changing = false, uncommitted = false, newTopicPending: Promise<ConversationInfo> | null = null
   let selectionToken = {}
 
@@ -225,14 +224,13 @@ export function createConversationSession({ history, agent, info, setInfo, isBus
   }
 
   function discardStaleCarry() {
-    if (carry && carry.revision !== carryRevision()) carry = null
   }
 
   return {
     open, current, select, reset, cwd, topicId, startingIn, ready, newTopic, switchDirectory, withSelection,
     isChanging: () => changing || uncommitted,
     context: (): ConversationContext => ({ conversationId: current().id, sessionId: current().sessionId }),
-    carryNext: (conversationId: string, text: string) => { carry = { conversationId, text, revision: carryRevision() } },
+    carryNext: (conversationId: string, text: string) => { carry = { conversationId, text } },
     discardStaleCarry,
     takeCarried: () => {
       discardStaleCarry()

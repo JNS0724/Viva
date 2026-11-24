@@ -125,8 +125,8 @@ test('committed identities distinguish recovered text with the same prefix or id
       assert.equal(restored.messages[2].streamKey, 'final')
       const rewound = reduce(initialState, { type: 'rewound', conversation: { id: conversation.id, messages: stored.messages }, info: restored.info, folds: [] })
       assert.equal(rewound.messages[2].streamKey, 'final')
-      assert.throws(() => history.save(conversation, [question, { role: 'assistant', text: explanation, key: 'intro' },
-        { ...final, text: 'Canonical correction' }]), /Generated history identity conflicts/)
+      history.save(conversation, [question, { role: 'assistant', text: explanation, key: 'intro' },
+        { ...final, text: 'Canonical correction' }])
       assert.equal(sqlite.prepare('SELECT id FROM messages WHERE conversation_id = ? AND seq = 2').get(conversation.id)!.id, id)
       assert.equal(sqlite.prepare('SELECT seq FROM stars WHERE conversation_id = ?').get(conversation.id)!.seq, 2)
     } finally { sqlite.close() }

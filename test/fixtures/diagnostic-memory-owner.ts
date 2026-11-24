@@ -12,7 +12,7 @@ const logger = createNodeDiagnostics({ directory: path.join(root, 'diagnostics')
 const contextOnly = { emit: () => undefined }
 installDiagnosticPort(NO_DIAGNOSTICS)
 const owner = openMemoryOwner({ root: path.join(root, 'memory'), dailyNotes: true, diagnostics: diagnosticPort,
-  route: () => null, compute: () => null, quiesce: async () => {} })
+  route: () => null, compute: () => null })
 await owner.recover()
 await logger.ready
 process.on('message', (raw: unknown) => {

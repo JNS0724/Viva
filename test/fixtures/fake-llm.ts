@@ -85,7 +85,7 @@ const textParts = (message: Message) => rawTexts(message).map(withoutHeaders)
 
 /** Says what background came with the question: the fixed layer, and how many pushed memories. */
 function backgroundOf(texts: readonly string[]) {
-  const block = texts.find((text) => text.startsWith(CONTEXT_OPEN))
+  const block = texts.find(text => text.includes(CONTEXT_OPEN))
   if (!block) return ''
   const fixed = block.includes('【记忆规则】') ? '画像' : ''
   const pushed = block.split('\n').filter((line) => line.startsWith('- ') && line.endsWith('〕')).length
@@ -114,8 +114,6 @@ function trailingToolResult(messages: readonly Message[]): Part | undefined {
 }
 
 function currentWords(text: string) {
-  // Test responder ignores the trusted delivery suffix; production admission uses exact owner aliases.
-  text = text.replace(/\n\n<memory-delivery id="[a-f0-9-]+" \/>$/u, '')
   if (!text.startsWith('以下是这个话题以前的记录（最近 ')) return text
   const end = text.lastIndexOf(CARRY_CLOSE)
   return end < 0 ? text : text.slice(end + CARRY_CLOSE.length).trimStart()
@@ -139,12 +137,13 @@ export const lastWords = (messages: readonly Message[]) => currentWords(messages
  * messages with text. dsh may add messages of its own after the user's words (a fresh session's runtime context).
  */
 const askedWords = (messages: readonly Message[]) => {
-  const hasText = (message: Message) => message.role === 'user' && textParts(message).length > 0
+  const userWords = (texts: readonly string[]) => currentTurnTextParts(texts).filter(text => !text.startsWith(CONTEXT_OPEN))
+  const hasText = (message: Message) => message.role === 'user' && userWords(textParts(message)).length > 0
   let end = messages.length - 1
   while (end >= 0 && !hasText(messages[end])) end -= 1
   let start = end
   while (start > 0 && messages[start - 1].role === 'user') start -= 1
-  return currentWords(messages.slice(start, end + 1).flatMap(textParts).find((text) => !text.startsWith(CONTEXT_OPEN)) ?? '')
+  return currentWords(userWords(messages.slice(start, end + 1).flatMap(textParts))[0] ?? '')
 }
 
 function lastToolUse(messages: readonly Message[]) {
@@ -342,7 +341,9 @@ export function decide(raw: object): Answer {
   // after its route receipt. Ordinary completed routes may answer the report.
   const appRoute = use?.name === ROUTE && Array.isArray(use.input?.actions)
     && use.input.actions.some((action: unknown) => objectOf(action)?.kind === 'app_action')
-  const result = appRoute ? trailingToolResult(messages) : partsOf(last).find((part) => part.type === 'tool_result')
+  const taskReport = currentTurnTextParts(trailingUserTexts(messages)).map(text => TASK_REPORT.exec(text)).find(Boolean)
+  if (taskReport && !appRoute) return { text: `已看过后台结果：${taskReport[1]}` }
+  const result = appRoute ? trailingToolResult(messages) : partsOf(last).find((part) => part.type === 'tool_result') ?? trailingToolResult(messages)
   // Once a request is routed, the rules go on with its words, as if just asked.
   const routed = result && toolUses(messages).at(-1)?.name === ROUTE
   if (result && !routed) return afterTool(request, messages, result)
@@ -355,7 +356,6 @@ export function decide(raw: object): Answer {
     const text = remember[1].trim()
     return { tool: { name: 'memory_remember', input: { text } } }
   }
-  const taskReport = TASK_REPORT.exec(question)
   if (taskReport) return { text: `已看过后台结果：${taskReport[1]}` }
   if (WEATHER.test(question)) return hasTool(request, 'ask_user_question') ? { tool: { name: 'ask_user_question', input: { questions: [CITY_QUESTION] } } } : { text: CITY_QUESTION.question }
   if (CONNECT.test(question)) return { tool: { name: 'viva_mcp_add', input: DEMO_SERVER } }

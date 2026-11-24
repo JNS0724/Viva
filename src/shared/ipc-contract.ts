@@ -1,5 +1,5 @@
 import { operationId } from '../memory/contracts/memory-contract.ts'
-import { memoryFileIdentity, memoryFileRestrictionId, memoryFileListRequest, memoryFileSetEnabledRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest, memoryFileForgetRequest } from '../memory/contracts/file-management.ts'
+import { memoryFileIdentity, memoryFileListRequest, memoryFileSetEnabledRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest, memoryFileForgetRequest } from '../memory/contracts/file-management.ts'
 import { z } from 'zod'
 
 /**
@@ -119,7 +119,7 @@ export const IPC_ARGS = Object.freeze({
   'memory:dream-status': read(z.tuple([operationId.optional()])),
   'memory:run-dream': z.tuple([operationId]),
   'memory:list-files': read(z.tuple([memoryFileListRequest, memoryReadOptions])),
-  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional(), memoryReadOptions])),
+  'memory:read-file': read(z.tuple([memoryFileIdentity, memoryReadOptions])),
   'memory:set-file-enabled': z.tuple([memoryFileSetEnabledRequest]),
   'memory:undo-file': z.tuple([memoryFileUndoRequest]),
   'memory:create-file': z.tuple([memoryFileCreateRequest]),

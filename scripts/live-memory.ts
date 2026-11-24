@@ -111,8 +111,7 @@ export async function fileSnapshot(call: HostMemoryCaller): Promise<MemoryFileDe
 /** One turn: the answer, the tool calls with their arguments, and the permissions refused. */
 async function ask(bridge: Bridge, events: readonly BridgeEvent[], question: string) {
   const from = events.length
-  const sourceId = randomUUID(), session = bridge.currentSession()!
-  await bridge.memory.call('sourceAlias', { operationId: sourceId, sourceId, session, conversation: session, text: question })
+  const sourceId = randomUUID()
   await withTimeout(bridge.prompt(question, [], { sourceId, sourceText: question }), TURN_TIMEOUT_MS, `「${question}」`)
   const turn = events.slice(from)
   const tools = new Map<string, ToolSummary>()
@@ -155,8 +154,12 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
     profile: DSH_PROFILE,
     overlay: vivaLayerFile(dshHome),
     cwd: workspace,
-    memoryRequired: true,
+
     memoryOwner,
+    recordSource: async ({ session, sourceId, text, wireText, wireSpans }) => {
+      if (sourceId) await memoryOwner.channel.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
+        conversation: session, text, wireText, wireSpans, cwd: workspace })
+    },
     env: dshEnv({ base: env, dshHome, runtime: RUNTIME, settings: { DEEPSEEK_API_KEY: key } }),
     emit: (event) => {
       events.push(event)
@@ -167,7 +170,8 @@ async function runSession({ questions, key, env, dshHome, workspace, memoryRoot 
     },
   })
   try {
-    const { sessionId, model } = await withTimeout(memoryOwner.prepare(async () => {}).then(() => bridge.start()), TURN_TIMEOUT_MS, 'dsh 启动')
+    const { sessionId, model } = await withTimeout(memoryOwner.prepare().then(() => bridge.start()), TURN_TIMEOUT_MS, 'dsh 启动')
+    await bridge.memory.waitReady()
     const turns = []
     for (const question of questions) {
       const turn = await ask(bridge, events, question)

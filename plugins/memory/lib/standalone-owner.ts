@@ -8,7 +8,6 @@ import type { MemoryOwnerConnection } from './remote-owner.ts'
 
 type SupervisorOptions = Parameters<typeof createMemoryOwnerSupervisor>[0]
 type Callbacks = NonNullable<SupervisorOptions['callbacks']> & {
-  recoverContext?(session: string, signal: AbortSignal): Promise<boolean>
 }
 type Supervisor = ReturnType<typeof createMemoryOwnerSupervisor>
 type OwnerOptions = Pick<SupervisorOptions, 'root' | 'hostNamespace' | 'dailyNotes' | 'embedding'> & { callbacks?: Callbacks }
@@ -32,9 +31,6 @@ function standaloneOwner(initial: OwnerOptions) {
           if (!compute) throw new Error('Memory model adapter is unavailable')
           return compute(input, signal)
         },
-        quiesce: async (input, signal) => { await attached?.callbacks?.quiesce?.(input, signal) },
-        checkRecovery: async (input, signal) => await attached?.callbacks?.checkRecovery?.(input, signal) ?? false,
-        drainSends: async input => { await attached?.callbacks?.drainSends?.(input) },
       },
       onEvent: event => { for (const listener of listeners) listener(event) },
     })
@@ -134,14 +130,6 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
       // Only the Viva parent sends reverse adapter callbacks on the dedicated IPC link.
       switch (method) {
         case 'compute': return required(callbacks?.compute)(input as Parameters<NonNullable<Callbacks['compute']>>[0], signal)
-        case 'quiesce': return required(callbacks?.quiesce)(input as Parameters<NonNullable<Callbacks['quiesce']>>[0], signal)
-        case 'checkRecovery': return required(callbacks?.checkRecovery)(input as Parameters<NonNullable<Callbacks['checkRecovery']>>[0], signal)
-        case 'recoverContext': {
-          const request = input as { session?: unknown, epoch?: unknown } | null
-          if (!current || request?.epoch !== current.epoch || typeof request.session !== 'string') throw new Error('Memory adapter generation changed')
-          return required(callbacks?.recoverContext)(request.session, signal)
-        }
-        case 'drainSends': return required(callbacks?.drainSends)(input as Parameters<NonNullable<Callbacks['drainSends']>>[0])
         default: throw new Error('Unsupported memory adapter callback')
       }
     },
@@ -182,7 +170,7 @@ function fromViva(options: OwnerOptions, port: typeof process): MemoryOwnerConne
       listeners.clear()
     },
     reconciled(epoch, ready) { peer.notify({ type: 'memory_adapter_ready', epoch, ready }) },
-    callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch, waitForCompletion: opts?.waitForCompletion }, opts),
+    callAdapter: (method, args, opts) => peer.call('adapter', { method, args, epoch: current?.epoch }, opts),
     callHost: () => Promise.reject(new Error('The Viva memory adapter has no host capabilities')),
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     status: () => current?.state ?? 'unavailable',

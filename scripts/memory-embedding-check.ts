@@ -153,9 +153,9 @@ export async function checkRuntime(embedder: MemoryEmbedder) {
     { scope: privateScope, id: 'private-escrow', text: 'ORCHID-19 的托管密钥只交给黑桦项目的专员。' },
   ]
   const memory = createMemoryRuntime({ store, dailyNotes: false, embedder,
-    compute: () => null, route: () => null, quiesce: async () => {}, changed: () => {},
+    compute: () => null, route: () => null, changed: () => {},
     // This isolated offline fixture has no physical sends or asynchronous model writes.
-    canCommit: () => true, validateDispatch: () => {}, runDocumentMutation: async work => work() })
+    canCommit: () => true })
   const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, source(id) {
     const source = store.readSource(id)
     return source?.text ? { text: source.text, workspace: memorySourceWorkspace(source), token: memorySourceToken(source) } : undefined

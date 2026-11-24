@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { EventEmitter } from 'node:events'
-import { feedSourceIdentity, openFeedStore, type FeedItem } from '../src/backend/feed-store.ts'
+import { openFeedStore, type FeedItem } from '../src/backend/feed-store.ts'
 import { openFeedSourceStore } from '../src/backend/feed-source-store.ts'
 import {
   buildFeedSourcePrompt, createFeedSourceRuns, MAX_ATTEMPTS, MAX_ITEMS_PER_RUN,
@@ -13,16 +13,14 @@ import { createRoutingDesk } from '../src/backend/routing-channel.ts'
 import { createHostChannel } from '../plugins/routing/lib/host.ts'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { createSourceGuard, verifyPluginReadOnlyTools } from '../plugins/routing/lib/source-tools.ts'
-import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import type { RunResult } from '../src/backend/unattended-runs.ts'
 
 const at = (iso: string) => Date.parse(iso)
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 
-function harness(start: string, { checkPlugin, run, memoryCurrent, serialize }: {
+function harness(start: string, { checkPlugin, run, serialize }: {
   checkPlugin?: (name: string) => Promise<PluginCheckResult>
   run: (prompt: string, cwd: string, policy: SourceExecutionPolicy) => Promise<RunResult>
-  memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
   serialize?: <T>(fn: () => Promise<T>) => Promise<T>
 }) {
   const db = new DatabaseSync(':memory:')
@@ -40,7 +38,6 @@ function harness(start: string, { checkPlugin, run, memoryCurrent, serialize }: 
     feed,
     checkPlugin: checkPlugin ?? (async () => ({ ok: true, ownerEntryIds: ['entry-mail'], allowedTools: ['mail_search', 'mail_read'] })),
     run,
-    memoryCurrent,
     serialize,
     keep: (item) => kept.push(item),
     delivered: () => { deliveredCount += 1 },
@@ -147,63 +144,24 @@ test('without cursor, incremental checkpoint uses query start time rather than c
   assert.match(prompts[1], /2026-11-19T01:00:00\.000Z/, 'next prompt starts from 09:00+08:00, not 09:06+08:00')
 })
 
-test('erased feed item key is skipped without rolling back new items, cursor, or queue completion', async () => {
-  const h = harness('2026-11-19T12:00:00+08:00', {
-    run: async () => ({
-      ok: true,
-      text: JSON.stringify({
-        action: 'publish',
-        items: [
-          { key: 'erased-key', title: '已撤回旧条目', body: '不应再出现' },
-          { key: 'fresh-key', title: '同批新条目', body: '应该正常发布' },
-        ],
-        cursor: { uid: 55 },
-      }),
-    }),
-  })
-  const source = h.store.create({
-    pluginName: '@company/dsh-plugin-mail',
-    name: '邮件监控',
-    instruction: '查紧急邮件',
-    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
-    cwd: '/work',
-  })
-  h.db.exec('CREATE TABLE IF NOT EXISTS memory_erased_feed_copies (identity TEXT PRIMARY KEY)')
-  h.db.prepare('INSERT INTO memory_erased_feed_copies (identity) VALUES (?)')
-    .run(feedSourceIdentity(`source:${source.id}`, 'erased-key'))
-  h.runs.arm()
 
-  await h.advance('2026-11-19T12:30:01+08:00')
-  assert.equal(h.feed.list().length, 1)
-  assert.equal(h.feed.list()[0].key, 'fresh-key')
-  assert.deepEqual(h.store.get(source.id)?.cursor, { uid: 55 })
-  assert.equal(h.db.prepare('SELECT COUNT(*) AS n FROM feed_source_runs').get()?.n, 0, 'queue row cleared')
-  assert.ok(h.db.prepare('SELECT 1 FROM memory_erased_feed_copies WHERE identity=?').get(feedSourceIdentity(`source:${source.id}`, 'erased-key')), 'erasure tombstone kept')
-})
-
-test('serializer covers through commit so manual runNow cannot race delayed memoryCurrent and regress cursor', async () => {
+test('serializer covers through commit so manual runNow cannot race a delayed run and regress cursor', async () => {
   let queue: Promise<unknown> = Promise.resolve()
   const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = queue.then(fn, fn)
     queue = next.then(() => undefined, () => undefined)
     return next
   }
-  let releaseMemoryCheck!: () => void
-  let checkCount = 0
+  let releaseRun!: () => void
   let runIndex = 0
   const prompts: string[] = []
-  const memory: MemoryProvenance = { sources: ['m1'], turnOnly: false, epoch: 1 }
 
   const h = harness('2026-11-19T12:00:00+08:00', {
     serialize,
-    memoryCurrent: async () => {
-      checkCount += 1
-      if (checkCount === 1) await new Promise<void>((resolve) => { releaseMemoryCheck = resolve })
-      return true
-    },
     run: async (prompt) => {
       prompts.push(prompt)
       runIndex += 1
+      if (runIndex === 1) await new Promise<void>(resolve => { releaseRun = resolve })
       return {
         ok: true,
         text: JSON.stringify({
@@ -211,7 +169,6 @@ test('serializer covers through commit so manual runNow cannot race delayed memo
           items: [{ key: `k-${runIndex}`, title: `条目 ${runIndex}`, body: '正文' }],
           cursor: runIndex,
         }),
-        memory,
       }
     },
   })
@@ -225,12 +182,11 @@ test('serializer covers through commit so manual runNow cannot race delayed memo
   h.runs.arm()
 
   await h.advance('2026-11-19T12:30:01+08:00')
-  // Scheduled run is now waiting inside memoryCurrent(); trigger runNow concurrently
   const manualPromise = h.runs.runNow(source.id)
   await flush()
   assert.equal(runIndex, 1, 'manual run must wait until scheduled run finishes commit')
 
-  releaseMemoryCheck()
+  releaseRun()
   await manualPromise
   assert.equal(runIndex, 2)
   assert.match(prompts[1], /上次保存的增量游标：1/, 'manual run sees cursor 1 committed by scheduled run')
@@ -346,35 +302,6 @@ test('bindings require read-only tools from the selected loader entry and rechec
   assert.match(guard.deny('sess-ok', search.name, changedCapability) ?? '', /只读/)
 })
 
-test('scheduled and manual publish persist memory provenance and reject stale memory results', async () => {
-  const memory: MemoryProvenance = { sources: ['mem-src-1'], turnOnly: false, epoch: 1 }
-  let memoryValid = true
-  const h = harness('2026-11-19T12:00:00+08:00', {
-    memoryCurrent: () => memoryValid,
-    run: async () => ({
-      ok: true,
-      text: '{"action":"publish","items":[{"key":"k1","title":"摘要","body":"内容"}]}',
-      memory,
-    }),
-  })
-  const source = h.store.create({
-    pluginName: '@company/dsh-plugin-mail',
-    name: '邮件监控',
-    instruction: '查紧急邮件',
-    schedule: { kind: 'interval', minutes: 30, timeZone: 'Asia/Shanghai' },
-    cwd: '/work',
-  })
-
-  const manual = await h.runs.runNow(source.id)
-  assert.equal(manual.status, 'published')
-  const item = h.feed.list()[0]
-  assert.deepEqual(h.feed.continuation(item.id)?.memory, memory)
-
-  memoryValid = false
-  const staleManual = await h.runs.runNow(source.id)
-  assert.equal(staleManual.status, 'failed')
-  assert.equal(h.feed.list().length, 1)
-})
 
 test('buildFeedSourcePrompt includes plugin name, instruction, lastSuccessAt and prior cursor', () => {
   const prompt = buildFeedSourcePrompt({

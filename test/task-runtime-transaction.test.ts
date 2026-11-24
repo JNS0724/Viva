@@ -11,7 +11,6 @@ import { openIndependentHistory as openHistoryDb } from './fixtures/independent-
 import { createTaskRuntime, KEEP_ENDED } from '../src/backend/task-runtime.ts'
 import { createTaskStore, type StoredTask } from '../src/backend/task-store.ts'
 import type { TaskSnapshot } from '../src/backend/task-registry.ts'
-import type { MemoryProvenance } from '../src/memory/contracts/provenance.ts'
 import { installDiagnosticPort } from '../src/diagnostics/node/context.ts'
 import { recordingDiagnosticPort } from './fixtures/diagnostic-port.ts'
 import type { DiagnosticEvent } from '../src/diagnostics/contracts.ts'
@@ -27,8 +26,8 @@ const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content
 type Started = { ok: true, task: { id: string, segmentId: string } }
 
 /** `uncancelled`: a try once asked for runs even if let go, to see that the run alone guards it. */
-function setup(t: TestContext, { uncancelled = false, captureReportMemory, mainMessages = [{ role: 'user', text: '做周报', receipt: null }] }: {
-  uncancelled?: boolean, captureReportMemory?: Parameters<typeof createTaskRuntime>[0]['captureReportMemory'],
+function setup(t: TestContext, { uncancelled = false, mainMessages = [{ role: 'user', text: '做周报', receipt: null }] }: {
+  uncancelled?: boolean,
   mainMessages?: Parameters<ReturnType<typeof openHistoryDb>['save']>[1],
 } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-runtime-tx-'))
@@ -77,7 +76,7 @@ function setup(t: TestContext, { uncancelled = false, captureReportMemory, mainM
       core.transient(push)
     },
     onEnd: (taskId, status) => { reported.push([taskId, status]) },
-    effects, captureReportMemory,
+    effects,
     newRunId: () => `run-${++runs}`,
     timers: {
       later: (run: () => void) => { due = [...due, run]; return run },
@@ -270,101 +269,4 @@ test('a task whose start cannot be kept: its session let go, its place given bac
   failing.words = false
   const again = await start('整理发布说明')
   assert.equal(again.ok, true, 'its place given back')
-})
-
-test('the completed run captures its report proof once and retains it across transaction retry', async t => {
-  const witness: MemoryProvenance = { sources: ['bound-source'], epoch: 0, turnOnly: false }
-  let captures = 0
-  const { start, tasks, failing, effects, runDue, due } = setup(t, { captureReportMemory: async () => { captures++; return witness } })
-  const { task } = await start('Captured brief')
-  tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('Captured output') })
-  failing.ending = true
-  const event = { type: 'task_end', taskId: task.id, stopReason: 'end_turn' }
-  tasks.dsh.receive(event)
-  tasks.dsh.receive(event)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(captures, 1)
-  assert(due() > 0)
-  assert.equal(effects().length, 0)
-  failing.ending = false
-  runDue()
-  const [report] = effects()
-  assert.equal(report?.key, `${task.id}:run-1`)
-  assert.deepEqual(report.payload && (report.payload as { memory?: unknown }).memory, witness)
-  tasks.dsh.receive(event)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(captures, 1, 'a duplicate native end cannot capture a new snapshot for a completed run')
-})
-
-test('a captured task report cannot be queued by a late end after its precise evidence was erased', async t => {
-  let resolveProof!: (memory: MemoryProvenance) => void
-  const proof = new Promise<MemoryProvenance>(resolve => { resolveProof = resolve })
-  const { start, tasks, history, reports, kept } = setup(t, { captureReportMemory: () => proof })
-  const { task } = await start('Report awaiting its proof')
-  tasks.dsh.receive({ type: 'task_update', taskId: task.id, update: chunk('The erased part') })
-  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
-  const secret = 'The erased part', hash = (value: string) => createHash('sha256').update(value).digest('hex')
-  history.eraseFileRanges([{ sourceId: 'selected-source', revision: 1, hash: hash(secret), afterHash: hash(' '.repeat(secret.length)),
-    length: secret.length, spans: [{ start: 0, end: secret.length }] }])
-  resolveProof({ sources: ['selected-source'], epoch: 0, turnOnly: false })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(kept()?.status, 'done', 'the task lifecycle settled even though the report itself was withheld')
-  assert.deepEqual(reports(), [])
-})
-
-test('shutdown keeps the task end while withholding a report proof still in flight', async t => {
-  let complete!: (memory: MemoryProvenance) => void
-  const proof = new Promise<MemoryProvenance>(resolve => { complete = resolve })
-  const { start, tasks, reports, kept } = setup(t, { captureReportMemory: () => proof })
-  const { task } = await start('Close while awaiting proof')
-  tasks.dsh.receive({ type: 'task_end', taskId: task.id, stopReason: 'end_turn' })
-  await Promise.resolve()
-  tasks.dispose()
-  complete({ sources: [], epoch: 0, turnOnly: false })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(kept()?.status, 'done')
-  assert.deepEqual(reports(), [])
-})
-
-test('a report retains the original brief proof after the owner snapshot changes and omits an unproved topic title', async t => {
-  const first: MemoryProvenance = { sources: ['old-brief-source'], epoch: 0, turnOnly: false }
-  const last: MemoryProvenance = { sources: ['new-result-source'], epoch: 0, turnOnly: false }
-  const { tasks, effects, kept } = setup(t, { captureReportMemory: async () => last })
-  const { taskId } = await tasks.agent.start('Original task instructions', undefined, async () => first)
-  assert.deepEqual(kept()?.requestMemory, first)
-  tasks.dsh.receive({ type: 'task_update', taskId, update: chunk('Current output') })
-  tasks.dsh.receive({ type: 'task_end', taskId, stopReason: 'end_turn' })
-  await new Promise(resolve => setImmediate(resolve))
-  const [report] = effects()
-  assert.equal(report?.key, `${taskId}:run-1`)
-  const payload = report.payload as { topic: string | null, memory: MemoryProvenance }
-  assert.equal(payload.topic, null)
-  assert.deepEqual(payload.memory.sources, ['old-brief-source', 'new-result-source'])
-})
-
-test('an automatically recomputed report topic uses the evidence of the row that supplies its title', async t => {
-  const blankSource = randomUUID()
-  const titleSource = randomUUID()
-  for (const [caseName, sourceId, expectedTopic] of [
-    ['unproved title', blankSource, null],
-    ['proved title', titleSource, 'Independent text'],
-  ] as const) {
-    await t.test(caseName, async subtest => {
-      const memory: MemoryProvenance = { sources: [sourceId], epoch: 0, turnOnly: false }
-      const { tasks, history, main, effects } = setup(subtest, {
-        captureReportMemory: async () => memory,
-        mainMessages: [
-          { role: 'user', text: '', receipt: null, sourceId: blankSource },
-          { role: 'user', text: 'Independent text', receipt: null, sourceId: titleSource },
-        ],
-      })
-      const { taskId } = await tasks.agent.start('Generic task instructions', undefined, async () => memory)
-      history.eraseMemoryCopies([randomUUID()])
-      assert.equal(history.get(main.id)?.conversation.title, 'Independent text')
-      tasks.dsh.receive({ type: 'task_end', taskId, stopReason: 'end_turn' })
-      await new Promise(resolve => setImmediate(resolve))
-      const [report] = effects()
-      assert.equal((report?.payload as { topic: string | null }).topic, expectedTopic)
-    })
-  }
 })

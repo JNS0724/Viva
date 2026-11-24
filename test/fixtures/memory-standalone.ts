@@ -21,7 +21,7 @@ assert.equal(typeof createMemoryClient, 'function')
 assert.equal(typeof createMemoryService, 'function')
 const database = join(process.cwd(), 'standalone.db')
 const start = () => createMemoryRuntime({ store: openMemoryStore(database), compute: () => null,
-  route: () => null, canCommit: () => true, validateDispatch() {}, async runDocumentMutation(work) { return work() }, quiesce: async () => {}, changed: () => {} })
+  route: () => null, canCommit: () => true, changed: () => {} })
 const writeId = randomUUID(), eraseId = randomUUID()
 let memory = start()
 const input = { operationId: writeId, text: 'Please keep weekly summaries concise.' }

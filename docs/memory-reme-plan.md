@@ -2,13 +2,15 @@
 
 [简体中文](memory-reme-plan.zh-CN.md)
 
+**Current file memory (2026-11-23).** Daily and digest files use a whole-file switch. Chat history, tasks and schedules run independently of memory availability. Deleting or editing chat history leaves memory intact. The older milestones below describe the earlier architecture. [Current implementation](memory-owner-isolation.md)
+
 **File integrity (2026-11-20).** The owner verifies registered Markdown against its committed hash on read. The external-edit review, rename detection and periodic scans described in the historical milestones have been retired. [Current owner design](memory-owner-isolation.md)
 
-**Current behavior (2026-11-19).** Deleting a memory removes the selected daily or digest file and its search index entries. Original chats, other files and host records survive. Previously confirmed erasures recover under their original contract. The Auto Dream section describes current processing. Later milestone and acceptance notes record the earlier erasure, clarification and review behavior. See [the current system design](system-design.md).
+**Current behavior (2026-11-24).** Memory runs beside DSH as a supervised worker. Chat, tasks, reports and schedules proceed independently. Each daily or digest file has one enable switch. Deleting a memory removes the selected file and its index entries. Deleting a chat or rewinding edits local history. The earlier plans and milestone records below document prior contracts. [Current system design](system-design.md)
 
 Status: 2026-11-17. Development and local acceptance for all six phases are complete. The implementation freeze is `f1746d919c25770927722dca7d619ba72a1e2cfa`. Both platforms pass full tests, types, i18n, build, complete source smoke and actual application-artifact checks. Dual-platform PR CI has not run, and R5b PR/release acceptance remains pending. Section 18 retains the executing versions and conclusions of the fixed Chinese real-model processing run and independent-copy cold recovery. Local artifacts have no release signing.
 
-The six-phase order and four deferred items remain unchanged. Evidence, authorization, forgetting and send barriers remain requirements. The old engine has no users. Old data is not migrated and compatibility paths are removed. No ReMe service is used, and the comparison branch is unchanged.
+The following six phases describe the historical rollout, including its former forgetting and send barriers. The old engine has no users. Old data is not migrated and compatibility paths are removed. No ReMe service is used, and the comparison branch is unchanged.
 
 ## Reference and scope
 

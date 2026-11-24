@@ -7,6 +7,8 @@ import { test } from 'node:test'
 import { scratch } from './fixtures/scratch.js'
 import { openMemoryOwner } from '../src/memory/node/owner.ts'
 
+const signal = new AbortController().signal
+
 test('standalone explicit file commands use the native session scope, versions and durable owner receipts', async t => {
   const { dir, defer } = scratch(t, 'viva-memory-commands-')
   const cwd = (name: string) => {
@@ -15,14 +17,14 @@ test('standalone explicit file commands use the native session scope, versions a
     writeFileSync(join(git, 'HEAD'), 'ref: refs/heads/main\n')
     return workspace
   }
-  const options = { root: join(dir, 'memory'), compute: () => null, route: () => null, quiesce: async () => {} }
+  const options = { root: join(dir, 'memory'), compute: () => null, route: () => null }
   let owner = openMemoryOwner(options)
   defer(() => owner.close())
   await owner.recover()
   const session = 'project-one', neighbor = 'project-two', personal = 'personal'
-  owner.initializeSession({ sessionId: session, cwd: cwd('one') })
-  owner.initializeSession({ sessionId: neighbor, cwd: cwd('two') })
-  owner.initializeSession({ sessionId: personal, cwd: dir })
+  owner.bindIntakeSession(session, cwd('one'))
+  owner.bindIntakeSession(neighbor, cwd('two'))
+  owner.bindIntakeSession(personal, dir)
   const method = (current: string, id: string) => owner.runtime.handle({ op: 'file_read', session: current, id }, owner.sessionContext(current))
   const input = { operationId: randomUUID(), text: 'Project-only release notes stay with the rollout.' }
   const written = await owner.rememberStandaloneFile(session, input)
@@ -36,7 +38,7 @@ test('standalone explicit file commands use the native session scope, versions a
   assert.deepEqual(JSON.parse(String(db.prepare('SELECT context FROM memory_sources WHERE id=?').get(input.operationId)?.context)),
     owner.sessionContext(session).context, 'manual and native foreground files share the authenticated default scope')
   const taskSession = 'project-one-task'
-  owner.initializeSession({ sessionId: taskSession, parentSessionId: session, cwd: cwd('one') })
+  owner.bindIntakeSession(taskSession, cwd('one'), true)
   const taskText = 'This delegated task alone uses the alternate release channel.'
   const taskFile = await owner.rememberStandaloneFile(taskSession, { operationId: randomUUID(), text: taskText })
   assert.notEqual(taskFile.identity.workspace, written.identity.workspace)
@@ -59,41 +61,37 @@ test('standalone explicit file commands use the native session scope, versions a
 
 test('native remember binds the active canonical span and replay identity without a numeric fact', async t => {
   const { dir, defer } = scratch(t, 'viva-native-remember-')
-  const options = { root: dir, compute: () => null, route: () => null, quiesce: async () => {} }
+  const options = { root: dir, compute: () => null, route: () => null }
   let owner = openMemoryOwner(options)
   defer(() => owner.close())
   await owner.recover()
   const session = randomUUID(), sourceId = randomUUID(), text = '每周五提交周报，客户故障时另行确认。', original = `记住：${text}`
-  await owner.receiveSource({ sessionId: session, messageId: sourceId, text: original, turn: 1, step: 1,
-    at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-  const call = { id: randomUUID(), session, generation: 0, callId: 'native-write', turn: 1, step: 1, seq: 3, digest: '1'.repeat(64) }
-  const write = () => owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text))
-  assert.equal(await owner.rememberNativeFile(text), null, 'a caller without a native lease has no write authority')
-  assert.equal(await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile('模型改写的无原文事实')), null)
+  await owner.receiveSource({ sessionId: session, messageId: sourceId, text: original, turn: 1, cwd: null,
+    at: Date.now(), timezone: 'UTC' })
+  const write = () => owner.rememberSidecarFile(session, text, signal)
+  assert.equal(await owner.rememberSidecarFile('unregistered', text, signal), null, 'a caller outside the current turn has no write authority')
+  assert.equal(await owner.rememberSidecarFile(session, '模型改写的无原文事实', signal), null)
   const first = await write()
   assert.ok(first)
-  const proof = owner.dispatch.snapshot(session).files?.find(file => file.id === first.identity.id)
-  assert.deepEqual(proof?.sourceRanges, [{ sourceId, spans: [{ start: 3, end: original.length }] }])
-  const replayedCall = { ...call, id: randomUUID() }
-  assert.deepEqual(await owner.withNativeToolRead({ call: replayedCall, calls: [replayedCall], current: () => true },
-    () => owner.rememberNativeFile(text)), first, 'the durable native event survives a new process-local lease ID')
+  assert.deepEqual(await owner.rememberSidecarFile(session, text, signal), first, 'the durable native event survives a new process-local lease ID')
   assert.equal(owner.runtime.listFiles({ kind: 'digest' }).items.length, 1)
   const detail = owner.runtime.readFile(first.identity)!
   assert.ok(detail.markdown.includes(text))
+  assert.deepEqual(detail.sources.map(source => source.sourceId), [sourceId])
   await owner.handleHost('setFileEnabled', { args: [{ operationId: randomUUID(), identity: first.identity, version: detail.version, enabled: false }] })
   const stopped = owner.runtime.readFile(first.identity)!
-  assert.equal(await write(), null, 'the same canonical span cannot bypass a stop through an explicit tool')
+  assert.deepEqual(await write(), first, 'replaying a completed write returns its receipt without re-enabling the file')
+  assert.equal(owner.runtime.readFile(first.identity)?.enabled, false)
   await owner.handleHost('setFileEnabled', { args: [{ operationId: randomUUID(), identity: first.identity, version: stopped.version, enabled: true }] })
   const currentDetail = owner.runtime.readFile(first.identity)!
   await owner.handleHost('forgetFile', { args: [{ operationId: randomUUID(), identity: first.identity, version: currentDetail.version }] })
   assert.deepEqual(await write(), first, 'replaying a completed call returns its original receipt')
   assert.equal(owner.runtime.readFile(first.identity), null, 'replay cannot recreate the deleted file')
-  assert.equal(owner.runtime.dispatchSourceCurrent(sourceId), true, 'the original user request remains available')
+  assert.equal(owner.runtime.sourceCurrent(sourceId), true, 'the original user request remains available')
   const independent = randomUUID()
-  await owner.receiveSource({ sessionId: session, messageId: independent, text: original, turn: 1, step: 2,
-    at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-  const nextCall = { ...call, id: randomUUID(), callId: 'independent-write', seq: 5, digest: '4'.repeat(64), step: 2 }
-  const fresh = await owner.withNativeToolRead({ call: nextCall, calls: [nextCall], current: () => true }, () => owner.rememberNativeFile(text))
+  await owner.receiveSource({ sessionId: session, messageId: independent, text: original, turn: 2, cwd: null,
+    at: Date.now(), timezone: 'UTC' })
+  const fresh = await owner.rememberSidecarFile(session, text, signal)
   assert.ok(fresh)
   assert.notEqual(fresh.identity.id, first.identity.id)
   assert.equal(owner.runtime.readFile(first.identity), null)
@@ -103,46 +101,23 @@ test('native remember binds the active canonical span and replay identity withou
   assert.equal(owner.runtime.readFile(first.identity), null)
 })
 
-test('native remember rejects derived input and an execution retired while waiting for the write fence', async t => {
-  const { dir, defer } = scratch(t, 'viva-native-remember-fence-')
-  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null, quiesce: async () => {} })
-  defer(() => owner.close())
-  await owner.recover()
-  const session = randomUUID(), text = '每周五提交周报。'
-  const call = { id: randomUUID(), session, generation: 0, callId: 'native-write', turn: 1, step: 1, seq: 3, digest: '2'.repeat(64) }
-  await owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: `记住：${text}`, derived: true,
-    turn: 1, step: 1, at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-  assert.equal(await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text)), null)
-  await owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: `记住：${text}`,
-    turn: 1, step: 1, at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-  const permit = owner.acquireSend(randomUUID(), { session }, 'physical request')
-  let current = true
-  const pending = owner.withNativeToolRead({ call, calls: [call], current: () => current }, () => owner.rememberNativeFile(text))
-  await new Promise<void>(resolve => setImmediate(resolve))
-  current = false
-  permit.settled()
-  await assert.rejects(pending, { code: 'not.found' })
-  assert.equal(owner.runtime.listFiles({}).items.length, 0)
-})
 
 test('native remember recovers the same file after publication precedes the owner receipt', async t => {
   const { dir, defer } = scratch(t, 'viva-native-remember-receipt-')
-  const options = { root: dir, compute: () => null, route: () => null, quiesce: async () => {} }
+  const options = { root: dir, compute: () => null, route: () => null }
   let owner = openMemoryOwner(options)
   defer(() => owner.close())
   await owner.recover()
   const session = randomUUID(), sourceId = randomUUID(), text = '保留提交周报的条件和例外。'
   await owner.receiveSource({ sessionId: session, messageId: sourceId, text: `记住：${text}`,
-    turn: 1, step: 1, at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
+    turn: 1, cwd: null, at: Date.now(), timezone: 'UTC' })
   const db = new DatabaseSync(join(dir, 'memory.db'))
   defer(() => db.close())
   db.exec(`CREATE TRIGGER lose_native_write_receipt BEFORE UPDATE OF state ON owner_operations
     WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'injected receipt interruption'); END`)
-  const call = { id: randomUUID(), session, generation: 0, callId: 'native-write', turn: 1, step: 1, seq: 3, digest: '3'.repeat(64) }
-  await assert.rejects(owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text)), /receipt interruption/)
+  await assert.rejects(owner.rememberSidecarFile(session, text, signal), /receipt interruption/)
   const before = owner.runtime.listFiles({ kind: 'digest' }).items
   assert.equal(before.length, 1)
-  assert.equal(db.prepare('SELECT count(*) AS n FROM owner_native_tool_reads WHERE call=?').get(call.id)?.n, 1)
   const pending = db.prepare("SELECT payload FROM owner_operations WHERE state='running'").all()
   assert.equal(pending.length, 1)
   assert.ok(!JSON.stringify(pending).includes(text))
@@ -157,13 +132,13 @@ test('native remember recovers the same file after publication precedes the owne
 
 test('native remember cannot use an older explicit request replayed before a new turn', async t => {
   const { dir, defer } = scratch(t, 'viva-native-remember-turn-')
-  const options = { root: dir, compute: () => null, route: () => null, quiesce: async () => {} }
+  const options = { root: dir, compute: () => null, route: () => null }
   let owner = openMemoryOwner(options)
   defer(() => owner.close())
   await owner.recover()
   const session = randomUUID(), text = '每周五提交周报。'
-  const original = { sessionId: session, messageId: randomUUID(), text: `记住：${text}`, turn: 1, step: 1,
-    at: Date.now(), timezone: 'UTC', admitted: true, inherited: false }
+  const original = { sessionId: session, messageId: randomUUID(), text: `记住：${text}`, turn: 1, cwd: null,
+    at: Date.now(), timezone: 'UTC' }
   const receipt = await owner.receiveSource(original)
   const done = { sessionId: session, turn: 1, eventSeq: 4, sourceIds: [receipt.sourceId], assistant: '', completed: true,
     at: original.at, timezone: original.timezone }
@@ -174,17 +149,16 @@ test('native remember cannot use an older explicit request replayed before a new
   await owner.receiveSource({ ...original, live: false })
   await owner.completeTurn(done)
   await owner.receiveSource({ ...original, messageId: randomUUID(), text: '继续讨论周报。', turn: 2 })
-  const call = { id: randomUUID(), session, generation: 0, callId: 'new-turn', turn: 2, step: 1, seq: 7, digest: '5'.repeat(64) }
-  assert.equal(await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text)), null)
+  assert.equal(await owner.rememberSidecarFile(session, text, signal), null)
   const current = await owner.receiveSource({ ...original, messageId: randomUUID(), turn: 2 })
-  const saved = await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text))
+  const saved = await owner.rememberSidecarFile(session, text, signal)
   assert.ok(saved)
   assert.deepEqual(owner.runtime.readFile(saved.identity)?.sources.map(source => source.sourceId), [current.sourceId])
 })
 
 test('native remember accepts arbitrary current-turn original fragments without a command prefix', async t => {
   const { dir, defer } = scratch(t, 'viva-native-remember-fragments-')
-  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null })
   defer(() => owner.close())
   await owner.recover()
   const session = randomUUID()
@@ -195,92 +169,10 @@ test('native remember accepts arbitrary current-turn original fragments without 
   ]
   for (const [index, example] of examples.entries()) {
     const sourceId = randomUUID()
-    await owner.receiveSource({ sessionId: session, messageId: sourceId, text: example.original, turn: index + 1, step: 1,
-      at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-    const call = { id: randomUUID(), session, generation: 0, callId: `fragment-${index}`, turn: index + 1, step: 1,
-      seq: index * 4 + 3, digest: String(index + 6).repeat(64) }
-    const saved = await owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(example.text))
+    await owner.receiveSource({ sessionId: session, messageId: sourceId, text: example.original, turn: index + 1, cwd: null,
+      at: Date.now(), timezone: 'UTC' })
+    const saved = await owner.rememberSidecarFile(session, example.text, signal)
     assert.ok(saved)
     assert.ok(owner.runtime.readFile(saved.identity)?.markdown.includes(example.text))
-    const proof = owner.dispatch.snapshot(session).files?.find(file => file.id === saved.identity.id)
-    const start = example.original.indexOf(example.text)
-    assert.deepEqual(proof?.sourceRanges, [{ sourceId, spans: [{ start, end: start + example.text.length }] }])
   }
-})
-
-test('native files reuse authenticated user or project scope across topics and keep task answers local', async t => {
-  const { dir, defer } = scratch(t, 'viva-native-memory-scope-')
-  const owner = openMemoryOwner({ root: dir, hostNamespace: 'viva', dailyNotes: false, compute: () => null, route: () => null, quiesce: async () => {} })
-  defer(() => owner.close())
-  await owner.recover()
-  const project = { kind: 'project' as const, id: 'project-one' }
-  const other = { kind: 'project' as const, id: 'project-two' }
-  async function original(session: string, text: string, context: import('../src/memory/contracts/memory-contract.ts').MemoryScope,
-    boundProject?: typeof project) {
-    const sourceId = randomUUID()
-    await owner.handleHost('sourceAlias', { operationId: sourceId, sourceId, session, conversation: `topic-${session}`, text, context, project: boundProject })
-    await owner.receiveSource({ sessionId: session, messageId: sourceId, text, turn: 1, step: 1, at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-    return sourceId
-  }
-  async function remember(session: string, text: string) {
-    const call = { id: randomUUID(), session, generation: 0, callId: randomUUID(), turn: 1, step: 1, seq: 3, digest: 'a'.repeat(64) }
-    return owner.withNativeToolRead({ call, calls: [call], current: () => true }, () => owner.rememberNativeFile(text))
-  }
-  const personal = 'I keep personal notes in Spanish.'
-  await original('personal', personal, { kind: 'user' })
-  const saved = await remember('personal', personal)
-  assert.ok(saved)
-  await original('personal-next', 'A separate topic.', { kind: 'user' })
-  assert.ok(owner.runtime.handle({ op: 'file_read', session: 'personal-next', id: saved.identity.id }, owner.sessionContext('personal-next')).includes(personal))
-  assert.ok(owner.runtime.fileProfile().user.some(item => item.text === personal))
-
-  const scoped = 'The release marker is orchid-17.'
-  const projectSource = await original('project-first', scoped, project, project)
-  const projectFile = await remember('project-first', scoped)
-  assert.ok(projectFile)
-  await original('project-next', 'Check the current project.', project, project)
-  await original('neighbor', 'Check another project.', other, other)
-  assert.ok(owner.runtime.handle({ op: 'file_read', session: 'project-next', id: projectFile.identity.id }, owner.sessionContext('project-next')).includes(scoped))
-  assert.ok(!owner.runtime.handle({ op: 'file_read', session: 'neighbor', id: projectFile.identity.id }, owner.sessionContext('neighbor')).includes(scoped))
-  assert.ok(owner.runtime.fileProfile(project).project?.some(item => item.text === scoped))
-  assert.ok(!owner.runtime.fileProfile().user.some(item => item.text === scoped))
-  owner.runtime.withdraw({ ids: [projectSource], conversation: 'topic-project-first', onlySources: true })
-  assert.equal(owner.runtime.readFile(projectFile.identity), null)
-  assert.ok(owner.runtime.readFile(saved.identity), 'withdrawing a project source retains the independent personal file')
-
-  const task = 'task-session', taskContext = { kind: 'task' as const, id: task }
-  await original(task, 'Ask for this task language.', taskContext)
-  const card = { id: 'language', header: 'Task language', question: 'Which language should this task use?', multiSelect: false, options: [] }
-  assert.equal(await owner.handleHost('authorizeGeneralQuestion', { args: [task, 'host-turn', [card], `topic-${task}`, taskContext, undefined, 'show'] }), true)
-  const answerId = randomUUID(), answer = 'Use Icelandic for this task.'
-  await owner.handleHost('acceptQuestionAnswer', { operationId: answerId, text: answer, session: task, conversation: `topic-${task}`,
-    requestId: 'task-question', questionId: card.id, question: card.question, context: taskContext })
-  const taskFile = await remember(task, answer)
-  assert.ok(taskFile)
-  assert.ok(owner.runtime.handle({ op: 'file_read', session: task, id: taskFile.identity.id }, owner.sessionContext(task)).includes(answer))
-  assert.ok(!owner.runtime.handle({ op: 'file_read', session: 'personal-next', id: taskFile.identity.id }, owner.sessionContext('personal-next')).includes(answer))
-  assert.ok(!owner.runtime.fileProfile().user.some(item => item.text.includes('Icelandic')))
-})
-
-test('native remember archives the exact source span for every authenticated PTC ancestor', async t => {
-  const { dir, defer } = scratch(t, 'viva-native-remember-family-')
-  const owner = openMemoryOwner({ root: dir, dailyNotes: false, compute: () => null, route: () => null, quiesce: async () => {} })
-  defer(() => owner.close())
-  await owner.recover()
-  const session = randomUUID(), sourceId = randomUUID(), text = 'I keep weekly status notes in French.'
-  await owner.receiveSource({ sessionId: session, messageId: sourceId, text, turn: 1, step: 1,
-    at: Date.now(), timezone: 'UTC', admitted: true, inherited: false })
-  const root = { id: randomUUID(), session, generation: 0, callId: 'ptc-root', turn: 1, step: 1, seq: 2, digest: '8'.repeat(64) }
-  const leaf = { ...root, id: randomUUID(), callId: 'remember-leaf', seq: 3, digest: '9'.repeat(64),
-    ptc: { rootCallId: root.callId, parentCallId: root.callId } }
-  const saved = await owner.withNativeToolRead({ call: leaf, calls: [root, leaf], current: () => true }, () => owner.rememberNativeFile(text))
-  assert.ok(saved)
-  const db = new DatabaseSync(join(dir, 'memory.db'))
-  defer(() => db.close())
-  const archived = db.prepare('SELECT c.identity,r.evidence FROM owner_native_tool_calls c JOIN owner_native_tool_reads r ON r.call=c.id').all()
-    .map(row => ({ call: JSON.parse(String(row.identity)) as { id: string }, evidence: JSON.parse(String(row.evidence)) as {
-      sources: string[], fileRanges: Array<{ sourceId: string, spans: Array<{ start: number, end: number }> }>
-    } }))
-  assert.deepEqual(new Set(archived.map(item => item.call.id)), new Set([root.id, leaf.id]))
-  for (const item of archived) assert.deepEqual(item.evidence, { sources: [], fileRanges: [{ sourceId, spans: [{ start: 0, end: text.length }] }] })
 })

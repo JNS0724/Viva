@@ -146,7 +146,11 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     const errors: string[] = []
     const bridge = createAcpBridge({
       routing: testRequests(), dshBin: path.join(CODE_ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), nodeBin: runtime.nodeBin,
-      profile: DSH_PROFILE, overlay: vivaLayerFile(dshHome), cwd: workspace, memoryRequired: true, memoryOwner: owner,
+      profile: DSH_PROFILE, overlay: vivaLayerFile(dshHome), cwd: workspace, memoryOwner: owner,
+      recordSource: async ({ session, sourceId, text, wireText, wireSpans }) => {
+        if (sourceId) await owner.channel.callIntake('sourceAlias', { operationId: sourceId, sourceId, session,
+          conversation: session, text, wireText, wireSpans, cwd: workspace })
+      },
       env: dshEnv({ base: process.env, dshHome, runtime, settings: { DEEPSEEK_API_KEY: 'fixture-only', DEEPSEEK_BASE_URL: model.url, NO_PROXY: '127.0.0.1,localhost' } }),
       emit(event) {
         if (event.type === 'error') errors.push(String(event.message))
@@ -168,15 +172,15 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
     })
     running = { bridge, owner }
     const start = performance.now()
-    await owner.prepare(async () => {})
+    await owner.prepare()
     await bridge.start()
+    await bridge.memory.waitReady()
     assert.ok(owner.pid() && bridge.pid() && owner.pid() !== bridge.pid())
     const startup = performance.now() - start
     async function ask(text: string) {
       const session = bridge.currentSession()
       assert.ok(session)
       const sourceId = randomUUID()
-      await bridge.memory.call('sourceAlias', { operationId: sourceId, sourceId, session, conversation: session, text })
       await bridge.prompt(text, [], { sourceId, sourceText: text })
     }
     async function measure({ fault = false, skipAutomatic = false, measureTools = true } = {}) {

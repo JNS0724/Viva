@@ -85,12 +85,12 @@ function memoryWindow(api: object): import('./smoke/smoke-kit.ts').SmokeWindow {
 
 test('live file discovery reads full paginated bodies and ignores stopped historical evidence', async () => {
   const { memoryFilesWith } = await import('./smoke/live-kit.ts')
-  const detail = (id: string, active = true, hasProjection = true): import('../src/shared/ipc-results.ts').MemoryFileDetailView => ({
+  const detail = (id: string, active = true): import('../src/shared/ipc-results.ts').MemoryFileDetailView => ({
     identity: { kind: 'digest', workspace: 'workspace', id }, title: 'A title without the search token', path: `digest/wiki/${id}.md`,
-    version: { contentRevision: id, usageVersion: 1, policyToken: id }, enabled: active, ...(hasProjection ? {} : { hasProjection: false }),
+    version: { contentRevision: id, usageVersion: 1, policyToken: id }, enabled: active,
     actions: { setEnabled: true, edit: false, forget: false, undo: null }, markdown: 'Only the body has NEEDLE.', sources: [],
   })
-  const items = [detail('disabled', false), detail('stopped-projection', true, false), detail('current')]
+  const items = [detail('disabled', false), detail('stopped-projection', false), detail('current')]
   const queries: object[] = []
   const win = memoryWindow({
     async listMemoryFiles(request: { cursor?: { offset: number } }) {
@@ -107,27 +107,6 @@ test('live file discovery reads full paginated bodies and ignores stopped histor
   assert.deepEqual((await memoryFilesWith(win, 'NEEDLE', true)).map(item => item.identity.id), ['disabled', 'stopped-projection', 'current'])
 })
 
-test('a match in a stopped snapshot identifies its whole file at the current version', async () => {
-  const { forgetMemories } = await import('./smoke/live-kit.ts')
-  const identity = { kind: 'daily' as const, workspace: 'workspace', id: 'daily' }
-  const version = { contentRevision: 'current', usageVersion: 2, policyToken: 'current-token' }
-  const archived = { contentRevision: 'old', usageVersion: 1, policyToken: 'old-token' }
-  const file: import('../src/shared/ipc-results.ts').MemoryFileDetailView = { identity, title: 'Day', path: 'daily/day.md', version,
-    enabled: true, hasProjection: true, actions: { setEnabled: true, edit: false, forget: true, undo: null },
-    markdown: 'Current body', sources: [], restrictions: [{ id: 'stopped', version: archived }] }
-  const requests: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest[] = []
-  const { markdown: _body, sources: _sources, restrictions: _restrictions, ...summary } = file
-  const win = memoryWindow({
-    listMemoryFiles: async () => ({ status: 'ok', snapshot: 'snapshot', items: requests.length ? [] : [summary], nextCursor: null }),
-    readMemoryFile: async (_id: unknown, range?: string) => range ? { ...file, stoppedSnapshot: { restrictionId: range, markdown: 'NEEDLE', sources: [] } } : file,
-    async forgetMemoryFile(request: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest) {
-      requests.push(request)
-      return { status: 'applied', cleanup: 'complete', receipt: { operationId: request.operationId, identity, action: 'FORGET', contentRevision: 'current', usageVersion: 3 } }
-    },
-  })
-  await forgetMemories(win, 'NEEDLE')
-  assert.deepEqual(structuredClone(requests), [{ operationId: requests[0]!.operationId, identity, version }])
-})
 
 test('live file cleanup retries the same operation after a lost reply and preserves host history', async t => {
   const { randomUUID } = await import('node:crypto')
@@ -138,7 +117,7 @@ test('live file cleanup retries the same operation after a lost reply and preser
   const { forgetMemories, memoryFilesWith } = await import('./smoke/live-kit.ts')
   const { dir, defer } = scratch(t, 'viva-live-file-cleanup-')
   const owner = openMemoryOwner({ root: dir, hostNamespace: 'live-fixture',
-    compute: () => null, route: () => null, quiesce: async () => {} })
+    compute: () => null, route: () => null })
   defer(() => owner.close())
   await owner.recover()
   const created = memoryFileMutationResult.parse(await owner.handleHost('createFile', {
@@ -146,8 +125,8 @@ test('live file cleanup retries the same operation after a lost reply and preser
   const requests: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest[] = []
   const win = memoryWindow({
     listMemoryFiles: (request: import('../src/memory/contracts/file-management.ts').MemoryFileListRequest) => owner.handleHost('listFiles', { args: [request] }),
-    readMemoryFile: (identity: import('../src/memory/contracts/file-management.ts').MemoryManagedFileIdentity, restriction?: string) =>
-      owner.handleHost('readFile', { args: [identity, restriction] }),
+    readMemoryFile: (identity: import('../src/memory/contracts/file-management.ts').MemoryManagedFileIdentity) =>
+      owner.handleHost('readFile', { args: [identity] }),
     async forgetMemoryFile(request: import('../src/memory/contracts/file-management.ts').MemoryFileForgetRequest) {
       requests.push(request)
       const receipt = await owner.handleHost('forgetFile', { args: [request] })
@@ -164,7 +143,6 @@ test('live file cleanup retries the same operation after a lost reply and preser
   assert.equal(owner.runtime.readFile(created.identity), null)
   const outcome = memoryOperationOutcome.parse(await owner.handleHost('getOperation', { operationId: requests[0]!.operationId }))
   assert.equal(outcome.state, 'completed')
-  assert.deepEqual(await owner.handleHost('pendingHostEffects', {}), [])
 })
 
 test('the offline runtime benchmark uses source-backed files, file profile and project-scoped retrieval', async () => {
@@ -207,7 +185,7 @@ test('the real-model report collects authorized file bodies and source reference
   const { openMemoryOwner } = await import('../src/memory/node/owner.ts')
   const { memoryFileMutationResult } = await import('../src/memory/contracts/file-management.ts')
   const { dir, defer } = scratch(t, 'viva-live-file-report-')
-  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: dir, compute: () => null, route: () => null })
   defer(() => owner.close())
   await owner.recover()
   const created = memoryFileMutationResult.parse(await owner.handleHost('createFile', {

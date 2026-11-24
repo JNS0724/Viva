@@ -695,42 +695,9 @@ test('a run kept is counted once: its place goes to the registry as its start co
   assert.equal(await fifth, 'ok', 'four places taken, not five: the fifth has one')
 })
 
-test('owner erasure drops task transcripts and ignores late end or flush copies', async () => {
-  const h = setup()
-  const { task } = await h.start('derived sensitive brief')
-  h.says(task.id, 'dependent private answer')
-  h.db.eraseMemoryCopies([], [task.id])
-  await h.tasks.revokeMemorySessions([task.id])
-  h.says(task.id, 'late private answer')
-  h.ends(task.id)
-  h.runPending()
-  h.tasks.dsh.flush()
-  assert.deepEqual(h.texts(task.segmentId), ['derived sensitive brief'])
-  assert.equal(h.tasks.reports.superseded(task.id, 'any-run'), true)
-  assert(h.pushes.some(push => push.type === 'task_closed' && push.taskId === task.id))
-  assert(h.calls.some(call => call[0] === 'closeTask' && call[1] === task.id))
-  h.db.close()
-})
 
-test('owner erasure during asynchronous task admission cannot recreate the task', async () => {
-  const h = setup()
-  let release!: (value: boolean) => void
-  let entered!: () => void
-  const admitted = new Promise<void>(resolve => { entered = resolve })
-  const pending = h.tasks.agent.start('derived secret', undefined, async () => {
-    entered()
-    return new Promise<boolean>(resolve => { release = resolve })
-  })
-  await admitted
-  await h.tasks.revokeMemorySessions(['s9'])
-  release(true)
-  await assert.rejects(pending)
-  assert.equal(h.kept().length, 0)
-  assert.equal(h.calls.filter(call => call[0] === 'promptTask').length, 0)
-  h.db.close()
-})
 
-test('long task output (>4000 chars) queues a head+tail report window, supports full segmented reads before and after relaunch, preserves error messages, and never resurrects erased previews', async () => {
+test('long task output (>4000 chars) queues a head+tail report window, supports full segmented reads before and after relaunch, preserves error messages', async () => {
   const h = setup()
   const { task } = await h.start('深度排查长日志')
   const full = `${'H'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(4000)}${'T'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
@@ -809,129 +776,9 @@ test('long task output (>4000 chars) queues a head+tail report window, supports 
   assert.equal(relaunchedCollision.resultPreview, '请求失败\nrate limit exceeded')
   assert.equal(relaunchedCollision.outputTotalChars, '请求失败\nrate limit exceeded'.length)
 
-  // Erased ended task preview (stored.resultErased === true) must never resurrect transcript text from historyDb.
-  const stored = h.kept().find(entry => entry.id === task.id)!
-  const erasedCheck = createTaskRuntime({
-    db: h.db,
-    store: { list: () => [{ ...stored, resultPreview: '', resultKey: undefined, resultErased: true }], add: () => {}, remove: () => {} },
-    current: () => h.current(),
-    agentInfo: () => ({ mode: 'live', model: 'V4' }),
-    agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
-  })
-  const erasedQuery = erasedCheck.agent.query({ op: 'get', taskId: stored.id, includeOutput: true }, { kind: 'main' }).task!
-  assert.equal(erasedQuery.resultPreview, '')
-  assert.equal(erasedQuery.outputTotalChars, 0)
-
   h.db.close()
 })
 
-test('production openHistoryDb + TaskStore(retainedReply) enforces provenance on live/ended queries and reports while preserving verified replies and terminal errors', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tasks-store-retained-'))
-  const db = openProductionHistoryDb({ file: path.join(dir, 'history.db'), newId: (() => { let n = 0; return () => `c${++n}` })() })
-  const appDb = new DatabaseSync(path.join(dir, 'app.db'))
-  appDb.exec(APP_DB_PRAGMAS)
-  const store = createTaskStore({ db: appDb, retainedReply: db.retainedReply })
-  const current = db.save(db.create({ sessionId: 's1', cwd: '/w' }), [user('开始')])
-  const queuedReports: Array<{ key: string, payload: ReportPayload }> = []
-  let seq = 0
-  const runtime = createTaskRuntime({
-    db, store,
-    effects: {
-      queue: (_kind: string, key: string, payload: unknown) => { queuedReports.push({ key, payload: payload as ReportPayload }) },
-      cancel: () => {}, cancelStarting: () => {},
-    } as unknown as Effects,
-    current: () => current,
-    agentInfo: () => ({ mode: 'live', model: 'V4' }),
-    agent: {
-      closeTask: async () => {}, cancelTask: async () => {},
-      steerTask: async () => ({ ok: true }), resumeTask: async () => ({ ok: true }),
-      promptTask: async () => {},
-      startTask: async () => ({ ok: true, taskId: `t-${++seq}` }),
-    },
-  })
-  try {
-    // 1. Genuinely empty running task reports total=0, not truncated; once unverified live streaming text arrives
-    // (either unkeyed agent_message_chunk or unsettled viva_stream delta before bindGeneratedCopy), queries never leak
-    // the unverified text AND explicitly mark outputUnavailable=true with outputTotalChars=null instead of claiming 0.
-    const unverified = await runtime.agent.start('未校验文本任务')
-    const emptyLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
-    assert.equal(emptyLive.resultPreview, '')
-    assert.equal(emptyLive.outputTotalChars, 0)
-    assert.equal(emptyLive.outputTruncated, false)
-    assert.equal(emptyLive.outputUnavailable, undefined)
-
-    runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: { sessionUpdate: 'viva_stream', key: 'streaming-k', kind: 'delta', index: 0, blockType: 'text', text: 'IN_FLIGHT_UNVERIFIED' } })
-    const streamingLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
-    assert.equal(streamingLive.resultPreview, '')
-    assert.equal(streamingLive.outputTotalChars, null)
-    assert.equal(streamingLive.outputTruncated, true)
-    assert.equal(streamingLive.outputUnavailable, true)
-
-    runtime.dsh.receive({ type: 'task_update', taskId: unverified.taskId, update: chunk('UNVERIFIED_IN_MEMORY_TEXT') })
-    const chunkLive = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
-    assert.equal(chunkLive.resultPreview, '')
-    assert.equal(chunkLive.outputTotalChars, null)
-    assert.equal(chunkLive.outputTruncated, true)
-    assert.equal(chunkLive.outputUnavailable, true)
-
-    runtime.dsh.receive({ type: 'task_end', taskId: unverified.taskId, stopReason: 'end_turn' })
-    const unverifiedStored = store.list().find(item => item.id === unverified.taskId)!
-    assert.equal(unverifiedStored.resultPreview, '')
-    assert.equal(queuedReports.find(item => item.payload.taskId === unverified.taskId)?.payload.output, '')
-    const unverifiedEnded = runtime.agent.query({ op: 'get', taskId: unverified.taskId, includeOutput: true }, { kind: 'main' }).task!
-    assert.equal(unverifiedEnded.resultPreview, '')
-    assert.equal(unverifiedEnded.outputTotalChars, null)
-    assert.equal(unverifiedEnded.outputTruncated, true)
-    assert.equal(unverifiedEnded.outputUnavailable, true)
-
-    // 2. Verified viva_stream reply (bound via bindGeneratedCopy): readable live, in report, and after restart.
-    const verified = await runtime.agent.start('已校验任务')
-    const verifiedText = `${'V'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(2000)}${'W'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
-    assert.equal(db.bindGeneratedCopy(verified.taskId, 'verified-k', 'assistant', verifiedText, [{ sources: [], fileRanges: [] }]), true)
-    runtime.dsh.receive({ type: 'task_update', taskId: verified.taskId, update: { sessionUpdate: 'viva_stream', key: 'verified-k', kind: 'settle', blocks: [{ type: 'text', text: verifiedText }] } })
-    assert.equal(runtime.agent.query({ op: 'get', taskId: verified.taskId, includeOutput: true, outputOffset: 0, outputLimit: 1000 }, { kind: 'main' }).task!.resultPreview, 'V'.repeat(1000))
-    runtime.dsh.receive({ type: 'task_end', taskId: verified.taskId, stopReason: 'end_turn' })
-    const verifiedReport = queuedReports.find(item => item.payload.taskId === verified.taskId)?.payload.output ?? ''
-    assert.ok(verifiedReport.startsWith('V'.repeat(REPORT_OUTPUT_HEAD_CHARS)))
-    assert.match(verifiedReport, /outputOffset=1000/)
-    assert.equal(runtime.agent.query({ op: 'get', taskId: verified.taskId, includeOutput: true, outputOffset: 1000, outputLimit: 2000 }, { kind: 'main' }).task!.resultPreview, 'M'.repeat(2000))
-
-    // 3. Terminal error event.message (no resultKey): preserved by TaskStore even with retainedReply so it
-    // survives restart and supports paginated reads and readable report pointers.
-    const errored = await runtime.agent.start('报错任务')
-    const longErr = `${'E'.repeat(REPORT_OUTPUT_HEAD_CHARS)}${'M'.repeat(3500)}${'Z'.repeat(REPORT_OUTPUT_TAIL_CHARS)}`
-    runtime.dsh.receive({ type: 'task_update', taskId: errored.taskId, update: chunk('前面说过的话') })
-    runtime.dsh.receive({ type: 'task_end', taskId: errored.taskId, stopReason: 'error', message: longErr })
-    const errStored = store.list().find(item => item.id === errored.taskId)!
-    assert.equal(errStored.resultPreview, longErr.slice(-4000))
-    assert.equal(errStored.terminalMessage, longErr)
-    assert.equal(errStored.resultFromTerminal, true)
-    assert.equal(errStored.resultErased, undefined)
-    const errReport = queuedReports.find(item => item.payload.taskId === errored.taskId)?.payload.output ?? ''
-    assert.match(errReport, /outputOffset=1000/)
-    const relaunched = createTaskRuntime({
-      db, store, current: () => current, agentInfo: () => ({ mode: 'live', model: 'V4' }),
-      agent: { closeTask: async () => {}, cancelTask: async () => {}, steerTask: async () => ({ ok: false }), resumeTask: async () => ({ ok: false }), promptTask: async () => {}, startTask: async () => ({ ok: false }) },
-    })
-    const errAfterRestart = relaunched.agent.query({ op: 'get', taskId: errored.taskId, includeOutput: true, outputOffset: 0, outputLimit: 4000 }, { kind: 'main' }).task!
-    assert.equal(errAfterRestart.resultPreview, longErr.slice(0, 4000))
-    assert.equal(errAfterRestart.outputTotalChars, longErr.length)
-    assert.equal(errAfterRestart.nextOutputOffset, 4000)
-
-    // 4. Unbound/retired viva_stream resultKey (retainedReply returns false): store marks resultErased=true and blocks output.
-    const retired = await runtime.agent.start('已擦除任务')
-    runtime.dsh.receive({ type: 'task_update', taskId: retired.taskId, update: { sessionUpdate: 'viva_stream', key: 'retired-k', kind: 'settle', blocks: [{ type: 'text', text: 'SENSITIVE_RETIRED' }] } })
-    runtime.dsh.receive({ type: 'task_end', taskId: retired.taskId, stopReason: 'end_turn' })
-    const retiredStored = store.list().find(item => item.id === retired.taskId)!
-    assert.equal(retiredStored.resultErased, true)
-    assert.equal(queuedReports.find(item => item.payload.taskId === retired.taskId)?.payload.output, '')
-    assert.equal(runtime.agent.query({ op: 'get', taskId: retired.taskId, includeOutput: true }, { kind: 'main' }).task!.resultPreview, '')
-  } finally {
-    appDb.close()
-    db.close()
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
 
 test('mid-run steers and question answers keep earlier output from the same run in reports and paginated queries, while a new run resets the run boundary', async () => {
   const h = setup()
@@ -1088,7 +935,7 @@ test('get_background_task exposes pendingQuestion only while waitingFor is answe
   h.db.close()
 })
 
-test('task:resume one-click resumes an interrupted task and rejects running, ended, unknown, or unadmitted tasks', async () => {
+test('task:resume one-click resumes an interrupted task and rejects running, ended, or unknown tasks', async () => {
   const h = setup()
   const { task } = await h.start('长耗时分析')
   h.says(task.id, '已完成一半')
@@ -1114,15 +961,4 @@ test('task:resume one-click resumes an interrupted task and rejects running, end
   const afterEnded = await later.call<{ ok: boolean, problem?: string }>('task:resume', task.id)
   assert.equal(afterEnded.ok, false)
   h.db.close()
-
-  // Unadmitted memory session -> refused and newly resumed session is closed.
-  const blocked = setup({ admitResume: async () => false })
-  const { task: interrupted } = await blocked.start('带记忆上下文的任务')
-  blocked.tasks.dsh.flush()
-  const laterBlocked = blocked.relaunch()
-  const denied = await laterBlocked.call<{ ok: boolean, problem?: string }>('task:resume', interrupted.id)
-  assert.equal(denied.ok, false)
-  assert.ok(laterBlocked.calls.some(([kind, id]) => kind === 'closeTask' && id === interrupted.id))
-  assert.equal(laterBlocked.calls.some(([kind]) => kind === 'promptTask'), false)
-  blocked.db.close()
 })

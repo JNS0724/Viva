@@ -22,21 +22,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { MAX_MESSAGE_CHARS as MAX_PROMPT_CHARS } from '../shared/text-limits.ts'
 import { createHash, randomUUID } from 'node:crypto'
-import { createMemoryHostClient } from './memory-host-client.ts'
+import { createVivaMemoryClient } from './memory-client.ts'
 import { createDesktopMemoryOwner } from './desktop-memory-owner.ts'
 import type { MemoryScope } from '../memory/contracts/memory-contract.ts'
-import { foregroundMemoryScope, memoryProjectScope } from './memory-project.ts'
-import { createMemoryHostRecovery } from './memory-host-recovery.ts'
-import { affectedTraceSessions, createMemoryHostEffects } from './memory-host-effects.ts'
-import { createMemoryWithdrawal } from './memory-withdrawal.ts'
-import type { MemoryProvenance } from '../memory/contracts/records.ts'
-import { intersectsMemoryErasure, memoryErasureEvidence, type MemoryErasureEvidence } from '../memory/contracts/provenance.ts'
-import type { CommittedOutput } from './assistant-stream.ts'
+import { resolveMemoryProject } from '../memory/node/project-scope.ts'
 import { registerRuntimeMemoryIpc } from './memory-ipc.ts'
-import { verifiedHistoryCarry, publishHistoryCarry, type HistoryCarry } from './history-carry.ts'
+import { carriedRecords, type HistoryCarry } from './history-carry.ts'
 import { activeHours } from './habits.ts'
-import { openTraceDb, traceStepDigest } from '../../plugins/trace/lib/store.ts'
-import { stepsFrom } from '../../plugins/trace/lib/steps.ts'
+import { openTraceDb } from '../../plugins/trace/lib/store.ts'
 import { registerLanguageIpc } from './language-ipc.ts'
 import { DEFAULT_PERMISSION, installedDshVersion, PERMISSION_LEVELS, PERSONA, resolvePlugins } from './app-plugins.ts'
 import { APP_ROOT, CODE_ROOT } from '../shared/node/app-roots.ts'
@@ -68,10 +61,10 @@ import { createEffects, type Effect, type Effects } from './effects.ts'
 import { createTaskRuntime, type TaskRuntime } from './task-runtime.ts'
 import type { TaskChannelAction } from './tasks-channel.ts'
 import { checkAnswers, type Question } from './question-channel.ts'
-import { answerText } from '../shared/question-answer.ts'
 import { createRequestStore } from './request-store.ts'
 import { createRequestRuntime, type RequestPlace, type RequestRuntime } from './request-runtime.ts'
 import { createTaskStore } from './task-store.ts'
+import { sameDir } from './work-dir.ts'
 import { registerWorkDirIpc } from './work-dir-ipc.ts'
 import { externalUrl } from './links.ts'
 import { createMcpConfigStore } from './mcp-config.ts'
@@ -87,7 +80,7 @@ import { authVariable, pinArgs, pnpmScopes } from './plugin-registry.ts'
 import { pnpmRunner, searchCatalog, specFit, type PnpmCall } from './plugin-catalog.ts'
 import { profileFitOptions } from './plugin-fit.ts'
 import { skillRoots } from './skills.ts'
-import { historyRecallAsync } from './history-recall.ts'
+import { historyRecall } from './history-recall.ts'
 import type { HistoryEvidence } from './history-recall.ts'
 import { openAppDb, type AppDb } from './app-db.ts'
 import { createEventCore, type EventCore, type Signal } from './event-core.ts'
@@ -170,15 +163,13 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     ? path.join(path.dirname(APP_ROOT), 'memory-embedding') : path.join(APP_ROOT, 'build', 'memory-embedding', 'prepared')
   const embedding = { modelRoot: path.join(embeddingRoot, 'model'), runtimeRoot: path.join(embeddingRoot, 'runtime') }
   const memoryRoot = path.join(userData, 'memory')
+  let defaultWorkspace: string | undefined
+  function historyWorkspace(cwd: string | null | undefined) {
+    return cwd && defaultWorkspace && sameDir(cwd, defaultWorkspace) ? null : cwd
+  }
   const memoryOwner = createDesktopMemoryOwner({ root: memoryRoot, embedding, dailyNotes }, {
-    onReady: () => { scheduleRuns?.wake() },
-    onChanged: () => { recoverMemoryHost(); emitToRenderer({ type: 'memory_changed' }) },
-    onNotice: notice => {
-      if (!memoryBusy()) void dsh.current?.refreshMemoryQuestions()
-      try { applyChange('memory.changed', { revision: notice.revision }, () => undefined) }
-      finally { emitToRenderer({ type: 'memory_changed' }) }
-    },
-    onProjection: () => emitToRenderer({ type: 'memory_changed' }),
+    onChanged: () => emitToRenderer({ type: 'memory_changed' }),
+    onNotice: () => emitToRenderer({ type: 'memory_changed' }),
     onContextUsed: notice => {
       const context = sessions.context()
       if (notice.session === context.sessionId && notice.conversation === context.conversationId && notice.pushed.length) {
@@ -186,8 +177,8 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
     },
   })
-  const memory = createMemoryHostClient(memoryOwner.channel.call, memoryOwner.channel.state, memoryOwner.channel.readBatch)
-  const memoryCoordination = memory
+  const memory = createVivaMemoryClient(memoryOwner.channel.call, memoryOwner.channel.readBatch)
+  const memoryOffline = () => !memoryOwner.channel.ready()
   /** What the trace plugin recorded, for the 过程 of reopened conversations; null if it can't be opened. */
   let traceDb: ReturnType<typeof openTraceDb> | null = null
   /** Background tasks still going or ended lately (task-store.ts); follow-ups look at it to not prepare what a task does. */
@@ -252,13 +243,11 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     info: () => lastInfo,
     setInfo: (info) => { lastInfo = info },
     isBusy: () => turn.active || stoppedContext !== null,
-    carryRevision: () => historyDb.fileErasureRevision(),
     folderExists: isFolder,
     selectedModel: () => { const last = modelStore.lastModel(); return last ? modelValue(last) : null },
     changed: () => {
       foregroundHistory?.retryPending()
       wakeEffects()
-      syncProjectView()
     },
   })
 
@@ -281,7 +270,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   })
 
   /** Scheduled runs have their own events, separate from background tasks. */
-  const unattended = createUnattendedRuns({ agent: () => dsh.current, provenance: taskId => memory.provenance(taskId) })
+  const unattended = createUnattendedRuns({ agent: () => dsh.current })
 
   /** One input to the backend (event-core.ts): recorded, then routed. */
   const signal = (input: Signal) => {
@@ -305,69 +294,21 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   const imagesDir = () => preferences.get().imagesDir || path.join(userData, 'images')
   const workDirNow = sessions.cwd
 
-  const currentMemoryProject = () => memoryProjectScope(workDirNow())
-  async function projectOfSession(session: string | undefined) {
-    const id = session ? await memory.sessionProject(session) : undefined
-    return id ? { kind: 'project' as const, id } : undefined
-  }
-  const bindSessionProject = memoryCoordination.bindProject
-  const sessionProjectChanged = memoryCoordination.projectChanged
-  let displayedProject: string | undefined
-  function syncProjectView() {
-    if (!memory || sessions.isChanging()) return
-    const project = currentMemoryProject()
-    if (displayedProject !== project?.id) {
-      displayedProject = project?.id
-      emitToRenderer({ type: 'memory_changed' })
-    }
-  }
-  const mayUseProjectEvidence = memoryCoordination.allowsEvidence
-
   type DshContext = { config: Config, cwd: string, resumeSessionId: string | null, carryHistory?: boolean }
   const dsh = createDshLifecycle({
-    beforeStart: ({ config }: DshContext, isCold) => memoryOwner.prepare(async () => {
-      if (!fs.existsSync(path.join(memoryRoot, 'memory.db'))) return
-      const { eraseColdNativeCopies, PendingNativePublication } = await import('../../plugins/memory/lib/native/maintenance.ts')
-      const root = dshHomeOf(config)
-      try {
-        await eraseColdNativeCopies({ memoryRoot, sessionsRoot: path.join(root, 'sessions'), storageRoot: path.join(root, 'storages'),
-          hostNamespace: 'viva', isCold, trace: {
-            key(event) {
-              const step = stepsFrom([event])[0]
-              return step ? traceStepDigest(step) : undefined
-            },
-            erase(session, positions) {
-              const file = path.join(userData, 'trace.db')
-              if (!traceDb && fs.existsSync(file)) traceDb = openTraceDb({ file })
-              if (traceDb && !traceDb.eraseSteps(session, positions)) throw new Error('Trace erasure awaits a durable checkpoint')
-            },
-          } })
-      }
-      catch (error) {
-        if (error instanceof PendingNativePublication) throw error
-        emitDiagnostic({ event: 'operation.progress', operation: 'memory.forget', stage: 'waiting', reason: 'cleanup_pending' })
-      }
-    }),
     create: ({ config, cwd }: DshContext, lifetime) => {
       return createBridge(config, cwd, lifetime)
     },
     connect: (instance: Bridge, context: DshContext) => instance.start({ resumeSessionId: context.resumeSessionId }),
     onReady: async (started, context) => {
       const old = sessions.current()
-      const project = memoryProjectScope(context.cwd)
-      const sameProject = !await sessionProjectChanged(old.sessionId, project) && memoryProjectScope(old.cwd)?.id === project?.id
-      const rebuild = sameProject && await staleMemorySession(old.sessionId)
+      const sameProject = (old.sessionId && historyDb.nativeProject(old.sessionId) || projectScopeKey(old.cwd)) === projectScopeKey(context.cwd)
       const info = sessions.ready(started, context.cwd)
       if (!sameProject) sessions.select(historyDb.create({ sessionId: started.sessionId, mode: started.mode, model: started.model, cwd: context.cwd }))
-      if (started.sessionId) {
-        await memory.recordSession(started.sessionId)
-        await bindSessionProject(started.sessionId, project)
-      }
-      if (sameProject && (context.carryHistory || rebuild || (!started.resumed && memory?.epoch() > 0 && historyDb.get(old.id)))) await storeSessionCarry(old.id)
+      if (sameProject && context.carryHistory) await storeSessionCarry(old.id)
       stoppedContext = null
       emitToRenderer({ type: 'ready', info: sameProject ? info : { ...info, conversationId: sessions.current().id, topicId: sessions.topicId(), remembersHistory: false } })
       wakeEffects()
-      syncProjectView()
       scheduleRuns?.wake()
       feedSourceRuns?.wake()
     },
@@ -399,102 +340,57 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     },
   })
 
-  function finishForegroundTurn(completed = false, noteCompleted = completed) {
+  function finishForegroundTurn() {
     if (!turn.active) return
     turn = { ...turn, active: false }
   }
 
-  const memoryBusy = memoryCoordination.busy
-  const memoryProjectFor = async (id: string | null | undefined, cwd?: string) => cwd === undefined ? await projectOfSession(id ?? undefined) : memoryProjectScope(cwd)
-  const staleMemorySession = async (id: string | null | undefined, cwd?: string) => memoryCoordination.stale(id, await memoryProjectFor(id, cwd))
+  function workspaceOfSession(id: string | undefined) {
+    if (!id) return undefined
+    if (isMainSession(id)) return workDirNow()
+    const conversation = historyDb.bySession(id)
+    return conversation ? conversation.cwd : unattended.workspaceOf(id)
+  }
+  function projectScopeKey(cwd: string | null | undefined) {
+    const scope = resolveMemoryProject(historyWorkspace(cwd))
+    return scope.status === 'project' ? scope.project.id : scope.status
+  }
 
   function readNativeTrace<T>(sessions: readonly string[], read: (visible: readonly string[]) => T | Promise<T>) {
-    return dsh.readNative(async () => {
-      if (!sessions.length) return read(sessions)
-      const bridge = dsh.current
-      async function visible() {
-        if (!bridge?.memory.ready() || bridge !== dsh.current || memoryBusy()) return []
-        try {
-          const effects = await memory.call('pendingHostEffects', {})
-          if (bridge !== dsh.current || !bridge.memory.ready() || memoryBusy()) return []
-          const hidden = new Set(effects.flatMap(affectedTraceSessions))
-          return sessions.filter(session => !hidden.has(session))
-        } catch { return [] }
-      }
-      const permitted = await visible()
-      const result = await read(permitted)
-      const stillPermitted = new Set(await visible())
-      return permitted.every(session => stillPermitted.has(session)) ? result : read([])
-    })
+    return dsh.readNative(async () => read(sessions))
   }
-  const allowMemorySession = async (id: string, cwd?: string) => memoryCoordination.allowsSession(id, await memoryProjectFor(id, cwd))
-  const canTransferMemoryToModel = (_id: string) => Boolean(dsh.current?.memory.ready())
   const isMainSession = (sessionId: string | null | undefined) => Boolean(sessionId && sessionId === sessions.current().sessionId)
-  function historyForProject(project: ReturnType<typeof memoryProjectScope>, crossProject = false) {
-    const bySegment = new Map<string, string | undefined>()
-    return async (row: HistoryEvidence) => {
+  function historyProject(conversationId: string, sessionId?: string | null) {
+    const saved = historyDb.workspaceOf(conversationId)
+    const source = sessionId ?? saved?.sessionId
+    return (source && historyDb.nativeProject(source)) || projectScopeKey(saved?.cwd)
+  }
+  function historyForProject(project: string, crossProject = false) {
+    return (row: HistoryEvidence) => {
       if (!historyDb.promptDeliverable(row.sourceId)) return false
-      if (!bySegment.has(row.segmentId)) {
-        const location = historyDb.workspaceOf(row.segmentId)
-        const saved = location?.sessionId ? await memory.sessionProject(location.sessionId) : undefined
-        bySegment.set(row.segmentId, saved === undefined ? memoryProjectScope(location?.cwd)?.id : saved || undefined)
-      }
-      const sourceProject = bySegment.get(row.segmentId)
-      const allowed = await memoryCoordination.allowsProjectHistory(row, sourceProject ? { kind: 'project', id: sourceProject } : undefined, project, await projectOfSession(row.sessionId ?? undefined), crossProject)
-      return allowed && historyDb.promptDeliverable(row.sourceId)
+      if (crossProject) return true
+      return project !== 'unknown' && historyProject(row.segmentId, row.sessionId) === project
+        && !row.foregroundOnly
     }
   }
-  const usedHistory = memoryCoordination.useHistory
   async function publishCarry(target: Conversation, carry: HistoryCarry) {
-    const current = () => Boolean(target.sessionId) && carry.revision === historyDb.fileErasureRevision()
-      && sessions.current().id === target.id && sessions.current().sessionId === target.sessionId
-    return publishHistoryCarry(carry, current, row => usedHistory(target.sessionId ?? undefined, row),
-      () => sessions.carryNext(target.id, carry.text))
+    if (!carry.turns || !target.sessionId || sessions.current().id !== target.id || sessions.current().sessionId !== target.sessionId) return false
+    sessions.carryNext(target.id, carry.text)
+    return true
   }
   async function storeSessionCarry(id: string) {
     const target = sessions.current()
     const carry = await filteredCarry(id, true, workDirNow() ?? undefined)
     await publishCarry(target, carry)
   }
-  async function reopenMemorySession() {
-    const started = await sessions.withSelection(async ({ switchAgent, select }) => {
-      const previous = sessions.current()
-      const started = await switchAgent(null, previous.cwd)
-      select({ ...previous, sessionId: started.sessionId, cwd: started.cwd ?? previous.cwd })
-      await storeSessionCarry(previous.id)
-      return started
-    })
-    emitToRenderer({ type: 'ready', info: { ...started, conversationId: sessions.current().id, topicId: sessions.topicId(), remembersHistory: false } })
-  }
   async function filteredCarry(conversationId: string, userOnly = false, targetCwd?: string) {
-    const revision = historyDb.fileErasureRevision()
     const topic = historyDb.topicOf(conversationId)
     const part = historyDb.read(userOnly || !topic ? `s:${conversationId}` : `t:${topic}`, { from: Number.MAX_SAFE_INTEGER, count: 40 })
-    const sourceProject = memoryProjectScope(historyDb.workspaceOf(conversationId)?.cwd)
-    const project = targetCwd === undefined ? sourceProject : memoryProjectScope(targetCwd)
-    const rows = sourceProject?.id === project?.id ? part?.messages.filter(row => !userOnly || row.role === 'user') ?? [] : []
-    return verifiedHistoryCarry(rows, historyForProject(project), revision, historyDb.fileErasureRevision)
-  }
-
-  async function changingMemory<T>(work: () => T | Promise<T>, { duringSelection = false } = {}): Promise<T> {
-    if (memoryBusy() || (!duringSelection && sessions.isChanging())) throw new Error(t('main.memory.change.pending'))
-    try { return await work() }
-    finally { dsh.current?.refreshMemoryQuestions(); scheduleRuns?.wake(); feedSourceRuns?.wake() }
-  }
-
-  async function recordDeliveredSource(sourceId: string, origin = sessions.context(), { derived = false } = {}) {
-    if (!origin.conversationId || !origin.sessionId) throw new Error(t('main.memory.receipt.failed'))
-    await memory.recordDeliveredSource(sourceId, origin.conversationId, derived, origin.sessionId)
-  }
-
-  async function aliasMemory(text: string, operation: string, origin = sessions.context()) {
-    const project = await projectOfSession(origin.sessionId ?? undefined)
-    if (!origin.sessionId || !origin.conversationId) throw new Error(t('main.memory.receipt.failed'))
-    if (!await bindSessionProject(origin.sessionId, project)) throw new Error(t('main.memory.context.stale'))
-    const context = foregroundMemoryScope(project)
-    const result = await memory.call('sourceAlias', { operationId: operation, sourceId: operation,
-      session: origin.sessionId, conversation: origin.conversationId, text, context, project })
-    return result.sourceId
+    const sourceProject = historyProject(conversationId)
+    const project = targetCwd === undefined ? sourceProject : projectScopeKey(targetCwd)
+    const rows = sourceProject === project ? part?.messages.filter(row => !userOnly || row.role === 'user') ?? [] : []
+    const allowed = historyForProject(project)
+    return carriedRecords(rows.filter(allowed))
   }
 
   /** The permission level picked; one no longer offered (an older or edited file) reads as the default. */
@@ -586,18 +482,10 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
-  let memoryHostEffects: ReturnType<typeof createMemoryHostEffects> | undefined
-  const memoryHostRecovery = createMemoryHostRecovery({
-    state: memoryOwner.channel.state,
-    recover: async () => { await memoryWithdrawal.recover(); await memoryHostEffects?.recover() },
-    onError: error => emitDiagnosticFailure('memory.recover', error, { stage: 'waiting' }),
-  })
-  const recoverMemoryHost = () => { void memoryHostRecovery.notify() }
-
   /** Events from a replaced bridge are dropped so a restart can't leak into the new conversation. */
   function createBridge(config: Config, cwd: string, lifetime: DshLifetime): Bridge {
     return createAcpBridge({
-      prewarmSessions: true, memoryRequired: true,
+      prewarmSessions: true,
       memoryOwner,
       dshBin: config.dshBin,
       nodeBin: config.nodeBin,
@@ -606,57 +494,30 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       env: dshEnv({ base: process.env, dshHome: dshHomeOf(config), runtime: config.runtime, settings: dshSettings(config) }),
       mcpServers: () => personal.mcpServers(),
       configActions: configActions(config),
-      allowSession: async (id, transportReady, _isTask, targetCwd) => transportReady && await memory.allowsSession(id, await memoryProjectFor(id, targetCwd)),
-      onSessionCreated: async (id, targetCwd, parent) => {
-        await memory.recordSession(id)
-        if (parent && !await memory.call('inheritFork', { args: [parent, id, await projectOfSession(parent), memoryProjectScope(targetCwd), true] })) throw new Error(t('main.memory.context.stale'))
-        if (!await bindSessionProject(id, memoryProjectScope(targetCwd))) throw new Error(t('main.memory.context.stale'))
+      onSessionCreated: (id, cwd) => historyDb.recordNativeProject(id, projectScopeKey(cwd)),
+      projectMatches: (id, cwd) => {
+        const saved = historyDb.nativeProject(id)
+        return saved === undefined || saved === projectScopeKey(cwd)
       },
-      taskSourceAlias: async (session, text) => {
+      recordSource: ({ session, sourceId, text, wireText, wireSpans, task }) => {
+        if (memoryOffline()) return
+        const selected = sessions.context()
+        const conversation = task ? historyDb.bySession(session)?.id ?? session : selected.sessionId === session ? selected.conversationId : null
+        if (!conversation) return
         const operationId = randomUUID()
-        const source = await memory.call('sourceAlias', { operationId, sourceId: operationId, session, text, origin: 'derived',
-          conversation: historyDb.bySession(session)?.id ?? session, context: { kind: 'task', id: session },
-          project: await projectOfSession(session), dependencies: await memory.provenance(session) })
-        return source.sourceId
+        void memoryOwner.channel.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session, conversation, text, wireText,
+          wireSpans, origin: sourceId ? 'original' : 'derived', ...(task ? { context: { kind: 'task', id: session } } : {}) })
+          .catch(error => emitDiagnosticFailure('memory.intake', error))
       },
-      recordOutputs: async (session, outputs) => {
-        const candidates: Array<{ output: CommittedOutput, proof: readonly MemoryErasureEvidence[] }> = []
-        try {
-          for (const output of outputs) {
-            if (!output.blocks.length || !lifetime.isCurrent()) continue
-            const request = output.requestId ? requests.outputEvidence(output.requestId, session) : null
-            const proof = output.native ? await memory.call('nativeOutputEvidence', { session, ...output.native })
-              : request ? [memoryErasureEvidence(request)] : null
-            if (proof) candidates.push({ output, proof })
-          }
-          // Owner publication can precede the host transaction that installs its local erasure ranges.
-          const effects = (await memory.call('pendingHostEffects', {})).filter(effect => effect.kind === 'erase-file-copies')
-          if (!lifetime.isCurrent()) return []
-          const accepted = candidates.filter(({ output, proof }) =>
-            !effects.some(effect => proof.some(item => intersectsMemoryErasure(item, effect.ranges)))
-            && historyDb.bindGeneratedCopy(session, output.key, 'assistant',
-              output.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), proof))
-          const kept = new Set(accepted.map(({ output }) => output.key))
-          return outputs.filter(output => !output.blocks.length || kept.has(output.key))
-        } catch (error) {
-          emitDiagnosticFailure('memory.intake', error, { stage: 'checkpoint' })
-          return []
-        }
-      },
-      readyMemory: () => { scheduleRuns?.wake(); feedSourceRuns?.wake() },
-      allowGeneralQuestion: async (session, turn, cards, _waiting, phase) => turn ? memory.call('authorizeGeneralQuestion', { args: [session, turn, cards,
-        session === sessions.current().sessionId ? sessions.current().id : historyDb.bySession(session)?.id ?? session,
-        session === sessions.current().sessionId ? foregroundMemoryScope(currentMemoryProject()) : { kind: 'task', id: session }, await projectOfSession(session), phase] }) : false,
+      allowGeneralQuestion: (_session, turn) => Boolean(turn),
       admitTaskWaitResume: (kind, id) => {
         const slot = taskRuntime?.dsh.reserveWaitResume(kind, id)
         return !slot || !('problem' in slot)
       },
-      onQuestionAnswer: async (entry, answers, operation) => {
-        if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
+      onQuestionAnswer: (entry, answers, operation) => {
         const conversation = entry.taskId ? historyDb.bySession(entry.sessionId)?.id : entry.context?.conversationId
         if (!conversation) return
-        const project = await projectOfSession(entry.sessionId)
-        const answerContext: MemoryScope = entry.taskId ? { kind: 'task', id: entry.sessionId } : foregroundMemoryScope(project)
+        const answerContext: MemoryScope = entry.taskId ? { kind: 'task', id: entry.sessionId } : { kind: 'user' }
         const answerSources = Object.create(null) as Record<string, string>
         const requestOperation = operation ?? randomUUID()
         for (const answer of answers) {
@@ -664,55 +525,25 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
           if (!text || !question) continue
           const digest = createHash('sha256').update(JSON.stringify([requestOperation, answer.id])).digest('hex')
           const operationId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`
-          const accepted = await memory.call('acceptQuestionAnswer', { operationId, text, session: entry.sessionId,
-            conversation, question: question.question, requestId: entry.question.id, questionId: answer.id,
-            context: answerContext, project })
-          answerSources[answer.id] = accepted.sourceId
-        if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
+          answerSources[answer.id] = operationId
+          if (entry.turn !== undefined && !memoryOffline()) void memoryOwner.channel.callIntake('acceptQuestionAnswer', { operationId, text,
+            session: entry.sessionId, turn: entry.turn, conversation, cards: entry.question.questions,
+            requestId: entry.question.id, questionId: answer.id,
+            context: answerContext }).catch(error => emitDiagnosticFailure('memory.intake', error))
         }
+        if (entry.taskId) taskAnswerSources.set(entry.question.id, answerSources)
         return { sourceIds: answerSources }
       },
-      historySearch: async (query, range, session) => {
-        if (memoryBusy() || !dsh.current?.memory.ready() || !historyDb) return []
-        const crossProject = isMainSession(session)
-        return historyRecallAsync(historyDb, historyForProject(await projectOfSession(session), crossProject), row => usedHistory(session, row, crossProject)).search(query, range)
-      },
-      historyRead: async (ref, around, session) => {
-        if (memoryBusy() || !dsh.current?.memory.ready() || !historyDb) return { status: 'deleted' as const }
-        const crossProject = isMainSession(session)
-        return historyRecallAsync(historyDb, historyForProject(await projectOfSession(session), crossProject), row => usedHistory(session, row, crossProject)).read(ref, around)
-      },
-      taskRead: async (request, sessionId) => {
-        if (memoryBusy() || (request.op === 'get' && await staleMemorySession(request.taskId))) throw new Error(t('main.memory.context.stale'))
-        const main = isMainSession(sessionId)
-        const result = requireTasks().agent.query(request, main ? { kind: 'main', cwd: workDirNow() ?? '' } : { taskId: sessionId })
-        const sessionProject = await projectOfSession(sessionId)
-        const ready = Boolean(dsh.current?.memory.ready())
-        if (request.op === 'get' && request.taskId) {
-          if (!await memoryCoordination.inherit(request.taskId, sessionId, await projectOfSession(request.taskId), sessionProject, ready, main)) throw new Error(t('main.memory.context.stale'))
-        }
-        if ('tasks' in result && result.tasks) {
-          const tasks = []
-          for (const task of result.tasks) if (!task.taskId || await memoryCoordination.inherit(task.taskId, sessionId, await projectOfSession(task.taskId), sessionProject, ready, main)) tasks.push(task)
-          return { ...result, tasks }
-        }
-        return result
-      },
+      historySearch: async (query, range, session) =>
+        historyRecall(historyDb, historyForProject(projectScopeKey(workspaceOfSession(session)), isMainSession(session))).search(query, range),
+      historyRead: async (ref, around, session) =>
+        historyRecall(historyDb, historyForProject(projectScopeKey(workspaceOfSession(session)), isMainSession(session))).read(ref, around),
+      taskRead: (request, sessionId) => requireTasks().agent.query(request,
+        isMainSession(sessionId) ? { kind: 'main', cwd: workDirNow() ?? '' } : { taskId: sessionId }),
       taskAct: (request, sessionId) => actOnSchedule(request, sessionId),
       routing: {
         receive: request => requests.receive(request),
-        async decide(decision) {
-          const bridge = dsh.current
-          if (bridge && decision.sessionId === sessions.current().sessionId) {
-            const evidence = await bridge.memory.call('authorizedProvenance', {
-              session: decision.sessionId, sourceId: requests.source(decision.requestId, decision.sessionId),
-            })
-            if (evidence && bridge === dsh.current && decision.sessionId === sessions.current().sessionId) {
-              return requests.decide(decision, evidence)
-            }
-          }
-          return { accepted: false, reason: t('main.memory.context.stale') }
-        },
+        decide: decision => requests.decide(decision),
         fail: failure => requests.fail(failure), noteFast: outcome => requests.noteFast(outcome), endTurn: turn => requests.endTurn(turn),
       },
       conversationContext: sessionId => {
@@ -774,13 +605,9 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
   /** The agent of the conversation on screen acting on schedules or answering a task's question (viva-tasks); a task's own session may not. */
   async function actOnSchedule(request: TaskChannelAction, sessionId: string) {
     if (sessionId !== lastInfo.sessionId || !isMainSession(sessionId)) throw new Error(t('main.tasks-channel.not.from.a.task'))
-    const erasureRevision = historyDb.fileErasureRevision()
     const caller = sessions.context()
     const bridge = dsh.current
-    if (!await allowMemorySession(sessionId)) throw new Error(t('main.memory.context.stale'))
-    const evidence = await memory.provenance(sessionId)
     if (request.op === 'answer_background_task') {
-      if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
       if (!bridge) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
       const pending = bridge.taskWaits(request.taskId).questions.find(
         (item): item is { questionId: string, questions: Question[] } =>
@@ -791,26 +618,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       if (!pending) throw new Error(t('main.tasks-channel.question.not.found'))
       const questions = pending.questions
       const checked = checkAnswers(questions, request.answers)
-      if (!await allowMemorySession(request.taskId) || !canTransferMemoryToModel(request.taskId)) {
-        throw new Error(t('main.memory.context.stale'))
-      }
-      if (evidence && historyDb.evidenceErased(evidence)) throw new Error(t('main.memory.context.stale'))
-      const taskProject = await projectOfSession(request.taskId)
-      const memoryReady = Boolean(bridge.memory.ready())
-      if (!await memoryCoordination.transfer(request.taskId, evidence, taskProject, memoryReady, true)) {
-        throw new Error(t('main.memory.context.stale'))
-      }
-      if (historyDb.fileErasureRevision() !== erasureRevision || dsh.current !== bridge || !sameContext(caller, sessions.context())
-        || (evidence && historyDb.evidenceErased(evidence))) {
-        throw new Error(t('main.memory.context.stale'))
-      }
-      let answerKey: string | undefined
-      if (evidence) {
-        answerKey = `generated-answer:${randomUUID()}`
-        if (!historyDb.bindGeneratedCopy(request.taskId, answerKey, 'user', answerText(questions, checked), [memoryErasureEvidence(evidence)])) {
-          throw new Error(t('main.memory.context.stale'))
-        }
-      }
+      if (dsh.current !== bridge || !sameContext(caller, sessions.context())) throw new Error(t('main.tasks-channel.not.from.a.task'))
       const slot = taskRuntime?.dsh.reserveWaitResume('answer', request.questionId)
       if (slot && 'problem' in slot) throw new Error(slot.problem)
       const keep = taskRuntime?.dsh.holdQuestion(request.questionId) ?? null
@@ -818,40 +626,24 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       try {
         accepted = await bridge.answerQuestion(request.questionId, checked, undefined, { recordMemory: false })
         if (!accepted) throw new Error(t('main.tasks-channel.question.not.found'))
-        keep?.(checked, undefined, answerKey)
+        keep?.(checked)
         return { ok: true, taskId: request.taskId, questionId: request.questionId }
       } finally {
         if (!accepted) slot?.release()
       }
     }
     if (!schedules) throw new Error(t('main.tasks-channel.task.queries.are.not.enabled.in.this'))
-    const memoryReady = dsh.current?.memory.ready()
-    const project = currentMemoryProject()
-    const sameWorkspace = async (schedule: { cwd: string, memory: MemoryProvenance | null }) =>
-      memoryProjectScope(schedule.cwd)?.id === project?.id && await mayUseProjectEvidence(schedule.memory, project)
+    const project = projectScopeKey(workDirNow())
+    const sameWorkspace = (schedule: { cwd: string }) => project !== 'unknown' && projectScopeKey(schedule.cwd) === project
     if (request.op === 'schedule_list') {
-      const modelSchedules = []
-      for (const schedule of schedules.store.list()) if (await sameWorkspace(schedule) && await memoryCoordination.transfer(sessionId, schedule.memory, project, Boolean(memoryReady))) modelSchedules.push(schedule)
-      const visible = new Set(modelSchedules.map(schedule => schedule.id))
+      const visible = new Set(schedules.store.list().filter(sameWorkspace).map(schedule => schedule.id))
       return schedules.list().filter(schedule => visible.has(schedule.id))
-    }
-    if (!memoryReady && (request.op === 'schedule_create' || request.op === 'schedule_update')) {
-      throw new Error(t('main.memory.context.stale'))
     }
     if (request.op === 'schedule_update' || request.op === 'schedule_delete') {
       const schedule = schedules.store.get(request.id)
-      if (schedule && !await sameWorkspace(schedule)) throw new Error(t('main.schedule-runs.memory.stale'))
-      const old = schedule?.memory
-      if (request.op === 'schedule_update' && old) {
-        if (!await memoryCoordination.transfer(sessionId, old, project, Boolean(memoryReady))
-          && (request.prompt === undefined || request.title === undefined)) throw new Error(t('main.schedule-runs.memory.stale'))
-      }
+      if (schedule && !sameWorkspace(schedule)) throw new Error(t('main.schedule-runs.memory.stale'))
     }
-    // The earlier owner replies may predate a host erasure that completed during the checks.
-    if (historyDb.fileErasureRevision() !== erasureRevision || dsh.current !== bridge || !sameContext(caller, sessions.context())) {
-      throw new Error(t('main.memory.context.stale'))
-    }
-    return schedules.act(request, caller.conversationId, workDirNow() ?? '', evidence)
+    return schedules.act(request, caller.conversationId, workDirNow() ?? '')
   }
 
   /**
@@ -899,30 +691,23 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
    * or as a turn of their own once nothing runs. The window is told such a turn began, as it is told nothing else of
    * it: no words of the user's.
    */
-  async function eligibleTaskReport(taskId: string, session: string, evidence?: MemoryProvenance) {
-    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready()), crossProject = isMainSession(session)
-    if (evidence) return await memoryCoordination.transferStatus(evidence, project, ready, crossProject) === 'ready'
-    return memoryCoordination.canInherit(taskId, await projectOfSession(taskId), project, ready, crossProject)
-  }
-  async function inheritTaskReport(taskId: string, session: string, evidence?: MemoryProvenance) {
-    const project = await projectOfSession(session), ready = Boolean(dsh.current?.memory.ready()), crossProject = isMainSession(session)
-    if (evidence) return memoryCoordination.transfer(session, evidence, project, ready, crossProject)
-    return memoryCoordination.inherit(taskId, session, await projectOfSession(taskId), project, ready, crossProject)
+  function isForeignReport(taskId: string) {
+    const current = sessions.context().sessionId
+    const task = historyDb.nativeProject(taskId) ?? projectScopeKey(workspaceOfSession(taskId))
+    const target = (current && historyDb.nativeProject(current)) || projectScopeKey(workDirNow())
+    return task !== target
   }
   const taskReports = createTaskReports({
-    eligible: eligibleTaskReport,
-    conversation: async () => (!dsh.current || memoryBusy() || await staleMemorySession(dsh.current.currentSession())
-      || sessions.isChanging() || dsh.current.isSwitching() || dsh.isQuitting() ? 'away' : turn.active ? 'busy' : 'idle'),
+    conversation: () => (!dsh.current || sessions.isChanging() || dsh.current.isSwitching() || dsh.isQuitting()
+      ? 'away' : turn.active ? 'busy' : 'idle'),
     typing: () => Boolean(host.window.composerTyping?.()),
     wakeLater: (ms) => scheduleReportWake(ms),
     session: () => dsh.current?.currentSession() ?? null,
     holds: (effect) => effects?.holds(effect) ?? false,
     opening: id => foregroundRequests.openingReports().includes(id),
     status: (session, reportId, token) => dsh.current?.reportStatus(session, reportId, token) ?? Promise.resolve('unavailable'),
-    deliver: async (session, reportId, token, text, taskId, held, evidence) => {
-      if (!await allowMemorySession(session) || !await eligibleTaskReport(taskId, session, evidence)) return 'unavailable'
-      if (!held() || !await inheritTaskReport(taskId, session, evidence)) return 'unavailable'
-      if (!held()) return 'unavailable'
+    deliver: (session, reportId, token, text, taskId, held) => {
+      if (isForeignReport(taskId)) foregroundHistory?.keepReplyInForeground(session)
       return dsh.current?.deliverReport(session, reportId, token, text, held) ?? Promise.resolve('unavailable')
     },
     // Where a report went is kept with it (task-reports.ts): only that session's word on it counts.
@@ -936,23 +721,19 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
     },
     currentConversation: () => sessions.current().id,
-    superseded: async (taskId, runId, evidence) => (taskRuntime?.reports.superseded(taskId, runId) ?? false)
-      || (evidence ? historyDb.evidenceErased(evidence) : await staleMemorySession(taskId)),
+    superseded: (taskId, runId) => taskRuntime?.reports.superseded(taskId, runId) ?? false,
     report: async (note, reports, held) => {
       const agent = dsh.current
-      if (!agent || memoryBusy()) return false
+      if (!agent) return false
       const context = sessions.context()
-      const session = context.sessionId
-      if (!session || !await allowMemorySession(session)) return false
-      for (const { taskId, memory: evidence } of reports) {
-        if (!held() || !await eligibleTaskReport(taskId, session, evidence) || !await inheritTaskReport(taskId, session, evidence)) return false
-      }
+      if (!context.sessionId) return false
       if (dsh.current !== agent || !sameContext(context, sessions.context()) || sessions.isChanging()
         || agent.isSwitching() || turn.active || !held()) return false
       const claim = foregroundRequests.reserveReport(reports.map(item => item.reportId))
       if (!claim) return false
       turn = { active: true, by: 'task', stopping: false, startedAt: Date.now(), id: randomUUID() }
       emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'task', context })
+      if (reports.some(item => isForeignReport(item.taskId))) foregroundHistory?.keepReplyInForeground(context.sessionId)
       void agent.prompt(note, [], { request: false, held: () => claim.current() && held() }).catch((err: Error) => {
         if (!claim.current() || dsh.current !== agent || !sameContext(context, sessions.context())) return
         turn = { ...turn, active: false }
@@ -1012,7 +793,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     fs.mkdirSync(config.cwd, { recursive: true })
     const context = sessions.startingIn(config.cwd)
     carryHistory ||= stoppedContext !== null
-    if (carryHistory || memoryProjectScope(sessions.current().cwd)?.id !== memoryProjectScope(context.cwd)?.id) context.resumeSessionId = null
+    if (carryHistory || historyProject(sessions.current().id, sessions.current().sessionId) !== projectScopeKey(context.cwd)) context.resumeSessionId = null
     try {
       const started = await dsh.start({ config, ...context, carryHistory })
       return started ? lastInfo : null
@@ -1117,7 +898,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       return true
     })
     ipcMain.handle('agent:prompt', (_event, text, images = [], operation, feedItemId, turnId) => {
-      if (memoryBusy()) throw new Error(t('memory.read.unavailable'))
       if (sessions.isChanging()) throw new Error(t("main.main.preparing.a.new.topic.please.wait"))
       // With pictures the words may be left out.
       const question = images?.length && text === '' ? '' : assertText(text, 'prompt', MAX_PROMPT_CHARS)
@@ -1154,7 +934,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       const selected = () => generation() && dsh.current === agent
         && !sessions.isChanging() && !agent.isSwitching() && sameContext(origin, sessions.context())
       const held = () => selected() && turn === originalTurn && turn.active && (!admitted || admitted.current())
-      return deliverHumanSteer(words, deliveryId, agent, origin, held, selected)
+      return deliverHumanSteer(words, deliveryId, agent, held, selected)
     })
     ipcMain.handle('agent:cancel', async (_event, target) => {
       const agent = dsh.current
@@ -1183,7 +963,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
     ipcMain.handle('agent:new-session', async () => {
       if (stoppedContext) throw new Error(t('conversation.stop.unconfirmed'))
-      if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
       // The bridge's onSessionCreated binds owner metadata before returning the acquired session.
       // Repeating it after selection commits can turn a successful switch into an unrelated recovery failure.
       return sessions.newTopic()
@@ -1213,7 +992,6 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
     })
     ipcMain.handle('agent:answer', async (_event, questionId, answers, operation) => {
-      if (memoryBusy()) return false
       const id = assertText(questionId, 'questionId', 200)
       const slot = taskRuntime?.dsh.reserveWaitResume('answer', id)
       if (slot && 'problem' in slot) throw new Error(slot.problem)
@@ -1237,20 +1015,15 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     })
   }
 
-  async function deliverHumanSteer(words: string, deliveryId: string, agent: Bridge, origin: ReturnType<typeof sessions.context>,
+  async function deliverHumanSteer(words: string, deliveryId: string, agent: Bridge,
     held: () => boolean, selected: () => boolean, onDispatch?: () => void): Promise<IpcResults['agent:steer']> {
     // A normally finished turn asks the renderer to resend as a new question;
     // cancellation or a replacement selection must never do so.
     const retiredReason = (): 'idle' | 'unavailable' => selected() ? 'idle' : 'unavailable'
-    if (memoryBusy()) {
-      historyDb.settlePromptDelivery([deliveryId], false)
-      return { ok: false, reason: 'unavailable', delivery: historyDb.promptDelivery(deliveryId) }
-    }
     let dispatched = false
     try {
-      const sourceId = await aliasMemory(words, deliveryId, origin)
       const result = !held() ? { ok: false, reason: retiredReason(), delivery: 'not-sent' as const }
-        : await agent.steer(words, sourceId, held, retiredReason, () => { dispatched = true; onDispatch?.() })
+        : await agent.steer(words, deliveryId, held, retiredReason, () => { dispatched = true; onDispatch?.() })
       if (!closed && (result.ok || result.reason === 'idle' || result.delivery === 'not-sent')) historyDb.settlePromptDelivery([deliveryId], result.ok)
       return { ...result, delivery: closed ? result.delivery ?? (result.ok ? 'sent' as const : 'pending' as const) : historyDb.promptDelivery(deliveryId) }
     }
@@ -1271,9 +1044,17 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const prior = pendingHumanPrompts.get(key)
     if (prior) return prior.fingerprint === fingerprint ? prior.promise
       : Promise.reject(new Error(t('main.memory.context.stale')))
+    if (Array.isArray(operation) && !historyDb.matchesPromptText(operation, question)) {
+      return Promise.reject(new Error(t('main.memory.context.stale')))
+    }
+    if (!feedItemId && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'not-sent'
+      && !historyDb.matchesPromptText([operation], question)) {
+      return Promise.reject(new Error(t('main.memory.operation.conflict')))
+    }
     if (!feedItemId && !pictures.length && typeof operation === 'string' && historyDb.promptDelivery(operation) === 'sent') {
       // The native steer may have acknowledged while this report is still running.
-      return aliasMemory(question, operation, origin).then(() => undefined)
+      return historyDb.matchesPromptText([operation], question) ? Promise.resolve(undefined)
+        : Promise.reject(new Error(t('main.memory.context.stale')))
     }
     const sources = feedItemId ? [] : typeof operation === 'string' ? [operation] : [...operation]
     if (historyDb.promptPending(sources)) return Promise.reject(new Error(t('main.memory.change.pending')))
@@ -1341,7 +1122,7 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
       }
       finally { if (humanAdmission === own) humanAdmission = null }
     }, interjectable ? async held => {
-      const result = await deliverHumanSteer(question, operation, agent, origin, held, selected, () => { nativeStarted = true })
+      const result = await deliverHumanSteer(question, operation, agent, held, selected, () => { nativeStarted = true })
       if (result.ok) return { result: undefined }
       if (result.delivery === 'not-sent') nativeStarted = false
       if (result.reason === 'idle' && result.delivery === 'not-sent' && selected()) {
@@ -1375,57 +1156,27 @@ export function createBackend({ host, ipc, dailyNotes = process.env.VIVA_DAILY_M
     const admission = humanAdmission
     const assertAdmitted = () => { if (admission && !admission.current()) throw new ForegroundRequestRetired() }
     assertAdmitted()
-    let feedOrigin = sessions.context()
+    const feedOrigin = sessions.context()
     const feedSelected = () => dsh.current === agent && !sessions.isChanging() && Boolean(feedOrigin.sessionId)
       && agent.currentSession() === feedOrigin.sessionId && sameContext(feedOrigin, sessions.context())
     const assertFeedSelected = () => { if (feedItemId && !feedSelected()) throw new Error(t('main.feed.memory.unavailable')) }
-    if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
     assertFeedSelected()
     const replay = Array.isArray(operation)
-    if (replay && !await memory.replaySources(operation, question, currentMemoryProject())) throw new Error(t('main.memory.context.stale'))
     assertAdmitted()
     const id = agent.currentSession()
-    const stale = await staleMemorySession(id)
-    assertAdmitted()
-    assertFeedSelected()
-    const projectAllowed = stale || !id || await allowMemorySession(id, workDirNow() ?? undefined)
-    if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
-    assertAdmitted()
-    assertFeedSelected()
-    if (stale || !projectAllowed) {
-      await reopenMemorySession()
-      admission?.recovered()
-      assertAdmitted()
-      if (feedItemId) {
-        const recovered = sessions.context()
-        if (dsh.current !== agent || sessions.isChanging() || recovered.conversationId !== feedOrigin.conversationId
-          || agent.currentSession() !== recovered.sessionId) throw new Error(t('main.feed.memory.unavailable'))
-        feedOrigin = recovered
-        assertFeedSelected()
-      }
-    }
     let feedCurrent: (() => boolean) | undefined
     if (feedItemId) {
       if (replay) throw new Error(t('main.memory.context.stale'))
-      const origin = { ...feedOrigin }
       feedCurrent = await admitFeedContinuation({ text: question, read: () => feedContinuation(feedItemId),
         current: feedSelected,
-        transfer: evidence => memoryCoordination.transfer(origin.sessionId!, evidence, currentMemoryProject(), agent.memory.ready()),
-        record: () => recordDeliveredSource(operation, origin, { derived: true }),
       })
       if (!feedCurrent()) throw new Error(t('main.feed.memory.unavailable'))
-    } else if (!replay) {
-      await aliasMemory(question, operation)
-    } else {
-      for (const sourceId of operation) { await recordDeliveredSource(sourceId); assertAdmitted() }
     }
     assertAdmitted()
     turn = { active: true, by: 'user', stopping: false, startedAt: Date.now(), id: admission?.turnId ?? randomUUID() }
     emitToRenderer({ type: 'turn_started', turnId: turn.id, by: 'user', context: sessions.context() })
-    const carryRevision = historyDb.fileErasureRevision()
     const carried = sessions.takeCarried()
-    const held = carried || feedCurrent || admission ? () => (!carried || historyDb.fileErasureRevision() === carryRevision)
-      && (feedCurrent?.() ?? true) && (admission?.current() ?? true) : undefined
+    const held = feedCurrent || admission ? () => (feedCurrent?.() ?? true) && (admission?.current() ?? true) : undefined
     const words = carried ? `${carried}
 
 ${question}` : question
@@ -1458,8 +1209,8 @@ ${question}` : question
     events.route({
       'chat.said': ({ text, images, operation, feedItemId }) => sayInChat(text, images as ReturnType<typeof imagesForPrompt>, operation, feedItemId),
       // A turn of the user's just ended: clear the turn's source bindings.
-      'agent.turn_ended': ({ stopReason }) => {
-        finishForegroundTurn(stopReason === 'end_turn', stopReason === 'end_turn' || stopReason === 'max_tokens')
+      'agent.turn_ended': () => {
+        finishForegroundTurn()
         // A task that ended while this turn ran comes back now that the conversation is free.
         wakeEffects()
       },
@@ -1500,24 +1251,18 @@ ${question}` : question
    * (a fork of the session into that directory), as a new segment of the timeline after the current one.
    */
   async function switchWorkDir(dir: string) {
-    if (memoryBusy()) throw new Error(t('main.memory.change.pending'))
-    const projectChanged = currentMemoryProject()?.id !== memoryProjectScope(dir)?.id
-    const info = projectChanged || await staleMemorySession(sessions.current().sessionId)
+    const previous = sessions.current()
+    const projectChanged = historyProject(previous.id, previous.sessionId) !== projectScopeKey(dir)
+    const info = projectChanged
       ? await sessions.withSelection(async ({ switchAgent, select }) => {
-        const previous = sessions.current(), topicId = sessions.topicId()
         const carried = await filteredCarry(previous.id, true, dir)
         const started = await switchAgent(null, dir)
-        const next = historyDb.create({ sessionId: started.sessionId, mode: started.mode, model: started.model, cwd: started.cwd,
-          parentId: !projectChanged && historyDb.get(previous.id) ? previous.id : null, topicId: projectChanged ? null : topicId })
+        const next = historyDb.create({ sessionId: started.sessionId, mode: started.mode, model: started.model, cwd: started.cwd })
         select(next)
         await publishCarry(next, carried)
         return { ...started, conversationId: next.id, topicId: next.topicId ?? next.id, remembersHistory: false }
       })
       : await sessions.switchDirectory(dir)
-    if (info.sessionId) {
-      await memory.recordSession(info.sessionId)
-      await bindSessionProject(info.sessionId, currentMemoryProject())
-    }
     emitToRenderer({ type: 'workdir', cwd: dir, info })
     return info
   }
@@ -1544,16 +1289,10 @@ ${question}` : question
   }
 
   async function feedContinuation(id: string) {
-    const store = requireFeed(), project = currentMemoryProject()
-    const revision = historyDb.fileErasureRevision()
+    const store = requireFeed()
     const continuation = store.continuation(id)
-    const current = () => revision === historyDb.fileErasureRevision() && project?.id === currentMemoryProject()?.id
-      && Boolean(continuation && store.continuationCurrent(continuation))
-    if (!continuation || await memoryCoordination.transferStatus(continuation.memory, project, true) !== 'ready'
-      || !current()) {
-      throw new Error(t('main.feed.memory.stale'))
-    }
-    return { ...continuation, current }
+    if (!continuation) throw new Error(t('main.feed.memory.stale'))
+    return { ...continuation, current: () => store.continuationCurrent(continuation) }
   }
 
   /** A new item in 动态: its notification queued in the change that made it, so a quit before it goes loses nothing. */
@@ -1563,49 +1302,25 @@ ${question}` : question
   }
 
   /** A schedule's prompt run in its own folder; one whose folder is gone fails, saying so. */
-  async function runSchedule(prompt: string, cwd: string, evidence: MemoryProvenance | null): Promise<RunResult> {
-    if (!await mayUseProjectEvidence(evidence, memoryProjectScope(cwd))) return Promise.resolve({ ok: false, staleMemory: true, problem: t('main.feed.memory.stale') })
-    if (!isFolder(cwd)) return Promise.resolve({ ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) })
-    if (memoryBusy()) return Promise.resolve({ ok: false, unavailable: true, problem: t('main.memory.change.pending') })
-    const ready = () => dsh.current?.memory.ready() === true
-    if (!ready()) {
-      return Promise.resolve({ ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') })
-    }
-    return serializeUnattended(() => unattended.run(prompt, cwd, async (session, bridge) => {
-      if (bridge !== dsh.current) return 'memory-unavailable'
-      const project = memoryProjectScope(cwd)
-      const status = await memoryCoordination.transferStatus(evidence, project, ready())
-      if (status !== 'ready') return status
-      if (!await bindSessionProject(session, project) || !await memoryCoordination.transfer(session, evidence, project, ready())) return 'stale'
-    }))
+  async function runSchedule(prompt: string, cwd: string): Promise<RunResult> {
+    if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
+    return serializeUnattended(() => unattended.run(prompt, cwd))
   }
 
   async function runFeedSource(prompt: string, cwd: string, policy: SourceExecutionPolicy): Promise<RunResult> {
     if (!isFolder(cwd)) return { ok: false, problem: t('main.schedule-runs.folder.gone', { cwd }) }
     if (!policy.allowedTools.length) return { ok: false, problem: t('main.feed-sources.policy.unavailable') }
-    if (memoryBusy()) return { ok: false, unavailable: true, problem: t('main.memory.change.pending') }
-    const ready = () => dsh.current?.memory.ready() === true
-    if (!ready()) {
-      return { ok: false, unavailable: true, memoryUnavailable: true, problem: t('main.feed.memory.unavailable') }
-    }
-    let bindError: string | null = null
-    const outcome = await unattended.run(prompt, cwd, async (session, bridge) => {
-      if (bridge !== dsh.current) return 'memory-unavailable'
-      const bound = await dsh.current.bindFeedSourceSession(session, policy)
-      if (!bound.ok) {
-        bindError = bound.reason
-        return 'stale'
-      }
-      const project = memoryProjectScope(cwd)
-      if (!await bindSessionProject(session, project)) return 'stale'
+    return unattended.run(prompt, cwd, async (session, bridge) => {
+      const current = dsh.current
+      if (!current || bridge !== current) return { ok: false, problem: 'unavailable', unavailable: true }
+      const bound = await current.bindFeedSourceSession(session, policy)
+      if (!bound.ok) return { ok: false, problem: bound.reason }
     })
-    if (bindError) return { ok: false, problem: bindError }
-    return outcome
   }
 
   function registerPersonalIpc(config: Config) {
     registerRuntimeMemoryIpc(ipcMain, {
-      client: memory, projectScope: currentMemoryProject,
+      client: memory,
       sourceLink: historyDb.sourceLink,
       habits: () => activeHours(historyDb.questionTimes()),
       cwd: () => config.cwd,
@@ -1655,10 +1370,6 @@ ${question}` : question
     })
   }
 
-  const memoryWithdrawal = createMemoryWithdrawal({
-    history: () => historyDb, effects: () => effects!, memory: () => memory, apply: applyChange, changing: changingMemory,
-  })
-
   function openPersonal(config: Config) {
     try {
       traceDb = openTraceDb({ file: path.join(userData, 'trace.db') })
@@ -1669,9 +1380,8 @@ ${question}` : question
     personal = createPersonal({ historyDb, mcpStore })
     registerPersonalIpc(config)
     const schedulesChanged = () => emitToRenderer({ type: 'schedules_changed' })
-    const scheduleMemoryCurrent = memoryCoordination.transferable
     schedules = createSchedules({ db: appDb.db, apply: applyChange, emit: event => emitToRenderer({ ...event, context: sessions.context() }),
-      changed: () => { scheduleRuns?.wake(); schedulesChanged() }, memoryCurrent: scheduleMemoryCurrent })
+      changed: () => { scheduleRuns?.wake(); schedulesChanged() } })
     // A schedule's run adds its item inside its own change (schedule.ran); the window's writes are events of their own.
     const items = openFeedStore({ db: appDb.db })
     feed = journaled(items, 'feed', FEED_WRITES, applyChange)
@@ -1681,7 +1391,6 @@ ${question}` : question
       store: schedules.store,
       feed: items,
       run: runSchedule,
-      memoryCurrent: scheduleMemoryCurrent,
       keep: queueFeedNotice,
       // Kept: its notice goes (a notification, clicked, opens 动态), and the window shows it.
       delivered: () => {
@@ -1728,7 +1437,6 @@ ${question}` : question
       feed: items,
       checkPlugin: checkFeedSourcePlugin,
       run: runFeedSource,
-      memoryCurrent: scheduleMemoryCurrent,
       serialize: serializeUnattended,
       keep: queueFeedNotice,
       delivered: () => {
@@ -1760,7 +1468,7 @@ ${question}` : question
     async startTask() {
       const agent = dsh.current
       const source = agent?.currentSession()
-      if (!agent || !source || sessions.isChanging() || !await allowMemorySession(source)) return { ok: false, reason: 'unavailable' }
+      if (!agent || !source || sessions.isChanging()) return { ok: false, reason: 'unavailable' }
       return agent.startTask()
     },
     promptTask: (taskId: string, text: string) => dsh.current?.promptTask(taskId, text),
@@ -1809,77 +1517,37 @@ ${question}` : question
       agentInfo: () => lastInfo,
       selectSession: sessions.withSelection,
       chooseExportPath,
-      isBusy: () => turn.active || memoryBusy(),
-      staleSession: staleMemorySession,
+      isBusy: () => turn.active,
       filteredCarry,
       publishCarry,
-      recordSession: async id => {
-        if (id) {
-          await memory.recordSession(id)
-          await bindSessionProject(id, currentMemoryProject())
-        }
-      },
-      deleteHistory: memoryWithdrawal.deleteHistory,
       folderExists: (dir) => isFolder(dir),
       workDir: () => workDirNow() ?? null,
     })
     registerRewindIpc(ipcMain, {
       db: historyDb,
       current: sessions.current,
-      isBusy: () => turn.active || memoryBusy(),
+      isBusy: () => turn.active,
       agentInfo: () => lastInfo,
       selectSession: sessions.withSelection,
       traceDb: () => traceDb,
       readNativeTrace,
-      replaySource: (id, text) => memory.replaySources([id], text, currentMemoryProject()),
-      derivedSource: id => memory.isDerivedDelivery(id),
-      canEditSource: async () => !await sessionProjectChanged(sessions.current().sessionId, currentMemoryProject())
-        && (!dsh.current || dsh.current.memory.ready()),
-      commitEdit: memoryWithdrawal.commitEdit,
-      rebuild: async (previous, kept, force) => {
-        if (!force && !await staleMemorySession(previous.sessionId) && memory.epoch() === 0) return null
-        const revision = historyDb.fileErasureRevision()
-        const project = memoryProjectScope(previous.cwd)
+      apply: applyChange,
+      rebuild: async (previous, kept) => {
+        const project = historyProject(previous.id, previous.sessionId)
+        if (project !== projectScopeKey(previous.cwd)) return null
         const current = historyDb.get(previous.id)?.messages.slice(0, kept.length) ?? []
         const rows = current.flatMap((row, index) => row.role === 'user' && row.sourceId && row.sourceId === kept[index]?.sourceId
           ? [{ ...row, segmentId: previous.id }] : [])
-        return verifiedHistoryCarry(rows, historyForProject(project), revision, historyDb.fileErasureRevision)
+        const allowed = historyForProject(project)
+        return carriedRecords(rows.filter(allowed))
       },
       publishCarry,
-      onContinuation: async (previous, started) => {
-        if (started.sessionId && await staleMemorySession(previous.sessionId)) await storeSessionCarry(previous.id)
-      },
     })
     // Tasks still going, kept so the next launch can offer to take them up (dsh ends with the app). Only the task
     // runtime writes them, each change with its event (task.started, task.ended, …).
-    taskStore = createTaskStore({ db: appDb.db, retainedReply: historyDb.retainedReply,
+    taskStore = createTaskStore({ db: appDb.db,
       onError: (err) => emitDiagnosticFailure('task', err) })
     effects = createEffects({ db: appDb.db, apply: applyChange, onError: (err) => emitDiagnosticFailure('effects', err) })
-    memoryWithdrawal.register()
-    memoryHostEffects = createMemoryHostEffects({ db: appDb.db, call: memory.call, apply: applyChange, eraseHistory: historyDb.eraseMemoryCopies,
-      eraseFileHistory: historyDb.eraseFileRanges,
-      fileCopiesDurable: async effect => {
-        await memory.call('ackHostEffect', { effectId: effect.effectId, causeOperationId: effect.causeOperationId, revision: effect.revision })
-      },
-      invalidateFileHistory: sessions.discardStaleCarry,
-      eraseTaskBodies: taskStore.eraseMemoryBodies,
-      invalidateTaskBodies: async sessions => { await taskRuntime?.revokeMemorySessions(sessions) },
-      generatedCopiesRemoved: copies => emitToRenderer({ type: 'memory_changed', erasedOutputs: copies.map(({ session, key }) => ({ session, key })) }),
-      feedCopiesRemoved: erasedFeedIds => emitToRenderer({ type: 'memory_changed', erasedFeedIds }),
-      eraseRoutedMemory: matches => requests.eraseMemory(matches),
-      reportsRemoved: reportIds => emitToRenderer({ type: 'reports_removed', reportIds }),
-      traceInvalidated: traceSessions => emitToRenderer({ type: 'memory_changed', traceSessions }),
-      invalidateScheduled: (matches, changed) => {
-        schedules?.discardMemory(matches)
-        const discarded = scheduleRuns?.discardMemory(matches)
-        if (changed || discarded) {
-          scheduleRuns?.wake()
-          feedChanged()
-          emitToRenderer({ type: 'schedules_changed' })
-        }
-      },
-      invalidate: async effect => { if (effect.kind === 'erase-copies') await taskRuntime?.revokeMemorySessions(effect.sessions ?? []); sessions.carryNext(sessions.current().id, ''); emitToRenderer({ type: 'memory_changed' }); feedChanged(); emitToRenderer({ type: 'schedules_changed' }) },
-    })
     effects.runs(REPORT, taskReports)
     // A new item's notification (schedule-runs.ts): handed to the desktop, done.
     effects.runs(FEED_NOTICE, async (queued) => {
@@ -1897,8 +1565,6 @@ ${question}` : question
       publish: emitToRenderer,
       // Once a task's end is kept: its result back to the conversation.
       onEnd: () => wakeEffects(),
-      captureReportMemory: taskId => memory.provenance(taskId),
-      admitResume: async (taskId) => !memoryBusy() && await allowMemorySession(taskId) && canTransferMemoryToModel(taskId),
       effects,
     })
     registerTaskIpc(ipcMain, taskRuntime.window)
@@ -1908,44 +1574,33 @@ ${question}` : question
     // inspect, message and stop any of its background tasks regardless of working directory.
     const tasks = taskRuntime.agent
     const visible = (taskId: string, cwd: string | null) => { tasks.query({ op: 'get', taskId }, { kind: 'main', cwd: cwd ?? '' }) }
-    async function requestEvidence(place: RequestPlace) {
+    function requestEvidence(place: RequestPlace) {
       const bridge = dsh.current
       const here = () => {
         const selected = sessions.current()
         return bridge === dsh.current && selected.id === place.conversationId && selected.sessionId === place.sessionId
       }
       if (!here()) throw new Error(t('main.requests.start.elsewhere'))
-      if (!bridge || !place.memory
-        || !await bridge.memory.call('authorizedProvenance', { session: place.sessionId, prior: place.memory })
-        || !here() || historyDb.evidenceErased(place.memory)) throw new Error(t('main.memory.context.stale'))
-      return place.memory
     }
-    function admitTask(place: RequestPlace, evidence: MemoryProvenance | undefined, targetCwd?: string, crossProject = false) {
-      return async (taskId: string) => {
-        if (sessions.current().sessionId !== place.sessionId || !await allowMemorySession(place.sessionId, place.cwd ?? undefined)
-          || !await allowMemorySession(taskId, targetCwd) || !canTransferMemoryToModel(taskId)) return false
-        const project = targetCwd === undefined ? await projectOfSession(taskId) : memoryProjectScope(targetCwd)
-        if (!await memoryCoordination.transfer(taskId, evidence, project, Boolean(dsh.current?.memory.ready()), crossProject)
-          || sessions.current().sessionId !== place.sessionId) return false
-        return evidence ?? true
-      }
+    const admitTask = (place: RequestPlace) => () => {
+      const selected = sessions.current()
+      return selected.sessionId === place.sessionId && selected.id === place.conversationId
     }
     requests = createRequestRuntime({
       store: createRequestStore({ db: appDb.db }),
-      evidenceErased: historyDb.evidenceErased,
       apply: applyChange,
       tasks: {
         start: async ({ title, brief }, place) => {
-          const evidence = await requestEvidence(place)
-          return tasks.start(brief, title, admitTask(place, evidence, place.cwd ?? workDirNow() ?? undefined, true))
+          requestEvidence(place)
+          return tasks.start(brief, title, admitTask(place))
         },
         message: async (taskId, text, place) => {
-          const evidence = await requestEvidence(place)
+          requestEvidence(place)
           visible(taskId, place.cwd)
-          return tasks.message(taskId, text, admitTask(place, evidence, undefined, true))
+          return tasks.message(taskId, text, admitTask(place))
         },
         stop: async (taskId, place) => {
-          await requestEvidence(place)
+          requestEvidence(place)
           visible(taskId, place.cwd)
           return tasks.stop(taskId)
         },
@@ -1995,6 +1650,7 @@ ${question}` : question
     registerAgentIpc()
     registerSettingsIpc()
     const config = currentConfig()
+    defaultWorkspace = config.cwd
     // Set just above, so the folder in use is always one from here on.
     const workDirInUse = () => workDirNow() ?? config.cwd
     registerFilesIpc(ipcMain, { root: workDirInUse, shell: host.shell, notify: emitToRenderer })
@@ -2010,6 +1666,7 @@ ${question}` : question
     openHistory(config)
     openPersonal(config)
     routeSignals(core)
+    void memoryOwner.prepare().catch(error => emitDiagnosticFailure('memory.owner', error))
   }
 
   /** The computer back from sleep, or unlocked: schedules due meanwhile run. */
@@ -2024,8 +1681,6 @@ ${question}` : question
     void memoryOwner.close().catch(error => emitDiagnosticFailure('shutdown', error))
     for (const timer of historyPurgeTimers) clearTimeout(timer)
     historyPurgeTimers.clear()
-    memoryHostRecovery.close()
-    memoryHostEffects?.close()
     scheduleRuns?.close()
     feedSourceRuns?.close()
     foregroundHistory?.flush()

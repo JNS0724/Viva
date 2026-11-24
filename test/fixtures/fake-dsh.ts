@@ -261,7 +261,7 @@ function createAgent(conn: AgentSideConnection): Agent {
       const controller = new AbortController()
       session.turn = controller
       const wireText = params.prompt.map((block) => block.type === 'text' ? block.text : '').join('\n')
-      const intake = wireText ? await memoryOwner?.receive(params.sessionId, wireText) : undefined
+      const intake = wireText ? await memoryOwner?.receive(params.sessionId, wireText).catch(() => undefined) : undefined
       const text = withoutHeaders(wireText)
       let completed = false
       // Pictures come as image blocks, base64; the answer says what came, so the smoke run can see they got here.
@@ -331,20 +331,18 @@ function answerStream() {
     async start(sessionId: string, blockType: 'text' | 'reasoning') {
       const binding = bindings.get(sessionId)
       if (!binding) return { signal: undefined, delta: (_text: string) => {}, settle: (_text: string) => {}, abandon: () => {} }
-      const proof = await memoryOwner?.startOutput(sessionId)
       const key = `${binding.operation}:${binding.messages.length + 1}`
       const base = { type: 'assistant_stream', version: 1, sessionId, operation: binding.operation, key }
       send({ ...base, kind: 'start' })
       return {
-        signal: proof?.signal,
-        abandon: () => proof?.abandon(),
+        signal: undefined,
+        abandon: () => {},
         delta: (text: string) => send({ ...base, kind: 'delta', index: 0, blockType, text }),
         settle: async (text: string) => {
           const blocks = [{ type: blockType, text }]
-          const native = await proof?.settle(blocks)
-          binding.messages = [...binding.messages, { key, blocks, ...(native ? { native } : {}) }]
+          binding.messages = [...binding.messages, { key, blocks }]
           binding.finalReply = blockType === 'text' && Boolean(text.trim())
-          send({ ...base, kind: 'settle', blocks, ...(native ? { native } : {}) })
+          send({ ...base, kind: 'settle', blocks })
         },
       }
     },

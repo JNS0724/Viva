@@ -121,7 +121,7 @@ type State = 'idle' | 'busy' | 'away'
 
 function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(), known = {} as Record<string, ReportState>,
   steered = 'steered' as ReportState, whileAsking = (_reportId: string) => {}, keeps = true,
-  eligible = (_taskId: string, _session: string): boolean => true, opening = (_id: string): boolean => false,
+  opening = (_id: string): boolean => false,
   typing = false, now = 0 } = {}) {
   const turns: string[] = []
   const delivered: Array<[string, string, string]> = []
@@ -139,7 +139,7 @@ function setup({ state = 'idle' as State, here = 'c1', atWork = new Set<string>(
     typing: () => world.typing,
     now: () => world.now,
     wakeLater: (ms) => { wakes.push(ms) },
-    eligible, opening,
+    opening,
     status: async (session, reportId, token) => { asked.push([session, reportId, token]); whileAsking(reportId); return known[`${session} ${reportId}`] ?? known[reportId] ?? 'none' },
     deliver: async (session, reportId, _token, text) => { delivered.push([session, reportId, text]); return steered },
     report: (note) => { turns.push(note); return true },
@@ -192,22 +192,6 @@ test('idle: reports due together for the conversation on screen share one turn, 
   assert.equal(later.turns.length, 0)
 })
 
-test('a report held outside its project does not prevent other reports or lose its next retry', async () => {
-  const { outcomes, turns, world, kept } = setup({ eligible: (id, session) => session === 's1' ? id === 't2' : id === 't1' })
-  assert.deepEqual(await outcomes([t1, t2]), { 't1:run-1': 'wait', 't2:run-1': 'wait' })
-  assert.equal(turns.length, 1)
-  assert.match(turns[0], /核对发票/u)
-  assert.doesNotMatch(turns[0], /整理发布说明/u)
-  assert.deepEqual(kept.filter(item => item.deliveredTo).map(item => item.taskId), ['t2'])
-
-  world.session = 's2'
-  await outcomes([t1])
-  assert.match(turns[1], /整理发布说明/u)
-
-  const busy = setup({ state: 'busy', eligible: id => id === 't2' })
-  await busy.outcomes([t1, t2])
-  assert.deepEqual(busy.delivered.map(([, key]) => key), ['t2:run-1'])
-})
 
 test('a turn running: each report goes into it, as not the user\'s words; read, it is done', async () => {
   const { outcomes, turns, delivered } = setup({ state: 'busy' })
@@ -530,28 +514,4 @@ test('going back, a path opened, back onto a path: the window takes the records 
   const opened = reduce(rewound, { type: 'fold_opened', id: 'c1', messages: [{ seq: 0, role: 'assistant', text: '改了' }], records: [{ reportId: 'task-0002:run-1', at, text: inTurnText, after: 1 }] })
   assert.deepEqual(opened.rewind.openRecords.c1.map((record: ReportRecord) => record.reportId), ['task-0002:run-1'])
   assert.deepEqual(reduce(opened, { type: 'fold_closed', id: 'c1' }).rewind.openRecords, {})
-})
-
-test('report erasure removes live and cached copies and rejects late history, stream and fork snapshots', () => {
-  const erased = { reportId: 'run-a', at: 4, text: 'Erased report', after: 0 }, retained = { ...erased, reportId: 'run-b', text: 'Retained report' }
-  const records = [erased, retained]
-  const message = { role: 'user' as const, text: 'Independent' }
-  const segment = (id: string): Segment => ({ id, sourceSessionId: 's1', cwd: null, parentId: null, createdAt: 1, messages: [], records })
-  const loaded = { type: 'history_loaded' as const, conversationId: 'c1', messages: [message], records }
-  const folded = { type: 'fold_opened' as const, id: 'fold', messages: [], records }
-  let state = reduce(initialState, loaded)
-  state = reduce(state, folded)
-  state = reduce(state, { type: 'earlier_loaded', segments: [segment('before')], hasMore: true })
-  state = reduce(state, { type: 'reports_removed', reportIds: [erased.reportId] })
-  assert.deepEqual(state.records, [retained])
-  assert.deepEqual(state.earlier.segments[0]?.records, [retained])
-  assert.deepEqual(state.rewind.openRecords.fold, [retained])
-  state = reduce(state, { type: 'new_session' })
-  state = reduce(state, loaded)
-  state = reduce(state, { ...delivered('c1'), reportId: erased.reportId, text: erased.text })
-  state = reduce(state, folded)
-  state = reduce(state, { type: 'earlier_loaded', segments: [segment('older')], hasMore: false })
-  assert.deepEqual(state.records, [retained])
-  assert.deepEqual(state.rewind.openRecords.fold, [retained])
-  assert.deepEqual(state.earlier.segments[0]?.records, [retained])
 })

@@ -4,7 +4,6 @@ import { safeDiagnosticReason } from '../diagnostics/contracts.ts'
 import { asData, IN_TURN_MARK, REPORT_HEAD, reportId, shownNote, TOKEN_MARK } from '../shared/task-report.ts'
 import type { Effect, Outcome, Runner } from './effects.ts'
 import type { ReportState } from './steer-channel.ts'
-import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Results back to the main conversation (system-design §11.5): when a background task's run ends, a `report`
@@ -55,7 +54,6 @@ export interface ReportPayload {
   /** True when `output` already contains the head+tail window with an omission marker. */
   outputTruncated?: boolean
   /** The task run's immutable readset, and sources used in the report header. */
-  memory?: MemoryProvenance
   /** A random secret kept with the report, by which its note is known again (plugins/steer/lib/reports.ts). */
   token?: string
   /** What the task was asked (its words, the start of them), and the title of the topic it was started from. */
@@ -134,7 +132,7 @@ export interface TaskReportsDeps {
   /** The main conversation's session now (acp-bridge.ts currentSession); null while there is none. */
   session: () => string | null
   /** Whether that run's result is moot: the task asked again or taken up since (task-runtime.ts superseded). */
-  superseded: (taskId: string, runId: string, memory?: MemoryProvenance) => boolean | Promise<boolean>
+  superseded: (taskId: string, runId: string) => boolean | Promise<boolean>
   /** Whether the effect is still queued at the generation this pass took (effects.ts holds). */
   holds?: (effect: Effect) => boolean
   /** A locally submitted opening prompt can be absent from the native catalog until its first message is written. */
@@ -148,13 +146,12 @@ export interface TaskReportsDeps {
   /** Schedule a future wake when an idle report defers for typing. */
   wakeLater?: (ms: number) => void
   /** Whether a report's context can be used in the receiving session. */
-  eligible?: (taskId: string, session: string, memory?: MemoryProvenance) => boolean | Promise<boolean>
   /** How a report stands in a session (acp-bridge.ts reportStatus). */
   status: (session: string, reportId: string, token: string) => Promise<ReportState>
   /** A report into that session's running turn, unless it is there already (acp-bridge.ts deliverReport). */
-  deliver: (session: string, reportId: string, token: string, text: string, taskId: string, held: () => boolean, memory?: MemoryProvenance) => Promise<ReportState>
+  deliver: (session: string, reportId: string, token: string, text: string, taskId: string, held: () => boolean) => Promise<ReportState>
   /** Opens a turn with the note in the main conversation; false when it could not be opened now. */
-  report: (note: string, reports: ReadonlyArray<Pick<ReportPayload, 'taskId' | 'memory'> & { reportId: string }>, held: () => boolean) => boolean | Promise<boolean>
+  report: (note: string, reports: ReadonlyArray<Pick<ReportPayload, 'taskId'> & { reportId: string }>, held: () => boolean) => boolean | Promise<boolean>
   /** Writes what a try learned into the effect at its generation (effects.ts amend); false when it is gone. */
   amend: (effect: Effect<ReportPayload>, payload: ReportPayload) => boolean
   /**
@@ -182,7 +179,7 @@ const endedOf = (effect: Effect<ReportPayload>): EndedTask => {
  * is first sent, so every later try knows it by the same token.
  */
 export function createTaskReports({ currentConversation, session, superseded, holds = () => true, opening = () => false, conversation,
-  typing = () => false, now = Date.now, wakeLater = () => {}, eligible = () => true, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
+  typing = () => false, now = Date.now, wakeLater = () => {}, status, deliver, report, amend, onRead }: TaskReportsDeps): Runner {
   /** effect.key → timestamp when an idle report first deferred for an actively typing composer. */
   const typingDeferSince = new Map<string, number>()
   return (effects: readonly Effect[]) => withOperation('task.report', async () => {
@@ -191,9 +188,9 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     const bound = session()
     const mine: Array<Effect<ReportPayload>> = []
     for (const effect of effects as ReadonlyArray<Effect<ReportPayload>>) {
-      const { taskId, runId, memory } = effect.payload
+      const { taskId, runId } = effect.payload
       // Superseded (asked again, taken up, closed): let go. Any other goes to the main conversation, on any topic.
-      if (await superseded(taskId, runId, memory)) outcomes.set(effect.key, 'done')
+      if (await superseded(taskId, runId)) outcomes.set(effect.key, 'done')
       else mine.push(effect)
     }
     if (!mine.length) return outcomes
@@ -205,7 +202,7 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     /** Still this pass's moment: the same conversation and session, the run not superseded, its effect still queued. */
     const still = async (effect: Effect<ReportPayload>) => {
       if (currentConversation() !== here || session() !== bound || !holds(effect)) return false
-      const obsolete = await superseded(effect.payload.taskId, effect.payload.runId, effect.payload.memory)
+      const obsolete = await superseded(effect.payload.taskId, effect.payload.runId)
       return !obsolete && currentConversation() === here && session() === bound && holds(effect)
     }
     /** The effect with what this try learned, kept first; null when it could not be kept (its generation gone). */
@@ -250,12 +247,12 @@ export function createTaskReports({ currentConversation, session, superseded, ho
     }
     const forTurn: Array<Effect<ReportPayload>> = []
     for (const effect of unsent) {
-      if (!await still(effect) || !await eligible(effect.payload.taskId, bound, effect.payload.memory) || !await still(effect)) { outcomes.set(effect.key, 'wait'); continue }
+      if (!await still(effect)) { outcomes.set(effect.key, 'wait'); continue }
       if (state !== 'busy') { forTurn.push(effect); continue }
       // Where it goes is kept before it is sent: a later try asks there, whatever the conversation is on by then.
       const sending = await still(effect) ? kept(effect, { ...effect.payload, deliveredTo: bound, via: 'steer', beforeSource: undefined }) : null
       const sent = sending ? await withOperation('task.report', () => deliver(bound, sending.key, sending.payload.token as string,
-        noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId, () => held(sending), sending.payload.memory),
+        noteFor([endedOf(sending)], { inTurn: true }), sending.payload.taskId, () => held(sending)),
         { ...fields(sending), stage: 'sending', identities: { ...fields(sending).identities, sessionId: bound } }) : 'unavailable'
       if (sent === 'read' && sending && await still(sending)) outcomes.set(effect.key, readOutcome(sending))
       else if (sent === 'idle' && sending) forTurn.push(sending)
@@ -283,13 +280,13 @@ export function createTaskReports({ currentConversation, session, superseded, ho
       }
       for (const effect of forTurn) typingDeferSince.delete(effect.key)
       const opening: Array<Effect<ReportPayload>> = []
-      for (const effect of forTurn) if (await still(effect) && await eligible(effect.payload.taskId, bound, effect.payload.memory) && await still(effect)) {
+      for (const effect of forTurn) if (await still(effect)) {
         const saved = kept(effect, { ...effect.payload, deliveredTo: bound, via: 'turn', beforeSource: undefined })
         if (saved) opening.push(saved)
       }
       const ready = opening.filter(held)
       if (ready.length) await withOperation('task.report', () => report(noteFor(ready.map(endedOf)),
-        ready.map(({ key: reportId, payload: { taskId, memory } }) => ({ reportId, taskId, memory })), () => ready.every(held)),
+        ready.map(({ key: reportId, payload: { taskId } }) => ({ reportId, taskId })), () => ready.every(held)),
         { stage: 'sending', identities: { sessionId: bound }, metrics: { count: ready.length } })
     } else if (!forTurn.length) {
       typingDeferSince.clear()

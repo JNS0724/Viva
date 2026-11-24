@@ -88,36 +88,6 @@ test('a failed reopen of About You offers an operable retry after a previous loa
   assert.equal(fileLists, 3)
 })
 
-test('file details distinguish linked and unlocated sources without promoting the note text to evidence', t => {
-  const { draw } = profileDom(t)
-  const identity = { kind: 'daily' as const, id: 'note', workspace: 'workspace' }
-  const selection = { identity }
-  const link = 'viva://timeline/segment/0/88'
-  const unknown = { namespace: 'canonical', sourceId: 'unlocated', revision: 1, link: null }
-  const detail: MemoryFileDetailView = { identity, version: { contentRevision: 'body', usageVersion: 1, policyToken: 'policy' },
-    title: '日记', path: 'daily/note.md', enabled: true, actions: { setEnabled: true, edit: false, forget: false, undo: null },
-    markdown: '这是笔记内容。', sources: [{ ...unknown, sourceId: 'linked', link }, unknown],
-  }
-  let state = reduce(reduce(initialState, { type: 'memory_open' }), { type: 'memory_loaded', data: { cleanupPending: 2, profile: {}, onboarding: 'done', habits: { text: '', samples: 0 } } })
-  state = reduce(state, { type: 'memory_file_select', selection })
-  state = reduce(state, { type: 'memory_file_read', selection, detail })
-  const links: string[] = []
-  const handlers = { closeProfile: () => {}, openLink: (url: string) => { links.push(url) } } as Handlers
-  let nodes = draw(state.memory, handlers)
-  assert.ok(nodes.some(node => node.textContent === '部分原文尚未在本机定位。'))
-  assert.ok(nodes.some(node => node.textContent === '记忆存储还有 2 项清理待处理。'))
-  const source = nodes.find(node => node.tag === 'button' && node.textContent === '查看原文')
-  assert.ok(source?.listeners.click)
-  source.listeners.click()
-  assert.deepEqual(links, [link])
-  const archived = { ...selection, restrictionId: 'archive' }
-  state = reduce(state, { type: 'memory_file_select', selection: archived })
-  state = reduce(state, { type: 'memory_file_read', selection: archived, detail: { ...detail,
-    stoppedSnapshot: { restrictionId: 'archive', markdown: '这是存档笔记。', sources: [unknown] } } })
-  nodes = draw(state.memory, handlers)
-  assert.ok(nodes.some(node => node.textContent === '原文尚未在本机定位。'))
-  assert.ok(!nodes.some(node => node.tag === 'button' && node.textContent === '查看原文'))
-})
 
 test('file-backed profile opens the matching evidence by identity and clears obsolete project summaries', t => {
   const { draw, flatten } = profileDom(t)

@@ -5,7 +5,7 @@ import type { MemoryPluginConfig } from './lib/config.ts'
 import { applyMemoryAdapter } from './lib/adapter.ts'
 
 export const name = 'viva-memory'
-export const inject = ['agents', 'sessions', 'tools', 'llm', 'userQuestions']
+export const inject = ['agents', 'sessions', 'tools', 'llm']
 export const Config = z.object({
   host: z.boolean().default(false),
   dataRoot: z.string(),

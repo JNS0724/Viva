@@ -162,7 +162,6 @@ export function apply(ctx: Context, config: { prefix: string, suffix?: string },
   const tasks = createTasksChannel({ send: port.send.bind(port), on: port.on.bind(port), off: port.off.bind(port) }, TASK_LIST_WAIT_MS)
   const onSteer = (raw: unknown) => {
     const message = raw as { type?: string, sessionId?: unknown, text?: unknown, fast?: unknown } | null
-    // The host opts in only after the memory transport guard is ready; ordinary steering still runs either way.
     if (message?.type === 'steer' && message.fast === true && typeof message.sessionId === 'string' && typeof message.text === 'string') {
       fastLane(message.sessionId, message.text)
     }

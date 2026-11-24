@@ -37,7 +37,7 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
   function messagesByIds(places: readonly Place[]) {
     if (!places.length) return []
     const named = Object.fromEntries(places.map((place, i) => [`m${i}`, place.id]))
-    const rows = db.prepare(`SELECT id, conversation_id, seq, role, text, receipt, images, source_key, source_id, session_id, created_at,
+    const rows = db.prepare(`SELECT id, conversation_id, seq, role, text, receipt, images, source_key, source_id, session_id, created_at, foreground_only,
       (SELECT state FROM prompt_deliveries p WHERE p.source=messages.source_id) delivery FROM messages
       WHERE id IN (${Object.keys(named).map((key) => `:${key}`).join(', ')})`).all(named) as Row[]
     const byId = new Map(rows.map((row) => [row.id, row]))
@@ -47,6 +47,7 @@ export function readerQueries(db: DatabaseSync, reviewTopic: (topicId: unknown) 
       return row ? [{
         id: row.id, seq: row.seq, segmentId: row.conversation_id, role: row.role, text: row.text, ...(typeof row.source_id === 'string' ? { sourceId: row.source_id } : {}),
         ...(typeof row.source_key === 'string' ? { key: row.source_key } : {}),
+        ...(row.foreground_only ? { foregroundOnly: true as const } : {}),
         ...(typeof row.session_id === 'string' ? { sessionId: row.session_id } : {}),
         ...delivery,
         receipt: row.receipt ? JSON.parse(row.receipt) : null, ...(row.images ? { images: JSON.parse(row.images) } : {}), at: row.created_at,

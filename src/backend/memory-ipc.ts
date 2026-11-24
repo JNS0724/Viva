@@ -53,12 +53,11 @@ async function fileWrite(write: Promise<MemoryFileMutationResult>): Promise<Memo
   }
 }
 
-export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink, projectScope }: {
+export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, { client, habits, cwd, chooseDocs, sourceLink }: {
   client: VivaMemoryClient,
   habits: () => { text: string, samples: number },
   cwd: () => string,
   chooseDocs: () => Promise<string[] | null>,
-  projectScope?: () => ReturnType<typeof import('./memory-project.ts').memoryProjectScope>,
   sourceLink?: (sourceId: string, segmentId?: string) => string | null,
 }) {
   const handle = handlerOf(ipcMain)
@@ -67,24 +66,20 @@ export function registerRuntimeMemoryIpc(ipcMain: Pick<IpcRegistry, 'handle'>, {
     return lifetime ? { budgetMs: lifetime.remainingMs(), signal: lifetime.signal } : options
   }
   handle('memory:get', async options => {
-    const project = projectScope?.()
-    const { profile, onboarding, cleanupPending, revision, fileProfile } = await client.readPage(project, readOptions(options))
+    const { profile, onboarding, cleanupPending, revision, fileProfile } = await client.readPage(undefined, readOptions(options))
     emitDiagnostic({ event: 'operation.progress', operation: 'memory.get', stage: 'responded', metrics: { pendingCount: cleanupPending } })
-    return { profile, onboarding, cleanupPending, revision, habits: habits(),
-      fileProfile: project?.id === projectScope?.()?.id ? fileProfile : { ...fileProfile, project: null } }
+    return { profile, onboarding, cleanupPending, revision, habits: habits(), fileProfile }
   })
   handle('memory:dream-status', client.dreamStatus)
   handle('memory:run-dream', client.requestDream)
   handle('memory:list-files', (query, options) => client.listFiles(query, readOptions(options)))
-  handle('memory:read-file', async (identity, restrictionId, options): Promise<IpcResults['memory:read-file']> => {
-    const item = await client.readFile(identity, restrictionId, readOptions(options))
+  handle('memory:read-file', async (identity, options): Promise<IpcResults['memory:read-file']> => {
+    const item = await client.readFile(identity, readOptions(options))
     if (!item) return null
     const link = (source: typeof item.sources[number]): MemoryFileSourceView => ({ ...source,
       link: source.namespace === 'canonical' ? sourceLink?.(source.sourceId) ?? null : null,
     })
-    const { sources, stoppedSnapshot, ...file } = item
-    return { ...file, sources: sources.map(link), ...(stoppedSnapshot
-      ? { stoppedSnapshot: { ...stoppedSnapshot, sources: stoppedSnapshot.sources.map(link) } } : {}) }
+    return { ...item, sources: item.sources.map(link) }
   })
   handle('memory:set-file-enabled', client.setFileEnabled)
   handle('memory:undo-file', client.undoFile)

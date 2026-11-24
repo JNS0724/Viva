@@ -2,6 +2,8 @@
 
 [English](system-design.md) | 简体中文
 
+**记忆可用性。** 记忆在受监管的旁路进程运行。记忆不可用时，主对话、后台任务、结果汇报和定时安排仍可继续。删除聊天和回退编辑只修改本地时间线。见 [记忆 owner 隔离](memory-owner-isolation.zh-CN.md)。
+
 > 进程拆分以 PR #132（`82a5bf3`，2026-11-10）为基线；记忆相关职责、存储与插件边界已对照 2026-11-17 的本地提交 `3085bad` 更新。这是本地实现快照，本轮 PR CI 尚未运行，不代表已经合入或完成全部交付验收。拆分的设计稿和实施记录保留在 git 历史里；之后按模块做的整治记在[架构整治](architecture-health.zh-CN.md)里。
 
 ## 1. 概述
@@ -48,8 +50,8 @@ flowchart TB
 
 - **页面**（`src/renderer`）：主窗口和桌面岛，跑在沙箱里，没有 Node。只负责显示和交互，状态由后端推送。
 - **外壳**（`src/shell`，Electron 主进程）：应用的生命周期、窗口、托盘、桌面岛、快捷键、通知、对话框和系统钥匙串。它把页面的调用校验后转给后端，并执行后端要桌面做的事。
-- **后端**（`src/backend`，Electron 以 Node 身份运行的子进程）：负责事件内核、历史、任务、定时与动态、设置、模型、插件管理，以及记忆客户端和宿主副本清理，不持有在线记忆 owner。`dsh-lifecycle.ts` 启动和重启 dsh，`acp-bridge.ts` 管进程、MCP 和屏幕上的会话，`acp-operations.ts` 管进行中的 prompt，`acp-task-sessions.ts` 管任务的会话。这些模块的创建、连线和关闭由 `compose.ts` 负责；它自己仍协调一部分功能（设置、MCP 变更、定时与动态）。它运行时不导入 `electron`，桌面能力只通过 `HostCapabilities`（`src/backend/host.ts`）拿到。
-- **dsh**（后端的子进程）：真正跑对话的 agent，加载 12 个 Viva 自带插件和用户装的插件。`viva-memory` 在这里持有在线记忆 owner；独立 DSH 和 DSH Web 使用同一插件与记忆核心，无须 Viva 后端。
+- **后端**（`src/backend`，Electron 以 Node 身份运行的子进程）：负责事件内核、历史、任务、定时与动态、设置、模型、插件管理，以及记忆客户端和 worker 监管，不持有在线记忆 owner。`dsh-lifecycle.ts` 启动和重启 dsh，`acp-bridge.ts` 管进程、MCP 和屏幕上的会话，`acp-operations.ts` 管进行中的 prompt，`acp-task-sessions.ts` 管任务的会话。这些模块的创建、连线和关闭由 `compose.ts` 负责；它自己仍协调一部分功能（设置、MCP 变更、定时与动态）。它运行时不导入 `electron`，桌面能力只通过 `HostCapabilities`（`src/backend/host.ts`）拿到。
+- **dsh**（后端的子进程）：真正跑对话的 agent，加载 12 个 Viva 自带插件和用户装的插件。`viva-memory` 在这里观察会话事件并查询独立记忆 worker；独立 DSH 和 DSH Web 使用同一插件与记忆核心，无须 Viva 后端。
 
 这样划分的好处是，后端没有任何按桌面写死的代码。以后把它搬到云上，只需要换掉两端之间的传输和鉴权，见第 10 节。
 
@@ -113,25 +115,25 @@ flowchart TB
 | 文件 | 内容 | 谁写 | 事件 |
 | --- | --- | --- | --- |
 | `app.db` | `app_events`、`meta`；定时（`schedules`，以及还没跑完的 `schedule_runs`）和动态的条目（`feed_items`）；历史（`conversations`、`messages` 及全文索引、`stars`）；留给下次启动的后台任务（`background_tasks`）；还要在外面做的事（`effects`，§11.4）；对话里的结果记录（`report_records`，§11.5）；主对话的请求、决策和动作（`routing_requests`、`routing_decisions`、`routing_actions`，见[路由设计](agent-routing-design.zh-CN.md)第 12 节） | 后端 | 和写入在同一个事务里 |
-| `memory/memory.db` | 核验过的原文与版本、文档目录和来源映射、操作与变更回执、停用和遗忘记录、daily/dream 工作、检索索引及副本清理凭证 | 记忆插件持有的 Node owner | 提交后通过宿主通道通知 Viva，再发布带 revision 的 `memory.changed` |
-| `memory/memory-files/` | 按 workspace 隔离的会话记录、`daily/` 笔记与日索引、`digest/` Markdown 文档 | Node 文件适配器，经文档 journal 写入 | journal 协调文件发布与 SQLite 回执，崩溃后恢复 |
+| `memory/memory.db` | 核验过的原文与版本、文档目录和来源映射、操作与变更回执、停用和遗忘记录、daily/dream 工作、检索索引及文件清理回执 | 记忆插件持有的 Node owner | 提交后通过宿主通道通知 Viva，供记忆页刷新 |
+| `memory/memory-files/` | 会话记录、`daily/` 笔记与日索引、`digest/` Markdown 文档 | Node 文件适配器，经文档 journal 写入 | journal 协调文件发布与 SQLite 回执，崩溃后恢复 |
 | `trace.db` | 每轮的“过程”：工具调用、思考和每次模型调用的完整提示词 | 过程插件（dsh 进程） | 无 |
 | `settings.json`、`models.json`、`mcp-servers.json`、`preferences.json` | key、模型提供方、MCP 服务器、偏好 | 后端 | 无 |
 | `data-key.bin` | 加密 key 用的数据密钥，由系统钥匙串加密 | 外壳 | 无 |
 
-**记忆的四层。** [`contracts`](../src/memory/contracts/index.ts) 定义纯 DTO 与校验；[`core`](../src/memory/core/index.ts) 负责写入、遗忘、检索、dream、版本与来源权限，不依赖 Electron、DSH 或 Node 存储；[`node`](../src/memory/node/index.ts) 实现 SQLite、文件、索引、模型资源和 owner 锁；[DSH 适配器](../plugins/memory/lib/adapter.ts) 绑定真实会话、工具执行、模型传输、持久化与生命周期。Viva 经受信的 [owner 客户端](../src/backend/remote-memory-channel.ts) 调用服务、传递用户操作和处理自己的副本，不再运行第二套记忆引擎。阶段范围以[文件记忆与独立插件方案](memory-reme-plan.zh-CN.md)为准；[M1–M4 文档](memory-design.zh-CN.md)是旧事实库的历史记录。
+**记忆的四层。** 契约层定义请求类型与校验。核心层负责文件读写和 Dream。Node 适配层提供 SQLite、Markdown 和索引。DSH 适配层观察已持久化的会话事件，并在时限内检索上下文。Viva 通过宿主通道使用独立 worker，聊天历史由自己写入 app.db。[记忆进程隔离](memory-owner-isolation.zh-CN.md)
 
 **文件写入与读取。** 会话摄取先保存用户原文，再按完成轮次生成 daily 笔记。Dream 从有变化的文件中提取候选记忆，仅在输入过大时拆批。依据含糊的候选会跳过，本轮继续处理后续候选。每次提交草稿前，核心都会核对原文跨度、授权范围、预期版本和操作回执。改写已有 digest 结论时才额外调用模型二审。新建 digest 和仅补充来源的更新也经过核心校验。标签是可选步骤，打标失败仍保留本轮已完成的进度。明确的「记住」和管理页编辑共用文件服务。检索结合全文、配置的本地向量及 personal、procedure、wiki 三个文档桶之间的链接，索引可以重建。
 
 「关于你」的「记忆」区域显示 Dream 的当前状态和上次处理有变化日记的时间。检查时无新日记会单独记录检查时间。「立即整理」复用夜间定时整理的后台任务。
 
-**请求与恢复。** owner 记录会话实际使用的来源和精确文件版本、范围；后台任务、定时任务、动态续接与原生 PTC 工具链传递已核验的依赖。每次模型调用在实际发送前重新校验，受支持的传输持有许可到请求体交付；正常工具结束不授予新的读取权限。owner 正在恢复、依赖失效或清理证据不足时，受影响请求不能回退到未过滤的历史或原始追踪。Viva 在 dsh 启动前通过独立冷清理入口处理原生副本，随后由插件恢复在线 owner；两者不会同时持有根目录。
+**请求与恢复。** 记忆服务不可用时，聊天、任务、汇报和定时照常运行。重连后从已保存的 DSH 事件游标继续摄取。自动注入排除当前会话生成的日记。Viva 的记忆写入、显式检索和自动注入使用同一份全局记忆。独立 DSH 的作用域独立配置。日记和 Dream 在提交前复核读取时的内容版本与使用版本。
 
-**停用、撤销与删除记忆文件。** 停用和恢复作用于选中的版本与范围。支持撤销的编辑会保留撤销入口。删除一份 daily 日记或 digest 摘要会移除该文件及其检索索引，原聊天、其他记忆、后台任务、汇报和动态继续保留。已删除的文件无法通过撤销恢复。独立 DSH 使用 `/memory-forget <id>`。用户单独删除聊天时，Viva 仍会撤回该聊天的来源。升级前已经确认的旧擦除请求按当时的规则继续完成。
+**停用、撤销与删除记忆文件。** 每篇日记或摘要各有一个启用开关。停用后仍可在「关于你」查看和重新启用。支持撤销的编辑保留撤销入口。删除记忆只清理选中的文件及其索引，原聊天和其他记忆保留。独立 DSH 提供 `/memory-forget <id>`。删除或回退编辑聊天只改动本地历史。
 
 **key 的加密。** 系统钥匙串（Electron `safeStorage`：macOS 用钥匙串，Windows 用 DPAPI）只在外壳里用得到。外壳用它保护一把随机的 32 字节数据密钥，启动时经 IPC 通道交给后端；后端用它做 AES-256-GCM 加密（`src/backend/envelope.ts`）。钥匙串打不开密钥文件时，把它改名留着，再生成新的，原来加密的 key 要重新填。钥匙串不可用时拒绝保存 key，不会退回明文。
 
-**不做兼容。** 记忆只支持当前文件契约（插件契约与 SQLite schema 为 8，宿主协议为 2）；旧事实库和旧数值事实 ID 接口已移除，旧库不会迁移或双写。旧版保存的 key 要重新填，`followups.db` 和更早的 JSON 历史也不会带过来。ReMe 对照分支保持独立，当前实现没有接入 ReMe。
+**记忆存储版本。** 插件与 SQLite 契约为 v12。空数据目录会初始化新库。不兼容的记忆库留在磁盘，worker 报告不可用。Viva 升级使用用户自行清理后的数据目录。
 
 ## 6. dsh 与插件
 
@@ -143,7 +145,7 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 | 约定 | 插件做什么 |
 | --- | --- |
-| `memory` | 独立 owner、会话摄取、文件写入/遗忘/检索、daily/dream、上下文注入、请求屏障与原生副本恢复；宿主通道供 Viva 客户端访问 |
+| `memory` | 独立 owner、会话摄取、文件写入/遗忘/检索、daily/dream、有时限的上下文检索；宿主通道供 Viva 客户端访问 |
 | `trace` | 把每轮的工具调用、思考和模型请求记进 `trace.db` |
 | `tasks` | 后台任务的查询工具（`list_background_tasks`、`get_background_task`）和定时的工具（`schedule_create`、`schedule_list`、`schedule_update`、`schedule_delete`）；范围由后端按会话限定（主会话可跨工作目录查询全部后台任务并按可选 `cwd` 过滤，后台任务只能查询自身；定时任务仍限定在当前项目）。开始、停止任务和给任务发话不是工具，由主会话的路由决定交给后端去做（§11.1） |
 | `history` | 让模型查以前的对话 |
@@ -166,14 +168,14 @@ Viva 不改 dsh，只通过插件和配置层定制它。dsh 是后端的子进�
 
 **约定检查。** `APP_PLUGINS` 列出每个插件的名字、目录、约定和配置；插件在 `package.json` 里声明约定，如 `"viva": { "contract": { "memory": 8 } }`。启动前 `resolvePlugins` 检查插件存在、`package.json` 可读、名字一致、约定版本和 dsh 版本完全匹配；不通过的插件不写进 profile，原因显示在「能力」页。过程库记录 `meta.contract_version`。记忆 Node 存储在 owner 打开数据库前检查 SQLite `user_version`，不匹配就拒绝。
 
-**各插件用到的 dsh 接口。** `memory`：会话与 projection、agent/pre-step、原生工具执行与 PTC 事件、用户问题、llm 传输、持久化和 spill 服务；`trace`：agent/turn-stopping、agent/assistant-stream、session/event、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager；`mcp`：ctx.mcpManager（register、list、restart）、mcp-manager/status。可选功能失败可以降级，但记忆 owner 不可用或请求依赖未核验时，受影响的模型请求必须等待恢复或明确失败，不能以“省略记忆”绕过屏障。
+**各插件用到的 dsh 接口。** `memory`：会话事件、agent/pre-step、systemPrompt、tools.register、持久化和独立 DSH 的记忆命令；`trace`：agent/turn-stopping、agent/assistant-stream、session/event、session.eventAt；`stream`（`viva-routing`）：agent/created、agent.ctx.tools.restrict、agent.ctx.plugin（dsh-persona）、tools/pre-execute（在审批之前）、tools.register、agent/pre-step、agent/turn-stopping、agent/status、agent/assistant-stream、session/event、agent/disposed、llm.stream；`plugins`：ctx.pluginManager；`mcp`：ctx.mcpManager（register、list、restart）、mcp-manager/status。记忆 owner 不可用或自动检索超时，模型请求照常继续。
 
 **会话准备。** 新话题先显示空输入框，准备期间可以打字，发送要等准备好。最多提前准备一个独立的空会话，120 秒没用就作废。会话不带自己的 MCP 服务器：用户的服务器由 `viva-mcp` 交给 dsh 的 MCP 管理器，整个 dsh 只连一次、各会话共用（单例服务器也只起一个进程）。连接在后台进行，每次尝试最多 30 秒，失败按退避自动重连；一个服务器卡住或坏掉只会让它自己的工具暂时没有，不会拖住会话的创建，也就不会拖慢 commit_route 交给后台任务。计时：后端设 `VIVA_SESSION_TIMING=1`，页面设 `localStorage.setItem('viva:session-timing', '1')`，只记阶段、耗时和结果，不记提示词和 MCP 配置。
 
 **升级 dsh 时要复查。**
 
 - `viva-routing` 依赖 dsh 的内部事件，不是通用的 ACP 扩展。dsh 固定在 `0.2.2-rc.2`，它的 ACP 适配器只转发完整的块。升级后用真实 dsh 和延迟 SSE 重跑 `test/stream-runtime.test.ts`：第一段文字要先于回答完成到达，取消要保留已提交的部分；再跑 `test/tasks-routing-dsh.test.ts`：第一步组装前已经收窄。流式通道中途失败时，撤回这次调用的临时内容，这次调用以错误结束；ACP 的文字从不直接显示，否则路由步骤的文字会漏出来。
-- 升级 DSH 后检查记忆通道。删除文件后验证全新检索找不到该文件，同时原聊天与已有任务仍可恢复；单独删除聊天时验证被撤回的来源不会进入新请求。
+- 升级 DSH 后检查记忆通道。确认删除的文件不会在新检索中出现，已有聊天仍可恢复，记忆 worker 离线时聊天照常运行。
 
 **几项定下来的取舍。**
 

@@ -1,5 +1,6 @@
 import { createRequestBudget, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
 import path from 'node:path'
+import { emitDiagnosticFailure } from '../diagnostics/node/context.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../memory/contracts/memory-daily-defaults.ts'
 import { isDailyMemoryStage } from '../memory/contracts/memory-contract.ts'
 import { MEMORY_HOST_PROTOCOL } from '../memory/contracts/host.ts'
@@ -12,25 +13,14 @@ import { createRemoteMemoryChannel, MemoryOwnerUnavailable, type MemoryChannelEv
 type Supervisor = ReturnType<typeof createMemoryOwnerSupervisor>
 type SupervisorOptions = Parameters<typeof createMemoryOwnerSupervisor>[0]
 type AdapterLink = { peer: ReturnType<typeof createOwnerRpcPeer>, attached: boolean, reconciledEpoch?: string }
-const CALLBACK_MS = 10_000
 const MODEL_CALLBACK_MS = 130_000
 
-/** Settlement remains legal after a session is fenced. New work carries either
- * a session argument, a request origin, or a native tool identity. */
-function adapterSessions(method: keyof OwnerAdapterApi, args: unknown[]): unknown[] {
-  const first = objectOf(args[0]), second = objectOf(args[1])
+function requestSession(method: string, args: unknown[]) {
   switch (method) {
-    case 'finishNativeOutput': case 'finishNativeToolRead': return []
-    case 'finishNativeSpill': return [args[2]]
-    case 'nativeToolEvidence': return Array.isArray(args[0]) ? args[0].map(call => objectOf(call)?.session) : []
-    case 'sessionView': case 'snapshot': case 'rememberStandaloneFile': case 'forgetStandaloneFile': return [args[0]]
-    case 'modelRequest': return [args[1]]
-    case 'acquireSend': return [second?.session]
-    case 'admitNativeSpillRead': return [objectOf(second?.call)?.session]
-    case 'registerDerived': return [first?.sessionId, first?.senderSessionId]
-    case 'initializeSession': return [first?.sessionId, first?.parentSessionId]
-    case 'prepareContextRecovery': return [first?.sessionId, first?.nativeParentSessionId]
-    default: return [first?.sessionId ?? first?.session ?? objectOf(first?.call)?.session]
+    case 'receiveSource': case 'completeTurn': return objectOf(args[0])?.sessionId
+    case 'sidecarRequest': return objectOf(args[0])?.session
+    case 'bindIntakeSession': case 'intakeWatermark': case 'advanceIntake':
+    case 'rememberStandaloneFile': case 'forgetStandaloneFile': return args[0]
   }
 }
 
@@ -56,8 +46,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     if (adapter) throw new Error('The previous dsh memory channel is still active')
     const waiters = new Set<() => void>()
     const notifyWaiters = () => { for (const wake of waiters) wake() }
-    const grantSignals = new Map<string, AbortSignal>()
-    let grantEpoch: string | undefined
+    const previousAdapter = adapterRelease
     const ready = () => adapter === link && channel.ready() && link.reconciledEpoch === owner?.epoch()
     const peer = createOwnerRpcPeer({ send, onEvent(raw) {
       const event = objectOf(raw)
@@ -66,13 +55,16 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
       const wasReady = ready()
       link.reconciledEpoch = event.ready ? event.epoch : undefined
       if (!wasReady && ready()) { notifyWaiters(); onReady?.() }
-    }, handle(method, input, signal, budgetMs) {
+    }, async handle(method, input, signal, budgetMs) {
       const data = objectOf(input)
       if (method === 'attach') {
         if (!data || data.protocol !== MEMORY_HOST_PROTOCOL || typeof data.root !== 'string'
           || path.resolve(data.root) !== path.resolve(settings.root) || data.hostNamespace !== 'viva') {
           throw new Error('Memory adapter owner binding differs')
         }
+        await previousAdapter
+        signal.throwIfAborted()
+        if (adapter !== link) throw new MemoryOwnerUnavailable()
         link.attached = true
         return channel.state()
       }
@@ -80,30 +72,13 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
         || typeof data?.method !== 'string' || !Array.isArray(data.args) || !data.epoch || data.epoch !== owner.epoch()) {
         throw new MemoryOwnerUnavailable()
       }
-      if (grantEpoch !== data.epoch) {
-        grantEpoch = owner.epoch()
-        grantSignals.clear()
-      }
       const operation = data.method as keyof OwnerAdapterApi
-      let args = data.args
-      // The worker validates the method and its input. Bind foreground work to the
-      // session that issued it. Permit settlement and final audit receipts still drain.
-      const grantId = typeof args[0] === 'string' ? args[0] : ''
-      const fences = adapterSessions(operation, args).map(id => typeof id === 'string' ? foregroundSignal(id) : undefined)
-        .filter((fence): fence is AbortSignal => !!fence)
-      const fence = operation === 'recordSendBody' ? grantSignals.get(grantId) : fences.length > 1 ? AbortSignal.any(fences) : fences[0]
-      if (operation === 'settleSend') grantSignals.delete(grantId)
-      fence?.throwIfAborted()
-      if (operation === 'reconcileActiveTurns' && Array.isArray(args[0])) {
-        args = [args[0].filter(turn => {
-          const id = objectOf(turn)?.sessionId
-          return typeof id !== 'string' || !foregroundSignal(id)?.aborted
-        })]
-      }
-      if (operation === 'acquireSend' && fence) grantSignals.set(grantId, fence)
+      const args = data.args
+      const session = requestSession(operation, args)
+      const lifetime = typeof session === 'string' ? foregroundSignal(session) : undefined
+      lifetime?.throwIfAborted()
       return owner.callAdapter(operation, args as Parameters<OwnerAdapterApi[keyof OwnerAdapterApi]>,
-        { signal: fence ? AbortSignal.any([signal, fence]) : signal, budgetMs, waitForCompletion: data.waitForCompletion === true ? true : undefined })
-        .catch(error => { if (operation === 'acquireSend') grantSignals.delete(grantId); throw error })
+        { signal: lifetime ? AbortSignal.any([signal, lifetime]) : signal, budgetMs })
     } })
     const link: AdapterLink = { peer, attached: false }
     adapter = link
@@ -114,8 +89,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
         notifyWaiters()
         if (!closing) await owner?.adapterExited()
       }
-    })
-    void adapterRelease.catch(() => {})
+    }).catch(error => emitDiagnosticFailure('memory.owner', error, { stage: 'recovering' }))
     return {
       receive: peer.receive,
       ready,
@@ -134,12 +108,7 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
           }))
         } finally { waiters.delete(wake); budget.close() }
       },
-      recoverContext(session: string) {
-        if (!ready()) throw new MemoryOwnerUnavailable()
-        const epoch = link.reconciledEpoch
-        return peer.call<boolean>('recoverContext', { epoch, session }, { budgetMs: CALLBACK_MS, signal: foregroundSignal(session) })
-          .then(value => ready() && link.reconciledEpoch === epoch && value)
-      },
+
     }
   }
 
@@ -157,14 +126,6 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
     callbacks: {
       compute: (input, signal) => adapterCall<string>('compute', input, signal,
         isDailyMemoryStage(input.job.stage) ? DAILY_MEMORY_DEFAULTS.backgroundTimeoutMs : MODEL_CALLBACK_MS),
-      quiesce: async (input, signal) => { if (adapter?.attached) await adapterCall('quiesce', input, signal, CALLBACK_MS) },
-      checkRecovery: (input, signal) => adapterCall<boolean>('checkRecovery', input, signal, CALLBACK_MS),
-      async drainSends(input) {
-        const link = adapter
-        if (!link?.attached) return
-        try { await link.peer.call('drainSends', input, { budgetMs: CALLBACK_MS }) }
-        catch (error) { if (adapter === link) throw error }
-      },
     },
   })
 
@@ -181,18 +142,10 @@ export function createDesktopMemoryOwner(settings: Pick<SupervisorOptions, 'root
   return {
     channel, bindDsh,
     pid: () => owner?.pid() ?? null,
-    async prepare(coldMaintenance: () => Promise<void>) {
+    async prepare() {
       if (closing) throw new MemoryOwnerUnavailable()
-      await adapterRelease.catch(() => release())
-      if (owner) {
-        await owner.start()
-        if (!await owner.nativeMaintenancePending()) return
-        await release()
-      }
-      await coldMaintenance()
-      if (closing) throw new MemoryOwnerUnavailable()
-      owner = create()
-      await owner.start()
+      owner ??= create()
+      void owner.start().catch(error => emitDiagnosticFailure('memory.owner', error, { stage: 'unavailable' }))
     },
     close() {
       closing = true
