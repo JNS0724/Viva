@@ -16,7 +16,7 @@ export type PrefetchStartInput = {
 
 export type ClaimPrefetchResult =
   | { found: false }
-  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number }
+  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean }
 
 type PrefetchEntry = {
   key: string
@@ -309,13 +309,13 @@ export function createMemoryPrefetchManager({
         return { claim: { found: true, result: entry.result }, entry }
       }
       if (entry.result?.status === 'hit' && !entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision }, entry }
+        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
       }
       // Stale hit: allow at most one re-query within remaining original budget.
       const remaining = entry.deadlineAt - now()
       if (remaining > 0 && !entry.requeried) {
         const retried = await runRequeryOnce(entry, remaining, signal)
-        return { claim: { found: true, ...retried }, entry }
+        return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
       }
       return { claim: { found: true, result: { status: 'timeout' } }, entry }
     }
@@ -351,14 +351,14 @@ export function createMemoryPrefetchManager({
       if (entry.result.status !== 'hit') return { claim: { found: true, result: entry.result }, entry }
       // Claim-side double-point invalidation check.
       if (!entry.stale && versionCurrent(entry.ownerEpoch, entry.revision)) {
-        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision }, entry }
+        return { claim: { found: true, result: entry.result, epoch: entry.ownerEpoch, revision: entry.revision, deadlineAt: entry.deadlineAt, retried: entry.requeried }, entry }
       }
     }
     // Invalidated while pending: allow at most one re-query within remaining original budget.
     const afterWaitRemaining = entry.deadlineAt - now()
     if (entry.stale && afterWaitRemaining > 0 && !entry.requeried && !signal?.aborted) {
       const retried = await runRequeryOnce(entry, afterWaitRemaining, signal)
-      return { claim: { found: true, ...retried }, entry }
+      return { claim: { found: true, ...retried, deadlineAt: entry.deadlineAt, retried: true }, entry }
     }
     return { claim: { found: true, result: { status: 'timeout' } }, entry }
   }

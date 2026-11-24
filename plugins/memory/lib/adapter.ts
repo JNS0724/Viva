@@ -227,11 +227,14 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   ): Promise<Array<{ msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult }>> {
     const remaining = () => Math.max(0, stepDeadlineAt - Date.now())
     const items = messages.map(msg => ({ msg, requestId: extractCorrelationRequestId(msg.text) }))
-    type ResolvedItem = { msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult, epoch?: string, revision?: number }
+    type ResolvedItem = {
+      msg: { id: string, text: string }, requestId: string | undefined, result: AutomaticRecallResult,
+      epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean,
+    }
 
     // Resolve every message concurrently: each message with a correlation ID claims independently so a
     // missing claim starts live fallback immediately without waiting for slow sibling prefetches.
-    const resolved = await Promise.all(items.map(async (item): Promise<ResolvedItem> => {
+    const initial = await Promise.all(items.map(async (item): Promise<ResolvedItem> => {
       const { msg, requestId } = item
       if (requestId && (connection.claimPrefetch || connection.claimPrefetchBatch)) {
         const left = remaining()
@@ -241,7 +244,11 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
             ? await connection.claimPrefetch({ requestId, sessionId }, { signal, budgetMs: left })
             : (await connection.claimPrefetchBatch!({ requestIds: [requestId], sessionId }, { signal, budgetMs: left }))[0]
           if (claim?.found) {
-            return { msg, requestId, result: claim.result, epoch: claim.epoch, revision: claim.revision }
+            return {
+              msg, requestId, result: claim.result,
+              epoch: claim.epoch, revision: claim.revision,
+              deadlineAt: claim.deadlineAt, retried: claim.retried,
+            }
           }
         } catch (error) {
           const fallbackStatus: AutomaticRecallResult = signal.aborted
@@ -254,10 +261,29 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       return resolveFallbackRecall(sessionId, cwd, turn, msg, requestId, stepDeadlineAt, signal)
     }))
 
-    // Final adoption-time version guard across all messages in the step, preserving original [A, B, ...] order.
+    // If a hit was invalidated while siblings settled, allow at most one bounded refresh within its original deadline.
+    const checkEpoch = owner.epoch
+    const checkRevision = currentRevision
+    const refreshed = await Promise.all(initial.map(async (item): Promise<ResolvedItem> => {
+      if (item.result.status !== 'hit') return item
+      if (!available()) return { ...item, result: { status: 'unavailable' } }
+      const epochStale = item.epoch !== undefined && checkEpoch !== undefined && item.epoch !== checkEpoch
+      const revStale = item.revision !== undefined && checkRevision !== undefined && item.revision !== checkRevision
+      if (!epochStale && !revStale) return item
+      if (!item.retried && !signal.aborted) {
+        const refreshDeadline = item.deadlineAt !== undefined ? Math.min(stepDeadlineAt, item.deadlineAt) : stepDeadlineAt
+        if (refreshDeadline - Date.now() > 0) {
+          const retryResult = await resolveFallbackRecall(sessionId, cwd, turn, item.msg, item.requestId, refreshDeadline, signal)
+          return { ...retryResult, deadlineAt: refreshDeadline, retried: true }
+        }
+      }
+      return { ...item, result: { status: 'timeout' } }
+    }))
+
+    // Final synchronous adoption-time version guard across all messages in the step, preserving original [A, B, ...] order.
     const liveEpoch = owner.epoch
     const liveRevision = currentRevision
-    return resolved.map(({ msg, requestId, result, epoch, revision }) => {
+    return refreshed.map(({ msg, requestId, result, epoch, revision }) => {
       if (result.status === 'hit') {
         if (!available()) return { msg, requestId, result: { status: 'unavailable' as const } }
         if (epoch !== undefined && liveEpoch !== undefined && epoch !== liveEpoch) {

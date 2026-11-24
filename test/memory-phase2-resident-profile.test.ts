@@ -39,6 +39,7 @@ const TODAY_MS = Date.parse('2026-11-16T10:00:00.000Z')
 function dreamHarness(t: TestContext, options: {
   initialNow?: number
   dreamUnits?: number
+  eligible?: (source: { id: string }) => boolean
   readPhysicalOverride?: (
     defaultRead: (workspace: string, filePath: string, signal?: AbortSignal) => Promise<{ path: string, revision: string, markdown: string } | null>,
     workspace: string,
@@ -92,7 +93,7 @@ function dreamHarness(t: TestContext, options: {
       now: () => clock,
       settings: { timezone: 'UTC', dreamUnits: options.dreamUnits ?? 6 },
       readable,
-      eligible: () => true,
+      eligible: src => options.eligible ? options.eligible(src) : true,
       source: id => store.readSource(id) ?? undefined,
       reference: id => ({ namespace: 'canonical', sourceId: id, revision: 1 }),
       transaction: write => store.tx(write),
@@ -1503,30 +1504,55 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
   assert.equal(owner.runtime.profileDeletionGeneration(), 1)
   assert.equal(Number(store.meta('profile_deleted_at')), TODAY_MS + 5_000)
 
-  // User answers the pre-deletion question AFTER deletion (so answer gets a newer seq > deletedSeq and at > watermark, with NO context deps!)
+  // User answers three questions AFTER deletion (all get seq > deletedSeq and at > watermark, with questionCurrent: true & empty deps!):
+  // 1) old generation (gen=0 < 1, questionAt > watermark due to rollback) -> MUST BE BLOCKED
+  // 2) missing generation (gen=undefined, questionAt > watermark due to rollback) -> MUST BE BLOCKED (fail closed)
+  // 3) current generation (gen=1 >= 1) -> MUST BE ALLOWED
   clock = TODAY_MS + 6_000
-  const answerId = randomUUID()
+  const oldGenId = randomUUID()
+  const missingGenId = randomUUID()
+  const currentGenId = randomUUID()
   owner.runtime.accept(
-    '我习惯用简洁要点回复',
+    '旧代回答：我喜欢要点回复',
     { conversation: session, session, scope: { kind: 'user' }, context: { kind: 'user' } },
-    answerId,
-    { question: '机密旧问题：关于已删除画像的敏感偏好', requestId: 'req-q1', questionId: 'q1', custom: true, questionAt: preDeleteAskedAt, questionProfileGen: preDeleteGen },
+    oldGenId,
+    { question: '机密旧问题（gen=0）', requestId: 'req-q1', questionId: 'q1', custom: true, questionAt: preDeleteAskedAt, questionProfileGen: preDeleteGen },
     { deferAutomatic: true, at: clock, timezone: 'UTC' },
   )
-  const answerRow = store.readSource(answerId)!
-  assert.equal(answerRow.questionProfileGen, 0)
+  owner.runtime.accept(
+    '缺失代回答：我也喜欢中文回复',
+    { conversation: session, session, scope: { kind: 'user' }, context: { kind: 'user' } },
+    missingGenId,
+    { question: '机密旧问题（gen缺失）', requestId: 'req-q2', questionId: 'q2', custom: true, questionAt: preDeleteAskedAt },
+    { deferAutomatic: true, at: clock + 1, timezone: 'UTC' },
+  )
+  owner.runtime.accept(
+    '当前代回答：请用简洁专业口吻',
+    { conversation: session, session, scope: { kind: 'user' }, context: { kind: 'user' } },
+    currentGenId,
+    { question: '删除后的新问题（gen=1）', requestId: 'req-q3', questionId: 'q3', custom: true, questionAt: clock + 2, questionProfileGen: 1 },
+    { deferAutomatic: true, at: clock + 2, timezone: 'UTC' },
+  )
+  const oldGenRow = store.readSource(oldGenId)!
+  const missingGenRow = store.readSource(missingGenId)!
+  const currentGenRow = store.readSource(currentGenId)!
+  assert.equal(oldGenRow.questionProfileGen, 0)
+  assert.equal(missingGenRow.questionProfileGen, null)
+  assert.equal(currentGenRow.questionProfileGen, 1)
 
   const notes = openMemoryNotes(store, () => true)
-  const noteKey = notes.add(session, '2026-11-16', [answerRow], '好的', answerId)!
+  const noteKey = notes.add(
+    session, '2026-11-16', [oldGenRow, missingGenRow, currentGenRow], '好的', oldGenId, [], '好的',
+    { questionSources: [], questionCurrent: true },
+  )!
   const rows = notes.pending(noteKey, 10)
-  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Answer Note', markdown: '我习惯用简洁要点回复' }, 1, clock, notes.snapshot([answerId]), undefined), true)
-  const effects = createEffects({ db: store.db, now: () => clock })
+  assert.equal(notes.commit(noteKey, rows, { status: 'write', title: 'Answer Note', markdown: '回答汇总' }, 1, clock + 2, notes.snapshot([oldGenId, missingGenId, currentGenId]), undefined), true)
+  const effects = createEffects({ db: store.db, now: () => clock + 2 })
   defer(() => effects.close())
 
-  let sawQuestion: string | null = 'UNSET'
-  let sawUnavailable = false
+  const seen = new Map<string, { question: string | null, questionUnavailable: boolean }>()
   const jobs = createMemoryDreamJobs({
-    store, notes, documents, effects, now: () => clock, transaction: store.tx,
+    store, notes, documents, effects, now: () => clock + 2, transaction: store.tx,
     identity: { newId: randomUUID, hash: memoryHash },
     readable: () => true, eligible: () => true,
     source: id => store.readSource(id) ?? undefined,
@@ -1535,9 +1561,9 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
     async calculate(request) {
       if (request.system === DREAM_PROFILE_SYSTEM) {
         const payload = request.input as { canonicalSources: Array<{ sourceId: string, question: string | null, questionUnavailable: boolean }> }
-        const entry = payload.canonicalSources.find(item => item.sourceId === answerId)!
-        sawQuestion = entry.question
-        sawUnavailable = entry.questionUnavailable
+        for (const entry of payload.canonicalSources) {
+          seen.set(entry.sourceId, { question: entry.question, questionUnavailable: entry.questionUnavailable })
+        }
         return JSON.stringify({ action: 'NOOP' })
       }
       return JSON.stringify({ operations: [] })
@@ -1545,11 +1571,12 @@ test('pre-deletion question with clock rollback is blocked by profile_deletion_g
   })
   jobs.run()
   await effects.wake()
-  assert.equal(sawQuestion, null, 'pre-deletion question must NOT reach profile planner even after clock rollback')
-  assert.equal(sawUnavailable, true)
+  assert.deepEqual(seen.get(oldGenId), { question: null, questionUnavailable: true }, 'old generation (0 < 1) must be blocked even with questionCurrent:true and clock rollback')
+  assert.deepEqual(seen.get(missingGenId), { question: null, questionUnavailable: true }, 'missing generation must fail closed after deletion even when questionAt > watermark')
+  assert.deepEqual(seen.get(currentGenId), { question: '删除后的新问题（gen=1）', questionUnavailable: false }, 'current generation (1 >= 1) with questionCurrent:true must reach profile planner')
 })
 
-test('repeated Dream REFINE preserves multi-paragraph confirmed section and link defs verbatim near 800-char limit (R3 P1-3)', () => {
+test('repeated Dream REFINE preserves multi-paragraph confirmed section, link defs, and wikilink subheadings verbatim near 800-char limit (R3 P1-3, R4 P1-3)', () => {
   const confirmedParagraphs = `${'A'.repeat(780)}\n\nEND`
   const initial = `## 用户确认\n${confirmedParagraphs}\n\n## 自动整理\n- 旧整理`
   let current = initial
@@ -1564,9 +1591,19 @@ test('repeated Dream REFINE preserves multi-paragraph confirmed section and link
   const withRefLink = '## 用户确认\n[Example][my-link]\n\n[my-link]: https://example.org\n\n## 自动整理\n- old'
   const refined = assembleDreamProfileBody({ existingBody: withRefLink, autoSummaryBody: '- new', action: 'REFINE' })
   assert.equal(parseProfileSections(refined).confirmedLines.join('\n'), '[Example][my-link]\n\n[my-link]: https://example.org')
+
+  // R4 P1-3: subheading with wikilink inside ## 用户确认 must NOT be misclassified as reserved ## 自动整理!
+  const withWikilinkSubheading = '## 用户确认\n### 自动整理 [[digest/wiki/guide.md]]\n保留的确认段落，绝不能在 REFINE 中丢失。\n\n## 自动整理\n- 旧整理'
+  const refinedSub = assembleDreamProfileBody({ existingBody: withWikilinkSubheading, autoSummaryBody: '- 新整理', action: 'REFINE' })
+  assert.equal(
+    parseProfileSections(refinedSub).confirmedLines.join('\n'),
+    '### 自动整理 [[digest/wiki/guide.md]]\n保留的确认段落，绝不能在 REFINE 中丢失。',
+    'wikilink subheading and paragraph under ## 用户确认 must survive REFINE intact',
+  )
+  assert.ok(refinedSub.includes('保留的确认段落，绝不能在 REFINE 中丢失。'))
 })
 
-test('mixed Dream plan does not discard independent digest with inline-code profile example inside a Markdown table (R3 P2-1)', async t => {
+test('mixed Dream plan does not discard independent digest with inline-code profile example inside a Markdown table, and strips YAML-shaped body referencing stripped profile draft (R3 P2-1, R4 P2-1)', async t => {
   const h = dreamHarness(t, { initialNow: TODAY_MS })
   const d1 = h.addDailyNote([{ text: '表格示例说明与个人习惯' }], { session: 's-r3-p2-1' })
   h.setModel(async request => {
@@ -1585,6 +1622,15 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
         },
         {
           action: 'CREATE',
+          path: 'digest/wiki/yaml-dependent.md',
+          name: 'Yaml Dependent',
+          description: 'Dependent digest with leading --- block referencing stripped profile draft',
+          body: '---\nrelated: "[[digest/personal/profile.MD]]"\n---\n依赖被剔除画像草案的正文',
+          dailyPaths: [d1.path],
+          sourceIds: [d1.sources[0]!.id],
+        },
+        {
+          action: 'CREATE',
           path: 'digest/wiki/table-guide.md',
           name: 'Table Guide',
           description: 'Independent digest mentioning profile path inside inline code in a table',
@@ -1598,6 +1644,71 @@ test('mixed Dream plan does not discard independent digest with inline-code prof
   await h.run()
 
   assert.equal(h.documents.read(d1.workspace, RESIDENT_PROFILE_PATH), null)
+  assert.equal(h.documents.read(d1.workspace, 'digest/wiki/yaml-dependent.md'), null, 'dependent digest with leading --- YAML-shaped block linking stripped profile draft must be stripped')
   const guide = h.documents.read(d1.workspace, 'digest/wiki/table-guide.md')
   assert.ok(guide, 'independent digest with inline-code wikilink inside Markdown table must NOT be stripped')
+})
+
+test('out-of-batch observed source becoming ineligible blocks digest commit, and NOOP checkpoint rejects observed note mutating during checkpoint load (R4 P1-2)', async t => {
+  // Part A: out-of-batch observed daily note source becomes ineligible during profile pass -> digest must NOT commit!
+  const ineligibleSources = new Set<string>()
+  const hA = dreamHarness(t, { initialNow: TODAY_MS, eligible: src => !ineligibleSources.has(src.id) })
+  const d0A = hA.addDailyNote([{ text: '历史背景：北京机房配置' }], { session: 's-r4-a0', day: '2026-11-15' })
+  hA.notes.markProcessed(d0A.key, d0A.note.revision)
+  const d1A = hA.addDailyNote([{ text: '基于背景做决策，我偏好蓝色主题' }], { session: 's-r4-a1', day: '2026-11-16' })
+  hA.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      // Session of out-of-batch note d0A starts a foreground turn -> d0A's source becomes ineligible!
+      ineligibleSources.add(d0A.sources[0]!.id)
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0', name: 'read', input: { path: d0A.path } })
+    assert.equal(readRes.state, 'completed')
+    assert.match(readRes.content, /北京机房配置/)
+    return JSON.stringify({
+      operations: [{
+        action: 'CREATE',
+        path: 'digest/wiki/beijing-ops.md',
+        name: 'Beijing Ops',
+        description: 'Derived from d0A',
+        body: '北京机房运维记录',
+        dailyPaths: [d1A.path],
+        sourceIds: [d1A.sources[0]!.id],
+      }],
+    })
+  })
+  await hA.run()
+  assert.equal(hA.documents.read(d0A.workspace, 'digest/wiki/beijing-ops.md'), null, 'digest must NOT commit when out-of-batch observed source became ineligible')
+  assert.equal(hA.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'd1A checkpoint must NOT advance when observed source became ineligible')
+
+  // Part B: NOOP consolidate reads d0B, and d0B mutates DURING the final checkpoint load -> checkpoint must NOT advance!
+  let mutateDuringNextLoad = false
+  let d0BAbsPath = ''
+  const hB = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      if (mutateDuringNextLoad && d0BAbsPath) {
+        mutateDuringNextLoad = false
+        fs.writeFileSync(d0BAbsPath, `${fs.readFileSync(d0BAbsPath, 'utf8')}\n<!-- mutated during final checkpoint load -->`)
+      }
+      return defaultRead(workspace, filePath, signal)
+    },
+  })
+  const d0B = hB.addDailyNote([{ text: '旧日记：广州机房配置' }], { session: 's-r4-b0', day: '2026-11-15' })
+  d0BAbsPath = path.join(hB.store.fileRoot, d0B.workspace, d0B.path)
+  hB.notes.markProcessed(d0B.key, d0B.note.revision)
+  const d1B = hB.addDailyNote([{ text: '今天一切正常，无需新建摘要' }], { session: 's-r4-b1', day: '2026-11-16' })
+  hB.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      // Arm mutation right before checkpointTargets calls loadFiles!
+      mutateDuringNextLoad = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-d0b', name: 'read', input: { path: d0B.path } })
+    assert.equal(readRes.state, 'completed')
+    assert.match(readRes.content, /广州机房配置/)
+    return JSON.stringify({ operations: [] })
+  })
+  await hB.run()
+  assert.equal(hB.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'NOOP must NOT advance d1B checkpoint when observed d0B mutated during final checkpoint load')
 })

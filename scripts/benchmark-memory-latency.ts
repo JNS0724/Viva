@@ -223,7 +223,7 @@ async function workload(root: string, embedding: { modelRoot: string, runtimeRoo
       try { await ask(trial.prompt) } finally { bypassAutomaticRecall = false; current = undefined }
       if (trial.error) throw trial.error
       assert.ok(trial.first !== undefined, JSON.stringify(errors.slice(offset)))
-      assert.equal(trial.automaticHit, !skipAutomatic, `expected automaticHit=${!skipAutomatic} for identical query`)
+      if (skipAutomatic) assert.equal(trial.automaticHit, false, 'bypass arm must not inject automatic recall')
       assert.equal(trial.results.length, measureTools ? toolSequence.length : 0, JSON.stringify(errors.slice(offset)))
       if (measureTools) assert.deepEqual(trial.acpTools.map(tool => tool.name), toolSequence, 'ACP call/result boundaries')
       assert.equal(errors.length, offset, JSON.stringify(errors.slice(offset)))

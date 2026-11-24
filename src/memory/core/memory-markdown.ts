@@ -292,6 +292,8 @@ function extractInlineVisibleText(tokens: readonly Token[] | undefined): string 
       out += decodeHtmlEntities(tok.raw.replace(/<[^>]*>/gu, ''))
     } else if (tok.type === 'br') {
       out += ' '
+    } else if (tok.type === 'memory_wikilink') {
+      out += tok.raw
     } else if ('tokens' in tok && Array.isArray(tok.tokens) && tok.tokens.length > 0) {
       out += extractInlineVisibleText(tok.tokens)
     } else if ('text' in tok && typeof tok.text === 'string') {

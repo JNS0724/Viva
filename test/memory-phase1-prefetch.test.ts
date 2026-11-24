@@ -10,7 +10,10 @@ import { leadingTaskRequestId, taskRequestsIn, withoutTaskHeaders, withTaskReque
 import { openPluginOwner } from '../plugins/memory/lib/standalone-owner.ts'
 import { applyMemoryAdapter } from '../plugins/memory/lib/adapter.ts'
 import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { boot } from '@deepseek-ai/dsh-app-boot'
+import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { writeFileSync } from 'node:fs'
 import { withRequestSource } from '../src/shared/request-routing/header.ts'
 import { MEMORY_OWNER_RPC, ownerRpcFrame } from '../src/memory/contracts/owner-rpc.ts'
 import type { AutomaticRecallResult } from '../src/memory/contracts/memory-contract.ts'
@@ -761,4 +764,246 @@ test('multi-steer starts live fallback immediately for missing-ID sibling while 
   }, async () => ({ kind: 'enter', messages: [] }))
   await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(contextUsedReports.length, 1, 'committed turn with continuation step must emit reportContextUsed exactly once')
+})
+
+test('multi-steer refreshes hit A once within its original deadline if revision changes while sibling B is pending (R4 P2-4)', async t => {
+  const { dir } = scratch(t, 'memory-r4-adapter-refresh-')
+  const root = path.join(dir, 'memory')
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+
+  const reqA = randomUUID()
+  const reqB = randomUUID()
+  const slowClaimB = deferred<{ found: boolean, result?: AutomaticRecallResult, epoch?: string, revision?: number }>()
+  let refreshCount = 0
+
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', {
+          type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+          result: { state: ownerState('e-ref', 1) },
+        })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      const input = frame.input as { requestId: string, sessionId: string }
+      if (input.requestId === reqA) {
+        // Hit A arrives immediately at revision 1 with 115ms remaining on its original deadline
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: {
+              found: true, epoch: 'e-ref', revision: 1, deadlineAt: Date.now() + 115, retried: false,
+              result: { status: 'hit', text: 'OLD_REV1_A', partial: false, hits: [{ text: 'OLD_REV1_A', names: ['a'] }] },
+            },
+          })
+        })
+      } else {
+        void slowClaimB.promise.then(res => {
+          port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: res })
+        })
+      }
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method } = frame.input as { method: string }
+      if (method === 'automaticRecall') {
+        refreshCount++
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: { status: 'hit', text: 'FRESH_REV2_A', partial: false, hits: [{ text: 'FRESH_REV2_A', names: ['a2'] }] },
+          })
+        })
+        return true
+      }
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { nextSeq: 0, createdAt: 0 } })
+      })
+    }
+    return true
+  }
+
+  const ctx = new Context()
+  const preStepHandlers: Array<(payload: any, next: () => Promise<any>) => Promise<any>> = []
+  const fakeCtx = Object.assign(ctx, {
+    agents: { list: () => [] },
+    sessions: { list: () => [], flush: async () => true, get: () => undefined },
+    tools: { register: () => () => {} },
+    llm: { stream: async function* () {} },
+    on(event: string, listener: (...args: any[]) => any) {
+      if (event === 'agent/pre-step') preStepHandlers.push(listener)
+      return () => {}
+    },
+    inject() { return () => {} },
+    effect() { return () => {} },
+  })
+
+  const owner = applyMemoryAdapter(fakeCtx as unknown as Context, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(owner.ready(), true)
+
+  const msgA = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 A', reqA, '问题 A').text }], source: { kind: 'user' } })
+  const msgB = createUserMessage({ content: [{ type: 'text', text: withRequestSource('问题 B', reqB, '问题 B').text }], source: { kind: 'user' } })
+  const fakeSession = { id: 'sess-ref', header: { cwd: dir }, seq: 0, inheritedEventCount: 0, snapshotEvents: () => [] }
+  const preStep = preStepHandlers[0]!
+
+  const decisionPromise = preStep({
+    agent: { session: fakeSession },
+    turn: 1,
+    signal: new AbortController().signal,
+    modelSelection: { provider: 'test', model: 'm' },
+  }, async () => ({ kind: 'enter', messages: [msgA, msgB] }))
+
+  // Let A settle at rev 1 while B is still pending, then bump revision to 2 before B resolves!
+  await new Promise(resolve => setTimeout(resolve, 15))
+  port.emit('message', {
+    type: MEMORY_OWNER_RPC, kind: 'event',
+    event: { type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: 'e-ref', revision: 2 },
+  })
+  slowClaimB.resolve({
+    found: true, epoch: 'e-ref', revision: 2,
+    result: { status: 'hit', text: 'REV2_B', partial: false, hits: [{ text: 'REV2_B', names: ['b'] }] },
+  })
+
+  const decision = await decisionPromise
+  assert.equal(refreshCount, 1, 'stale hit A must refresh once within its remaining original deadline')
+  const appendedRecall = decision.messages.slice(2)
+  assert.equal(appendedRecall.length, 2)
+  assert.match(appendedRecall[0].content[0].text, /FRESH_REV2_A/, 'refreshed hit A must carry rev 2 evidence')
+  assert.match(appendedRecall[1].content[0].text, /REV2_B/)
+})
+
+test('real DSH agent-loop emits 0 memory_context receipts on prepareRequest failure and post-pre-step cancel before commit, and 1 on committed turn (R4 P2-7)', async t => {
+  const { dir } = scratch(t, 'memory-r4-dsh-prepare-receipt-')
+  const config = path.join(dir, 'cordis.yml')
+  const root = path.join(dir, 'memory')
+  writeFileSync(config, JSON.stringify([
+    'dsh-session', 'dsh-session-projection', 'dsh-agent', 'dsh-agent-loop', 'dsh-tool-executor-native', 'dsh-llm', 'dsh-system-prompt', 'dsh-tools', 'dsh-user-questions',
+  ].map(name => ({ id: name, name: '@deepseek-ai/' + name }))))
+
+  const ctx = await boot('memory-r4-receipt-test', config, [], undefined, new URL('../package.json', import.meta.url).href)
+  t.after(async () => { await ctx.fiber.dispose() })
+
+  const port = new EventEmitter() as EventEmitter & { connected: boolean, send: (frame: unknown, cb?: () => void) => boolean }
+  port.connected = true
+  const contextUsedReports: unknown[] = []
+  port.send = (raw, cb) => {
+    cb?.()
+    const frame = ownerRpcFrame(raw)
+    if (!frame || frame.kind !== 'request') return true
+    if (frame.method === 'attach') {
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { state: ownerState('e-dsh', 1) } })
+      })
+      return true
+    }
+    if (frame.method === 'claimPrefetch') {
+      queueMicrotask(() => {
+        port.emit('message', {
+          type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+          result: {
+            found: true, epoch: 'e-dsh', revision: 1,
+            result: { status: 'hit', text: 'DSH_EVIDENCE', partial: false, hits: [{ text: 'DSH_EVIDENCE', names: ['e'] }] },
+          },
+        })
+      })
+      return true
+    }
+    if (frame.method === 'adapter') {
+      const { method, args } = frame.input as { method: string, args: unknown[] }
+      if (method === 'reportContextUsed') {
+        contextUsedReports.push(args[0])
+        queueMicrotask(() => { port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: undefined }) })
+        return true
+      }
+      if (method === 'automaticRecall') {
+        queueMicrotask(() => {
+          port.emit('message', {
+            type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true,
+            result: { status: 'hit', text: 'DSH_EVIDENCE', partial: false, hits: [{ text: 'DSH_EVIDENCE', names: ['e'] }] },
+          })
+        })
+        return true
+      }
+      queueMicrotask(() => {
+        port.emit('message', { type: MEMORY_OWNER_RPC, kind: 'result', id: frame.id, ok: true, result: { nextSeq: 0, createdAt: 0 } })
+      })
+    }
+    return true
+  }
+
+  let prepareMode: 'fail' | 'cancel' | 'ok' = 'fail'
+  let prepareCalls = 0
+  let cancelCurrentAgent: (() => void) | undefined
+  class TestPrepareAdapter extends LlmAdapter {
+    override async prepareCall(provider: string, model: string, signal?: AbortSignal) {
+      prepareCalls++
+      if (prepareMode === 'fail') throw new Error('simulated prepareRequest failure after pre-step')
+      if (prepareMode === 'cancel') {
+        cancelCurrentAgent?.()
+        await new Promise(resolve => setTimeout(resolve, 10))
+        signal?.throwIfAborted()
+      }
+      return super.prepareCall(provider, model, signal)
+    }
+    override async *stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'committed reply' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'committed reply' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  ctx.llm.registerAdapter(['mock'], new TestPrepareAdapter())
+
+  const owner = applyMemoryAdapter(ctx, { host: true, dataRoot: root }, port as unknown as NodeJS.Process)
+  t.after(async () => { await owner.close() })
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(owner.ready(), true)
+
+  const handle = await ctx.agents.create({
+    sessionId: SessionId(randomUUID()),
+    agentOptions: { provider: 'mock', model: 'test-model' },
+  })
+  t.after(async () => { await handle.dispose() })
+  cancelCurrentAgent = () => { void handle.agent.cancel({ kind: 'user' }) }
+
+  const runTurn = async (text: string) => {
+    const done = deferred<void>()
+    const off = ctx.on('session/event', (session, event) => {
+      if (session.id === handle.agent.session.id && event.type === 'turn/end') {
+        off()
+        done.resolve()
+      }
+    })
+    handle.agent.send(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), 'next-turn', true)
+    await done.promise
+  }
+
+  // Turn 1: real pre-step injects <memory-recall>, then real prepareRequest throws BEFORE user/message commit -> 0 receipts!
+  prepareMode = 'fail'
+  await runTurn('第一次查询触发 prepareRequest 失败')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(prepareCalls, 1, 'real dsh-agent-loop must reach prepareCall right after pre-step')
+  assert.equal(contextUsedReports.length, 0, 'real prepareRequest failure after pre-step must emit 0 memory_context receipts')
+
+  // Turn 2: real pre-step injects <memory-recall>, then real agent.cancel() fires during prepareCall BEFORE commit -> 0 receipts!
+  prepareMode = 'cancel'
+  await runTurn('第二次查询在 pre-step 后取消')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(prepareCalls, 2)
+  assert.equal(contextUsedReports.length, 0, 'real post-pre-step cancellation before commit must emit 0 memory_context receipts')
+
+  // Turn 3: real committed turn -> EXACTLY 1 receipt!
+  prepareMode = 'ok'
+  await runTurn('第三次查询正常提交')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(prepareCalls, 3)
+  assert.equal(contextUsedReports.length, 1, 'real committed turn must emit exactly 1 memory_context receipt')
 })

@@ -75,13 +75,14 @@ type PersistedOperation = {
   files: Array<{ path: string, revision: string }>
   questionSourceIds?: string[]
 }
-type ObservedNoteRef = { key: string, path: string, revision: string, checkpoint: number }
+type ObservedReadRef = { id: string, revision: string, usageVersion: number, sources?: DocumentSourceRef[] }
+type ObservedNoteRef = { key: string, path: string, revision: string, checkpoint: number, sources: DocumentSourceRef[] }
 type PersistedBatch = {
   workspace: string
   fileRefs: FileRef[]
   operations: PersistedOperation[]
   checkpointPaths: string[]
-  observedReads?: Array<{ id: string, revision: string, usageVersion: number }>
+  observedReads?: ObservedReadRef[]
   observedNotes?: ObservedNoteRef[]
   oversized?: boolean
 }
@@ -89,6 +90,8 @@ type DeferredCheckpoint = {
   workspace: string
   file: FileRef
   operationIds: string[]
+  observedReads?: ObservedReadRef[]
+  observedNotes?: ObservedNoteRef[]
   oversized?: boolean
 }
 type JobPayload = {
@@ -150,6 +153,8 @@ function deferredCheckpointsOf(payload: unknown): DeferredCheckpoint[] {
     return typeof entry.workspace === 'string'
       && Boolean(entry.file && typeof entry.file === 'object' && typeof entry.file.key === 'string')
       && Array.isArray(entry.operationIds)
+      && (entry.observedReads === undefined || Array.isArray(entry.observedReads))
+      && (entry.observedNotes === undefined || Array.isArray(entry.observedNotes))
       && (entry.oversized === undefined || typeof entry.oversized === 'boolean')
   })
 }
@@ -380,11 +385,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
   ): boolean => {
     if (!item.question) return true
     if (watermark === null && delGen === 0) return true
-    if (typeof item.questionProfileGen === 'number') {
-      if (item.questionProfileGen < delGen) return false
-      return true
+    // Once a profile deletion has occurred, require a recorded generation >= current deletion generation.
+    // Missing generation fails closed instead of falling back to mutable wall-clock time.
+    if (delGen > 0) {
+      return typeof item.questionProfileGen === 'number' && item.questionProfileGen >= delGen
     }
-    // No recorded deletion generation at ask time: fall back strictly to questionAt > watermark (fail closed).
     return watermark !== null && typeof item.questionAt === 'number' && item.questionAt > watermark
   }
   const profileSourcesAllowedByWatermark = (
@@ -664,11 +669,80 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       return fileCurrent(file) ? 'current' : 'stale'
     }
 
+    const classifyObservedRefs = (
+      workspace: string,
+      observedReads: readonly ObservedReadRef[] | undefined,
+      observedNotes: readonly ObservedNoteRef[] | undefined,
+      batch?: MemoryDocumentReadBatch,
+    ): 'current' | 'wait' | 'unverifiable' | 'stale' => {
+      let hasUnverifiable = false
+      let hasWait = false
+      if (observedReads?.length) {
+        const regById = new Map(documents.fileRegistry(workspace).map(row => [row.id, row]))
+        for (const ref of observedReads) {
+          const row = regById.get(ref.id)
+          if (!row || row.state !== 'active' || row.revision !== ref.revision || row.usageVersion !== ref.usageVersion) {
+            return 'stale'
+          }
+          if (ref.sources) {
+            if (!refsCurrent(ref.sources)) return 'stale'
+            if (ref.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
+          }
+          if (batch) {
+            const obsRev = batch.observedRevision(workspace, row.path)
+            if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
+            if (obsRev !== ref.revision) return 'stale'
+            const doc = documents.read(workspace, row.path, { physical: batch.physical(workspace, row.path) })
+            if (!doc || doc.id !== ref.id || doc.revision !== ref.revision || doc.usageVersion !== ref.usageVersion) return 'stale'
+          }
+        }
+      }
+      for (const obsNote of observedNotes ?? []) {
+        const reg = notes.noteRegistration(obsNote.key)
+        if (!reg || reg.deleted || !reg.enabled || reg.workspace !== workspace || reg.path !== obsNote.path
+          || reg.revision !== obsNote.checkpoint || reg.fileRevision !== obsNote.revision) {
+          return 'stale'
+        }
+        if (!refsCurrent(obsNote.sources)) return 'stale'
+        if (obsNote.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) hasWait = true
+        if (batch) {
+          const obsRev = batch.observedRevision(workspace, obsNote.path)
+          if (obsRev === undefined || obsRev === null) { hasUnverifiable = true; continue }
+          if (obsRev !== obsNote.revision) return 'stale'
+          const latest = notes.read(obsNote.key, batch.physical(workspace, obsNote.path))
+          if (!latest || !latest.enabled || latest.workspace !== workspace || latest.path !== obsNote.path
+            || latest.revision !== obsNote.checkpoint || latest.fileRevision !== obsNote.revision) {
+            return 'stale'
+          }
+        }
+      }
+      if (hasWait) return 'wait'
+      if (hasUnverifiable) return 'unverifiable'
+      return 'current'
+    }
+
     const checkpointTargets = async (
       targets: readonly DeferredCheckpoint[],
       options: { clearPending: boolean, isDeferredRetry: boolean },
     ) => {
-      const checkpointBatch = await loadFiles(targets.map(target => target.file), undefined, true)
+      const locations: Location[] = []
+      const seenLoc = new Set<string>()
+      const addLoc = (workspace: string, filePath: string) => {
+        const key = `${workspace}\0${filePath}`
+        if (!seenLoc.has(key)) { seenLoc.add(key); locations.push({ workspace, path: filePath }) }
+      }
+      for (const target of targets) {
+        addLoc(target.file.workspace, target.file.path)
+        for (const obsNote of target.observedNotes ?? []) addLoc(target.workspace, obsNote.path)
+        if (target.observedReads?.length) {
+          const regById = new Map(documents.fileRegistry(target.workspace).map(row => [row.id, row]))
+          for (const ref of target.observedReads) {
+            const row = regById.get(ref.id)
+            if (row) addLoc(target.workspace, row.path)
+          }
+        }
+      }
+      const checkpointBatch = await loadFiles(locations, undefined, true)
       if (!effects.holds(job)) return
       transaction(() => {
         const at = now()
@@ -679,6 +753,22 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           if (state === 'unverifiable') {
             unresolved.push(target)
           } else if (state === 'current') {
+            if (target.observedNotes?.length || target.observedReads?.length) {
+              const obsState = classifyObservedRefs(target.workspace, target.observedReads, target.observedNotes, checkpointBatch)
+              if (obsState === 'stale') {
+                progress(job, 'source_changed', 'consolidate')
+                scanRetry = true
+                continue
+              }
+              if (obsState === 'wait') {
+                waitingForAdmission = true
+                continue
+              }
+              if (obsState === 'unverifiable') {
+                unresolved.push(target)
+                continue
+              }
+            }
             if (notes.markProcessed(target.file.key, target.file.checkpoint)) {
               if (target.oversized) oversizedAny = true
               if (!target.oversized || target.operationIds.length > 0) {
@@ -814,6 +904,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             || reg.revision !== obsNote.checkpoint || reg.fileRevision !== obsNote.revision) {
             return 'stale'
           }
+          if (!refsCurrent(obsNote.sources)) return 'stale'
+          if (obsNote.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
+        }
+        for (const obsRead of batch.observedReads ?? []) {
+          if (obsRead.sources) {
+            if (!refsCurrent(obsRead.sources)) return 'stale'
+            if (obsRead.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
+          }
         }
         if (!opSourcesValid(op, false)) return 'stale'
         if (op.sources.some(ref => { const item = source(ref.id); return Boolean(item && !eligible(item)) })) return 'wait'
@@ -842,8 +940,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             || !(batch.observedNotes ?? []).every(obsNote => {
               const latest = notes.read(obsNote.key, observed?.physical(workspace, obsNote.path))
               return Boolean(latest && latest.enabled && latest.workspace === workspace && latest.path === obsNote.path
-                && latest.revision === obsNote.checkpoint && latest.fileRevision === obsNote.revision)
+                && latest.revision === obsNote.checkpoint && latest.fileRevision === obsNote.revision
+                && refsCurrent(obsNote.sources)
+                && obsNote.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) }))
             })
+            || !(batch.observedReads ?? []).every(obsRead => !obsRead.sources
+              || (refsCurrent(obsRead.sources) && obsRead.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) })))
             || !opSourcesValid(op, true)) return false
           if (!opReads.every(ref => {
             const target = documents.indexFile(workspace, ref.id)
@@ -1136,7 +1238,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         let prepared: {
           operations: PreparedOperation[]
           hasMore: boolean
-          observedReads: Array<{ id: string, revision: string, usageVersion: number }>
+          observedReads: ObservedReadRef[]
           observedNotes: ObservedNoteRef[]
         } | undefined
         let retryHint: string | undefined
@@ -1205,8 +1307,8 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                               ? [(edit as { newText: string }).newText] : [])
                             .join('\n')
                         : ''
-                      const draftText = rawBody || rawEdits
-                      const draftLinks = draftText ? rawWikilinkTargets(draftText) : []
+                      const draftText = rawBody ? stripAccidentalFrontmatter(rawBody) : rawEdits
+                      const draftLinks = draftText ? rawWikilinkTargets(formatMemoryDocument({ metadata: {}, body: draftText })) : []
                       if (draftLinks.some(link => strippedDraftPaths.has(link.toLowerCase()))) {
                         if (rawPath) strippedDraftPaths.add(rawPath.toLowerCase())
                         continue
@@ -1301,18 +1403,29 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   files: opFiles.map(file => ({ path: file.path, revision: file.revision })),
                 })
               }
-              const batchObservedReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
+              const batchObservedReadsMap = new Map<string, ObservedReadRef>()
               const batchObservedNotesMap = new Map<string, ObservedNoteRef>()
               for (const doc of tools.reads()) {
                 if (doc.backing) {
-                  batchObservedReadsMap.set(doc.backing.id, { id: doc.backing.id, revision: doc.backing.revision, usageVersion: doc.backing.usageVersion })
+                  batchObservedReadsMap.set(doc.backing.id, {
+                    id: doc.backing.id,
+                    revision: doc.backing.revision,
+                    usageVersion: doc.backing.usageVersion,
+                    sources: doc.sourceTokens,
+                  })
                 } else if (dailyPath.safeParse(doc.path).success) {
                   const regAt = notes.registeredAt(workspace, doc.path)
                   const reg = regAt && notes.noteRegistration(regAt.key)
                   if (!reg || reg.deleted || !reg.enabled || reg.fileRevision !== doc.revision) {
                     throw new MemoryDreamStaleError()
                   }
-                  batchObservedNotesMap.set(reg.key, { key: reg.key, path: doc.path, revision: doc.revision, checkpoint: reg.revision })
+                  batchObservedNotesMap.set(reg.key, {
+                    key: reg.key,
+                    path: doc.path,
+                    revision: doc.revision,
+                    checkpoint: reg.revision,
+                    sources: notes.references(reg.key),
+                  })
                 }
               }
               prepared = {
@@ -1633,68 +1746,21 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             scanRetry = true
             return
           }
-        } else if (prepared.observedReads.length > 0 || prepared.observedNotes.length > 0) {
-          // Even when consolidate emitted zero ops, revalidate read digests and daily notes before advancing checkpoints.
-          const registry = documents.fileRegistry(workspace)
-          const regById = new Map(registry.map(row => [row.id, row]))
-          const obsLocations: Location[] = [
-            ...prepared.observedNotes.map(obs => ({ workspace, path: obs.path })),
-            ...prepared.observedReads.flatMap(ref => {
-              const target = regById.get(ref.id)
-              return target ? [{ workspace, path: target.path }] : []
-            }),
-          ]
-          let obsBatch: MemoryDocumentReadBatch | undefined
-          try {
-            obsBatch = await loadFiles(obsLocations, undefined, true)
-          } catch (error) {
-            if (!(error instanceof RequestTimeout)) throw error
-            stopPass = true
-            scanRetry = true
-            return
-          }
-          if (!effects.holds(job)) return
-          for (const ref of prepared.observedReads) {
-            const target = regById.get(ref.id)
-            if (!target || target.state !== 'active' || target.revision !== ref.revision || target.usageVersion !== ref.usageVersion) {
-              progress(job, 'source_changed', 'consolidate')
-              scanRetry = true
-              return
-            }
-            if (obsBatch) {
-              const obsRev = obsBatch.observedRevision(workspace, target.path)
-              if (obsRev === undefined || obsRev === null || obsRev !== ref.revision) {
-                progress(job, 'source_changed', 'consolidate')
-                scanRetry = true
-                return
-              }
-            }
-          }
-          for (const obsNote of prepared.observedNotes) {
-            const reg = notes.noteRegistration(obsNote.key)
-            if (!reg || reg.deleted || !reg.enabled || reg.workspace !== workspace || reg.path !== obsNote.path
-              || reg.revision !== obsNote.checkpoint || reg.fileRevision !== obsNote.revision) {
-              progress(job, 'source_changed', 'consolidate')
-              scanRetry = true
-              return
-            }
-            if (obsBatch) {
-              const obsRev = obsBatch.observedRevision(workspace, obsNote.path)
-              if (obsRev === undefined || obsRev === null || obsRev !== obsNote.revision) {
-                progress(job, 'source_changed', 'consolidate')
-                scanRetry = true
-                return
-              }
-            }
-          }
         }
 
         if (deferRetry) scanRetry = true
         if (checkpointRefs.length) {
           const operationIds = persistedOps.map(op => op.operationId)
+          const noopObservations = persistedOps.length === 0
+            ? {
+                ...(prepared.observedReads.length ? { observedReads: prepared.observedReads } : {}),
+                ...(prepared.observedNotes.length ? { observedNotes: prepared.observedNotes } : {}),
+              }
+            : {}
           await checkpointTargets(
             checkpointRefs.map(file => ({
               workspace, file, operationIds,
+              ...noopObservations,
               ...(batchOversized ? { oversized: true } : {}),
             })),
             { clearPending: persistedOps.length > 0, isDeferredRetry: false },

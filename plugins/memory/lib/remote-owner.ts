@@ -5,7 +5,7 @@ import type { OwnerAdapterApi, OwnerAdapterCaller, OwnerCallOptions } from '../.
 
 export type PrefetchClaimResponse =
   | { found: false }
-  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number }
+  | { found: true, result: AutomaticRecallResult, epoch?: string, revision?: number, deadlineAt?: number, retried?: boolean }
 
 export type MemoryOwnerConnection = OwnerAdapterCaller & {
   start(): Promise<void>
