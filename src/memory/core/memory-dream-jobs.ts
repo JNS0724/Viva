@@ -670,6 +670,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
       saveJobState(null, activeDeferred)
     }
 
+    const isPhysicalReadError = (error: unknown): boolean => {
+      if (!error || typeof error !== 'object') return false
+      const code = (error as { code?: unknown }).code
+      return typeof code === 'string'
+        && /^(EACCES|EPERM|EBUSY|EIO|EMFILE|ENFILE|ENOENT|ENOTDIR|EISDIR|ESTALE|EAGAIN|ETIMEDOUT)$/u.test(code)
+    }
+
     const livePhysicalState = (workspace: string, filePath: string):
       | { kind: 'snapshot', file: MemoryPhysicalFile | null }
       | { kind: 'revision', revision: string | undefined }
@@ -721,9 +728,15 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             && latest.revision === file.checkpoint && latest.fileRevision === file.revision && refsCurrent(file.sources)) ? 'current' : 'stale'
         }
         try {
-          if (fileCurrent(file)) return 'current'
-        } catch {
-          return 'unverifiable'
+          const latest = notes.read(file.key, undefined, { throwOnPhysicalError: true })
+          if (latest && latest.enabled && latest.workspace === file.workspace && latest.path === file.path
+            && latest.revision === file.checkpoint && latest.fileRevision === file.revision
+            && fileCurrent(file)) {
+            return 'current'
+          }
+        } catch (error) {
+          if (isPhysicalReadError(error)) return 'unverifiable'
+          throw error
         }
         // No-batch revision-only fallback: distinguish a file that disappeared before notes.read from an in-place change.
         const afterMiss = livePhysicalState(file.workspace, file.path)
@@ -777,9 +790,12 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           let doc: ReturnType<MemoryDocuments['read']>
           try {
             doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
-          } catch {
-            hasUnverifiable = true
-            continue
+          } catch (error) {
+            if (physical === undefined && isPhysicalReadError(error)) {
+              hasUnverifiable = true
+              continue
+            }
+            throw error
           }
           if (!doc) {
             if (revisionOnlyNoBatch) {
@@ -822,10 +838,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         }
         let latest: ReturnType<MemoryNotes['read']>
         try {
-          latest = notes.read(obsNote.key, physical)
-        } catch {
-          hasUnverifiable = true
-          continue
+          latest = notes.read(obsNote.key, physical, physical === undefined ? { throwOnPhysicalError: true } : undefined)
+        } catch (error) {
+          if (physical === undefined && isPhysicalReadError(error)) {
+            hasUnverifiable = true
+            continue
+          }
+          throw error
         }
         if (!latest) {
           if (revisionOnlyNoBatch) {

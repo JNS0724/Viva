@@ -117,20 +117,29 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       }
     },
   })
-  function read(key: string, physical?: MemoryPhysicalFile | null): Note | undefined {
+  function read(key: string, physical?: MemoryPhysicalFile | null, options?: { throwOnPhysicalError?: boolean }): Note | undefined {
     const row = rawNote(key)
     if (!row?.file_revision || !journal.visible(row.workspace, row.path)) return
     const refs = references(key)
     if (!refs.every(validRef)) return
+    let file: MemoryPhysicalFile | null
+    if (physical === undefined) {
+      if (options?.throwOnPhysicalError) {
+        file = journal.files(row.workspace).read(row.path)
+      } else {
+        try { file = journal.files(row.workspace).read(row.path) }
+        catch { return undefined }
+      }
+    } else {
+      file = physical
+    }
+    if (!file || file.path !== row.path || file.revision !== row.file_revision) return
     try {
-      const file = physical === undefined ? journal.files(row.workspace).read(row.path) : physical
-      if (!file || file.path !== row.path || file.revision !== row.file_revision) return
       const doc = parseMemoryDocument(file.markdown)
       const session = doc.metadata.session_id
       return { ...row, file_revision: file.revision, enabled: Boolean(row.enabled), title: String(doc.metadata.name ?? ''), markdown: doc.body,
         document: file.markdown, fileRevision: file.revision, ...(typeof session === 'string' ? { session } : {}) }
     } catch { return undefined } // One malformed or externally replaced file cannot hide unrelated accepted notes.
-
   }
   function dialog(workspace: string, session: string): DialogTurn[] {
     const text = journal.files(workspace).read(sessionPath(session))?.markdown ?? ''

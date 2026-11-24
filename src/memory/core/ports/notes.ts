@@ -54,7 +54,7 @@ export interface MemoryNotes {
     pendingCleanup(): number;
     needsRecovery(): boolean;
     recover: () => void;
-    read: (key: string, physical?: MemoryPhysicalFile | null) => Note | undefined;
+    read: (key: string, physical?: MemoryPhysicalFile | null, options?: { throwOnPhysicalError?: boolean }) => Note | undefined;
     snapshot: (ids: readonly string[]) => SourceRef[];
     jobState: (key: string, generation: number) => string | undefined;
     blocked: (key: string) => boolean;

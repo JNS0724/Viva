@@ -2265,5 +2265,106 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
     await hI.retryNow()
     assert.equal(modelCallsI, callsAfterDeferI, 'restoring read access must complete deferred checkpoint with 0 extra planner calls (R11 P2-3)')
     assert.equal(hI.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+
+    // Part J (R12 P2-1): Brief EACCES on observed daily note after first revision match, restored BEFORE any second revision check:
+    // notes.read preserves the physical read error separately from a policy/revision mismatch -> defers -> 0 extra planner calls!
+    let d0JPath = ''
+    let d0JAbs = ''
+    let revChecksJ = 0
+    let armBriefChmod = false
+    const hJ = dreamHarness(t, {
+      initialNow: TODAY_MS,
+      omitReadFileAtCommit: true,
+      omitReadPhysicalFile: true,
+      readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+        if (filePath === d0JPath) {
+          revChecksJ++
+          if (revChecksJ === 2) {
+            // Even if access is restored before any second check, the first notes.read EACCES must already have deferred!
+            try { fs.chmodSync(d0JAbs, 0o644) } catch { /* ignore */ }
+          }
+        }
+        const rev = defaultRead(workspace, filePath)
+        if (armBriefChmod && filePath === d0JPath && rev) {
+          armBriefChmod = false
+          fs.chmodSync(d0JAbs, 0o000)
+        }
+        return rev
+      },
+    })
+    const d0J = hJ.addDailyNote([{ text: '旧日记：重庆机房配置' }], { session: 's-r12-j0', day: '2026-11-15' })
+    d0JPath = d0J.path
+    d0JAbs = path.join(hJ.store.fileRoot, d0J.workspace, d0J.path)
+    t.after(() => { try { fs.chmodSync(d0JAbs, 0o644) } catch { /* ignore */ } })
+    hJ.notes.markProcessed(d0J.key, d0J.note.revision)
+    hJ.addDailyNote([{ text: '目标 J 无新建摘要' }], { session: 's-r12-j1', day: '2026-11-16' })
+    let modelCallsJ = 0
+    hJ.setModel(async request => {
+      modelCallsJ++
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        armBriefChmod = true
+        return JSON.stringify({ action: 'NOOP' })
+      }
+      const readRes = await request.tools!.executeTool({ callId: 'c-d0j', name: 'read', input: { path: d0J.path } })
+      assert.equal(readRes.state, 'completed')
+      return JSON.stringify({ operations: [] })
+    })
+    await hJ.run()
+    assert.equal(armBriefChmod, false)
+    assert.equal(modelCallsJ, 2)
+    assert.equal(hJ.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'brief note EACCES must defer instead of discarding checkpoint as stale (R12 P2-1)')
+    fs.chmodSync(d0JAbs, 0o644)
+    await hJ.retryNow()
+    assert.equal(modelCallsJ, 2, 'restoring note access must finish deferred checkpoint with 0 extra planner calls (2 total, not 4) (R12 P2-1)')
+    assert.equal(hJ.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
   }
+
+  // Part K (R12 P2-2): Malformed source-reference metadata JSON for an observed digest after revision matches must NOT be
+  // swallowed as unverifiable — it must propagate to the job error handler and keep the manual Dream request pending!
+  let armCorruptK = false
+  let corruptWorkspaceK = ''
+  const hK = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    omitReadFileAtCommit: true,
+    omitReadPhysicalFile: true,
+    readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+      const rev = defaultRead(workspace, filePath)
+      if (armCorruptK && filePath === 'digest/wiki/doc-k.md' && rev) {
+        armCorruptK = false
+        hK.store.db.prepare('UPDATE memory_documents SET sources = ? WHERE workspace = ? AND path = ?')
+          .run('{malformed-json', corruptWorkspaceK, 'digest/wiki/doc-k.md')
+      }
+      return rev
+    },
+  })
+  const d0K = hK.addDailyNote([{ text: '旧摘要来源：苏州机房配置' }], { session: 's-r12-k0', day: '2026-11-15' })
+  corruptWorkspaceK = d0K.workspace
+  hK.documents.commit({
+    operationId: randomUUID(),
+    workspace: d0K.workspace,
+    path: 'digest/wiki/doc-k.md',
+    expectedRevision: null,
+    action: 'CREATE',
+    markdown: '---\nname: Doc K\ndescription: Observed digest for metadata decode failure test\n---\n\n苏州机房运维配置。\n',
+    sources: [{ id: d0K.sources[0]!.id, token: memorySourceToken(d0K.sources[0]!) }],
+    reads: [],
+  })
+  hK.notes.markProcessed(d0K.key, d0K.note.revision)
+  hK.addDailyNote([{ text: '目标 K 读取观察摘要' }], { session: 's-r12-k1', day: '2026-11-16' })
+  hK.setModel(async request => {
+    if (request.system === DREAM_PROFILE_SYSTEM) {
+      armCorruptK = true
+      return JSON.stringify({ action: 'NOOP' })
+    }
+    const readRes = await request.tools!.executeTool({ callId: 'c-dock', name: 'read', input: { path: 'digest/wiki/doc-k.md' } })
+    assert.equal(readRes.state, 'completed')
+    return JSON.stringify({ operations: [] })
+  })
+  const manualOpK = randomUUID()
+  hK.jobs.request(manualOpK)
+  await hK.effects.wake()
+  assert.equal(armCorruptK, false, 'metadata corruption after revision check must have fired')
+  const statusK = hK.jobs.status(manualOpK)
+  assert.equal(statusK.completedAt, null, 'metadata decoding failure must NOT produce a successful manual completion receipt (R12 P2-2)')
+  assert.notEqual(statusK.state, 'idle', 'job must enter retry state rather than idle/empty on metadata decoding error (R12 P2-2)')
 })
