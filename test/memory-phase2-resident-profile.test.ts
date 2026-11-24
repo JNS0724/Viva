@@ -2209,4 +2209,61 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   await hH.retryNow()
   assert.equal(modelCallsH, callsAfterDeferH, 'restored file must complete deferred checkpoint with 0 extra planner calls (R10 P2-4)')
   assert.equal(hH.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+
+  // Part I (R11 P2-3): Revision-only no-batch runtime where an observed digest becomes unreadable (EACCES) right after
+  // readFileRevisionAtCommit matches -> documents.read throws -> caught as unverifiable -> deferred checkpoint preserved (0 extra planner calls!).
+  if (process.platform !== 'win32' && (typeof process.getuid !== 'function' || process.getuid() !== 0)) {
+    let docIAbs = ''
+    let armChmod = false
+    const hI = dreamHarness(t, {
+      initialNow: TODAY_MS,
+      omitReadFileAtCommit: true,
+      omitReadPhysicalFile: true,
+      readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+        const rev = defaultRead(workspace, filePath)
+        if (armChmod && filePath === 'digest/wiki/doc-i.md' && rev) {
+          armChmod = false
+          fs.chmodSync(docIAbs, 0o000)
+        }
+        return rev
+      },
+    })
+    const d0I = hI.addDailyNote([{ text: '旧摘要来源：天津机房配置' }], { session: 's-r11-i0', day: '2026-11-15' })
+    hI.documents.commit({
+      operationId: randomUUID(),
+      workspace: d0I.workspace,
+      path: 'digest/wiki/doc-i.md',
+      expectedRevision: null,
+      action: 'CREATE',
+      markdown: '---\nname: Doc I\ndescription: Observed digest for EACCES test\n---\n\n天津机房运维配置。\n',
+      sources: [{ id: d0I.sources[0]!.id, token: memorySourceToken(d0I.sources[0]!) }],
+      reads: [],
+    })
+    docIAbs = path.join(hI.store.fileRoot, d0I.workspace, 'digest/wiki/doc-i.md')
+    t.after(() => { try { fs.chmodSync(docIAbs, 0o644) } catch { /* ignore */ } })
+    hI.notes.markProcessed(d0I.key, d0I.note.revision)
+    hI.addDailyNote([{ text: '目标 I 读取观察摘要后无需新建文档' }], { session: 's-r11-i1', day: '2026-11-16' })
+    let modelCallsI = 0
+    hI.setModel(async request => {
+      modelCallsI++
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        armChmod = true
+        return JSON.stringify({ action: 'NOOP' })
+      }
+      const readRes = await request.tools!.executeTool({ callId: 'c-doci', name: 'read', input: { path: 'digest/wiki/doc-i.md' } })
+      assert.equal(readRes.state, 'completed')
+      return JSON.stringify({ operations: [] })
+    })
+    await hI.run()
+    assert.equal(armChmod, false, 'chmod 0o000 right after revision check must have fired')
+    const callsAfterDeferI = modelCallsI
+    assert.equal(callsAfterDeferI, 2, 'initial Dream run should make exactly 2 planner calls (consolidate + profile)')
+    assert.equal(hI.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'EACCES during observed digest read must defer instead of marking processed')
+    await hI.retryNow()
+    assert.equal(modelCallsI, callsAfterDeferI, 'deferred checkpoint must survive EACCES with 0 extra planner calls while unreadable (R11 P2-3)')
+    fs.chmodSync(docIAbs, 0o644)
+    await hI.retryNow()
+    assert.equal(modelCallsI, callsAfterDeferI, 'restoring read access must complete deferred checkpoint with 0 extra planner calls (R11 P2-3)')
+    assert.equal(hI.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+  }
 })

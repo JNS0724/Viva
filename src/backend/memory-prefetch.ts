@@ -576,7 +576,7 @@ export function createMemoryPrefetchManager({
     }
     // Retain a bounded true-LRU cancellation record so delayed/replayed claims stay idempotently `skipped`.
     boundedSet(cancelledRecords, key, true)
-    // Attach this cancellation ONLY to concurrent sibling entries in the same session still awaiting adoption.
+    // Attach this cancellation ONLY to concurrent sibling entries actively participating in an adoption/refresh step.
     if (wasDelivered || activeClaim) {
       const attachTo = (map: Map<string, PrefetchEntry>) => {
         for (const sibling of map.values()) {
@@ -586,7 +586,6 @@ export function createMemoryPrefetchManager({
           }
         }
       }
-      attachTo(entries)
       attachTo(claiming)
       attachTo(refreshable)
     }

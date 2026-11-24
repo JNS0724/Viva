@@ -720,7 +720,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           return Boolean(latest && latest.enabled && latest.workspace === file.workspace && latest.path === file.path
             && latest.revision === file.checkpoint && latest.fileRevision === file.revision && refsCurrent(file.sources)) ? 'current' : 'stale'
         }
-        if (fileCurrent(file)) return 'current'
+        try {
+          if (fileCurrent(file)) return 'current'
+        } catch {
+          return 'unverifiable'
+        }
         // No-batch revision-only fallback: distinguish a file that disappeared before notes.read from an in-place change.
         const afterMiss = livePhysicalState(file.workspace, file.path)
         if (afterMiss.kind === 'revision' && afterMiss.revision === undefined) return 'unverifiable'
@@ -770,7 +774,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               else revisionOnlyNoBatch = true
             }
           }
-          const doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
+          let doc: ReturnType<MemoryDocuments['read']>
+          try {
+            doc = documents.read(workspace, row.path, physical !== undefined ? { physical } : undefined)
+          } catch {
+            hasUnverifiable = true
+            continue
+          }
           if (!doc) {
             if (revisionOnlyNoBatch) {
               const afterMiss = livePhysicalState(workspace, row.path)
@@ -810,7 +820,13 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             else revisionOnlyNoBatch = true
           }
         }
-        const latest = notes.read(obsNote.key, physical)
+        let latest: ReturnType<MemoryNotes['read']>
+        try {
+          latest = notes.read(obsNote.key, physical)
+        } catch {
+          hasUnverifiable = true
+          continue
+        }
         if (!latest) {
           if (revisionOnlyNoBatch) {
             const afterMiss = livePhysicalState(workspace, obsNote.path)

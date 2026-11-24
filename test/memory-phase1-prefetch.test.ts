@@ -1552,4 +1552,26 @@ test('cancel before claim, settled-sibling cancel before adoption, late valid-hi
   const nextClaim = await prefetchHist.claimPrefetch({ requestId: 'turn-1024', sessionId: 'sess-hist' })
   assert.equal(nextClaim.found && nextClaim.result.status, 'hit')
   assert.equal(nextClaim.cancelledRequestIds, undefined, 'subsequent turn claim must NOT resend 1,024 historical cancellations (R10 Additional P2)')
+
+  // Part I (R11 P2-2): An older valid hit left unclaimed across 4,100 later claimed+cancelled turns must accumulate ZERO historical IDs.
+  const prefetchOldQueue = createMemoryPrefetchManager({
+    defaultBudgetMs: 100,
+    async callPrefetch(input) {
+      return { epoch: 'e-old', revision: 1, result: { status: 'hit', text: `OLD_${input.query}`, partial: false, hits: [{ text: `OLD_${input.query}`, names: ['o'] }] } }
+    },
+  })
+  t.after(() => prefetchOldQueue.close())
+  prefetchOldQueue.onState(ownerState('e-old', 1))
+  const reqOld = randomUUID()
+  prefetchOldQueue.startPrefetch({ requestId: reqOld, sessionId: 'sess-old-q', queryText: 'older-queued' })
+  await Promise.resolve()
+  for (let i = 0; i < 4100; i++) {
+    const id = `later-${i}`
+    prefetchOldQueue.startPrefetch({ requestId: id, sessionId: 'sess-old-q', queryText: `q-${i}` })
+    await prefetchOldQueue.claimPrefetch({ requestId: id, sessionId: 'sess-old-q' })
+    prefetchOldQueue.cancelPrefetch('sess-old-q', id)
+  }
+  const oldClaim = await prefetchOldQueue.claimPrefetch({ requestId: reqOld, sessionId: 'sess-old-q' })
+  assert.equal(oldClaim.found && oldClaim.result.status, 'hit')
+  assert.equal(oldClaim.cancelledRequestIds, undefined, 'older queued hit must NOT accumulate 4,100 later cancelled IDs (R11 P2-2)')
 })
