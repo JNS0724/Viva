@@ -97,65 +97,6 @@ for (const failure of [false, true]) test(`foreground ${failure ? 'error' : 'com
   }
 })
 
-test('a permission check cannot cross turns and a timed-out foreground cannot query history', { timeout: 5000 }, async t => {
-  const sessionId = 'same-session', first = deferred(), second = deferred(), firstEnd = deferred(), secondEnd = deferred()
-  const checking = deferred(), checked = deferred()
-  const input = new PassThrough(), output = new PassThrough()
-  const child = withPluginSide(Object.assign(new EventEmitter(), { stdin: input, stdout: output, stderr: new PassThrough(), exitCode: null as number | null }))
-  let remote!: AgentSideConnection
-  let nativeTurns = 0, checkNext = false, shown = 0, searches = 0
-  new AgentSideConnection(client => {
-    remote = client
-    return {
-      initialize: () => ({ protocolVersion: 1, agentCapabilities: {}, authMethods: [] }),
-      authenticate: () => ({}), newSession: () => ({ sessionId }), cancel: () => {},
-      async prompt() {
-        const original = ++nativeTurns === 1
-        const started = original ? first : second
-        started.resolve()
-        await (original ? firstEnd : secondEnd).promise
-        return { stopReason: 'end_turn' }
-      },
-    } satisfies Agent
-  }, ndJsonStream(Writable.toWeb(output), Readable.toWeb(input) as ReadableStream<Uint8Array>))
-  const bridge = createAcpBridge({ routing: testRequests(), dshBin: '/fixture/dsh', profile: 'viva', cwd: process.cwd(),
-    spawnFn: (() => child as unknown as ChildProcess) as typeof spawn,
-    conversationContext: () => ({ conversationId: 'topic', sessionId }),
-    allowSession: async () => { if (checkNext) { checkNext = false; checking.resolve(); await checked.promise } return true },
-    historySearch: () => { searches++; return [] },
-    emit: event => { if (event.type === 'permission') { shown++; bridge.respondPermission(String(event.requestId), null) } },
-  })
-  try {
-    await bridge.start()
-    const oldTurn = bridge.prompt('old')
-    await first.promise
-    checkNext = true
-    const pending = remote.requestPermission({ sessionId, toolCall: { toolCallId: 'old', title: 'old' }, options: [] })
-    await checking.promise
-    await bridge.cancel(sessionId)
-    firstEnd.resolve()
-    await oldTurn
-    const nextTurn = bridge.prompt('new')
-    await second.promise
-    checked.resolve()
-    assert.equal((await pending).outcome.outcome, 'cancelled')
-    assert.equal(shown, 0, 'a permission belonging to the first turn cannot appear on the next')
-    t.mock.timers.enable({ apis: ['setTimeout'] })
-    await bridge.cancel(sessionId)
-    t.mock.timers.tick(STOP_GRACE_MS)
-    assert.ok(bridge.needsRecovery())
-    child.emit('message', { type: 'history_query', id: 'delayed', sessionId, request: { query: 'private' } })
-    assert.equal(searches, 0)
-    secondEnd.resolve()
-    await nextTurn
-  } finally {
-    t.mock.timers.reset()
-    checked.resolve(); firstEnd.resolve(); secondEnd.resolve()
-    child.exitCode = 0
-    await bridge.dispose()
-    input.end(); output.end()
-  }
-})
 
 test('a cold MCP reattachment publishes the reconciled context before its next foreground answer', async t => {
   const db = openHistoryDb({ file: ':memory:' }); t.after(() => db.close())

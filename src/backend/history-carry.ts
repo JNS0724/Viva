@@ -1,5 +1,3 @@
-import type { HistoryEvidence } from './history-recall.ts'
-
 /**
  * A topic gone on from its saved records, its own session gone (继续这个话题 when dsh no longer has it): the latest
  * turns go with the first question of the new conversation, marked as records to refer to, not as anything to do.
@@ -11,29 +9,7 @@ const MAX_MESSAGE_CHARS = 1_500
 const SPEAKERS: Readonly<Record<string, string>> = { user: '用户', assistant: 'Viva' }
 
 type Said = { role: string, text: string }
-export type HistoryCarry = { text: string, turns: number, evidence: readonly HistoryEvidence[], revision: number }
-
-/** Authorization can yield to a file erasure after any individual row. */
-export async function verifiedHistoryCarry(rows: readonly HistoryEvidence[], allowed: (row: HistoryEvidence) => Promise<boolean>,
-  revision: number, currentRevision: () => number): Promise<HistoryCarry> {
-  const evidence: HistoryEvidence[] = []
-  for (const row of rows) {
-    if (await allowed(row)) evidence.push(row)
-    if (currentRevision() !== revision) return { text: '', turns: 0, evidence: [], revision }
-  }
-  return { ...carriedRecords(evidence), evidence, revision }
-}
-/** Publish only after every source transfer and the final selection/version check. */
-export async function publishHistoryCarry(carry: HistoryCarry, current: () => boolean,
-  use: (row: HistoryEvidence) => Promise<void>, publish: () => void) {
-  if (!carry.turns || !current()) return false
-  for (const row of carry.evidence) {
-    await use(row)
-    if (!current()) return false
-  }
-  publish()
-  return true
-}
+export type HistoryCarry = { text: string, turns: number }
 
 const shortened = (text: string) => {
   const line = text.trim()

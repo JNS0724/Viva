@@ -7,7 +7,6 @@ import type { Apply } from './journal.ts'
 import type { FeedItem, FeedStore } from './feed-store.ts'
 import type { Occurrence, ScheduleStore } from './schedule-store.ts'
 import type { RunResult } from './unattended-runs.ts'
-import { combineMemoryProvenance, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Schedules run when due (system-design §12.2). One timer, set for the soonest thing to do; when it fires, what is
@@ -35,21 +34,19 @@ const SCHEMA = `
     cwd TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0,
     due_at INTEGER NOT NULL,
-    memory TEXT,
     schedule_revision INTEGER NOT NULL DEFAULT 0
   );
 `
 
 /** What a run came to, to be kept: an item in 动态 (its answer, or that it kept failing), or another try later. */
-type Delivery = { kind: 'deliver', body: string, needsReview?: boolean, memory?: MemoryProvenance }
-type Outcome = Delivery | { kind: 'retry', attempts: number, memory?: MemoryProvenance }
+type Delivery = { kind: 'deliver', body: string }
+type Outcome = Delivery | { kind: 'retry', attempts: number }
 
-interface Run { key: string, scheduleId: string, at: string, title: string, prompt: string, cwd: string, attempts: number, dueAt: number, memory: MemoryProvenance | null, scheduleRevision: number }
+interface Run { key: string, scheduleId: string, at: string, title: string, prompt: string, cwd: string, attempts: number, dueAt: number, scheduleRevision: number }
 type Row = Record<string, unknown>
 const runOf = (row: Row): Run => ({
   key: String(row.key), scheduleId: String(row.schedule_id), at: String(row.at), title: String(row.title),
   prompt: String(row.prompt), cwd: String(row.cwd), attempts: Number(row.attempts), dueAt: Number(row.due_at),
-  memory: typeof row.memory === 'string' ? JSON.parse(row.memory) as MemoryProvenance : null,
   scheduleRevision: Number(row.schedule_revision),
 })
 
@@ -60,8 +57,7 @@ export interface ScheduleRunsDeps {
   store: ScheduleStore
   feed: FeedStore
   /** Runs one prompt where nobody watches, in `cwd`. */
-  run: (prompt: string, cwd: string, memory: MemoryProvenance | null) => Promise<RunResult>
-  memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
+  run: (prompt: string, cwd: string) => Promise<RunResult>
   /** A new item in 动态, inside the change that made it: its notice queued there, so it is not lost. */
   keep: (item: FeedItem) => void
   /** That change kept: the window, and the notice, may go now. */
@@ -74,10 +70,9 @@ export interface ScheduleRunsDeps {
   onError?: (err: unknown) => void
 }
 
-export function createScheduleRuns({ db, apply, store, feed, run, keep, delivered, changed = () => {}, now = Date.now, later = setTimeout, cancel = clearTimeout, onError = () => {}, memoryCurrent = () => true }: ScheduleRunsDeps) {
+export function createScheduleRuns({ db, apply, store, feed, run, keep, delivered, changed = () => {}, now = Date.now, later = setTimeout, cancel = clearTimeout, onError = () => {} }: ScheduleRunsDeps) {
   db.exec(SCHEMA)
   const fields = db.prepare('PRAGMA table_info(schedule_runs)').all()
-  if (!fields.some(row => row.name === 'memory')) db.exec('ALTER TABLE schedule_runs ADD COLUMN memory TEXT')
   if (!fields.some(row => row.name === 'schedule_revision')) db.exec('ALTER TABLE schedule_runs ADD COLUMN schedule_revision INTEGER NOT NULL DEFAULT 0')
   const change: Apply = apply ?? ((_kind, _data, write) => ({ value: transaction(db, write) }))
   let timer: unknown = null
@@ -85,7 +80,6 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   let again = false
   /** dsh is not there: runs wait for `wake`, not for the timer. */
   let blocked = false
-  const waitingForMemory = new Set<string>()
   let closed = false
   /** How many times woken: a run that found no dsh while it was woken looks again. */
   let wakes = 0
@@ -99,34 +93,20 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   const outcomes = new Map<string, { revision: number, outcome: Outcome }>()
 
   const queue = (occurrence: Occurrence) => db.prepare(`INSERT INTO schedule_runs
-    (key, schedule_id, at, title, prompt, cwd, attempts, due_at, memory, schedule_revision) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-    ON CONFLICT(key) DO UPDATE SET title=excluded.title,prompt=excluded.prompt,attempts=0,due_at=excluded.due_at,memory=excluded.memory,schedule_revision=excluded.schedule_revision
+    (key, schedule_id, at, title, prompt, cwd, attempts, due_at, schedule_revision) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET title=excluded.title,prompt=excluded.prompt,attempts=0,due_at=excluded.due_at,schedule_revision=excluded.schedule_revision
     WHERE schedule_runs.schedule_revision<>excluded.schedule_revision`).run(occurrence.key, occurrence.schedule.id, occurrence.at,
     occurrence.schedule.record.title, occurrence.schedule.record.prompt, occurrence.schedule.cwd, now(),
-    occurrence.schedule.memory && JSON.stringify(occurrence.schedule.memory), occurrence.schedule.revision)
+    occurrence.schedule.revision)
   const due = (): Run[] => (db.prepare('SELECT * FROM schedule_runs WHERE due_at <= ? ORDER BY due_at, rowid').all(now()) as Row[])
-    .filter(row => !waitingForMemory.has(String(row.key))).map(runOf)
+    .map(runOf)
   const nextRunAt = (): number | null => {
-    const row = db.prepare('SELECT key, due_at FROM schedule_runs ORDER BY due_at').iterate()
-    for (const item of row) if (!waitingForMemory.has(String(item.key))) return Number(item.due_at)
-    return null
+    const row = db.prepare('SELECT due_at FROM schedule_runs ORDER BY due_at LIMIT 1').get()
+    return row ? Number(row.due_at) : null
   }
-  const forget = (key: string) => { outcomes.delete(key); waitingForMemory.delete(key) }
+  const forget = (key: string) => { outcomes.delete(key) }
   const queued = db.prepare('SELECT schedule_revision FROM schedule_runs WHERE key=?')
   const drop = db.prepare('DELETE FROM schedule_runs WHERE key=? AND schedule_revision=?')
-
-  /** An affected cached result can still be held by an awaiting commit. Retire its queue row as well. */
-  function discardMemory(matches: (memory: MemoryProvenance) => boolean) {
-    let changed = false
-    for (const [key, cached] of outcomes) {
-      if (cached.outcome.memory && matches(cached.outcome.memory)) {
-        changed = Number(drop.run(key, cached.revision).changes) > 0 || changed
-        forget(key)
-      } else if (queued.get(key)?.schedule_revision !== cached.revision) forget(key)
-    }
-    for (const key of waitingForMemory) if (!queued.get(key)) waitingForMemory.delete(key)
-    return changed
-  }
 
   /** A change failed: tried again after a growing wait. */
   function failed(err: unknown): void {
@@ -166,55 +146,39 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   }
 
   /** Done with a run: its item made (or the one made before) and its notice queued, the run gone, together. */
-  function deliver(item: Run, { body, needsReview = false, memory }: Delivery): void {
+  function deliver(item: Run, { body }: Delivery): void {
     const made = change('schedule.ran', { key: item.key }, () => {
-      if (needsReview) store.setPaused(item.scheduleId, true)
-      const title = needsReview ? t('main.schedule-runs.memory.title') : item.title
-      const added = feed.add({ source: SCHEDULE_SOURCE, key: item.key, title, body, memory, origin: { label: t('main.schedule-runs.origin'), ref: item.scheduleId } })
+      const added = feed.add({ source: SCHEDULE_SOURCE, key: item.key, title: item.title, body, origin: { label: t('main.schedule-runs.origin'), ref: item.scheduleId } })
       db.prepare('DELETE FROM schedule_runs WHERE key = ?').run(item.key)
       if (added.made) keep(added.item)
       return added.made
     }).value
     emitDiagnostic({ event: 'state.changed', operation: 'schedule', stage: 'applied', reason: made ? 'normal' : 'idempotent',
       identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision }, metrics: { attempt: item.attempts } })
-    if (needsReview) changed()
     if (made) delivered()
   }
 
   /** What a run came to: no dsh (nothing to keep), or what to keep: its item, or another try later. */
-  function retry(item: Run, problem: string, memory?: MemoryProvenance): Outcome {
+  function retry(item: Run, problem: string): Outcome {
     const attempts = item.attempts + 1
-    return attempts < MAX_ATTEMPTS ? { kind: 'retry', attempts, memory }
-      : { kind: 'deliver', body: t('main.schedule-runs.failed', { value1: problem }), memory }
+    return attempts < MAX_ATTEMPTS ? { kind: 'retry', attempts }
+      : { kind: 'deliver', body: t('main.schedule-runs.failed', { value1: problem }) }
   }
 
-  const staleInstructions = (): Delivery => ({ kind: 'deliver', needsReview: true, body: t('main.schedule-runs.memory.stale') })
-
-  async function outcomeOf(item: Run): Promise<Outcome | 'unavailable' | 'memory-unavailable' | 'superseded'> {
-    // The creation snapshot is checked again at commit. A cached model response retains its own sources.
-    if (item.memory && !await memoryCurrent(item.memory)) return staleInstructions()
+  async function outcomeOf(item: Run): Promise<Outcome | 'unavailable' | 'superseded'> {
     if (closed || !runCurrent(item) || !scheduleCurrent(item)) return 'superseded'
     const pending = outcomes.get(item.key)
     if (pending?.revision === item.scheduleRevision) return pending.outcome
-    const result = await run(item.prompt, item.cwd, item.memory)
+    const result = await run(item.prompt, item.cwd)
     if (closed || !runCurrent(item)) return 'superseded'
-    if (!result.ok && result.unavailable) return result.memoryUnavailable ? 'memory-unavailable' : 'unavailable'
-    const memory = result.memory ? combineMemoryProvenance(item.memory, result.memory) : item.memory ?? undefined
-    const outcome: Outcome = result.ok ? { kind: 'deliver', body: result.text, memory }
-      : result.staleMemory ? staleInstructions()
-        : retry(item, result.problem, memory)
+    if (!result.ok && result.unavailable) return 'unavailable'
+    const outcome: Outcome = result.ok ? { kind: 'deliver', body: result.text } : retry(item, result.problem)
     outcomes.set(item.key, { revision: item.scheduleRevision, outcome })
     return outcome
   }
 
   /** Kept: its item made, or its next try set; then the outcome is let go. */
-  async function commit(item: Run, outcome: Outcome): Promise<void> {
-    if (item.memory && !await memoryCurrent(item.memory)) {
-      outcome = staleInstructions()
-    } else if (outcome.memory && !await memoryCurrent(outcome.memory)) {
-      outcome = retry(item, t('main.schedule-runs.memory.result.stale'))
-    }
-    // Recheck local lifecycle after the remote read, before entering the synchronous transaction.
+  function commit(item: Run, outcome: Outcome): void {
     if (closed || dropIfSuperseded(item)) return
     if (outcome.kind === 'deliver') deliver(item, outcome)
     else {
@@ -249,7 +213,6 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
   async function runOne(item: Run): Promise<boolean> {
     return withDetachedOperation('schedule', async () => {
       if (dropIfSuperseded(item)) return true
-      const startedAtWake = wakes
       const outcome = await outcomeOf(item)
       if (closed) return false
       if (dropIfSuperseded(item)) return true
@@ -258,12 +221,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
         return false
       }
       if (outcome === 'superseded') return true
-      if (outcome === 'memory-unavailable') {
-        emitDiagnostic({ event: 'operation.progress', operation: 'schedule', stage: 'waiting', reason: 'unavailable' })
-        if (wakes === startedAtWake) waitingForMemory.add(item.key)
-        return true
-      }
-      await commit(item, outcome)
+      commit(item, outcome)
       return true
     }, { stage: item.attempts ? 'recovering' : 'dispatch',
       identities: { jobId: item.key, resourceId: item.scheduleId, generation: item.scheduleRevision,
@@ -308,7 +266,6 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     if (timer !== null) cancel(timer as never)
     wakes += 1
     blocked = false
-    waitingForMemory.clear()
     tick()
   }
 
@@ -317,7 +274,7 @@ export function createScheduleRuns({ db, apply, store, feed, run, keep, delivere
     arm()
   }
 
-  return { arm, wake, close, discardMemory }
+  return { arm, wake, close }
 }
 
 export type ScheduleRuns = ReturnType<typeof createScheduleRuns>

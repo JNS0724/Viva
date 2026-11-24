@@ -1,11 +1,9 @@
 import type { MemoryDreamStatus } from './dream-status.ts'
 import { z } from 'zod'
-import { memoryProvenanceSchema, type MemoryErasureEvidence } from './provenance.ts'
-import type { MemoryProvenance } from './records.ts'
 import type { MemoryScope } from './memory-contract.ts'
 import type { TextSpan } from './text-spans.ts'
-import type { MemoryHostEffect, MemoryOperationOutcome } from './service.ts'
-import { memoryFileListRequest, memoryFileIdentity, memoryFileRestrictionId, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
+import type { MemoryOperationOutcome } from './service.ts'
+import { memoryFileListRequest, memoryFileIdentity, memoryFileSetEnabledRequest, memoryFileForgetRequest, memoryFileUndoRequest, memoryFileCreateRequest, memoryFileEditRequest } from './file-management.ts'
 import type { MemoryFileListRequest, MemoryFileListResult, MemoryManagedFileIdentity, MemoryFileDetail, MemoryFileProfile,
   MemoryFileSetEnabledRequest, MemoryFileForgetRequest, MemoryFileUndoRequest, MemoryFileMutationResult, MemoryFileCreateRequest, MemoryFileEditRequest } from './file-management.ts'
 
@@ -15,24 +13,20 @@ export const MEMORY_HOST_PROTOCOL = 3
 export const memoryHostRead = z.strictObject({ readBatchId: z.uuid(), budgetMs: z.number().positive().max(10_000) })
 export const MEMORY_PAGE_READ_METHODS: ReadonlySet<string> = new Set(['profilePage', 'profile', 'onboarding', 'cleanupPending', 'revision', 'fileProfile', 'listFiles', 'readFile'])
 export type MemoryProject = { kind: 'project', id: string }
-export type MemoryHistoryOccurrence = { segmentId: string, role: string, text: string, sourceId?: string | null, sessionId?: string | null }
 export type MemoryProfile = Record<string, { value: string, updatedAt: number, revision: number, source: string }>
-export type HostMemoryQuestion = { id: string, question: string, topic?: string, options: Array<{ label: string, description?: string }> }
-export type HostQuestionCard = HostMemoryQuestion & { header: string, multiSelect: boolean }
+type HostQuestionCard = { id: string, question: string, header: string, multiSelect: boolean, options: Array<{ label: string, description?: string }> }
 export type MemorySourceAlias = {
   operationId: string, sourceId: string, session: string, conversation: string,
-  text: string, wireText?: string, wireSpans?: TextSpan[], context?: MemoryScope, project?: MemoryProject,
-  origin?: 'original' | 'derived', dependencies?: MemoryProvenance,
+  text: string, wireText: string, wireSpans?: TextSpan[], cwd?: string | null, context?: MemoryScope, project?: MemoryProject,
+  origin?: 'original' | 'derived',
 }
-export type SourceChangeInput = { operationId: string, conversation: string, ids: string[], onlySources?: true,
-  replacement?: { sourceId: string, segmentId: string, projectId?: string | null } }
 type Args<A extends readonly unknown[], O> = { input: { args: A }, output: O }
 /** Deliberate whitelist: adding a host operation requires adding a decoder and an owner handler. */
 export interface HostMemoryApi {
   dreamStatus: Args<[operationId?: string], MemoryDreamStatus>
   requestDream: Args<[operationId?: string], MemoryDreamStatus>
   listFiles: Args<[request: MemoryFileListRequest], MemoryFileListResult>
-  readFile: Args<[identity: MemoryManagedFileIdentity, restrictionId?: string], MemoryFileDetail | null>
+  readFile: Args<[identity: MemoryManagedFileIdentity], MemoryFileDetail | null>
   setFileEnabled: Args<[request: MemoryFileSetEnabledRequest], MemoryFileMutationResult>
   createFile: Args<[request: MemoryFileCreateRequest], MemoryFileMutationResult>
   editFile: Args<[request: MemoryFileEditRequest], MemoryFileMutationResult>
@@ -48,39 +42,9 @@ export interface HostMemoryApi {
   setOnboarding: Args<[status: string], string>
   rebuildIndexes: Args<[], { fullText: boolean, semantic: boolean, files?: { lexical: boolean, vectorGeneration: number } }>
   setProfile: Args<[fields: Record<string, unknown>, operation?: string], MemoryProfile>
-  bindProject: Args<[session: string, project?: MemoryProject], boolean>
-  projectChanged: Args<[session: string | null | undefined, project?: MemoryProject], boolean>
-  allowsEvidence: Args<[evidence: MemoryProvenance | null | undefined, project?: MemoryProject], boolean>
-  stale: Args<[session: string | null | undefined, project?: MemoryProject], boolean>
-  allowsSession: Args<[session: string, project?: MemoryProject], boolean>
-  /** Trusted native adapter only: rebuild an idle model surface and acknowledge its durable replacement. */
-  recoverContext: Args<[session: string], boolean>
-  transferable: Args<[evidence: MemoryProvenance | null | undefined], boolean>
-  transferStatus: Args<[evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], 'ready' | 'stale' | 'memory-unavailable'>
-  transfer: Args<[session: string, evidence: MemoryProvenance | null | undefined, project: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], boolean>
-  canInherit: Args<[source: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], boolean>
-  inherit: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean, crossProject?: boolean], boolean>
-  inheritFork: Args<[source: string, target: string, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, transportReady: boolean], boolean>
-  allowsProjectHistory: Args<[row: MemoryHistoryOccurrence, sourceProject: MemoryProject | undefined, targetProject: MemoryProject | undefined, sessionProject?: MemoryProject, crossProject?: boolean], boolean>
-  useHistory: Args<[session: string | undefined, row: MemoryHistoryOccurrence, crossProject?: boolean], void>
-  provenance: Args<[session: string], MemoryProvenance>
-  nativeOutputEvidence: { input: { session: string, seq: number, digest: string }, output: MemoryErasureEvidence[] | null }
-  authorizedProvenance: { input: { session: string, prior?: MemoryProvenance, sourceId?: string }, output: MemoryProvenance | null }
-  recordSession: Args<[session: string], void>
-  sessionProject: Args<[session: string], string | undefined>
-  recordSessionProject: Args<[session: string, project: string], void>
-  recordDeliveredSource: Args<[source: string, conversation: string, derived: boolean, session: string], void>
-  isDerivedDelivery: Args<[source: string], boolean>
-  replaySources: Args<[sources: readonly string[], text: string, project?: MemoryProject], boolean>
-  bindWireAlias: Args<[session: string, text: string, wireText: string, sourceId?: string, wireSpans?: TextSpan[]], { wireText: string }>
-  authorizeGeneralQuestion: Args<[session: string, turn: string, cards: readonly HostQuestionCard[], conversation: string | null, context: MemoryScope, project?: MemoryProject, phase?: 'show' | 'check'], boolean>
-  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, question: string, requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
+  acceptQuestionAnswer: { input: { operationId: string, session: string, conversation: string, text: string, turn: number, cards: readonly HostQuestionCard[], requestId: string, questionId: string, context: MemoryScope, project?: MemoryProject }, output: { sourceId: string } }
   sourceAlias: { input: MemorySourceAlias, output: { sourceId: string } }
-  prepareSourceChange: { input: SourceChangeInput, output: { ticket: string, operation: MemoryOperationOutcome } }
-  commitSourceChange: { input: { operationId: string, ticket: string }, output: MemoryOperationOutcome }
   getOperation: { input: { operationId: string }, output: MemoryOperationOutcome | null }
-  pendingHostEffects: { input: Record<string, never>, output: MemoryHostEffect[] }
-  ackHostEffect: { input: { effectId: string, causeOperationId: string, revision: number }, output: { accepted: true } }
 }
 export type HostMemoryMethod = keyof HostMemoryApi
 export type HostMemoryCommand = { [M in HostMemoryMethod]: { method: M, input: HostMemoryApi[M]['input'] } }[HostMemoryMethod]
@@ -92,46 +56,26 @@ const wireSpans = z.array(z.strictObject({ start: z.int().nonnegative(), end: z.
 const integer = z.number().int().nonnegative()
 const project = z.strictObject({ kind: z.literal('project'), id: key })
 const scope = z.union([z.strictObject({ kind: z.literal('user') }), z.strictObject({ kind: z.enum(['project', 'conversation', 'task']), id: key })])
-const provenance = memoryProvenanceSchema
-const maybeProvenance = provenance.nullish()
-const occurrence = z.strictObject({ segmentId: key, role: key, text, sourceId: key.nullish(), sessionId: key.nullish() })
 // Node's JSON IPC encodes an undefined tuple slot as null. Only optional slots
 // are restored; nullable domain values keep their meaning.
 const args = <T extends z.ZodTuple>(schema: T) => z.strictObject({ args: z.preprocess(value => Array.isArray(value)
   ? value.map((item, index) => item === null && schema.def.items[index] && z.safeParse(schema.def.items[index], undefined).success ? undefined : item)
   : value, schema) })
 const empty = args(z.tuple([]))
-const transfer = [maybeProvenance, project.optional(), z.boolean(), z.boolean().optional()] as const
-const inheritance = [key, project.optional(), project.optional(), z.boolean(), z.boolean().optional()] as const
-const forkInheritance = [key, project.optional(), project.optional(), z.boolean()] as const
 export const hostMemoryInputSchemas = {
   profile: empty, dreamStatus: args(z.tuple([z.uuid().optional()])), requestDream: args(z.tuple([z.uuid().optional()])),
   createFile: args(z.tuple([memoryFileCreateRequest])), editFile: args(z.tuple([memoryFileEditRequest])),
-  listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity, memoryFileRestrictionId.optional()])),
+  listFiles: args(z.tuple([memoryFileListRequest])), readFile: args(z.tuple([memoryFileIdentity])),
   setFileEnabled: args(z.tuple([memoryFileSetEnabledRequest])), undoFile: args(z.tuple([memoryFileUndoRequest])), forgetFile: args(z.tuple([memoryFileForgetRequest])),
   profilePage: args(z.tuple([project.optional()])), fileProfile: args(z.tuple([project.optional()])),
   revision: empty, epoch: empty, cleanupPending: empty, onboarding: empty, rebuildIndexes: empty,
   setOnboarding: args(z.tuple([z.enum(['pending', 'done', 'skipped'])])),
   setProfile: args(z.tuple([z.record(z.string(), z.unknown()), key.optional()])),
-  bindProject: args(z.tuple([key, project.optional()])), projectChanged: args(z.tuple([key.nullish(), project.optional()])),
-  allowsEvidence: args(z.tuple([maybeProvenance, project.optional()])), stale: args(z.tuple([key.nullish(), project.optional()])),
-  allowsSession: args(z.tuple([key, project.optional()])), recoverContext: args(z.tuple([key])), transferable: args(z.tuple([maybeProvenance])),
-  transferStatus: args(z.tuple(transfer)), transfer: args(z.tuple([key, ...transfer])),
-  canInherit: args(z.tuple(inheritance)), inherit: args(z.tuple([key, ...inheritance])),
-  inheritFork: args(z.tuple([key, ...forkInheritance])),
-  allowsProjectHistory: args(z.tuple([occurrence, project.optional(), project.optional(), project.optional(), z.boolean().optional()])),
-  useHistory: args(z.tuple([key.optional(), occurrence, z.boolean().optional()])), provenance: args(z.tuple([key])), authorizedProvenance: z.strictObject({ session: key, prior: provenance.optional(), sourceId: key.optional() }),
-  nativeOutputEvidence: z.strictObject({ session: key, seq: integer, digest: z.string().regex(/^[a-f0-9]{64}$/u) }),
-  recordSession: args(z.tuple([key])), sessionProject: args(z.tuple([key])), recordSessionProject: args(z.tuple([key, z.string()])),
-  recordDeliveredSource: args(z.tuple([key, key, z.boolean(), key])), isDerivedDelivery: args(z.tuple([key])),
-  replaySources: args(z.tuple([z.array(key), text, project.optional()])),
-  bindWireAlias: args(z.tuple([key, text, text, key.optional(), wireSpans])),
-  authorizeGeneralQuestion: args(z.tuple([key, key, z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })), key.nullable(), scope, project.optional(), z.enum(['show', 'check']).optional()])),
-  acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, question: text, requestId: key, questionId: key, context: scope, project: project.optional() }),
-  sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text.optional(), wireSpans, context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional(), dependencies: provenance.optional() }),
-  prepareSourceChange: z.strictObject({ operationId: z.uuid(), conversation: key, ids: z.array(key), onlySources: z.literal(true).optional(), replacement: z.strictObject({ sourceId: key, segmentId: key, projectId: key.nullish() }).optional() }),
-  commitSourceChange: z.strictObject({ operationId: z.uuid(), ticket: key }), getOperation: z.strictObject({ operationId: z.uuid() }),
-  pendingHostEffects: z.strictObject({}), ackHostEffect: z.strictObject({ effectId: key, causeOperationId: z.uuid(), revision: integer }),
+  acceptQuestionAnswer: z.strictObject({ operationId: z.uuid(), session: key, conversation: key, text, turn: z.number().int().positive(),
+    cards: z.array(z.strictObject({ id: key, question: text, header: z.string(), multiSelect: z.boolean(), options: z.array(z.strictObject({ label: text, description: text.optional() })) })),
+    requestId: key, questionId: key, context: scope, project: project.optional() }),
+  sourceAlias: z.strictObject({ operationId: key, sourceId: key, session: key, conversation: key, text, wireText: text, wireSpans, cwd: z.string().nullish(), context: scope.optional(), project: project.optional(), origin: z.enum(['original', 'derived']).optional() }),
+  getOperation: z.strictObject({ operationId: z.uuid() }),
 } satisfies Record<HostMemoryMethod, z.ZodType>
 export function parseHostMemoryCommand(method: unknown, input: unknown): HostMemoryCommand {
   if (typeof method !== 'string' || !Object.hasOwn(hostMemoryInputSchemas, method)) throw new Error('Unknown memory host method')
@@ -151,6 +95,3 @@ export const memoryOwnerContextUsed = z.strictObject({ type: z.literal('memory_o
   epoch: key, revision: integer, session: key, conversation: key.nullable(), turn: integer, at: integer,
   pushed: z.array(z.strictObject({ text, names: z.array(text) })) })
 export type MemoryOwnerContextUsed = z.infer<typeof memoryOwnerContextUsed>
-export const memoryOwnerProjection = z.strictObject({ type: z.literal('memory_owner_projection'), protocol: z.literal(MEMORY_HOST_PROTOCOL),
-  epoch: key, revision: integer })
-export type MemoryOwnerProjection = z.infer<typeof memoryOwnerProjection>

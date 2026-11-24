@@ -12,19 +12,6 @@ export type MemoryFileDependency = {
   /** Body-free evidence of this accepted projection, retained even after it changes. */
   sourceRanges: Array<{ sourceId: string; spans?: TextSpan[] }>
 }
-export type MemoryProvenance = {
-  files?: MemoryFileDependency[]
-  sources: string[]
-  /** Subset of sources seen only through the exact accepted file dependencies. */
-  fileSources?: string[]
-  turnOnly: boolean
-  epoch: number
-  projects?: readonly string[]
-}
-export interface MemorySourceErasure {
-  token: string
-  spans: Array<{ start: number; end: number }>
-}
 export interface MemorySource {
   id: string
   operation: string
@@ -44,6 +31,4 @@ export interface MemorySource {
   at: number
   timezone: string
   outcome: string
-  withdrawn: boolean
-  erasure?: MemorySourceErasure
 }

@@ -23,6 +23,7 @@ export interface HistoryEvidence {
   text: string
   sourceId?: string | null
   sessionId?: string | null
+  foregroundOnly?: true
 }
 
 export function historyRecall(db: HistoryDb, allowed?: (message: HistoryEvidence) => boolean, used?: (message: HistoryEvidence) => void) {
@@ -68,31 +69,4 @@ export function historyRecall(db: HistoryDb, allowed?: (message: HistoryEvidence
   }
 
   return { search, read }
-}
-
-/** The host reads its own rows; the memory owner authorizes the exact occurrences before any is returned. */
-export function historyRecallAsync(db: HistoryDb, allowed: (message: HistoryEvidence) => Promise<boolean>, used: (message: HistoryEvidence) => Promise<void>) {
-  const keyOf = (row: HistoryEvidence) => JSON.stringify([row.segmentId, row.role, row.text, row.sourceId, row.sessionId])
-  async function authorize<T>(read: (recall: ReturnType<typeof historyRecall>) => T, unavailable: T): Promise<T> {
-    const revision = db.fileErasureRevision()
-    const current = () => db.fileErasureRevision() === revision
-    const candidates = new Map<string, HistoryEvidence>()
-    read(historyRecall(db, row => { candidates.set(keyOf(row), row); return true }))
-    const decisions = new Map<string, boolean>()
-    for (const [key, row] of candidates) {
-      decisions.set(key, await allowed(row))
-      if (!current()) return unavailable
-    }
-    const delivered = new Map<string, HistoryEvidence>()
-    const result = read(historyRecall(db, row => decisions.get(keyOf(row)) === true, row => { delivered.set(keyOf(row), row) }))
-    for (const row of delivered.values()) {
-      await used(row)
-      if (!current()) return unavailable
-    }
-    return result
-  }
-  return {
-    search: (query: string, range?: RecallRange) => authorize(recall => recall.search(query, range), []),
-    read: (ref: { segmentId: string, seq: number, messageId?: number }, around?: number) => authorize(recall => recall.read(ref, around), { status: 'deleted' }),
-  }
 }

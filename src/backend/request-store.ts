@@ -1,5 +1,4 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { memoryProvenanceSchema, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 import type { Action, Plan, Receipt } from '../shared/request-routing/protocol.ts'
 
 /**
@@ -29,10 +28,6 @@ const SCHEMA = `
     request_id TEXT PRIMARY KEY REFERENCES routing_requests (id) ON DELETE CASCADE,
     plan TEXT NOT NULL,
     decided_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS routing_decision_memory (
-    request_id TEXT PRIMARY KEY REFERENCES routing_decisions (request_id) ON DELETE CASCADE,
-    evidence TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS routing_actions (
     request_id TEXT NOT NULL REFERENCES routing_requests (id) ON DELETE CASCADE,
@@ -87,13 +82,6 @@ export function createRequestStore({ db }: { db: DatabaseSync }) {
   const byId = db.prepare('SELECT * FROM routing_requests WHERE id = ?')
   const setStatus = db.prepare('UPDATE routing_requests SET status = ?, failure = ?, updated_at = ? WHERE id = ? AND status = ?')
   const putDecision = db.prepare('INSERT INTO routing_decisions (request_id, plan, decided_at) VALUES (?, ?, ?)')
-  const putEvidence = db.prepare('INSERT INTO routing_decision_memory VALUES (?, ?)')
-  const proofOf = db.prepare(`SELECT evidence FROM routing_decision_memory m JOIN routing_requests r ON m.request_id=r.id
-    WHERE r.id=? AND r.session_id=? AND r.status='decided'`)
-  const decisionEvidence = db.prepare('SELECT request_id,evidence FROM routing_decision_memory')
-  const dropDecision = db.prepare('DELETE FROM routing_decisions WHERE request_id = ?')
-  const clearReceipts = db.prepare(`UPDATE routing_actions SET status = CASE WHEN status = 'pending' THEN 'uncertain' ELSE status END,
-    error = NULL WHERE request_id = ?`)
   const putAction = db.prepare('INSERT INTO routing_actions (request_id, idx, kind, status, updated_at) VALUES (?, ?, ?, ?, ?)')
   const settleAction = db.prepare("UPDATE routing_actions SET status = ?, task_id = ?, error = ?, updated_at = ? WHERE request_id = ? AND idx = ? AND status = 'pending'")
   const actionsOf = db.prepare('SELECT idx, kind, status, task_id, error FROM routing_actions WHERE request_id = ? ORDER BY idx')
@@ -107,31 +95,16 @@ export function createRequestStore({ db }: { db: DatabaseSync }) {
       insert.run(request.id, request.sessionId, request.conversationId, request.cwd, request.kind, request.at, request.at)
       if (request.sourceId) putSource.run(request.id, request.sourceId)
     },
-    outputEvidence(id: string, session: string) {
-      const proof = proofOf.get(id, session)?.evidence
-      return typeof proof === 'string' ? memoryProvenanceSchema.parse(JSON.parse(proof)) : null
-    },
-    source: (id: string, session: string) => readSource.get(id, session)?.source as string | undefined,
     get(id: string): StoredRequest | null {
       const row = byId.get(id) as Row | undefined
       return row ? fromRow(row) : null
     },
     /** Only a request still received takes a decision, with a row for each of its actions; false when it did not. */
-    decide(id: string, plan: Plan, at: number, evidence?: MemoryProvenance): boolean {
+    decide(id: string, plan: Plan, at: number): boolean {
       if (Number(setStatus.run('decided', null, at, id, 'received').changes) !== 1) return false
       putDecision.run(id, JSON.stringify(plan), at)
-      if (evidence) putEvidence.run(id, JSON.stringify(memoryProvenanceSchema.parse(evidence)))
       plan.actions.forEach((action, idx) => putAction.run(id, idx, action.kind, initialStatus(action), at))
       return true
-    },
-    /** Called with the host erasure transaction, before any further actions can settle. */
-    eraseMemory(matches: (evidence: MemoryProvenance) => boolean) {
-      for (const row of decisionEvidence.all()) {
-        const evidence = memoryProvenanceSchema.parse(JSON.parse(String(row.evidence)))
-        if (!matches(evidence)) continue
-        clearReceipts.run(row.request_id)
-        dropDecision.run(row.request_id)
-      }
     },
     /** What became of a pending action; false when it was settled already. */
     settle(id: string, idx: number, receipt: Receipt, at: number): boolean {

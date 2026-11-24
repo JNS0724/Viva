@@ -6,9 +6,9 @@ Viva 和独立 DSH 都在受监管的 worker 中运行记忆。worker 独占 SQL
 
 ## 摄取与检索
 
-适配器从已保存的游标扫描持久化会话事件。新库以库创建时间为起点。worker 记录回合结果时推进游标，扫描中断重试通过原消息 ID 复用来源。Viva 为能够核实的真人原话注册映射，由映射指出原话在发给 DSH 的文字中的位置。没有可信映射时对话仍可继续，该消息不作为原话证据。独立 DSH 的纯文本用户消息可直接摄取。工具结果、自动注入、无人值守输入和后台汇报均不属于原话证据。[适配器](../plugins/memory/lib/adapter.ts) · [会话摄取](../plugins/memory/lib/ingestion.ts)
+适配器从已保存的游标扫描持久化会话事件。新库以库创建时间为起点。worker 记录回合结果时推进游标，扫描中断重试通过原消息 ID 复用来源。Viva 异步登记可核实的真人原话在发给 DSH 的文本中的位置。聊天、插话、汇报和开放题回答无需等待记忆回执。DSH 热重启与记忆 worker 的恢复各自进行。没有可信映射时对话仍可继续，该消息不作为原话证据。独立 DSH 的纯文本用户消息可直接摄取。工具结果、自动注入、无人值守输入和后台汇报均不属于原话证据。[适配器](../plugins/memory/lib/adapter.ts) · [会话摄取](../plugins/memory/lib/ingestion.ts)
 
-已核实的项目会话读取个人和项目记忆，写入项目记忆。个人会话读写个人记忆。工作区身份未知时可以查询个人记忆，摄取跳过该会话的消息。自动注入有短时预算，并排除当前会话自己生成的日记。显式工具使用独立预算，owner 无法响应时返回记忆不可用。[项目身份](../src/memory/node/project-scope.ts) · [文件读取规则](../src/memory/core/memory-document-read-policy.ts)
+Viva 使用全局记忆，写入和检索独立于工作文件夹及 Git 状态。任务专用来源仍按任务权限读取。独立 DSH 沿用原有作用域。自动注入有短时预算，并排除当前会话自己生成的日记。显式工具使用独立预算，owner 无法响应时返回记忆不可用。[项目身份](../src/memory/node/project-scope.ts) · [文件读取规则](../src/memory/core/memory-document-read-policy.ts)
 
 ## 文件操作
 

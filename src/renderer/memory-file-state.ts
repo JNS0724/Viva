@@ -40,7 +40,7 @@ export const sameMemoryFile = (a: MemoryManagedFileIdentity, b: MemoryManagedFil
   a.kind === b.kind && a.workspace === b.workspace && a.id === b.id
 
 export const sameMemoryFileSelection = (a: MemoryFileSelection | null, b: MemoryFileSelection): boolean =>
-  Boolean(a && a.restrictionId === b.restrictionId && sameMemoryFile(a.identity, b.identity))
+  Boolean(a && sameMemoryFile(a.identity, b.identity))
 
 export function canEditMemoryFile(detail: MemoryFileDetailView | null): detail is MemoryFileDetailView & { editor: NonNullable<MemoryFileDetailView['editor']> } {
   return Boolean(detail?.actions.edit && detail.editor)

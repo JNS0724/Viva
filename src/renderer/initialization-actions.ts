@@ -1,6 +1,6 @@
 import { createRequestBudget, INITIALIZATION_BUDGET_MS } from '../shared/request-budget.ts'
 import { belongsTo, isConversationEvent, type ContextEvent } from '../shared/conversation-context.ts'
-import { invalidatesConversationSnapshot, streamMark, type ActiveTurnSnapshot, type RendererSnapshot, type StreamMark } from '../shared/renderer-sync.ts'
+import { streamMark, type ActiveTurnSnapshot, type RendererSnapshot, type StreamMark } from '../shared/renderer-sync.ts'
 import type { DiagnosticEvent } from '../diagnostics/contracts.ts'
 
 export type InitializationFailure = 'timeout' | 'capacity' | 'age' | 'boundary' | 'gap' | 'unavailable'
@@ -22,7 +22,7 @@ export function createInitializationActions({ snapshot, install, deliver, restor
   let bytes = 0, ageTimer: ReturnType<typeof setTimeout> | undefined
   let lifetime: ReturnType<typeof createRequestBudget> | undefined
   // A push can announce a replacement or arrive late from an old owner. Only a snapshot confirms its generation.
-  const cursors = new Map<string, { last: number, required: number, invalidation: number }>()
+  const cursors = new Map<string, { last: number, required: number }>()
   let latestPush: string | undefined
   const pushedDuringRequest = new Set<string>()
   const retired = new Set<string>()
@@ -47,14 +47,13 @@ export function createInitializationActions({ snapshot, install, deliver, restor
           cursors.delete(unconfirmed)
           fail('boundary')
         }
-        cursor = { last: -1, required: 0, invalidation: 0 }
+        cursor = { last: -1, required: 0 }
         cursors.set(mark.streamGeneration, cursor)
       }
       if (mark.eventCursor <= cursor.last) return
       if (mode === 'loading') { latestPush = mark.streamGeneration; pushedDuringRequest.add(mark.streamGeneration) }
       if (mark.eventCursor > cursor.last + 1) cursor.required = mark.eventCursor - 1
       cursor.last = mark.eventCursor
-      if (invalidatesConversationSnapshot(raw)) cursor.invalidation = mark.eventCursor
     }
     if (mode === 'ready') {
       if (!mark) { if (foreground(value)) fail('boundary'); else deliver(raw); return }
@@ -89,7 +88,6 @@ export function createInitializationActions({ snapshot, install, deliver, restor
       if (!mark || !Array.isArray(view.replay) || retired.has(mark.streamGeneration)
         || latestPush !== undefined && latestPush !== mark.streamGeneration
         || active?.streamGeneration === mark.streamGeneration && pushedDuringRequest.size > 1
-        || cursor && cursor.invalidation > mark.eventCursor
         || (view.history && view.history.id !== view.context.conversationId)
         || (view.info.conversationId ?? null) !== view.context.conversationId || (view.info.sessionId ?? null) !== view.context.sessionId) throw new Error('Untrusted snapshot boundary')
       if (cursor && cursor.required > mark.eventCursor) { fail('gap'); return false }
@@ -115,7 +113,7 @@ export function createInitializationActions({ snapshot, install, deliver, restor
       }
       active = { streamGeneration: mark.streamGeneration, eventCursor: Math.max(mark.eventCursor, cursor?.last ?? 0) }
       cursors.clear()
-      cursors.set(mark.streamGeneration, { last: active.eventCursor, required: active.eventCursor, invalidation: 0 })
+      cursors.set(mark.streamGeneration, { last: active.eventCursor, required: active.eventCursor })
       clearHeld(); mode = 'ready'
       log({ event: 'state.changed', operation: 'startup', stage: 'ready', identities: { generation: attempt }, metrics: { eventCursor: active.eventCursor } })
       return true

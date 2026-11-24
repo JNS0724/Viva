@@ -8,7 +8,9 @@ Viva and standalone DSH run memory in a supervised worker. The worker owns SQLit
 
 The adapter scans durable session events from the saved cursor. A new database starts at its creation time. The worker advances the cursor with each recorded turn outcome, and message IDs stabilize receipts for interrupted scans. Viva registers an alias for each original it can verify. The alias identifies the original text within the text sent to DSH. If the alias is unavailable, the conversation can still proceed and the message contributes no original evidence. Standalone DSH can ingest its own plain user messages. Tool output, automatic context, unattended inputs, and background reports stay outside original evidence. [Adapter](../plugins/memory/lib/adapter.ts) · [Session intake](../plugins/memory/lib/ingestion.ts)
 
-Verified projects read personal and project memory and write to the project. Personal sessions read and write personal memory. When a workspace cannot be identified, it can query personal memory and intake skips its messages. Automatic context has a short deadline and excludes daily notes written by the current session. Explicit memory tools use a separate request budget and return an unavailable result when the owner cannot answer. [Project identity](../src/memory/node/project-scope.ts) · [Document read policy](../src/memory/core/memory-document-read-policy.ts)
+Viva submits source mappings asynchronously. Chat, interjections, reports and open-ended answers proceed without waiting for a memory receipt. DSH can restart while its memory worker recovers.
+
+Viva uses global memory across working folders and Git states. Task-specific sources remain subject to task access rules. Standalone DSH retains its existing scopes. Automatic context has a short deadline and excludes daily notes written by the current session. Explicit memory tools use a separate request budget and return an unavailable result when the owner cannot answer. [Project identity](../src/memory/node/project-scope.ts) · [Document read policy](../src/memory/core/memory-document-read-policy.ts)
 
 ## File operations
 

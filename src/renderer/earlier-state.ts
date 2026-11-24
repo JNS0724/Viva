@@ -1,5 +1,4 @@
 import type { ActionHandlers } from './action-types.ts'
-import { withoutErasedReports } from './report-state.ts'
 /**
  * The one timeline (single-conversation design): the segments before the one on screen, oldest first, as the
  * history keeps them (main/history-db.js segmentsBefore). The window scrolls up into them; when the conversation
@@ -54,7 +53,7 @@ export const EARLIER_ACTIONS= {
     const shown = new Set(state.earlier.segments.map((segment: Segment) => segment.id))
     const fresh = (segments ?? []).filter((segment: Segment) => !shown.has(segment.id)).map(segment => {
       if (!segment.records) return segment
-      const records = withoutErasedReports(segment.records, state.erasedReportIds)
+      const records = segment.records
       return records === segment.records ? segment : { ...segment, records }
     })
     return withEarlier(state, { segments: [...fresh, ...state.earlier.segments], hasMore: Boolean(hasMore), loading: false })

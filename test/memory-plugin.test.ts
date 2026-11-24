@@ -14,14 +14,12 @@ import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defa
 /** The real DSH adapter and the separate storage owner communicate through the backend relay. */
 async function setupMemory(t: TestContext, options?: Parameters<typeof setup>[1]) {
   const harness = await setup(t, options)
-  const agent = harness.bridge({ memoryRequired: true })
+  const agent = harness.bridge()
   let session = (await agent.start()).sessionId!
   assert.ok(await eventually(() => agent.memory.ready()), 'independent memory owner becomes ready')
   const call = agent.memory.call
   async function ask(text: string) {
     const sourceId = randomUUID()
-    await call('sourceAlias', { operationId: randomUUID(), sourceId, session,
-      conversation: 'memory-integration', text })
     return agent.prompt(text, [], { userTurn: true, sourceId })
   }
   async function freshSession() { session = (await agent.newSession()).sessionId! }
@@ -78,7 +76,7 @@ test('automatic context times out without interrupting the request', { timeout: 
     const frame = event === 'message' && this.pid === pid ? ownerRpcFrame(args[0]) : null
     if (frame?.kind === 'request' && frame.method === 'adapter') {
       const call = objectOf(frame.input), input = Array.isArray(call?.args) ? objectOf(call.args[0]) : null
-      if (call?.method === 'receiveSource' && input?.admitted === true) admitted = true
+      if (call?.method === 'receiveSource' && input?.live === true) admitted = true
       if (admitted && !lookup && call?.method === 'sessionView') extraSessionReads++
       if (call?.method === 'sidecarRequest' && input?.op === 'context') {
         lookup = true
@@ -108,7 +106,7 @@ test('the plugin injects manual profile and recalls file memory with exact evide
   const epoch = agent.memory.state()!.epoch
   const dsh = agent.pid()
   await agent.dispose()
-  const restarted = bridge({ memoryRequired: true })
+  const restarted = bridge()
   await restarted.start()
   assert.ok(await eventually(() => restarted.memory.ready()))
   assert.notEqual(restarted.pid(), dsh)
@@ -118,9 +116,9 @@ test('the plugin injects manual profile and recalls file memory with exact evide
 })
 
 test('trusted source aliases retain exact user evidence and refuse reused operation text', { timeout: DSH_TIMEOUT_MS }, async t => {
-  const { agent, call, session, userData } = await setupMemory(t)
+  const { agent, call, session, userData, workspace } = await setupMemory(t)
   const text = '周报每周五交给李四，客户故障时另行确认。'
-  const alias = { operationId: randomUUID(), sourceId: randomUUID(), session: session(), conversation: 'aliases', text }
+  const alias = { operationId: randomUUID(), sourceId: randomUUID(), session: session(), conversation: session(), text, wireText: text, cwd: workspace }
   assert.deepEqual(await call('sourceAlias', alias), await call('sourceAlias', alias))
   await assert.rejects(call('sourceAlias', { ...alias, text: 'different text' }))
   await agent.prompt(text, [], { sourceId: alias.sourceId })

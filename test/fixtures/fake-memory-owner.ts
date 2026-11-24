@@ -34,7 +34,7 @@ export async function startFakeMemoryOwner() {
     async receive(sessionId: string, text: string) {
       const turn = ++ordinal
       const receipt = await owner.receiveSource({ sessionId, messageId: randomUUID(), text, at: Date.now(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, turn, step: 1, admitted: true, inherited: false })
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, turn, cwd: process.cwd() })
       return { turn, sourceIds: receipt.handledIntent ? [] : [receipt.sourceId] }
     },
     async complete(sessionId: string, turn: number, sourceIds: readonly string[], completed: boolean) {

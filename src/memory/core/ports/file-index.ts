@@ -63,7 +63,6 @@ export interface MemoryFileIndex {
   vector(query: Float32Array, space: MemoryVectorSpace, authorized: readonly MemoryFileIdentity[], limit: number): MemoryFileHit[] | null
   /** Rebuild derived indexes from accepted snapshots only. Never touches filesystem. */
   reindex(): { lexical: boolean, vectorGeneration: number }
-  withdraw(sourceId: string): void
   recover(): void
   pendingCleanup(): number
 }

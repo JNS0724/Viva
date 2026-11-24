@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { test } from 'node:test'
 import { createEffects } from '../src/backend/effects.ts'
+import { openHistoryDb } from '../src/backend/history-db.ts'
 import { memoryCompute } from '../src/memory/contracts/memory-contract.ts'
 import { MemoryComputeError } from '../src/memory/contracts/compute.ts'
 import { DREAM_CONSOLIDATE_SYSTEM } from '../src/memory/core/memory-dream-prompts.ts'
@@ -28,7 +29,7 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
   const memory = createMemoryRuntime({
     store, now: () => now, timezone: () => 'UTC', dailyNotes: { timezone: 'UTC' },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job, _signal, tools) {
       stages.push(job.stage)
       if (job.stage === 'note') {
@@ -62,10 +63,53 @@ test('daily notes are recalled after five rounds and a new digest retains its ci
   assert.equal(store.db.prepare("SELECT 1 FROM sqlite_master WHERE name='memories'").get(), undefined)
   const document = store.db.prepare('SELECT sources FROM memory_documents').get()!
   assert.deepEqual(new Set(JSON.parse(String(document.sources)).map((ref: { id: string }) => ref.id)), new Set(ids))
-  memory.withdraw({ ids: [ids[1]], conversation: origin.conversation, onlySources: true })
-  const after = JSON.parse(memory.handle({ op: 'recall', session: origin.session, query: '周报' }, origin))
-  assert.deepEqual(after.notes, [])
-  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM memory_documents WHERE forgotten=0').get()?.n, 0)
+})
+
+test('Dream refines the current report recipient while the original chat keeps its earlier instruction', async t => {
+  const { dir, defer } = scratch(t, 'viva-dream-correction-')
+  let now = Date.parse('2026-11-03T12:00:00Z')
+  const appHistory = openHistoryDb({ file: path.join(dir, 'app.db') })
+  defer(appHistory.close)
+  const chat = appHistory.create({ sessionId: origin.session })
+  const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
+  const first = 'Send the weekly status report to Alice.'
+  const corrected = 'Send the weekly status report to Bob from now on.'
+  let canonical = first
+  const stages: string[] = []
+  const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 1 },
+    route: () => ({ provider: 'fake', model: 'fake' }), changed() {},
+    async compute(job, _signal, tools) {
+      stages.push(job.stage)
+      if (job.stage === 'note') {
+        return JSON.stringify({ status: 'write', title: 'Weekly report', markdown: canonical })
+      }
+      if (job.system !== DREAM_CONSOLIDATE_SYSTEM) return JSON.stringify({ verdict: 'accept' })
+      return dreamModelStep(job, { name: 'Weekly-report', summary: canonical, body: canonical }, tools)
+    },
+  })
+  defer(memory.close)
+  const send = async (text: string) => {
+    const sourceId = randomUUID()
+    canonical = text
+    appHistory.commit(chat, [{ kind: 'append_user', message: { role: 'user', text, receipt: null, sourceId } }])
+    memory.accept(text, { ...origin, conversation: chat.id }, sourceId)
+    memory.recordNoteTurn!(origin.session, [sourceId], 'Acknowledged.')
+    await memory.wake()
+    await memory.runDocumentDream()
+  }
+  await send(first)
+  const [seed] = memory.listFiles({ kind: 'digest' }).items
+  assert.ok(seed, JSON.stringify({ stages, notes: memory.listFiles({ kind: 'daily' }), dream: memory.dreamStatus() }))
+  now += 60_000
+  await send(corrected)
+  const [updated] = memory.listFiles({ kind: 'digest' }).items
+  assert.deepEqual(updated?.identity, seed.identity)
+  assert.notEqual(updated?.version.contentRevision, seed.version.contentRevision)
+  const next = { conversation: 'fresh-topic', session: 'fresh-session' }
+  const recalled = JSON.parse(await memory.handleModelRequest({ op: 'file_read', session: next.session, id: seed.identity.id }, next, () => true))
+  assert.match(recalled.text, /to Bob from now on/)
+  assert.doesNotMatch(recalled.text, /to Alice/)
+  assert.deepEqual(appHistory.get(chat.id)?.messages.map(message => message.text), [first, corrected])
 })
 
 test('daily recall searches past 64 newer notes and returns a match at the end without prefix clipping', async t => {
@@ -76,7 +120,7 @@ test('daily recall searches past 64 newer notes and returns a match at the end w
   const ending = '# Final decisions\n' + 'Supplemental material from the daily discussion.\n'.repeat(40) + 'NEBULARHARBOR'
   const memory = createMemoryRuntime({
     store, now: () => now, dailyNotes: { noteInterval: 1 },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job) {
       if (job.stage !== 'note') return JSON.stringify({ units: [] })
       const input = JSON.parse(job.input)
@@ -132,7 +176,7 @@ test('document consolidation waits for the draft before checkpointing and retrie
   let dreams = 0
   const memory = createMemoryRuntime({
     store, now: () => now, dailyNotes: { noteInterval: 1 },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job, _signal, tools) {
       if (job.stage === 'note') return JSON.stringify({ status: 'write', title: 'Report', markdown: fact })
       assert.equal(job.stage, 'dream')
@@ -170,7 +214,7 @@ test('consolidation groups the two-day window by byte budget, bisects explicit c
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
   const memory = createMemoryRuntime({
     store, now: () => now, dailyNotes: { noteInterval: 1 },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job) {
       const input = JSON.parse(job.input)
       if (job.stage === 'note') {
@@ -220,7 +264,7 @@ test('a partial daily-note batch survives restart and can be written once', asyn
   const start = () => createMemoryRuntime({
     store: openMemoryStore(file), dailyNotes: true,
     now: () => Date.parse('2026-11-04T12:00:00Z'), timezone: () => 'UTC',
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job) {
       assert.equal(job.stage, 'note')
       modelCalls += 1
@@ -254,7 +298,7 @@ test('a recovered completed turn uses message time in configured timezone, accep
   let now = Date.parse('2026-11-14T15:59:00Z')
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
   const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { noteInterval: 1, timezone: 'Asia/Shanghai' },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job) {
       if (job.stage !== 'note') return '{"units":[]}'
       const input = JSON.parse(job.input)
@@ -282,7 +326,7 @@ test('a malformed note response is retried and never counted as a successful ski
   let now = Date.parse('2026-11-14T12:00:00Z'), attempts = 0
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
   const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { noteInterval: 1 },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job) {
       assert.equal(job.stage, 'note')
       return ++attempts === 1 ? '{"broken":true}' : '{"status":"skip"}'
@@ -310,7 +354,7 @@ for (const extraction of ['partial', 'empty'] as const) test(`daily files retain
   const text = `${fact}。今天还在调试界面`
   const store = openMemoryStore(path.join(dir, 'memory.db'), () => now)
   const memory = createMemoryRuntime({ store, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 1 },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(job, _signal, tools) {
       if (job.stage === 'note') {
         notesWritten++
@@ -365,7 +409,7 @@ test('recovery finishes a receipted note generation before processing the remain
   const reopened = openMemoryStore(file, () => now)
   const computed: number[] = []
   const memory = createMemoryRuntime({ store: reopened, now: () => now, dailyNotes: { timezone: 'UTC', noteInterval: 5 },
-    route: () => ({ provider: 'fake', model: 'fake' }), quiesce: async () => {}, changed: () => {},
+    route: () => ({ provider: 'fake', model: 'fake' }), changed: () => {},
     async compute(request) {
       assert.equal(request.stage, 'note')
       const input = JSON.parse(request.input) as { existing: { markdown: string }, turns: unknown[] }

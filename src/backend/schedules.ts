@@ -2,7 +2,6 @@ import type { DatabaseSync } from 'node:sqlite'
 import { t } from '../shared/i18n/translate.ts'
 import { journaled, type Apply } from './journal.ts'
 import { openScheduleStore, type Schedule, type ScheduleRule } from './schedule-store.ts'
-import { combineMemoryProvenance, type MemoryProvenance } from '../memory/contracts/provenance.ts'
 import { parseScheduleWords, type ScheduleAction } from './tasks-channel.ts'
 
 /**
@@ -31,7 +30,7 @@ const viewOf = (schedule: Schedule): ScheduleView => ({
 /** The schedules' writes made by the user or the model, each an event (journal.ts); being run is schedule-runs.ts's. */
 const SCHEDULE_WRITES = Object.freeze(['create', 'update', 'setPaused', 'remove'] as const)
 
-export function createSchedules({ db, apply, emit, changed = () => {}, now = Date.now, newId = () => `p${crypto.randomUUID().slice(0, 8)}`, memoryCurrent = () => true }: {
+export function createSchedules({ db, apply, emit, changed = () => {}, now = Date.now, newId = () => `p${crypto.randomUUID().slice(0, 8)}` }: {
   db: DatabaseSync
   /** The event core's apply: each write and its event together. Without it (tests), plain writes. */
   apply?: Apply
@@ -41,18 +40,17 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   changed?: () => void
   now?: () => number
   newId?: () => string
-  memoryCurrent?: (memory: MemoryProvenance) => boolean | Promise<boolean>
 }) {
   const opened = openScheduleStore({ db, now })
   const store = apply ? journaled(opened, 'schedule', SCHEDULE_WRITES, apply) : opened
   /** Proposals waiting on the user's yes, by id: kept in memory, gone with the app (the card then says so). */
-  let proposals = new Map<string, ScheduleProposal & { conversationId: string | null, cwd: string, memory?: MemoryProvenance }>()
+  let proposals = new Map<string, ScheduleProposal & { conversationId: string | null, cwd: string }>()
 
-  function propose(action: Extract<ScheduleAction, { op: 'schedule_create' }>, conversationId: string | null, cwd: string, memory?: MemoryProvenance) {
+  function propose(action: Extract<ScheduleAction, { op: 'schedule_create' }>, conversationId: string | null, cwd: string) {
     const rule = action.rule as unknown as ScheduleRule
     const record = store.preview({ title: action.title, prompt: action.prompt, rule })
     const proposal: ScheduleProposal = { proposalId: newId(), title: action.title, prompt: action.prompt, rule, firstAt: record.scheduledAt }
-    proposals = new Map([...proposals, [proposal.proposalId, { ...proposal, conversationId, cwd, memory }]])
+    proposals = new Map([...proposals, [proposal.proposalId, { ...proposal, conversationId, cwd }]])
     emit({ type: 'schedule_propose', proposal })
     return { proposed: true, firstAt: record.scheduledAt, note: t('main.schedules.proposed') }
   }
@@ -69,13 +67,10 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
     const edited = edits === undefined ? null : parseScheduleWords(kept ? { ...edits, rule: proposal.rule } : edits)
     const words = edited ? { ...edited, rule: edited.rule as unknown as ScheduleRule } : proposal
     // Let go only once kept: a save that fails leaves the card to be answered again.
-    if (proposal.memory && !await memoryCurrent(proposal.memory)) throw new Error(t('main.schedule-runs.memory.stale'))
-    // A remote memory check yields: another acceptance or a decline may have consumed this card.
-    if (proposals.get(proposalId) !== proposal) throw new Error(t('main.schedules.proposal.gone'))
     let schedule: Schedule
     try {
       schedule = store.create({ title: words.title, prompt: words.prompt, rule: words.rule,
-        cwd: proposal.cwd, conversationId: proposal.conversationId, memory: proposal.memory })
+        cwd: proposal.cwd, conversationId: proposal.conversationId })
     } catch (err) {
       throw timeRefused(err)
     }
@@ -90,7 +85,7 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
 
   const list = (): ScheduleView[] => store.list().map(viewOf)
 
-  function update(id: string, changes: { title?: string, prompt?: string, rule?: ScheduleRule, paused?: boolean, memory?: MemoryProvenance }): ScheduleView {
+  function update(id: string, changes: { title?: string, prompt?: string, rule?: ScheduleRule, paused?: boolean }): ScheduleView {
     const { paused, ...rest } = changes
     let found = Object.keys(rest).length ? store.update(id, rest) : store.get(id)
     if (found && paused !== undefined) found = store.setPaused(id, paused)
@@ -106,22 +101,15 @@ export function createSchedules({ db, apply, emit, changed = () => {}, now = Dat
   }
 
   /** What the model asked (tasks-channel.ts ScheduleAction), from the conversation on screen, in its working folder. */
-  function act(action: ScheduleAction, conversationId: string | null, cwd: string, memory?: MemoryProvenance): unknown {
-    if (action.op === 'schedule_create') return propose(action, conversationId, cwd, memory)
+  function act(action: ScheduleAction, conversationId: string | null, cwd: string): unknown {
+    if (action.op === 'schedule_create') return propose(action, conversationId, cwd)
     if (action.op === 'schedule_list') return list()
     if (action.op === 'schedule_delete') return remove(action.id)
     const { op: _op, id, rule, ...rest } = action
-    const previous = store.get(id)
-    const updated = previous && memory && (rest.prompt === undefined || rest.title === undefined)
-      ? combineMemoryProvenance(previous.memory, memory) : memory
-    return update(id, { ...rest, ...(rule ? { rule: rule as unknown as ScheduleRule } : {}), ...(updated ? { memory: updated } : {}) })
+    return update(id, { ...rest, ...(rule ? { rule: rule as unknown as ScheduleRule } : {}) })
   }
 
-  function discardMemory(matches: (memory: MemoryProvenance) => boolean) {
-    for (const [id, proposal] of proposals) if (proposal.memory && matches(proposal.memory)) proposals.delete(id)
-  }
-
-  return { act, accept, decline, list, update, remove, store, discardMemory }
+  return { act, accept, decline, list, update, remove, store }
 }
 
 export type Schedules = ReturnType<typeof createSchedules>

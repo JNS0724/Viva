@@ -102,17 +102,16 @@ test('restarting retains accepted chunks and completed vectors, reindex invalida
   assert.equal(reopened.missingVectors(rebuilt.vectorGeneration).length,1)
   assert.equal(reopened.lexicalCandidates('喜欢茶',{workspaces:[workspace]},10).rows.length,1)
 })
-test('withdrawal physically erases accepted projections and generations, rejects delayed reaccept, keeps WAL cleanup pending with a reader',t=>{
+test('file removal erases accepted projections and generations and keeps WAL cleanup pending with a reader',t=>{
   const {db,path,index,defer}=fixture(t), marker='Archived sentence about quietly drinking peppermint tea.'
   const a=file('private',marker,{ name: 'private-derived-node-name' })
   index.accept(a,null); const gen=index.beginVectors({fingerprint:'model',dimensions:2}), refs=index.missingVectors(gen).map(chunk=>chunk.ref)
   index.stageVectors(gen,refs.map(ref=>({ref,vectors:[new Float32Array([1,0])]})))
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
   const reader=new DatabaseSync(path); defer(()=>reader.close()); reader.exec('BEGIN'); reader.prepare('SELECT * FROM memory_file_index_nodes').all()
-  index.withdraw(a.sources[0]!.id); index.recover()
+  assert.equal(index.remove(a),true); index.recover()
   assert.equal(index.pendingCleanup(),1)
   assert.equal(index.snapshot(workspace,a.id),null)
-  assert.equal(index.accept(a,null),false)
   assert.equal(db.prepare('SELECT count(*) AS n FROM memory_file_index_vectors').get()?.n,0)
   assert.equal(db.prepare('SELECT count(*) AS n FROM memory_file_index_nodes').get()?.n,0)
   assert.equal(db.prepare('SELECT count(*) AS n FROM memory_file_index_chunks').get()?.n,0)

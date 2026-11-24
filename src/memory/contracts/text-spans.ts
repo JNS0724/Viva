@@ -11,11 +11,3 @@ export function mergeTextSpans(spans: readonly TextSpan[]): TextSpan[] {
 }
 
 /** Mask checked UTF-16 spans without moving offsets or line breaks. */
-export function maskTextSpans(text: string, spans: readonly TextSpan[]): string {
-  let projected = '', offset = 0
-  for (const span of mergeTextSpans(spans)) {
-    projected += text.slice(offset, span.start) + text.slice(span.start, span.end).replace(/[^\r\n]/g, ' ')
-    offset = span.end
-  }
-  return projected + text.slice(offset)
-}

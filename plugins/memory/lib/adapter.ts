@@ -65,8 +65,8 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
   }, port)
   const owner = createRemoteMemoryOwner(connection)
   const available = () => !lifetime.signal.aborted && owner.ready()
-  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session), Boolean(config.host))
-  const context = new WeakMap<object, { epoch: string | undefined, turn: number, text: string }>()
+  const intake = createSessionIngestion(owner, session => ctx.sessions.flush(session))
+  const context = new WeakMap<object, { epoch: string | undefined, text: string }>()
   let route: { provider: string, model: string } | null = null
   let published: { epoch: string | undefined, provider: string, model: string } | undefined
   function publishRoute() {
@@ -117,22 +117,22 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       return available() && entry && entry.epoch === owner.epoch ? entry.text : ''
     } })
   })
-  ctx.on('agent/pre-step', async ({ agent, turn, step, signal, modelSelection }, next) => {
+  ctx.on('agent/pre-step', async ({ agent, turn, signal, modelSelection }, next) => {
     const decision = await next()
-    if (context.get(agent)?.turn !== turn || !available()) context.delete(agent)
+    context.delete(agent)
     if (decision.kind === 'reject' || signal.aborted || !available()) return decision
     route = { provider: modelSelection.provider, model: modelSelection.model }
     publishRoute()
     const messages = humanMessages(decision.messages)
     if (!messages.length) return decision
-    void intake.receive(agent.session, decision.messages, turn, step).catch(report)
+    void intake.receive(agent.session, decision.messages, turn).catch(report)
     const budget = createRequestBudget(DAILY_MEMORY_DEFAULTS.automaticContextBudgetMs, signal)
     try {
       const epoch = owner.epoch
       const request: MemoryRequest = { op: 'context', session: String(agent.session.id), turn, question: '' }
-      const text = await budget.run(() => owner.call('sidecarRequest', [request, agent.session.header.cwd, { messages, requiresAlias: Boolean(config.host) }],
+      const text = await budget.run(() => owner.call('sidecarRequest', [request, agent.session.header.cwd, messages],
         { signal: budget.signal, budgetMs: budget.remainingMs() }))
-      if (text && !signal.aborted && available() && owner.epoch === epoch) context.set(agent, { epoch, turn, text })
+      if (text && !signal.aborted && available() && owner.epoch === epoch) context.set(agent, { epoch, text })
     } catch (error) {
       if (!budget.signal.aborted && available()) report(error)
     } finally { budget.close() }
@@ -152,7 +152,7 @@ export function applyMemoryAdapter(ctx: Context, config: MemoryPluginConfig = {}
       if (!budget.signal.aborted && available()) report(error)
       return null
     } finally { budget.close() }
-  })
+  }, { projectScope: !config.host })
   ctx.inject(['commands'], scoped => {
     if (!config.host) scoped.effect(() => registerMemoryFileCommands(scoped.commands, owner, async (agent, signal) => {
       const session = agent.session

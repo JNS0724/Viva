@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
 import path from 'node:path'
 import { z } from 'zod'
 import { parseDiagnosticContext, safeDiagnosticEvent, type DiagnosticPort } from '../../diagnostics/contracts.ts'
@@ -7,17 +6,14 @@ import { MemoryComputeError, type MemoryComputeTools } from '../contracts/comput
 import { MEMORY_HOST_PROTOCOL } from '../contracts/host.ts'
 import { isDailyMemoryStage, memoryComputeFailure, memoryRequest } from '../contracts/memory-contract.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../contracts/memory-daily-defaults.ts'
-import { OWNER_RPC_MAX_ACTIVE, OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
+import { OWNER_RPC_MAX_BUDGET_MS } from '../contracts/owner-rpc.ts'
 import { objectOf } from '../contracts/unknown-value.ts'
-import type { OwnerAdapterApi, OwnerSendOrigin, RemoteToolReadScope } from './owner-adapter.ts'
-import type { NativeToolReadScope } from './native-tool-reads.ts'
+import type { OwnerAdapterApi } from './owner-adapter.ts'
 import { createOwnerRpcPeer } from './owner-rpc-peer.ts'
 import { openMemoryOwner } from './owner.ts'
-import { resolveMemoryProject } from './project-scope.ts'
 
 type Owner = ReturnType<typeof openMemoryOwner>
 const routeSchema = z.strictObject({ provider: z.string().min(1).max(256), model: z.string().min(1).max(256) })
-const turnSchema = z.strictObject({ sessionId: z.string().min(1).max(256), turn: z.int().nonnegative() })
 const bootSchema = z.strictObject({
   root: z.string().refine(path.isAbsolute),
   hostNamespace: z.string().min(1).max(256).optional(),
@@ -26,7 +22,6 @@ const bootSchema = z.strictObject({
   preserveActiveTurns: z.boolean(),
 })
 const idSchema = z.string().min(1).max(256)
-const attemptId = z.uuid()
 
 if (!process.send || !process.connected || process.argv[2] !== '--memory-owner-ipc') throw new Error('Memory owner requires its dedicated parent IPC')
 
@@ -34,12 +29,8 @@ let owner: Owner | undefined
 let booted = false
 let closing = false
 let route: z.output<typeof routeSchema> | null = null
-let effectsRevision = 0
 let lastState = ''
-const sessions = new AsyncLocalStorage<string | undefined>()
 const computeTools = new Map<string, MemoryComputeTools>()
-type Grant = { origin: OwnerSendOrigin, lifetime: AbortController, permit?: ReturnType<Owner['acquireSend']> }
-const permits = new Map<string, Grant>()
 const adapterExecutions = new Set<Promise<unknown>>()
 let pendingDiagnostics = 0
 const diagnosticRelay: DiagnosticPort = {
@@ -68,7 +59,7 @@ const notify = (event: object) => {
 const publishState = () => {
   if (!owner || !booted || closing) return
   const state = { type: 'memory_owner_state', protocol: MEMORY_HOST_PROTOCOL, epoch: owner.epoch, state: owner.status(),
-    revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch(), effectsRevision }
+    revision: owner.runtime.revision(), coreEpoch: owner.runtime.epoch() }
   const encoded = JSON.stringify(state)
   if (encoded !== lastState) { lastState = encoded; notify(state) }
 }
@@ -95,15 +86,11 @@ async function boot(raw: unknown, signal: AbortSignal) {
         throw new MemoryComputeError('call-failed')
       } finally { computeTools.delete(job.id) }
     },
-    quiesce: () => peer.call<void>('quiesce', { session: sessions.getStore() }),
     onContextUsed: notice => notify({ type: 'memory_owner_context_used', protocol: MEMORY_HOST_PROTOCOL, epoch: owner!.epoch, ...notice }),
     onChange: change => {
       publishState()
       notify({ type: 'memory_owner_change', protocol: MEMORY_HOST_PROTOCOL, epoch: owner!.epoch, ...change })
     },
-    onProjectionChanged: () => notify({ type: 'memory_owner_projection', protocol: MEMORY_HOST_PROTOCOL,
-      epoch: owner!.epoch, revision: owner!.runtime.revision() }),
-    onHostEffects: () => { effectsRevision++; publishState() },
   })
   await owner.recover(preserveActiveTurns)
   signal.throwIfAborted()
@@ -111,149 +98,46 @@ async function boot(raw: unknown, signal: AbortSignal) {
   publishState()
 }
 
-function nativeScope(scope: RemoteToolReadScope, signal: AbortSignal): NativeToolReadScope {
-  const { readCut, ...identity } = scope
-  return { ...identity, current: () => !signal.aborted, ...(readCut ? { readCut: () => readCut } : {}) }
-}
-
-function settleSend(id: string) {
-  const grant = permits.get(id)
-  if (!grant) return
-  permits.delete(id)
-  grant.lifetime.abort()
-  grant.permit?.settled()
-}
-
 const inputFrame = z.strictObject({ method: z.string(), args: z.array(z.unknown()).max(8) })
 function runAdapter(current: Owner, raw: unknown, signal: AbortSignal) {
   const { method, args } = inputFrame.parse(raw)
   // Only these operations can run on behalf of the native DSH adapter.
   const handlers: OwnerAdapterApi = {
-    initializeSession: async input => current.initializeSession(input, await current.loadSessionFileProof(input.sessionId, signal, input.parentSessionId)),
-    noteInheritedNativeCut: current.noteInheritedNativeCut,
-    receiveSource: input => sessions.run(input.sessionId, () => current.receiveSource(input)),
-    registerDerived: input => current.registerDerived(input, signal),
-    completeTurn: input => sessions.run(input.sessionId, () => current.completeTurn(input, signal)),
-    bindIntakeSession: (session, cwd, task) => current.bindIntakeSession(idSchema.parse(session), z.string().optional().parse(cwd), task === true),
+    receiveSource: current.receiveSource,
+    completeTurn: input => current.completeTurn(input, signal),
+    bindIntakeSession: (session, cwd, task) => current.bindIntakeSession(idSchema.parse(session), z.string().nullish().parse(cwd), task === true),
     intakeWatermark: session => current.intakeWatermark(idSchema.parse(session)),
     advanceIntake: (session, nextSeq) => current.advanceIntake(idSchema.parse(session), z.int().nonnegative().parse(nextSeq)),
-    prepareContextRecovery: current.prepareContextRecovery,
-    bindContextRecovery: current.bindContextRecovery,
-    snapshot: current.dispatch.snapshot,
-    rememberStandaloneFile: (session, input) => sessions.run(session, () => current.rememberStandaloneFile(session, input)),
-    forgetStandaloneFile: (session, id, operation) => sessions.run(session, () => current.forgetStandaloneFile(session, id, operation, signal)),
-    finishNativeOutput: current.finishNativeOutput,
-    finishNativeToolRead: current.finishNativeToolRead,
-    nativeToolEvidence: current.nativeToolEvidence,
-    nativeSpillGoverned: current.nativeSpillGoverned,
-    beginNativeSpill: current.beginNativeSpill,
-    finishNativeSpill: current.finishNativeSpill,
-    nativeSpillCandidates: current.nativeSpillCandidates,
-    sessionView: async session => {
-      idSchema.parse(session)
-      const acceptsFiles = await current.loadSessionFileProof(session, signal)
-      const sessionContext = current.sessionContext(session)
-      return {
-        contextGeneration: current.contextGeneration(session), contextRecovery: current.contextRecovery(session),
-        needsContextRecovery: current.needsContextRecovery(session, undefined, acceptsFiles), nativeContextRewritten: current.nativeContextRewritten(session),
-        allowsSession: current.coordination.allowsSession(session, sessionContext.project, acceptsFiles), sessionContext,
-      }
-    },
-    commitContextRecovery: (input, checkId) => current.commitContextRecovery(input,
-      () => peer.call<boolean>('checkRecovery', { checkId: attemptId.parse(checkId) }, { signal })),
-    inheritNativeToolRead: (scope, evidence) => current.inheritNativeToolRead(nativeScope(scope, signal), evidence),
-    admitNativeSpillRead: async (id, scope) => {
-      const proof = await current.loadSpillFileProof(id, signal)
-      return current.admitNativeSpillRead(id, nativeScope(scope, signal), signal, proof).current()
-    },
+    rememberStandaloneFile: current.rememberStandaloneFile,
+    forgetStandaloneFile: (session, id, operation) => current.forgetStandaloneFile(session, id, operation, signal),
     sidecarRequest: (raw, cwd, originals) => {
       const request = memoryRequest.parse(raw)
       const session = request.session
-      return sessions.run(session, async () => {
+      return (async () => {
         if (!current.ready() || signal.aborted) return null
-        const resolved = resolveMemoryProject(cwd)
+        const resolved = current.resolveIntakeScope(cwd)
         const origin = current.sessionContext(session)
         const project = resolved.status === 'project' ? resolved.project : undefined
-        const scopeCurrent = resolved.status !== 'unknown' && project?.id === origin.project?.id
+        const scopeCurrent = current.scopeMatches(session, resolved)
         if (request.op === 'remember') {
           if (!scopeCurrent) return '{"status":"unavailable"}'
           const result = await current.rememberSidecarFile(session, request.text.trim(), signal)
           return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
             : { status: 'rejected', reason: 'no-explicit-user-source' })
         }
-        const readScope = scopeCurrent ? origin : { ...origin, project, context: project ?? { kind: 'user' as const } }
+        const readScope = scopeCurrent ? { ...origin, project } : { ...origin, project: undefined, context: { kind: 'user' as const } }
         if (request.op === 'context' && originals) {
-          request.question = current.intakeQuery(session, readScope.project, originals.messages, originals.requiresAlias)
+          request.question = current.intakeQuery(session, readScope.project, originals)
           if (!request.question) return null
         }
         return current.runtime.handleModelRequest(request, readScope, current.ready, signal)
-      })
+      })()
     },
-    modelRequest: (request, session, generation, scope, unknownProject) => sessions.run(session, async () => {
-      // The native DSH tools and runtime own argument semantics. Validate the operation
-      // here without narrowing native file-tool input to the legacy memory RPC limits.
-      if (!objectOf(request) || !memoryRequest.options.some(option => option.shape.op.value === request.op)) {
-        throw new Error('Unsupported memory model request')
-      }
-      const sameOrigin = () => current.ready() && !signal.aborted && current.contextGeneration(session) === generation
-      if (request.session !== session || !sameOrigin() || scope && (scope.call.session !== session || scope.call.generation !== generation)) {
-        throw new Error('Memory request origin is unavailable')
-      }
-      const acceptsFiles = await current.loadSessionFileProof(session, signal)
-      const allowed = () => sameOrigin() && !current.needsContextRecovery(session, undefined, acceptsFiles)
-      if (!allowed()) throw new Error('Memory request origin is unavailable')
-      if (request.op === 'remember') {
-        if (!scope || unknownProject === true) return '{"status":"unavailable"}'
-        const result = await current.withNativeToolRead(nativeScope(scope, signal), () => current.rememberNativeFile(request.text.trim()))
-        return JSON.stringify(result ? { status: 'accepted', id: result.identity.id, revision: result.contentRevision }
-          : { status: 'rejected', reason: 'no-explicit-user-source' })
-      }
-      const context = current.sessionContext(session)
-      const origin = unknownProject === true ? { ...context, project: undefined, context: { kind: 'user' as const } } : context
-      const read = () => current.runtime.handleModelRequest(request, origin, allowed, signal)
-      if (request.op === 'context') return read()
-      return scope ? current.withNativeToolRead(nativeScope(scope, signal), read) : '{"status":"unavailable"}'
-    }),
-    acquireSend: async (id, origin, digest) => {
-      attemptId.parse(id)
-      const payload = z.string().regex(/^[a-f0-9]{64}$/u).parse(digest)
-      if (permits.size >= OWNER_RPC_MAX_ACTIVE || permits.has(id)) throw new Error('Memory send limit reached or duplicate grant')
-      // Reserve the ID before awaiting disk. An adapter exit or settlement during
-      // verification must retire this attempt before it can acquire a physical lease.
-      const grant: Grant = { origin, lifetime: new AbortController() }
-      const active = AbortSignal.any([signal, grant.lifetime.signal])
-      permits.set(id, grant)
-      try {
-        const proof = await current.loadOutputProof(origin, active)
-        active.throwIfAborted()
-        grant.permit = current.acquireSend(id, origin, payload, proof)
-        grant.permit.signal.addEventListener('abort', () => notify({ type: 'memory_owner_send_revoked', epoch: current.epoch, id }), { once: true })
-      } catch (error) {
-        if (permits.get(id) === grant) settleSend(id)
-        throw error
-      }
-    },
-    outputCurrent: async origin => current.outputCurrent(origin, await current.loadOutputProof(origin, signal)),
-    recordSendBody: async id => {
-      const grant = permits.get(id)
-      const permit = grant?.permit
-      if (!grant || !permit?.current()) throw new Error('Memory send permission expired')
-      // External edits can happen while the transport prepares the body. Reload
-      // at the actual send boundary, then check the same permit before recording it.
-      const active = AbortSignal.any([signal, grant.lifetime.signal, permit.signal])
-      const origin = grant.origin
-      const proof = await current.loadOutputProof(origin, active)
-      active.throwIfAborted()
-      if (!permit.current() || !current.outputCurrent(origin, proof)) throw new Error('Memory send permission expired')
-      permit.recordBody?.()
-    },
-    settleSend,
     setRoute: next => {
       const previous = route
       route = next === null ? null : routeSchema.parse(next)
       if (route && (route.provider !== previous?.provider || route.model !== previous.model)) void current.runtime.wake()
     },
-    reconcileActiveTurns: turns => current.reconcileActiveTurns(z.array(turnSchema).max(10_000).parse(turns)),
     computeTool: (jobId, input) => {
       const tools = computeTools.get(jobId)
       if (!tools) throw new Error('Memory computation tools are unavailable')
@@ -274,8 +158,6 @@ const peer = createOwnerRpcPeer({
     if (method === 'boot') return boot(raw, signal)
     if (method === 'shutdown') {
       closing = true
-      // A graceful shutdown follows parent-confirmed transport drainage.
-      for (const id of permits.keys()) settleSend(id)
       await Promise.allSettled(adapterExecutions)
       await owner?.close()
       return
@@ -283,14 +165,11 @@ const peer = createOwnerRpcPeer({
     if (!owner || !booted || closing) throw new Error('Memory owner is unavailable')
     try {
       if (method === 'adapterExited') {
-        // Only the supervisor reports that the trusted sender has exited or drained.
         route = null
-        for (const id of permits.keys()) settleSend(id)
         // Intake can durably record its active turn after a caller has stopped waiting.
         await Promise.allSettled(adapterExecutions)
         return owner.reconcileActiveTurns([])
       }
-      if (method === 'nativeMaintenancePending') return owner.nativeMaintenancePending()
       if (method === 'adapter') {
         const current = owner
         const execution = Promise.resolve().then(() => {
@@ -313,5 +192,5 @@ const peer = createOwnerRpcPeer({
   },
 })
 process.on('message', raw => { peer.receive(raw) })
-// An orphan must release SQLite and stop all writes even if a former send never settles.
+// An orphan must release SQLite and stop all writes.
 process.once('disconnect', () => process.exit(0))

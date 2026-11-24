@@ -3,7 +3,7 @@
  * messages go over Node's IPC channel (`process.send` / `process.on('message')`); the app keeps the same
  * shapes in src/backend/question-channel.ts.
  *
- *   plugin → app  { type: 'question', id, sessionId, questions: [{ id, question, header?, options?: [{ label, description? }], multiSelect? }] }
+ *   plugin → app  { type: 'question', id, sessionId, turn?, questions: [{ id, question, header?, options?: [{ label, description? }], multiSelect? }] }
  *   plugin → app  { type: 'question_closed', id }          the turn was stopped before the user answered
  *   app → plugin  { type: 'answer', id, answers: [{ id, selected: string[], custom?: string }] }
  *   app → plugin  { type: 'decline', id }                  the window cannot ask it (another conversation)
@@ -64,22 +64,21 @@ interface Waiting {
 export function createQuestionChannel(
   port: { send: (message: object) => unknown, on: Function, off: Function },
   log: (message: string) => void,
-): { ask: (request: QuestionRequest) => Promise<{ answers: Answer[] }>, close: () => void } {
+): { ask: (request: QuestionRequest, turn?: number) => Promise<{ answers: Answer[] }>, close: () => void } {
   const waiting = new Map<string, Waiting>()
   let seq = 0
 
   function onMessage(message: Incoming) {
     const entry = waiting.get(message?.id)
     if (!entry || (message.type !== 'answer' && message.type !== 'decline')) return
-    if (message.type === 'decline') return entry.settle(() => entry.reject(new Error(message.reason === 'memory-clarification'
-      ? '这张问题卡已失效。请根据当前任务及可用信息继续。' : DECLINED)))
+    if (message.type === 'decline') return entry.settle(() => entry.reject(new Error(DECLINED)))
     const answer = answerFor(entry.questions, message)
     if (!answer) return log(`ignored an answer that does not match question ${message.id}`)
     entry.settle(() => entry.resolve(answer))
   }
   port.on('message', onMessage)
 
-  function ask(request: QuestionRequest) {
+  function ask(request: QuestionRequest, turn?: number) {
     const id = `q${++seq}-${Date.now().toString(36)}`
     const questions = request.questions.map(questionView)
     const signal = request.signal
@@ -103,7 +102,7 @@ export function createQuestionChannel(
       }
       waiting.set(id, entry)
       signal?.addEventListener('abort', onAbort, { once: true })
-      port.send({ type: 'question', id, sessionId: String(request.agent?.session?.id ?? ''), questions })
+      port.send({ type: 'question', id, sessionId: String(request.agent?.session?.id ?? ''), ...(turn === undefined ? {} : { turn }), questions })
     })
   }
 

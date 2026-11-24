@@ -11,7 +11,7 @@ import { scratch } from './fixtures/scratch.js'
 test('standalone session persistence starts while its incompatible memory database stays intact', async t => {
   const { dir, defer } = scratch(t, 'viva-standalone-persistence-')
   const config = { root: join(dir, 'sessions'), memoryRoot: join(dir, 'memory') }
-  const owner = openMemoryOwner({ root: config.memoryRoot, route: () => null, compute: async () => '', quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: config.memoryRoot, route: () => null, compute: async () => '' })
   try { await owner.recover() } finally { await owner.close() }
   const file = join(config.memoryRoot, 'memory.db')
   const db = new DatabaseSync(file)

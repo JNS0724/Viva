@@ -1,9 +1,8 @@
 import type { MemoryFileIndexChanges } from '../core/ports/runtime.ts'
 import type { DailyAllocation, DailyFileRegistration } from '../core/ports/notes.ts'
-import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { truncateMemoryJournal } from './sqlite.ts'
-import { documentSourceProofCurrent, documentSourceRestricted, erasedDocumentSource, projectDocumentSource } from '../core/memory-document-restrictions.ts'
-import type { DocumentSourceCut, MemoryPhysicalFile } from '../core/ports/documents.ts'
+import { documentSourceProofCurrent } from '../core/memory-source-proof.ts'
+import type { MemoryPhysicalFile } from '../core/ports/documents.ts'
 import { memoryFileRevision } from './memory-file-store.ts'
 import { memorySourceWorkspace as workspaceOf, memorySourceToken as token } from './source-identity.ts'
 import { fileErasure, openMemoryFileJournal } from './memory-file-journal.ts'
@@ -27,39 +26,13 @@ type SourceRef = import('../core/ports/documents.ts').DocumentSourceRef
 type DialogTurn = { id: string, session: string, day: string, messages: Array<{
   role: 'user' | 'assistant', text: string, sourceId?: string, version?: number, author?: MemorySource['author'], at: number,
 }> }
-type DialogPurge = { session: string, turn: string, mode: string, source: string | null }
-type DialogCut = DocumentSourceCut & { turnIds: string[] }
-function purgeDialog(text: string, purge: DialogPurge): string | null {
-  const cut = purge.mode === 'redact' ? JSON.parse(purge.source!) as DialogCut : null
-  const turns = text.split('\n').filter(Boolean).map(line => JSON.parse(line) as DialogTurn)
-  if (cut && turns.some(row => !cut.turnIds.includes(row.id) && row.messages.some(message => message.sourceId === cut.id))) {
-    throw new Error('memory-purge-version')
-  }
-  const rows = turns.flatMap(row => {
-    if (row.id !== purge.turn) return [row]
-    if (purge.mode === 'remove') return []
-    const messages = row.messages.flatMap(message => {
-      if (message.role === 'assistant') return []
-      if (!cut) return message.sourceId === purge.source ? [] : [message]
-      if (message.sourceId !== cut.id) return [message]
-      if (message.version !== cut.version || message.text.length !== cut.length || memoryFileRevision(message.text) !== cut.hash) {
-        throw new Error('memory-purge-version')
-      }
-      const projected = projectDocumentSource(message.text, cut, [cut])
-      return [{ ...message, text: projected, version: cut.version + 1 }]
-    })
-    return messages.length ? [{ ...row, messages }] : []
-  })
-  return rows.length ? rows.map(row => JSON.stringify(row)).join('\n') + '\n' : null
-}
 interface TurnRow { id: string, note: string, session: string, day: string, workspace: string, sources: string, source_tokens: string, assistant_sources: string, assistant_digest: string | null, assistant_valid: number, question_sources: string, question_valid: number, written: number }
 interface NoteRow { key: string, day: string, workspace: string, path: string, revision: number, processed: number, updatedAt: number, file_revision: string | null, enabled: number }
 type Note = Omit<NoteRow, 'enabled'> & { file_revision: string, title: string, markdown: string, document: string, fileRevision: string, enabled: boolean }
 type Data = { refs: SourceRef[], indexKeys?: string[] } & (
   | { kind: 'turn', row: TurnRow }
-  | { kind: 'note', key: string, day: string, workspace: string, path: string | null, revision: number, expectedRevision: number | null, policyToken: string, generation: number, at: number, rows: string[], contributed: boolean, fileRevision: string | null, previousRefs: SourceRef[], remove?: boolean, reallocatePath?: boolean }
-  | { kind: 'purge', id: number, dialog: DialogPurge }
-  | { kind: 'restore', key: string, path: string, revision: string, markdown: string }
+  | { kind: 'note', key: string, day: string, workspace: string, path: string | null, revision: number, expectedRevision: number | null, generation: number, at: number, rows: string[], contributed: boolean, fileRevision: string | null }
+  | { kind: 'purge', id: number }
 )
 
 /** Markdown/JSONL own content. SQLite keeps identities, dependencies, pending work and commit receipts. */
@@ -84,7 +57,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     );
     CREATE TABLE IF NOT EXISTS memory_note_sources (note TEXT NOT NULL, source TEXT NOT NULL, token TEXT NOT NULL, spans TEXT, PRIMARY KEY(note,source));
     CREATE INDEX IF NOT EXISTS memory_note_sources_by_source ON memory_note_sources(source,note);
-    CREATE TABLE IF NOT EXISTS memory_note_purges (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace TEXT NOT NULL, note TEXT NOT NULL, path TEXT, expected_revision TEXT, session TEXT NOT NULL, turn TEXT NOT NULL, mode TEXT NOT NULL, source TEXT);
+    CREATE TABLE IF NOT EXISTS memory_note_purges (id INTEGER PRIMARY KEY AUTOINCREMENT, workspace TEXT NOT NULL, note TEXT NOT NULL, path TEXT, expected_revision TEXT);
   `)
   const snapshot = (ids: readonly string[]): SourceRef[] => [...new Set(ids)].map(id => {
     const source = store.readSource(id)
@@ -96,30 +69,14 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   }
   function validRef(ref: SourceRef): boolean {
     const source = store.readSource(ref.id)
-    return Boolean(source?.text && readable(ref.id) && documentSourceProofCurrent(ref, source.text, token(source), erasedDocumentSource(source)))
+    return Boolean(source?.text && readable(ref.id) && documentSourceProofCurrent(ref, source.text, token(source)))
   }
-  const useRestrictions = openMemoryFileRestrictions(db)
-  const restrictions = (workspace: string) => [...store.fileErasures(workspace), ...useRestrictions.sources(workspace)]
-  const usePolicyToken = (workspace: string) => memoryFileRevision(JSON.stringify(restrictions(workspace)))
   const dailyPathBase = (day: string, key: string) => `daily/${day}/note-${memoryFileRevision(key)}`
-  function canonicalLocator(path: string, day: string, key: string) {
-    const base = dailyPathBase(day, key)
-    return path === `${base}.md` || path.startsWith(`${base}-`) && /^-[0-9]+\.md$/u.test(path.slice(base.length))
-  }
-  function requiresOpaqueLocator(workspace: string, key: string): boolean {
-    const blocked = restrictions(workspace)
-    if (!blocked.length) return false
-    if (useRestrictions.forTarget({ kind: 'daily', workspace, key }).length) return true
-    const turns = db.prepare('SELECT source_tokens,assistant_sources,question_sources FROM memory_note_turns WHERE note=?')
-      .all(key) as Pick<TurnRow, 'source_tokens' | 'assistant_sources' | 'question_sources'>[]
-    return [...references(key), ...turns.flatMap(row => [row.source_tokens, row.assistant_sources, row.question_sources]
-      .flatMap(value => JSON.parse(value) as SourceRef[]))].some(ref => documentSourceRestricted(ref, blocked))
-  }
   const rawNote = (key: string) => db.prepare('SELECT *,updated_at AS updatedAt FROM memory_daily_notes WHERE key=?').get(key) as NoteRow | undefined
   const deleted = (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_deleted_daily_notes WHERE note=?').get(key))
   const publicNoteId = (key: string) => `daily:${memoryFileRevision(key)}`
   function indexTarget(data: Data) {
-    return data.kind === 'note' && (data.path || data.remove) || data.kind === 'restore'
+    return data.kind === 'note' && data.path
       ? publicNoteId(data.key) : null
   }
   const journal = openMemoryFileJournal<Data>({ db, root: store.fileRoot, checkpoint,
@@ -127,18 +84,12 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       const id = indexTarget(data)
       if (id) options.index?.publish(workspace, id)
     },
-    projectErasure(data, path, before) {
-      if (data.kind === 'restore' && path === data.path) return data.markdown
-      if (data.kind === 'purge' && path === sessionPath(data.dialog.session)) return purgeDialog(before, data.dialog)
-    },
-    valid: data => (data.kind !== 'note' || !deleted(data.key) && (rawNote(data.key)?.revision ?? null) === data.expectedRevision
-        && usePolicyToken(data.workspace) === data.policyToken && (!currentJob || currentJob(data.key, data.generation)))
-      && (data.kind !== 'restore' || rawNote(data.key)?.file_revision === data.revision)
-      && data.refs.every(validRef),
-
+    valid: data => (data.kind !== 'note' || !deleted(data.key)
+      && (rawNote(data.key)?.revision ?? null) === data.expectedRevision
+      && (!currentJob || currentJob(data.key, data.generation))) && data.refs.every(validRef),
     finish(data) {
       const id = indexTarget(data)
-      const workspace = data.kind === 'restore' ? rawNote(data.key)?.workspace : 'workspace' in data ? data.workspace : undefined
+      const workspace = data.kind === 'note' ? data.workspace : undefined
       if (id && workspace) options.index?.queue({ workspace, id })
       if (data.kind === 'turn') {
         const row = data.row
@@ -146,26 +97,20 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
           VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(row.id, row.note, row.session, row.day, row.workspace, row.sources, row.source_tokens,
           row.assistant_sources, row.assistant_digest, row.question_sources, row.question_valid)
       } else if (data.kind === 'note') {
-        if (data.remove) {
-          // Keep the allocation when a safe rebuild has no usable content. The
-          // next projection of the same session/day still belongs at this path.
-          db.prepare("UPDATE memory_daily_notes SET file_revision=NULL,revision=?,updated_at=? WHERE key=?")
-            .run(data.revision, data.at, data.key)
-        }
         if (data.path) db.prepare(`INSERT INTO memory_daily_notes(key,day,workspace,path,file_revision,revision,updated_at) VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(key) DO UPDATE SET path=excluded.path,file_revision=excluded.file_revision,revision=excluded.revision,updated_at=excluded.updated_at`)
           .run(data.key, data.day, data.workspace, data.path, data.fileRevision!, data.revision, data.at)
-        if (data.contributed || data.remove) {
+        if (data.contributed) {
           db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(data.key)
-          if (!data.remove) for (const ref of data.refs) db.prepare('INSERT INTO memory_note_sources(note,source,token,spans) VALUES(?,?,?,?)').run(data.key, ref.id, ref.token, ref.spans ? JSON.stringify(ref.spans) : null)
+          for (const ref of data.refs) db.prepare('INSERT INTO memory_note_sources(note,source,token,spans) VALUES(?,?,?,?)').run(data.key, ref.id, ref.token, ref.spans ? JSON.stringify(ref.spans) : null)
         }
         for (const id of data.rows) db.prepare('UPDATE memory_note_turns SET written=? WHERE id=?').run(data.contributed ? 1 : 2, id)
-        if (data.path || data.remove) options.onCommitted?.()
+        if (data.path) options.onCommitted?.()
         for (const ref of data.refs) if (store.readSource(ref.id)?.outcome === 'note-pending') {
           store.outcome(ref.id, data.contributed ? 'note-ready' : 'note-skipped')
         }
       } else if (data.kind === 'purge') {
-        const deletedNote = data.dialog.mode === 'file' && db.prepare(`SELECT d.public_id FROM memory_deleted_daily_notes d
+        const deletedNote = db.prepare(`SELECT d.public_id FROM memory_deleted_daily_notes d
           JOIN memory_note_purges p ON p.note=d.note WHERE p.id=?`).get(data.id)
         db.prepare('INSERT OR IGNORE INTO memory_note_erasures VALUES(?)').run(deletedNote ? `file:${deletedNote.public_id}` : `purge:${data.id}`)
         db.prepare('DELETE FROM memory_note_purges WHERE id=?').run(data.id)
@@ -239,7 +184,7 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
     }
     return { files, edits, put, index, indexKeys }
   }
-  type Purge = DialogPurge & { id: number, note: string, workspace: string, path: string | null, expected_revision: string | null }
+  type Purge = { id: number, note: string, workspace: string, path: string | null, expected_revision: string | null }
   const purges = () => db.prepare('SELECT * FROM memory_note_purges ORDER BY id').all() as Purge[]
   function purgePlan(purge: Purge): FilePlan<Data> | null {
     const edit = changes(purge.workspace)
@@ -255,17 +200,8 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       // External rename changes a pathname, never the session/day identity that owns the index.
       edit.index(noteDay(purge.note), undefined, !owner || owner.key === purge.note ? purge.path : undefined)
     }
-    const directive: DialogPurge = { session: purge.session, turn: purge.turn, mode: purge.mode, source: purge.source }
-    const path = sessionPath(purge.session), before = purge.mode === 'file' ? null : edit.files.read(path)
-    if (before) edit.put(path, purgeDialog(before.markdown, directive))
-    const members = [...edit.edits.values()].map(change => change.path === path || change.path === purge.path ? fileErasure(change) : change)
-    return { workspace: purge.workspace, changes: members, data: { kind: 'purge', refs: [], id: purge.id, dialog: directive } }
-  }
-  function purgeReady(purge: Purge) {
-    // A prepared purge is checked against its own durable plan by journal.needsRecovery().
-    if (journal.state(`purge:${purge.id}`)) return false
-    const plan = purgePlan(purge)
-    return plan && plan.changes.every(change => journal.visible(plan.workspace, change.path))
+    const members = [...edit.edits.values()].map(change => change.path === purge.path ? fileErasure(change) : change)
+    return { workspace: purge.workspace, changes: members, data: { kind: 'purge', refs: [], id: purge.id } }
   }
   function recover() {
     journal.recover()
@@ -289,124 +225,6 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
   function checkpointCleanup() {
     if (db.prepare('SELECT 1 FROM memory_note_erasures LIMIT 1').get() && truncateMemoryJournal(db)) db.exec('DELETE FROM memory_note_erasures')
   }
-  function removeEvidence(sourceId: string, cut?: DocumentSourceCut) {
-    const matches = (ref: SourceRef) => ref.id === sourceId && (!cut || documentSourceRestricted(ref, [cut]))
-    const pendingKeys: string[] = []
-    db.prepare('INSERT OR IGNORE INTO memory_note_erasures VALUES(?)').run(sourceId)
-    const affected = db.prepare('SELECT * FROM memory_note_turns WHERE EXISTS (SELECT 1 FROM json_each(sources) WHERE value=?)')
-      .all(sourceId) as unknown as TurnRow[]
-    const affectedIds = new Set(affected.map(row => row.id))
-    const assistants = (db.prepare(`SELECT * FROM memory_note_turns WHERE assistant_valid=1
-      AND EXISTS (SELECT 1 FROM json_each(assistant_sources) WHERE json_extract(value,'$.id')=?)`).all(sourceId) as unknown as TurnRow[])
-      .filter(row => !affectedIds.has(row.id))
-    const questions = (db.prepare(`SELECT * FROM memory_note_turns WHERE question_valid=1
-      AND EXISTS (SELECT 1 FROM json_each(question_sources) WHERE json_extract(value,'$.id')=?)`).all(sourceId) as unknown as TurnRow[]).filter(row => !affectedIds.has(row.id))
-    const dependent = db.prepare('SELECT note FROM memory_note_sources WHERE source=?').all(sourceId) as Array<{ note: string }>
-    const affectedCards = new Set(cut ? dependent.filter(row => references(row.note).some(matches)).map(row => row.note)
-      : [...affected, ...assistants, ...questions, ...dependent].map(row => row.note))
-    // Every unfinished source-bearing plan is a plaintext copy. Cancel it before recovery can
-    // restore withdrawn bytes, then erase only its registered card/session identities.
-    for (const pending of db.prepare("SELECT id,plan FROM memory_file_intents WHERE namespace='notes' AND plan IS NOT NULL").all()) {
-      const plan = JSON.parse(String(pending.plan)) as FilePlan<Data>
-      const data=plan.data
-      if (data.kind === 'purge') continue
-      // A rebuild can have no new sources and still retain old plaintext in its before-image.
-      const refs = data.kind === 'note' ? [...data.refs, ...data.previousRefs] : data.refs
-      if (!refs.some(matches)) {
-        if (data.indexKeys?.some(key => affectedCards.has(key))) {
-          // The following purge rebuilds navigation. An independent card's
-          // plan must neither retain the old link nor reserve the index path.
-          plan.changes = plan.changes.filter(change => !isDailyIndexPath(change.path))
-          delete data.indexKeys
-          db.prepare('UPDATE memory_file_intents SET plan=? WHERE id=?').run(JSON.stringify(plan), String(pending.id))
-        }
-        continue
-      }
-      const key=data.kind==='turn' ? data.row.note : data.key
-      const turn=db.prepare('SELECT session FROM memory_note_turns WHERE note=? LIMIT 1').get(key)
-      const session=data.kind==='turn' ? data.row.session : String(turn?.session ?? '')
-      const path = data.kind === 'turn' ? null : data.path
-      const registered = rawNote(key)
-      if (cut && data.kind === 'note' && path && registered?.path === path && registered.file_revision
-        && !references(key).some(matches)) {
-        const change = plan.changes.find(item => item.path === path)
-        if (change && 'before' in change && change.before !== null && change.after !== null
-          && memoryFileRevision(change.before) === registered.file_revision) {
-          const restore: FilePlan<Data> = { workspace: plan.workspace,
-            changes: [fileErasure({ path, before: change.after, after: change.before })],
-            data: { kind: 'restore', refs: references(key), key, path, revision: registered.file_revision, markdown: change.before } }
-          db.prepare("UPDATE memory_file_intents SET plan=?,state='pending' WHERE id=?").run(JSON.stringify(restore), String(pending.id))
-          continue
-        }
-      }
-      const revision = data.kind === 'turn' ? null
-        : data.kind === 'restore' ? data.revision : data.fileRevision
-      const expected = path && (!registered?.file_revision || registered.path !== path) ? revision : null
-      if (data.kind !== 'turn' || !cut) pendingKeys.push(key)
-      db.prepare('INSERT INTO memory_note_purges(workspace,note,path,expected_revision,session,turn,mode,source) VALUES(?,?,?,?,?,?,?,?)')
-        .run(plan.workspace,key,path,expected,session,data.kind==='turn' ? data.row.id : '',data.kind==='turn' ? 'remove' : 'assistant',null)
-      db.prepare("UPDATE memory_file_intents SET state='cancelled',plan=NULL WHERE id=?").run(String(pending.id))
-    }
-    const keys = [...new Set([...affectedCards, ...pendingKeys])]
-    const plannedCards = new Set<string>()
-    function enqueue(row: Pick<TurnRow, 'workspace' | 'note' | 'session' | 'id'>, mode: 'remove' | 'assistant' | 'source' | 'redact') {
-      const allocation = plannedCards.has(row.note) || cut && !keys.includes(row.note) ? undefined : rawNote(row.note)
-      // An empty allocation owns a pathname, but contains no accepted bytes to erase.
-      const card = allocation?.file_revision ? allocation : undefined
-      const directive = cut && mode === 'redact' ? { ...cut, turnIds: affected
-        .filter(turn => turn.workspace === row.workspace && turn.session === row.session).map(turn => turn.id) } satisfies DialogCut : null
-      if (card) plannedCards.add(row.note)
-      db.prepare('INSERT INTO memory_note_purges(workspace,note,path,expected_revision,session,turn,mode,source) VALUES(?,?,?,?,?,?,?,?)')
-        .run(row.workspace, row.note, card?.path ?? null, null, row.session, row.id, mode, directive ? JSON.stringify(directive) : mode === 'source' ? sourceId : null)
-    }
-    for (const row of affected) {
-      if (cut) {
-        enqueue(row, 'redact')
-        db.prepare("UPDATE memory_note_turns SET assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,question_valid=0,question_sources='[]' WHERE id=?").run(row.id)
-        continue
-      }
-      const survivors = sourceIds(row).filter(id => id !== sourceId)
-      enqueue(row, survivors.length ? 'source' : 'remove')
-      if (survivors.length) {
-        const refs = (JSON.parse(row.source_tokens) as SourceRef[]).filter(ref => ref.id !== sourceId)
-        db.prepare("UPDATE memory_note_turns SET sources=?,source_tokens=?,assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,question_valid=0,question_sources='[]',written=0 WHERE id=?")
-          .run(JSON.stringify(survivors), JSON.stringify(refs), row.id)
-      } else db.prepare('DELETE FROM memory_note_turns WHERE id=?').run(row.id)
-    }
-    for (const row of assistants) {
-      enqueue(row, 'assistant')
-      db.prepare("UPDATE memory_note_turns SET assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,question_valid=0,question_sources='[]',written=0 WHERE id=?").run(row.id)
-    }
-    for (const row of questions) {
-      enqueue(row, 'assistant')
-      db.prepare("UPDATE memory_note_turns SET question_valid=0,question_sources='[]',assistant_valid=0,assistant_sources='[]',assistant_digest=NULL,written=0 WHERE id=?").run(row.id)
-    }
-    for (const key of keys) {
-      const note = rawNote(key)
-      if (note && !plannedCards.has(key)) {
-        const row = db.prepare('SELECT * FROM memory_note_turns WHERE note=? LIMIT 1').get(key) as unknown as TurnRow | undefined
-        if (row) enqueue({ ...row, id: '' }, 'assistant')
-      }
-      db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(key)
-      const remainingRestrictions = note && useRestrictions.forTarget({ kind: 'daily', workspace: note.workspace, key })
-        .some(restriction => restriction.sources.some(ref => ref.id !== sourceId))
-      if (note && (cut || remainingRestrictions)) {
-        // Keep the logical allocation for surviving restrictions, but do not
-        // retain a source-derived filename from the withdrawn projection.
-        const base = dailyPathBase(note.day, key)
-        let path = `${base}.md`, suffix = 1
-        if (cut && canonicalLocator(note.path, note.day, key)) path = note.path
-        else while (path === note.path || journal.files(note.workspace).read(path)
-          || db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(note.workspace, path)) {
-          path = `${base}-${suffix++}.md`
-        }
-        db.prepare('UPDATE memory_daily_notes SET path=?,file_revision=NULL,revision=revision+1,updated_at=? WHERE key=?')
-          .run(path, Date.now(), key)
-      } else db.prepare('DELETE FROM memory_daily_notes WHERE key=?').run(key)
-      if (!cut) db.prepare('UPDATE memory_note_turns SET written=0 WHERE note=? AND written=1').run(key)
-    }
-    return keys
-  }
   function deleteFile(workspace: string, key: string, expectedUsageVersion: number) {
     return store.tx(() => {
       const row = rawNote(key)
@@ -414,25 +232,22 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       const [, session] = JSON.parse(key) as [string, string, string, number?]
       const publicId = `daily:${memoryFileRevision(key)}`
       db.prepare('INSERT INTO memory_deleted_daily_notes(note,base,public_id) VALUES(?,?,?)').run(key, dailyNoteKey(session, row.day, workspace), publicId)
-      db.prepare("INSERT INTO memory_note_purges(workspace,note,path,expected_revision,session,turn,mode) VALUES(?,?,?,?,?,'','file')")
-        .run(workspace, key, row.file_revision ? row.path : null, row.file_revision, session)
+      db.prepare("INSERT INTO memory_note_purges(workspace,note,path,expected_revision) VALUES(?,?,?,?)")
+        .run(workspace, key, row.file_revision ? row.path : null, row.file_revision)
       db.prepare('DELETE FROM memory_note_sources WHERE note=?').run(key)
       db.prepare('DELETE FROM memory_daily_notes WHERE key=?').run(key)
-      useRestrictions.removeTarget({ kind: 'daily', workspace, key })
       return row.revision + 1
     })
   }
-  const pendingCleanup = () => Number(db.prepare('SELECT (SELECT count(*) FROM memory_note_purges)+(SELECT count(*) FROM memory_note_erasures) AS n').get()?.n ?? 0)
   if (!options.deferRecovery) recover()
   return {
     allocations: () => db.prepare('SELECT key,day,workspace,path,revision,updated_at AS updatedAt FROM memory_daily_notes ORDER BY workspace,key').all() as unknown as DailyAllocation[],
-    fileRegistry: () => db.prepare(`SELECT n.key,n.day,n.workspace,n.path,n.revision,n.updated_at AS updatedAt,n.file_revision AS fileRevision
-      FROM memory_daily_notes n WHERE n.file_revision IS NOT NULL OR EXISTS (
-        SELECT 1 FROM memory_file_use_restrictions r WHERE r.workspace=n.workspace AND r.kind='daily' AND r.target=n.key
-      )`).all() as unknown as DailyFileRegistration[],
+    fileRegistry: () => (db.prepare(`SELECT key,day,workspace,path,revision,updated_at AS updatedAt,file_revision AS fileRevision,enabled
+      FROM memory_daily_notes WHERE file_revision IS NOT NULL`).all() as unknown as Array<Omit<DailyFileRegistration, 'enabled'> & { enabled: number }>)
+      .map(row => ({ ...row, enabled: Boolean(row.enabled) })),
     setEnabled: (key: string, revision: number, enabled: boolean) => db.prepare(`UPDATE memory_daily_notes SET enabled=?,revision=revision+1
       WHERE key=? AND revision=? AND enabled<>?`).run(Number(enabled), key, revision, Number(enabled)).changes === 1,
-    usePolicyToken, deleteFile,
+    deleteFile,
     registeredAt: (workspace: string, path: string) => db.prepare(
       'SELECT key,file_revision FROM memory_daily_notes WHERE workspace=? AND path=? AND file_revision IS NOT NULL'
     ).get(workspace, path) as { key: string, file_revision: string } | undefined,
@@ -446,16 +261,14 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       file_revision: String(row.file_revision), enabled: Boolean(row.enabled), sources: references(String(row.key)),
       state: db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(String(row.key)) ? 'withdrawing' as const : 'active' as const,
     })),
-    needsRecovery: () => journal.needsRecovery(data => data.kind !== 'purge' || data.dialog.mode !== 'file')
-      || purges().some(row => row.mode !== 'file' && purgeReady(row)),
-    recoverDeletedFiles: () => applyPurges(purges().filter(row => row.mode === 'file')),
+    needsRecovery: () => journal.needsRecovery(data => data.kind !== 'purge'),
+    recoverDeletedFiles: () => { applyPurges(purges()); checkpointCleanup() },
     deletedFileCleanupPending: (workspace: string, id: string) => Boolean(db.prepare(`SELECT 1 FROM memory_deleted_daily_notes d
-      WHERE public_id=? AND json_extract(d.note,'$[0]')=? AND (EXISTS (SELECT 1 FROM memory_note_purges p WHERE p.note=d.note AND p.mode='file')
+      WHERE public_id=? AND json_extract(d.note,'$[0]')=? AND (EXISTS (SELECT 1 FROM memory_note_purges p WHERE p.note=d.note)
       OR EXISTS (SELECT 1 FROM memory_note_erasures WHERE source=?))`).get(id, workspace, `file:${id}`)),
     checkpointCleanup,
+    pendingCleanup: () => Number(db.prepare('SELECT (SELECT count(*) FROM memory_note_purges)+(SELECT count(*) FROM memory_note_erasures) AS n').get()?.n ?? 0),
     recover, read, snapshot, references,
-    pendingCleanup,
-    rebuildRows: (key: string) => deleted(key) ? [] : (db.prepare('SELECT * FROM memory_note_turns WHERE note=? ORDER BY rowid').all(key) as unknown as TurnRow[]).map(turn),
     jobState: (key: string, generation: number) => journal.state(`note:${memoryFileRevision(key)}:${generation}`),
     blocked: (key: string) => Boolean(db.prepare('SELECT 1 FROM memory_note_purges WHERE note=?').get(key) || rawNote(key)?.file_revision && !read(key)),
     contextSources(session: string, source: MemorySource) {
@@ -523,48 +336,40 @@ export function openMemoryNotes(store: MemoryStore, readable: (id: string) => bo
       for (const row of rows) db.prepare('UPDATE memory_note_turns SET written=? WHERE id=?').run(contributed ? 1 : 2, row.id)
     },
     commit(key: string, rows: Array<{ id: string }>, reply: { status: 'skip' } | { status: 'write', title: string, markdown: string, filename?: string },
-      generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options: { rebuild?: boolean } = {}) {
+      generation: number, at: number, refs: SourceRef[], expected: Note | undefined) {
       if (deleted(key)) return false
       const first = db.prepare('SELECT * FROM memory_note_turns WHERE id=?').get(rows[0]!.id) as unknown as TurnRow
       const id = `note:${memoryFileRevision(key)}:${generation}`
-      const input = memoryFileRevision(JSON.stringify([key, rows.map(row => row.id), refs, expected?.fileRevision, expected?.revision, options.rebuild ?? false]))
+      const input = memoryFileRevision(JSON.stringify([key, rows.map(row => row.id), refs, expected?.fileRevision, expected?.revision]))
       return journal.commit(id, input, () => {
         const allocation = rawNote(key), current = read(key)
         if (allocation?.file_revision && !current) throw new Error('memory-file-version')
         if (current?.enabled === false || current?.fileRevision !== expected?.fileRevision || current?.revision !== expected?.revision) throw new Error('memory-file-version')
         const edit = changes(first.workspace)
         let path: string | null = null, fileRevision: string | null = null
-        const reallocatePath = reply.status === 'write' && Boolean(allocation && (options.rebuild || !current)
-          && requiresOpaqueLocator(first.workspace, key) && !canonicalLocator(allocation.path, first.day, key))
         if (reply.status === 'write') {
           // The locator is stable and contains no model-generated title or stopped prose.
-          path = !reallocatePath && allocation ? allocation.path : `${dailyPathBase(first.day, key)}.md`
+          path = allocation ? allocation.path : `${dailyPathBase(first.day, key)}.md`
           const base = path.slice(0, -3)
-          if (allocation && !reallocatePath && !current && edit.files.read(path)) throw new Error('memory-file-version')
+          if (allocation && !current && edit.files.read(path)) throw new Error('memory-file-version')
           let suffix = 1
-          while ((!allocation || reallocatePath) && (edit.files.read(path) || db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(first.workspace, path))) {
+          while (!allocation && (edit.files.read(path) || db.prepare('SELECT 1 FROM memory_daily_notes WHERE workspace=? AND path=?').get(first.workspace, path))) {
             path = `${base}-${suffix++}.md`
           }
-          const old = current && !options.rebuild ? parseMemoryDocument(edit.files.read(current.path)!.markdown).metadata : {}
-          if (current && current.path !== path) edit.put(current.path, null)
+          const old = current ? parseMemoryDocument(edit.files.read(current.path)!.markdown).metadata : {}
           edit.put(path, formatMemoryDocument({ metadata: { ...old, name: reply.title, description: reply.title,
             session_id: first.session, source_conversation: `[[${sessionPath(first.session)}]]` }, body: reply.markdown }))
           fileRevision = memoryFileRevision(edit.edits.get(path)?.after ?? edit.files.read(path)!.markdown)
           edit.index(first.day, { key, path, title: reply.title })
-        } else if (options.rebuild && current) {
-          edit.put(current.path, null)
-          edit.index(first.day, undefined, current.path)
         }
         return { workspace: first.workspace, changes: [...edit.edits.values()], data: {
-          kind: 'note', indexKeys: [...edit.indexKeys], key, day: first.day, workspace: first.workspace, path, revision: Math.max(generation, (allocation?.revision ?? 0) + 1), expectedRevision: allocation?.revision ?? null, policyToken: usePolicyToken(first.workspace), generation, at, rows: rows.map(row => row.id),
-          contributed: reply.status === 'write', refs, previousRefs: current ? references(key) : [], fileRevision, reallocatePath, remove: Boolean(options.rebuild && reply.status === 'skip' && current),
+          kind: 'note', indexKeys: [...edit.indexKeys], key, day: first.day, workspace: first.workspace, path, revision: Math.max(generation, (allocation?.revision ?? 0) + 1), expectedRevision: allocation?.revision ?? null, generation, at, rows: rows.map(row => row.id),
+          contributed: reply.status === 'write', refs, fileRevision,
         } }
       })
     },
     markProcessed(key: string, revision: number) {
       return Number(db.prepare('UPDATE memory_daily_notes SET processed=? WHERE key=? AND revision=? AND processed<>revision').run(revision, key, revision).changes) > 0
     },
-    withdraw: (sourceId: string) => removeEvidence(sourceId),
-    eraseSource: (cut: DocumentSourceCut) => removeEvidence(cut.id, cut),
   }
 }

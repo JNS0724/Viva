@@ -3,21 +3,6 @@ import { createEventActions } from './agent-event-actions.ts'
 import { decodeAgentEvent, type EventIssue } from './agent-event-decoder.ts'
 import type { AgentEvent } from './agent-event-types.ts'
 
-/** Held pushes arrived before the erasure notice. Keep the non-trace portion of a settlement. */
-function withoutHeldTrace(event: AgentEvent, sessions: ReadonlySet<string>): AgentEvent | undefined {
-  if ((event.type !== 'update' && event.type !== 'memory_context')
-    || !event.context.sessionId || !sessions.has(event.context.sessionId)) return event
-  if (event.type === 'memory_context') return undefined
-  const update = event.update
-  if (update.sessionUpdate === 'agent_thought_chunk' || update.sessionUpdate === 'viva_model_call' || update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') return undefined
-  if (update.sessionUpdate !== 'viva_stream') return event
-  if (update.kind !== 'settle') return update.blockType === 'reasoning' ? undefined : event
-  return { ...event, update: {
-    ...update, blocks: update.blocks.filter(block => block.type !== 'reasoning'),
-    before: update.before?.text === undefined ? undefined : { text: update.before.text },
-  } }
-}
-
 /** Owns the wire boundary, foreground selection handoff, task-load handoff and push-triggered effects. */
 export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, clearAfterTurn, ready, mcpChanged = () => {}, refreshWorkDir, refreshFiles, memoryChanged, filesChanged, refreshFeed, rejected, overflow, now = Date.now }: {
   getState: () => State, dispatch: (action: Action) => void
@@ -44,10 +29,6 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
       }
     },
     deliver(event, receivedAt) {
-      if ((event.type === 'update' || event.type === 'task_update') && event.update.sessionUpdate === 'viva_stream') {
-        const session = event.type === 'update' ? event.context.sessionId : event.taskId
-        if (getState().erasedGeneratedKeys[event.update.key] === session) return
-      }
       const action = actionFor(event, receivedAt)
       if (action) dispatch(action)
       switch (event.type) {
@@ -65,14 +46,7 @@ export function createAgentEvents({ getState, dispatch, holdTask, afterTurn, cle
     receive(value: unknown) {
       const event = decodeAgentEvent(value, rejected)
       if (!event) return
-      if (event.type === 'memory_changed') {
-        if (event.erasedOutputs?.length) dispatch({ type: 'generated_outputs_removed', copies: event.erasedOutputs })
-        if (event.traceSessions?.length) {
-          const sessions = new Set(event.traceSessions)
-          ingress.reviseHeld(held => withoutHeldTrace(held, sessions))
-        }
-        return memoryChanged(event)
-      }
+      if (event.type === 'memory_changed') return memoryChanged(event)
       if (event.type === 'files_changed') return filesChanged(event)
       if (!holdTask(event)) ingress.receive(event)
     },

@@ -24,7 +24,6 @@ export function openMemoryFileIndex({ db, checkpoint = () => {}, onCleanupPendin
     CREATE TABLE IF NOT EXISTS memory_file_index_chunks(rowid INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT NOT NULL,file_id TEXT NOT NULL,ordinal INTEGER NOT NULL,payload TEXT NOT NULL,UNIQUE(workspace,file_id,ordinal));
     CREATE TABLE IF NOT EXISTS memory_file_index_vectors(generation INTEGER NOT NULL,ref TEXT NOT NULL,passage INTEGER NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(generation,ref,passage));
     CREATE TABLE IF NOT EXISTS memory_file_index_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS memory_file_index_withdrawn(source TEXT PRIMARY KEY);
   `)
   const meta = (name: string) => db.prepare('SELECT value FROM memory_file_index_meta WHERE key=?').get(name)?.value as string | undefined
   const setMeta = (name: string, value: string) => db.prepare('INSERT OR REPLACE INTO memory_file_index_meta VALUES(?,?)').run(name, value)
@@ -118,7 +117,6 @@ ${entry.description}`))
     return transaction(db, () => {
       const old = snapshot(file.workspace, file.id)
       if (old ? !expected || !same(old, expected) : expected !== null) return false
-      if (file.sources.some(ref => db.prepare('SELECT 1 FROM memory_file_index_withdrawn WHERE source=?').get(ref.id))) return false
       const entry = passages(file)
       const nextNode = JSON.stringify(node(file))
       const nextChunks = entry.map(chunk => JSON.stringify(chunk))
@@ -374,16 +372,6 @@ ${file.description}`))
     remove(file) { return transaction(db, () => { const old=snapshot(file.workspace,file.id); if (!old || old.path !== file.path || !same(old,file)) return false; erase(old); return true }) },
     missingVectors(generation) { const state=vectorState(); return state.generation !== generation || !state.space ? [] : allChunks().filter(chunk => !covered(chunk.ref,state)) },
     reindex() { lexicalReady=initializeFts(true); const state=vectorState(); transaction(db, () => { db.exec('DELETE FROM memory_file_index_vectors'); dirty(); saveState({...state,generation:state.generation+1,active:false}) }); return {lexical:lexicalReady,vectorGeneration:state.generation+1} },
-    withdraw(sourceId) {
-      transaction(db, () => {
-        db.prepare('INSERT OR IGNORE INTO memory_file_index_withdrawn VALUES(?)').run(sourceId)
-        for (const row of db.prepare('SELECT payload FROM memory_file_index_nodes ORDER BY workspace,id').all()) {
-          const file = JSON.parse(String(row.payload)) as MemoryFileNode
-          if (file.sources.some(ref => ref.id === sourceId)) erase(file)
-        }
-        dirty()
-      })
-    },
     recover, pendingCleanup: () => meta('erase-pending') ? 1 : 0,
   }
 }

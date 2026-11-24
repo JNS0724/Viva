@@ -19,8 +19,7 @@ function fixture(t: test.TestContext) {
   const start = (options: Partial<Parameters<typeof createMemoryRuntime>[0]> = {}) => {
     runtime?.close()
     const store = openMemoryStore(path.join(root, 'memory.db'))
-    runtime = createMemoryRuntime({ store, ...offlineMemorySafety, compute: () => null, route: () => null,
-      quiesce: async () => {}, changed: () => {}, ...options })
+    runtime = createMemoryRuntime({ store, ...offlineMemorySafety, compute: () => null, route: () => null, changed: () => {}, ...options })
     return { runtime, store }
   }
   return { start }
@@ -45,8 +44,6 @@ test('ordinary Node assembly preserves file identities and erasure receipts acro
   assert.ok(detail.markdown.includes(input.text))
   const reader = 'ordinary-node-reader'
   assert.ok(runtime.handle({ op: 'file_read', session: reader, id: written.identity.id }, { session: reader, conversation: null }).includes(input.text))
-  assert.equal(store.dispatch.snapshot(reader).files?.[0]?.id, written.identity.id)
-  assert.deepEqual(store.dispatch.snapshot(reader).fileSources, detail.sources.map(source => source.sourceId))
   assert.deepEqual(['memories', 'memory_evidence', 'memory_facts', 'memory_links', 'memory_candidates', 'memory_exclusions']
     .flatMap(name => store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").all(name)), [])
   const erase = { operationId: randomUUID(), identity: detail.identity, version: detail.version }
@@ -69,44 +66,7 @@ test('portable file writes report stable domain codes and optional host wording'
     error => error instanceof MemoryDomainError && error.code === 'invalid.text' && error.message === 'Invalid memory text.')
 })
 
-test('core and note orchestration use explicit safety ports without inspecting platform handles', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-core-ports-'))
-  const store = openMemoryStore(path.join(root, 'memory.db'))
-  const resources = openMemoryRuntimeResources({ store })
-  const guarded = new Proxy(store, {
-    get(target, key, receiver) {
-      if (key === 'db' || key === 'fileRoot') throw new Error('core tried to open platform storage')
-      return Reflect.get(target, key, receiver)
-    },
-  })
-  const runtime = createCoreMemoryRuntime({ store: guarded, resources, ...offlineMemorySafety, dailyNotes: { noteInterval: 1 },
-    compute: async job => job.stage === 'note' ? JSON.stringify({ status: 'write', title: 'Port test', markdown: 'The user wants concise replies.' }) : JSON.stringify({ units: [] }),
-    route: () => ({ provider: 'test', model: 'test' }), quiesce: async () => {}, changed: () => {} })
-  t.after(() => { runtime.close(); fs.rmSync(root, { recursive: true, force: true }) })
-  runtime.recordSession('session')
-  const source = runtime.accept('I want concise replies.', { conversation: 'conversation', session: 'session' }, randomUUID())
-  assert.ok(runtime.recordNoteTurn)
-  runtime.recordNoteTurn('session', [source.sourceId], 'Understood.')
-  await runtime.wake()
-  assert.equal(runtime.listFiles({ kind: 'daily' }).items.length, 1)
-  const input = { operationId: randomUUID(), text: 'I prefer short answers.' }
-  const saved = await runtime.writeManagedFile(input.operationId, runtime.manualFileWorkspace(), input, () => {})
-  assert.ok(saved)
-  assert.ok(runtime.readFile(saved.identity)?.markdown.includes(input.text))
-})
 
-test('public core rejects missing physical-send safety capabilities before opening file resources', t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-required-safety-'))
-  const store = openMemoryStore(path.join(root, 'memory.db'))
-  const resources = openMemoryRuntimeResources({ store })
-  t.after(() => { resources.effects.close(); store.close(); fs.rmSync(root, { recursive: true, force: true }) })
-  for (const omitted of ['canCommit', 'validateDispatch', 'runDocumentMutation']) {
-    const input = { store, resources, compute: () => null, route: () => null, quiesce: async () => {}, changed: () => {},
-      ...offlineMemorySafety } as Record<string, unknown>
-    delete input[omitted]
-    assert.throws(() => Reflect.apply(createCoreMemoryRuntime, undefined, [input]), /safety ports must be provided/)
-  }
-})
 
 test('the file-only store rejects the prior schema before creating any new tables', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-prior-schema-'))
@@ -131,7 +91,7 @@ test('closing a runtime retires a late note calculation before it can read close
   const result = new Promise<string>(resolve => { finish = resolve })
   const runtime = createMemoryRuntime({ store: openMemoryStore(path.join(root, 'memory.db')), ...offlineMemorySafety,
     dailyNotes: { noteInterval: 1 }, route: () => ({ provider: 'fixture', model: 'fixture' }),
-    compute: () => { started(); return result }, quiesce: async () => {}, changed: () => {} })
+    compute: () => { started(); return result }, changed: () => {} })
   const source = runtime.accept('I keep a garden.', { conversation: 'topic', session: 'session' })
   runtime.recordNoteTurn!('session', [source.sourceId], '')
   const running = runtime.wake()

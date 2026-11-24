@@ -10,8 +10,7 @@ import { MEMORY_READ_BUDGET_MS } from '../src/shared/request-budget.ts'
 const version = (id: string) => ({ contentRevision: `body-${id}`, usageVersion: 4, policyToken: `policy-${id}` })
 const detailOf = (id: string, kind: 'daily' | 'digest' = 'digest'): MemoryFileDetailView => ({
   identity: { kind, id, workspace: 'workspace' }, title: id, path: `${kind}/${id}.md`, version: version(id), enabled: true,
-  ...(kind === 'daily' ? { hasProjection: true } : {}),
-  actions: { setEnabled: true, stop: kind === 'daily', edit: false, forget: false, undo: kind === 'daily' ? null : { changeId: `change-${id}` } },
+  actions: { setEnabled: true, edit: false, forget: false, undo: kind === 'daily' ? null : { changeId: `change-${id}` } },
   markdown: `Body ${id}`, sources: [],
 })
 const pageOf = (items: MemoryFileListResult['items'], nextCursor: MemoryFileListResult['nextCursor'] = null): MemoryFileListResult => ({
@@ -300,9 +299,9 @@ test('daily stop and resume use the current whole-file version', async () => {
   assert.equal(await f.actions.setManagedMemoryEnabled(current, false), true)
   assert.equal(await f.actions.setManagedMemoryEnabled(current, false), false)
   assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, true), true)
-  assert.deepEqual(requests.map(({ enabled, version, restrictionId }) => ({ enabled, version, restrictionId })), [
-    { enabled: false, version: current.version, restrictionId: undefined },
-    { enabled: true, version: version('current-1'), restrictionId: undefined },
+  assert.deepEqual(requests.map(({ enabled, version }) => ({ enabled, version })), [
+    { enabled: false, version: current.version },
+    { enabled: true, version: version('current-1') },
   ])
 })
 
@@ -350,9 +349,9 @@ test('digest stop and resume each take the currently read document version with 
   assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, true), false)
   assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, false), true)
   assert.equal(await f.actions.setManagedMemoryEnabled(f.file().detail!, true), true)
-  assert.deepEqual(requests.map(({ enabled, version, restrictionId }) => ({ enabled, version, restrictionId })), [
-    { enabled: false, version: original, restrictionId: undefined },
-    { enabled: true, version: { ...original, usageVersion: original.usageVersion + 1 }, restrictionId: undefined },
+  assert.deepEqual(requests.map(({ enabled, version }) => ({ enabled, version })), [
+    { enabled: false, version: original },
+    { enabled: true, version: { ...original, usageVersion: original.usageVersion + 1 } },
   ])
 })
 

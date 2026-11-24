@@ -21,7 +21,6 @@ import { formatMemoryDocument, parseMemoryDocument } from './memory-document.ts'
 import { createMemoryDocumentReadPolicy, createMemoryDocumentEvidence, mergeDocumentSources } from './memory-document-read-policy.ts'
 import { createRequestBudget, RequestTimeout } from '../../shared/request-budget.ts'
 import type { MemoryDocumentReadBatch, MemoryDocumentView } from './memory-document-read-policy.ts'
-import { documentSourceRestricted, projectDocumentSource } from './memory-document-restrictions.ts'
 import { DREAM_CONSOLIDATE_SYSTEM } from './memory-dream-prompts.ts'
 import { createMemoryDreamTools, dreamNodeMetadata, memoryDocumentLinks, MemoryDreamStaleError } from './memory-dream-tools.ts'
 import type { DreamSearchPage } from './memory-dream-tools.ts'
@@ -206,11 +205,11 @@ export function dreamHistory(store: Pick<MemoryStore, 'meta'>) {
 
 /** Dream consolidation: read-only exploration (node_search + read), structured JSON output, and deterministic guards. */
 export function createMemoryDreamJobs({ notes, documents, effects, store, identity, now, settings, readable, eligible, source, reference,
-  calculate, transaction, mutate, readPhysicalFile, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
+  calculate, transaction, mutate = async write => write(), readPhysicalFile, digestNodes, searchDigestNodes, committed = () => {}, allowsText = () => true, diagnostics: diagnosticPort }: {
   store: Pick<MemoryStore, 'meta' | 'setMeta' | 'command' | 'recordCommand'>, notes: MemoryNotes, documents: MemoryDocuments, effects: Effects, identity: MemoryIdentity, now: () => number,
   settings?: DailyMemorySettings, readable: (id: string) => boolean, eligible: (source: MemorySource) => boolean,
   source: (id: string) => MemorySource | undefined, reference: (id: string) => MemorySourceReference | null,
-  calculate: DreamCalculate, transaction: (write: () => void) => void, mutate: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
+  calculate: DreamCalculate, transaction: (write: () => void) => void, mutate?: <T>(write: () => T) => Promise<T>, committed?: (receipt: DocumentReceipt) => void,
   digestNodes?: MemoryFileIndex['digestNodes'],
   searchDigestNodes?: (workspace: string, query: string, limit: number, offset: number, signal?: AbortSignal) => Promise<{ nodes: Array<{ id: string, path: string, score: number }>, partial: boolean }>,
   readPhysicalFile?: ReadMemoryPhysicalFile, allowsText?: (text: string, source: MemorySource) => boolean,
@@ -249,7 +248,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const latest = notes.read(ref.key, batch?.physical(ref.workspace, ref.path))
     return latest?.workspace === ref.workspace && latest.path === ref.path && latest.fileRevision === ref.revision && latest.revision === ref.checkpoint && latest.enabled !== false
       && (batch ?? policy).read(ref.workspace, ref.path)?.policyToken === ref.policyToken && refsCurrent(ref.sources)
-      && !ref.sources.some(item => documentSourceRestricted(item, documents.sourceRestrictions(ref.workspace)))
   }
   async function loadFiles(files: Location[], signal?: AbortSignal, partial = false) {
     const batch = policy.readBatch(signal, files.length + 512)
@@ -277,13 +275,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
 
   const scopedDocuments = (workspace: string) => {
     const unpublished = new Map<string, { revision: string, path: string, name: string, terms: string[] }>()
-    const activeEntries = () => {
-      const restrictions = documents.sourceRestrictions(workspace)
-      const entries = restrictions.length
-        ? documents.registered(workspace).filter(doc => !doc.sources.some(ref => documentSourceRestricted(ref, restrictions)))
-        : documents.fileRegistry(workspace)
-      return entries.filter(row => row.state === 'active')
-    }
+    const activeEntries = () => documents.fileRegistry(workspace).filter(row => row.state === 'active')
     async function candidates(query: string, limit: number, hybridOffset: number, signal?: AbortSignal) {
       const terms = new Set(memorySearchTokens(query, false))
       const published = new Map(digestNodes?.(workspace).map(node => [node.id, node]))
@@ -552,14 +544,10 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     const pendingBatch = pendingBatchOf(job.payload)
     if (pendingBatch) {
       const workspace = pendingBatch.workspace
-      const project = (text: string) => documents.projectErasedLocators(workspace, text)
       const opSourcesValid = (op: PersistedOperation, requireEligible: boolean) => {
-        const restrictions = documents.sourceRestrictions(workspace)
         return refsCurrent(op.sources)
-          && !op.sources.some(ref => documentSourceRestricted(ref, restrictions))
           && (!requireEligible || op.sources.every(ref => { const item = source(ref.id); return Boolean(item && eligible(item)) }))
           && materialAllowed(op.markdown, op.sources)
-          && project(op.markdown) === op.markdown
       }
       const makeOpCurrent = (op: PersistedOperation, opReads: Array<{ id: string, revision: string, usageVersion: number }>) =>
         (observed?: MemoryDocumentReadBatch) => {
@@ -573,8 +561,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           })) return false
           const physical = observed?.physical(workspace, op.path)
           if (op.action === 'CREATE') {
-            return !documents.locatorRetired(workspace, op.path)
-              && documents.read(workspace, op.path, { includeDisabled: true, physical }) === null
+            return documents.read(workspace, op.path, { includeDisabled: true, physical }) === null
               && (observed ?? policy).read(workspace, op.path) === null
           }
           const target = documents.read(workspace, op.path, { physical })
@@ -645,7 +632,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     }
     const changed = available.filter(note => {
       const refs = notes.references(note.key)
-      if (!refsCurrent(refs) || refs.some(ref => documentSourceRestricted(ref, documents.sourceRestrictions(note.workspace))) || !materialAllowed(note.document, refs)) return false
+      if (!refsCurrent(refs) || !materialAllowed(note.document, refs)) return false
       const admitted = refs.every(ref => { const original = source(ref.id); return original && eligible(original) })
       if (!admitted) waitingForAdmission = true
       return admitted
@@ -656,7 +643,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     for (const workspace of unique(changed.map(note => note.workspace))) {
       if (stopPass || !effects.holds(job)) break
       const candidates = changed.filter(note => note.workspace === workspace)
-      const project = (text: string) => documents.projectErasedLocators(workspace, text)
       const scope = scopedDocuments(workspace)
 
       const consume = async (batch: Note[]): Promise<void> => {
@@ -670,7 +656,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             policyToken: view.policyToken, checkpoint: note.revision, sources: view.sourceTokens,
           }
         })
-        const restrictions = documents.sourceRestrictions(workspace)
         const existingDigestCount = scope.countActive()
         const existingCatalog = existingDigestCount > 0 ? await scope.catalog(30) : { items: [], truncated: false }
 
@@ -687,16 +672,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
           const context = notes.sourceQuestionContext(ref.id)
           const wholeSource = !ref.spans || ref.spans.some(span => span.start === 0 && span.end === original.text!.length)
           const questionAllowed = Boolean(original.question) && wholeSource && context.current
-            && !documentSourceRestricted({ id: ref.id, token: ref.token }, restrictions)
-            && context.refs.every(dep => !documentSourceRestricted(dep, restrictions))
             && (!context.refs.length || refsCurrent(context.refs))
             && allowsText(original.question!, original)
             && context.refs.every(dep => { const item = source(dep.id); return Boolean(item?.text && allowsText(item.text, item)) })
           if (questionAllowed) questionContexts.set(ref.id, context.refs)
           canonicalSources.push({
             sourceId: original.id, author: original.author,
-            text: project(projectDocumentSource(original.text, ref, restrictions)),
-            question: questionAllowed ? project(original.question!) : null,
+            text: original.text,
+            question: questionAllowed ? original.question! : null,
             questionUnavailable: (original.author === 'answer' || Boolean(original.question)) && !questionAllowed,
             at: original.at, timezone: original.timezone,
           })
@@ -811,13 +794,11 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   if (!ref) throw new Error('dream-source-outside-daily')
                   return ref
                 })
-                if (opRefs.some(ref => documentSourceRestricted(ref, restrictions))) throw new Error('dream-source-restricted')
                 let before: MemoryDocumentView | null = null
                 if (operation.action === 'CREATE') {
                   if (existingDigestCount > 0 && !tools.searched()) throw new Error('dream-search-required')
                   if (tools.searchIncomplete()) throw new Error('dream-search-incomplete')
-                  if (documents.locatorRetired(workspace, operation.path)
-                    || documents.read(workspace, operation.path, { includeDisabled: true }) !== null
+                  if (documents.read(workspace, operation.path, { includeDisabled: true }) !== null
                     || policy.read(workspace, operation.path) !== null) {
                     throw new Error('dream-target-unavailable')
                   }
@@ -854,9 +835,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                   ...opRefs.flatMap(ref => questionContexts.get(ref.id) ?? []),
                 ])
                 if (!evidence.length || !refsCurrent(evidence)
-                  || evidence.some(ref => documentSourceRestricted(ref, restrictions))
-                  || !materialAllowed(markdown, evidence)
-                  || project(markdown) !== markdown) {
+                  || !materialAllowed(markdown, evidence)) {
                   throw new Error('dream-material-rejected')
                 }
                 const opReadsMap = new Map<string, { id: string, revision: string, usageVersion: number }>()
@@ -1032,24 +1011,6 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
     run() {
       transaction(() => effects.queue(DREAM, DAILY, effects.get(DREAM, DAILY)?.payload ?? null))
       void effects.wake()
-    },
-    withdraw(sourceId: string) {
-      const job = effects.get(DREAM, DAILY)
-      if (job) {
-        transaction(() => {
-          if (active) {
-            effects.cancel(DREAM, DAILY)
-            if (store.meta(MANUAL_JOB)) {
-              store.setMeta(MANUAL_FOLLOWUP, '')
-              effects.queue(DREAM, DAILY, null)
-              void effects.wake()
-            } else schedule()
-          } else if (pendingBatchOf(job.payload)) {
-            effects.amend(job, {})
-          }
-        })
-      }
-      void sourceId
     },
   }
 }

@@ -19,7 +19,6 @@ Viva 默认在本地保存结构化诊断日志。一次会话、记忆请求或
 | [owner](../src/memory/node/owner.ts) 非 ready 或存在未完成来源变更时拒绝普通读取 | 记录 owner 状态、变化原因及相关操作，拒绝和挂起分别计数 |
 | [dream](../src/memory/core/memory-dream-jobs.ts) 可以持续重试，退避上限为 60 秒，部分 catch 丢失错误原因 | 记录阶段、错误分类、进展和下一次尝试，不据此推断它阻塞读取 |
 | [effects](../src/memory/node/effects.ts) 在同一轮中依次等待各类 runner | 记录 runner 耗时、队列积压和唤醒来源，识别后台工作之间的等待 |
-| [请求屏障](../src/memory/core/send-fence.ts) 等待实际传输尝试确认结束 | 记录取消请求与确认结束两个节点，以及尚未结束的 attempt |
 | 已合入的 app 启动路径在资料加载后绑定输入；当前工作区已提前绑定，但事件 initialize 仍在 Promise.all 后 | 按最终代码保留提前绑定，拆开可选记忆加载和必要事件初始化，避免覆盖正在进行的修改 |
 | [会话计时](../src/backend/session-timing.ts) 主要在结束时输出，Backend stdout/stderr 由 Shell 继承 | 增加开始与等待事件，使用正式本地文件 sink |
 

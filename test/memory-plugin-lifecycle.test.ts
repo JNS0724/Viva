@@ -43,7 +43,7 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
   const input = { operationId, text: '每周五交周报。' }
   const entry = await first.owner.handleHost('createFile', { args: [input] }) as MemoryFileMutationResult
   const epoch = first.owner.epoch
-  assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} }), /active owner/)
+  assert.throws(() => openMemoryOwner({ root, compute: () => null, route: () => null }), /active owner/)
   await first.fiber.dispose()
   assert.equal(globalThis.fetch, originalFetch, 'the plugin leaves process-wide fetch untouched')
   assert.equal(ctx.tools.get('memory_recall'), undefined, 'fiber-owned tools are unregistered')
@@ -54,6 +54,6 @@ test('standalone DSH without a model retains storage tools and unloads/reloads t
   await second.fiber.dispose()
   assert.equal(globalThis.fetch, originalFetch)
   // Independent reopening proves the plugin released the OS/SQLite owner lock on both unloads.
-  const reopened = openMemoryOwner({ root, compute: () => null, route: () => null, quiesce: async () => {} })
+  const reopened = openMemoryOwner({ root, compute: () => null, route: () => null })
   try { await reopened.recover(); assert.equal(reopened.ready(), true) } finally { await reopened.close() }
 })

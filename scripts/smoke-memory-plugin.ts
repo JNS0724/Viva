@@ -14,6 +14,7 @@ import { chromium, expect } from '@playwright/test'
 import type { Locator, Page } from '@playwright/test'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-session-persistence'
 import * as jsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { DAILY_MEMORY_DEFAULTS } from '../src/memory/contracts/memory-daily-defaults.ts'
@@ -87,7 +88,7 @@ async function nativeMessages(session: string) {
 /** Exercise the shared trusted owner operation while Web is stopped. Web has no memory management page. */
 async function prepareStandaloneForget() {
   const owner = openMemoryOwner({ root: dataRoot, dailyNotes: true,
-    compute: () => null, route: () => null, quiesce: async () => {} })
+    compute: () => null, route: () => null })
   try {
     await owner.recover()
     const store = openMemoryStore(path.join(dataRoot, 'memory.db'))

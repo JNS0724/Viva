@@ -163,7 +163,6 @@ let win: BrowserWindow | null = null
 let desk: ReturnType<typeof createDeskIsland> | null = null
 let deskPreview: ReturnType<typeof createDeskPreview> | null = null
 let ownDraft = (_owner: 'main' | 'desk'): unknown => undefined
-let eraseFeedDrafts = (_ids: readonly string[]): void => {}
 /** False in smoke runs, which turn the desktop island on only while they check it. */
 let deskAllowed = true
 /** The tray icon, made the first time the window is closed to it (tray.ts). */
@@ -266,9 +265,6 @@ function followLanguage(state: LanguageState) {
 /** What the backend may ask of this desktop (remote-host.ts): one handler for each of its calls. */
 const HOST: { readonly [M in HostMethod]: (...args: any[]) => unknown } = {
   'window.send': (event: unknown) => {
-    const erased = event as { type?: unknown, erasedFeedIds?: unknown }
-    if (erased?.type === 'memory_changed' && Array.isArray(erased.erasedFeedIds)
-      && erased.erasedFeedIds.every(id => typeof id === 'string')) eraseFeedDrafts(erased.erasedFeedIds)
     if (win && !win.isDestroyed()) win.webContents.send('agent:event', event)
   },
   'window.broadcastLanguage': (state: LanguageState) => followLanguage(state),
@@ -598,7 +594,6 @@ app.whenReady().then(async () => {
     keepImage: async bytes => (await backendConnection()).rpc('images:keep', [bytes]) as Promise<KeptImage>,
     switchOff: () => { setDeskIsland(false).catch(logged('switch off')) } })
   ownDraft = islandDrafts.ownDraft
-  eraseFeedDrafts = islandDrafts.eraseFeedDrafts
   installAutomationDriver(automationMode, {
     agentPid: async () => (await backendConnection()).control<number | null>('agent-pid'),
     memoryOwnerPid: async () => (await backendConnection()).control<number | null>('automation.memory-owner-pid'),

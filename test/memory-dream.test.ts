@@ -13,7 +13,6 @@ import { inspectMemoryDocumentText } from '../src/memory/core/memory-dream-mater
 import { formatMemoryDocument, parseMemoryDocument } from '../src/memory/core/memory-document.ts'
 import { looksSecret } from '../src/memory/core/memory-sensitive.ts'
 import { createEffects } from '../src/memory/node/effects.ts'
-import { createMemorySendFence } from '../src/memory/core/send-fence.ts'
 import { openMemoryNotes } from '../src/memory/node/memory-note-store.ts'
 import { openMemoryDocuments } from '../src/memory/node/memory-document-store.ts'
 import { memorySourceToken, memorySourceWorkspace } from '../src/memory/node/source-identity.ts'
@@ -32,7 +31,7 @@ function harness(t: TestContext, options: {
 } = {}) {
   let now = Date.parse('2026-11-16T12:00:00Z')
   const store = openMemoryStore(':memory:', () => now)
-  const readable = (id: string) => Boolean(store.readSource(id)?.text && !store.readSource(id)?.withdrawn)
+  const readable = (id: string) => Boolean(store.readSource(id)?.text)
   const notes = openMemoryNotes(store, readable)
   const documents = openMemoryDocuments({ db: store.db, root: store.fileRoot, now: () => now, checkpoint: options.checkpoint,
     source(id) {
@@ -78,7 +77,6 @@ function harness(t: TestContext, options: {
   const run = async () => { jobs.run(); await effects.wake() }
   return { store, notes, documents, requests, addSource, add, seedDigest, run, defaultModel,
     status: (operationId?: string) => jobs.status(operationId), request: (operationId?: string) => jobs.request(operationId), settle: () => effects.wake(),
-    withdraw: (sourceId: string) => jobs.withdraw(sourceId),
     setFixture(options: Parameters<typeof dreamModelStep>[1]) { fixtureOptions = options },
     setModel(next: DreamCalculate) { model = next },
     beforeMutation(next: () => void) { beforeMutation = next }, afterCommit(next: (receipt: DocumentReceipt) => void) { afterCommit = next },
@@ -88,6 +86,37 @@ function harness(t: TestContext, options: {
     sourceRef: (original: MemorySource) => ({ id: original.id, token: memorySourceToken(original) }),
   }
 }
+
+test('a daily disable and re-enable discards a late Dream result even when the bytes match', async t => {
+  const h = harness(t)
+  const { key, note } = h.add('The weekly report is due every Friday.')
+  let observed!: () => void, release!: () => void
+  const ready = new Promise<void>(resolve => { observed = resolve })
+  const suspended = new Promise<void>(resolve => { release = resolve })
+  h.setModel(async request => {
+    try {
+      const reply = await h.defaultModel(request)
+      observed()
+      await suspended
+      return reply
+    } finally { observed() }
+  })
+  const oldRun = h.run()
+  try {
+    await ready
+    assert(h.notes.setEnabled(key, note.revision, false))
+    assert(h.notes.setEnabled(key, note.revision + 1, true))
+    assert.equal(h.notes.read(key)?.fileRevision, note.fileRevision)
+    assert.equal(h.notes.read(key)?.revision, note.revision + 2)
+  } finally { release() }
+  await oldRun
+  assert.equal(h.documents.list(note.workspace).length, 0)
+  h.setModel(h.defaultModel)
+  await h.retry()
+  await h.run()
+  assert.equal(h.documents.list(note.workspace).length, 1)
+  assert(h.requests.length >= 2)
+})
 
 test('manual Dream acknowledges immediately, joins the scheduled job and keeps actual processing time across empty checks and restart', async t => {
   const h = harness(t)
@@ -340,30 +369,7 @@ test('temporary recovery admission preserves the same pending dream until the ne
   assert.equal(h.requests.length, 1)
 })
 
-test('the commit checks sources again after waiting for a mutation/send fence', async t => {
-  const fence = createMemorySendFence({ epoch: 'test', admit: () => ({ current: () => true, deadline: null }) })
-  let onMutate = () => {}
-  const h = harness(t, { mutate: work => fence.mutate(() => { onMutate(); return work() }) })
-  const input = h.add('The weekly report is due Friday.')
-  onMutate = () => { h.store.withdrawSource(input.source.id) }
-  await h.run()
-  assert.equal(h.documents.list(input.note.workspace).length, 0)
-})
 
-test('a disabled fragment is never re-sent through a mixed daily file while an independent source is eligible', async t => {
-  const h = harness(t)
-  const mixed = h.add('Keep Friday report. Secret side note.')
-  const restricted = h.seedDigest(mixed.note, 'Stopped')
-  h.documents.setEnabled({
-    operationId: randomUUID(), workspace: mixed.note.workspace, documentId: restricted.documentId,
-    expectedRevision: restricted.revision!, expectedUsageVersion: restricted.usageVersion, enabled: false,
-  })
-  const independent = h.add('Independent Monday standup.', 'Standup')
-  await h.run()
-  assert.equal(h.requests.length, 1)
-  const sent = h.requests[0]!.input as { notes: Array<{ path: string }> }
-  assert.deepEqual(sent.notes.map(note => note.path), [independent.note.path])
-})
 
 test('a question containing secret material is withheld and marked questionUnavailable in canonicalSources', async t => {
   const h = harness(t)
@@ -422,41 +428,6 @@ test('only exact backend-issued file references are excluded from credential ins
   assert.equal(looksSecret(inspectMemoryDocumentText(`api_key=sk-1234567890abcdef1234567890 [[${valid}]]`, [valid])), true)
 })
 
-test('new digest linking an inspected digest inherits its sources so withdrawing the cited source erases it', async t => {
-  const h = harness(t)
-  const sourceA = h.addSource('Keep the blue binder on shelf 2.', { session: randomUUID() })
-  const workspace = memorySourceWorkspace(sourceA)
-  h.documents.commit({
-    operationId: randomUUID(), workspace, path: 'digest/wiki/binder.md', action: 'CREATE', expectedRevision: null,
-    markdown: formatMemoryDocument({ metadata: { name: 'Binder', description: 'blue binder location' }, body: 'The blue binder is on shelf 2.' }),
-    sources: [h.sourceRef(sourceA)], reads: [],
-  })
-  const dailyB = h.add('Review the blue binder checklist.', 'Binder Checklist')
-  h.setModel(async request => {
-    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
-    const searched = await request.tools!.executeTool({ callId: 's1', name: 'node_search', input: { query: 'binder' } })
-    assert.ok((JSON.parse(searched.content) as Array<{ path: string }>).some(doc => doc.path === 'digest/wiki/binder.md'))
-    await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: 'digest/wiki/binder.md' } })
-    return JSON.stringify({
-      operations: [{
-        action: 'CREATE',
-        path: 'digest/wiki/shelf-summary.md',
-        name: 'Shelf Summary',
-        description: 'Summary referencing the blue binder',
-        body: 'Checklist uses the blue binder from [[digest/wiki/binder.md]].',
-        dailyPaths: [input.notes[0]!.path],
-        sourceIds: input.notes[0]!.sourceIds,
-      }],
-    })
-  })
-  await h.run()
-  const created = h.documents.read(workspace, 'digest/wiki/shelf-summary.md')
-  assert.ok(created)
-  assert.deepEqual(new Set(created.sources.map(ref => ref.id)), new Set([sourceA.id, dailyB.source.id]))
-  h.documents.withdraw(sourceA.id)
-  assert.equal(h.documents.read(workspace, 'digest/wiki/binder.md'), null)
-  assert.equal(h.documents.read(workspace, 'digest/wiki/shelf-summary.md'), null)
-})
 
 test('ungrounded digest wikilinks outside inspected candidates are rejected', async t => {
   const h = harness(t)
@@ -819,47 +790,6 @@ test('partial commit failure in a multi-op batch resumes idempotently across res
   assert.equal(h.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 })
 
-test('withdraw scrubs a persisted pendingBatch while Dream is sleeping for retry', async t => {
-  let failSecondCommit = true
-  let mutateCalls = 0
-  const h = harness(t, {
-    mutate: async work => {
-      mutateCalls++
-      if (failSecondCommit && mutateCalls === 2) {
-        failSecondCommit = false
-        throw new Error('transient-disk-busy')
-      }
-      return work()
-    },
-  })
-  const note = h.add('Private phrase banana-secret-42.', 'SecretTopic')
-  h.setModel(async request => {
-    const input = request.input as { notes: Array<{ path: string, sourceIds: string[] }> }
-    const dailyPaths = [input.notes[0]!.path]
-    const sourceIds = input.notes[0]!.sourceIds
-    return JSON.stringify({
-      operations: [
-        { action: 'CREATE', path: 'digest/wiki/one.md', name: 'One', description: 'One', body: 'banana-secret-42 part one.', dailyPaths, sourceIds },
-        { action: 'CREATE', path: 'digest/wiki/two.md', name: 'Two', description: 'Two', body: 'banana-secret-42 part two.', dailyPaths, sourceIds },
-      ],
-    })
-  })
-
-  await h.run()
-  assert.equal(h.status().state, 'retry')
-  const beforeRow = h.store.db.prepare("SELECT payload FROM effects WHERE kind='memory.dream' AND key='daily'").get() as { payload: string }
-  assert.ok(beforeRow.payload.includes('banana-secret-42'))
-
-  h.store.withdrawSource(note.source.id)
-  h.documents.withdraw(note.source.id)
-  h.notes.withdraw(note.source.id)
-  h.withdraw(note.source.id)
-
-  const afterRow = h.store.db.prepare("SELECT payload FROM effects WHERE kind='memory.dream' AND key='daily'").get() as { payload: string }
-  assert.equal(afterRow.payload.includes('banana-secret-42'), false)
-  await h.retry()
-  assert.equal(h.documents.read(note.note.workspace, 'digest/wiki/two.md'), null)
-})
 
 test('Dream passes a bounded metadata-only existingDigests catalog for active dimensions without leaking bodies or disabled files', async t => {
   const h = harness(t)
@@ -1081,51 +1011,6 @@ test('Dream node_search with limit: 1 visits every hybrid candidate across pages
   assert.ok(h.documents.read(incoming.note.workspace, 'digest/personal/hit-b.md')!.markdown.includes('New fact belonging to hit-b.'))
 })
 
-test('Dream existingDigests catalog enforces full policy.read checks and excludes unreadable or withdrawn-source digests', async t => {
-  const h = harness(t)
-  const okNote = h.add('User drinks oolong tea.', 'Tea')
-  const okPath = 'digest/personal/drinks.md'
-  h.documents.commit({
-    operationId: randomUUID(), workspace: okNote.note.workspace, path: okPath, action: 'CREATE', expectedRevision: null,
-    markdown: formatMemoryDocument({ metadata: { name: 'Drinks', description: 'Beverage preferences' }, body: 'Oolong tea.' }),
-    sources: h.notes.references(okNote.key), reads: [],
-  })
-  const withdrawnNote = h.add('Secret project codename.', 'Secret')
-  const withdrawnPath = 'digest/personal/withdrawn-topic.md'
-  h.documents.commit({
-    operationId: randomUUID(), workspace: okNote.note.workspace, path: withdrawnPath, action: 'CREATE', expectedRevision: null,
-    markdown: formatMemoryDocument({ metadata: { name: 'Withdrawn Secret Title', description: 'Should never leak' }, body: 'Secret body.' }),
-    sources: h.notes.references(withdrawnNote.key), reads: [],
-  })
-  // Withdraw source in store without purging document row yet so activeEntries() still sees it, while policy.read rejects it.
-  h.store.withdrawSource(withdrawnNote.source.id)
-
-  const incoming = h.add('User also enjoys jasmine tea.', 'Jasmine')
-  let sawCatalog: Array<{ path: string, name: string }> | undefined
-  h.setModel(async request => {
-    const input = request.input as { existingDigests?: Array<{ path: string, name: string }>, notes: Array<{ path: string, sourceIds: string[] }> }
-    sawCatalog = input.existingDigests
-    assert.equal(JSON.stringify(input).includes('Withdrawn Secret Title'), false)
-    assert.equal(JSON.stringify(input).includes(withdrawnPath), false)
-    const readRes = await request.tools!.executeTool({ callId: 'r1', name: 'read', input: { path: okPath } })
-    assert.equal(readRes.state, 'completed')
-    return JSON.stringify({
-      operations: [{
-        action: 'REFINE',
-        path: okPath,
-        name: 'Drinks',
-        description: 'Beverage preferences',
-        edits: [{ oldText: 'Oolong tea.', newText: 'Oolong tea.\nJasmine tea.' }],
-        dailyPaths: input.notes.map(note => note.path),
-        sourceIds: input.notes.flatMap(note => note.sourceIds),
-      }],
-    })
-  })
-  await h.run()
-  assert.equal(h.status().lastCheckResult, 'processed')
-  assert.deepEqual(sawCatalog, [{ path: okPath, name: 'Drinks' }])
-  assert.ok(h.documents.read(incoming.note.workspace, okPath)!.markdown.includes('Jasmine tea.'))
-})
 
 test('Dream node_search continues past offset 512 and deduplicates hybrid/lexical hits without skipping or repeating', async t => {
   const seenOffsets: number[] = []

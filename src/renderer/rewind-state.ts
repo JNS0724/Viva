@@ -70,7 +70,7 @@ export function rewindActions(newSession: (state: State, payload: PayloadFor<'ne
     rewind_confirm_cancel: (state) => withRewind(state, { confirm: null }),
     rewind_failed: (state) => withRewind(state, { busy: false }),
     fold_opened: (state, { id, messages, records }) => withRewind(state, {
-      open: { ...state.rewind.open, [id]: messages }, openRecords: { ...state.rewind.openRecords, [id]: recordsFrom(records, state.erasedReportIds) },
+      open: { ...state.rewind.open, [id]: messages }, openRecords: { ...state.rewind.openRecords, [id]: recordsFrom(records) },
     }),
     fold_closed: (state, { id }) => withRewind(state, {
       open: Object.fromEntries(Object.entries(state.rewind.open).filter(([key]) => key !== id)),
@@ -94,7 +94,7 @@ export function rewindActions(newSession: (state: State, payload: PayloadFor<'ne
           ...(m.sourceId ? { sourceId: m.sourceId } : {}), ...(m.images ? { images: m.images } : {}),
         })),
         // The task records of the part kept, and, back onto a path, those of that path (main/rewind-ipc.ts).
-        records: recordsFrom(conversation.records, state.erasedReportIds),
+        records: recordsFrom(conversation.records),
         folds,
       }
     },

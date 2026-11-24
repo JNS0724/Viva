@@ -8,9 +8,7 @@ import { emitDiagnosticFailure } from '../../diagnostics/node/context.ts'
 import { openMemoryNotes } from './memory-note-store.ts'
 import { openMemoryDocuments } from './memory-document-store.ts'
 import { openMemoryFileIndex } from './memory-file-index.ts'
-import { openMemoryFileRestrictions } from './memory-file-restrictions.ts'
 import { createMemoryPhysicalFileReader, readMemoryFileAtCommit } from './memory-file-store.ts'
-import { erasedDocumentSource } from '../core/memory-document-restrictions.ts'
 import { memorySourceToken, memorySourceWorkspace } from './source-identity.ts'
 
 export type NodeMemoryRuntimeOptions = Omit<Parameters<typeof createCoreMemoryRuntime>[0], 'store' | 'resources'> & { store: MemoryStore }
@@ -43,20 +41,18 @@ export function openMemoryRuntimeResources({ store, now }: { store: MemoryStore,
     sourceToken: memorySourceToken, sourceWorkspace: memorySourceWorkspace,
     identity: { newId: randomUUID, hash: memoryHash },
     effects,
-    openFileRestrictions: () => openMemoryFileRestrictions(store.db),
     openFileIndex: onCleanupPending => openMemoryFileIndex({ db: store.db, now, onCleanupPending }),
     readFileRevisionAtCommit: (workspace, path) => readMemoryFileAtCommit(store.fileRoot, workspace, path)?.revision,
     readPhysicalFile,
     openNotes: (readable, currentJob, options) => openMemoryNotes(store, readable, undefined, currentJob, options),
-    openDocuments: (readable, onCommitted, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted, erasures: store.fileErasures,
-      managementCurrent: policy?.managementCurrent, deferRecovery: policy?.deferRecovery,
-      expandRestrictions: policy?.expandRestrictions, locatorCleaned: policy?.locatorCleaned, index: policy?.index,
+    openDocuments: (readable, onCommitted, policy) => openMemoryDocuments({ db: store.db, root: store.fileRoot, now, onCommitted,
+      managementCurrent: policy?.managementCurrent, index: policy?.index, deferRecovery: policy?.deferRecovery,
       manual: policy?.manualCurrent && { current: policy.manualCurrent, token: memorySourceToken, workspace: memorySourceWorkspace,
-        commit: store.insertManualFileSource, retainsText: store.manualFileRetainsText },
+        commit: store.insertManualFileSource },
       source(id) {
         const source = store.readSource(id)
         return source?.text && readable(id) ? { token: memorySourceToken(source), workspace: memorySourceWorkspace(source),
-          text: source.text, erasure: erasedDocumentSource(source) } : undefined
+          text: source.text } : undefined
       },
     }),
   }
@@ -74,4 +70,4 @@ export function createMemoryRuntime(options: NodeMemoryRuntimeOptions) {
   }
 }
 export { MAX_RECALL_CHARS, MAX_DEEP_RECALL_CHARS } from '../core/memory-runtime.ts'
-export type { MemoryWithdrawal, MemoryRuntime } from '../core/memory-runtime.ts'
+export type { MemoryRuntime } from '../core/memory-runtime.ts'

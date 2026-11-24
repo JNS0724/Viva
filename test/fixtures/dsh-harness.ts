@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -98,7 +99,14 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
       prewarmSessions,
       configActions,
       memoryOwner,
-      memoryRequired: true,
+      recordSource: async ({ session, sourceId, text, wireText, wireSpans, task }) => {
+        if (!memoryOwner.channel.ready()) return
+        const operationId = randomUUID()
+        await memoryOwner.channel.callIntake('sourceAlias', { operationId, sourceId: sourceId ?? operationId, session,
+          conversation: session, text, wireText, wireSpans, cwd: workspace, origin: sourceId ? 'original' : 'derived',
+          ...(task ? { context: { kind: 'task', id: session } } : {}) })
+      },
+
       emit: (event) => {
         events.push(event)
         const requestId = event.requestId
@@ -109,7 +117,9 @@ export async function startHarness(t: TestContext, { mcpServers = [], prewarmSes
     const start = created.start
     created.start = async input => {
       await memoryOwner.prepare()
-      return start(input)
+      const result = await start(input)
+      await created.memory.waitReady()
+      return result
     }
     bridges.push(created)
     return created

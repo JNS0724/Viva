@@ -13,7 +13,6 @@ export const initialFeed = Object.freeze({
   items: Object.freeze([]) as readonly FeedItemView[],
   sources: Object.freeze([]) as readonly FeedSourceView[],
   schedules: Object.freeze([]) as readonly ScheduleView[],
-  erasedIds: Object.freeze([]) as readonly string[],
   /** Editable form draft for the selected or new data source. */
   draft: null as FeedSourceDraft | null,
   /** Source currently executing a manual run-now request. */
@@ -159,7 +158,7 @@ export const FEED_ACTIONS = {
       if (found && (resetDraft || draft?.sourceId !== found.id)) draft = feedSourceDraftOf(found)
     }
     return withFeed(state, {
-      ...(Array.isArray(items) ? { items: items.filter(item => !state.feed.erasedIds.includes(item.id)) } : {}),
+      ...(Array.isArray(items) ? { items } : {}),
       ...(Array.isArray(schedules) ? { schedules } : {}),
       ...(Array.isArray(sources) ? { sources } : {}),
       selected,
@@ -167,11 +166,6 @@ export const FEED_ACTIONS = {
       busy: false,
       error: null,
     })
-  },
-  feed_erased: (state, { ids }) => {
-    const erasedIds = [...new Set([...state.feed.erasedIds, ...ids])]
-    return withFeed(state, { erasedIds, items: state.feed.items.filter(item => !erasedIds.includes(item.id)),
-      selected: state.feed.selected?.kind === 'item' && erasedIds.includes(state.feed.selected.id) ? null : state.feed.selected })
   },
   feed_busy: (state) => withFeed(state, { busy: true, error: null }),
   feed_failed: (state, { message }) => withFeed(state, { busy: false, runningSourceId: null, error: typeof message === 'string' ? message : null }),

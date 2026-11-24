@@ -4,7 +4,6 @@ import {
   resolveRecurringOccurrence, ScheduleId,
 } from '@deepseek-ai/dsh-schedule'
 import type { AtInput, CronInput, DailyInput, ScheduleRecord, WeeklyInput } from '@deepseek-ai/dsh-schedule'
-import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Schedules (system-design §12.2): a time and a prompt, made by talking and kept once the user says yes. A schedule's
@@ -29,7 +28,6 @@ export interface Schedule {
   /** The working folder it was made in: its runs read there, whatever folder the window is on by then. */
   cwd: string
   createdAt: number
-  memory: MemoryProvenance | null
   revision: number
 }
 
@@ -46,7 +44,6 @@ const SCHEMA = `
     conversation_id TEXT,
     cwd TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    memory TEXT,
     revision INTEGER NOT NULL DEFAULT 0
   );
   CREATE INDEX IF NOT EXISTS schedules_active_due ON schedules (${scheduledAtSql}) WHERE status = 'active';
@@ -60,7 +57,6 @@ const scheduleOf = (row: Row): Schedule => ({
   conversationId: row.conversation_id === null ? null : String(row.conversation_id),
   cwd: String(row.cwd),
   createdAt: Number(row.created_at),
-  memory: typeof row.memory === 'string' ? JSON.parse(row.memory) as MemoryProvenance : null,
   revision: Number(row.revision),
 })
 
@@ -76,32 +72,30 @@ function recordOf(id: string, title: string, prompt: string, rule: ScheduleRule,
 export function openScheduleStore({ db, now = Date.now, newId = () => `s${crypto.randomUUID().slice(0, 8)}` }: { db: DatabaseSync, now?: () => number, newId?: () => string }) {
   db.exec(SCHEMA)
   const fields = db.prepare('PRAGMA table_info(schedules)').all()
-  if (!fields.some(row => row.name === 'memory')) db.exec('ALTER TABLE schedules ADD COLUMN memory TEXT')
   if (!fields.some(row => row.name === 'revision')) db.exec('ALTER TABLE schedules ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
   const get = (id: string): Schedule | null => {
     const row = db.prepare('SELECT * FROM schedules WHERE id = ?').get(id) as Row | undefined
     return row ? scheduleOf(row) : null
   }
-  const write = (schedule: Schedule) => db.prepare('UPDATE schedules SET record = ?, status = ?, memory = ?, revision = ? WHERE id = ?')
-    .run(JSON.stringify(schedule.record), schedule.status, schedule.memory && JSON.stringify(schedule.memory), schedule.revision, schedule.id)
+  const write = (schedule: Schedule) => db.prepare('UPDATE schedules SET record = ?, status = ?, revision = ? WHERE id = ?')
+    .run(JSON.stringify(schedule.record), schedule.status, schedule.revision, schedule.id)
 
-  function create(input: { title: string, prompt: string, rule: ScheduleRule, cwd: string, conversationId?: string | null, memory?: MemoryProvenance }): Schedule {
+  function create(input: { title: string, prompt: string, rule: ScheduleRule, cwd: string, conversationId?: string | null }): Schedule {
     const id = newId()
     const record = recordOf(id, input.title, input.prompt, input.rule, now())
-    db.prepare('INSERT INTO schedules (id, record, status, conversation_id, cwd, created_at, memory) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, JSON.stringify(record), 'active', input.conversationId ?? null, input.cwd, now(), input.memory ? JSON.stringify(input.memory) : null)
+    db.prepare('INSERT INTO schedules (id, record, status, conversation_id, cwd, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, JSON.stringify(record), 'active', input.conversationId ?? null, input.cwd, now())
     return get(id) as Schedule
   }
 
   /** Its title, prompt or time changed; a new time is reckoned from now, as dsh does. */
-  function update(id: string, changes: { title?: string, prompt?: string, rule?: ScheduleRule, memory?: MemoryProvenance }): Schedule | null {
+  function update(id: string, changes: { title?: string, prompt?: string, rule?: ScheduleRule }): Schedule | null {
     const found = get(id)
     if (!found || found.status === 'ended') return null
     const title = changes.title ?? found.record.title
     const prompt = changes.prompt ?? found.record.prompt
     const record = changes.rule ? recordOf(id, title, prompt, changes.rule, now()) : { ...found.record, title, prompt }
-    write({ ...found, record, revision: found.revision + 1,
-      memory: changes.prompt === undefined && changes.title === undefined ? found.memory : changes.memory ?? found.memory })
+    write({ ...found, record, revision: found.revision + 1 })
     return get(id)
   }
 

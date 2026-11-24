@@ -19,7 +19,6 @@ The baseline is merged main commit `c3224d7`, together with ongoing frontend cha
 | The [owner](../src/memory/node/owner.ts) rejects ordinary reads when not ready or when source changes remain pending | Record state, reasons and operations, distinguishing rejection from a stall |
 | [Dream](../src/memory/core/memory-dream-jobs.ts) can retry indefinitely, with backoff capped at 60 seconds, and some catches discard errors | Preserve stage, reason, progress and next attempt without assuming that retries block reads |
 | [Effects](../src/memory/node/effects.ts) awaits runners sequentially within a pass | Record runner duration, backlog and wake source |
-| The [send fence](../src/memory/core/send-fence.ts) waits for actual transport settlement | Distinguish cancellation requested from transport settlement and identify pending attempts |
 | Merged startup wires inputs after data loading, while ongoing workspace changes already wire inputs earlier but still initialize events after Promise.all | Preserve that work and decouple optional memory loading from required event initialization |
 | [Session timing](../src/backend/session-timing.ts) primarily reports on completion, and Shell inherits Backend stdout/stderr | Add start and wait events and durable local file sinks |
 

@@ -103,10 +103,9 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     dispatch({ type: 'memory_file_loading' })
     const current = () => active() && request === detailRequest && sameMemoryFileSelection(state().selection, selection)
     try {
-      const detail = await readPage(current, options => api.readMemoryFile(selection.identity, selection.restrictionId, options))
+      const detail = await readPage(current, options => api.readMemoryFile(selection.identity, options))
       if (!current()) return
-      if (!detail || !sameMemoryFile(detail.identity, selection.identity)
-        || detail.stoppedSnapshot?.restrictionId !== selection.restrictionId) throw new Error(t('main.memory.not.found'))
+      if (!detail || !sameMemoryFile(detail.identity, selection.identity)) throw new Error(t('main.memory.not.found'))
       dispatch({ type: 'memory_file_read', selection, detail })
     } catch (error) {
       if (current()) dispatch({ type: 'memory_file_read_failed', selection, message: error instanceof RequestTimeout ? t('memory.read.timeout') : errorMessage(error) })
@@ -208,7 +207,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       || !['confirm', 'unconfirmed', 'pending'].includes(forget.phase)) return false
     const { request } = forget
     if (forget.phase === 'confirm') {
-      if (!canForgetMemoryFile(detail) || !selection || selection.restrictionId || !sameMemoryFile(detail.identity, request.identity)
+      if (!canForgetMemoryFile(detail) || !selection || !sameMemoryFile(detail.identity, request.identity)
         || detail.version.contentRevision !== request.version.contentRevision || detail.version.usageVersion !== request.version.usageVersion
         || detail.version.policyToken !== request.version.policyToken) return false
     }
@@ -229,7 +228,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
       }
       const { receipt, cleanup } = result
       if (receipt.operationId !== request.operationId || receipt.action !== 'FORGET'
-        || !sameMemoryFile(receipt.identity, request.identity) || receipt.restrictionId !== undefined) {
+        || !sameMemoryFile(receipt.identity, request.identity)) {
         throw new Error('Unexpected memory file deletion receipt')
       }
       if (current()) dispatch({ type: 'memory_file_forgotten', id, cleanup })
@@ -252,7 +251,7 @@ export function createMemoryFileActions({ api, getState, dispatch, showToast, er
     askManagedMemoryForget(target: MemoryFileDetailView) {
       const { detail, selection, writing, editor, forget } = state()
       if (!active() || writing || editor || forget?.phase === 'unconfirmed' || detail !== target || !selection
-        || !canForgetMemoryFile(target) || selection.restrictionId) return
+        || !canForgetMemoryFile(target)) return
       dispatch({ type: 'memory_file_forget', forget: { id: ++forgetId, phase: 'confirm', title: target.title,
         request: { operationId: globalThis.crypto.randomUUID(), identity: target.identity, version: target.version } } })
     },

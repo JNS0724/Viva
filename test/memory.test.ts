@@ -19,7 +19,7 @@ import type { RawIpc } from '../src/shared/ipc-contract.ts'
 function memoryRuntime(t: TestContext) {
   const { dir, defer } = scratch(t, 'memory-test-')
   const store = openMemoryStore(path.join(dir, 'memory.db'))
-  const runtime = createMemoryRuntime({ store, compute: () => null, route: () => null, quiesce: async () => {}, changed: () => {} })
+  const runtime = createMemoryRuntime({ store, compute: () => null, route: () => null, changed: () => {} })
   defer(async () => { await runtime.wake(); runtime.close() })
   return { dir, runtime }
 }
@@ -121,7 +121,7 @@ test('picked documents are copied into the workspace under a free name', (t) => 
 
 test('memory IPC creates file memory and reports the profile page in one call', async t => {
   const { dir, defer } = scratch(t, 'memory-ipc-owner-')
-  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null })
   await owner.recover(); defer(() => owner.close())
   const handlers = new Map<string, Parameters<RawIpc['handle']>[1]>()
   const registry = checkedIpc({ handle: (channel, fn) => handlers.set(channel, fn), on: () => {} }, {
@@ -147,7 +147,7 @@ test('memory IPC creates file memory and reports the profile page in one call', 
 
 test('memory IPC rebuilds derived indexes without modifying the canonical records', async t => {
   const { dir, defer } = scratch(t, 'memory-ipc-index-')
-  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null, quiesce: async () => {} })
+  const owner = openMemoryOwner({ root: path.join(dir, 'owner'), compute: () => null, route: () => null })
   await owner.recover(); defer(() => owner.close())
   const runtime = owner.runtime
   const created = await ownerClient(owner).createFile({ operationId: randomUUID(), text: '我的工作电脑使用 Iosevka。' })

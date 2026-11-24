@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createMemoryClient, createMemoryService, MemoryServiceError } from '../src/memory/core/client.ts'
-import { MEMORY_SERVICE_PROTOCOL, memoryConversationEvent } from '../src/memory/contracts/service.ts'
+import { MEMORY_SERVICE_PROTOCOL } from '../src/memory/contracts/service.ts'
 import type { MemoryClientBinding, MemoryCommand, MemoryMethod, MemoryResult, MemoryServiceStatus } from '../src/memory/contracts/service.ts'
 
 const operationId = '038f4e1a-40d4-4fdd-98de-4146de21beb3'
@@ -9,7 +9,7 @@ function fixture(kind: MemoryClientBinding['kind'] = 'user-interface') {
   let epoch = 'owner-1'
   let state: MemoryServiceStatus['state'] = 'ready'
   const commands: MemoryCommand[] = []
-  const grants: MemoryMethod[] = ['status', 'list', 'remember', 'getOperation', 'pendingHostEffects', 'ackHostEffect']
+  const grants: MemoryMethod[] = ['status', 'list', 'remember', 'getOperation']
   const binding: MemoryClientBinding = { clientId: 'client-1', namespace: 'local-user', kind, capabilities: grants }
   let authorization: (command: MemoryCommand) => boolean | Promise<boolean> = command => command.method !== 'list' || command.input.scope.kind === 'user'
   let execute: (command: MemoryCommand) => MemoryResult | Promise<MemoryResult> = command => {
@@ -17,8 +17,6 @@ function fixture(kind: MemoryClientBinding['kind'] = 'user-interface') {
     if (command.method === 'list') return { items: [], partial: false }
     if (command.method === 'remember') return { operationId: command.input.operationId, state: 'completed', revision: 1 }
     if (command.method === 'getOperation') return { operationId: command.input.operationId, state: 'completed', revision: 1 }
-    if (command.method === 'pendingHostEffects') return { effects: [] }
-    if (command.method === 'ackHostEffect') return { accepted: true }
     throw new Error('not implemented')
   }
   const service = createMemoryService({ binding, supported: grants, epoch: () => epoch, state: () => state,
@@ -35,13 +33,11 @@ test('service advertises only granted implemented capabilities and uses trusted 
   const f = fixture()
   await assert.rejects(f.client.call('list', { scope: { kind: 'user' } }), failure('unavailable', 'not-connected'))
   const status = await f.client.connect()
-  assert.equal(status.capabilities.includes('pendingHostEffects'), false)
   assert.equal(status.capabilities.includes('read'), false)
   f.grants.push('read')
   assert.equal((await f.client.call('status', {})).capabilities.includes('read'), false)
   assert.deepEqual(await f.client.call('list', { scope: { kind: 'user' } }), { items: [], partial: false })
   await assert.rejects(f.client.call('list', { scope: { kind: 'project', id: 'someone-else' } }), failure('unauthorized'))
-  await assert.rejects(f.client.call('pendingHostEffects', {}), failure('unauthorized'))
   assert.equal(f.commands.length, 1)
 })
 
@@ -54,13 +50,11 @@ test('wire validation rejects self-asserted authority and protocol mismatches', 
   assert.equal(f.commands.length, 0)
 })
 
-test('recovering allows outcome and host cleanup queries without admitting memory reads or writes', async () => {
+test('recovering allows operation outcome queries without admitting memory reads or writes', async () => {
   const f = fixture('host')
   f.setState('recovering')
   assert.equal((await f.client.connect()).state, 'recovering')
   assert.equal((await f.client.call('getOperation', { operationId }))?.state, 'completed')
-  assert.deepEqual(await f.client.call('pendingHostEffects', {}), { effects: [] })
-  assert.deepEqual(await f.client.call('ackHostEffect', { effectId: 'effect', causeOperationId: operationId, revision: 2 }), { accepted: true })
   await assert.rejects(f.client.call('list', { scope: { kind: 'user' } }), failure('unavailable', 'recovering'))
   await assert.rejects(f.client.call('remember', { operationId, text: 'example', scope: { kind: 'user' }, input: { kind: 'explicit-user' } }), failure('unavailable', 'recovering'))
   f.setState('unavailable')
@@ -88,8 +82,6 @@ test('model proposals cannot forge explicit-user authority and source references
   await assert.rejects(f.client.call('remember', { operationId, text: 'example', scope: { kind: 'user' }, input: { kind: 'explicit-user' } }), failure('unauthorized'))
   const input = { operationId, text: 'example', scope: { kind: 'user' as const }, input: { kind: 'model-proposal' as const, sources: [{ namespace: 'user', sourceId: 'source', revision: 1 }] } }
   assert.equal((await f.client.call('remember', input)).state, 'completed')
-  assert.equal(memoryConversationEvent.safeParse({ kind: 'received', eventId: 'e', cursor: 'c', threadId: 't', at: 1,
-    source: { namespace: 'u', sourceId: 's', revision: 1 }, role: 'user', origin: 'derived', text: 'summary', dependencies: [], owner: 'admin' }).success, false)
 })
 
 test('endpoint does not leak invalid results/internal exceptions and client checks correlation', async () => {
@@ -140,17 +132,6 @@ test('non-DSH model port returns tool execution and added evidence to the isolat
   })
   assert.deepEqual(calls, ['job-1:call'])
   assert.deepEqual(result, { state: 'completed', text: '原文' })
-})
-
-test('normalized source events retain scope, canonical occurrence and revision across edits', () => {
-  const source = { namespace: 'host', sourceId: 'canonical', occurrenceId: 'fork-copy', revision: 3 }
-  const event = memoryConversationEvent.parse({ kind: 'revised', eventId: 'edit', cursor: 'cursor', threadId: 'fork', sessionId: 'dsh-session',
-    projectId: 'project', scope: { kind: 'project', id: 'project' }, at: 123,
-    source, previousRevision: 2, role: 'user', origin: 'original', text: '更正原文', dependencies: [] })
-  assert.ok(event.kind === 'revised')
-  assert.deepEqual(event.source, source)
-  assert.equal(event.previousRevision, 2)
-  assert.equal(event.scope.kind, 'project')
 })
 
 test('service and client reject a valid receipt for another operation', async () => {

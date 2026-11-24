@@ -126,22 +126,21 @@ test('dream model waits, repeated retry and persisted recovery never become a de
   let dreamCount = 0
   let owner: ReturnType<typeof openMemoryOwner>
   const open = () => openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
-    route: () => ({ provider: 'fixture', model: 'fixture' }), quiesce: async () => {},
+    route: () => ({ provider: 'fixture', model: 'fixture' }),
     compute: job => {
       if (job.stage === 'note') return Promise.resolve(JSON.stringify({ status: 'write', title: 'Weekly report', markdown: 'The weekly report is due Friday.' }))
       if (job.stage !== 'dream') return null
       dreamCount++
-      const lease = owner.acquireSend(randomUUID(), { jobId: job.id }, '{}')
       const pending = new Promise<string>((_resolve, reject) => { finish = () => reject(new MemoryComputeError('timeout')) })
       entered()
-      return pending.finally(lease.settled)
+      return pending
     },
   })
   owner = open()
   defer(async () => { finish?.(); await running; await owner.close() })
   await owner.recover()
   const source = { sessionId: randomUUID(), messageId: randomUUID(), text: 'The weekly report is due Friday.',
-    at: Date.now(), timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false }
+    at: Date.now(), timezone: 'UTC', turn: 1, cwd: null }
   const receipt = await owner.receiveSource(source)
   await owner.completeTurn({ sessionId: source.sessionId, turn: 1, eventSeq: 3, sourceIds: [receipt.sourceId], assistant: 'Noted.', completed: true, at: source.at, timezone: 'UTC' })
   await owner.runtime.wake()
@@ -201,20 +200,20 @@ test('dream model waits, repeated retry and persisted recovery never become a de
 })
 
 
-test('the file detail request preserves its optional restriction and cancels backend work on deadline', async t => {
+test('the file detail request cancels backend work on deadline', async t => {
   const identity = { workspace: 'workspace', kind: 'digest', id: 'file' }
   let input: unknown, lifetime: ReturnType<typeof createRequestBudget> | undefined
   const { connection } = await backendWith(t, {
-    'memory:read-file': (_event, target, restriction) => {
-      input = [target, restriction]
+    'memory:read-file': (_event, target) => {
+      input = target
       lifetime = memoryReadContext.getStore()
       return new Promise(() => {})
     },
   })
-  await assert.rejects(connection.rpc('memory:read-file', [identity, undefined, { budgetMs: 40 }]), {
+  await assert.rejects(connection.rpc('memory:read-file', [identity, { budgetMs: 40 }]), {
     message: translate('memory.read.timeout'),
   })
-  assert.deepEqual(input, [identity, undefined])
+  assert.deepEqual(input, identity)
   assert.ok(lifetime)
   if (!lifetime.signal.aborted) await new Promise<void>(resolve => lifetime!.signal.addEventListener('abort', () => resolve(), { once: true }))
   assert.ok(lifetime.signal.aborted)
@@ -238,75 +237,4 @@ test('a direct desktop transport retains read capacity through cancellation unti
     await tick()
     assert.deepEqual(channel.readState(), { batches: 0, executions: 0 })
   } finally { channel.close() }
-})
-
-test('a Dream provider grant and a late result each verify the current daily file while independent reads stay available', { timeout: 10_000 }, async t => {
-  const { dir: root, defer } = scratch(t, 'dream-send-verification-')
-  let report!: (id: string) => void, finish!: (result: string) => void
-  const requested = new Promise<string>(resolve => { report = resolve })
-  const provider = new Promise<string>(resolve => { finish = resolve })
-  const owner = openMemoryOwner({ root, dailyNotes: { noteInterval: 1, timezone: 'UTC' },
-    route: () => ({ provider: 'fixture', model: 'fixture' }), quiesce: async () => {},
-    compute: job => {
-      if (job.stage === 'note') return Promise.resolve('{"status":"write","title":"Friday","markdown":"The report is due Friday."}')
-      if (job.stage !== 'dream') return null
-      report(job.id)
-      return provider
-    },
-  })
-  defer(() => owner.close())
-  await owner.recover()
-  const client = createVivaMemoryClient(<M extends HostMemoryMethod>(method: M, input: HostMemoryApi[M]['input']) =>
-    owner.handleHost(method, input) as Promise<HostMemoryApi[M]['output']>)
-  const independent = await client.createFile({ operationId: randomUUID(), text: 'Independently available memory' })
-  const session = randomUUID(), at = Date.now()
-  const received = await owner.receiveSource({ sessionId: session, messageId: randomUUID(), text: 'The report is due Friday.', at,
-    timezone: 'UTC', turn: 1, step: 1, admitted: true, inherited: false })
-  await owner.completeTurn({ sessionId: session, turn: 1, eventSeq: 3, sourceIds: [received.sourceId], assistant: 'Understood.', completed: true, at, timezone: 'UTC' })
-  await owner.runtime.wake()
-  const daily = (await client.listFiles({ kind: 'daily' })).items[0]!
-  // Match owner-lock.ts (realpathSync) so Windows 8.3 temp aliases compare equal against createMemoryPhysicalFileReader's lstat path.
-  const file = path.resolve(realpathSync(root), 'memory-files', daily.identity.workspace, ...daily.path.split('/'))
-  const work = owner.runtime.runDocumentDream()
-  const origin = { jobId: await requested }, signal = new AbortController().signal
-  let permit: ReturnType<typeof owner.acquireSend> | undefined
-  let release: (() => void) | undefined
-  let mocked: { mock: { restore: () => void } } | undefined
-  let settled = false
-  const settlePermit = () => { if (!settled && permit) { settled = true; permit.settled() } }
-  // Registered after owner.close() so LIFO cleanup releases permits and dream waiters before fence.close() drains.
-  defer(() => {
-    release?.()
-    mocked?.mock.restore()
-    syncBuiltinESMExports()
-    settlePermit()
-    finish('{"units":[]}')
-  })
-  permit = owner.acquireSend(randomUUID(), origin, 'provider attempt', await owner.loadOutputProof(origin, signal))
-  let entered!: () => void
-  const gate = new Promise<void>(resolve => { release = resolve })
-  const blocked = new Promise<void>(resolve => { entered = resolve })
-  const original = fs.lstat
-  mocked = t.mock.method(fs, 'lstat', async (...args: Parameters<typeof original>) => {
-    if (path.resolve(String(args[0])) === file) { entered(); await gate }
-    return original(...args)
-  })
-  syncBuiltinESMExports()
-  try {
-    const denied = assert.rejects(owner.loadOutputProof(origin, signal), /timed out/)
-    await Promise.race([blocked, denied])
-    assert.match((await client.readFile(independent.identity))!.markdown, /Independently available memory/)
-    await denied
-  } finally {
-    release?.()
-    mocked.mock.restore()
-    syncBuiltinESMExports()
-    settlePermit()
-  }
-  await fs.writeFile(file, 'External edit after the admitted model request')
-  const proof = await owner.loadOutputProof(origin, signal)
-  assert.equal(owner.outputCurrent(origin, proof), false)
-  finish('{"units":[]}')
-  await work
-  assert.equal(owner.runtime.dreamStatus().lastProcessedAt, null)
 })

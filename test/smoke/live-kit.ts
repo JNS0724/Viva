@@ -285,7 +285,7 @@ export async function memoryFilesWith(win: SmokeWindow, words: string, includeSt
         `window.agent.listMemoryFiles(${JSON.stringify({ limit: 100, ...(cursor ? { cursor } : {}) })})`))
       if (page.status === 'stale') { stale = true; break }
       for (const item of page.items) {
-        if (!includeStopped && (!item.enabled || item.hasProjection === false)) continue
+        if (!includeStopped && !item.enabled) continue
         const detail: MemoryFileDetailView | null = await run(win, `window.agent.readMemoryFile(${JSON.stringify(item.identity)})`)
         if (!detail) continue
         if (detail.identity.kind !== item.identity.kind || detail.identity.id !== item.identity.id || detail.identity.workspace !== item.identity.workspace) {
@@ -293,14 +293,6 @@ export async function memoryFilesWith(win: SmokeWindow, words: string, includeSt
         }
         if (!sameVersion(item.version, detail.version)) { stale = true; break }
         if (detail.markdown.includes(words)) matches.push(detail)
-        else if (includeStopped) for (const restriction of detail.restrictions ?? []) {
-          const stopped: MemoryFileDetailView | null = await run(win,
-            `window.agent.readMemoryFile(${JSON.stringify(item.identity)}, ${JSON.stringify(restriction.id)})`)
-          if (stopped?.stoppedSnapshot?.restrictionId === restriction.id && stopped.stoppedSnapshot.markdown?.includes(words)) {
-            matches.push(detail)
-            break
-          }
-        }
       }
       if (stale) break
       cursor = page.nextCursor ?? undefined
@@ -322,8 +314,7 @@ export async function forgetMemories(win: SmokeWindow, words: string) {
     if (result.status === 'applied') {
       const receipt = memoryFileMutationResult.parse(result.receipt)
       if (receipt.action !== 'FORGET' || receipt.operationId !== request.operationId || receipt.identity.id !== file.identity.id
-        || receipt.identity.workspace !== file.identity.workspace || receipt.identity.kind !== file.identity.kind
-        || receipt.restrictionId !== undefined) throw new Error('Live cleanup received a different file deletion receipt')
+        || receipt.identity.workspace !== file.identity.workspace || receipt.identity.kind !== file.identity.kind) throw new Error('Live cleanup received a different file deletion receipt')
     }
     if (result.status === 'rejected' && result.code !== 'revision.conflict' && result.code !== 'not.found') {
       throw new Error(`Live memory cleanup was rejected: ${result.code}`)

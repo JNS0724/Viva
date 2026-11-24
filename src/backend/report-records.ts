@@ -3,7 +3,6 @@ import type { Effect } from './effects.ts'
 import type { Conversation } from './history-db.ts'
 import type { ConversationContext } from '../shared/conversation-context.ts'
 import { REPORT, recordedNote, type ReportPayload } from './task-reports.ts'
-import type { MemoryProvenance } from '../memory/contracts/provenance.ts'
 
 /**
  * Where a background task's result the model read is kept (system-design §11.5): as a record of the
@@ -24,9 +23,7 @@ export interface RecordHistory {
   /** Whether a conversation is stored (a blank topic is not, till its first save). */
   get: (id: string) => unknown
   save: (conversation: Conversation, messages: readonly never[], options: { keepEmpty: boolean }) => unknown
-  addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number, memory?: MemoryProvenance }) => boolean
-  evidenceErased: (memory: MemoryProvenance) => boolean
-  recordReportProof: (reportId: string, memory: MemoryProvenance) => boolean
+  addRecord: (record: { conversationId: string, reportId: string, at: number, text: string, beforeSource?: string, after?: number }) => boolean
 }
 
 /** What of the effects queue is used here. */
@@ -91,8 +88,6 @@ export function createReportRecords({ history, effects, apply, current, show, be
     if (!queue?.holds(effect)) return
     const target = targetOf(effect)
     if (!target || target.id !== current().id) return
-    const memory = effect.payload.memory
-    if (memory && !history()?.recordReportProof(effect.key, memory)) return
     const at = timeOf(effect)
     if (effect.payload.recordedAt === undefined && !queue.amend(effect, { ...effect.payload, recordedAt: at })) return
     drawOn(target, effect, at)
@@ -124,13 +119,11 @@ export function createReportRecords({ history, effects, apply, current, show, be
     const anchored = gate && typeof gate === 'object' ? gate.after : undefined
     const kept = apply('report.recorded', { reportId: effect.key, conversationId: target.id }, () => {
       if (!queue.finishGeneration(effect)) return false
-      const memory = effect.payload.memory
-      if (memory && store.evidenceErased(memory)) return false
       // A blank topic on screen is stored with it, so the record has a conversation to come back with after a restart.
       if (!store.get(target.id)) store.save(target, [], { keepEmpty: true })
       store.addRecord({
         conversationId: target.id, reportId: effect.key, at, text: recordedNote(effect.payload),
-        beforeSource: effect.payload.beforeSource, ...(anchored !== undefined ? { after: anchored } : {}), memory,
+        beforeSource: effect.payload.beforeSource, ...(anchored !== undefined ? { after: anchored } : {}),
       })
       return true
     }).value

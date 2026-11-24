@@ -170,26 +170,21 @@ test('a star on a message that does not exist is refused', () => {
   assert.throws(() => db.setStar('nope', 0, true), /找不到这条消息/)
 })
 
-test('a provisional message keeps its id when its committed proof arrives and a new reply gets a new id', () => {
+test('a provisional message keeps its id when its committed text arrives and a new reply gets a new id', () => {
   const sqlite = new DatabaseSync(':memory:')
   const db = openRawHistory({ db: sqlite })
   try {
     const a = db.save(db.create({ sessionId: 'session' }), [user('写首诗'), { ...answer('春'), key: 'provisional' }])
     const idOf = (seq: number) => db.timelineOf(a.id).find(message => message.seq === seq)!.id
     const first = idOf(1)
-    assert.equal(db.get(a.id)?.messages[1]?.text, '', 'an unbound provisional body is held outside durable history')
-    const proof = [{ sources: [], fileRanges: [] }]
-    db.bindGeneratedCopy('session', 'provisional', 'assistant', '春眠不觉晓', proof)
     db.save(a, [user('写首诗'), { ...answer('春眠不觉晓'), key: 'provisional' }])
     assert.equal(idOf(1), first, 'the settled reply retains its provisional identity')
     db.setStar(a.id, 1, true)
-    db.bindGeneratedCopy('session', 'replacement', 'assistant', '床前明月光', proof)
     db.save(a, [user('写首诗'), { ...answer('床前明月光'), key: 'replacement' }])
     assert.notEqual(idOf(1), first)
     assert.deepEqual(db.starsIn([a.id]), [])
     const before = idOf(1)
     db.save(a, [user('写首诗')])
-    db.bindGeneratedCopy('session', 'last', 'assistant', '白日依山尽', proof)
     db.save(a, [user('写首诗'), { ...answer('白日依山尽'), key: 'last' }])
     assert.ok(idOf(1) > before, 'a removed message id cannot name a later reply')
   } finally { sqlite.close() }

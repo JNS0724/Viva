@@ -6,30 +6,26 @@ import { MAX_MESSAGE_CHARS } from './text-limits.ts'
 const opaque = z.string().min(1).max(512)
 export const memoryFileIdentity = z.strictObject({ kind: z.enum(['daily', 'digest']), workspace: opaque, id: opaque })
 export const memoryFileVersion = z.strictObject({ contentRevision: opaque, usageVersion: z.number().int().nonnegative(), policyToken: opaque })
-export const memoryFileRestrictionId = z.uuid()
-export const memoryFileUseRestriction = z.strictObject({ id: memoryFileRestrictionId, version: memoryFileVersion })
 export const memoryFileCursor = z.strictObject({ snapshot: opaque, offset: z.number().int().nonnegative(), retry: z.array(z.number().int().nonnegative()).max(100).optional() })
 export const memoryFileListRequest = z.strictObject({ kind: z.enum(['daily', 'digest']).optional(),
   state: z.enum(['all', 'enabled', 'disabled']).optional(), query: z.string().max(500).optional(),
   limit: z.number().int().min(1).max(100).optional(), cursor: memoryFileCursor.optional() })
-export const memoryFileActions = z.strictObject({ setEnabled: z.boolean(), edit: z.boolean(), forget: z.boolean(), stop: z.boolean().optional(),
+export const memoryFileActions = z.strictObject({ setEnabled: z.boolean(), edit: z.boolean(), forget: z.boolean(),
   undo: z.strictObject({ changeId: opaque }).nullable() })
 export const memoryFileSummary = z.strictObject({ identity: memoryFileIdentity, version: memoryFileVersion,
   path: z.string().min(1).max(4096), title: z.string().max(200), enabled: z.boolean(), day: z.string().optional(),
-  actions: memoryFileActions,
-  hasProjection: z.boolean().optional(), restrictions: z.array(memoryFileUseRestriction).optional() })
+  actions: memoryFileActions })
 export const memoryFileDetail = memoryFileSummary.extend({ markdown: z.string(), sources: z.array(memorySourceReference),
   editor: z.strictObject({ title: z.string(), text: z.string() }).optional(),
-  stoppedSnapshot: z.strictObject({ restrictionId: memoryFileRestrictionId, markdown: z.string().nullable(), sources: z.array(memorySourceReference) }).optional(),
 })
 export const memoryFileListResult = z.strictObject({ status: z.enum(['ok', 'stale']), snapshot: opaque,
   items: z.array(memoryFileSummary).max(100), partial: z.boolean().optional(), nextCursor: memoryFileCursor.nullable() })
 const mutation = { operationId: z.uuid(), identity: memoryFileIdentity, version: memoryFileVersion }
-export const memoryFileSetEnabledRequest = z.strictObject({ ...mutation, enabled: z.boolean(), restrictionId: memoryFileRestrictionId.optional() })
+export const memoryFileSetEnabledRequest = z.strictObject({ ...mutation, enabled: z.boolean() })
 const manual = { text: z.string().min(1).max(MAX_MESSAGE_CHARS), title: z.string().max(200).optional() }
 export const memoryFileCreateRequest = z.strictObject({ operationId: mutation.operationId, ...manual })
 export const memoryFileEditRequest = z.strictObject({ ...mutation, ...manual })
-export const memoryFileForgetRequest = z.strictObject({ ...mutation, restrictionId: memoryFileRestrictionId.optional() })
+export const memoryFileForgetRequest = z.strictObject({ ...mutation })
 export const memoryFileUndoRequest = z.strictObject({ ...mutation, changeId: opaque })
 export const memoryFileMutation = z.discriminatedUnion('action', [
   memoryFileSetEnabledRequest.extend({ action: z.literal('setEnabled') }),
@@ -37,7 +33,7 @@ export const memoryFileMutation = z.discriminatedUnion('action', [
 ])
 /** Durable receipt only. Read the file again for its current policy-bound version. */
 export const memoryFileMutationResult = z.strictObject({ operationId: z.uuid(), identity: memoryFileIdentity,
-  contentRevision: opaque, usageVersion: z.number().int().nonnegative(), action: z.enum(['ENABLE', 'DISABLE', 'UNDO', 'FORGET', 'CREATE', 'EDIT']), restrictionId: memoryFileRestrictionId.optional() })
+  contentRevision: opaque, usageVersion: z.number().int().nonnegative(), action: z.enum(['ENABLE', 'DISABLE', 'UNDO', 'FORGET', 'CREATE', 'EDIT']) })
 export const memoryFileWriteResult = z.discriminatedUnion('status', [
   z.strictObject({ status: z.literal('applied'), receipt: memoryFileMutationResult }),
   z.strictObject({ status: z.literal('rejected'), code: memoryDomainErrorCode }),

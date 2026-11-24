@@ -203,7 +203,7 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
     }
     let computations = 0
     const owner = openMemoryOwner({ root: path.join(directory, 'memory'), dailyNotes: { noteInterval: 5, timezone: 'UTC' },
-      route: () => ({ ...DEEPSEEK_DEFAULT }), quiesce: async () => {},
+      route: () => ({ ...DEEPSEEK_DEFAULT }),
       async compute(job, signal, tools) {
         assert.ok(currentPhase, 'A model computation must belong to an explicit phase')
         if (++computations > (recoveryFrom ? 12 : 64)) throw new Error('Evaluation exceeded its fixed per-case model-job budget')
@@ -273,7 +273,7 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
         save()
         return
       }
-      owner.initializeSession({ sessionId, cwd: workingDirectory })
+      owner.bindIntakeSession(sessionId, workingDirectory)
       for (const phase of fixture.phases) {
         const snapshot: PhaseResult = { id: phase.id, sourceIds: [], files: [], documents: [], pending: [], recall: '', jobs: [] }
         currentPhase = snapshot
@@ -288,7 +288,7 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
             const at = Date.now()
             turn++
             const receipt = await owner.receiveSource({ sessionId, messageId: randomUUID(), text: pair.user, at, timezone: 'UTC',
-              turn, step: 1, admitted: true, inherited: false })
+              turn, cwd: workingDirectory })
             sourceIds.add(receipt.sourceId)
             snapshot.sourceIds.push(receipt.sourceId)
             await owner.completeTurn({ sessionId, turn, eventSeq: turn * 2 + 1, sourceIds: [receipt.sourceId], assistant: pair.assistant,
@@ -307,18 +307,18 @@ export async function evaluateMemorySemantics(output: string, selected?: string,
           for (const file of snapshot.files) assert.ok(file.sources.length > 0 && file.sources.every(source => sourceIds.has(source.sourceId)),
             'Every accepted file must retain only admitted synthetic user evidence')
           const reader = randomUUID()
-          owner.initializeSession({ sessionId: reader, cwd: workingDirectory })
+          owner.bindIntakeSession(reader, workingDirectory)
           snapshot.recall = owner.runtime.handle({ op: 'recall', session: reader, query: phase.recallQuery }, owner.sessionContext(reader))
           if (project) {
             const foreignDirectory = path.join(directory, 'independent-project')
             gitFixture(foreignDirectory)
             const foreign = randomUUID()
-            owner.initializeSession({ sessionId: foreign, cwd: foreignDirectory })
+            owner.bindIntakeSession(foreign, foreignDirectory)
             snapshot.foreignProjectReads = snapshot.files.map(file => owner.runtime.handle({ op: 'file_read', session: foreign, id: file.identity.id }, owner.sessionContext(foreign)))
             assert.ok(snapshot.foreignProjectReads.every(text => JSON.parse(text).status === 'unavailable'),
               'An independent project must not read an accepted project file')
             const userOnly = randomUUID()
-            owner.initializeSession({ sessionId: userOnly })
+            owner.bindIntakeSession(userOnly, null)
             snapshot.userOnlyReads = snapshot.files.map(file => owner.runtime.handle({ op: 'file_read', session: userOnly, id: file.identity.id }, owner.sessionContext(userOnly)))
             assert.ok(snapshot.userOnlyReads.every(text => JSON.parse(text).status === 'unavailable'),
               'A personal origin must not read an accepted project file')

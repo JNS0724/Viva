@@ -1,5 +1,5 @@
 // Domain storage port. Implementations live in memory/node; no database handle crosses this boundary.
-import type { DocumentSourceCut, DocumentSourceRef, MemoryPhysicalFile } from './documents.ts'
+import type { DocumentSourceRef, MemoryPhysicalFile } from './documents.ts'
 import type { MemorySource } from './store.ts'
 type SourceRef = DocumentSourceRef
 export interface NoteRow {
@@ -11,7 +11,7 @@ export interface NoteRow {
     processed: number;
     updatedAt: number;
     file_revision: string;
-    enabled?: boolean;
+    enabled: boolean;
 }
 type Note = NoteRow & {
     title: string;
@@ -28,20 +28,19 @@ export interface DailyAllocation {
     revision: number;
     updatedAt: number;
 }
-export type DailyFileRegistration = DailyAllocation & { fileRevision: string | null }
+export type DailyFileRegistration = DailyAllocation & { fileRevision: string, enabled: boolean }
 export interface MemoryNotes {
     allocations(): DailyAllocation[];
     fileRegistry(): DailyFileRegistration[];
     deleteFile(workspace: string, key: string, expectedUsageVersion: number): number;
     setEnabled(key: string, revision: number, enabled: boolean): boolean;
-    usePolicyToken(workspace: string): string;
-    pendingCleanup(): number;
     registeredAt(workspace: string, path: string): { key: string, file_revision: string } | undefined;
     registeredForSources(ids: readonly string[]): Array<{ workspace: string, path: string }>;
     registered(): Array<NoteRow & { sources: DocumentSourceRef[], state: 'active' | 'withdrawing' }>;
     recoverDeletedFiles(): void;
     deletedFileCleanupPending(workspace: string, id: string): boolean;
     checkpointCleanup(): void;
+    pendingCleanup(): number;
     needsRecovery(): boolean;
     recover: () => void;
     read: (key: string, physical?: MemoryPhysicalFile | null) => Note | undefined;
@@ -99,7 +98,6 @@ export interface MemoryNotes {
     sourceQuestionContext(sourceId: string): { current: boolean, refs: DocumentSourceRef[] };
     sources(key: string): string[];
     references(key: string): DocumentSourceRef[];
-    rebuildRows(key: string): ReturnType<MemoryNotes['pending']>;
     finish(rows: Array<{
         id: string;
     }>, contributed: boolean): void;
@@ -112,8 +110,6 @@ export interface MemoryNotes {
         title: string;
         markdown: string;
         filename?: string;
-    }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined, options?: { rebuild?: boolean }): boolean;
+    }, generation: number, at: number, refs: SourceRef[], expected: Note | undefined): boolean;
     markProcessed(key: string, revision: number): boolean;
-    withdraw(sourceId: string): string[];
-    eraseSource(cut: DocumentSourceCut): string[];
 }

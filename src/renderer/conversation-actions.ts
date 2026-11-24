@@ -60,7 +60,6 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
     }
     if ((!text && !images.length) || setupView(getState().info) || selectionPending()) return false
     if (getState().phase === 'stopping' || getState().stopUnconfirmed) return false
-    if (feedItemId && getState().feed.erasedIds.includes(feedItemId)) return false
     if (feedItemId && isBusy(getState())) {
       showToast(t('feed.continue.wait'))
       return false
@@ -109,9 +108,8 @@ export function createConversationActions({ api, getState, dispatch, errorMessag
       }
       api.prompt(text, images, operation, feed.id, turnId).then(result => {
         if (result?.accepted === false) { refused(result.message); return }
-        const accepted = !getState().feed.erasedIds.includes(feed.id)
-        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted })
-        feed.admitted?.(accepted)
+        if (pendingHere()) dispatch({ type: 'prompt_admitted', sourceId: operation, accepted: true })
+        feed.admitted?.(true)
       }, error => refused(errorMessage(error)))
     } else api.prompt(text, images, operation, undefined, turnId)
       .then(promptFinished(origin, epoch, [operation]), promptRejected(origin, epoch, operation, onRejected))

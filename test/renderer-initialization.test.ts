@@ -237,31 +237,7 @@ test('snapshot identity, retired generations and missing publication cursors can
   }
 })
 
-test('withdrawn generated content is never available from the backend replay cache', t => {
-  const stream = backendStream(t)
-  stream.send({ type: 'update', context, update: { text: 'withdrawn thought' } })
-  stream.send({ type: 'memory_changed', traceSessions: [context.sessionId] })
-  assert.throws(() => stream.snapshot(context.conversationId, context), /gap/)
-  const reports = backendStream(t)
-  reports.send({ type: 'report_delivered', context, reportId: 'withdrawn-report', text: 'withdrawn' })
-  reports.send({ type: 'reports_removed', reportIds: ['withdrawn-report'] })
-  assert.throws(() => reports.snapshot(context.conversationId, context), /gap/)
-})
 
-test('a withdrawal arriving before an older snapshot response prevents installation of that snapshot', async t => {
-  for (const event of [{ type: 'memory_changed', traceSessions: [context.sessionId] }, { type: 'reports_removed', reportIds: ['report'] }]) {
-    const required = deferred<RendererSnapshot>(), installed: RendererSnapshot[] = [], failed: string[] = []
-    const actions = createInitializationActions({ snapshot: () => required.promise, install: value => installed.push(value), deliver() {},
-      pause() {}, initialized() {}, loading() {}, failed: reason => failed.push(reason) })
-    t.after(actions.close)
-    const pending = actions.initialize()
-    actions.receive({ ...event, streamGeneration: 'generation', eventCursor: 1 })
-    actions.receive({ ...event, streamGeneration: 'generation', eventCursor: 0 })
-    required.resolve(snapshot(0))
-    assert.equal(await pending, false)
-    assert.deepEqual(installed, []); assert.deepEqual(failed, ['boundary'])
-  }
-})
 
 test('a cutover inside a missing range cannot release the foreground', async t => {
   for (const cutover of [2, 3, 4]) {
@@ -316,17 +292,6 @@ test('replay loss is scoped to the segment and session-wide configuration only b
   assert.deepEqual(stream.snapshot(sibling.conversationId, sibling).replay, [])
 })
 
-test('withdrawals discard affected session or report copies without invalidating unrelated segments', t => {
-  for (const invalidation of [{ type: 'reports_removed', reportIds: ['withdrawn'] },
-    { type: 'memory_changed', traceSessions: [context.sessionId] }, { type: 'memory_changed', erasedOutputs: [{ session: context.sessionId, key: 'output' }] }]) {
-    const stream = backendStream(t), other = { conversationId: 'other', sessionId: 'other' }
-    stream.send({ type: 'report_delivered', context, reportId: 'withdrawn' })
-    stream.send({ type: 'report_delivered', context: other, reportId: 'keep' })
-    stream.send(invalidation)
-    assert.throws(() => stream.snapshot(context.conversationId, context), /gap/)
-    assert.equal(stream.snapshot(other.conversationId, other).replay.length, 1)
-  }
-})
 
 test('an old snapshot and an interleaved late old push cannot retire a live replacement', async t => {
   let required = deferred<RendererSnapshot>()

@@ -116,7 +116,7 @@ export function dataPolicy(documents: readonly EvaluationDocument[]) {
   type PolicyArguments = Parameters<typeof createMemoryDocumentReadPolicy>[0]
   const notes = new Map(documents.filter(document=>document.kind==='daily' && !retiredIds.has(document.id)).map(document=>{
     const markdown=bodies.get(document.id)!, revision=hash(markdown), row={key:document.id,workspace:workspace(document.scope),path:pathOf(document),day:document.day!,
-      revision:1,processed:0,updatedAt:Date.parse(`${document.day}T12:00:00Z`),file_revision:revision}
+      revision:1,enabled:activeState(document)==='active',processed:0,updatedAt:Date.parse(`${document.day}T12:00:00Z`),file_revision:revision}
     return [document.id,{...row,title:document.name,markdown:parseMemoryDocument(markdown).body,document:markdown,fileRevision:revision}]
   }))
   const notePort: PolicyArguments['notes'] = {
@@ -129,7 +129,6 @@ export function dataPolicy(documents: readonly EvaluationDocument[]) {
   const documentPort: PolicyArguments['documents'] = {
     registered:scope=>[...snapshots.values()].filter(item=>item.workspace===scope).map(item=>({...item,state:activeState(byId.get(item.id)!)})),
     read:(scope,path)=>[...snapshots.values()].find(item=>item.workspace===scope && item.path===path && activeState(byId.get(item.id)!)==='active') ?? null,
-    sourceRestrictions:scope=>documents.filter(document=>workspace(document.scope)===scope && activeState(document)==='disabled').map(source),
   }
   const policy=createMemoryDocumentReadPolicy({notes:notePort,documents:documentPort,hash,
     refsCurrent:refs=>refs.every(ref=>documents.some(document=>source(document).id===ref.id && source(document).token===ref.token && document.state!=='forgotten')),

@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { belongsTo, contextOf, isConversationEvent, type ConversationContext } from '../shared/conversation-context.ts'
-import { invalidatesConversationSnapshot } from '../shared/renderer-sync.ts'
 
 /** Publication, backend-persisted history cutoffs and replay share a synchronous boundary on this connection. */
 export function createRendererStream(publish: (event: { type: string, [key: string]: unknown }) => void, db: DatabaseSync) {
   const streamGeneration = randomUUID()
   let eventCursor = 0, bytes = 0
-  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, reportId?: string, questionId?: string, streamKey?: string, provisionalStream?: boolean, reasoningRetained?: boolean, inHistory?: boolean, plainChunk?: boolean, bytes: number }> = []
+  const held: Array<{ json: string, cursor: number, routing: { type: string, context: ConversationContext }, scope: string, questionId?: string, streamKey?: string, provisionalStream?: boolean, reasoningRetained?: boolean, inHistory?: boolean, plainChunk?: boolean, bytes: number }> = []
 
   // Connection-local scalar receipts outlive the bounded replay buffer, including for inactive conversations.
   // Eviction must never turn one session's lost data into another session's replay gap.
@@ -74,7 +73,6 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
       )
       const questionId = event.type === 'question_answered' && typeof event.questionId === 'string' ? event.questionId : undefined
       held.push({ json, cursor: eventCursor, routing: { type: event.type, context: origin }, scope: key(origin.sessionId, origin.conversationId),
-        reportId: event.type === 'report_delivered' && typeof event.reportId === 'string' ? event.reportId : undefined,
         ...(questionId ? { questionId } : {}),
         ...(streamKey ? { streamKey } : {}),
         ...(provisionalStream ? { provisionalStream: true } : {}),
@@ -87,20 +85,6 @@ export function createRendererStream(publish: (event: { type: string, [key: stri
         if (removed.streamKey !== undefined && !removed.reasoningRetained) recordStreamLoss(removed.scope, removed.routing.context.conversationId, removed.streamKey, removed.cursor)
         else if (removed.plainChunk) recordPlainLoss(removed.scope, removed.routing.context.conversationId, removed.cursor)
         else recordLoss(removed.scope, removed.cursor)
-      }
-    }
-    if (invalidatesConversationSnapshot(event)) {
-      const reports = new Set<unknown>(Array.isArray(event.reportIds) ? event.reportIds : [])
-      const sessions = new Set<unknown>(Array.isArray(event.traceSessions) ? event.traceSessions : [])
-      if (Array.isArray(event.erasedOutputs)) for (const copy of event.erasedOutputs) {
-        if (copy && typeof copy === 'object' && 'session' in copy) sessions.add(copy.session)
-      }
-      // Generated traces are session-scoped; report removals identify exact records. Feed IDs refer to another store.
-      for (let index = held.length - 1; index >= 0; index--) {
-        const row = held[index]!
-        if (!sessions.has(row.routing.context.sessionId) && !(row.reportId !== undefined && reports.has(row.reportId))) continue
-        held.splice(index, 1)
-        bytes -= row.bytes; recordLoss(row.scope, eventCursor)
       }
     }
     publish(event)

@@ -13,12 +13,11 @@ export function createVivaMemoryClient(call: HostMemoryCaller, readBatch: Memory
     dreamStatus: method('dreamStatus'), requestDream: method('requestDream'),
     listFiles: (request: HostMemoryApi['listFiles']['input']['args'][0], options?: Parameters<MemoryReadBatch>[1]) =>
       readBatch(read => read('listFiles', { args: [request] }), options),
-    readFile: (identity: HostMemoryApi['readFile']['input']['args'][0], restriction?: string, options?: Parameters<MemoryReadBatch>[1]) =>
-      readBatch(read => read('readFile', { args: [identity, restriction] }), options),
+    readFile: (identity: HostMemoryApi['readFile']['input']['args'][0], options?: Parameters<MemoryReadBatch>[1]) =>
+      readBatch(read => read('readFile', { args: [identity] }), options),
     createFile: method('createFile'), editFile: method('editFile'),
     setFileEnabled: method('setFileEnabled'), undoFile: method('undoFile'), forgetFile: method('forgetFile'),
     fileOperation: (operationId: string) => call('getOperation', { operationId }),
-    recoverContext: method('recoverContext'),
     profile: method('profile'), fileProfile: method('fileProfile'),
     revision: method('revision'), cleanupPending: method('cleanupPending'),
     onboarding: method('onboarding'), setOnboarding: method('setOnboarding'), rebuildIndexes: method('rebuildIndexes'),

@@ -2,9 +2,8 @@ import type { MemoryDreamStatus } from '../memory/contracts/dream-status.ts'
 import type { MemoryFileListResult, MemoryFileDetail, MemoryFileMutationResult, MemoryFileWriteResult, MemoryFileForgetResult } from '../memory/contracts/file-management.ts'
 
 export type MemoryFileSourceView = MemoryFileDetail['sources'][number] & { link: string | null }
-export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources' | 'stoppedSnapshot'> & {
+export type MemoryFileDetailView = Omit<MemoryFileDetail, 'sources'> & {
   sources: MemoryFileSourceView[]
-  stoppedSnapshot?: Omit<NonNullable<MemoryFileDetail['stoppedSnapshot']>, 'sources'> & { sources: MemoryFileSourceView[] }
 }
 
 /**

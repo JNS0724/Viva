@@ -196,20 +196,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   }
   if (type === 'mcp_status') { const mcp = decodeMcp(item.mcp); return mcp ? { type, mcp } : null }
   if (type === 'error') return string(item.message) && (item.context === undefined || context) ? { type, message: item.message, ...(context ? { context } : {}) } : null
-  if (type === 'memory_changed') {
-    const traceSessions = item.traceSessions === undefined ? undefined : texts(item.traceSessions)
-    const erasedFeedIds = item.erasedFeedIds === undefined ? undefined : texts(item.erasedFeedIds)
-    const erasedOutputs = item.erasedOutputs === undefined ? undefined : list(item.erasedOutputs, value => {
-      const output = objectOf(value)
-      return string(output?.session) && Boolean(output.session) && string(output.key) && Boolean(output.key)
-        ? { session: output.session, key: output.key } : null
-    })
-    return traceSessions !== null && erasedOutputs !== null && erasedFeedIds !== null
-      ? { type, ...(traceSessions ? { traceSessions } : {}), ...(erasedOutputs ? { erasedOutputs } : {}),
-          ...(erasedFeedIds ? { erasedFeedIds } : {}),
-          ...(string(item.failure) ? { failure: item.failure } : {}) } : null
-  }
-  if (type === 'reports_removed') { const reportIds = texts(item.reportIds); return reportIds ? { type, reportIds } : null }
+  if (type === 'memory_changed') return { type, ...(string(item.failure) ? { failure: item.failure } : {}) }
   if (type === 'files_changed') return string(item.path) ? { type, path: item.path } : null
   if (type === 'feed_changed' || type === 'schedules_changed') return { type }
   if (type === 'task_closed') return typeof item.taskId === 'string' && item.taskId ? { type, taskId: item.taskId } : null
@@ -259,7 +246,7 @@ function eventOf(item: ObjectValue): AgentEvent | null {
   return null
 }
 export const EVENT_TAGS = {
-  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_stopping: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, prompt_persisted: true, reports_removed: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
+  ready: true, workdir: true, config: true, mcp_status: true, update: true, turn_started: true, turn_stopping: true, turn_end: true, permission: true, question: true, question_answered: true, question_closed: true, secret_request: true, secret_closed: true, waits: true, memory_context: true, report_delivered: true, prompt_persisted: true, error: true, schedule_propose: true, memory_changed: true, files_changed: true, feed_changed: true, schedules_changed: true, task_closed: true, task_snapshot: true, task_update: true, task_permission_closed: true, task_question: true, task_question_closed: true, task_steered: true, task_end: true
 } satisfies Record<AgentEvent['type'], true>
 
 export interface EventIssue { reason: 'unknown-event' | 'malformed-event', tag: string }

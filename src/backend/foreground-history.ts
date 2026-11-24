@@ -44,6 +44,7 @@ interface ActiveTurn {
   conversation: Conversation
   sessionId: string | null
   by: string | null
+  foregroundOnly?: boolean
   startedAt: number
   tools: number
   thoughts: number
@@ -223,6 +224,7 @@ export function createForegroundHistory({
     const ops: HistoryMessageMutation[] = turn.pendingPlainSegments.map(text => ({
       kind: 'upsert_assistant',
       message: { role: 'assistant', text, receipt: null },
+      foregroundOnly: turn.foregroundOnly,
     }))
     turn.pendingPlainSegments = []
     return ops
@@ -651,7 +653,7 @@ export function createForegroundHistory({
       const plain = drainPlainOps(turn)
       const ops: HistoryMessageMutation[] = [
         ...plain,
-        { kind: 'upsert_assistant', message: { role: 'assistant', text, receipt: null, key }, ...(beforeKey ? { beforeKey } : {}) },
+        { kind: 'upsert_assistant', message: { role: 'assistant', text, receipt: null, key }, ...(beforeKey ? { beforeKey } : {}), foregroundOnly: turn.foregroundOnly },
       ]
       // Track the settled stream in the logical turn even if commit fails so retries and turn_end stay ordered.
       persist(ops, sessionId, { plainPersisted: plain.length > 0, streamKeys: [key] })
@@ -709,6 +711,10 @@ export function createForegroundHistory({
         return
       }
     }
+  }
+
+  function keepReplyInForeground(sessionId: string) {
+    if (active?.sessionId === sessionId) active.foregroundOnly = true
   }
 
   function receive(raw: unknown) {
@@ -865,6 +871,6 @@ export function createForegroundHistory({
     reset()
   }
 
-  return { userPrompt, userSteer, beforeReportRecord, receive, flush, retryPending, reset, close, hasPendingWrites: () => pendingWrites.size > 0 }
+  return { keepReplyInForeground, userPrompt, userSteer, beforeReportRecord, receive, flush, retryPending, reset, close, hasPendingWrites: () => pendingWrites.size > 0 }
 }
 export type ForegroundHistory = ReturnType<typeof createForegroundHistory>

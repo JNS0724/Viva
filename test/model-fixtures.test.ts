@@ -23,7 +23,7 @@ test('a recovered task selects its real brief after provider-converted system me
   const runtime = '<system-reminder>\nCurrent working directory: synthetic-workspace.\n</system-reminder>'
   const skills = '<system-reminder>\n<available_skills>synthetic catalog</available_skills>\n</system-reminder>'
   const brief = '核对任意任务的原文，不依赖任务名称。'
-  const delivered = `${brief}\n\n<memory-delivery id="${randomUUID()}" />`
+  const delivered = brief
   const blocks = [history, persona, delivered, runtime, skills, '<about-user>profile']
   const layouts = [blocks.map(human), [{ role: 'user', content: blocks.map(text => ({ type: 'text', text })) }],
     [human(`${history}${persona}\n${delivered}`), human(runtime), human(skills)]]
