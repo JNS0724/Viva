@@ -2583,113 +2583,197 @@ test('out-of-batch observed source becoming ineligible blocks digest commit, and
   assert.equal(hP.notes.changedFiles('2026-11-15', '2026-11-16').length, 0, 'self-observed target note must complete cleanly using its single physical observation (R14 P2-2)')
   fs.renameSync(d1PBackup, d1PAbs)
 
-  // Part Q (R14 P2-3, R15 P2-1): Metadata decoding error during target policy validation AND across retries
-  // (on both no-batch and batch runtimes) must propagate via readStrict and NEVER emit an empty completion receipt!
+  // Part Q (R14 P2-3, R15 P2-1, R16 P2-3): Persistently malformed memory_documents.sources committed OUTSIDE the
+  // checkpoint transaction must propagate through strict candidate-scan policy reads on retry with 0 extra planner calls
+  // and keep the manual Dream request pending on both batch and no-batch runtimes!
   for (const omitPhysical of [true, false]) {
-    let armCorruptQ = false
     const hQ = dreamHarness(t, {
       initialNow: TODAY_MS,
       omitReadFileAtCommit: omitPhysical,
       omitReadPhysicalFile: omitPhysical,
     })
-    const d1Q = hQ.addDailyNote([{ text: `目标 Q 策略校验与重试元数据损坏 (${omitPhysical})` }], { session: `s-r14-q1-${omitPhysical}`, day: '2026-11-16' })
-    const origReadQ = hQ.notes.read
-    hQ.notes.read = (key, physical, opts) => {
-      const res = origReadQ(key, physical, opts)
-      if (armCorruptQ && key === d1Q.key && (omitPhysical ? opts?.throwOnPhysicalError : physical !== undefined) && res) {
-        armCorruptQ = false
-        hQ.store.db.prepare('UPDATE memory_note_sources SET spans = ? WHERE note = ?')
-          .run('{malformed-json', d1Q.key)
-      }
-      return res
-    }
+    const d0Q = hQ.addDailyNote([{ text: '旧摘要来源：合肥机房配置' }], { session: `s-r16-q0-${omitPhysical}`, day: '2026-11-15' })
+    hQ.documents.commit({
+      operationId: randomUUID(),
+      workspace: d0Q.workspace,
+      path: 'digest/wiki/doc-q.md',
+      expectedRevision: null,
+      action: 'CREATE',
+      markdown: '---\nname: Doc Q\ndescription: Digest whose sources JSON is corrupted persistently\n---\n\n合肥机房运维配置。\n',
+      sources: [{ id: d0Q.sources[0]!.id, token: memorySourceToken(d0Q.sources[0]!) }],
+      reads: [],
+    })
+    hQ.notes.markProcessed(d0Q.key, d0Q.note.revision)
+    const d1Q = hQ.addDailyNote([{ text: `目标 Q 关联 [[digest/wiki/doc-q.md]] (${omitPhysical})` }], { session: `s-r16-q1-${omitPhysical}`, day: '2026-11-16' })
+    let modelCallsQ = 0
     hQ.setModel(async request => {
+      modelCallsQ++
       if (request.system === DREAM_PROFILE_SYSTEM) {
-        armCorruptQ = true
+        // Persist malformed memory_documents.sources OUTSIDE the checkpoint transaction so rollback never undoes it!
+        hQ.store.db.prepare('UPDATE memory_documents SET sources = ? WHERE workspace = ? AND path = ?')
+          .run('{malformed-json', d0Q.workspace, 'digest/wiki/doc-q.md')
         return JSON.stringify({ action: 'NOOP' })
       }
+      const readRes = await request.tools!.executeTool({ callId: 'c-docq', name: 'read', input: { path: 'digest/wiki/doc-q.md' } })
+      assert.equal(readRes.state, 'completed')
       return JSON.stringify({ operations: [] })
     })
     const manualOpQ = randomUUID()
     hQ.jobs.request(manualOpQ)
     await hQ.effects.wake()
-    assert.equal(armCorruptQ, false, `target metadata corruption must have fired (omitPhysical=${omitPhysical})`)
+    assert.equal(modelCallsQ, 2)
     const statusQ1 = hQ.jobs.status(manualOpQ)
     assert.equal(statusQ1.completedAt, null, `first failure must NOT emit completedAt receipt (omitPhysical=${omitPhysical}) (R14 P2-3)`)
     assert.notEqual(statusQ1.state, 'idle')
-    // Retry with the corruption STILL present in DB: candidate scan must ALSO propagate via readStrict (never idle/empty)!
+    // Retry with the persistent corruption still in memory_documents.sources: candidate scan readStrict must fail
+    // BEFORE running the planner (0 extra planner calls, manual request still pending)!
     await hQ.retryNow()
+    assert.equal(modelCallsQ, 2, `retry with persistent malformed memory_documents.sources must fail in candidate scan without another planner call (omitPhysical=${omitPhysical}) (R16 P2-3)`)
     const statusQ2 = hQ.jobs.status(manualOpQ)
-    assert.equal(statusQ2.completedAt, null, `retry with persistent metadata corruption must NOT emit completedAt/empty receipt (omitPhysical=${omitPhysical}) (R15 P2-1)`)
+    assert.equal(statusQ2.completedAt, null, `retry with persistent metadata corruption must NOT emit completedAt/empty receipt (omitPhysical=${omitPhysical}) (R15 P2-1, R16 P2-3)`)
     assert.notEqual(statusQ2.state, 'idle')
+    assert.equal(hQ.notes.changedFiles('2026-11-15', '2026-11-16').some(f => f.key === d1Q.key), true)
   }
 
-  // Part R (R15 P2-2): Missing target already observed by checkpointBatch + temporarily ineligible dependency must defer
-  // (saving deferred checkpoint and finishing with 2 total planner calls, NOT waiting & replanning).
-  const ineligibleR = new Set<string>()
-  let d1RPath = ''
-  let d1RAbs = ''
-  let d1RBackup = ''
-  let d0RSourceId = ''
-  let armCheckpointR = false
-  let postProfileReadsOfD1R = 0
-  const hR = dreamHarness(t, {
-    initialNow: TODAY_MS,
-    eligible: src => !ineligibleR.has(src.id),
-    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
-      if (armCheckpointR && filePath === d1RPath) {
-        postProfileReadsOfD1R++
-        // 1st read after profile pass is profileInputsCurrent(); 2nd read is checkpointTargets loadFiles()!
-        if (postProfileReadsOfD1R === 2) {
+  // Part R (R15 P2-2, R16 P2-2): Missing target + temporarily ineligible dependency must defer on BOTH batch AND
+  // no-batch revision-only runtimes (saving deferred checkpoint and finishing with 2 total planner calls, NOT 4).
+  for (const noBatch of [false, true]) {
+    const ineligibleR = new Set<string>()
+    let d1RPath = ''
+    let d1RAbs = ''
+    let d1RBackup = ''
+    let d0RSourceId = ''
+    let armCheckpointR = false
+    let postProfileReadsOfD1R = 0
+    const hR = dreamHarness(t, {
+      initialNow: TODAY_MS,
+      omitReadFileAtCommit: noBatch,
+      omitReadPhysicalFile: noBatch,
+      eligible: src => !ineligibleR.has(src.id),
+      async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+        if (!noBatch && armCheckpointR && filePath === d1RPath) {
+          postProfileReadsOfD1R++
+          if (postProfileReadsOfD1R === 2) {
+            armCheckpointR = false
+            fs.renameSync(d1RAbs, d1RBackup)
+            ineligibleR.add(d0RSourceId)
+          }
+        }
+        return defaultRead(workspace, filePath, signal)
+      },
+      readFileRevisionAtCommitOverride(defaultRead, workspace, filePath) {
+        if (noBatch && armCheckpointR && filePath === 'digest/wiki/doc-r.md') {
           armCheckpointR = false
           fs.renameSync(d1RAbs, d1RBackup)
           ineligibleR.add(d0RSourceId)
+        }
+        return defaultRead(workspace, filePath)
+      },
+    })
+    const d0R = hR.addDailyNote([{ text: `旧摘要来源：宁波机房配置 (${noBatch})` }], { session: `s-r15-r0-${noBatch}`, day: '2026-11-15' })
+    d0RSourceId = d0R.sources[0]!.id
+    hR.documents.commit({
+      operationId: randomUUID(),
+      workspace: d0R.workspace,
+      path: 'digest/wiki/doc-r.md',
+      expectedRevision: null,
+      action: 'CREATE',
+      markdown: '---\nname: Doc R\ndescription: Observed digest for ineligible + missing target test\n---\n\n宁波机房运维配置。\n',
+      sources: [{ id: d0R.sources[0]!.id, token: memorySourceToken(d0R.sources[0]!) }],
+      reads: [],
+    })
+    hR.notes.markProcessed(d0R.key, d0R.note.revision)
+    const d1R = hR.addDailyNote([{ text: `目标 R 读取 doc-r 后缺失且依赖暂不可入场 (${noBatch})` }], { session: `s-r15-r1-${noBatch}`, day: '2026-11-16' })
+    d1RPath = d1R.path
+    d1RAbs = path.join(hR.store.fileRoot, d1R.workspace, d1R.path)
+    d1RBackup = `${d1RAbs}.moved`
+    let modelCallsR = 0
+    hR.setModel(async request => {
+      modelCallsR++
+      if (request.system === DREAM_PROFILE_SYSTEM) {
+        armCheckpointR = true
+        return JSON.stringify({ action: 'NOOP' })
+      }
+      const readRes = await request.tools!.executeTool({ callId: 'c-docr', name: 'read', input: { path: 'digest/wiki/doc-r.md' } })
+      assert.equal(readRes.state, 'completed')
+      return JSON.stringify({ operations: [] })
+    })
+    const manualOpR = randomUUID()
+    hR.jobs.request(manualOpR)
+    await hR.effects.wake()
+    assert.equal(armCheckpointR, false, `target move + dependency ineligibility must have triggered (noBatch=${noBatch})`)
+    assert.equal(modelCallsR, 2)
+    assert.ok(hR.jobs.status(manualOpR).completedAt !== null, `manual request must complete while missing target is deferred (noBatch=${noBatch}) (R15 P2-2, R16 P2-2)`)
+    assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
+    fs.renameSync(d1RBackup, d1RAbs)
+    ineligibleR.clear()
+    await hR.retryNow()
+    assert.equal(modelCallsR, 2, `missing target deferred before dependency wait must finish with 0 extra planner calls (noBatch=${noBatch}) (R15 P2-2, R16 P2-2)`)
+    assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+  }
+
+  // Part R2 (R16 P2-1): A deferred target whose on-disk bytes changed while its observed digest source is ineligible
+  // MUST be dropped immediately (restoring original bytes later must NOT advance the old plan without replanning!).
+  const ineligibleR2 = new Set<string>()
+  let armDeferR2 = false
+  let postProfileReadsR2 = 0
+  let d1R2Path = ''
+  const hR2 = dreamHarness(t, {
+    initialNow: TODAY_MS,
+    eligible: src => !ineligibleR2.has(src.id),
+    async readPhysicalOverride(defaultRead, workspace, filePath, signal) {
+      if (armDeferR2 && filePath === d1R2Path) {
+        postProfileReadsR2++
+        if (postProfileReadsR2 === 2) {
+          armDeferR2 = false
+          return null
         }
       }
       return defaultRead(workspace, filePath, signal)
     },
   })
-  const d0R = hR.addDailyNote([{ text: '旧摘要来源：宁波机房配置' }], { session: 's-r15-r0', day: '2026-11-15' })
-  d0RSourceId = d0R.sources[0]!.id
-  hR.documents.commit({
+  const d0R2 = hR2.addDailyNote([{ text: '旧摘要来源：长沙机房配置' }], { session: 's-r16-r20', day: '2026-11-15' })
+  hR2.documents.commit({
     operationId: randomUUID(),
-    workspace: d0R.workspace,
-    path: 'digest/wiki/doc-r.md',
+    workspace: d0R2.workspace,
+    path: 'digest/wiki/doc-r2.md',
     expectedRevision: null,
     action: 'CREATE',
-    markdown: '---\nname: Doc R\ndescription: Observed digest for ineligible + missing target test\n---\n\n宁波机房运维配置。\n',
-    sources: [{ id: d0R.sources[0]!.id, token: memorySourceToken(d0R.sources[0]!) }],
+    markdown: '---\nname: Doc R2\ndescription: Observed digest for deferred mismatch test\n---\n\n长沙机房运维配置。\n',
+    sources: [{ id: d0R2.sources[0]!.id, token: memorySourceToken(d0R2.sources[0]!) }],
     reads: [],
   })
-  hR.notes.markProcessed(d0R.key, d0R.note.revision)
-  const d1R = hR.addDailyNote([{ text: '目标 R 读取 doc-r 后缺失且依赖暂不可入场' }], { session: 's-r15-r1', day: '2026-11-16' })
-  d1RPath = d1R.path
-  d1RAbs = path.join(hR.store.fileRoot, d1R.workspace, d1R.path)
-  d1RBackup = `${d1RAbs}.moved`
-  let modelCallsR = 0
-  hR.setModel(async request => {
-    modelCallsR++
+  hR2.notes.markProcessed(d0R2.key, d0R2.note.revision)
+  const d1R2 = hR2.addDailyNote([{ text: '目标 R2 延迟后发生内容变更' }], { session: 's-r16-r21', day: '2026-11-16' })
+  d1R2Path = d1R2.path
+  const d1R2Abs = path.join(hR2.store.fileRoot, d1R2.workspace, d1R2.path)
+  const originalBytesR2 = fs.readFileSync(d1R2Abs, 'utf8')
+  let modelCallsR2 = 0
+  hR2.setModel(async request => {
+    modelCallsR2++
     if (request.system === DREAM_PROFILE_SYSTEM) {
-      armCheckpointR = true
+      if (modelCallsR2 === 2) armDeferR2 = true
       return JSON.stringify({ action: 'NOOP' })
     }
-    const readRes = await request.tools!.executeTool({ callId: 'c-docr', name: 'read', input: { path: 'digest/wiki/doc-r.md' } })
+    const readRes = await request.tools!.executeTool({ callId: 'c-docr2', name: 'read', input: { path: 'digest/wiki/doc-r2.md' } })
     assert.equal(readRes.state, 'completed')
     return JSON.stringify({ operations: [] })
   })
-  const manualOpR = randomUUID()
-  hR.jobs.request(manualOpR)
-  await hR.effects.wake()
-  assert.equal(armCheckpointR, false, 'target move + dependency ineligibility must have triggered right before checkpoint loading')
-  assert.equal(modelCallsR, 2)
-  assert.ok(hR.jobs.status(manualOpR).completedAt !== null, 'manual request must complete while missing target is deferred (R15 P2-2)')
-  assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 1)
-  // Restore both target and eligibility -> deferred checkpoint completes with 0 extra planner calls (2 total)!
-  fs.renameSync(d1RBackup, d1RAbs)
-  ineligibleR.clear()
-  await hR.retryNow()
-  assert.equal(modelCallsR, 2, 'missing target deferred before dependency wait must finish with 0 extra planner calls (R15 P2-2)')
-  assert.equal(hR.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
+  await hR2.run()
+  assert.equal(armDeferR2, false, 'd1R2 must have been deferred on initial checkpoint load')
+  assert.equal(modelCallsR2, 2)
+  assert.equal(hR2.notes.changedFiles('2026-11-15', '2026-11-16').length, 1, 'd1R2 must be deferred')
+  // Now modify d1R2 on disk AND make d0R2's source ineligible before deferred retry!
+  fs.writeFileSync(d1R2Abs, `${originalBytesR2}\n<!-- modified bytes -->`)
+  ineligibleR2.add(d0R2.sources[0]!.id)
+  await hR2.retryNow()
+  // The batch observed the changed revision -> old deferred checkpoint MUST have been dropped!
+  // Now restore original bytes & eligibility -> a fresh Dream run MUST replan (modelCallsR2 === 4, NOT 2)!
+  fs.writeFileSync(d1R2Abs, originalBytesR2)
+  ineligibleR2.clear()
+  await hR2.run()
+  assert.equal(modelCallsR2, 4, 'observed target revision mismatch during dependency wait must drop the deferred checkpoint so restoring original bytes requires replanning (R16 P2-1)')
+  assert.equal(hR2.notes.changedFiles('2026-11-15', '2026-11-16').length, 0)
 
   // Part S (R15 P2-3): Caller omitting BOTH readFileAtCommit AND readFileRevisionAtCommit (plus readPhysicalFile):
   // moving target immediately before strict read must defer (0 extra planner calls after restore).

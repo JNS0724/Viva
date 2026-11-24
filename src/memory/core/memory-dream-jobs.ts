@@ -916,6 +916,23 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
         const at = now()
         let advanced = false
         const unresolved: DeferredCheckpoint[] = []
+        const handleWait = (target: DeferredCheckpoint) => {
+          if (!checkpointBatch) {
+            const targetState = classifyNoteFile(target.file)
+            if (targetState === 'unverifiable') {
+              unresolved.push(target)
+              return
+            }
+            if (targetState === 'stale') {
+              progress(job, 'source_changed', 'consolidate')
+              if (!options.isDeferredRetry) scanRetry = true
+              return
+            }
+            if (targetState === 'already_processed') return
+          }
+          if (options.isDeferredRetry) unresolved.push(target)
+          else waitingForAdmission = true
+        }
         for (const target of targets) {
           // 1. Metadata-only precondition check on target (zero disk I/O).
           const metaState = classifyNoteMetadata(target.file)
@@ -925,11 +942,16 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             if (!options.isDeferredRetry) scanRetry = true
             continue
           }
-          // If the loaded batch already observed the target file as missing/unreadable, defer before dependency wait checks.
+          // If the loaded batch already observed the target as missing/unreadable or changed, resolve before dependency wait checks.
           if (checkpointBatch) {
             const targetBatchRev = checkpointBatch.observedRevision(target.file.workspace, target.file.path)
             if (targetBatchRev === undefined || targetBatchRev === null) {
               unresolved.push(target)
+              continue
+            }
+            if (targetBatchRev !== target.file.revision) {
+              progress(job, 'source_changed', 'consolidate')
+              if (!options.isDeferredRetry) scanRetry = true
               continue
             }
           }
@@ -948,8 +970,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
               continue
             }
             if (obsState === 'wait') {
-              if (options.isDeferredRetry) unresolved.push(target)
-              else waitingForAdmission = true
+              handleWait(target)
               continue
             }
             if (obsState === 'unverifiable') {
@@ -969,8 +990,7 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
                 continue
               }
               if (liveObsState === 'wait') {
-                if (options.isDeferredRetry) unresolved.push(target)
-                else waitingForAdmission = true
+                handleWait(target)
                 continue
               }
             }
@@ -996,16 +1016,14 @@ export function createMemoryDreamJobs({ notes, documents, effects, store, identi
             continue
           }
           if (selfWait) {
-            if (options.isDeferredRetry) unresolved.push(target)
-            else waitingForAdmission = true
+            handleWait(target)
             continue
           }
 
           // 5. Own-source eligibility for NOOP targets.
           if (target.operationIds.length === 0
             && target.file.sources.some(src => { const item = source(src.id); return Boolean(item && !eligible(item)) })) {
-            if (options.isDeferredRetry) unresolved.push(target)
-            else waitingForAdmission = true
+            handleWait(target)
             continue
           }
 
